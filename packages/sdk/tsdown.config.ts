@@ -11,6 +11,7 @@ export default defineConfig({
     "src/providers/daytona/index.ts",
     "src/providers/vercel/index.ts",
     "src/providers/upstash/index.ts",
+    "src/providers/railway/index.ts",
     "src/ai/index.ts",
     "src/ai/harness.ts",
     "src/eve/index.ts",
@@ -30,5 +31,6 @@ export default defineConfig({
     "@ai-sdk/harness",
     "@mastra/core/workspace",
     "eve",
+    "railway",
   ],
 });

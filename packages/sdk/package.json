@@ -46,6 +46,10 @@
       "types": "./dist/providers/upstash/index.d.mts",
       "import": "./dist/providers/upstash/index.mjs"
     },
+    "./railway": {
+      "types": "./dist/providers/railway/index.d.mts",
+      "import": "./dist/providers/railway/index.mjs"
+    },
     "./metadata": {
       "types": "./dist/metadata.d.mts",
       "import": "./dist/metadata.mjs"
@@ -106,6 +110,7 @@
     "ai": "^7",
     "e2b": "^2.32.0",
     "eve": "^0.22",
+    "railway": "^3.5.7",
     "tsdown": "^0.16.6",
     "typescript": "^6.0.3"
   },
@@ -117,7 +122,8 @@
     "@vercel/sandbox": "^2.5.0",
     "ai": "^7.0.0",
     "e2b": "^2.32.0",
-    "eve": "^0.22.0"
+    "eve": "^0.22.0",
+    "railway": "^3.5.7"
   },
   "peerDependenciesMeta": {
     "e2b": {
@@ -142,6 +148,9 @@
       "optional": true
     },
     "eve": {
+      "optional": true
+    },
+    "railway": {
       "optional": true
     }
   },

@@ -40,7 +40,7 @@ Eve runs `bootstrap` once for a template identity. Each durable session starts f
 
 ## Choose a provider
 
-<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash", "Railway"]}>
   <Tab value="Local">
     ```ts
     import { local } from "@opencoredev/sandbox-sdk/local";
@@ -71,6 +71,13 @@ Eve runs `bootstrap` once for a template identity. Each durable session starts f
     import { upstash } from "@opencoredev/sandbox-sdk/upstash";
     const backend = createEveSandboxBackend({ provider: upstash({ runtime: "node" }) });
     ```
+  </Tab>
+  <Tab value="Railway">
+    ```ts
+    import { railway } from "@opencoredev/sandbox-sdk/railway";
+    const backend = createEveSandboxBackend({ provider: railway() });
+    ```
+    Set `RAILWAY_API_TOKEN` and `RAILWAY_ENVIRONMENT_ID`.
   </Tab>
 </Tabs>
 

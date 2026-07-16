@@ -2,6 +2,7 @@ import {
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
+  railwayCapabilities,
   upstashCapabilities,
   vercelCapabilities,
 } from "./providers/capabilities";
@@ -133,6 +134,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "railway",
+    displayName: "Railway Sandboxes",
+    officialUrl: "https://docs.railway.com/sandboxes",
+    packageName: "railway",
+    packageVersion: "3.5.7",
+    capabilities: railwayCapabilities,
+    environmentVariables: ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"],
+    technicalStatus: "experimental",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Normalized ports.expose() is unsupported. Use railway sandbox forward or sandbox.raw for port access.",
+    snapshotBehavior:
+      "snapshot.create() forks the live filesystem into a new sandbox. Restore is unsupported; boot forks or checkpoints through sandbox.raw.",
+    runtimeLimitations:
+      "Priority Boarding feature. Requires a Railway project environment and API token. Sandboxes are ephemeral VMs billed by resource usage.",
   },
 ];
 
