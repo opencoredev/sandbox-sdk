@@ -1,0 +1,98 @@
+---
+title: Railway Sandboxes
+description: Run Railway hosted Linux sandboxes through the normalized SDK API.
+icon: railway
+---
+
+Railway provides ephemeral Linux sandboxes (VMs) with files, commands, templates, forks, and checkpoints. See the [Railway sandboxes docs](https://docs.railway.com/sandboxes).
+
+Sandboxes are available through Railway Priority Boarding and the official `railway` TypeScript SDK may change while the feature is in preview.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk railway
+```
+
+## Authentication
+
+Set `RAILWAY_API_TOKEN` and `RAILWAY_ENVIRONMENT_ID`, or pass them to `railway()`:
+
+```ts title="credentials.ts"
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+const provider = railway({
+  token: process.env.RAILWAY_API_TOKEN!,
+  environmentId: process.env.RAILWAY_ENVIRONMENT_ID!,
+});
+```
+
+Create an API token in the Railway dashboard and use an environment from a Railway project. Each sandbox is scoped to that environment.
+
+## Run a command
+
+```ts title="railway.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using sandbox = await createSandbox({ provider: railway() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+export const agentSandboxProvider = railway();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Railway supports background processes, cancellation via `process.kill()`, and separate stdout and stderr streams. Normalized stdin is not available. Long-running sessions can be detached and reattached through `sandbox.raw`.
+
+## Ports and snapshots
+
+Normalized `ports.expose()` is not supported. Forward ports with the Railway CLI (`railway sandbox forward`) or use `sandbox.raw`.
+
+`snapshots.create()` forks the running sandbox's filesystem into a new independent sandbox. Deleting a snapshot destroys that fork. Named checkpoints and template builds remain available on `sandbox.raw`.
+
+```ts title="snapshot.ts"
+const snapshot = await sandbox.snapshots.create({ name: "prepared" });
+await sandbox.snapshots.delete(snapshot);
+```
+
+## Options
+
+| Option                | Type                     | Default                    | Behavior                                                         |
+| --------------------- | ------------------------ | -------------------------- | ---------------------------------------------------------------- |
+| `token`               | `string`                 | `RAILWAY_API_TOKEN`        | Authenticates Railway API requests.                              |
+| `environmentId`       | `string`                 | `RAILWAY_ENVIRONMENT_ID`   | Scopes sandboxes to a Railway environment.                       |
+| `idleTimeoutMinutes`  | `number`                 | Plan default               | Auto-destroys idle sandboxes. Max depends on plan.               |
+| `networkIsolation`    | `ISOLATED` \| `PRIVATE`  | `ISOLATED`                 | `PRIVATE` joins the environment private network.                 |
+
+Creation also maps `createSandbox({ timeout })` to `idleTimeoutMinutes` when the adapter option is unset.
+
+## Behavior
+
+- Sandboxes start from a clean Debian base once `Sandbox.create()` resolves.
+- Files are ephemeral unless you fork, checkpoint, or build a template through `sandbox.raw`.
+- Managed sessions keep the live sandbox reference in the current process.
+- Templates, checkpoints, SSH, and network isolation remain available through `sandbox.raw`.
+- Destroy sandboxes when done; idle sandboxes still consume billable resources.
+
+## Read next
+
+Compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Railway to [HarnessAgent](/docs/integrations/ai-sdk-harness). Official reference: [docs.railway.com/sandboxes](https://docs.railway.com/sandboxes).

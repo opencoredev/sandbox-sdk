@@ -80,6 +80,22 @@ export const vercelCapabilities = defineCapabilities({
   "network.policy": "native",
 });
 
+export const railwayCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "separate-streams",
+  "process.background": "full",
+  "process.cancel": "full",
+  "snapshot.create": "fork",
+  "snapshot.delete": "fork",
+  "filesystem.persistent": "ephemeral",
+  "image.custom": "template",
+  "network.policy": "native",
+});
+
 export const upstashCapabilities = defineCapabilities({
   "files.read": "full",
   "files.write": "full",

@@ -1,3 +1,7 @@
+## Unreleased
+
+- Add experimental Railway Sandboxes provider (`@opencoredev/sandbox-sdk/railway`) via the official `railway` SDK.
+
 ## @opencoredev/sandbox-sdk@0.1.1
 
 - Add `Symbol.asyncDispose` to `Sandbox` so `await using` provides automatic cleanup.
