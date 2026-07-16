@@ -20,12 +20,13 @@ const response = await preview.request?.("/health");
 
 Authenticated adapters keep preview credentials inside `request()`. `toJSON()` never returns credential-bearing headers and redacts URL query values.
 
-| Provider       | Port behavior                                                      |
-| -------------- | ------------------------------------------------------------------ |
-| Local          | Returns a private URL and bridges calls through `request()`.       |
-| E2B            | Returns an E2B host and uses a native access token when required.  |
-| Daytona        | Returns a public or token-authenticated preview URL.               |
-| Vercel Sandbox | Registers the port and returns a public `vercel.run` route.        |
-| Upstash Box    | Returns a public URL or keeps its bearer token inside `request()`. |
+| Provider       | Port behavior                                                          |
+| -------------- | ---------------------------------------------------------------------- |
+| Local          | Returns a private URL and bridges calls through `request()`.           |
+| E2B            | Returns an E2B host and uses a native access token when required.      |
+| Daytona        | Returns a public or token-authenticated preview URL.                   |
+| Vercel Sandbox | Registers the port and returns a public `vercel.run` route.            |
+| Upstash Box    | Returns a public URL or keeps its bearer token inside `request()`.     |
+| Ascii Box      | Keeps `_token` and its same-origin cookie redirect inside `request()`. |
 
 Compare provider preview behavior in [Providers](/docs/providers).

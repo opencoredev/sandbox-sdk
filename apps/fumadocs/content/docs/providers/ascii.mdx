@@ -1,0 +1,104 @@
+---
+title: Ascii Box
+description: Run Ascii cloud computers through the normalized SDK API.
+icon: ascii
+---
+
+Ascii Box provides persistent cloud computers with files, commands, detached processes, protected previews, snapshots, desktop streaming, SSH, and native agent workflows.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @asciidev/box-sdk
+```
+
+## Authentication
+
+Create an API key in the Box dashboard and set `BOX_API_KEY`, or pass `apiKey` to `ascii()`. Set `BOX_BASE_URL` only when targeting a non-production Box API.
+
+## Run a command
+
+```ts title="ascii.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { ascii } from "@opencoredev/sandbox-sdk/ascii";
+
+await withSandbox({ provider: ascii({ ttlSeconds: 600 }) }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+The Box command API preserves separate stdout and stderr streams. Foreground commands are limited to 60 seconds; use `sandbox.processes.start()` for longer work.
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { ascii } from "@opencoredev/sandbox-sdk/ascii";
+
+export const agentSandboxProvider = ascii({ ttlSeconds: 3600 });
+```
+
+Managed sessions archive the native Box when stopped and resume its persistent filesystem later. Destroying the session deletes the Box.
+
+## Files and processes
+
+Ascii's file and command endpoints use paths relative to the Box work directory. Sandbox SDK maps that directory to the sandbox's virtual working directory, `/workspace` by default.
+
+```ts title="workspace.ts"
+await sandbox.files.mkdir("output");
+await sandbox.files.write("output/result.txt", "ready\n");
+
+const process = await sandbox.processes.start("bun run dev");
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Background processes are detached inside the Box. Their stdout, stderr, and exit status are persisted under `.sandbox-sdk/processes` so callers can stream output, wait, inspect status, and send signals. Normalized stdin is not available.
+
+## Ports
+
+Box previews are protected by default. The adapter removes `_token` from the returned URL and retains it inside `preview.request()` so serialization does not leak the credential. On server runtimes, `request()` also completes Box's same-origin cookie redirect because native `fetch` does not provide a cookie jar.
+
+```ts title="preview.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = await preview.request?.("/health");
+```
+
+Pass `public: true` to `ascii()` only when the service is safe to expose without Box authentication.
+
+## Snapshots and lifecycle
+
+Ascii creates filesystem snapshots while archiving. `sandbox.snapshots.create()` archives the Box, waits for a new completed snapshot, then resumes the same Box. Snapshot deletion and point-in-time restoration are not exposed by Box v1 and remain unsupported on the normalized surface. Snapshot download and tree APIs remain typed on `sandbox.raw.api`.
+
+`sandbox.stop()` deletes the Box because it is the normalized cleanup operation. If Box requires a recent safety snapshot before deletion, the adapter archives the Box, waits for the new snapshot, and retries deletion. Managed integration `stop()` calls archive instead, allowing the session to resume.
+
+## Options
+
+| Option           | Type             | Default                      | Behavior                                       |
+| ---------------- | ---------------- | ---------------------------- | ---------------------------------------------- |
+| `apiKey`         | `string`         | `BOX_API_KEY`                | Authenticates Box v1 requests.                 |
+| `baseUrl`        | `string`         | `BOX_BASE_URL` or production | Selects the Box v1 API endpoint.               |
+| `ttlSeconds`     | `number \| null` | Provider default             | Configures automatic archival.                 |
+| `noEnv`          | `boolean`        | `false`                      | Withholds account secrets and credentials.     |
+| `public`         | `boolean`        | `false`                      | Creates public rather than protected previews. |
+| `readyTimeoutMs` | `number`         | `300000`                     | Bounds provisioning and lifecycle waits.       |
+| `pollIntervalMs` | `number`         | `1000`                       | Controls lifecycle and process polling.        |
+| `configuration`  | `object`         | `{}`                         | Adds official SDK fetch configuration.         |
+
+## Native API
+
+```ts title="native.ts"
+const box = await sandbox.raw.get();
+const snapshots = await sandbox.raw.api.listBoxSnapshots({
+  boxId: sandbox.raw.id,
+});
+```
+
+Prompting Codex or Claude Code, event streaming, desktop access, SSH keys, repository selection, forks, and snapshot downloads are provider-specific and remain available through the official `BoxApi` on `sandbox.raw.api`.
+
+## Read next
+
+See [Box's TypeScript SDK guide](https://docs.ascii.dev/box/sdks/typescript), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Ascii to [Mastra](/docs/integrations/mastra).

@@ -18,13 +18,14 @@ bun add @opencoredev/sandbox-sdk @mastra/core
 
 The Local provider is included. Install the native SDK only for the cloud provider you use.
 
-| Provider       | Additional package |
-| -------------- | ------------------ |
-| Local          | None               |
-| E2B            | `e2b`              |
-| Daytona        | `@daytona/sdk`     |
-| Vercel Sandbox | `@vercel/sandbox`  |
-| Upstash Box    | `@upstash/box`     |
+| Provider       | Additional package  |
+| -------------- | ------------------- |
+| Local          | None                |
+| E2B            | `e2b`               |
+| Daytona        | `@daytona/sdk`      |
+| Vercel Sandbox | `@vercel/sandbox`   |
+| Upstash Box    | `@upstash/box`      |
+| Ascii Box      | `@asciidev/box-sdk` |
 
 Configure the provider's credentials as described in its [provider guide](/docs/providers). The agent example below also expects `OPENAI_API_KEY` for its selected model.
 
@@ -76,7 +77,7 @@ The adapter normalizes Mastra's workspace contract once. Switching providers cha
 
 Every supported provider uses the same `createMastraWorkspace()` factory.
 
-<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash", "Ascii"]}>
   <Tab value="Local">
     ```ts
     import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
@@ -138,6 +139,18 @@ Every supported provider uses the same `createMastraWorkspace()` factory.
     });
     ```
     Set `UPSTASH_BOX_API_KEY` before starting the agent.
+
+  </Tab>
+  <Tab value="Ascii">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { ascii } from "@opencoredev/sandbox-sdk/ascii";
+
+    export const workspace = createMastraWorkspace({
+      provider: ascii({ ttlSeconds: 3600 }),
+    });
+    ```
+    Set `BOX_API_KEY` before starting the agent.
 
   </Tab>
 </Tabs>

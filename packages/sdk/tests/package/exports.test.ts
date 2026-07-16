@@ -13,9 +13,11 @@ test("core and self-hosted built entries import independently", async () => {
   const coreEntry = "../../dist/index.mjs";
   const localEntry = "../../dist/providers/local/index.mjs";
   const agentosEntry = "../../dist/providers/agentos/index.mjs";
+  const asciiEntry = "../../dist/providers/ascii/index.mjs";
   expect(await import(coreEntry)).toHaveProperty("createSandbox");
   expect(await import(localEntry)).toHaveProperty("local");
   expect(await import(agentosEntry)).toHaveProperty("agentos");
+  expect(await import(asciiEntry)).toHaveProperty("ascii");
 });
 
 test("experimental integration entries import independently", async () => {

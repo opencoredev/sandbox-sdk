@@ -12,14 +12,16 @@ const missingCredentials =
     ? !process.env.E2B_API_KEY
     : id === "daytona"
       ? !process.env.DAYTONA_API_KEY
-      : id === "upstash"
-        ? !process.env.UPSTASH_BOX_API_KEY
-        : !process.env.VERCEL_OIDC_TOKEN &&
-          !(
-            process.env.VERCEL_TOKEN &&
-            process.env.VERCEL_TEAM_ID &&
-            process.env.VERCEL_PROJECT_ID
-          );
+      : id === "ascii"
+        ? !process.env.BOX_API_KEY
+        : id === "upstash"
+          ? !process.env.UPSTASH_BOX_API_KEY
+          : !process.env.VERCEL_OIDC_TOKEN &&
+            !(
+              process.env.VERCEL_TOKEN &&
+              process.env.VERCEL_TEAM_ID &&
+              process.env.VERCEL_PROJECT_ID
+            );
 const processResult = missingCredentials
   ? null
   : Bun.spawn(["bun", "test", `tests/live/${id}.test.ts`], {

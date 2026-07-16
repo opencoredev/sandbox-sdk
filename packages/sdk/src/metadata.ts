@@ -1,4 +1,5 @@
 import {
+  asciiCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
@@ -133,6 +134,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "ascii",
+    displayName: "Ascii Box",
+    officialUrl: "https://docs.ascii.dev/box",
+    packageName: "@asciidev/box-sdk",
+    packageVersion: "0.0.24",
+    capabilities: asciiCapabilities,
+    environmentVariables: ["BOX_API_KEY", "BOX_BASE_URL"],
+    technicalStatus: "experimental",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Creates a protected URL by default and keeps its query token inside request(), or creates a public URL when configured.",
+    snapshotBehavior:
+      "Archives the Box to capture its latest filesystem snapshot, then resumes it. Cleanup also satisfies Box's recent-snapshot safeguard before deletion. Point-in-time restore remains on raw.",
+    runtimeLimitations:
+      "Commands are limited to 60 seconds by the Box v1 command API. Normalized paths are virtual paths rooted at the Box work directory.",
   },
 ];
 

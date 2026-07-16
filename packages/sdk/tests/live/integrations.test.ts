@@ -4,6 +4,7 @@ import { toAISandboxSession } from "../../src/ai";
 import { isSandboxError } from "../../src/core/errors";
 import type { SandboxProvider } from "../../src/core/provider";
 import { createEveSandboxBackend } from "../../src/eve";
+import { ascii } from "../../src/providers/ascii";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
 import { local } from "../../src/providers/local";
@@ -40,6 +41,11 @@ const providers: Array<{
     name: "Upstash",
     enabled: Boolean(process.env.UPSTASH_BOX_API_KEY),
     create: () => upstash({ runtime: "node", timeout: 180_000 }),
+  },
+  {
+    name: "Ascii",
+    enabled: Boolean(process.env.BOX_API_KEY),
+    create: () => ascii({ ttlSeconds: 1800 }),
   },
 ];
 

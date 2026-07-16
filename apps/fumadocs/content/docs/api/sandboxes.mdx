@@ -27,13 +27,13 @@ const sandbox = await createSandbox({
 
 ## Sandbox properties
 
-| Property       | Type                 | Description                                         |
-| -------------- | -------------------- | --------------------------------------------------- |
-| `id`           | `string`             | Provider or adapter identifier for this sandbox.    |
-| `provider`     | `ProviderName`       | `local`, `e2b`, `daytona`, `vercel`, or `upstash`.  |
-| `cwd`          | `string`             | Normalized working directory.                       |
-| `capabilities` | `CapabilityMap`      | Supported operations and their modes.               |
-| `raw`          | Provider-native type | Typed access to the underlying provider SDK object. |
+| Property       | Type                 | Description                                                 |
+| -------------- | -------------------- | ----------------------------------------------------------- |
+| `id`           | `string`             | Provider or adapter identifier for this sandbox.            |
+| `provider`     | `ProviderName`       | `local`, `e2b`, `daytona`, `vercel`, `upstash`, or `ascii`. |
+| `cwd`          | `string`             | Normalized working directory.                               |
+| `capabilities` | `CapabilityMap`      | Supported operations and their modes.                       |
+| `raw`          | Provider-native type | Typed access to the underlying provider SDK object.         |
 
 ## Stopping a sandbox
 

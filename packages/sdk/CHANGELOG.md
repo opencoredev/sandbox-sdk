@@ -1,3 +1,7 @@
+## Unreleased
+
+- Add the Ascii Box provider with normalized files, commands, detached processes, protected ports, safe snapshot-backed cleanup, persistent managed sessions, snapshot capture, metadata, documentation, and live coverage.
+
 ## @opencoredev/sandbox-sdk@0.1.0
 
 ### Initial release

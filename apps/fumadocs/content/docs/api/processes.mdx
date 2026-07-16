@@ -25,7 +25,7 @@ Each event reports `stream`, `data`, and an optional `timestamp`. Providers that
 
 ## Writing stdin
 
-Check the capability before writing because Vercel does not expose normalized background stdin.
+Check the capability before writing because Vercel and Ascii do not expose normalized background stdin.
 
 ```ts title="stdin.ts"
 import { supports } from "@opencoredev/sandbox-sdk";

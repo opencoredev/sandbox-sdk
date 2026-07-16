@@ -2,7 +2,7 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, or Upstash Box.
+Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, or Ascii Box.
 
 ## Install
 
@@ -14,13 +14,14 @@ Node.js 22 or 24 is supported. Bun 1.3 or newer is also supported.
 
 ## Providers
 
-| Provider                                                        | Runtime                 | Best for                               |
-| --------------------------------------------------------------- | ----------------------- | -------------------------------------- |
-| [Local](https://sandbox-sdk.app/docs/providers/local)           | AgentOS VM              | Development, CI, and self-hosting      |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)               | Hosted Linux sandbox    | Coding agents and isolated jobs        |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs           |
-| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Vercel workloads and previews          |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state |
+| Provider                                                        | Runtime                   | Best for                                 |
+| --------------------------------------------------------------- | ------------------------- | ---------------------------------------- |
+| [Local](https://sandbox-sdk.app/docs/providers/local)           | AgentOS VM                | Development, CI, and self-hosting        |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)               | Hosted Linux sandbox      | Coding agents and isolated jobs          |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace           | Persistent projects and GPUs             |
+| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox      | Vercel workloads and previews            |
+| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container   | Serverless agents and long-lived state   |
+| [Ascii Box](https://sandbox-sdk.app/docs/providers/ascii)       | Persistent cloud computer | Agents, previews, and durable workspaces |
 
 Local is included. Cloud providers use their official SDKs and credentials.
 

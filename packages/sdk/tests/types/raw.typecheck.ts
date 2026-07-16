@@ -3,6 +3,7 @@ import type { Sandbox as E2BNative } from "e2b";
 import type { Sandbox as VercelNative } from "@vercel/sandbox";
 import type { Box as UpstashNative } from "@upstash/box";
 import { createSandbox } from "../../src";
+import { ascii, type AsciiBox } from "../../src/providers/ascii";
 import { agentos, type AgentOsSandbox } from "../../src/providers/agentos";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
@@ -17,7 +18,16 @@ async function rawTypes() {
   const daytonaSandbox: DaytonaNative = (await createSandbox({ provider: daytona() })).raw;
   const vercelSandbox: VercelNative = (await createSandbox({ provider: vercel() })).raw;
   const upstashSandbox: UpstashNative = (await createSandbox({ provider: upstash() })).raw;
-  void [localSandbox, agentosSandbox, e2bSandbox, daytonaSandbox, vercelSandbox, upstashSandbox];
+  const asciiSandbox: AsciiBox = (await createSandbox({ provider: ascii() })).raw;
+  void [
+    localSandbox,
+    agentosSandbox,
+    e2bSandbox,
+    daytonaSandbox,
+    vercelSandbox,
+    upstashSandbox,
+    asciiSandbox,
+  ];
 }
 
 void rawTypes;

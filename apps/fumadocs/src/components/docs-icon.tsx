@@ -27,6 +27,8 @@ export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
       return <VercelLogo {...props} />;
     case "upstash":
       return <UpstashLogo {...props} />;
+    case "ascii":
+      return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
     default:
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
   }
@@ -42,6 +44,7 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "daytona":
     case "vercel":
     case "upstash":
+    case "ascii":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;

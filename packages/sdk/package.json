@@ -46,6 +46,10 @@
       "types": "./dist/providers/upstash/index.d.mts",
       "import": "./dist/providers/upstash/index.mjs"
     },
+    "./ascii": {
+      "types": "./dist/providers/ascii/index.d.mts",
+      "import": "./dist/providers/ascii/index.mjs"
+    },
     "./metadata": {
       "types": "./dist/metadata.d.mts",
       "import": "./dist/metadata.mjs"
@@ -90,13 +94,15 @@
     "test:live:integrations": "bun test tests/live/integrations.test.ts",
     "test:live:mastra": "bun test tests/live/mastra.test.ts",
     "test:live:vercel": "bun test tests/live/vercel.test.ts",
-    "test:live:upstash": "bun test tests/live/upstash.test.ts"
+    "test:live:upstash": "bun test tests/live/upstash.test.ts",
+    "test:live:ascii": "bun test tests/live/ascii.test.ts"
   },
   "dependencies": {
     "@rivet-dev/agentos-core": "^0.2.7"
   },
   "devDependencies": {
     "@ai-sdk/harness": "^1",
+    "@asciidev/box-sdk": "0.0.24",
     "@daytona/sdk": "^0.196.0",
     "@mastra/core": "1.51.0",
     "@types/bun": "^1.3.14",
@@ -111,6 +117,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/harness": "^1.0.0",
+    "@asciidev/box-sdk": "^0.0.24",
     "@daytona/sdk": "^0.196.0",
     "@mastra/core": ">=1.12.0-0 <2.0.0-0",
     "@upstash/box": "^0.5.3",
@@ -130,6 +137,9 @@
       "optional": true
     },
     "@upstash/box": {
+      "optional": true
+    },
+    "@asciidev/box-sdk": {
       "optional": true
     },
     "ai": {

@@ -46,6 +46,7 @@ export const metadata: Metadata = {
     "Daytona",
     "Vercel Sandbox",
     "Upstash Box",
+    "Ascii Box",
   ],
   alternates: { canonical: "/" },
   openGraph: {

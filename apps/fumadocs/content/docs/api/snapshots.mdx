@@ -35,7 +35,7 @@ if (supports(sandbox, "snapshot.restore")) {
 }
 ```
 
-Only Local exposes normalized in-place restore. E2B and Vercel restore flows create new native sandboxes, so those operations remain on `sandbox.raw`. Daytona snapshot and fork behavior also remains provider-specific.
+Only Local exposes normalized in-place restore. E2B and Vercel restore flows create new native sandboxes, so those operations remain on `sandbox.raw`. Daytona snapshot and fork behavior also remains provider-specific. Ascii captures a snapshot by archiving and resuming the Box; snapshot deletion and point-in-time restore remain on `sandbox.raw.api`.
 
 ## Read next
 

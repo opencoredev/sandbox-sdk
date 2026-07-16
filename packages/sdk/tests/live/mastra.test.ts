@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SandboxProvider } from "../../src/core/provider";
 import { createMastraWorkspace } from "../../src/mastra";
+import { ascii } from "../../src/providers/ascii";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
 import { local } from "../../src/providers/local";
@@ -44,6 +45,11 @@ const cases: LiveMastraCase[] = [
     name: "Upstash",
     enabled: Boolean(process.env.UPSTASH_BOX_API_KEY),
     provider: () => upstash({ runtime: "node", timeout: 180_000 }),
+  },
+  {
+    name: "Ascii",
+    enabled: Boolean(process.env.BOX_API_KEY),
+    provider: () => ascii({ ttlSeconds: 1800 }),
   },
 ];
 
