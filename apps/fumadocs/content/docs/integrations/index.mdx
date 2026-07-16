@@ -1,0 +1,26 @@
+---
+title: Overview
+description: Choose the agent integration that matches your runtime and session model.
+icon: integrations
+---
+
+Sandbox SDK connects the same provider adapters to AI SDK tool-loop agents, established coding-agent harnesses, Eve, and Mastra workspaces.
+
+## Choose an integration
+
+| Integration                                       | Use it when                                                 | Agent runtime                            | Session model                                          |
+| ------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| [AI SDK](/docs/integrations/ai-sdk)               | You are building your own tools and agent loop              | `ToolLoopAgent` with your model          | One application-owned sandbox per run                  |
+| [HarnessAgent](/docs/integrations/ai-sdk-harness) | You want Codex, Claude Code, Pi, or another harness adapter | Established coding-agent runtime         | Managed, resumable sessions within one Node.js process |
+| [Eve](/docs/integrations/eve)                     | Your application already uses Eve's agent runtime           | Eve's default harness                    | Eve-managed sessions and reconnect metadata            |
+| [Mastra](/docs/integrations/mastra)               | You want Mastra workspace file, command, and process tools  | Mastra `Agent` with a shared `Workspace` | Mastra-owned managed sandbox session                   |
+
+AI SDK's model providers and harness adapters solve different problems. A model provider supplies the model used by `ToolLoopAgent`; a harness adapter supplies a complete agent runtime used by `HarnessAgent`.
+
+## Run shell commands without an agent
+
+Use `sandbox.run()` for one command and `sandbox.processes.start()` for a long-running process. The [Commands reference](/docs/api/commands) covers working directories, environment variables, timeouts, cancellation, results, and argument arrays.
+
+## Read next
+
+Start with [AI SDK](/docs/integrations/ai-sdk) for a custom tool-loop agent, [HarnessAgent](/docs/integrations/ai-sdk-harness) for an established coding-agent runtime, or [Mastra](/docs/integrations/mastra) for a shared agent workspace.

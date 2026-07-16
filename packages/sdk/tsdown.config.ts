@@ -1,0 +1,34 @@
+import { defineConfig } from "tsdown";
+
+export default defineConfig({
+  entry: [
+    "src/index.ts",
+    "src/metadata.ts",
+    "src/testing/index.ts",
+    "src/providers/local/index.ts",
+    "src/providers/agentos/index.ts",
+    "src/providers/e2b/index.ts",
+    "src/providers/daytona/index.ts",
+    "src/providers/vercel/index.ts",
+    "src/providers/upstash/index.ts",
+    "src/ai/index.ts",
+    "src/ai/harness.ts",
+    "src/eve/index.ts",
+    "src/mastra/index.ts",
+  ],
+  format: "esm",
+  dts: true,
+  sourcemap: true,
+  clean: true,
+  external: [
+    "@rivet-dev/agentos-core",
+    "e2b",
+    "@daytona/sdk",
+    "@vercel/sandbox",
+    "@upstash/box",
+    "ai",
+    "@ai-sdk/harness",
+    "@mastra/core/workspace",
+    "eve",
+  ],
+});

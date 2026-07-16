@@ -1,0 +1,95 @@
+---
+title: AI SDK
+description: Run AI SDK agents in an isolated Sandbox SDK execution environment.
+icon: ai-sdk
+---
+
+Sandbox SDK supports both AI SDK agent runtimes. Use `ToolLoopAgent` when you own the model and tools, or use [`HarnessAgent`](/docs/integrations/ai-sdk-harness) to run an established coding runtime such as Codex or Claude Code.
+
+## Choose an agent runtime
+
+| Runtime         | Use it when                                                  | Setup                                                             |
+| --------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `ToolLoopAgent` | You want to choose the model, tools, and approval policy.    | Continue below.                                                   |
+| `HarnessAgent`  | You want Codex, Claude Code, Pi, or another harness runtime. | [Open the HarnessAgent guide](/docs/integrations/ai-sdk-harness). |
+
+## Installation
+
+AI SDK 7 requires Node.js 22 or newer. This example uses Vercel Sandbox; install a different [provider package](/docs/providers) if needed.
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk ai zod @vercel/sandbox
+```
+
+Complete [Vercel authentication](/docs/providers/vercel#authentication) before running the example.
+Pass the `LanguageModel` from your existing AI SDK provider or AI Gateway setup to `runSandboxAgent()`.
+
+## Run an agent
+
+Create the sandbox, pass its AI SDK session to the agent call, and stop it after the turn.
+
+```ts title="sandbox-agent.ts"
+import { ToolLoopAgent, type LanguageModel } from "ai";
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import {
+  createSandboxToolApproval,
+  createSandboxTools,
+  toAISandboxSession,
+} from "@opencoredev/sandbox-sdk/ai";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+export function runSandboxAgent(model: LanguageModel) {
+  return withSandbox({ provider: vercel({ runtime: "node24" }) }, async (sandbox) => {
+    const aiSandbox = toAISandboxSession(sandbox);
+    const agent = new ToolLoopAgent({
+      model,
+      instructions: `Work only in the provided sandbox.\n\n${aiSandbox.description}`,
+      tools: createSandboxTools(),
+      toolApproval: createSandboxToolApproval(),
+    });
+
+    return agent.generate({
+      prompt: "Inspect package.json, run the test script, and summarize the result.",
+      experimental_sandbox: aiSandbox,
+    });
+  });
+}
+```
+
+`toAISandboxSession()` does not own the underlying sandbox lifecycle. `withSandbox()` stops it when the callback finishes or throws.
+
+The AI SDK does not add the sandbox description to the model prompt automatically. The example includes it in `instructions` so the model knows the working directory and provider.
+
+## Configure tool approval
+
+`createSandboxTools()` adds `bash`, `read_file`, and `write_file`. Configure approval on the AI SDK call or agent, not on the tool definitions.
+
+```ts title="approval.ts"
+createSandboxToolApproval(); // commands and writes require user approval
+createSandboxToolApproval("always"); // every tool requires user approval
+createSandboxToolApproval("never"); // every tool executes immediately
+```
+
+The default policy returns `user-approval` for `bash` and `write_file`, so a turn pauses and emits an approval request before either tool executes. Continue it through the [AI SDK tool approval flow](https://ai-sdk.dev/docs/agents/tool-approvals).
+
+Use `"never"` only when your application policy permits every offered tool call. A sandbox limits where a command runs; it does not decide whether the requested action is acceptable.
+
+## Use the adapter directly
+
+Pass the adapted session to `generateText()`, `streamText()`, your own tools, or a `ToolLoopAgent` call.
+
+```ts title="sandbox-session.ts"
+const aiSandbox = toAISandboxSession(sandbox);
+
+const result = await aiSandbox.run({
+  command: "bun test",
+  workingDirectory: sandbox.cwd,
+  env: { CI: "true" },
+});
+```
+
+The adapter maps text and binary files, commands, background processes, working directories, environment variables, and abort signals. Provider capability differences still apply.
+
+## Read next
+
+Use [HarnessAgent](/docs/integrations/ai-sdk-harness) when an established coding runtime should own the tools and session history. Use [Commands](/docs/api/commands) for the normalized command API.

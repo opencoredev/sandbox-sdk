@@ -1,0 +1,100 @@
+---
+title: Vercel Sandbox
+description: Run Vercel sandboxes through the normalized SDK API.
+icon: vercel
+---
+
+Vercel provides hosted runtimes with files, processes, public previews, filesystem snapshots, and persistent sandboxes.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @vercel/sandbox
+```
+
+## Authentication
+
+Use OIDC on Vercel and during local development. Run `bunx vercel link`, then `bunx vercel env pull` to write `VERCEL_OIDC_TOKEN` to `.env.local`. Deployed Vercel applications receive the token automatically.
+
+Outside Vercel, pass an access token with its team and project:
+
+```ts title="credentials.ts"
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const provider = vercel({
+  token: process.env.VERCEL_TOKEN!,
+  teamId: process.env.VERCEL_TEAM_ID!,
+  projectId: process.env.VERCEL_PROJECT_ID!,
+});
+```
+
+See [Vercel's authentication guide](https://vercel.com/docs/sandbox/concepts/authentication) for token creation and project identifiers.
+
+## Run a command
+
+```ts title="vercel.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await withSandbox({ provider: vercel() }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+export const agentSandboxProvider = vercel({
+  ports: [4000], // required by bridge-backed AI SDK harnesses
+});
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Vercel supports background processes, cancellation, and separate stdout and stderr streams. Background stdin is not available through the normalized process handle.
+
+## Ports and snapshots
+
+`ports.expose()` registers a missing port and returns its public `vercel.run` URL. Creating and deleting filesystem snapshots is normalized; creating a new sandbox from a snapshot remains on `sandbox.raw`.
+
+```ts title="snapshot.ts"
+const snapshot = await sandbox.snapshots.create({ name: "prepared" });
+await sandbox.snapshots.delete(snapshot);
+```
+
+## Options
+
+| Option       | Type       | Default          | Behavior                             |
+| ------------ | ---------- | ---------------- | ------------------------------------ |
+| `runtime`    | `string`   | `node24`         | Selects an available Vercel runtime. |
+| `name`       | `string`   | Generated        | Sets the sandbox name.               |
+| `ports`      | `number[]` | `[]`             | Registers initial public ports.      |
+| `persistent` | `boolean`  | Provider default | Enables provider persistence.        |
+| `token`      | `string`   | OIDC             | Requires `teamId` and `projectId`.   |
+| `teamId`     | `string`   | OIDC             | Requires `token` and `projectId`.    |
+| `projectId`  | `string`   | OIDC             | Requires `token` and `teamId`.       |
+
+## Behavior
+
+- Creating a filesystem snapshot stops the current Vercel session.
+- Persistent sandboxes can resume across application processes.
+- PTY and native runtime controls remain available through `sandbox.raw`.
+- Preview URLs are public; do not expose a service that lacks its own authentication.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Vercel to [HarnessAgent](/docs/integrations/ai-sdk-harness).

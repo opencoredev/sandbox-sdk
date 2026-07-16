@@ -1,0 +1,54 @@
+---
+title: Commands
+description: Execute shell strings or argument arrays and inspect normalized results.
+---
+
+## Running a command
+
+```ts title="commands.ts"
+const result = await sandbox.run("bun test", {
+  timeout: 60_000,
+  env: { CI: "true" },
+});
+
+if (!result.success) console.error(result.stderr);
+```
+
+| Result field | Type      | Description                                                  |
+| ------------ | --------- | ------------------------------------------------------------ |
+| `stdout`     | `string`  | Captured standard output.                                    |
+| `stderr`     | `string`  | Captured standard error when the provider separates streams. |
+| `exitCode`   | `number`  | Process exit code.                                           |
+| `success`    | `boolean` | `true` when `exitCode` is zero.                              |
+| `signal`     | `string?` | Termination signal when reported by the provider.            |
+| `durationMs` | `number?` | Duration when measured or reported by the provider.          |
+
+Nonzero exits return a result. Infrastructure failures, timeouts, and cancellation throw `SandboxError`.
+
+## Using argument arrays
+
+```ts title="arguments.ts"
+await sandbox.run({
+  command: "bun",
+  args: ["test", "--watch=false"],
+});
+```
+
+Local and Vercel pass arrays directly without a shell. String-only provider APIs receive individually POSIX-quoted arguments.
+
+## Overriding command options
+
+```ts title="commands.ts"
+await sandbox.run("bun run build", {
+  cwd: "packages/app",
+  env: { NODE_ENV: "production" },
+  timeout: 120_000,
+  signal: abortController.signal,
+});
+```
+
+Relative `cwd` values resolve against `sandbox.cwd`.
+
+## Read next
+
+Use [Processes](/docs/api/processes) for long-running work.

@@ -1,0 +1,84 @@
+---
+title: Daytona
+description: Run Daytona workspaces through the normalized SDK API.
+icon: daytona
+---
+
+Daytona provides persistent workspaces with files, processes, authenticated previews, custom images, and native compute controls.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @daytona/sdk
+```
+
+## Authentication
+
+Set `DAYTONA_API_KEY`, or pass `apiKey` to `daytona()`. `DAYTONA_API_URL` and `DAYTONA_TARGET` select a custom endpoint or target.
+
+## Run a command
+
+```ts title="daytona.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await withSandbox({ provider: daytona() }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+export const agentSandboxProvider = daytona();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Daytona supports persistent files, background processes, stdin, cancellation, and separate background output streams.
+
+## Ports and snapshots
+
+Private previews keep the Daytona token inside `preview.request()`. Daytona snapshot and fork operations create provider resources, so they remain on `sandbox.raw` instead of the normalized in-place snapshot API.
+
+```ts title="preview.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = preview.request ? await preview.request("/") : await fetch(preview.url);
+```
+
+## Options
+
+| Option     | Type      | Default           | Behavior                                  |
+| ---------- | --------- | ----------------- | ----------------------------------------- |
+| `apiKey`   | `string`  | `DAYTONA_API_KEY` | Authenticates Daytona requests.           |
+| `apiUrl`   | `string`  | `DAYTONA_API_URL` | Selects the API endpoint.                 |
+| `target`   | `string`  | `DAYTONA_TARGET`  | Selects the execution target.             |
+| `image`    | `string`  | Provider default  | Creates the workspace from an image.      |
+| `language` | `string`  | Provider default  | Selects the workspace language.           |
+| `name`     | `string`  | Generated         | Sets the sandbox name.                    |
+| `public`   | `boolean` | Provider default  | Controls whether preview URLs are public. |
+
+## Behavior
+
+- Foreground command output is combined; background events retain separate stdout and stderr streams.
+- The filesystem persists with the Daytona workspace.
+- Custom images, PTY, network controls, and GPU configuration remain available through `sandbox.raw`.
+- Some binary and streaming methods require a Node.js-compatible runtime.
+
+## Read next
+
+See [Processes](/docs/api/processes), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Daytona to [HarnessAgent](/docs/integrations/ai-sdk-harness).

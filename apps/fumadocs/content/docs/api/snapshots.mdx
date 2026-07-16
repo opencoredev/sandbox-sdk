@@ -1,0 +1,42 @@
+---
+title: Snapshots
+description: Use normalized snapshot operations without hiding provider lifecycle differences.
+---
+
+## Creating a snapshot
+
+Check support before creating one.
+
+```ts title="snapshots.ts"
+import { supports } from "@opencoredev/sandbox-sdk";
+
+if (supports(sandbox, "snapshot.create")) {
+  const snapshot = await sandbox.snapshots.create({
+    name: "configured-workspace",
+  });
+}
+```
+
+Snapshots report `id`, optional `name`, `mode`, and optional `createdAt`.
+
+## Deleting a snapshot
+
+```ts title="snapshots.ts"
+await sandbox.snapshots.delete(snapshot);
+// An ID is also accepted:
+await sandbox.snapshots.delete(snapshot.id);
+```
+
+## Restoring a snapshot
+
+```ts title="snapshots.ts"
+if (supports(sandbox, "snapshot.restore")) {
+  await sandbox.snapshots.restore(snapshot);
+}
+```
+
+Only Local exposes normalized in-place restore. E2B and Vercel restore flows create new native sandboxes, so those operations remain on `sandbox.raw`. Daytona snapshot and fork behavior also remains provider-specific.
+
+## Read next
+
+Check exact modes in [Compatibility](/docs/reference/compatibility).

@@ -1,0 +1,85 @@
+---
+title: Local
+description: Run isolated AgentOS sandboxes in the current Node.js process.
+icon: local
+---
+
+Local provides the normalized Sandbox SDK API without a cloud account. It is an AgentOS VM, not a Linux container.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk
+```
+
+Local supports Node.js 22 and 24, and Bun 1.3 or newer.
+
+## Authentication
+
+No credentials are required.
+
+## Run a command
+
+```ts title="local.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await withSandbox({ provider: local() }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+export const agentSandboxProvider = local();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.data);
+}
+```
+
+Local supports background processes, stdin, cancellation, and combined output streams.
+
+## Ports and snapshots
+
+`ports.expose()` bridges requests into the VM without publishing a host port. Local snapshots support create, restore, and delete within the current host process.
+
+```ts title="snapshot.ts"
+const snapshot = await sandbox.snapshots.create({ name: "prepared" });
+await sandbox.snapshots.restore(snapshot);
+```
+
+## Options
+
+| Option    | Type             | Default               | Behavior                          |
+| --------- | ---------------- | --------------------- | --------------------------------- |
+| `agentOs` | `AgentOsOptions` | SDK policy and limits | Configures the native AgentOS VM. |
+
+## Behavior
+
+- Outbound internet and host bindings are denied by default. Native `agentOs.permissions` replace the complete default policy.
+- The guest is WebAssembly/V8-based. Do not assume Docker, browsers, package managers, or arbitrary Linux executables are available.
+- Sandboxes, suspended sessions, and snapshots live only as long as the host process.
+- `sandbox.raw` provides typed access to the current AgentOS VM.
+
+<Callout type="warn" title="Beta runtime">
+  AgentOS is beta. Your application still owns authentication, authorization, quotas, host
+  hardening, secrets, and cleanup.
+</Callout>
+
+## Read next
+
+Compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Local to [AI SDK](/docs/integrations/ai-sdk).

@@ -1,0 +1,28 @@
+---
+title: Capabilities
+description: Check optional operations and provider-specific modes at runtime.
+---
+
+Capability declarations distinguish unsupported behavior from supported behavior with meaningful modes.
+
+```ts title="capabilities.ts"
+import { capabilityMode, requireCapability, supports } from "@opencoredev/sandbox-sdk";
+
+if (supports(sandbox, "ports.expose")) {
+  console.log(capabilityMode(sandbox, "ports.expose"));
+}
+
+requireCapability(sandbox, "snapshot.create");
+```
+
+| Helper                | Result                                                             |
+| --------------------- | ------------------------------------------------------------------ |
+| `supports()`          | Returns a boolean and narrows intent before an optional operation. |
+| `capabilityMode()`    | Returns the provider's mode or `false`.                            |
+| `requireCapability()` | Returns the mode or throws an `unsupported` `SandboxError`.        |
+
+Modes describe real differences such as `public` versus `authenticated` ports, `filesystem` versus `template` snapshots, and `combined-stream` versus `separate-streams` command output.
+
+## Read next
+
+Compare provider declarations in [Compatibility](/docs/reference/compatibility).

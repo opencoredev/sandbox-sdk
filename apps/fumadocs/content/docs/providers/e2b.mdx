@@ -1,0 +1,80 @@
+---
+title: E2B
+description: Run E2B hosted sandboxes through the normalized SDK API.
+icon: e2b
+---
+
+E2B provides hosted Linux sandboxes with files, processes, authenticated previews, and template snapshots.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk e2b
+```
+
+## Authentication
+
+Set `E2B_API_KEY`, or pass `apiKey` to `e2b()`.
+
+## Run a command
+
+```ts title="e2b.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await withSandbox({ provider: e2b() }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+export const agentSandboxProvider = e2b();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+E2B supports background processes, stdin, cancellation, and separate stdout and stderr streams.
+
+## Ports and snapshots
+
+Restricted previews keep the E2B access token inside `preview.request()`. Creating and deleting template snapshots is normalized; restoring one creates a new native sandbox and stays on `sandbox.raw`.
+
+```ts title="preview.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = await preview.request!("/");
+```
+
+## Options
+
+| Option     | Type     | Default          | Behavior                                        |
+| ---------- | -------- | ---------------- | ----------------------------------------------- |
+| `apiKey`   | `string` | `E2B_API_KEY`    | Authenticates E2B requests.                     |
+| `template` | `string` | E2B default      | Creates the sandbox from a named template.      |
+| `timeout`  | `number` | Creation timeout | Overrides the creation timeout in milliseconds. |
+
+## Behavior
+
+- Requires Node.js 20.18.1 or newer and an E2B account.
+- Files are ephemeral unless captured in an E2B template snapshot.
+- Managed resume keeps the live sandbox reference in the current process.
+- PTY, templates, and native network controls remain available through `sandbox.raw`.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect E2B to [HarnessAgent](/docs/integrations/ai-sdk-harness).

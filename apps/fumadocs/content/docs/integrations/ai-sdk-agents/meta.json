@@ -1,0 +1,8 @@
+{
+  "title": "AI SDK",
+  "icon": "ai-sdk",
+  "pages": [
+    "[AI SDK agents](/docs/integrations/ai-sdk)",
+    "[Harness agents](/docs/integrations/ai-sdk-harness)"
+  ]
+}

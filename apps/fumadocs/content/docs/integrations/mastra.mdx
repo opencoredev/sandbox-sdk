@@ -1,0 +1,215 @@
+---
+title: Mastra
+description: Run Mastra workspace agents on any Sandbox SDK provider.
+icon: mastra
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Sandbox SDK provides Mastra workspace sandbox, process, and filesystem adapters. The filesystem and command tools share one isolated session, so files created by either surface are immediately visible to the other.
+
+## Installation
+
+Mastra requires Node.js 22.13 or newer. Install Mastra, Sandbox SDK, and the SDK for the provider you want to use.
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @mastra/core
+```
+
+The Local provider is included. Install the native SDK only for the cloud provider you use.
+
+| Provider       | Additional package |
+| -------------- | ------------------ |
+| Local          | None               |
+| E2B            | `e2b`              |
+| Daytona        | `@daytona/sdk`     |
+| Vercel Sandbox | `@vercel/sandbox`  |
+| Upstash Box    | `@upstash/box`     |
+
+Configure the provider's credentials as described in its [provider guide](/docs/providers). The agent example below also expects `OPENAI_API_KEY` for its selected model.
+
+## Create a workspace agent
+
+`createMastraWorkspace()` creates a normal Mastra `Workspace` with a shared Sandbox SDK filesystem and sandbox.
+
+```ts title="agent.ts"
+import { Agent } from "@mastra/core/agent";
+import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const workspace = createMastraWorkspace({ provider: local() });
+
+export const agent = new Agent({
+  id: "sandbox-agent",
+  name: "Sandbox agent",
+  model: "openai/gpt-5",
+  instructions: "Work only in the attached workspace and verify changes.",
+  workspace,
+});
+```
+
+Mastra adds its workspace file, command, and background-process tools to the agent. Filesystem path `/` maps to `/workspace` in the sandbox by default.
+
+Destroy the workspace when your application owns its lifecycle directly:
+
+```ts
+try {
+  const result = await agent.generate("Create hello.js and run it.");
+  console.log(result.text);
+} finally {
+  await workspace.destroy();
+}
+```
+
+## How the bridge works
+
+| Mastra surface      | Sandbox SDK mapping         | Result                                                                                   |
+| ------------------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| Filesystem tools    | `sandbox.files`             | Reads and writes the same files used by commands                                         |
+| Foreground commands | `sandbox.run()`             | Streams stdout and stderr and returns the real exit code                                 |
+| Background commands | `sandbox.processes.start()` | Supports output polling, stdin, cancellation, and process cleanup when the provider does |
+| Workspace lifecycle | Managed provider sessions   | `init()` provisions or resumes; `destroy()` releases the session                         |
+
+The adapter normalizes Mastra's workspace contract once. Switching providers changes where the sandbox runs, not how the agent or workspace is configured.
+
+## Choose a provider
+
+Every supported provider uses the same `createMastraWorkspace()` factory.
+
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+  <Tab value="Local">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { local } from "@opencoredev/sandbox-sdk/local";
+
+    export const workspace = createMastraWorkspace({
+      provider: local(),
+    });
+    ```
+    Local runs inside the current Node.js process and needs no cloud credentials.
+
+  </Tab>
+  <Tab value="E2B">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+    export const workspace = createMastraWorkspace({
+      provider: e2b(),
+    });
+    ```
+    Set `E2B_API_KEY` before starting the agent.
+
+  </Tab>
+  <Tab value="Daytona">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+    export const workspace = createMastraWorkspace({
+      provider: daytona(),
+    });
+    ```
+    Set `DAYTONA_API_KEY` before starting the agent.
+
+  </Tab>
+  <Tab value="Vercel">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+    const ports = [3000];
+
+    export const workspace = createMastraWorkspace({
+      provider: vercel({ runtime: "node24", ports }),
+      ports,
+    });
+    ```
+    Configure Vercel OIDC, or pass token, team, and project credentials to `vercel()`.
+
+  </Tab>
+  <Tab value="Upstash">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+    export const workspace = createMastraWorkspace({
+      provider: upstash(),
+    });
+    ```
+    Set `UPSTASH_BOX_API_KEY` before starting the agent.
+
+  </Tab>
+</Tabs>
+
+Provider capability differences still apply. Check the exact process, stdin, cancellation, port, and persistence modes in [Compatibility](/docs/reference/compatibility).
+
+## Configure the Mastra workspace
+
+Pass normal Mastra workspace settings under `workspace`. Sandbox settings remain at the top level.
+
+```ts
+import { WORKSPACE_TOOLS } from "@mastra/core/workspace";
+
+const workspace = createMastraWorkspace({
+  provider: local(),
+  identity: "repo-bootstrap-v1",
+  filesystem: { readOnly: false },
+  async onFirstCreate(sandbox) {
+    await sandbox.files.write("package.json", '{"type":"module"}\n');
+  },
+  workspace: {
+    id: "repo-workspace",
+    bm25: true,
+    autoIndexPaths: ["/docs"],
+    tools: {
+      [WORKSPACE_TOOLS.SANDBOX.EXECUTE_COMMAND]: { requireApproval: true },
+      [WORKSPACE_TOOLS.FILESYSTEM.WRITE_FILE]: {
+        requireReadBeforeWrite: true,
+      },
+    },
+  },
+});
+```
+
+`identity` runs `onFirstCreate` once for that template identity and copies the resulting files into later sessions using the same provider instance. The template and resumable-session registries currently live in that Node.js process.
+
+Set `filesystem: { readOnly: true }` when the agent should be able to inspect workspace files and run commands without modifying files through Mastra's filesystem tools.
+
+## Use only the sandbox adapter
+
+Use `createMastraSandbox()` when you want Mastra command and process tools but already have a separate filesystem strategy.
+
+```ts
+import { Workspace } from "@mastra/core/workspace";
+import { createMastraSandbox } from "@opencoredev/sandbox-sdk/mastra";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const sandbox = createMastraSandbox({
+  provider: vercel({ runtime: "node24", ports: [3000] }),
+  ports: [3000],
+});
+
+const workspace = new Workspace({ sandbox });
+```
+
+The sandbox implements Mastra's command lifecycle and `SandboxProcessManager`, including streamed output, stdin, cancellation, timeouts, process lookup, stop, resume, and destroy.
+
+## Access ports and the normalized sandbox
+
+The concrete adapter remains available through `workspace.sandbox`.
+
+```ts
+await workspace.init();
+
+const url = await workspace.sandbox.getPortUrl(3000);
+await workspace.sandbox.sandboxSdk.files.write("READY", "yes\n");
+```
+
+Only ports configured through the provider or the Mastra adapter's `ports` option can be resolved with `getPortUrl()`.
+
+Mastra filesystem mounts are not emulated by this adapter. Use `createMastraWorkspace()` when commands and file tools should operate on the same sandbox filesystem, or configure a separate Mastra mount-capable provider when you need FUSE-backed cloud mounts.
+
+## Read next
+
+Compare provider behavior in [Compatibility](/docs/reference/compatibility), or read Mastra's [introduction to Workspaces](https://mastra.ai/blog/introducing-mastra-workspaces).

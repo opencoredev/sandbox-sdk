@@ -1,0 +1,48 @@
+---
+title: Processes
+description: Start background processes, stream output, write stdin, and cancel work.
+---
+
+## Starting a process
+
+```ts title="processes.ts"
+const process = await sandbox.processes.start("bun run dev", {
+  env: { PORT: "3000" },
+});
+```
+
+A process exposes `id`, `status()`, `output()`, `write()`, and `kill()`.
+
+## Streaming output
+
+```ts title="processes.ts"
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Each event reports `stream`, `data`, and an optional `timestamp`. Providers that combine output declare `combined-stream`; the SDK does not invent stdout/stderr separation.
+
+## Writing stdin
+
+Check the capability before writing because Vercel does not expose normalized background stdin.
+
+```ts title="stdin.ts"
+import { supports } from "@opencoredev/sandbox-sdk";
+
+if (supports(sandbox, "process.stdin")) {
+  await process.write("yes\n");
+}
+```
+
+## Stopping a process
+
+```ts title="processes.ts"
+await process.kill("SIGTERM");
+```
+
+The default signal depends on the provider. Pass a signal only when the provider supports it.
+
+## Read next
+
+Expose the process through [Ports](/docs/api/ports).

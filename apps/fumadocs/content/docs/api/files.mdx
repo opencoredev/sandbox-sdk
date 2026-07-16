@@ -1,0 +1,44 @@
+---
+title: Files
+description: Read, write, list, and remove sandbox files with consistent path rules.
+---
+
+Relative paths resolve against `sandbox.cwd`. Absolute paths stay absolute inside the provider sandbox.
+
+## Writing and reading
+
+```ts title="files.ts"
+await sandbox.files.write("main.ts", `console.log("hello")`);
+await sandbox.files.write("asset.bin", new Uint8Array([0, 1, 255]));
+
+const text = await sandbox.files.text("main.ts");
+const bytes = await sandbox.files.read("asset.bin");
+```
+
+`write()` accepts strings, `Uint8Array`, `ArrayBuffer`, `Blob`, and web `ReadableStream<Uint8Array>`. `read()` returns `Uint8Array`; `text()` decodes UTF-8.
+
+## Listing directories
+
+```ts title="files.ts"
+const entries = await sandbox.files.list(".");
+
+for (const entry of entries) {
+  console.log(entry.name, entry.type, entry.size);
+}
+```
+
+Entries report `name`, `path`, `type`, and an optional byte `size` for files.
+
+## Managing directories
+
+```ts title="directories.ts"
+await sandbox.files.mkdir("src/generated");
+const exists = await sandbox.files.exists("src");
+await sandbox.files.remove("src/generated");
+```
+
+Paths containing null bytes or `..` segments are rejected consistently.
+
+## Read next
+
+Execute a file with [Commands](/docs/api/commands).

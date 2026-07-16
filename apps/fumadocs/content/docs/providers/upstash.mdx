@@ -1,0 +1,84 @@
+---
+title: Upstash Box
+description: Run Upstash Boxes through the normalized SDK API.
+icon: upstash
+---
+
+Upstash provides durable cloud containers with files, processes, public or authenticated URLs, snapshots, and native agents.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @upstash/box
+```
+
+## Authentication
+
+Set `UPSTASH_BOX_API_KEY`, or pass `apiKey` to `upstash()`.
+
+## Run a command
+
+```ts title="upstash.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await withSandbox({ provider: upstash() }, async (sandbox) => {
+  const result = await sandbox.run("node --version");
+  console.log(result.stdout);
+});
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+export const agentSandboxProvider = upstash();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.data);
+}
+```
+
+Upstash supports persistent files and background processes with combined output. Normalized stdin and cancellation are not available in `@upstash/box` 0.5.
+
+## Ports and snapshots
+
+Ports are public by default. Pass `public: false` to return bearer-token URLs and keep the token inside `preview.request()`. Creating and deleting snapshots is normalized; restoring one creates a new Box and remains on `sandbox.raw`.
+
+```ts title="snapshot.ts"
+const snapshot = await sandbox.snapshots.create({ name: "prepared" });
+await sandbox.snapshots.delete(snapshot);
+```
+
+## Options
+
+| Option          | Type                       | Default               | Behavior                              |
+| --------------- | -------------------------- | --------------------- | ------------------------------------- |
+| `apiKey`        | `string`                   | `UPSTASH_BOX_API_KEY` | Authenticates Box requests.           |
+| `runtime`       | `string`                   | `node`                | Selects the Box runtime.              |
+| `size`          | `small \| medium \| large` | `small`               | Selects CPU and memory.               |
+| `name`          | `string`                   | Generated             | Sets a human-readable name.           |
+| `keepAlive`     | `boolean`                  | `false`               | Keeps compute active while idle.      |
+| `public`        | `boolean`                  | `true`                | Controls public or bearer-token URLs. |
+| `networkPolicy` | `NetworkPolicy`            | `allow-all`           | Controls outbound network access.     |
+
+## Behavior
+
+- Files and sandbox identity persist when managed sessions pause and resume.
+- `sandbox.stop()` permanently deletes the Box.
+- Commands expose one combined output stream.
+- Native agents, Git, skills, MCP, schedules, forks, images, and network controls pass through `upstash()` and remain typed on `sandbox.raw`.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Upstash to [HarnessAgent](/docs/integrations/ai-sdk-harness).

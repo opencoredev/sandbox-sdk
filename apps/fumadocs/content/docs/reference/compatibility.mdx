@@ -1,0 +1,22 @@
+---
+title: Compatibility
+description: Compare declared capability modes across every supported provider.
+full: true
+---
+
+The matrix is generated from the same capability declarations exported by the adapters. A dash means the normalized operation is unsupported; provider-native behavior may still exist on `sandbox.raw`.
+
+<ProviderCapabilityMatrix />
+
+## Important differences
+
+- Local uses AgentOS as its in-process isolation boundary, with private bridged ports, deny-by-default
+  networking and beta runtime status.
+- E2B and Daytona can issue authenticated preview URLs through `preview.request()`.
+- Vercel and E2B snapshots create provider-native artifacts, but restore creates a new native sandbox and stays on `raw`.
+- Daytona persistence, PTYs, networking, images, and GPUs are provider-native capabilities beyond the normalized core.
+- Upstash Box provides durable filesystems, pause and resume, network policies, and public or bearer-token URLs; snapshot restore creates a new native Box.
+
+## Read next
+
+Open a page in the [provider catalog](/docs/providers) for setup and limitations.

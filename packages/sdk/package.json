@@ -1,0 +1,151 @@
+{
+  "name": "@opencoredev/sandbox-sdk",
+  "version": "0.1.0",
+  "description": "One TypeScript SDK for every sandbox provider.",
+  "homepage": "https://sandbox-sdk.app",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./local": {
+      "types": "./dist/providers/local/index.d.mts",
+      "import": "./dist/providers/local/index.mjs"
+    },
+    "./agentos": {
+      "types": "./dist/providers/agentos/index.d.mts",
+      "import": "./dist/providers/agentos/index.mjs"
+    },
+    "./e2b": {
+      "types": "./dist/providers/e2b/index.d.mts",
+      "import": "./dist/providers/e2b/index.mjs"
+    },
+    "./daytona": {
+      "types": "./dist/providers/daytona/index.d.mts",
+      "import": "./dist/providers/daytona/index.mjs"
+    },
+    "./vercel": {
+      "types": "./dist/providers/vercel/index.d.mts",
+      "import": "./dist/providers/vercel/index.mjs"
+    },
+    "./upstash": {
+      "types": "./dist/providers/upstash/index.d.mts",
+      "import": "./dist/providers/upstash/index.mjs"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.mts",
+      "import": "./dist/metadata.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.mts",
+      "import": "./dist/testing/index.mjs"
+    },
+    "./ai": {
+      "types": "./dist/ai/index.d.mts",
+      "import": "./dist/ai/index.mjs"
+    },
+    "./ai/harness": {
+      "types": "./dist/ai/harness.d.mts",
+      "import": "./dist/ai/harness.mjs"
+    },
+    "./eve": {
+      "types": "./dist/eve/index.d.mts",
+      "import": "./dist/eve/index.mjs"
+    },
+    "./mastra": {
+      "types": "./dist/mastra/index.d.mts",
+      "import": "./dist/mastra/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepack": "bun run build",
+    "dev": "tsdown --watch src",
+    "lint": "oxlint src tests examples",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests --parallel=1 --timeout=15000",
+    "test:live": "bun test tests/live",
+    "test:live:ai-gateway": "bun scripts/run-ai-gateway-live.ts local",
+    "test:live:ai-gateway:vercel": "bun scripts/run-ai-gateway-live.ts vercel",
+    "test:live:e2b": "bun test tests/live/e2b.test.ts",
+    "test:live:daytona": "bun test tests/live/daytona.test.ts",
+    "test:live:integrations": "bun test tests/live/integrations.test.ts",
+    "test:live:mastra": "bun test tests/live/mastra.test.ts",
+    "test:live:vercel": "bun test tests/live/vercel.test.ts",
+    "test:live:upstash": "bun test tests/live/upstash.test.ts"
+  },
+  "dependencies": {
+    "@rivet-dev/agentos-core": "^0.2.7"
+  },
+  "devDependencies": {
+    "@ai-sdk/harness": "^1",
+    "@daytona/sdk": "^0.196.0",
+    "@mastra/core": "1.51.0",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^22.13.14",
+    "@upstash/box": "0.5.3",
+    "@vercel/sandbox": "^2.5.0",
+    "ai": "^7",
+    "e2b": "^2.32.0",
+    "eve": "^0.22",
+    "tsdown": "^0.16.6",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@ai-sdk/harness": "^1.0.0",
+    "@daytona/sdk": "^0.196.0",
+    "@mastra/core": ">=1.12.0-0 <2.0.0-0",
+    "@upstash/box": "^0.5.3",
+    "@vercel/sandbox": "^2.5.0",
+    "ai": "^7.0.0",
+    "e2b": "^2.32.0",
+    "eve": "^0.22.0"
+  },
+  "peerDependenciesMeta": {
+    "e2b": {
+      "optional": true
+    },
+    "@daytona/sdk": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
+      "optional": true
+    },
+    "@upstash/box": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "@ai-sdk/harness": {
+      "optional": true
+    },
+    "@mastra/core": {
+      "optional": true
+    },
+    "eve": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22 <26"
+  }
+}

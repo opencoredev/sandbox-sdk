@@ -1,0 +1,20 @@
+# Local dependencies and generated build output
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+*.tsbuildinfo
+
+# Local-only files and caches
+.git
+.env
+.env.*
+!.env.example
+.cache
+coverage
+logs
+tmp
+temp
+artifacts
+*.tgz
+*.log

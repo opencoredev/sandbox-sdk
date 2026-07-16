@@ -1,0 +1,70 @@
+---
+title: Quickstart
+description: Install Sandbox SDK, run a Local sandbox, and switch to a cloud provider.
+---
+
+Sandbox SDK uses one TypeScript API for Local, E2B, Daytona, Vercel Sandbox, and Upstash Box.
+
+## Install
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk
+```
+
+Use Node.js 22 or 24, or Bun 1.3 or newer.
+
+Local is included and needs no account or API key. Cloud providers need their official SDK and credentials; each [provider page](/docs/providers) has the setup details.
+
+## Run your first sandbox
+
+```ts title="quickstart.ts"
+import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await withSandbox({ provider: local() }, async (sandbox) => {
+  await sandbox.files.write("hello.mjs", `console.log("hello from the sandbox")`);
+  const result = await sandbox.run("node /workspace/hello.mjs");
+  console.log(result.stdout);
+});
+```
+
+```bash title="Terminal"
+bun quickstart.ts
+```
+
+`withSandbox()` stops the sandbox after the callback finishes or throws. Use `createSandbox()` only when the sandbox must outlive one callback.
+
+## What you can do
+
+| Capability      | Shared API          | Typical use                                     |
+| --------------- | ------------------- | ----------------------------------------------- |
+| Commands        | `sandbox.run()`     | Builds, tests, scripts, and one-off jobs        |
+| Files           | `sandbox.files`     | Seed a project and collect artifacts            |
+| Processes       | `sandbox.processes` | Dev servers and long-running workers            |
+| Ports           | `sandbox.ports`     | Preview a service or call it from your app      |
+| Snapshots       | `sandbox.snapshots` | Cache setup and restore workspace state         |
+| Native features | `sandbox.raw`       | Use provider-specific APIs without losing types |
+
+## Switch providers
+
+Change the provider import and factory. The sandbox calls do not change.
+
+```diff title="provider.ts"
+- import { local } from "@opencoredev/sandbox-sdk/local";
++ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+- const provider = local();
++ const provider = e2b();
+```
+
+Install the E2B package and set `E2B_API_KEY` before running that version. The [provider overview](/docs/providers) lists the requirements for every adapter.
+
+## Add the agent skill
+
+Install the Sandbox SDK skill through [skills.sh](https://skills.sh/docs/cli) when a coding agent will work with the SDK:
+
+```bash title="Terminal"
+npx skills add opencoredev/sandbox-sdk --skill sandbox-sdk
+```
+
+The skill works with Codex, Claude Code, Cursor, and other agents supported by the skills.sh CLI. See [Agent skill](/docs/agent-skill) for project and global installation.

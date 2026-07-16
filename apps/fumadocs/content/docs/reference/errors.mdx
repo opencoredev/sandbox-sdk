@@ -1,0 +1,43 @@
+---
+title: Errors
+description: Handle stable error categories while retaining each provider's native cause.
+---
+
+## Handling errors
+
+```ts title="errors.ts"
+import { isSandboxError } from "@opencoredev/sandbox-sdk";
+
+try {
+  await sandbox.run("work");
+} catch (error) {
+  if (isSandboxError(error) && error.retryable) {
+    console.error(error.code, error.operation);
+  }
+}
+```
+
+Every `SandboxError` includes `code`, `provider`, optional `operation`, `retryable`, and the original provider error in `cause`.
+
+## Error codes
+
+| Code             | Retryable by default | Meaning                                                      |
+| ---------------- | -------------------- | ------------------------------------------------------------ |
+| `authentication` | No                   | Credentials are missing or invalid.                          |
+| `permission`     | No                   | The credential or account cannot perform the operation.      |
+| `not_found`      | No                   | A sandbox, file, snapshot, or other resource does not exist. |
+| `timeout`        | Yes                  | An operation exceeded its time limit.                        |
+| `rate_limited`   | Yes                  | The provider rejected work because of a rate limit.          |
+| `unavailable`    | Yes                  | The provider service is temporarily unavailable.             |
+| `unsupported`    | No                   | The selected adapter does not support the operation.         |
+| `invalid_input`  | No                   | An argument or path failed SDK validation.                   |
+| `conflict`       | No                   | The requested state conflicts with an existing resource.     |
+| `terminated`     | No                   | The sandbox or process has already terminated.               |
+| `process_failed` | No                   | A process-level operation failed.                            |
+| `internal`       | No                   | The provider failure did not match a more specific category. |
+
+Messages redact credential-shaped values and sensitive URLs. Inspect `cause` for provider-specific diagnostics without coupling control flow to native error text.
+
+## Read next
+
+Use [Capabilities](/docs/reference/capabilities) to avoid unsupported operations.

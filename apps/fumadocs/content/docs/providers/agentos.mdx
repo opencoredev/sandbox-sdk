@@ -1,0 +1,25 @@
+---
+title: AgentOS import migration
+description: Move from the deprecated agentos() import to the AgentOS-backed Local provider.
+icon: agentos
+---
+
+AgentOS now powers the [Local provider](/docs/providers/local) under the hood. It is no longer a
+separate provider choice.
+
+The old import remains as a compatibility alias and creates a sandbox whose provider is `local`.
+New code should import `local()` directly:
+
+```diff title="provider.ts"
+- import { agentos } from "@opencoredev/sandbox-sdk/agentos";
++ import { local } from "@opencoredev/sandbox-sdk/local";
+
+- const sandbox = await createSandbox({ provider: agentos() });
++ const sandbox = await createSandbox({ provider: local() });
+```
+
+Native options still live under the same `agentOs` key, and `sandbox.raw.vm` still exposes the
+current `AgentOs` instance. No behavioral migration is required beyond the import and factory name.
+
+Continue with the [Local provider guide](/docs/providers/local) for security defaults, deployment
+guidance, ports and snapshots.

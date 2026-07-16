@@ -1,0 +1,60 @@
+---
+title: Package exports
+description: Import the core API, provider adapters, metadata, and testing helpers from stable entry points.
+---
+
+## Core
+
+```ts title="app.ts"
+import { createSandbox, withSandbox, supports, SandboxError } from "@opencoredev/sandbox-sdk";
+```
+
+## Providers
+
+```ts title="providers.ts"
+import { local } from "@opencoredev/sandbox-sdk/local";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+```
+
+Each adapter export includes its options type, native sandbox type, and capability declaration.
+
+The former `@opencoredev/sandbox-sdk/agentos` entry remains as a deprecated compatibility alias.
+New code should use `local()`, which is powered by AgentOS under the hood.
+
+## Metadata
+
+```ts title="metadata.ts"
+import { providers, getProviderMetadata } from "@opencoredev/sandbox-sdk/metadata";
+```
+
+Metadata includes package names, environment variables, status, declared capabilities, port behavior, snapshot behavior, and runtime limitations.
+
+## Testing
+
+```ts title="provider.test.ts"
+import { conformanceCases, runConformance } from "@opencoredev/sandbox-sdk/testing";
+```
+
+The testing export also provides `ConformanceResult` and `ConformanceSubject` types.
+
+## Experimental integrations
+
+```ts title="integrations.ts"
+import {
+  createSandboxToolApproval,
+  createSandboxTools,
+  toAISandboxSession,
+} from "@opencoredev/sandbox-sdk/ai";
+import { createSandboxHarnessProvider } from "@opencoredev/sandbox-sdk/ai/harness";
+import { createEveSandboxBackend } from "@opencoredev/sandbox-sdk/eve";
+import { createMastraSandbox, createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+```
+
+These are isolated optional-peer entry points. Core consumers do not load or install AI SDK, Harness, Eve, or Mastra. `/ai` and `/ai/harness` require Node.js 22 or newer; `/mastra` requires Node.js 22.13 or newer; `/eve` requires Node.js 24 or newer.
+
+## Read next
+
+Start with the [Sandbox API](/docs/api/sandboxes).

@@ -1,0 +1,5 @@
+{
+  "title": "Integrations",
+  "icon": "integrations",
+  "pages": ["index", "ai-sdk-agents", "eve", "mastra"]
+}

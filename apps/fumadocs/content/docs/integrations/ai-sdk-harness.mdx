@@ -1,0 +1,104 @@
+---
+title: HarnessAgent
+description: Run an established coding-agent runtime on any managed Sandbox SDK provider.
+icon: ai-sdk-harness
+---
+
+Use this integration when an established runtime such as Codex or Claude Code should own the coding tools, context management, and native session history.
+
+## Installation
+
+AI SDK Harness requires Node.js 22 or newer. Install the harness core, one [harness adapter](https://ai-sdk.dev/docs/ai-sdk-harnesses/harness-adapters), and one Sandbox SDK provider.
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk ai zod @ai-sdk/harness @ai-sdk/harness-codex @vercel/sandbox
+```
+
+Complete [Vercel authentication](/docs/providers/vercel#authentication) and configure the credentials required by the selected harness adapter.
+
+## Run a Codex agent
+
+Create the Sandbox SDK harness provider once, then give it to `HarnessAgent`.
+
+```ts title="codex-agent.ts"
+import { HarnessAgent } from "@ai-sdk/harness/agent";
+import { codex } from "@ai-sdk/harness-codex";
+import { createSandboxHarnessProvider } from "@opencoredev/sandbox-sdk/ai/harness";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const sandboxProvider = createSandboxHarnessProvider({
+  provider: vercel({ runtime: "node24" }),
+  ports: [4000],
+});
+
+const agent = new HarnessAgent({
+  harness: codex,
+  sandbox: sandboxProvider,
+  instructions: "Make focused changes and verify them before finishing.",
+});
+
+const session = await agent.createSession();
+
+try {
+  const result = await agent.generate({
+    session,
+    prompt: "Inspect the repository, run its tests, and fix the first failure.",
+  });
+  console.log(result.text);
+} finally {
+  await session.destroy();
+}
+```
+
+`session.destroy()` discards the session and sandbox. Use `session.stop()` when you need a resume payload for a later turn.
+
+## Configure the sandbox provider
+
+The adapter accepts the normalized provider plus initial ports, working directory, and environment variables.
+
+```ts title="sandbox-provider.ts"
+import { createSandboxHarnessProvider } from "@opencoredev/sandbox-sdk/ai/harness";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+export const sandboxProvider = createSandboxHarnessProvider({
+  provider: e2b(),
+  ports: [4000],
+  cwd: "/workspace",
+  env: { NODE_ENV: "development" },
+});
+```
+
+Bridge-backed adapters need at least one exposed port. The harness receives the ports through each created sandbox session.
+
+## Manage a sandbox session directly
+
+Most applications should let `HarnessAgent` manage sessions. Use the provider directly only when integrating at the harness specification layer.
+
+```ts title="session.ts"
+const session = await sandboxProvider.createSession({
+  sessionId: "coding-session",
+  identity: "repo-setup-v1",
+  async onFirstCreate(sandbox) {
+    await sandbox.writeTextFile({
+      path: "READY",
+      content: "dependencies installed\n",
+    });
+  },
+});
+
+await session.stop();
+
+const resumed = await sandboxProvider.resumeSession!({
+  sessionId: "coding-session",
+});
+
+await resumed.destroy?.();
+```
+
+`identity` caches the first setup files for later sessions with the same identity. The identity cache and resumable-session registry currently live in the Node.js process that created the provider; they do not survive a process restart.
+
+Code running as a user tool receives `session.restricted()`. That view can work with files and processes but cannot stop the session, replace ports, or change network policy.
+
+## Read next
+
+See the [AI SDK HarnessAgent guide](https://ai-sdk.dev/docs/ai-sdk-harnesses/harness-agent) for lifecycle, streaming, UI, and adapter behavior. Use [AI SDK tool-loop agents](/docs/integrations/ai-sdk) when you want to define the tools and model loop yourself.

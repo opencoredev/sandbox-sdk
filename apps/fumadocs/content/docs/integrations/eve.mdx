@@ -1,0 +1,81 @@
+---
+title: Eve
+description: Use a Sandbox SDK provider as the backend for an Eve agent sandbox.
+icon: eve
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+Eve has its own agent runtime and default harness. This integration does not use `@ai-sdk/harness`; it implements Eve's `SandboxBackend` interface.
+
+## Installation
+
+Eve requires Node.js 24 or newer. For a manual Eve setup, install its normal dependencies with Sandbox SDK:
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk eve ai zod
+```
+
+## Configure the backend
+
+```ts title="agent/sandbox/sandbox.ts"
+import { defineSandbox } from "eve/sandbox";
+import { createEveSandboxBackend } from "@opencoredev/sandbox-sdk/eve";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+export default defineSandbox({
+  backend: createEveSandboxBackend({ provider: local() }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use();
+    await sandbox.writeTextFile({ path: "READY", content: "yes\n" });
+  },
+  async onSession({ use }) {
+    await use();
+  },
+});
+```
+
+Eve runs `bootstrap` once for a template identity. Each durable session starts from those files, keeps later writes isolated, and can reconnect through Eve's saved backend metadata.
+
+## Choose a provider
+
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+  <Tab value="Local">
+    ```ts
+    import { local } from "@opencoredev/sandbox-sdk/local";
+    const backend = createEveSandboxBackend({ provider: local() });
+    ```
+    Local runs in an isolated AgentOS VM inside the Eve host process. Its state lasts as long as that process unless your application persists it.
+  </Tab>
+  <Tab value="E2B">
+    ```ts
+    import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+    const backend = createEveSandboxBackend({ provider: e2b() });
+    ```
+  </Tab>
+  <Tab value="Daytona">
+    ```ts
+    import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+    const backend = createEveSandboxBackend({ provider: daytona() });
+    ```
+  </Tab>
+  <Tab value="Vercel">
+    ```ts
+    import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+    const backend = createEveSandboxBackend({ provider: vercel({ ports: [3000] }) });
+    ```
+  </Tab>
+  <Tab value="Upstash">
+    ```ts
+    import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+    const backend = createEveSandboxBackend({ provider: upstash({ runtime: "node" }) });
+    ```
+  </Tab>
+</Tabs>
+
+The backend maps Eve seed files, filesystem methods, process streams, reconnect metadata, and shutdown. Network-policy changes throw an `unsupported` `SandboxError` when the selected provider cannot enforce them.
+
+## Read next
+
+Compare exact provider behavior in [Compatibility](/docs/reference/compatibility), or return to the [Integrations overview](/docs/integrations).

@@ -1,0 +1,38 @@
+{
+  "name": "sandbox-sdk",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "check-types": "bun run typecheck",
+    "test": "turbo run test",
+    "test:live": "turbo run test:live",
+    "test:live:ai-gateway": "bun packages/sdk/scripts/run-ai-gateway-live.ts local",
+    "test:live:ai-gateway:vercel": "bun packages/sdk/scripts/run-ai-gateway-live.ts vercel",
+    "format": "oxfmt --write .",
+    "check": "bun run format && bun run lint && bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "better-icons": "^1.0.4",
+    "oxfmt": "^0.59.0",
+    "oxlint": "^1.74.0",
+    "turbo": "^2.10.5",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "bun@1.3.14"
+}

@@ -1,0 +1,21 @@
+---
+title: Agent skill
+description: Install Sandbox SDK guidance in Codex, Claude Code, Cursor, and other coding agents.
+icon: agent-skill
+---
+
+Install the skill in your current project with the [skills.sh CLI](https://skills.sh/docs/cli):
+
+```bash title="Terminal"
+npx skills add opencoredev/sandbox-sdk --skill sandbox-sdk
+```
+
+The CLI detects supported coding agents and puts the skill in their project-level skill directories. Add `--global` if you want it available in every project.
+
+```bash title="Terminal"
+npx skills add opencoredev/sandbox-sdk --skill sandbox-sdk --global
+```
+
+The skill tells an agent how to choose a provider, clean up sessions, check optional capabilities, and find the right reference page without loading the entire docs site.
+
+Review the [skill source](https://github.com/opencoredev/sandbox-sdk/blob/main/skills/sandbox-sdk/SKILL.md) before installing it.
