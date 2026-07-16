@@ -15,6 +15,7 @@ interface VercelBaseOptions {
   runtime?: "node24" | "node22" | "node26" | "python3.13" | (string & {});
   name?: string;
   ports?: number[];
+  /** Whether the sandbox persists across sessions. Defaults to true. */
   persistent?: boolean;
 }
 

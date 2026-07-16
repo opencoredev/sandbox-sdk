@@ -6,13 +6,13 @@ icon: providers
 
 Every provider supports files, foreground commands, background processes, streaming, and cleanup. Choose based on the optional behavior your workload needs.
 
-| Provider                                 | Best for                      | Runtime         | Persistence    | Preview                 | Snapshot             |
-| ---------------------------------------- | ----------------------------- | --------------- | -------------- | ----------------------- | -------------------- |
-| [Local](/docs/providers/local)           | Development, CI, self-hosting | AgentOS VM      | Process-scoped | Private bridge          | Filesystem + restore |
-| [E2B](/docs/providers/e2b)               | Hosted coding agents          | Linux sandbox   | Ephemeral      | Authenticated           | Template             |
-| [Daytona](/docs/providers/daytona)       | Persistent workspaces, GPUs   | Linux workspace | Persistent     | Public or authenticated | Native API           |
-| [Vercel Sandbox](/docs/providers/vercel) | Vercel workloads and previews | Linux sandbox   | Optional       | Public                  | Filesystem           |
-| [Upstash Box](/docs/providers/upstash)   | Durable serverless boxes      | Linux container | Persistent     | Public or bearer token  | Filesystem           |
+| Provider                                 | Vendor documentation                    | Best for                             | Runtime         | Persistence    | Preview                 | Snapshot             |
+| ---------------------------------------- | --------------------------------------- | ------------------------------------ | --------------- | -------------- | ----------------------- | -------------------- |
+| [Local](/docs/providers/local)           | <ProviderDocsLink provider="local" />   | Development, CI, self-hosting        | AgentOS VM      | Process-scoped | Private bridge          | Filesystem + restore |
+| [E2B](/docs/providers/e2b)               | <ProviderDocsLink provider="e2b" />     | Hosted coding agents                 | Linux sandbox   | Ephemeral      | Authenticated           | Template             |
+| [Daytona](/docs/providers/daytona)       | <ProviderDocsLink provider="daytona" /> | Persistent workspaces, GPUs          | Linux workspace | Persistent     | Public or authenticated | Native API           |
+| [Vercel Sandbox](/docs/providers/vercel) | <ProviderDocsLink provider="vercel" />  | Coding agents, persistent workspaces | Linux sandbox   | Default on     | Public                  | Filesystem           |
+| [Upstash Box](/docs/providers/upstash)   | <ProviderDocsLink provider="upstash" /> | Durable serverless boxes             | Linux container | Persistent     | Public or bearer token  | Filesystem           |
 
 Optional semantics differ. Check the generated [compatibility matrix](/docs/reference/compatibility) before depending on stdin, restore, resume, networking, GPUs, or a custom image.
 

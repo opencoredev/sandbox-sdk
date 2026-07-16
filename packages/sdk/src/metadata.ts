@@ -58,7 +58,7 @@ export const providers: readonly ProviderMetadata[] = [
   {
     id: "e2b",
     displayName: "E2B",
-    officialUrl: "https://e2b.dev",
+    officialUrl: "https://e2b.dev/docs",
     packageName: "e2b",
     packageVersion: "2.32.0",
     capabilities: e2bCapabilities,
@@ -76,7 +76,7 @@ export const providers: readonly ProviderMetadata[] = [
   {
     id: "daytona",
     displayName: "Daytona",
-    officialUrl: "https://www.daytona.io",
+    officialUrl: "https://www.daytona.io/docs/en/sandboxes/",
     packageName: "@daytona/sdk",
     packageVersion: "0.196.0",
     capabilities: daytonaCapabilities,

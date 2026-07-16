@@ -1,10 +1,12 @@
 ---
 title: Vercel Sandbox
-description: Run Vercel sandboxes through the normalized SDK API.
+description: Run coding agents in persistent Vercel sandboxes through the normalized SDK API.
 icon: vercel
 ---
 
-Vercel provides hosted runtimes with files, processes, public previews, filesystem snapshots, and persistent sandboxes.
+Vercel provides hosted sandboxes for coding agents and persistent workspaces, with files, processes, public previews, and filesystem snapshots.
+
+Persistence is enabled by default. Pass `persistent: false` to `vercel()` when you want an ephemeral sandbox instead.
 
 ## Installation
 
@@ -78,20 +80,20 @@ await sandbox.snapshots.delete(snapshot);
 
 ## Options
 
-| Option       | Type       | Default          | Behavior                             |
-| ------------ | ---------- | ---------------- | ------------------------------------ |
-| `runtime`    | `string`   | `node24`         | Selects an available Vercel runtime. |
-| `name`       | `string`   | Generated        | Sets the sandbox name.               |
-| `ports`      | `number[]` | `[]`             | Registers initial public ports.      |
-| `persistent` | `boolean`  | Provider default | Enables provider persistence.        |
-| `token`      | `string`   | OIDC             | Requires `teamId` and `projectId`.   |
-| `teamId`     | `string`   | OIDC             | Requires `token` and `projectId`.    |
-| `projectId`  | `string`   | OIDC             | Requires `token` and `teamId`.       |
+| Option       | Type       | Default   | Behavior                                 |
+| ------------ | ---------- | --------- | ---------------------------------------- |
+| `runtime`    | `string`   | `node24`  | Selects an available Vercel runtime.     |
+| `name`       | `string`   | Generated | Sets the sandbox name.                   |
+| `ports`      | `number[]` | `[]`      | Registers initial public ports.          |
+| `persistent` | `boolean`  | `true`    | Set to `false` for an ephemeral sandbox. |
+| `token`      | `string`   | OIDC      | Requires `teamId` and `projectId`.       |
+| `teamId`     | `string`   | OIDC      | Requires `token` and `projectId`.        |
+| `projectId`  | `string`   | OIDC      | Requires `token` and `teamId`.           |
 
 ## Behavior
 
 - Creating a filesystem snapshot stops the current Vercel session.
-- Persistent sandboxes can resume across application processes.
+- Persistence is enabled by default, allowing sandboxes to resume across application processes. Set `persistent: false` to disable it.
 - PTY and native runtime controls remain available through `sandbox.raw`.
 - Preview URLs are public; do not expose a service that lacks its own authentication.
 
