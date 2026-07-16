@@ -98,3 +98,24 @@ test("Railway adapter kills in-flight commands when the abort signal fires", asy
   expect(kill).toHaveBeenCalled();
   await sandbox.stop();
 });
+
+test("Railway process.output() ends after kill without hanging", async () => {
+  hangExec = true;
+  kill.mockClear();
+  const { railway } = await import("../../src/providers/railway");
+  const sandbox = await createSandbox({ provider: railway() });
+  const process = await sandbox.processes.start("sleep 30");
+  const drained = (async () => {
+    for await (const _event of process.output()) {
+      // no events expected from hanging mock
+    }
+  })();
+  await process.kill();
+  await Promise.race([
+    drained,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("output hung after kill")), 500)),
+  ]);
+  expect(kill).toHaveBeenCalled();
+  expect(await process.status()).toBe("exited");
+  await sandbox.stop();
+});

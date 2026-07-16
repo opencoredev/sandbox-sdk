@@ -118,7 +118,7 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
             void completed.then(finish, finish);
             const abort = () => {
               void handle.kill();
-              running = false;
+              finish();
             };
             runOptions.signal?.addEventListener("abort", abort, { once: true });
             void completed.finally(() => runOptions.signal?.removeEventListener("abort", abort));
@@ -141,7 +141,7 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
               wait: () => completed,
               async kill() {
                 await handle.kill();
-                running = false;
+                finish();
               },
             };
             return process;
