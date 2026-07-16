@@ -135,17 +135,15 @@ export default function HomePage() {
           </div>
           <pre>
             <code>
-              <span>await</span> withSandbox({`{`}
+              <span>await using</span> sandbox = <span>await</span> createSandbox({`{`}
               {"\n"}
               {"  "}provider: e2b(),{"\n"}
-              {`}`}, <span>async</span> (sandbox) ={">"} {`{`}
-              {"\n"}
-              {"  "}
-              <i>const</i> result = <span>await</span> sandbox.run({"\n"}
-              {"    "}
-              <b>&quot;pnpm test&quot;</b>,{"\n"}
-              {"  "});{"\n"}
               {`}`});
+              {"\n"}
+              <i>const</i> result = <span>await</span> sandbox.run({"\n"}
+              {"  "}
+              <b>&quot;pnpm test&quot;</b>,{"\n"}
+              );
             </code>
           </pre>
           <div className={styles.codeResult}>

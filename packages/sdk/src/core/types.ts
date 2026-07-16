@@ -138,5 +138,8 @@ export interface Sandbox<TRaw = unknown> {
   readonly ports: SandboxPorts;
   readonly snapshots: SandboxSnapshots;
   run(command: CommandInput, options?: RunOptions): Promise<CommandResult>;
+  /** Stops the provider runtime. Repeated calls share the same cleanup operation. */
   stop(): Promise<void>;
+  /** Stops the sandbox when an `await using` scope exits. */
+  [Symbol.asyncDispose](): Promise<void>;
 }

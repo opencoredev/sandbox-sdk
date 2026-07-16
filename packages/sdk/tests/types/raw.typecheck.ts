@@ -20,7 +20,14 @@ async function rawTypes() {
   void [localSandbox, agentosSandbox, e2bSandbox, daytonaSandbox, vercelSandbox, upstashSandbox];
 }
 
+async function disposableSandbox() {
+  await using sandbox = await createSandbox({ provider: local() });
+  const raw: LocalSandbox = sandbox.raw;
+  void raw;
+}
+
 void rawTypes;
+void disposableSandbox;
 
 // @ts-expect-error cwd must be a string.
 createSandbox({ provider: local(), cwd: 123 });

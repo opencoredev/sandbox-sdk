@@ -35,13 +35,12 @@ See [Vercel's authentication guide](https://vercel.com/docs/sandbox/concepts/aut
 ## Run a command
 
 ```ts title="vercel.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-await withSandbox({ provider: vercel() }, async (sandbox) => {
-  const result = await sandbox.run("node --version");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: vercel() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
 ```
 
 ## Run an agent

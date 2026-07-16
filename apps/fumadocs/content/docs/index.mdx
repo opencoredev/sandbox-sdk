@@ -18,21 +18,23 @@ Local is included and needs no account or API key. Cloud providers need their of
 ## Run your first sandbox
 
 ```ts title="quickstart.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await withSandbox({ provider: local() }, async (sandbox) => {
-  await sandbox.files.write("hello.mjs", `console.log("hello from the sandbox")`);
-  const result = await sandbox.run("node /workspace/hello.mjs");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: local() });
+
+await sandbox.files.write("hello.mjs", `console.log("hello from the sandbox")`);
+const result = await sandbox.run("node /workspace/hello.mjs");
+console.log(result.stdout);
 ```
 
 ```bash title="Terminal"
 bun quickstart.ts
 ```
 
-`withSandbox()` stops the sandbox after the callback finishes or throws. Use `createSandbox()` only when the sandbox must outlive one callback.
+`await using` stops the sandbox when the current scope exits, including when an operation throws. Call `createSandbox()` without `await using` only when the sandbox must outlive the current scope and your application will stop it explicitly.
+
+Node.js 24 and Bun run `await using` directly. When targeting Node.js 22, compile TypeScript to ES2022 or use `withSandbox()` in uncompiled JavaScript.
 
 ## What you can do
 

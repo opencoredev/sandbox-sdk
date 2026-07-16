@@ -6,7 +6,7 @@ description: Create normalized sandboxes and access their shared surface.
 ## Creating a sandbox
 
 ```ts title="sandbox.ts"
-const sandbox = await createSandbox({
+await using sandbox = await createSandbox({
   provider,
   cwd: "/workspace",
   env: { NODE_ENV: "development" },
@@ -25,6 +25,19 @@ const sandbox = await createSandbox({
 
 `cwd` must be absolute and cannot contain a null byte.
 
+`Sandbox` implements `Symbol.asyncDispose`. The `await using` declaration calls `sandbox.stop()` when the enclosing block, function, or module exits, including when an operation throws.
+
+Node.js 24 and Bun run `await using` directly. TypeScript 5.2 or newer can compile it for Node.js 22 when the target is ES2022. Use `withSandbox()` when running uncompiled JavaScript on Node.js 22.
+
+```json title="tsconfig.json"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "ESNext.Disposable", "DOM"]
+  }
+}
+```
+
 ## Sandbox properties
 
 | Property       | Type                 | Description                                         |
@@ -35,11 +48,41 @@ const sandbox = await createSandbox({
 | `capabilities` | `CapabilityMap`      | Supported operations and their modes.               |
 | `raw`          | Provider-native type | Typed access to the underlying provider SDK object. |
 
-## Stopping a sandbox
+## Automatic cleanup
+
+Keep sandbox work inside the `await using` scope. The sandbox is stopped after the final statement.
+
+```ts title="task.ts"
+{
+  await using sandbox = await createSandbox({ provider });
+  await sandbox.run("bun test");
+} // sandbox.stop() is awaited here
+```
+
+Do not return the sandbox from that scope because it has already stopped. Create it without `await using` only when another scope must own its lifecycle.
+
+## Manual cleanup
 
 ```ts title="sandbox.ts"
-await sandbox.stop();
-await sandbox.stop(); // safe: stop is idempotent
+const sandbox = await createSandbox({ provider });
+
+try {
+  await sandbox.run("bun test");
+} finally {
+  await sandbox.stop();
+}
+```
+
+`stop()` is idempotent, so repeated calls share the same cleanup operation.
+
+## Callback compatibility
+
+`withSandbox()` remains available for applications that already use callback-scoped cleanup or run uncompiled JavaScript on Node.js 22. It returns the callback result after stopping the sandbox.
+
+```ts title="legacy-task.ts"
+const result = await withSandbox({ provider }, async (sandbox) => {
+  return sandbox.run("bun test");
+});
 ```
 
 ## Read next

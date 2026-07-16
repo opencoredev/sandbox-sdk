@@ -16,23 +16,23 @@ Use one normalized TypeScript interface across Local, E2B, Daytona, Vercel Sandb
 ## Default implementation
 
 ```ts
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await withSandbox({ provider: local() }, async (sandbox) => {
-  const result = await sandbox.run("node --version");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: local() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
 ```
 
 ## Rules
 
-- Prefer `withSandbox()` for scoped work; use `createSandbox()` only when lifecycle ownership must outlive one callback.
+- Prefer `await using sandbox = await createSandbox(...)` so the sandbox stops automatically when its scope exits.
+- Use `withSandbox()` when callback-style lifecycle management is required or uncompiled JavaScript runs on Node.js 22.
 - Use Local when no hosted runtime is required. Select a cloud provider from the compatibility table when persistence, previews, native Linux, GPUs, or provider-specific features matter.
 - Use `sandbox.files`, `sandbox.run`, `sandbox.processes`, `sandbox.ports`, and `sandbox.snapshots` before native SDK methods.
 - Check `sandbox.capabilities` or use `requireCapability()` before optional operations.
 - Access provider-specific APIs through the typed `sandbox.raw` escape hatch.
-- Put cleanup in `finally` when not using `withSandbox()`.
+- Put `sandbox.stop()` in `finally` only when the sandbox must outlive an `await using` scope.
 - Treat preview URLs, environment variables, credentials, and untrusted commands as security boundaries owned by the application.
 - Do not assume optional behavior is portable. Verify it in `https://sandbox-sdk.app/docs/reference/compatibility`.
 

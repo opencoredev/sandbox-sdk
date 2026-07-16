@@ -19,12 +19,11 @@ Optional semantics differ. Check the generated [compatibility matrix](/docs/refe
 ## Switch with one import
 
 ```ts title="provider.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await withSandbox({ provider: e2b() }, async (sandbox) => {
-  console.log((await sandbox.run("node --version")).stdout);
-});
+await using sandbox = await createSandbox({ provider: e2b() });
+console.log((await sandbox.run("node --version")).stdout);
 ```
 
 Only provider creation changes. The sandbox calls stay the same, and the provider object can also be passed to [AI SDK](/docs/integrations/ai-sdk), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).

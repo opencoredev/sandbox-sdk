@@ -19,13 +19,12 @@ Set `E2B_API_KEY`, or pass `apiKey` to `e2b()`.
 ## Run a command
 
 ```ts title="e2b.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await withSandbox({ provider: e2b() }, async (sandbox) => {
-  const result = await sandbox.run("node --version");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: e2b() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
 ```
 
 ## Run an agent

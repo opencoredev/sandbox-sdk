@@ -1,6 +1,6 @@
 {
   "name": "@opencoredev/sandbox-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One TypeScript SDK for every sandbox provider.",
   "homepage": "https://sandbox-sdk.app",
   "license": "MIT",

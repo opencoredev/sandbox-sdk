@@ -14,8 +14,8 @@ New code should import `local()` directly:
 - import { agentos } from "@opencoredev/sandbox-sdk/agentos";
 + import { local } from "@opencoredev/sandbox-sdk/local";
 
-- const sandbox = await createSandbox({ provider: agentos() });
-+ const sandbox = await createSandbox({ provider: local() });
+- await using sandbox = await createSandbox({ provider: agentos() });
++ await using sandbox = await createSandbox({ provider: local() });
 ```
 
 Native options still live under the same `agentOs` key, and `sandbox.raw.vm` still exposes the

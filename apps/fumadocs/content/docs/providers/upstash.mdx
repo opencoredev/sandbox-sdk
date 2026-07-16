@@ -19,13 +19,12 @@ Set `UPSTASH_BOX_API_KEY`, or pass `apiKey` to `upstash()`.
 ## Run a command
 
 ```ts title="upstash.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-await withSandbox({ provider: upstash() }, async (sandbox) => {
-  const result = await sandbox.run("node --version");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: upstash() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
 ```
 
 ## Run an agent

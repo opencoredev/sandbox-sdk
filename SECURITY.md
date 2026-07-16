@@ -26,7 +26,7 @@ Snapshots also differ: they may capture filesystems, templates or memory and may
 
 ## Cleanup guarantees
 
-`stop()` is idempotent. `withSandbox()` attempts cleanup after success, callback failure, command failure and timeout, preserving the original callback error if cleanup also fails. Cleanup is best effort: provider outages, process failures or host termination can prevent it. Configure provider-side timeouts and resource expiration as a second line of defense.
+`stop()` is idempotent. A sandbox created with `await using` invokes `stop()` when its scope exits after success or failure. The callback-style `withSandbox()` helper provides the same scoped cleanup behavior and preserves the original callback error if cleanup also fails. Cleanup is best effort: provider outages, process failures or host termination can prevent it. Configure provider-side timeouts and resource expiration as a second line of defense.
 
 ## What Sandbox SDK does not secure
 

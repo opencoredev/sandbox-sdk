@@ -45,7 +45,7 @@ export default function SecurityPage() {
         />
         <Card
           title="Cleanup"
-          description="Stop is idempotent and withSandbox attempts cleanup after every callback outcome."
+          description="Stop is idempotent, and await using disposes a sandbox whenever its scope exits."
         />
         <Card
           title="Provider differences"

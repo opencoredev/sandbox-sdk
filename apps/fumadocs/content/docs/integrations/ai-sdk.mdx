@@ -30,7 +30,7 @@ Create the sandbox, pass its AI SDK session to the agent call, and stop it after
 
 ```ts title="sandbox-agent.ts"
 import { ToolLoopAgent, type LanguageModel } from "ai";
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import {
   createSandboxToolApproval,
   createSandboxTools,
@@ -38,25 +38,27 @@ import {
 } from "@opencoredev/sandbox-sdk/ai";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-export function runSandboxAgent(model: LanguageModel) {
-  return withSandbox({ provider: vercel({ runtime: "node24" }) }, async (sandbox) => {
-    const aiSandbox = toAISandboxSession(sandbox);
-    const agent = new ToolLoopAgent({
-      model,
-      instructions: `Work only in the provided sandbox.\n\n${aiSandbox.description}`,
-      tools: createSandboxTools(),
-      toolApproval: createSandboxToolApproval(),
-    });
+export async function runSandboxAgent(model: LanguageModel) {
+  await using sandbox = await createSandbox({
+    provider: vercel({ runtime: "node24" }),
+  });
 
-    return agent.generate({
-      prompt: "Inspect package.json, run the test script, and summarize the result.",
-      experimental_sandbox: aiSandbox,
-    });
+  const aiSandbox = toAISandboxSession(sandbox);
+  const agent = new ToolLoopAgent({
+    model,
+    instructions: `Work only in the provided sandbox.\n\n${aiSandbox.description}`,
+    tools: createSandboxTools(),
+    toolApproval: createSandboxToolApproval(),
+  });
+
+  return await agent.generate({
+    prompt: "Inspect package.json, run the test script, and summarize the result.",
+    experimental_sandbox: aiSandbox,
   });
 }
 ```
 
-`toAISandboxSession()` does not own the underlying sandbox lifecycle. `withSandbox()` stops it when the callback finishes or throws.
+`toAISandboxSession()` does not own the underlying sandbox lifecycle. `await using` stops it after the agent turn finishes or throws.
 
 The AI SDK does not add the sandbox description to the model prompt automatically. The example includes it in `instructions` so the model knows the working directory and provider.
 

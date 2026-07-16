@@ -37,6 +37,9 @@ function validatePath(cwd: string, value: string): string {
   return `${cwd}/${value}`.replace(/\/{2,}/g, "/");
 }
 
+/**
+ * Creates a normalized sandbox. Prefer `await using` so cleanup runs when the scope exits.
+ */
 export async function createSandbox<TProvider extends SandboxProvider<unknown>>(
   options: CreateSandboxOptions<TProvider>,
 ): Promise<Sandbox<RawOf<TProvider>>> {
@@ -103,6 +106,7 @@ export async function createSandbox<TProvider extends SandboxProvider<unknown>>(
     run: (command, runOptions = {}) =>
       call("process.run", () => runtime.run(command, normalizeRunOptions(cwd, runOptions))),
     stop,
+    [Symbol.asyncDispose]: stop,
   };
 }
 
@@ -110,6 +114,12 @@ function normalizeRunOptions(cwd: string, options: RunOptions): RunOptions {
   return { ...options, cwd: options.cwd ? validatePath(cwd, options.cwd) : cwd };
 }
 
+/**
+ * Runs a callback with a sandbox and stops it afterward.
+ *
+ * Prefer `await using` with `createSandbox()` in new code. This helper remains useful for
+ * callback-style code and runtimes that do not parse explicit resource management syntax.
+ */
 export async function withSandbox<TProvider extends SandboxProvider<unknown>, TResult>(
   options: CreateSandboxOptions<TProvider>,
   callback: (sandbox: Sandbox<RawOf<TProvider>>) => TResult | Promise<TResult>,

@@ -1,3 +1,7 @@
+## @opencoredev/sandbox-sdk@0.1.1
+
+- Add `Symbol.asyncDispose` to `Sandbox` so `await using` provides automatic cleanup.
+
 ## @opencoredev/sandbox-sdk@0.1.0
 
 ### Initial release

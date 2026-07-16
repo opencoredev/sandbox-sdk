@@ -9,6 +9,8 @@ description: Import the core API, provider adapters, metadata, and testing helpe
 import { createSandbox, withSandbox, supports, SandboxError } from "@opencoredev/sandbox-sdk";
 ```
 
+`createSandbox()` returns an async-disposable sandbox for the recommended `await using` lifecycle. `withSandbox()` remains available for callback-style cleanup and backward compatibility.
+
 ## Providers
 
 ```ts title="providers.ts"

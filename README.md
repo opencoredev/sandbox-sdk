@@ -12,6 +12,20 @@ bun add @opencoredev/sandbox-sdk
 
 Node.js 22 or 24 is supported. Bun 1.3 or newer is also supported.
 
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using sandbox = await createSandbox({ provider: local() });
+console.log((await sandbox.run("node --version")).stdout);
+```
+
+`await using` stops the sandbox automatically when its scope exits, including when an operation throws.
+
+Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript to ES2022 or use the callback-style `withSandbox()` helper.
+
 ## Providers
 
 | Provider                                                        | Runtime                 | Best for                                |

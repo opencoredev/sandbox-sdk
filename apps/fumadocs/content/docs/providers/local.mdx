@@ -21,13 +21,12 @@ No credentials are required.
 ## Run a command
 
 ```ts title="local.ts"
-import { withSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await withSandbox({ provider: local() }, async (sandbox) => {
-  const result = await sandbox.run("node --version");
-  console.log(result.stdout);
-});
+await using sandbox = await createSandbox({ provider: local() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
 ```
 
 ## Run an agent
