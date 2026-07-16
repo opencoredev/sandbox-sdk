@@ -1,5 +1,5 @@
 import { Sandbox as RailwaySandbox } from "railway";
-import { normalizeError } from "../../core/errors";
+import { normalizeError, SandboxError } from "../../core/errors";
 import type { SandboxProvider } from "../../core/provider";
 import type { ProcessOutputEvent, SandboxProcess, SandboxSnapshot } from "../../core/types";
 import { commandString, toUint8Array, unsupported } from "../../internal/provider-utils";
@@ -69,11 +69,15 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
           },
           async run(command, runOptions) {
             try {
+              assertNotAborted(runOptions.signal, "process.run");
               const started = performance.now();
-              const result = await raw.exec(commandString(command), {
+              const handle = raw.exec(commandString(command), {
                 cwd: runOptions.cwd,
                 env: runOptions.env ? { ...runOptions.env } : undefined,
                 timeoutSec: runOptions.timeout ? Math.ceil(runOptions.timeout / 1_000) : undefined,
+              });
+              const result = await withAbort(handle, runOptions.signal, async () => {
+                await handle.kill();
               });
               return {
                 stdout: result.stdout,
@@ -87,6 +91,7 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
             }
           },
           async start(command, runOptions) {
+            assertNotAborted(runOptions.signal, "process.start");
             const events: ProcessOutputEvent[] = [];
             const waiters = new Set<() => void>();
             let running = true;
@@ -111,6 +116,12 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
               waiters.clear();
             };
             void completed.then(finish, finish);
+            const abort = () => {
+              void handle.kill();
+              running = false;
+            };
+            runOptions.signal?.addEventListener("abort", abort, { once: true });
+            void completed.finally(() => runOptions.signal?.removeEventListener("abort", abort));
             const process: SandboxProcess = {
               id: await handle.sessionName,
               async status() {
@@ -175,3 +186,44 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
 }
 
 export type { RailwaySandbox };
+
+function assertNotAborted(signal: AbortSignal | undefined, operation: string): void {
+  if (signal?.aborted) throw interrupted(operation);
+}
+
+function interrupted(operation: string): SandboxError {
+  return new SandboxError({
+    code: "terminated",
+    provider: "railway",
+    operation,
+    message: "Operation was aborted",
+  });
+}
+
+async function withAbort<T>(
+  work: PromiseLike<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => void | Promise<void>,
+): Promise<T> {
+  if (!signal) return await work;
+  if (signal.aborted) {
+    await onAbort();
+    throw interrupted("process.run");
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      void Promise.resolve(onAbort()).finally(() => reject(interrupted("process.run")));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(work).then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}

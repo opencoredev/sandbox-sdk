@@ -4,6 +4,7 @@ import { createSandbox } from "../../src";
 const files = new Map<string, Uint8Array>();
 const destroy = mock(async () => {});
 const mkdir = mock(async () => {});
+const kill = mock(async () => {});
 const execResult = {
   stdout: "railway",
   stderr: "",
@@ -11,6 +12,8 @@ const execResult = {
   truncated: false,
   timedOut: false,
 };
+
+let hangExec = false;
 
 class NativeRailway {
   static create = mock(async () => new NativeRailway());
@@ -20,10 +23,16 @@ class NativeRailway {
     return instance;
   });
   id = "railway-test";
-  async exec() {
+  exec() {
+    if (hangExec) {
+      return Object.assign(new Promise(() => {}), {
+        sessionName: Promise.resolve("session-hang"),
+        kill,
+      });
+    }
     return Object.assign(Promise.resolve(execResult), {
       sessionName: Promise.resolve("session-1"),
-      kill: mock(async () => {}),
+      kill,
     });
   }
   files = {
@@ -49,6 +58,7 @@ class NativeRailway {
 mock.module("railway", () => ({ Sandbox: NativeRailway }));
 
 test("Railway adapter maps official SDK operations", async () => {
+  hangExec = false;
   const { railway } = await import("../../src/providers/railway");
   const sandbox = await createSandbox({ provider: railway() });
   expect(NativeRailway.create).toHaveBeenCalled();
@@ -70,4 +80,21 @@ test("Railway adapter maps official SDK operations", async () => {
   await sandbox.stop();
   expect(destroy).toHaveBeenCalled();
   expect(sandbox.raw).toBeInstanceOf(NativeRailway);
+});
+
+test("Railway adapter kills in-flight commands when the abort signal fires", async () => {
+  hangExec = true;
+  kill.mockClear();
+  const { railway } = await import("../../src/providers/railway");
+  const sandbox = await createSandbox({ provider: railway() });
+  const controller = new AbortController();
+  const running = sandbox.run("sleep 30", { signal: controller.signal });
+  controller.abort();
+  await expect(running).rejects.toMatchObject({
+    code: "terminated",
+    provider: "railway",
+    operation: "process.run",
+  });
+  expect(kill).toHaveBeenCalled();
+  await sandbox.stop();
 });
