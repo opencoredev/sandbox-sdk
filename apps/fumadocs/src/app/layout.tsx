@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
+import { Analytics } from "@vercel/analytics/next";
 
 import { Provider } from "@/components/provider";
 import { socialImage } from "@/lib/shared";
@@ -79,6 +80,7 @@ export default function Layout({ children }: LayoutProps<"/">) {
       </head>
       <body className="flex flex-col min-h-screen">
         <Provider>{children}</Provider>
+        <Analytics />
       </body>
     </html>
   );
