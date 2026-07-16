@@ -1,0 +1,90 @@
+---
+title: Agent37
+description: Run persistent Agent37 instances through the normalized SDK API.
+icon: agent37
+---
+
+Agent37 provides persistent cloud computers with files, processes, key-authenticated or public preview URLs, and custom Docker templates. The adapter drives the Agent37 REST APIs directly over `fetch`.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk
+```
+
+No provider package is required.
+
+## Authentication
+
+Set `AGENT37_API_KEY`, or pass `apiKey` to `agent37()`.
+
+## Run a command
+
+```ts title="agent37.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agent37 } from "@opencoredev/sandbox-sdk/agent37";
+
+await using sandbox = await createSandbox({ provider: agent37() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { agent37 } from "@opencoredev/sandbox-sdk/agent37";
+
+export const agentSandboxProvider = agent37();
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.data);
+}
+```
+
+Agent37 supports persistent files, background processes with combined output, and cancellation. Foreground commands return separate stdout and stderr. Normalized stdin is not available.
+
+## Ports
+
+Preview URLs are key-authenticated by default. `preview.request()` injects the key, so it never appears in the URL or serialized output. Pass `public: true` to expose ports at permanent unauthenticated public-port URLs instead.
+
+```ts title="ports.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = await preview.request?.("/api/status");
+```
+
+The bare `/health` path is answered by the Agent37 edge itself and never reaches your service, so serve health checks on another path.
+
+## Options
+
+| Option               | Type                                               | Default                      | Behavior                                            |
+| -------------------- | -------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
+| `apiKey`             | `string`                                           | `AGENT37_API_KEY`            | Authenticates Hosting API and gateway requests.     |
+| `template`           | `string`                                           | `agent37-hermes`             | Selects a system or workspace template.             |
+| `resources`          | `{ cpu?: number; memory?: number; disk?: number }` | Template defaults            | Sets the instance shape.                            |
+| `name`               | `string`                                           | None                         | Stores a label on the instance.                     |
+| `autoSleep`          | `boolean`                                          | `false`                      | Checkpoints the idle instance to disk-only billing. |
+| `idleTimeoutSeconds` | `number`                                           | `300`                        | Idle seconds before auto-sleep, from 60 to 86400.   |
+| `public`             | `boolean`                                          | `false`                      | Controls public-port or key-authenticated URLs.     |
+| `baseUrl`            | `string`                                           | `https://api.agent37.com/v1` | Overrides the Hosting API base URL.                 |
+
+## Behavior
+
+- The instance disk persists. Managed sessions stop and start the instance, and files survive the pause.
+- `sandbox.stop()` permanently deletes the instance.
+- Foreground commands cap at 280 seconds and 512 KB per stream; background processes stream one combined output through files on the instance.
+- Snapshots are not supported. The persistent disk covers stop and resume instead.
+- Custom Docker templates work through `template` when the image builds on an Agent37 gateway-bearing base image (such as `hermes-base`); the adapter needs the in-instance gateway for boot detection and file operations.
+- Native instance controls (`hosting()`, `gateway()`, `exec()`, `stop()`, `start()`, `restart()`, `delete()`) remain typed on `sandbox.raw`.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Agent37 to [HarnessAgent](/docs/integrations/ai-sdk-harness).

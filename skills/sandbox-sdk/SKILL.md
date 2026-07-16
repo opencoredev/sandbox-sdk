@@ -5,7 +5,7 @@ description: Use when implementing isolated code execution with @opencoredev/san
 
 # Sandbox SDK
 
-Use one normalized TypeScript interface across Local, E2B, Daytona, Vercel Sandbox, and Upstash Box.
+Use one normalized TypeScript interface across Local, E2B, Daytona, Vercel Sandbox, Upstash Box, and Agent37.
 
 ## Start here
 

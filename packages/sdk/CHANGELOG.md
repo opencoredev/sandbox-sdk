@@ -1,3 +1,7 @@
+## Unreleased
+
+- Add the Agent37 provider: run sandboxes on persistent Agent37 instances through the `@opencoredev/sandbox-sdk/agent37` subpath and `AGENT37_API_KEY`, using the Agent37 REST APIs with no SDK dependency.
+
 ## @opencoredev/sandbox-sdk@0.1.1
 
 - Add `Symbol.asyncDispose` to `Sandbox` so `await using` provides automatic cleanup.

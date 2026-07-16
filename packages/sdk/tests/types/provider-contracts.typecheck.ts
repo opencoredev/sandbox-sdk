@@ -9,6 +9,7 @@ import { e2b } from "../../src/providers/e2b";
 import { local, type LocalSandbox } from "../../src/providers/local";
 import { vercel } from "../../src/providers/vercel";
 import { upstash } from "../../src/providers/upstash";
+import { agent37, type Agent37Sandbox } from "../../src/providers/agent37";
 
 const localContract: SandboxProvider<LocalSandbox> = local();
 const agentosContract: SandboxProvider<AgentOsSandbox> = agentos();
@@ -16,6 +17,7 @@ const e2bContract: SandboxProvider<E2BNative> = e2b();
 const daytonaContract: SandboxProvider<DaytonaNative> = daytona();
 const vercelContract: SandboxProvider<VercelNative> = vercel();
 const upstashContract: SandboxProvider<UpstashNative> = upstash();
+const agent37Contract: SandboxProvider<Agent37Sandbox> = agent37();
 void [
   localContract,
   agentosContract,
@@ -23,6 +25,7 @@ void [
   daytonaContract,
   vercelContract,
   upstashContract,
+  agent37Contract,
 ];
 
 // @ts-expect-error Explicit access-token authentication requires the complete credential triple.

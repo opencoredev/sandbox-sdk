@@ -9,6 +9,7 @@ import { e2b } from "../../src/providers/e2b";
 import { local, type LocalSandbox } from "../../src/providers/local";
 import { vercel } from "../../src/providers/vercel";
 import { upstash } from "../../src/providers/upstash";
+import { agent37, type Agent37Sandbox } from "../../src/providers/agent37";
 
 async function rawTypes() {
   const localSandbox: LocalSandbox = (await createSandbox({ provider: local() })).raw;
@@ -17,7 +18,16 @@ async function rawTypes() {
   const daytonaSandbox: DaytonaNative = (await createSandbox({ provider: daytona() })).raw;
   const vercelSandbox: VercelNative = (await createSandbox({ provider: vercel() })).raw;
   const upstashSandbox: UpstashNative = (await createSandbox({ provider: upstash() })).raw;
-  void [localSandbox, agentosSandbox, e2bSandbox, daytonaSandbox, vercelSandbox, upstashSandbox];
+  const agent37Sandbox: Agent37Sandbox = (await createSandbox({ provider: agent37() })).raw;
+  void [
+    localSandbox,
+    agentosSandbox,
+    e2bSandbox,
+    daytonaSandbox,
+    vercelSandbox,
+    upstashSandbox,
+    agent37Sandbox,
+  ];
 }
 
 async function disposableSandbox() {

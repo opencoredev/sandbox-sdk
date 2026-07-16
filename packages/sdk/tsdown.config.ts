@@ -11,6 +11,7 @@ export default defineConfig({
     "src/providers/daytona/index.ts",
     "src/providers/vercel/index.ts",
     "src/providers/upstash/index.ts",
+    "src/providers/agent37/index.ts",
     "src/ai/index.ts",
     "src/ai/harness.ts",
     "src/eve/index.ts",

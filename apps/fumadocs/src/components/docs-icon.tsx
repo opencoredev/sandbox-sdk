@@ -27,6 +27,8 @@ export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
       return <VercelLogo {...props} />;
     case "upstash":
       return <UpstashLogo {...props} />;
+    case "agent37":
+      return <Agent37Logo {...props} />;
     default:
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
   }
@@ -42,6 +44,7 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "daytona":
     case "vercel":
     case "upstash":
+    case "agent37":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;
@@ -96,6 +99,18 @@ function UpstashLogo(props: IconProps) {
       <path
         fill="currentColor"
         d="M13.803 0c-2.61 0-5.22.995-7.211 2.986-3.982 3.983-3.982 10.44 0 14.422a5.1 5.1 0 0 0 7.21-7.21L12 12a2.55 2.55 0 0 1-3.605 3.605A7.649 7.649 0 0 1 19.21 4.79l1.803-1.803A10.17 10.17 0 0 0 13.803 0M12 12a2.55 2.55 0 0 1 3.605-3.605A7.649 7.649 0 0 1 4.79 19.21l-1.803 1.803c3.983 3.982 10.44 3.982 14.422 0s3.982-10.44 0-14.422A5.08 5.08 0 0 0 13.803 5.1a5.1 5.1 0 0 0-3.605 8.703z"
+      />
+    </svg>
+  );
+}
+
+function Agent37Logo(props: IconProps) {
+  return (
+    <svg {...iconProps} {...props} viewBox="0 0 24 24">
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M4.5 2h15A2.5 2.5 0 0 1 22 4.5v15a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 2 19.5v-15A2.5 2.5 0 0 1 4.5 2Zm0 2a.5.5 0 0 0-.5.5v15a.5.5 0 0 0 .5.5h15a.5.5 0 0 0 .5-.5v-15a.5.5 0 0 0-.5-.5h-15Zm2.44 4.06 1.41-1.41L12.71 11l-4.36 4.35-1.41-1.41L9.88 11 6.94 8.06ZM12.5 14.5h5v2h-5v-2Z"
       />
     </svg>
   );

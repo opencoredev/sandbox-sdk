@@ -46,6 +46,10 @@
       "types": "./dist/providers/upstash/index.d.mts",
       "import": "./dist/providers/upstash/index.mjs"
     },
+    "./agent37": {
+      "types": "./dist/providers/agent37/index.d.mts",
+      "import": "./dist/providers/agent37/index.mjs"
+    },
     "./metadata": {
       "types": "./dist/metadata.d.mts",
       "import": "./dist/metadata.mjs"
@@ -90,7 +94,8 @@
     "test:live:integrations": "bun test tests/live/integrations.test.ts",
     "test:live:mastra": "bun test tests/live/mastra.test.ts",
     "test:live:vercel": "bun test tests/live/vercel.test.ts",
-    "test:live:upstash": "bun test tests/live/upstash.test.ts"
+    "test:live:upstash": "bun test tests/live/upstash.test.ts",
+    "test:live:agent37": "bun test tests/live/agent37.test.ts"
   },
   "dependencies": {
     "@rivet-dev/agentos-core": "^0.2.7"

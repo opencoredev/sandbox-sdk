@@ -1,4 +1,4 @@
-export const providerNames = ["local", "e2b", "daytona", "vercel", "upstash"] as const;
+export const providerNames = ["local", "e2b", "daytona", "vercel", "upstash", "agent37"] as const;
 export type ProviderName = (typeof providerNames)[number];
 
 export const capabilityNames = [

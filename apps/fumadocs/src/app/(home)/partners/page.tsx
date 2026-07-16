@@ -28,7 +28,7 @@ export default function PartnersPage() {
       <article className="prose mt-12 max-w-3xl">
         <h2>What we maintain</h2>
         <p>
-          OpenCore maintains five integrations: Local, E2B, Daytona, Vercel Sandbox and Upstash Box.
+          OpenCore maintains six integrations: Local, E2B, Daytona, Vercel Sandbox, Upstash Box and Agent37.
           Local is powered by AgentOS under the hood. The unified API covers files, commands,
           processes, ports, capabilities, errors, cleanup and typed native access.
         </p>

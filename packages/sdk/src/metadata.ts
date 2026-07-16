@@ -1,4 +1,5 @@
 import {
+  agent37Capabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
@@ -133,6 +134,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "agent37",
+    displayName: "Agent37",
+    officialUrl: "https://www.agent37.com/docs",
+    packageName: null,
+    packageVersion: "v1",
+    capabilities: agent37Capabilities,
+    environmentVariables: ["AGENT37_API_KEY"],
+    technicalStatus: "experimental",
+    providerReviewed: true,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Derives key-authenticated preview URLs for any port; the key stays inside ExposedPort.request(). Pass public: true for permanent unauthenticated public-port URLs.",
+    snapshotBehavior:
+      "Snapshots are not supported. The instance disk persists across stop, start, and resume instead.",
+    runtimeLimitations:
+      "Persistent cloud instances driven over the Agent37 REST APIs with no SDK dependency. Foreground commands cap at 280 seconds and 512 KB per stream; background processes stream through files. Templates must build on a gateway-bearing Agent37 base image.",
   },
 ];
 

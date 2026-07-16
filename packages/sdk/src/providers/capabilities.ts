@@ -80,6 +80,22 @@ export const vercelCapabilities = defineCapabilities({
   "network.policy": "native",
 });
 
+export const agent37Capabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "combined-stream",
+  "process.background": "full",
+  "process.cancel": "full",
+  "ports.expose": "authenticated",
+  "ports.authenticatedRequest": "authenticated",
+  "sandbox.resume": "persistent",
+  "filesystem.persistent": "persistent",
+  "image.custom": "template",
+});
+
 export const upstashCapabilities = defineCapabilities({
   "files.read": "full",
   "files.write": "full",

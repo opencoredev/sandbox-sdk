@@ -2,7 +2,7 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, or Upstash Box.
+Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, or Agent37.
 
 ## Install
 
@@ -35,8 +35,9 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs            |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Coding agents and persistent workspaces |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
+| [Agent37](https://sandbox-sdk.app/docs/providers/agent37)       | Cloud computer          | Persistent instances and custom images  |
 
-Local is included. Cloud providers use their official SDKs and credentials.
+Local is included. Cloud providers use their official SDKs and credentials; Agent37 needs only its REST API key.
 
 ## Documentation
 
