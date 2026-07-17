@@ -1,0 +1,73 @@
+---
+title: Islo
+description: Run persistent Islo microVM sandboxes through the normalized SDK API.
+---
+
+Islo provides persistent, hardware-isolated Linux microVMs for coding agents, remote development, and long-running work.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @islo-labs/sdk
+```
+
+## Authentication
+
+Set `ISLO_API_KEY`, or pass `apiKey` to `islo()`. `ISLO_BASE_URL` and `ISLO_COMPUTE_URL` are also honored by the native SDK.
+
+## Run a command
+
+```ts title="islo.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { islo } from "@opencoredev/sandbox-sdk/islo";
+
+await using sandbox = await createSandbox({ provider: islo() });
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
+```
+
+## Files and processes
+
+The adapter maps normalized files and commands onto Islo's exec stream. Foreground and background commands preserve separate stdout and stderr events.
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+## Persistent sessions
+
+Managed `stop()` pauses the Islo microVM and releases compute while preserving its filesystem. Managed `resume()` restores the same sandbox, and `destroy()` deletes it.
+
+## Ports
+
+`ports.expose()` creates an expiring public HTTPS share. The default TTL is 24 hours and can be changed with `shareTtlSeconds`.
+
+## Options
+
+| Option              | Type     | Default                     | Behavior                                  |
+| ------------------- | -------- | --------------------------- | ----------------------------------------- |
+| `apiKey`            | `string` | `ISLO_API_KEY`              | Authenticates Islo requests.              |
+| `baseUrl`           | `string` | `ISLO_BASE_URL`             | Overrides the control-plane URL.          |
+| `computeUrl`        | `string` | `ISLO_COMPUTE_URL`          | Overrides the compute-plane URL.          |
+| `name`              | `string` | Generated                   | Sets the Islo sandbox name.               |
+| `image`             | `string` | Islo default                | Selects a container image.                |
+| `vcpus`             | `number` | Islo default                | Sets virtual CPUs.                        |
+| `memoryMb`          | `number` | Islo default                | Sets memory in MB.                        |
+| `diskGb`            | `number` | Islo default                | Sets disk size in GB.                     |
+| `gatewayProfile`    | `string` | None                        | Attaches an Islo gateway profile.         |
+| `snapshotName`      | `string` | None                        | Creates from an Islo snapshot.            |
+| `user`              | `string` | Image default               | Runs normalized commands as this user.    |
+| `shareTtlSeconds`   | `number` | `86400`                     | Sets public-share TTL, clamped to 1m–7d.  |
+
+## Behavior
+
+- Filesystem state persists until the sandbox is deleted.
+- Public shares are HTTPS endpoints and expire automatically.
+- Native snapshots, gateway controls, SSH, and interactive sessions remain available through `sandbox.raw.client`.
+- Normalized file operations and string commands require `bash` and GNU coreutils in the image.
+- Normalized stdin, cancellation, and snapshot operations are not exposed.
