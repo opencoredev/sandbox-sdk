@@ -40,13 +40,13 @@ Node.js 24 and Bun run `await using` directly. TypeScript 5.2 or newer can compi
 
 ## Sandbox properties
 
-| Property       | Type                 | Description                                         |
-| -------------- | -------------------- | --------------------------------------------------- |
-| `id`           | `string`             | Provider or adapter identifier for this sandbox.    |
-| `provider`     | `ProviderName`       | `local`, `e2b`, `daytona`, `vercel`, or `upstash`.  |
-| `cwd`          | `string`             | Normalized working directory.                       |
-| `capabilities` | `CapabilityMap`      | Supported operations and their modes.               |
-| `raw`          | Provider-native type | Typed access to the underlying provider SDK object. |
+| Property       | Type                 | Description                                                  |
+| -------------- | -------------------- | ------------------------------------------------------------ |
+| `id`           | `string`             | Provider or adapter identifier for this sandbox.             |
+| `provider`     | `ProviderName`       | `local`, `e2b`, `daytona`, `vercel`, `upstash`, or `blaxel`. |
+| `cwd`          | `string`             | Normalized working directory.                                |
+| `capabilities` | `CapabilityMap`      | Supported operations and their modes.                        |
+| `raw`          | Provider-native type | Typed access to the underlying provider SDK object.          |
 
 ## Automatic cleanup
 

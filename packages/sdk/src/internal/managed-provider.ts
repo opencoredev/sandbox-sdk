@@ -27,6 +27,11 @@ export function withManagedSessions<TRaw>(
       signal?: AbortSignal,
     ) => Promise<void>;
     setNetworkPolicy?: (sandbox: Sandbox<TRaw>, policy: SandboxNetworkPolicy) => Promise<void>;
+    getPortUrl?: (
+      sandbox: Sandbox<TRaw>,
+      port: number,
+      protocol?: "http" | "https" | "ws",
+    ) => Promise<string>;
   } = {},
 ): SandboxProvider<TRaw> {
   const sessions = new Map<string, ManagedSandboxSession>();
@@ -124,6 +129,11 @@ function createManagedSession<TRaw>(
       signal?: AbortSignal,
     ) => Promise<void>;
     setNetworkPolicy?: (sandbox: Sandbox<TRaw>, policy: SandboxNetworkPolicy) => Promise<void>;
+    getPortUrl?: (
+      sandbox: Sandbox<TRaw>,
+      port: number,
+      protocol?: "http" | "https" | "ws",
+    ) => Promise<string>;
   },
 ): ManagedSandboxSession {
   let destroyed = false;
@@ -155,6 +165,7 @@ function createManagedSession<TRaw>(
           message: `Port ${port} is not exposed by this session`,
         });
       }
+      if (lifecycle.getPortUrl) return lifecycle.getPortUrl(sandbox, port, protocol);
       const exposed = await sandbox.ports.expose(port);
       const url = new URL(exposed.url);
       if (protocol) url.protocol = `${protocol}:`;

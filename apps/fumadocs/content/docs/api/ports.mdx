@@ -18,7 +18,7 @@ console.log(preview.url);
 const response = await preview.request?.("/health");
 ```
 
-Authenticated adapters keep preview credentials inside `request()`. `toJSON()` never returns credential-bearing headers and redacts URL query values.
+Authenticated normalized adapters keep preview credentials inside `request()`. `toJSON()` never returns credential-bearing headers and redacts URL query values. Managed integrations that accept only a URL can return a credential-bearing URL; treat the result of `getPortUrl()` as sensitive.
 
 | Provider       | Port behavior                                                      |
 | -------------- | ------------------------------------------------------------------ |
@@ -27,5 +27,6 @@ Authenticated adapters keep preview credentials inside `request()`. `toJSON()` n
 | Daytona        | Returns a public or token-authenticated preview URL.               |
 | Vercel Sandbox | Registers the port and returns a public `vercel.run` route.        |
 | Upstash Box    | Returns a public URL or keeps its bearer token inside `request()`. |
+| Blaxel         | Returns a public or token-authenticated preview URL.               |
 
 Compare provider preview behavior in [Providers](/docs/providers).

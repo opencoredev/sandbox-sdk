@@ -1,25 +1,26 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import type { ProviderName } from "../src/core/types";
 import { providers } from "../src/metadata";
 
-const id = process.argv[2];
-const provider = providers.find((item) => item.id === id);
-if (!provider || id === "local" || id === "agentos")
-  throw new Error(`Unknown hosted live provider: ${id}`);
+const requestedId = process.argv[2];
+const provider = providers.find((item) => item.id === requestedId);
+if (!provider) throw new Error(`Unknown hosted live provider: ${requestedId}`);
+const id = provider.id;
+if (id === "local") throw new Error(`Unknown hosted live provider: ${requestedId}`);
+
+const credentialsAvailable = {
+  e2b: Boolean(process.env.E2B_API_KEY),
+  daytona: Boolean(process.env.DAYTONA_API_KEY),
+  vercel: Boolean(
+    process.env.VERCEL_OIDC_TOKEN ||
+    (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID),
+  ),
+  upstash: Boolean(process.env.UPSTASH_BOX_API_KEY),
+  blaxel: Boolean(process.env.BL_API_KEY && process.env.BL_WORKSPACE),
+} satisfies Record<Exclude<ProviderName, "local">, boolean>;
 
 const started = new Date();
-const missingCredentials =
-  id === "e2b"
-    ? !process.env.E2B_API_KEY
-    : id === "daytona"
-      ? !process.env.DAYTONA_API_KEY
-      : id === "upstash"
-        ? !process.env.UPSTASH_BOX_API_KEY
-        : !process.env.VERCEL_OIDC_TOKEN &&
-          !(
-            process.env.VERCEL_TOKEN &&
-            process.env.VERCEL_TEAM_ID &&
-            process.env.VERCEL_PROJECT_ID
-          );
+const missingCredentials = !credentialsAvailable[id];
 const processResult = missingCredentials
   ? null
   : Bun.spawn(["bun", "test", `tests/live/${id}.test.ts`], {
