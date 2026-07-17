@@ -58,7 +58,7 @@ Blaxel supports background processes, cancellation, and separate stdout and stde
 
 ## Ports
 
-Private, token-authenticated previews are the default. The adapter keeps the token inside `preview.request()` instead of adding it to the returned URL.
+Private, token-authenticated previews are the default. Normalized `sandbox.ports.expose()` calls keep the token inside `preview.request()` instead of adding it to the returned URL. Managed integrations only accept a URL, so their `getPortUrl()` method returns a short-lived URL containing `bl_preview_token`; treat that URL as a credential.
 
 ```ts title="preview.ts"
 const preview = await sandbox.ports.expose(3000);

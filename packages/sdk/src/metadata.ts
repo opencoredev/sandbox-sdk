@@ -148,7 +148,7 @@ export const providers: readonly ProviderMetadata[] = [
     sponsor: false,
     liveTest: null,
     portBehavior:
-      "Creates token-authenticated preview URLs by default and keeps preview tokens inside request().",
+      "Normalized private previews keep tokens inside request(); managed getPortUrl() returns a short-lived tokenized URL.",
     snapshotBehavior:
       "Blaxel snapshot configuration remains provider-native; snapshot CRUD is not normalized.",
     runtimeLimitations:

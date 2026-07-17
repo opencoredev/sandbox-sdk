@@ -39,6 +39,19 @@ export function blaxel(options: BlaxelOptions = {}): SandboxProvider<SandboxInst
   const configuredPorts = (sandboxOptions.ports ?? [])
     .map((port) => Number("target" in port ? port.target : NaN))
     .filter(Number.isFinite);
+  const createPreviewAccess = async (raw: SandboxInstance, port: number) => {
+    const preview = await raw.previews.createIfNotExists({
+      metadata: {
+        name: `sandbox-sdk-${port}-${publicPorts ? "public" : "private"}`,
+      },
+      spec: { port, public: publicPorts },
+    });
+    const url = preview.spec.url;
+    if (!url) throw new Error(`Blaxel did not return a preview URL for port ${port}`);
+    if (publicPorts) return { url };
+    const token = await preview.tokens.create(new Date(Date.now() + previewTokenTtl));
+    return { url, token: token.value };
+  };
 
   return withManagedSessions(
     {
@@ -229,20 +242,11 @@ export function blaxel(options: BlaxelOptions = {}): SandboxProvider<SandboxInst
             } satisfies SandboxProcess;
           },
           async expose(port) {
-            const preview = await raw.previews.createIfNotExists({
-              metadata: {
-                name: `sandbox-sdk-${port}-${publicPorts ? "public" : "private"}`,
-              },
-              spec: { port, public: publicPorts },
-            });
-            const url = preview.spec.url;
-            if (!url) throw new Error(`Blaxel did not return a preview URL for port ${port}`);
-            if (publicPorts) return portResult(port, url, true, false);
-
-            const token = await preview.tokens.create(new Date(Date.now() + previewTokenTtl));
+            const { url, token } = await createPreviewAccess(raw, port);
+            if (!token) return portResult(port, url, true, false);
             return portResult(port, url, false, true, (path = "/", init = {}) =>
               authenticatedPortRequest("blaxel", url, path, init, {
-                "x-blaxel-preview-token": token.value,
+                "x-blaxel-preview-token": token,
               }),
             );
           },
@@ -260,6 +264,13 @@ export function blaxel(options: BlaxelOptions = {}): SandboxProvider<SandboxInst
       // Blaxel automatically enters standby; resuming only needs to wait until it is ready.
       resume: async (sandbox) => {
         await sandbox.raw.wait();
+      },
+      getPortUrl: async (sandbox, port, protocol) => {
+        const { url, token } = await createPreviewAccess(sandbox.raw, port);
+        const target = new URL(url);
+        if (token) target.searchParams.set("bl_preview_token", token);
+        if (protocol) target.protocol = `${protocol}:`;
+        return target.toString().replace(/\/$/, "");
       },
       destroy: async (sandbox) => {
         await sandbox.raw.delete();

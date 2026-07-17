@@ -57,6 +57,41 @@ test.skipIf(!hasCredentials)(
   300_000,
 );
 
+test.skipIf(!hasCredentials)(
+  "Blaxel live managed private preview URL",
+  async () => {
+    const provider = blaxel({
+      image: "blaxel/node:latest",
+      region: "us-pdx-1",
+      lifecycle: {
+        expirationPolicies: [{ type: "ttl-max-age", value: "30m", action: "delete" }],
+      },
+    });
+    const session = await provider.managed!.create({
+      sessionId: `live-managed-${crypto.randomUUID()}`,
+      ports: [3001],
+    });
+    let server: SandboxProcess | undefined;
+    try {
+      server = await session.sandbox.processes.start(
+        `node -e 'require("http").createServer((_,res)=>res.end("managed-preview-ok")).listen(3001,"0.0.0.0",()=>console.log("ready"))'`,
+      );
+      await expectOutput(server, "ready");
+      const url = new URL(await session.getPortUrl({ port: 3001 }));
+      expect(url.searchParams.has("bl_preview_token")).toBe(true);
+      const response = await fetch(url).catch(() => {
+        throw new Error("Managed private preview request failed");
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("managed-preview-ok");
+    } finally {
+      await server?.kill().catch(() => undefined);
+      await session.destroy();
+    }
+  },
+  300_000,
+);
+
 async function expectOutput(process: SandboxProcess, expected: string): Promise<void> {
   for await (const event of process.output()) {
     const value =

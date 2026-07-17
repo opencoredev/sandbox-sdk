@@ -18,7 +18,7 @@ console.log(preview.url);
 const response = await preview.request?.("/health");
 ```
 
-Authenticated adapters keep preview credentials inside `request()`. `toJSON()` never returns credential-bearing headers and redacts URL query values.
+Authenticated normalized adapters keep preview credentials inside `request()`. `toJSON()` never returns credential-bearing headers and redacts URL query values. Managed integrations that accept only a URL can return a credential-bearing URL; treat the result of `getPortUrl()` as sensitive.
 
 | Provider       | Port behavior                                                      |
 | -------------- | ------------------------------------------------------------------ |

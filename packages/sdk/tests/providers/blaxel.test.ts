@@ -187,6 +187,22 @@ test("Blaxel adapter maps official SDK operations", async () => {
   ).rejects.toMatchObject({ code: "invalid_input" });
 });
 
+test("Blaxel managed sessions return authenticated private preview URLs", async () => {
+  const { blaxel } = await import("../../src/providers/blaxel");
+  const provider = blaxel();
+  const session = await provider.managed!.create({
+    sessionId: "managed-preview",
+    ports: [3000],
+  });
+  try {
+    const url = new URL(await session.getPortUrl({ port: 3000 }));
+    expect(url.origin).toBe("https://preview.example.test");
+    expect(url.searchParams.get("bl_preview_token")).toBe("private-token");
+  } finally {
+    await session.destroy();
+  }
+});
+
 test("Blaxel adapter cleans up an ambiguous creation failure", async () => {
   const { blaxel } = await import("../../src/providers/blaxel");
   createError = new Error("gateway timeout");
