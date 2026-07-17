@@ -1,5 +1,5 @@
 {
   "title": "Providers",
   "icon": "providers",
-  "pages": ["index", "local", "e2b", "daytona", "vercel", "upstash"]
+  "pages": ["index", "local", "e2b", "daytona", "vercel", "upstash", "islo"]
 }
