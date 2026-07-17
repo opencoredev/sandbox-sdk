@@ -15,8 +15,35 @@ export function commandString(input: CommandInput): string {
   return [input.command, ...(input.args ?? [])].map(shellQuote).join(" ");
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+export async function authenticatedPortRequest(
+  provider: string,
+  baseUrl: string,
+  path: string,
+  init: RequestInit,
+  authenticationHeaders: Readonly<Record<string, string>>,
+): Promise<Response> {
+  const base = new URL(baseUrl);
+  const target = new URL(path, base);
+  if (target.origin !== base.origin) {
+    throw new SandboxError({
+      code: "invalid_input",
+      provider,
+      operation: "ports.request",
+      message: "Authenticated port requests must stay on the preview origin",
+    });
+  }
+  return fetch(target, {
+    ...init,
+    redirect: "manual",
+    headers: {
+      ...Object.fromEntries(new Headers(init.headers)),
+      ...authenticationHeaders,
+    },
+  });
 }
 
 export function portResult(

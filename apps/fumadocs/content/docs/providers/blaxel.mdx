@@ -1,0 +1,97 @@
+---
+title: Blaxel
+description: Run Blaxel perpetual sandboxes through the normalized SDK API.
+icon: blaxel
+---
+
+Blaxel provides persistent microVM sandboxes that scale to standby and resume with their memory, filesystem, and processes intact.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk @blaxel/core
+```
+
+## Authentication
+
+Set both `BL_API_KEY` and `BL_WORKSPACE`. You can also pass `apiKey` and `workspace` to `blaxel()`; programmatic credentials use Blaxel's process-global SDK configuration, so one process cannot mix credential pairs.
+
+## Run a command
+
+```ts title="blaxel.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { blaxel } from "@opencoredev/sandbox-sdk/blaxel";
+
+await using sandbox = await createSandbox({
+  provider: blaxel({ image: "blaxel/node:latest", region: "us-pdx-1" }),
+});
+const result = await sandbox.run("node --version");
+console.log(result.stdout);
+```
+
+## Run an agent
+
+Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
+
+```ts title="agent-provider.ts"
+import { blaxel } from "@opencoredev/sandbox-sdk/blaxel";
+
+export const agentSandboxProvider = blaxel({
+  image: "blaxel/node:latest",
+  memory: 4096,
+  region: "us-pdx-1",
+});
+```
+
+## Files and processes
+
+```ts title="workspace.ts"
+await sandbox.files.write("index.mjs", `console.log("ready")`);
+const process = await sandbox.processes.start("node index.mjs");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Blaxel supports background processes, cancellation, and separate stdout and stderr streams. Process stdin and active foreground aborts are not exposed by the native process API.
+
+## Ports
+
+Private, token-authenticated previews are the default. The adapter keeps the token inside `preview.request()` instead of adding it to the returned URL.
+
+```ts title="preview.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = await preview.request!("/");
+```
+
+Pass `public: true` to `blaxel()` when the preview must be publicly reachable.
+
+## Options
+
+`blaxel()` accepts Blaxel's native sandbox creation options plus the adapter options below.
+
+| Option            | Type      | Default        | Behavior                                               |
+| ----------------- | --------- | -------------- | ------------------------------------------------------ |
+| `apiKey`          | `string`  | `BL_API_KEY`   | Authenticates Blaxel requests.                         |
+| `workspace`       | `string`  | `BL_WORKSPACE` | Selects the Blaxel workspace.                          |
+| `image`           | `string`  | Blaxel default | Selects a Blaxel or custom image.                      |
+| `memory`          | `number`  | Blaxel default | Sets sandbox memory in MB.                             |
+| `region`          | `string`  | Blaxel default | Selects the deployment region; set it explicitly.      |
+| `ports`           | `Port[]`  | `[]`           | Declares native sandbox ports.                         |
+| `ttl`             | `string`  | Blaxel default | Sets native sandbox TTL; this is not creation timeout. |
+| `public`          | `boolean` | `false`        | Creates public instead of authenticated previews.      |
+| `previewTokenTtl` | `number`  | `3600000`      | Sets private preview token lifetime in milliseconds.   |
+
+## Behavior
+
+- Set `region` explicitly; the native SDK warns that it will become required.
+- Sandboxes preserve memory, files, and processes while in standby.
+- `sandbox.stop()` deletes the sandbox; managed agent sessions keep it available for standby until destroyed.
+- Creation abort signals are checked before and after creation; the native create call does not accept an operation timeout.
+- Native network controls, lifecycle settings, and snapshot-enabled creation remain available through options or `sandbox.raw`.
+- Snapshot create, delete, and restore are not part of the normalized adapter because the native SDK does not expose snapshot CRUD.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or connect Blaxel to [HarnessAgent](/docs/integrations/ai-sdk-harness).

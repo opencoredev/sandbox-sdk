@@ -1,9 +1,11 @@
+import type { SandboxInstance as BlaxelNative } from "@blaxel/core";
 import type { Sandbox as DaytonaNative } from "@daytona/sdk";
 import type { Sandbox as E2BNative } from "e2b";
 import type { Sandbox as VercelNative } from "@vercel/sandbox";
 import type { Box as UpstashNative } from "@upstash/box";
 import { createSandbox } from "../../src";
 import { agentos, type AgentOsSandbox } from "../../src/providers/agentos";
+import { blaxel } from "../../src/providers/blaxel";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
 import { local, type LocalSandbox } from "../../src/providers/local";
@@ -17,7 +19,16 @@ async function rawTypes() {
   const daytonaSandbox: DaytonaNative = (await createSandbox({ provider: daytona() })).raw;
   const vercelSandbox: VercelNative = (await createSandbox({ provider: vercel() })).raw;
   const upstashSandbox: UpstashNative = (await createSandbox({ provider: upstash() })).raw;
-  void [localSandbox, agentosSandbox, e2bSandbox, daytonaSandbox, vercelSandbox, upstashSandbox];
+  const blaxelSandbox: BlaxelNative = (await createSandbox({ provider: blaxel() })).raw;
+  void [
+    localSandbox,
+    agentosSandbox,
+    e2bSandbox,
+    daytonaSandbox,
+    vercelSandbox,
+    upstashSandbox,
+    blaxelSandbox,
+  ];
 }
 
 async function disposableSandbox() {

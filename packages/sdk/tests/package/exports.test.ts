@@ -18,6 +18,11 @@ test("core and self-hosted built entries import independently", async () => {
   expect(await import(agentosEntry)).toHaveProperty("agentos");
 });
 
+test("Blaxel provider entry imports independently", async () => {
+  const blaxelEntry = "../../dist/providers/blaxel/index.mjs";
+  expect(await import(blaxelEntry)).toHaveProperty("blaxel");
+});
+
 test("experimental integration entries import independently", async () => {
   const aiEntry = "../../dist/ai/index.mjs";
   const harnessEntry = "../../dist/ai/harness.mjs";

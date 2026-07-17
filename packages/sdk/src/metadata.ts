@@ -1,4 +1,5 @@
 import {
+  blaxelCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
@@ -133,6 +134,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "blaxel",
+    displayName: "Blaxel",
+    officialUrl: "https://docs.blaxel.ai/Sandboxes/Overview",
+    packageName: "@blaxel/core",
+    packageVersion: "0.3.3",
+    capabilities: blaxelCapabilities,
+    environmentVariables: ["BL_API_KEY", "BL_WORKSPACE"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Creates token-authenticated preview URLs by default and keeps preview tokens inside request().",
+    snapshotBehavior:
+      "Blaxel snapshot configuration remains provider-native; snapshot CRUD is not normalized.",
+    runtimeLimitations:
+      "Process stdin and active foreground aborts are not exposed; programmatic authentication is limited to one credential pair per process.",
   },
 ];
 
