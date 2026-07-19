@@ -60,6 +60,7 @@
       "devDependencies": {
         "@ai-sdk/harness": "^1",
         "@daytona/sdk": "^0.196.0",
+        "@islo-labs/sdk": "^0.0.27",
         "@mastra/core": "1.51.0",
         "@types/bun": "^1.3.14",
         "@types/node": "^22.13.14",
@@ -74,6 +75,7 @@
       "peerDependencies": {
         "@ai-sdk/harness": "^1.0.0",
         "@daytona/sdk": "^0.196.0",
+        "@islo-labs/sdk": "^0.0.27",
         "@mastra/core": ">=1.12.0-0 <2.0.0-0",
         "@upstash/box": "^0.5.3",
         "@vercel/sandbox": "^2.5.0",
@@ -84,6 +86,7 @@
       "optionalPeers": [
         "@ai-sdk/harness",
         "@daytona/sdk",
+        "@islo-labs/sdk",
         "@mastra/core",
         "@upstash/box",
         "@vercel/sandbox",
@@ -377,6 +380,8 @@
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 
     "@isaacs/ttlcache": ["@isaacs/ttlcache@2.1.5", "", {}, "sha512-VwGZqqjAWPICTmxUZnbpEfO60LhPWzquik+bmyXGY7pYRn6diEvCI5i6Ca+J6o2y4vS73HrpuMTo2dOvUevH8w=="],
+
+    "@islo-labs/sdk": ["@islo-labs/sdk@0.0.27", "", {}, "sha512-+wHVxnY+imauK7NM+vlVe6nmleZZf/yIlPHy93jLzGDObf/aF3sLv+TgNZ5vHD4T8EdOWMHpkeqPwmhX2mW1ow=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

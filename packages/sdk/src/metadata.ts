@@ -117,24 +117,6 @@ export const providers: readonly ProviderMetadata[] = [
       "Available runtimes are controlled by Vercel; node24 is the adapter default.",
   },
   {
-    id: "islo",
-    displayName: "Islo",
-    officialUrl: "https://docs.islo.dev",
-    packageName: "@islo-labs/sdk",
-    packageVersion: "0.0.27",
-    capabilities: isloCapabilities,
-    environmentVariables: ["ISLO_API_KEY", "ISLO_BASE_URL", "ISLO_COMPUTE_URL"],
-    technicalStatus: "supported",
-    providerReviewed: false,
-    sponsor: false,
-    liveTest: null,
-    portBehavior: "Creates an expiring public HTTPS share for the requested port.",
-    snapshotBehavior:
-      "Native Islo snapshots and restore-at-create remain available through sandbox.raw.",
-    runtimeLimitations:
-      "Persistent hardware-isolated Linux microVMs; normalized files and string commands require bash and GNU coreutils.",
-  },
-  {
     id: "upstash",
     displayName: "Upstash Box",
     officialUrl: "https://upstash.com/docs/box",
@@ -152,6 +134,24 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "islo",
+    displayName: "Islo",
+    officialUrl: "https://docs.islo.dev",
+    packageName: "@islo-labs/sdk",
+    packageVersion: "0.0.27",
+    capabilities: isloCapabilities,
+    environmentVariables: ["ISLO_API_KEY", "ISLO_BASE_URL", "ISLO_COMPUTE_URL"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior: "Creates an expiring public HTTPS share for the requested port.",
+    snapshotBehavior:
+      "Native Islo snapshots and restore-at-create remain available through sandbox.raw.",
+    runtimeLimitations:
+      "Persistent hardware-isolated Linux microVMs; normalized files and string commands require bash and GNU coreutils.",
   },
 ];
 

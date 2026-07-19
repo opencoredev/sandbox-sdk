@@ -183,9 +183,15 @@ export function islo(options: IsloOptions = {}): SandboxProvider<IsloSandbox> {
   };
 
   return withManagedSessions(provider, [], {
-    stop: ({ raw }) => raw.client.sandboxes.pauseSandbox({ sandbox_name: raw.name }),
-    resume: ({ raw }) => raw.client.sandboxes.resumeSandbox({ sandbox_name: raw.name }),
-    destroy: ({ raw }) => raw.client.sandboxes.deleteSandbox({ sandbox_name: raw.name }),
+    stop: async ({ raw }) => {
+      await raw.client.sandboxes.pauseSandbox({ sandbox_name: raw.name });
+    },
+    resume: async ({ raw }) => {
+      await raw.client.sandboxes.resumeSandbox({ sandbox_name: raw.name });
+    },
+    destroy: async ({ raw }) => {
+      await raw.client.sandboxes.deleteSandbox({ sandbox_name: raw.name });
+    },
   });
 }
 
