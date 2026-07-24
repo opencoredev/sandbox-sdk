@@ -97,3 +97,31 @@ export const upstashCapabilities = defineCapabilities({
   "image.custom": "native",
   "network.policy": "native",
 });
+
+export const boxCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "ports.expose": "public",
+  "ports.authenticatedRequest": "authenticated",
+  "sandbox.resume": "persistent",
+  "filesystem.persistent": "persistent",
+});
+
+export const railwayCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "separate-streams",
+  "process.background": "full",
+  "process.cancel": "full",
+  "snapshot.create": "filesystem",
+  "snapshot.delete": "filesystem",
+  "filesystem.persistent": "persistent",
+  "image.custom": "template",
+  "network.policy": "native",
+});

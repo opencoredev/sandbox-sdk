@@ -9,7 +9,7 @@ E2B provides hosted Linux sandboxes with files, processes, authenticated preview
 ## Installation
 
 ```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk e2b
+bun add @opencoredev/sandbox-sdk ai zod e2b
 ```
 
 ## Authentication
@@ -27,15 +27,9 @@ const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
 
-## Run an agent
+## Run an AI SDK agent
 
-Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
-
-```ts title="agent-provider.ts"
-import { e2b } from "@opencoredev/sandbox-sdk/e2b";
-
-export const agentSandboxProvider = e2b();
-```
+<ProviderAISDKExample provider="e2b" />
 
 ## Files and processes
 

@@ -1,7 +1,9 @@
 import {
+  boxCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
+  railwayCapabilities,
   upstashCapabilities,
   vercelCapabilities,
 } from "./providers/capabilities";
@@ -133,6 +135,44 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "box",
+    displayName: "Ascii Box",
+    officialUrl: "https://docs.ascii.dev/box/quickstart",
+    packageName: "@asciidev/box-sdk",
+    packageVersion: "0.0.24",
+    capabilities: boxCapabilities,
+    environmentVariables: ["BOX_API_KEY", "BOX_BASE_URL"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Runs Box's native host command and returns a public HTTPS URL by default; protected mode can be requested explicitly.",
+    snapshotBehavior:
+      "Stop and resume snapshots are available through the native Box client; on-demand normalized snapshots are not exposed.",
+    runtimeLimitations:
+      "Foreground commands use the Box HTTP command endpoint, which has a 60-second maximum and no streaming or background-process handle.",
+  },
+  {
+    id: "railway",
+    displayName: "Railway Sandboxes",
+    officialUrl: "https://docs.railway.com/sandboxes",
+    packageName: "railway",
+    packageVersion: "3.5.7",
+    capabilities: railwayCapabilities,
+    environmentVariables: ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"],
+    technicalStatus: "experimental",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "The TypeScript SDK has no public preview URL API; use Railway CLI port forwarding outside the normalized runtime.",
+    snapshotBehavior:
+      "Creates and deletes named Railway checkpoints. Booting from a checkpoint creates a new sandbox and remains on raw.",
+    runtimeLimitations:
+      "Railway Sandboxes are in Priority Boarding and the provider SDK may introduce breaking changes between releases.",
   },
 ];
 

@@ -16,6 +16,8 @@ The matrix is generated from the same capability declarations exported by the ad
 - Vercel and E2B snapshots create provider-native artifacts, but restore creates a new native sandbox and stays on `raw`.
 - Daytona persistence, PTYs, networking, images, and GPUs are provider-native capabilities beyond the normalized core.
 - Upstash Box provides durable filesystems, pause and resume, network policies, and public or bearer-token URLs; snapshot restore creates a new native Box.
+- Ascii Box provides persistent VMs and public HTTPS routes by default, but its command API is bounded to 60 seconds and has no background-process handle.
+- Railway provides streamed durable exec sessions and checkpoints; public port URLs and in-place checkpoint restore are not available through its TypeScript SDK.
 
 ## Read next
 

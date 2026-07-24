@@ -4,9 +4,11 @@ import type { Sandbox as VercelNative } from "@vercel/sandbox";
 import type { Box as UpstashNative } from "@upstash/box";
 import { createSandbox } from "../../src";
 import { agentos, type AgentOsSandbox } from "../../src/providers/agentos";
+import { box, type AsciiBoxSandbox } from "../../src/providers/box";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
 import { local, type LocalSandbox } from "../../src/providers/local";
+import { railway } from "../../src/providers/railway";
 import { vercel } from "../../src/providers/vercel";
 import { upstash } from "../../src/providers/upstash";
 
@@ -17,7 +19,20 @@ async function rawTypes() {
   const daytonaSandbox: DaytonaNative = (await createSandbox({ provider: daytona() })).raw;
   const vercelSandbox: VercelNative = (await createSandbox({ provider: vercel() })).raw;
   const upstashSandbox: UpstashNative = (await createSandbox({ provider: upstash() })).raw;
-  void [localSandbox, agentosSandbox, e2bSandbox, daytonaSandbox, vercelSandbox, upstashSandbox];
+  const boxSandbox: AsciiBoxSandbox = (await createSandbox({ provider: box({ apiKey: "test" }) }))
+    .raw;
+  const railwaySandbox: import("railway").Sandbox = (await createSandbox({ provider: railway() }))
+    .raw;
+  void [
+    localSandbox,
+    agentosSandbox,
+    e2bSandbox,
+    daytonaSandbox,
+    vercelSandbox,
+    upstashSandbox,
+    boxSandbox,
+    railwaySandbox,
+  ];
 }
 
 async function disposableSandbox() {

@@ -7,19 +7,27 @@ if (!provider || id === "local" || id === "agentos")
   throw new Error(`Unknown hosted live provider: ${id}`);
 
 const started = new Date();
-const missingCredentials =
-  id === "e2b"
-    ? !process.env.E2B_API_KEY
-    : id === "daytona"
-      ? !process.env.DAYTONA_API_KEY
-      : id === "upstash"
-        ? !process.env.UPSTASH_BOX_API_KEY
-        : !process.env.VERCEL_OIDC_TOKEN &&
-          !(
-            process.env.VERCEL_TOKEN &&
-            process.env.VERCEL_TEAM_ID &&
-            process.env.VERCEL_PROJECT_ID
-          );
+const missingCredentials = (() => {
+  switch (id) {
+    case "e2b":
+      return !process.env.E2B_API_KEY;
+    case "daytona":
+      return !process.env.DAYTONA_API_KEY;
+    case "upstash":
+      return !process.env.UPSTASH_BOX_API_KEY;
+    case "box":
+      return !process.env.BOX_API_KEY;
+    case "railway":
+      return !process.env.RAILWAY_API_TOKEN || !process.env.RAILWAY_ENVIRONMENT_ID;
+    case "vercel":
+      return (
+        !process.env.VERCEL_OIDC_TOKEN &&
+        !(process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID)
+      );
+    default:
+      return true;
+  }
+})();
 const processResult = missingCredentials
   ? null
   : Bun.spawn(["bun", "test", `tests/live/${id}.test.ts`], {
