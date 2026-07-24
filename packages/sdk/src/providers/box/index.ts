@@ -361,6 +361,14 @@ function findUrl(output: string): string | undefined {
 function withProtectedPath(base: string, path: string): URL {
   const protectedUrl = new URL(base);
   const target = new URL(path, base);
+  if (target.origin !== protectedUrl.origin) {
+    throw new SandboxError({
+      code: "invalid_input",
+      provider: "box",
+      operation: "port.request",
+      message: "Protected Ascii Box preview requests must stay on the preview origin",
+    });
+  }
   for (const [key, value] of protectedUrl.searchParams) target.searchParams.set(key, value);
   return target;
 }
