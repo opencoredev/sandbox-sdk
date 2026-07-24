@@ -165,18 +165,18 @@ test("Ascii Box adapter maps the official SDK and protects hosted credentials", 
   }) as unknown as typeof fetch;
   try {
     await preview.request!("/health?probe=1");
+    expect(requestedUrl).toContain("probe=1");
+    expect(requestedUrl).toContain("_token=secret");
+    await expect(preview.request!("https://example.com/steal")).rejects.toThrow(
+      "Protected Ascii Box preview requests must stay on the preview origin",
+    );
+    await expect(preview.request!("//example.com/steal")).rejects.toThrow(
+      "Protected Ascii Box preview requests must stay on the preview origin",
+    );
+    expect(requestedUrl).not.toContain("example.com");
   } finally {
     globalThis.fetch = originalFetch;
   }
-  expect(requestedUrl).toContain("probe=1");
-  expect(requestedUrl).toContain("_token=secret");
-  await expect(preview.request!("https://example.com/steal")).rejects.toThrow(
-    "Protected Ascii Box preview requests must stay on the preview origin",
-  );
-  await expect(preview.request!("//example.com/steal")).rejects.toThrow(
-    "Protected Ascii Box preview requests must stay on the preview origin",
-  );
-  expect(requestedUrl).not.toContain("example.com");
 
   await sandbox.stop();
   expect(remove).toHaveBeenCalledWith({ boxId: "bx_23456789" });
