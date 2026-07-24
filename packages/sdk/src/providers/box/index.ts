@@ -1,4 +1,4 @@
-import { BoxApi, Configuration, waitUntilReady, type Box as NativeBox } from "@asciidev/box-sdk";
+import { BoxApi, Configuration, type Box as NativeBox } from "@asciidev/box-sdk";
 import { SandboxError } from "../../core/errors";
 import type { SandboxProvider } from "../../core/provider";
 import type { CommandInput } from "../../core/types";
@@ -77,13 +77,11 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
       const id = created.box.id;
       let native: AsciiBoxSandbox | undefined;
       try {
-        const ready = await awaitProvisioning(
-          waitUntilReady(client, id, {
-            timeoutMs: createOptions.timeout ?? readyTimeoutMs,
-            intervalMs: 1_000,
-          }),
+        const ready = await waitUntilBoxReady(
+          client,
+          id,
           createOptions.signal,
-          createOptions.timeout,
+          createOptions.timeout ?? readyTimeoutMs,
         );
         native = { client, box: ready, readyTimeoutMs };
         if (options.name) {
@@ -264,10 +262,12 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
     },
     async resume(sandbox) {
       await sandbox.raw.client.resume({ boxId: sandbox.id });
-      sandbox.raw.box = await waitUntilReady(sandbox.raw.client, sandbox.id, {
-        timeoutMs: sandbox.raw.readyTimeoutMs,
-        intervalMs: 1_000,
-      });
+      sandbox.raw.box = await waitUntilBoxReady(
+        sandbox.raw.client,
+        sandbox.id,
+        undefined,
+        sandbox.raw.readyTimeoutMs,
+      );
     },
     async destroy(sandbox) {
       await destroyBox(sandbox.raw.client, sandbox.id, sandbox.raw.readyTimeoutMs);
@@ -336,7 +336,7 @@ function withEnvironment(
   const entries = Object.entries(environment ?? {});
   if (entries.length === 0) return command;
   const assignments = entries.map(([key, value]) => shellQuote(`${key}=${value}`));
-  return `env ${assignments.join(" ")} sh -lc ${shellQuote(command)}`;
+  return `env ${assignments.join(" ")} sh -c ${shellQuote(command)}`;
 }
 
 function toRemotePath(path: string): string {
@@ -411,34 +411,41 @@ function hasResponseStatus(error: unknown, status: number): boolean {
   );
 }
 
-async function awaitProvisioning<T>(
-  promise: Promise<T>,
+async function waitUntilBoxReady(
+  client: BoxApi,
+  boxId: string,
   signal?: AbortSignal,
-  timeoutMs?: number,
-): Promise<T> {
-  if (!signal && timeoutMs === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      if (timer) clearTimeout(timer);
-      callback();
+  timeoutMs = 600_000,
+): Promise<NativeBox> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    assertNotAborted(signal);
+    const current = (await client.get({ boxId }, { signal })).box;
+    if (["ready", "idle", "running"].includes(current.state)) return current;
+    if (["archived", "archiving", "error"].includes(current.state)) {
+      throw new Error(`Box entered terminal state ${current.state}`);
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`Sandbox creation timed out after ${timeoutMs}ms`);
+    }
+    await abortableDelay(Math.min(1_000, remainingMs), signal);
+  }
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  assertNotAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
     };
-    const onAbort = () =>
-      finish(() => reject(signal?.reason ?? new DOMException("Aborted", "AbortError")));
-    const timer = timeoutMs
-      ? setTimeout(
-          () => finish(() => reject(new Error(`Sandbox creation timed out after ${timeoutMs}ms`))),
-          timeoutMs,
-        )
-      : undefined;
-    signal?.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => finish(() => resolve(value)),
-      (error) => finish(() => reject(error)),
-    );
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

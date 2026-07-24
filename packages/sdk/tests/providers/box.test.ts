@@ -4,9 +4,18 @@ import { createSandbox } from "../../src";
 const files = new Map<string, string>();
 const commands: Array<{ command: string; cwd?: string; timeoutSeconds?: number }> = [];
 let readyError: Error | undefined;
+let provisioning = false;
+let getCalls = 0;
+let nativeState: "ready" | "archived" = "ready";
 let removeConflictOnce = false;
-const stop = mock(async () => ({ ok: true }));
-const resume = mock(async () => ({ ok: true }));
+const stop = mock(async () => {
+  nativeState = "archived";
+  return { ok: true };
+});
+const resume = mock(async () => {
+  nativeState = "ready";
+  return { ok: true };
+});
 const remove = mock(async () => {
   if (removeConflictOnce) {
     removeConflictOnce = false;
@@ -16,15 +25,18 @@ const remove = mock(async () => {
   }
   return { ok: true };
 });
-const create = mock(async () => ({
-  box: {
-    id: "bx_23456789",
-    name: "Test Box",
-    state: "provisioning",
-    desktopAvailable: true,
-    snapshotAvailable: false,
-  },
-}));
+const create = mock(async () => {
+  nativeState = "ready";
+  return {
+    box: {
+      id: "bx_23456789",
+      name: "Test Box",
+      state: "provisioning",
+      desktopAvailable: true,
+      snapshotAvailable: false,
+    },
+  };
+});
 
 class NativeConfiguration {
   constructor(readonly options: unknown) {}
@@ -67,15 +79,19 @@ class NativeBoxApi {
   remove = remove;
   stop = stop;
   resume = resume;
-  get = async () => ({
-    box: {
-      id: "bx_23456789",
-      name: "Test Box",
-      state: "archived",
-      desktopAvailable: true,
-      snapshotAvailable: true,
-    },
-  });
+  get = async () => {
+    getCalls += 1;
+    if (readyError) throw readyError;
+    return {
+      box: {
+        id: "bx_23456789",
+        name: "Test Box",
+        state: provisioning ? "provisioning" : nativeState,
+        desktopAvailable: true,
+        snapshotAvailable: nativeState === "archived",
+      },
+    };
+  };
 }
 
 function commandResult(stdout: string, exitCode = 0) {
@@ -91,16 +107,6 @@ function commandResult(stdout: string, exitCode = 0) {
 mock.module("@asciidev/box-sdk", () => ({
   BoxApi: NativeBoxApi,
   Configuration: NativeConfiguration,
-  waitUntilReady: async () => {
-    if (readyError) throw readyError;
-    return {
-      id: "bx_23456789",
-      name: "Test Box",
-      state: "ready",
-      desktopAvailable: true,
-      snapshotAvailable: false,
-    };
-  },
 }));
 
 test("Ascii Box adapter maps the official SDK and protects hosted credentials", async () => {
@@ -148,6 +154,8 @@ test("Ascii Box adapter maps the official SDK and protects hosted credentials", 
   );
   expect(commands.at(-3)).toMatchObject({ cwd: "tmp", timeoutSeconds: 2 });
   expect(commands.at(-3)?.command).toContain("MESSAGE=hello world");
+  expect(commands.at(-3)?.command).toContain("sh -c");
+  expect(commands.at(-3)?.command).not.toContain("sh -lc");
 
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";
@@ -197,6 +205,23 @@ test("Ascii Box cleans up failed provisioning and archives before deleting when 
   await sandbox.stop();
   expect(stop).toHaveBeenCalledWith({ boxId: "bx_23456789" });
   expect(remove).toHaveBeenCalledWith({ boxId: "bx_23456789" });
+});
+
+test("Ascii Box stops readiness polling when creation times out", async () => {
+  const { box } = await import("../../src/providers/box");
+  provisioning = true;
+  getCalls = 0;
+  try {
+    await expect(
+      createSandbox({ provider: box({ apiKey: "box_test" }), timeout: 5 }),
+    ).rejects.toThrow("Sandbox creation timed out after 5ms");
+    const callsAfterTimeout = getCalls;
+    await Bun.sleep(20);
+    expect(getCalls).toBe(callsAfterTimeout);
+    expect(remove).toHaveBeenCalledWith({ boxId: "bx_23456789" });
+  } finally {
+    provisioning = false;
+  }
 });
 
 test("Ascii Box managed sessions archive, resume, and destroy", async () => {
