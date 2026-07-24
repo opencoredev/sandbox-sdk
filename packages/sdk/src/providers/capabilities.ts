@@ -97,3 +97,19 @@ export const upstashCapabilities = defineCapabilities({
   "image.custom": "native",
   "network.policy": "native",
 });
+
+export const createosCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "separate-streams",
+  "process.background": "full",
+  "process.cancel": "full",
+  "ports.expose": "authenticated",
+  "sandbox.resume": "persistent",
+  "filesystem.persistent": "ephemeral",
+  "image.custom": "template",
+  "network.policy": "native",
+});

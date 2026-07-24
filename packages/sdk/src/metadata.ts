@@ -1,4 +1,5 @@
 import {
+  createosCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
@@ -133,6 +134,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Captures persistent workspace state. Restoring creates a new Box and remains available through raw.",
     runtimeLimitations:
       "Durable Debian or Alpine boxes with Node.js, Python, Go, Ruby, or Rust runtimes.",
+  },
+  {
+    id: "createos",
+    displayName: "CreateOS Sandbox",
+    officialUrl: "https://github.com/NodeOps-app/createos-sandbox-sdk",
+    packageName: "@nodeops-createos/sandbox",
+    packageVersion: "0.7.1",
+    capabilities: createosCapabilities,
+    environmentVariables: ["CREATEOS_SANDBOX_API_KEY", "CREATEOS_SANDBOX_BASE_URL"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Returns an ingress URL with a port placeholder. Ingress is enabled on first expose() call if not already set.",
+    snapshotBehavior:
+      "Snapshots are not supported. Use sandbox.raw for pause/resume/fork lifecycle operations.",
+    runtimeLimitations:
+      "VM-based sandbox with configurable shapes. stdin is not available on exec. Files list/mkdir/remove/exists use shell commands.",
   },
 ];
 
