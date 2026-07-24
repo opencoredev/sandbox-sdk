@@ -170,10 +170,10 @@ test("Ascii Box adapter maps the official SDK and protects hosted credentials", 
   }
   expect(requestedUrl).toContain("probe=1");
   expect(requestedUrl).toContain("_token=secret");
-  expect(() => preview.request!("https://example.com/steal")).toThrow(
+  await expect(preview.request!("https://example.com/steal")).rejects.toThrow(
     "Protected Ascii Box preview requests must stay on the preview origin",
   );
-  expect(() => preview.request!("//example.com/steal")).toThrow(
+  await expect(preview.request!("//example.com/steal")).rejects.toThrow(
     "Protected Ascii Box preview requests must stay on the preview origin",
   );
   expect(requestedUrl).not.toContain("example.com");

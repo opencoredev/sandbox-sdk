@@ -234,7 +234,7 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
               !protectedUrl,
               protectedUrl,
               protectedUrl
-                ? (path = "/", init = {}) => fetch(withProtectedPath(url, path), init)
+                ? async (path = "/", init = {}) => fetch(withProtectedPath(url, path), init)
                 : undefined,
             );
           },
