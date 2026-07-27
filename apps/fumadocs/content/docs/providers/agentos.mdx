@@ -21,5 +21,11 @@ New code should import `local()` directly:
 Native options still live under the same `agentOs` key, and `sandbox.raw.vm` still exposes the
 current `AgentOs` instance. No behavioral migration is required beyond the import and factory name.
 
+## Run an AI SDK agent
+
+Use the Local provider for new AI SDK agents; the deprecated `agentos()` alias resolves to the same runtime.
+
+<ProviderAISDKExample provider="local" />
+
 Continue with the [Local provider guide](/docs/providers/local) for security defaults, deployment
 guidance, ports and snapshots.

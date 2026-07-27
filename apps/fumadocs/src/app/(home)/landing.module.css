@@ -309,9 +309,11 @@
 .heroActions {
   display: flex;
   align-items: center;
+  gap: 12px;
   margin-top: 36px;
 }
 .primaryButton,
+.secondaryButton,
 .footerButton {
   display: inline-flex;
   align-items: center;
@@ -325,7 +327,30 @@
   transition:
     transform 220ms ease,
     background 220ms ease,
+    border-color 220ms ease,
     box-shadow 220ms ease;
+}
+.secondaryButton {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #f2f1ed;
+  background: rgba(4, 8, 8, 0.22);
+  box-shadow: 0 14px 42px rgba(1, 8, 8, 0.14);
+}
+.secondaryButton span {
+  margin-left: 3px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 21px;
+  font-weight: 400;
+  line-height: 1;
+  transition: transform 220ms ease;
+}
+.secondaryButton:hover {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-2px);
+}
+.secondaryButton:hover span {
+  transform: translateX(2px);
 }
 .primaryButton {
   color: #101312;
@@ -346,6 +371,7 @@
   transform: translateY(-2px);
 }
 .primaryButton:active,
+.secondaryButton:active,
 .footerButton:active {
   transform: translateY(1px) scale(0.985);
 }
@@ -666,6 +692,11 @@
     width: 100%;
   }
   .primaryButton {
+    flex: 1;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+  .secondaryButton {
     flex: 1;
     padding: 0 12px;
     font-size: 12px;

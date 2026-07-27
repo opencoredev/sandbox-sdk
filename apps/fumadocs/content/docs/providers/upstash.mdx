@@ -9,7 +9,7 @@ Upstash provides durable cloud containers with files, processes, public or authe
 ## Installation
 
 ```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk @upstash/box
+bun add @opencoredev/sandbox-sdk ai zod @upstash/box
 ```
 
 ## Authentication
@@ -27,15 +27,9 @@ const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
 
-## Run an agent
+## Run an AI SDK agent
 
-Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
-
-```ts title="agent-provider.ts"
-import { upstash } from "@opencoredev/sandbox-sdk/upstash";
-
-export const agentSandboxProvider = upstash();
-```
+<ProviderAISDKExample provider="upstash" />
 
 ## Files and processes
 

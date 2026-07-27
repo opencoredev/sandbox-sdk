@@ -1,0 +1,93 @@
+---
+title: Railway Sandboxes
+description: Run Railway's ephemeral Linux VMs through the normalized SDK API.
+icon: railway
+---
+
+Railway Sandboxes provide isolated Debian VMs with durable command sessions, byte-safe files, private networking, templates, and checkpoints.
+
+Railway currently offers Sandboxes through Priority Boarding, and its SDK may introduce breaking changes between releases.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk ai zod railway
+```
+
+## Authentication
+
+Set the token and target environment used by the official Railway SDK.
+
+```bash title=".env"
+RAILWAY_API_TOKEN=your_api_token
+RAILWAY_ENVIRONMENT_ID=your_environment_id
+```
+
+You can also pass `token` and `environmentId` to `railway()`. The explicit options override environment variables.
+
+## Run a command
+
+```ts title="railway.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using sandbox = await createSandbox({
+  provider: railway({ idleTimeoutMinutes: 5 }),
+});
+
+console.log((await sandbox.run("node --version")).stdout);
+```
+
+`sandbox.stop()` destroys the Railway sandbox. Keep work inside an `await using` scope so cleanup also runs when an operation throws.
+
+## Run an AI SDK agent
+
+<ProviderAISDKExample provider="railway" />
+
+## Stream a durable process
+
+```ts title="process.ts"
+const process = await sandbox.processes.start("npm run build");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Railway provides durable exec sessions and cancellation. Its SDK does not provide stdin for an existing exec handle, so normalized `process.write()` is unsupported.
+
+## Create a checkpoint
+
+```ts title="checkpoint.ts"
+const checkpoint = await sandbox.snapshots.create({ name: "after-deps" });
+await sandbox.snapshots.delete(checkpoint);
+```
+
+Checkpoint creation and deletion are normalized. Booting from a checkpoint creates a new sandbox, so pass `railway({ checkpoint: "after-deps" })` instead of calling in-place `restore()`.
+
+## Forward a port locally
+
+Railway's TypeScript SDK does not return a public preview URL, so `sandbox.ports.expose()` is unsupported. Use the Railway CLI when you need a local tunnel to a running sandbox.
+
+```bash title="Terminal"
+railway sandbox forward 3000 --id <sandbox-id>
+```
+
+This maps the sandbox port to localhost while the command remains running. It requires an SSH key configured on the Railway account.
+
+## Options
+
+| Option               | Type                     | Default                  | Behavior                                                  |
+| -------------------- | ------------------------ | ------------------------ | --------------------------------------------------------- |
+| `token`              | `string`                 | `RAILWAY_API_TOKEN`      | Authenticates Railway API requests.                       |
+| `environmentId`      | `string`                 | `RAILWAY_ENVIRONMENT_ID` | Selects the Railway environment.                          |
+| `idleTimeoutMinutes` | `number`                 | Plan default             | Destroys the sandbox after the configured idle period.    |
+| `networkIsolation`   | `ISOLATED \| PRIVATE`    | `ISOLATED`               | Controls access to the environment's private network.     |
+| `checkpoint`         | `string`                 | None                     | Boots from a named checkpoint.                            |
+| `template`           | `RailwaySandboxTemplate` | None                     | Boots from an official SDK template; excludes checkpoint. |
+
+Use `sandbox.raw` for reconnecting, forking, template builds, checkpoint listing, and other native Railway operations.
+
+## Read next
+
+Compare exact modes in [Compatibility](/docs/reference/compatibility), or read the official [Railway Sandboxes guide](https://docs.railway.com/sandboxes).

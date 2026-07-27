@@ -64,20 +64,37 @@ export function normalizeError(
 ): SandboxError {
   if (isSandboxError(error)) return error;
   const message = error instanceof Error ? error.message : "Unknown provider error";
-  const lower = message.toLowerCase();
+  const lower = `${error instanceof Error ? error.name : ""} ${message}`.toLowerCase();
+  const status = errorStatus(error);
   const code =
-    lower.includes("unauthorized") || lower.includes("api key")
+    status === 401 || lower.includes("unauthorized") || lower.includes("api key")
       ? "authentication"
-      : lower.includes("forbidden") || lower.includes("permission")
+      : status === 403 || lower.includes("forbidden") || lower.includes("permission")
         ? "permission"
-        : lower.includes("not found") || lower.includes("enoent")
+        : status === 404 || lower.includes("not found") || lower.includes("enoent")
           ? "not_found"
-          : lower.includes("timeout") || lower.includes("timed out")
+          : status === 408 || lower.includes("timeout") || lower.includes("timed out")
             ? "timeout"
-            : lower.includes("rate limit") || lower.includes("429")
+            : status === 429 || lower.includes("rate limit") || lower.includes("429")
               ? "rate_limited"
-              : lower.includes("already exists") || lower.includes("conflict")
+              : status === 409 || lower.includes("already exists") || lower.includes("conflict")
                 ? "conflict"
                 : fallback;
   return new SandboxError({ code, provider, operation, message, cause: error });
+}
+
+function errorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  if ("statusCode" in error && typeof error.statusCode === "number") return error.statusCode;
+  if ("status" in error && typeof error.status === "number") return error.status;
+  if (
+    "response" in error &&
+    typeof error.response === "object" &&
+    error.response !== null &&
+    "status" in error.response &&
+    typeof error.response.status === "number"
+  ) {
+    return error.response.status;
+  }
+  return undefined;
 }

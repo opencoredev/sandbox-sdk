@@ -9,7 +9,7 @@ Local provides the normalized Sandbox SDK API without a cloud account. It is an 
 ## Installation
 
 ```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk
+bun add @opencoredev/sandbox-sdk ai zod
 ```
 
 Local supports Node.js 22 and 24, and Bun 1.3 or newer.
@@ -29,15 +29,9 @@ const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
 
-## Run an agent
+## Run an AI SDK agent
 
-Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
-
-```ts title="agent-provider.ts"
-import { local } from "@opencoredev/sandbox-sdk/local";
-
-export const agentSandboxProvider = local();
-```
+<ProviderAISDKExample provider="local" />
 
 ## Files and processes
 

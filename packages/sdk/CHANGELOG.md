@@ -1,3 +1,9 @@
+## Unreleased
+
+- Add Ascii Box and Railway Sandbox provider adapters, package exports, capabilities, examples,
+  live-test entry points, and provider documentation.
+- Normalize HTTP response status codes from provider SDK errors.
+
 ## @opencoredev/sandbox-sdk@0.1.1
 
 - Add `Symbol.asyncDispose` to `Sandbox` so `await using` provides automatic cleanup.

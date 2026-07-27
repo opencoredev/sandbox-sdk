@@ -1,4 +1,13 @@
-export const providerNames = ["local", "e2b", "daytona", "vercel", "upstash", "createos"] as const;
+export const providerNames = [
+  "local",
+  "e2b",
+  "daytona",
+  "vercel",
+  "upstash",
+  "box",
+  "railway",
+  "createos",
+] as const;
 export type ProviderName = (typeof providerNames)[number];
 
 export const capabilityNames = [

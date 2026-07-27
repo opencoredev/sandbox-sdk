@@ -9,7 +9,7 @@ Daytona provides persistent workspaces with files, processes, authenticated prev
 ## Installation
 
 ```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk @daytona/sdk
+bun add @opencoredev/sandbox-sdk ai zod @daytona/sdk
 ```
 
 ## Authentication
@@ -27,15 +27,9 @@ const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
 
-## Run an agent
+## Run an AI SDK agent
 
-Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
-
-```ts title="agent-provider.ts"
-import { daytona } from "@opencoredev/sandbox-sdk/daytona";
-
-export const agentSandboxProvider = daytona();
-```
+<ProviderAISDKExample provider="daytona" />
 
 ## Files and processes
 

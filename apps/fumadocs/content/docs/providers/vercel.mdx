@@ -11,7 +11,7 @@ Persistence is enabled by default. Pass `persistent: false` to `vercel()` when y
 ## Installation
 
 ```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk @vercel/sandbox
+bun add @opencoredev/sandbox-sdk ai zod @vercel/sandbox
 ```
 
 ## Authentication
@@ -43,17 +43,9 @@ const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
 
-## Run an agent
+## Run an AI SDK agent
 
-Export one provider instance and pass it to [AI SDK](/docs/integrations/ai-sdk), [HarnessAgent](/docs/integrations/ai-sdk-harness), [Eve](/docs/integrations/eve), or [Mastra](/docs/integrations/mastra).
-
-```ts title="agent-provider.ts"
-import { vercel } from "@opencoredev/sandbox-sdk/vercel";
-
-export const agentSandboxProvider = vercel({
-  ports: [4000], // required by bridge-backed AI SDK harnesses
-});
-```
+<ProviderAISDKExample provider="vercel" />
 
 ## Files and processes
 

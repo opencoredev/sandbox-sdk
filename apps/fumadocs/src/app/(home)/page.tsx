@@ -5,6 +5,7 @@ import {
   ArrowRight01Icon,
   CheckmarkCircle02Icon,
   Folder01Icon,
+  GithubIcon,
   Globe02Icon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
@@ -107,6 +108,21 @@ export default function HomePage() {
             interface.
           </p>
           <div className={styles.heroActions} data-hero-reveal>
+            <a
+              href="https://github.com/opencoredev/sandbox-sdk"
+              className={styles.secondaryButton}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <HugeiconsIcon
+                icon={GithubIcon}
+                size={17}
+                strokeWidth={2}
+                aria-hidden="true"
+              />
+              GitHub
+              <span aria-hidden="true">›</span>
+            </a>
             <Link href="/docs" className={styles.primaryButton}>
               Start building <HugeiconsIcon icon={ArrowRight01Icon} size={18} strokeWidth={2} />
             </Link>

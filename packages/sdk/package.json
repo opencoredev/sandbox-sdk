@@ -46,6 +46,14 @@
       "types": "./dist/providers/upstash/index.d.mts",
       "import": "./dist/providers/upstash/index.mjs"
     },
+    "./box": {
+      "types": "./dist/providers/box/index.d.mts",
+      "import": "./dist/providers/box/index.mjs"
+    },
+    "./railway": {
+      "types": "./dist/providers/railway/index.d.mts",
+      "import": "./dist/providers/railway/index.mjs"
+    },
     "./createos": {
       "types": "./dist/providers/createos/index.d.mts",
       "import": "./dist/providers/createos/index.mjs"
@@ -95,6 +103,8 @@
     "test:live:mastra": "bun test tests/live/mastra.test.ts",
     "test:live:vercel": "bun test tests/live/vercel.test.ts",
     "test:live:upstash": "bun test tests/live/upstash.test.ts",
+    "test:live:box": "bun test tests/live/box.test.ts",
+    "test:live:railway": "bun test tests/live/railway.test.ts",
     "test:live:createos": "bun test tests/live/createos.test.ts"
   },
   "dependencies": {
@@ -102,6 +112,7 @@
   },
   "devDependencies": {
     "@ai-sdk/harness": "^1",
+    "@asciidev/box-sdk": "0.0.24",
     "@daytona/sdk": "^0.196.0",
     "@mastra/core": "1.51.0",
     "@nodeops-createos/sandbox": "^0.7.1",
@@ -112,11 +123,13 @@
     "ai": "^7",
     "e2b": "^2.32.0",
     "eve": "^0.22",
+    "railway": "3.5.7",
     "tsdown": "^0.16.6",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
     "@ai-sdk/harness": "^1.0.0",
+    "@asciidev/box-sdk": "^0.0.24",
     "@daytona/sdk": "^0.196.0",
     "@mastra/core": ">=1.12.0-0 <2.0.0-0",
     "@upstash/box": "^0.5.3",
@@ -124,7 +137,8 @@
     "ai": "^7.0.0",
     "@nodeops-createos/sandbox": "^0.7.1",
     "e2b": "^2.32.0",
-    "eve": "^0.22.0"
+    "eve": "^0.22.0",
+    "railway": "^3.5.7"
   },
   "peerDependenciesMeta": {
     "e2b": {
@@ -137,6 +151,12 @@
       "optional": true
     },
     "@upstash/box": {
+      "optional": true
+    },
+    "@asciidev/box-sdk": {
+      "optional": true
+    },
+    "railway": {
       "optional": true
     },
     "ai": {

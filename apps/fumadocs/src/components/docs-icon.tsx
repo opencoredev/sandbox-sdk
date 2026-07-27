@@ -27,6 +27,10 @@ export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
       return <VercelLogo {...props} />;
     case "upstash":
       return <UpstashLogo {...props} />;
+    case "box":
+      return <BoxLogo {...props} />;
+    case "railway":
+      return <RailwayLogo {...props} />;
     default:
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
   }
@@ -42,6 +46,8 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "daytona":
     case "vercel":
     case "upstash":
+    case "box":
+    case "railway":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;
@@ -96,6 +102,28 @@ function UpstashLogo(props: IconProps) {
       <path
         fill="currentColor"
         d="M13.803 0c-2.61 0-5.22.995-7.211 2.986-3.982 3.983-3.982 10.44 0 14.422a5.1 5.1 0 0 0 7.21-7.21L12 12a2.55 2.55 0 0 1-3.605 3.605A7.649 7.649 0 0 1 19.21 4.79l1.803-1.803A10.17 10.17 0 0 0 13.803 0M12 12a2.55 2.55 0 0 1 3.605-3.605A7.649 7.649 0 0 1 4.79 19.21l-1.803 1.803c3.983 3.982 10.44 3.982 14.422 0s3.982-10.44 0-14.422A5.08 5.08 0 0 0 13.803 5.1a5.1 5.1 0 0 0-3.605 8.703z"
+      />
+    </svg>
+  );
+}
+
+function BoxLogo(props: IconProps) {
+  return (
+    <svg {...iconProps} {...props} viewBox="-4.6 0 35.5 35.5">
+      <path
+        fill="currentColor"
+        d="M20.986 0c-.017.068-4.012 16.011-2.276 19.746 1.735 3.734 7.526 7.373 7.554 7.391-.016-.003-6.152-.864-9.968.546v-5.017h-5.032v5.032h4.991c-.182.069-.36.14-.53.219-3.732 1.734-7.37 7.519-7.391 7.554.006-.044.954-6.809-.78-10.539C5.817 21.196.021 17.554 0 17.541c.025.004 6.803.956 10.539-.78C14.275 15.023 20.963.053 20.986 0Z"
+      />
+    </svg>
+  );
+}
+
+function RailwayLogo(props: IconProps) {
+  return (
+    <svg {...iconProps} {...props} viewBox="0 0 24 24">
+      <path
+        fill="currentColor"
+        d="M.113 10.27A13.026 13.026 0 0 0 0 11.48h18.23c-.064-.125-.15-.237-.235-.347-3.117-4.027-4.793-3.677-7.19-3.78-.8-.034-1.34-.048-4.524-.048-1.704 0-3.555.005-5.358.01-.234.63-.459 1.24-.567 1.737h9.342v1.216H.113v.002Zm18.26 2.426H.009c.02.326.05.645.094.961h16.955c.754 0 1.179-.429 1.315-.96Zm-17.318 4.28S3.865 23.878 11.985 24c4.855 0 9.027-2.883 10.92-7.024H1.056ZM11.988 0C7.5 0 3.593 2.466 1.531 6.108l4.75-.005v-.002c3.71 0 3.849.016 4.573.047l.448.016c1.563.052 3.485.22 4.996 1.364.82.621 2.007 1.99 2.712 2.965.654.902.842 1.94.396 2.934-.408.914-1.289 1.458-2.353 1.458H.391s.099.42.249.886h22.748A12.026 12.026 0 0 0 24 12.005C24 5.377 18.621 0 11.988 0Z"
       />
     </svg>
   );
