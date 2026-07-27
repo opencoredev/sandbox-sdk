@@ -209,16 +209,16 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
         async run(command, runOptions) {
           try {
             const cmd = commandString(command);
-            const envExports = runOptions.env
-              ? Object.entries(runOptions.env)
-                  .map(([k, v]) => `export ${shellQuote(k)}=${shellQuote(v)}`)
-                  .join("; ") + "; "
+            const envPrefix = runOptions.env
+              ? "env " + Object.entries(runOptions.env)
+                  .map(([k, v]) => `${shellQuote(k + "=" + v)}`)
+                  .join(" ") + " "
               : "";
             const cdPrefix = runOptions.cwd
               ? `cd ${shellQuote(runOptions.cwd)} && `
               : "";
             const fullArgs = runOptions.cwd || runOptions.env
-              ? ["-c", `${envExports}${cdPrefix}${cmd}`]
+              ? ["-c", `${cdPrefix}${envPrefix}${cmd}`]
               : ["-c", cmd];
 
             const started = performance.now();
@@ -244,15 +244,15 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
           let exitCode = -1;
 
           const cmd = commandString(command);
-          const envExports = runOptions.env
-            ? Object.entries(runOptions.env)
-                .map(([k, v]) => `export ${shellQuote(k)}=${shellQuote(v)}`)
-                .join("; ") + "; "
+          const envPrefix = runOptions.env
+            ? "env " + Object.entries(runOptions.env)
+                .map(([k, v]) => `${shellQuote(k + "=" + v)}`)
+                .join(" ") + " "
             : "";
           const cdPrefix = runOptions.cwd
             ? `cd ${shellQuote(runOptions.cwd)} && `
             : "";
-          const fullCmd = `${envExports}${cdPrefix}${cmd}`;
+          const fullCmd = `${cdPrefix}${envPrefix}${cmd}`;
 
           const push = (stream: "stdout" | "stderr", data: string) => {
             events.push({ stream, data, timestamp: new Date() });
@@ -287,6 +287,12 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
                     push("stderr", event.message);
                     break;
                 }
+              }
+            } catch (error) {
+              if (killController.signal.aborted) {
+                exitCode = exitCode === -1 ? 137 : exitCode;
+              } else {
+                throw error;
               }
             } finally {
               running = false;
