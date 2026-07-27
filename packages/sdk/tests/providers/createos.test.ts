@@ -32,7 +32,7 @@ class MockSandbox {
   runCommand = mock(async (cmd: string, args: string[] = []) => {
     if (cmd === "mkdir") return { result: { stdout: "", stderr: "", exit_code: 0 }, exec_ms: 1 };
     if (cmd === "test" && args[0] === "-e") return { result: { stdout: "", stderr: "", exit_code: 0 }, exec_ms: 1 };
-    if (cmd === "ls") return { result: { stdout: "file1.txt\ndir1/\n", stderr: "", exit_code: 0 }, exec_ms: 1 };
+    if (cmd === "find") return { result: { stdout: "f\tfile1.txt\0d\tdir1\0", stderr: "", exit_code: 0 }, exec_ms: 1 };
     if (cmd === "rm") return { result: { stdout: "", stderr: "", exit_code: 0 }, exec_ms: 1 };
     if (cmd === "bash") return { result: { stdout: "createos-output", stderr: "createos-err", exit_code: 0 }, exec_ms: 5 };
     return { result: { stdout: "", stderr: "", exit_code: 0 }, exec_ms: 1 };

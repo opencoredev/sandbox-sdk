@@ -146,23 +146,27 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
           },
           async list(path) {
             try {
-              const result = await raw.runCommand("ls", ["-1apL", path]);
+              const result = await raw.runCommand("find", [
+                path, "-maxdepth", "1", "-mindepth", "1", "-printf", "%y\\t%f\\0",
+              ]);
               if (result.result.exit_code !== 0) {
                 throw new CreateosSandboxError(
-                  `ls failed: ${result.result.stderr || result.result.error}`,
+                  `find failed: ${result.result.stderr || result.result.error}`,
                 );
               }
+              if (!result.result.stdout) return [];
+              const normalizedPath = path.endsWith("/") ? path : `${path}/`;
               return result.result.stdout
-                .split("\n")
-                .filter((line) => line && line !== "." && line !== ".." && line !== "./" && line !== "../")
-                .map((line) => {
-                  const isDir = line.endsWith("/");
-                  const name = isDir ? line.slice(0, -1) : line;
-                  const normalizedPath = path.endsWith("/") ? path : `${path}/`;
+                .split("\0")
+                .filter(Boolean)
+                .map((entry) => {
+                  const sep = entry.indexOf("\t");
+                  const typeChar = entry.slice(0, sep);
+                  const name = entry.slice(sep + 1);
                   return {
                     name,
                     path: `${normalizedPath}${name}`,
-                    type: isDir ? ("directory" as const) : ("file" as const),
+                    type: typeChar === "d" ? ("directory" as const) : ("file" as const),
                   };
                 });
             } catch (error) {
@@ -207,7 +211,7 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
             const cmd = commandString(command);
             const envExports = runOptions.env
               ? Object.entries(runOptions.env)
-                  .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
+                  .map(([k, v]) => `export ${shellQuote(k)}=${shellQuote(v)}`)
                   .join("; ") + "; "
               : "";
             const cdPrefix = runOptions.cwd
@@ -242,7 +246,7 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
           const cmd = commandString(command);
           const envExports = runOptions.env
             ? Object.entries(runOptions.env)
-                .map(([k, v]) => `export ${k}=${shellQuote(v)}`)
+                .map(([k, v]) => `export ${shellQuote(k)}=${shellQuote(v)}`)
                 .join("; ") + "; "
             : "";
           const cdPrefix = runOptions.cwd
@@ -256,9 +260,14 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
             waiters.clear();
           };
 
+          const killController = new AbortController();
+          const combinedSignal = runOptions.signal
+            ? AbortSignal.any([runOptions.signal, killController.signal])
+            : killController.signal;
+
           const streamIter = raw.streamCommand("bash", ["-c", fullCmd], {
             timeoutMs: runOptions.timeout,
-            signal: runOptions.signal,
+            signal: combinedSignal,
           });
 
           const completed = (async () => {
@@ -310,6 +319,7 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
             },
             wait: () => completed,
             async kill() {
+              killController.abort();
               running = false;
               for (const wake of waiters) wake();
               waiters.clear();
