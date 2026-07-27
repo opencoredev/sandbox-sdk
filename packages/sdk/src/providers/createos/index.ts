@@ -289,7 +289,7 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
                 }
               }
             } catch (error) {
-              if (killController.signal.aborted) {
+              if (combinedSignal.aborted) {
                 exitCode = exitCode === -1 ? 137 : exitCode;
               } else {
                 throw error;
@@ -326,9 +326,7 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
             wait: () => completed,
             async kill() {
               killController.abort();
-              running = false;
-              for (const wake of waiters) wake();
-              waiters.clear();
+              await completed.catch(() => {});
             },
           };
           return process;
