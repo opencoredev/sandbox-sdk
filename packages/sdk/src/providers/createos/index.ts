@@ -163,11 +163,12 @@ export function createos(options: CreateosOptions = {}): SandboxProvider<Createo
                   const sep = entry.indexOf("\t");
                   const typeChar = entry.slice(0, sep);
                   const name = entry.slice(sep + 1);
-                  return {
-                    name,
-                    path: `${normalizedPath}${name}`,
-                    type: typeChar === "d" ? ("directory" as const) : ("file" as const),
-                  };
+                  const type = typeChar === "d"
+                    ? ("directory" as const)
+                    : typeChar === "l"
+                      ? ("symlink" as const)
+                      : ("file" as const);
+                  return { name, path: `${normalizedPath}${name}`, type };
                 });
             } catch (error) {
               throw mapError("files.list", error);
