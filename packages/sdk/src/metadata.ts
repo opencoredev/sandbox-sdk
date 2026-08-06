@@ -1,5 +1,6 @@
 import {
   boxCapabilities,
+  createosCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
@@ -173,6 +174,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Creates and deletes named Railway checkpoints. Booting from a checkpoint creates a new sandbox and remains on raw.",
     runtimeLimitations:
       "Railway Sandboxes are in Priority Boarding and the provider SDK may introduce breaking changes between releases.",
+  },
+  {
+    id: "createos",
+    displayName: "CreateOS Sandbox",
+    officialUrl: "https://github.com/NodeOps-app/createos-sandbox-sdk",
+    packageName: "@nodeops-createos/sandbox",
+    packageVersion: "0.7.1",
+    capabilities: createosCapabilities,
+    environmentVariables: ["CREATEOS_SANDBOX_API_KEY", "CREATEOS_SANDBOX_BASE_URL"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Returns an ingress URL with a port placeholder. Ingress is enabled on first expose() call if not already set.",
+    snapshotBehavior:
+      "Snapshots are not supported. Use sandbox.raw for pause/resume/fork lifecycle operations.",
+    runtimeLimitations:
+      "VM-based sandbox with configurable shapes. stdin is not available on exec. Files list/mkdir/remove/exists use shell commands.",
   },
 ];
 
