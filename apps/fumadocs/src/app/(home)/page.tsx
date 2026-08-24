@@ -17,8 +17,55 @@ import Link from "next/link";
 import { useRef } from "react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { JsonLd } from "@/components/json-ld";
+import { faqs, faqSchema } from "@/lib/seo";
 
 import styles from "./landing.module.css";
+
+const providerCards = [
+  {
+    name: "Local",
+    href: "/docs/providers/local",
+    runtime: "AgentOS VM",
+    blurb: "Development, CI, and self-hosting with no hosted provider account.",
+  },
+  {
+    name: "E2B",
+    href: "/docs/providers/e2b",
+    runtime: "Hosted Linux sandbox",
+    blurb: "Coding agents and isolated jobs on E2B infrastructure.",
+  },
+  {
+    name: "Daytona",
+    href: "/docs/providers/daytona",
+    runtime: "Cloud workspace",
+    blurb: "Persistent projects and GPU-backed workspaces.",
+  },
+  {
+    name: "Vercel Sandbox",
+    href: "/docs/providers/vercel",
+    runtime: "Hosted Linux sandbox",
+    blurb: "Coding agents and persistent workspaces on Fluid Compute.",
+  },
+  {
+    name: "Upstash Box",
+    href: "/docs/providers/upstash",
+    runtime: "Durable cloud container",
+    blurb: "Serverless agents and long-lived state.",
+  },
+  {
+    name: "Ascii Box",
+    href: "/docs/providers/box",
+    runtime: "Persistent cloud VM",
+    blurb: "Full VMs and protected application previews.",
+  },
+  {
+    name: "Railway",
+    href: "/docs/providers/railway",
+    runtime: "Ephemeral cloud VM",
+    blurb: "Durable jobs and private networking.",
+  },
+];
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
@@ -98,14 +145,18 @@ export default function HomePage() {
         </div>
 
         <div className={styles.heroContent} id="content">
+          <p className={styles.heroKicker} data-hero-reveal>
+            Sandbox SDK
+          </p>
           <h1 data-hero-reveal>
             One sandbox API.
             <br />
             Every provider.
           </h1>
           <p className={styles.heroCopy} data-hero-reveal>
-            Run commands, stream processes, move files, and expose ports through one typed
-            interface.
+            Sandbox SDK is the open-source TypeScript SDK for running code in isolated sandboxes.
+            Run commands, stream processes, move files, and expose ports through one typed interface
+            — on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, or Railway.
           </p>
           <div className={styles.heroActions} data-hero-reveal>
             <a
@@ -114,12 +165,7 @@ export default function HomePage() {
               target="_blank"
               rel="noopener noreferrer"
             >
-              <HugeiconsIcon
-                icon={GithubIcon}
-                size={17}
-                strokeWidth={2}
-                aria-hidden="true"
-              />
+              <HugeiconsIcon icon={GithubIcon} size={17} strokeWidth={2} aria-hidden="true" />
               GitHub
               <span aria-hidden="true">›</span>
             </a>
@@ -195,6 +241,47 @@ export default function HomePage() {
         </article>
       </section>
 
+      <section className={styles.providers} id="providers" aria-labelledby="providers-heading">
+        <p className={styles.kicker}>Supported providers</p>
+        <h2 id="providers-heading">Every sandbox provider, one SDK.</h2>
+        <p className={styles.sectionCopy}>
+          Local ships with the package. Cloud providers use their official SDKs and your own
+          credentials, so nothing is proxied through us.
+        </p>
+        <ul className={styles.providerGrid}>
+          {providerCards.map((provider) => (
+            <li key={provider.href}>
+              <Link href={provider.href}>
+                <h3>{provider.name}</h3>
+                <span>{provider.runtime}</span>
+                <p>{provider.blurb}</p>
+              </Link>
+            </li>
+          ))}
+        </ul>
+        <div className={styles.sectionLinks}>
+          <Link href="/compatibility">Compatibility matrix</Link>
+          <Link href="/docs/integrations">AI SDK &amp; agent integrations</Link>
+          <Link href="/security">Security model</Link>
+        </div>
+      </section>
+
+      <section className={styles.faq} aria-labelledby="faq-heading">
+        <JsonLd data={faqSchema} />
+        <p className={styles.kicker}>Questions</p>
+        <h2 id="faq-heading">Sandbox SDK, answered.</h2>
+        <div className={styles.faqList}>
+          {faqs.map((faq) => (
+            <details className={styles.faqItem} key={faq.question}>
+              <summary>
+                <h3>{faq.question}</h3>
+              </summary>
+              <p>{faq.answer}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+
       <footer className={styles.footer}>
         <div className={styles.footerCta}>
           <h2>
@@ -213,8 +300,12 @@ export default function HomePage() {
           </Link>
           <div>
             <Link href="/docs">Documentation</Link>
-            <a href="https://github.com/opencoredev/sandbox-sdk">GitHub</a>
             <Link href="/docs/providers">Providers</Link>
+            <Link href="/docs/integrations">Integrations</Link>
+            <Link href="/compatibility">Compatibility</Link>
+            <Link href="/security">Security</Link>
+            <a href="https://github.com/opencoredev/sandbox-sdk">GitHub</a>
+            <a href="https://www.npmjs.com/package/@opencoredev/sandbox-sdk">npm</a>
           </div>
           <span>MIT licensed</span>
         </div>

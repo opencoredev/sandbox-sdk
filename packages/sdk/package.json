@@ -1,7 +1,20 @@
 {
   "name": "@opencoredev/sandbox-sdk",
   "version": "0.2.0",
-  "description": "One TypeScript SDK for every sandbox provider.",
+  "description": "Open-source TypeScript SDK for running code in isolated sandboxes, with one typed API for Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, and Railway.",
+  "keywords": [
+    "sandbox",
+    "sandbox-sdk",
+    "code-execution",
+    "code-interpreter",
+    "isolation",
+    "ai-agents",
+    "e2b",
+    "daytona",
+    "vercel-sandbox",
+    "railway",
+    "typescript"
+  ],
   "homepage": "https://sandbox-sdk.app",
   "license": "MIT",
   "repository": {

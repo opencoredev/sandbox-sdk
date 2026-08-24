@@ -297,6 +297,14 @@
   line-height: 0.88;
   text-wrap: balance;
 }
+.heroKicker {
+  margin-bottom: 24px;
+  color: #9d9b94;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
 .heroCopy {
   max-width: 670px;
   margin-top: 34px;
@@ -624,6 +632,140 @@
   justify-self: end;
 }
 
+.providers,
+.faq {
+  width: min(1160px, calc(100% - 48px));
+  margin: 0 auto 190px;
+  text-align: center;
+}
+.providers h2,
+.faq h2 {
+  max-width: 900px;
+  margin: 0 auto;
+  color: #f2f0e9;
+  font-size: clamp(2.2rem, 4vw, 3.8rem);
+  font-weight: 480;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  text-wrap: balance;
+}
+.sectionCopy {
+  max-width: 620px;
+  margin: 26px auto 0;
+  color: #999791;
+  font-size: 17px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.providerGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1px;
+  margin-top: 52px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  background: var(--line);
+  list-style: none;
+}
+.providerGrid li {
+  background: #141413;
+}
+.providerGrid a {
+  display: block;
+  height: 100%;
+  padding: 26px 24px 30px;
+  text-align: left;
+  transition: background 220ms ease;
+}
+.providerGrid a:hover {
+  background: #191918;
+}
+.providerGrid h3 {
+  color: #efede7;
+  font-size: 19px;
+  font-weight: 560;
+  letter-spacing: -0.03em;
+}
+.providerGrid span {
+  display: block;
+  margin-top: 6px;
+  color: #75c8c1;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.providerGrid p {
+  margin-top: 14px;
+  color: #8d8b85;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.sectionLinks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 34px;
+}
+.sectionLinks a {
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #c9c7bf;
+  font-size: 13px;
+  transition:
+    border-color 200ms ease,
+    color 200ms ease;
+}
+.sectionLinks a:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #f2f0e9;
+}
+.faqList {
+  max-width: 820px;
+  margin: 52px auto 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+.faqItem {
+  border-bottom: 1px solid var(--line);
+}
+.faqItem summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 4px;
+  cursor: pointer;
+  list-style: none;
+}
+.faqItem summary::-webkit-details-marker {
+  display: none;
+}
+.faqItem summary::after {
+  color: #75c8c1;
+  font-size: 20px;
+  line-height: 1;
+  content: "+";
+}
+.faqItem[open] summary::after {
+  content: "\2212";
+}
+.faqItem h3 {
+  color: #e6e4dd;
+  font-size: 17px;
+  font-weight: 520;
+  letter-spacing: -0.02em;
+}
+.faqItem p {
+  max-width: 68ch;
+  padding: 0 4px 24px;
+  color: #8d8b85;
+  font-size: 15px;
+  line-height: 1.62;
+}
+
 @media (max-width: 900px) {
   .nav {
     grid-template-columns: 1fr auto;
@@ -730,6 +872,11 @@
   }
   .proofPanel h3 {
     margin-top: 38px;
+  }
+  .providers,
+  .faq {
+    width: calc(100% - 30px);
+    margin-bottom: 110px;
   }
   .footerCta {
     width: calc(100% - 30px);
