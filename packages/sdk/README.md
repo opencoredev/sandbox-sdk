@@ -2,7 +2,11 @@
   <img alt="Sandbox SDK with supported provider logos" src="https://raw.githubusercontent.com/opencoredev/sandbox-sdk/main/Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, or Railway Sandboxes.
+# Sandbox SDK
+
+**Sandbox SDK** is an open-source TypeScript SDK for running code in isolated sandboxes. One typed API covers files, commands, processes, ports, and snapshots, so the same sandbox code runs on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, or Railway Sandboxes.
+
+[Documentation](https://sandbox-sdk.app) · [Providers](https://sandbox-sdk.app/docs/providers) · [Integrations](https://sandbox-sdk.app/docs/integrations) · [GitHub](https://github.com/opencoredev/sandbox-sdk)
 
 ## Install
 

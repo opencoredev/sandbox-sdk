@@ -3,8 +3,18 @@ import { Inter } from "next/font/google";
 import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 
+import { JsonLd } from "@/components/json-ld";
 import { Provider } from "@/components/provider";
-import { socialImage } from "@/lib/shared";
+import {
+  organizationSchema,
+  siteDescription,
+  siteKeywords,
+  siteTagline,
+  siteUrl,
+  softwareSchema,
+  websiteSchema,
+} from "@/lib/seo";
+import { appName, socialImage } from "@/lib/shared";
 
 import "./global.css";
 
@@ -13,11 +23,10 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://sandbox-sdk.app"),
-  title: { default: "Sandbox SDK", template: "%s · Sandbox SDK" },
-  description:
-    "An open-source TypeScript SDK for running files, commands, processes, ports, and snapshots across sandbox providers.",
-  applicationName: "Sandbox SDK",
+  metadataBase: new URL(siteUrl),
+  title: { default: `${appName} — ${siteTagline}`, template: `%s · ${appName}` },
+  description: siteDescription,
+  applicationName: appName,
   icons: {
     icon:
       process.env.NODE_ENV === "development"
@@ -36,31 +45,29 @@ export const metadata: Metadata = {
           ],
     apple: "/apple-icon.png",
   },
-  authors: [{ name: "OpenCore" }],
+  authors: [{ name: "OpenCore", url: "https://opencore.dev" }],
   creator: "OpenCore",
+  publisher: "OpenCore",
   category: "developer tools",
-  keywords: [
-    "TypeScript sandbox SDK",
-    "code execution sandbox",
-    "AI agent sandbox",
-    "E2B",
-    "Daytona",
-    "Vercel Sandbox",
-    "Upstash Box",
-  ],
+  keywords: siteKeywords,
   alternates: { canonical: "/" },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 },
+  },
   openGraph: {
-    title: "Sandbox SDK",
-    description:
-      "One open-source TypeScript API for isolated files, commands, processes, ports, and snapshots.",
-    url: "https://sandbox-sdk.app",
-    siteName: "Sandbox SDK",
+    title: `${appName} — ${siteTagline}`,
+    description: siteDescription,
+    url: siteUrl,
+    siteName: appName,
+    locale: "en_US",
     type: "website",
     images: [socialImage],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Sandbox SDK",
+    title: `${appName} — ${siteTagline}`,
     description: "One open-source TypeScript API for every sandbox provider.",
     images: [socialImage],
   },
@@ -70,6 +77,9 @@ export default function Layout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <head>
+        <JsonLd data={organizationSchema} />
+        <JsonLd data={websiteSchema} />
+        <JsonLd data={softwareSchema} />
         {process.env.NODE_ENV === "development" && (
           <Script
             src="//unpkg.com/react-grab/dist/index.global.js"

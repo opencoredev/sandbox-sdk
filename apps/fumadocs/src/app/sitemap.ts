@@ -1,10 +1,9 @@
 import type { MetadataRoute } from "next";
 
+import { siteUrl as origin } from "@/lib/seo";
 import { source } from "@/lib/source";
 
 export const dynamic = "force-static";
-
-const origin = "https://sandbox-sdk.app";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [
@@ -12,11 +11,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       url: origin,
       changeFrequency: "weekly",
       priority: 1,
-    },
-    {
-      url: `${origin}/providers`,
-      changeFrequency: "weekly",
-      priority: 0.8,
     },
     {
       url: `${origin}/compatibility`,
