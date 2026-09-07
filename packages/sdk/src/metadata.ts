@@ -1,12 +1,15 @@
 import {
   boxCapabilities,
+  cloudflareCapabilities,
   daytonaCapabilities,
   e2bCapabilities,
   localCapabilities,
+  memoryCapabilities,
   railwayCapabilities,
   upstashCapabilities,
   vercelCapabilities,
 } from "./providers/capabilities";
+import { SandboxError } from "./core/errors";
 import type { CapabilityMap, ProviderName } from "./core/types";
 
 export interface LiveTestResult {
@@ -174,8 +177,53 @@ export const providers: readonly ProviderMetadata[] = [
     runtimeLimitations:
       "Railway Sandboxes are in Priority Boarding and the provider SDK may introduce breaking changes between releases.",
   },
+  {
+    id: "cloudflare",
+    displayName: "Cloudflare Sandbox",
+    officialUrl: "https://developers.cloudflare.com/sandbox/",
+    packageName: "@cloudflare/sandbox",
+    packageVersion: "user-supplied",
+    capabilities: cloudflareCapabilities,
+    environmentVariables: [],
+    technicalStatus: "experimental",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Uses exposePort(). Production preview URLs need a custom wildcard domain. .workers.dev does not support preview subdomains.",
+    snapshotBehavior:
+      "Official backups are directory snapshots to R2 and are not mapped. Normalized snapshots throw unsupported.",
+    runtimeLimitations:
+      "Worker-only. create() calls getSandbox(env.Sandbox, id). There is no Node-only create path. Local Cloudflare dev needs Docker.",
+  },
+  {
+    id: "memory",
+    displayName: "Memory",
+    officialUrl: "https://sandbox-sdk.app/docs/providers/memory",
+    packageName: null,
+    packageVersion: "0.0.0",
+    capabilities: memoryCapabilities,
+    environmentVariables: [],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior: "Unsupported. Memory is an in-process test double, not a VM.",
+    snapshotBehavior: "Unsupported.",
+    runtimeLimitations:
+      "Not a security boundary. Files and a tiny command table live in the current process. No network, ports, processes, or snapshots.",
+  },
 ];
 
 export function getProviderMetadata(id: ProviderName): ProviderMetadata {
-  return providers.find((provider) => provider.id === id)!;
+  const metadata = providers.find((provider) => provider.id === id);
+  if (!metadata) {
+    throw new SandboxError({
+      code: "not_found",
+      provider: id,
+      operation: "metadata.get",
+      message: `Unknown sandbox adapter: ${id}`,
+    });
+  }
+  return metadata;
 }

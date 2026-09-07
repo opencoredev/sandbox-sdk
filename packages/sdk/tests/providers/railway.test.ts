@@ -117,5 +117,7 @@ test("Railway adapter maps files, durable exec, checkpoints, and teardown", asyn
 
   await expect(sandbox.ports.expose(3000)).rejects.toMatchObject({ code: "unsupported" });
   await sandbox.stop();
-  expect(destroy).toHaveBeenCalled();
+  expect(destroy).not.toHaveBeenCalled();
+  await sandbox.destroy();
+  expect(destroy).toHaveBeenCalledTimes(1);
 });

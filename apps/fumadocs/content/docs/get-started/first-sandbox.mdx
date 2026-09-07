@@ -1,0 +1,32 @@
+---
+title: First sandbox
+description: Create a sandbox, run a command, and let stop() run on scope exit.
+---
+
+The happy path is the adapter factory. `await using` stops the sandbox when the scope exits.
+
+This page covers create, run, and the stop versus destroy contrast.
+
+```ts
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using sandbox = await memory().create();
+console.log((await sandbox.$`echo ready`).stdout);
+```
+
+Cloud adapters use the same shape after you add credentials:
+
+```ts
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using sandbox = await e2b().create();
+console.log((await sandbox.$`node --version`).stdout);
+```
+
+`createSandbox({ provider })` still works for this major.
+
+**stop()**: pause or release the session. State may remain on persistent adapters.
+
+**destroy()**: permanent delete.
+
+**await using** and `withSandbox()` call `stop()`, not `destroy()`.

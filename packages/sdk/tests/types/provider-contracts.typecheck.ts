@@ -2,7 +2,7 @@ import type { Sandbox as DaytonaNative } from "@daytona/sdk";
 import type { Sandbox as E2BNative } from "e2b";
 import type { Sandbox as VercelNative } from "@vercel/sandbox";
 import type { Box as UpstashNative } from "@upstash/box";
-import type { SandboxProvider } from "../../src/core/provider";
+import type { SandboxAdapter } from "../../src/core/adapter";
 import { agentos, type AgentOsSandbox } from "../../src/providers/agentos";
 import { box, type AsciiBoxSandbox } from "../../src/providers/box";
 import { daytona } from "../../src/providers/daytona";
@@ -12,14 +12,14 @@ import { railway } from "../../src/providers/railway";
 import { vercel } from "../../src/providers/vercel";
 import { upstash } from "../../src/providers/upstash";
 
-const localContract: SandboxProvider<LocalSandbox> = local();
-const agentosContract: SandboxProvider<AgentOsSandbox> = agentos();
-const e2bContract: SandboxProvider<E2BNative> = e2b();
-const daytonaContract: SandboxProvider<DaytonaNative> = daytona();
-const vercelContract: SandboxProvider<VercelNative> = vercel();
-const upstashContract: SandboxProvider<UpstashNative> = upstash();
-const boxContract: SandboxProvider<AsciiBoxSandbox> = box({ apiKey: "test" });
-const railwayContract: SandboxProvider<import("railway").Sandbox> = railway();
+const localContract: SandboxAdapter<LocalSandbox> = local();
+const agentosContract: SandboxAdapter<AgentOsSandbox> = agentos();
+const e2bContract: SandboxAdapter<E2BNative> = e2b();
+const daytonaContract: SandboxAdapter<DaytonaNative> = daytona();
+const vercelContract: SandboxAdapter<VercelNative> = vercel();
+const upstashContract: SandboxAdapter<UpstashNative> = upstash();
+const boxContract: SandboxAdapter<AsciiBoxSandbox> = box({ apiKey: "test" });
+const railwayContract: SandboxAdapter<import("railway").Sandbox> = railway();
 void [
   localContract,
   agentosContract,

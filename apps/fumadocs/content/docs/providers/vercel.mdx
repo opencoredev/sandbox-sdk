@@ -35,10 +35,9 @@ See [Vercel's authentication guide](https://vercel.com/docs/sandbox/concepts/aut
 ## Run a command
 
 ```ts title="vercel.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-await using sandbox = await createSandbox({ provider: vercel() });
+await using sandbox = await vercel().create();
 const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
@@ -87,6 +86,8 @@ await sandbox.snapshots.delete(snapshot);
 - Persistence is enabled by default, allowing sandboxes to resume across application processes. Set `persistent: false` to disable it.
 - PTY and native runtime controls remain available through `sandbox.raw`.
 - Preview URLs are public; do not expose a service that lacks its own authentication.
+- `stop()` does not delete persistent state. `destroy()` does.
+- `liveTest` is `null`. No dated live run is published.
 
 ## Read next
 

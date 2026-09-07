@@ -1,0 +1,59 @@
+---
+title: Migrate from 0.2
+description: Move a 0.2 app to Sandbox 2 without a compat package.
+---
+
+0.2 call sites keep working for this major. The new happy path is shorter. This page covers what stays, what changed, and what now throws.
+
+## Still works
+
+```ts
+import { createSandbox, withSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using sandbox = await createSandbox({ provider: local() });
+```
+
+`withSandbox()` still stops the sandbox after the callback. There is no `@opencoredev/sandbox-sdk/compat` package.
+
+## New happy path
+
+```ts
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using sandbox = await e2b().create();
+```
+
+Factory `create()` returns a `Sandbox`. Tests can use `memory().create()`. Memory is not a security boundary.
+
+## stop() vs destroy()
+
+**stop()**: idempotent. Vercel persistent sandboxes keep files.
+
+**destroy()**: permanent delete.
+
+`await using` and `withSandbox()` call `stop()`, not `destroy()`.
+
+## Methods that now throw
+
+If the adapter does not advertise a capability, the call throws `SandboxError` with code `unsupported` before the native SDK runs.
+
+That includes `ports.expose`, `processes.start`, `snapshots.*`, `metrics()`, and `pty.create()` on adapters that do not list them.
+
+## Integrations
+
+Eve, Mastra, and Harness need managed sessions. Local, E2B, Daytona, Vercel, Upstash, and Ascii Box provide them. Railway does not.
+
+Do not pass Railway to those integrations.
+
+## Renamed or added exports
+
+**Added**: `defineAdapter`, `SandboxAdapter`, `builtInProviderNames`, `memory()`, `sandbox.$`, `runCode`, `git`, `connectSandbox`, `listSandboxes`, `hooks`.
+
+**Still exported**: `createSandbox`, `withSandbox`, `providerNames` (alias of `builtInProviderNames`), `SandboxProvider`.
+
+`ProviderName` is now `string`. Built-in ids stay in `builtInProviderNames`.
+
+## Live tests
+
+Every shipped adapter records `liveTest: null`. See [Live tests](/docs/reference/live-tests).

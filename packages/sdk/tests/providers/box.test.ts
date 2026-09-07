@@ -128,11 +128,14 @@ test("Ascii Box adapter maps the official SDK and protects hosted credentials", 
   await sandbox.files.write("/tmp/absolute.bin", new Uint8Array([2, 3]));
   expect(files.has("tmp/absolute.bin")).toBe(true);
   expect(await sandbox.run("printf box")).toMatchObject({ stdout: "box", success: true });
-  await sandbox.run({ command: "printf", args: ["hello world"] }, {
-    cwd: "/tmp",
-    env: { MESSAGE: "hello world" },
-    timeout: 1_500,
-  });
+  await sandbox.run(
+    { command: "printf", args: ["hello world"] },
+    {
+      cwd: "/tmp",
+      env: { MESSAGE: "hello world" },
+      timeout: 1_500,
+    },
+  );
   const preview = await sandbox.ports.expose(3000);
   expect(preview).toMatchObject({ public: false, authenticated: true });
   expect(preview.url).not.toContain("_token");
@@ -179,6 +182,8 @@ test("Ascii Box adapter maps the official SDK and protects hosted credentials", 
   }
 
   await sandbox.stop();
+  expect(stop).toHaveBeenCalledWith({ boxId: "bx_23456789" });
+  await sandbox.destroy();
   expect(remove).toHaveBeenCalledWith({ boxId: "bx_23456789" });
 });
 
@@ -211,6 +216,7 @@ test("Ascii Box cleans up failed provisioning and archives before deleting when 
   const sandbox = await createSandbox({ provider: box({ apiKey: "box_test" }) });
   await sandbox.stop();
   expect(stop).toHaveBeenCalledWith({ boxId: "bx_23456789" });
+  await sandbox.destroy();
   expect(remove).toHaveBeenCalledWith({ boxId: "bx_23456789" });
 });
 

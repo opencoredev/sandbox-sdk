@@ -1,0 +1,25 @@
+---
+title: Blaxel decision
+description: Official SDK still exists. Closed PR 5 is not Sandbox 2. Keep off 1.0.0.
+---
+
+Checked 2026-08-18.
+
+- PR https://github.com/opencoredev/sandbox-sdk/pull/5 is **closed** (2026-08-06).
+- `@blaxel/core` still resolves on npm (HTTP 200).
+- https://docs.blaxel.ai/ returns HTTP 200.
+
+PR 5 added files, processes, streaming, cancellation, managed sessions, and token-authenticated previews. It predates `defineAdapter`, `stop` vs `destroy`, open adapter ids, and the authoring kit.
+
+## Decision
+
+Reject Blaxel for Sandbox 2 / 1.0.0 as a ship-from-this-PR item.
+
+A later PR can revive it only if it:
+
+- uses `defineAdapter` and the authoring kit
+- keeps preview tokens off public `toJSON` URLs
+- records `liveTest: null` or a dated row
+- does not pull in Islo or Agent37
+
+Islo and Agent37 stay rejected.

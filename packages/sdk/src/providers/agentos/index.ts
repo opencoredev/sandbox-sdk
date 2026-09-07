@@ -6,6 +6,8 @@ import type {
   RootSnapshotExport,
 } from "@rivet-dev/agentos-core";
 import { SandboxError } from "../../core/errors";
+import { assertNotAborted } from "../../internal/provider-utils";
+import { defineAdapter } from "../../core/adapter";
 import type { SandboxProvider, SandboxRuntime } from "../../core/provider";
 import type {
   CommandInput,
@@ -92,11 +94,12 @@ export { agentosCapabilities } from "../capabilities";
  */
 function createAgentOsProvider(
   options: AgentOsProviderOptions = {},
-): SandboxProvider<AgentOsSandbox> {
+): import("../../core/adapter").SandboxAdapter<AgentOsSandbox> {
   const provider: SandboxProvider<AgentOsSandbox> = {
     id: "local",
     capabilities: localCapabilities,
     async create(createOptions) {
+      assertNotAborted(createOptions.signal);
       const id = randomUUID();
       const snapshots = new Map<string, StoredSnapshot>();
       const baseOptions = options.agentOs ?? {};
@@ -182,6 +185,16 @@ function createAgentOsProvider(
         resume,
       };
 
+      const dispose = async () => {
+        if (stopped) return;
+        stopped = true;
+        suspendedRoot = undefined;
+        snapshots.clear();
+        const active = vm;
+        vm = null;
+        await active?.dispose();
+      };
+
       const runtime: SandboxRuntime<AgentOsSandbox> = {
         id,
         raw,
@@ -259,31 +272,33 @@ function createAgentOsProvider(
             }
           },
         },
+        async destroy() {
+          await dispose();
+        },
         async stop() {
-          if (stopped) return;
-          stopped = true;
-          suspendedRoot = undefined;
-          snapshots.clear();
-          const active = vm;
-          vm = null;
-          await active?.dispose();
+          await dispose();
         },
       };
       return runtime;
     },
   };
 
-  return withManagedSessions(provider, [], {
-    stop: (sandbox) => sandbox.raw.suspend(),
-    resume: (sandbox) => sandbox.raw.resume(),
-  });
+  return defineAdapter(
+    withManagedSessions(provider, [], {
+      stop: (sandbox) => sandbox.raw.suspend(),
+      resume: (sandbox) => sandbox.raw.resume(),
+      destroy: (sandbox) => sandbox.stop(),
+    }),
+  );
 }
 
 /**
  * @deprecated AgentOS now powers `local()` under the hood. Import `local` from
  * `@opencoredev/sandbox-sdk/local` instead.
  */
-export function agentos(options: AgentOsProviderOptions = {}): SandboxProvider<AgentOsSandbox> {
+export function agentos(
+  options: AgentOsProviderOptions = {},
+): import("../../core/adapter").SandboxAdapter<AgentOsSandbox> {
   return createAgentOsProvider(options);
 }
 

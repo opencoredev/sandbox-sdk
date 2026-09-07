@@ -1,3 +1,5 @@
+import type { CommandResult } from "./types";
+
 export const sandboxErrorCodes = [
   "authentication",
   "permission",
@@ -49,6 +51,25 @@ export class SandboxError extends Error {
 
   override toString(): string {
     return `${this.name} [${this.code}]: ${this.message}`;
+  }
+}
+
+/** Thrown by `sandbox.$` and other strict helpers when a command exits nonzero. */
+export class CommandFailedError extends SandboxError {
+  readonly command: string;
+  readonly result: CommandResult;
+
+  constructor(options: { provider: string; command: string; result: CommandResult }) {
+    const stderr = options.result.stderr.trim();
+    super({
+      code: "process_failed",
+      provider: options.provider,
+      operation: "process.run",
+      message: `Command failed with exit code ${options.result.exitCode}: ${options.command}${stderr ? `\n${stderr}` : ""}`,
+    });
+    this.name = "CommandFailedError";
+    this.command = redactSensitive(options.command);
+    this.result = options.result;
   }
 }
 

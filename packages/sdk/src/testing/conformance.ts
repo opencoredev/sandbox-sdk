@@ -1,6 +1,6 @@
 import { createSandbox, type CreateSandboxOptions } from "../core/sandbox";
 import { supports } from "../core/capabilities";
-import type { SandboxProvider } from "../core/provider";
+import type { AnySandboxProvider } from "../core/sandbox";
 
 export const conformanceCases = [
   "create and stop",
@@ -24,7 +24,37 @@ export const conformanceCases = [
   "cleanup after failure",
 ] as const;
 
-export interface ConformanceSubject<TProvider extends SandboxProvider<unknown>> {
+/** Cases every adapter must pass. The rest may skip with a reason. */
+export const requiredConformanceCases = [
+  "create and stop",
+  "idempotent stop",
+  "text files",
+  "binary files",
+  "directories",
+  "relative paths",
+  "invalid paths",
+  "successful command",
+  "stdout",
+  "stderr",
+  "nonzero exit",
+  "timeout",
+  "cleanup after failure",
+] as const satisfies ReadonlyArray<(typeof conformanceCases)[number]>;
+
+/** Default POSIX commands for required conformance on Linux guests. */
+export function posixConformanceCommands() {
+  return {
+    success: "true",
+    stdout: "printf stdout",
+    stderr: "printf stderr >&2",
+    nonzero: "exit 2",
+    timeout: "sleep 1",
+    background: "sleep 1",
+    stdin: 'read value; printf "$value"',
+  } as const;
+}
+
+export interface ConformanceSubject<TProvider extends AnySandboxProvider> {
   create: CreateSandboxOptions<TProvider>;
   commands: {
     success: string;
@@ -41,9 +71,10 @@ export interface ConformanceResult {
   name: (typeof conformanceCases)[number];
   status: "passed" | "failed" | "skipped";
   error?: unknown;
+  reason?: string;
 }
 
-export async function runConformance<TProvider extends SandboxProvider<unknown>>(
+export async function runConformance<TProvider extends AnySandboxProvider>(
   subject: ConformanceSubject<TProvider>,
 ): Promise<ConformanceResult[]> {
   const results: ConformanceResult[] = [];
@@ -129,7 +160,12 @@ export async function runConformance<TProvider extends SandboxProvider<unknown>>
         const process = await sandbox.processes.start(subject.commands.background);
         await process.kill();
       });
-    else results.push({ name: "background process", status: "skipped" });
+    else
+      results.push({
+        name: "background process",
+        status: "skipped",
+        reason: "process.background is not advertised",
+      });
     if (supports(sandbox, "process.stdin"))
       await check("stdin", async () => {
         const process = await sandbox.processes.start(subject.commands.stdin);
@@ -141,20 +177,35 @@ export async function runConformance<TProvider extends SandboxProvider<unknown>>
         }
         throw new Error("stdin output missing");
       });
-    else results.push({ name: "stdin", status: "skipped" });
+    else
+      results.push({
+        name: "stdin",
+        status: "skipped",
+        reason: "process.stdin is not advertised",
+      });
     if (supports(sandbox, "ports.expose"))
       await check("ports", async () => {
         const port = await sandbox.ports.expose(30_00);
         if (port.port !== 3000 || !port.url) throw new Error("invalid exposed port");
       });
-    else results.push({ name: "ports", status: "skipped" });
+    else
+      results.push({
+        name: "ports",
+        status: "skipped",
+        reason: "ports.expose is not advertised",
+      });
     let createdSnapshot: Awaited<ReturnType<typeof sandbox.snapshots.create>> | undefined;
     if (supports(sandbox, "snapshot.create"))
       await check("snapshot create", async () => {
         await sandbox.files.write("snapshot.txt", "before");
         createdSnapshot = await sandbox.snapshots.create({ name: "conformance" });
       });
-    else results.push({ name: "snapshot create", status: "skipped" });
+    else
+      results.push({
+        name: "snapshot create",
+        status: "skipped",
+        reason: "snapshot.create is not advertised",
+      });
     if (createdSnapshot && supports(sandbox, "snapshot.restore"))
       await check("snapshot restore", async () => {
         await sandbox.files.write("snapshot.txt", "after");
@@ -162,12 +213,26 @@ export async function runConformance<TProvider extends SandboxProvider<unknown>>
         if ((await sandbox.files.text("snapshot.txt")) !== "before")
           throw new Error("snapshot not restored");
       });
-    else results.push({ name: "snapshot restore", status: "skipped" });
+    else
+      results.push({
+        name: "snapshot restore",
+        status: "skipped",
+        reason: createdSnapshot
+          ? "snapshot.restore is not advertised"
+          : "snapshot.create is not advertised",
+      });
     if (createdSnapshot && supports(sandbox, "snapshot.delete"))
       await check("snapshot delete", async () => {
         await sandbox.snapshots.delete(createdSnapshot!);
       });
-    else results.push({ name: "snapshot delete", status: "skipped" });
+    else
+      results.push({
+        name: "snapshot delete",
+        status: "skipped",
+        reason: createdSnapshot
+          ? "snapshot.delete is not advertised"
+          : "snapshot.create is not advertised",
+      });
   } finally {
     await sandbox.stop();
   }

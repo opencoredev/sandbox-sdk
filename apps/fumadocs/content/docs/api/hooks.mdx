@@ -1,0 +1,32 @@
+---
+title: Hooks
+description: Observe create, run, stop, and destroy without wrapping every call.
+---
+
+Pass `hooks` to `create()` or `createSandbox()`. Hooks must not include env values or file contents.
+
+This page covers the opt-in events.
+
+```ts
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using sandbox = await memory().create({
+  hooks: {
+    onCreate: (event) => {
+      console.log(event.provider, event.id);
+    },
+    onRun: (event) => {
+      console.log(event.command, event.exitCode);
+    },
+    onError: (event) => {
+      console.log(event.code, event.message);
+    },
+    onStop: (event) => {
+      console.log(event.operation);
+    },
+  },
+});
+await sandbox.run("true");
+```
+
+Tokens in command strings are redacted. There is no default network telemetry.

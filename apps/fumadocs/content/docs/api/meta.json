@@ -1,4 +1,4 @@
 {
   "title": "API Reference",
-  "pages": ["sandboxes", "files", "commands", "processes", "ports", "snapshots"]
+  "pages": ["sandboxes", "files", "commands", "git", "processes", "ports", "snapshots", "hooks"]
 }

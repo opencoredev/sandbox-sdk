@@ -1,0 +1,25 @@
+---
+title: Git
+description: Clone, pull, checkout, and inspect repositories inside a sandbox.
+---
+
+Git helpers run on every adapter that can execute commands. Tokens passed as `auth` are redacted from error output.
+
+```ts title="git.ts"
+await sandbox.git.clone("https://github.com/acme/app.git", {
+  branch: "main",
+  depth: 1,
+  auth: { token: process.env.GITHUB_TOKEN! },
+});
+await sandbox.git.checkout("feat/dx");
+const status = await sandbox.git.status();
+await sandbox.git.pull();
+```
+
+You can also clone at create time:
+
+```ts title="create.ts"
+await using sandbox = await e2b().create({
+  source: { git: { url: "https://github.com/acme/app.git", depth: 1 } },
+});
+```

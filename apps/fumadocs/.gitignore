@@ -8,6 +8,7 @@
 /coverage
 /.next/
 /out/
+/dist/
 /build
 *.tsbuildinfo
 
@@ -24,3 +25,5 @@ yarn-error.log*
 .env*.local
 .vercel
 next-env.d.ts
+/artifacts
+

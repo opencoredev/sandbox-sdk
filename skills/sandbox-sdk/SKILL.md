@@ -5,30 +5,30 @@ description: Use when implementing isolated code execution with @opencoredev/san
 
 # Sandbox SDK
 
-Use one normalized TypeScript interface across Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, and Railway Sandboxes.
+Use one TypeScript interface across Local, Memory, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway, and Cloudflare. Files and commands are portable. Ports, snapshots, and PTY are not.
 
 ## Start here
 
 1. Fetch `https://sandbox-sdk.app/llms.txt` to find the current documentation.
-2. Read the Quickstart and exactly one provider page.
+2. Read First sandbox and exactly one adapter page.
 3. Read a focused API or integration page only when the task needs it.
 
 ## Default implementation
 
 ```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await using sandbox = await createSandbox({ provider: local() });
-const result = await sandbox.run("node --version");
-console.log(result.stdout);
+await using sandbox = await e2b().create();
+console.log((await sandbox.$`node --version`).stdout);
 ```
+
+For tests with no VM, use `memory()`. It is not a security boundary.
 
 ## Rules
 
-- Prefer `await using sandbox = await createSandbox(...)` so the sandbox stops automatically when its scope exits.
+- Prefer `await using sandbox = await e2b().create()` so the sandbox stops when its scope exits. `createSandbox({ provider })` still works.
 - Use `withSandbox()` when callback-style lifecycle management is required or uncompiled JavaScript runs on Node.js 22.
-- Use Local when no hosted runtime is required. Select a cloud provider from the compatibility table when persistence, previews, native Linux, GPUs, or provider-specific features matter.
+- Use Memory for unit tests. Use Local when no hosted runtime is required. Railway and Cloudflare are experimental and are not eligible for Eve, Mastra, or Harness. Cloudflare needs a Worker `getSandbox` binding.
 - Use `sandbox.files`, `sandbox.run`, `sandbox.processes`, `sandbox.ports`, and `sandbox.snapshots` before native SDK methods.
 - Check `sandbox.capabilities` or use `requireCapability()` before optional operations.
 - Access provider-specific APIs through the typed `sandbox.raw` escape hatch.

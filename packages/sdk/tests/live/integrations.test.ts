@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createSandboxHarnessProvider } from "../../src/ai/harness";
 import { toAISandboxSession } from "../../src/ai";
 import { isSandboxError } from "../../src/core/errors";
-import type { SandboxProvider } from "../../src/core/provider";
+import type { AnySandboxProvider } from "../../src/core/sandbox";
 import { createEveSandboxBackend } from "../../src/eve";
 import { box } from "../../src/providers/box";
 import { daytona } from "../../src/providers/daytona";
@@ -19,7 +19,7 @@ const vercelAuthenticated = Boolean(
 const providers: Array<{
   name: string;
   enabled: boolean;
-  create: () => SandboxProvider<unknown>;
+  create: () => AnySandboxProvider;
 }> = [
   { name: "Local", enabled: true, create: () => local() },
   {
@@ -61,7 +61,7 @@ for (const live of providers) {
   );
 }
 
-async function verifyAISDK(provider: SandboxProvider<unknown>, name: string) {
+async function verifyAISDK(provider: AnySandboxProvider, name: string) {
   const session = await provider.managed!.create({
     sessionId: `live-ai-${name.toLowerCase()}-${crypto.randomUUID()}`,
     cwd: "/workspace",
@@ -76,7 +76,7 @@ async function verifyAISDK(provider: SandboxProvider<unknown>, name: string) {
   }
 }
 
-async function verifyHarness(provider: SandboxProvider<unknown>, name: string) {
+async function verifyHarness(provider: AnySandboxProvider, name: string) {
   const harness = createSandboxHarnessProvider({ provider });
   const sessionId = `live-harness-${name.toLowerCase()}-${crypto.randomUUID()}`;
   const first = await harness.createSession({ sessionId });
@@ -94,7 +94,7 @@ async function verifyHarness(provider: SandboxProvider<unknown>, name: string) {
   }
 }
 
-async function verifyEve(provider: SandboxProvider<unknown>, name: string) {
+async function verifyEve(provider: AnySandboxProvider, name: string) {
   const backend = createEveSandboxBackend({ provider });
   const templateKey = `live-${name.toLowerCase()}-${crypto.randomUUID()}`;
   const sessionKey = `live-eve-${name.toLowerCase()}-${crypto.randomUUID()}`;
@@ -136,7 +136,7 @@ async function verifyEve(provider: SandboxProvider<unknown>, name: string) {
   }
 }
 
-async function destroyManaged(provider: SandboxProvider<unknown>, sessionId: string) {
+async function destroyManaged(provider: AnySandboxProvider, sessionId: string) {
   try {
     const session = await provider.managed!.resume({ sessionId });
     await session.destroy();
@@ -146,7 +146,7 @@ async function destroyManaged(provider: SandboxProvider<unknown>, sessionId: str
   }
 }
 
-function vercelProvider(): SandboxProvider<unknown> {
+function vercelProvider(): AnySandboxProvider {
   const options = { persistent: true };
   if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {
     return vercel({

@@ -1,6 +1,6 @@
 ---
 title: Mastra
-description: Run Mastra workspace agents on any Sandbox SDK provider.
+description: Run Mastra workspace agents on providers with managed session support.
 icon: mastra
 ---
 
@@ -18,13 +18,14 @@ bun add @opencoredev/sandbox-sdk @mastra/core
 
 The Local provider is included. Install the native SDK only for the cloud provider you use.
 
-| Provider       | Additional package |
-| -------------- | ------------------ |
-| Local          | None               |
-| E2B            | `e2b`              |
-| Daytona        | `@daytona/sdk`     |
-| Vercel Sandbox | `@vercel/sandbox`  |
-| Upstash Box    | `@upstash/box`     |
+| Provider       | Additional package  |
+| -------------- | ------------------- |
+| Local          | None                |
+| E2B            | `e2b`               |
+| Daytona        | `@daytona/sdk`      |
+| Vercel Sandbox | `@vercel/sandbox`   |
+| Upstash Box    | `@upstash/box`      |
+| Ascii Box      | `@asciidev/box-sdk` |
 
 Configure the provider's credentials as described in its [provider guide](/docs/providers). The agent example below also expects `OPENAI_API_KEY` for its selected model.
 
@@ -74,9 +75,9 @@ The adapter normalizes Mastra's workspace contract once. Switching providers cha
 
 ## Choose a provider
 
-Every supported provider uses the same `createMastraWorkspace()` factory.
+Each provider with managed session support uses the same `createMastraWorkspace()` factory. Railway and Cloudflare do not expose that surface, so the Mastra adapter rejects them before creating a workspace.
 
-<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash", "Ascii Box"]}>
   <Tab value="Local">
     ```ts
     import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
@@ -138,6 +139,18 @@ Every supported provider uses the same `createMastraWorkspace()` factory.
     });
     ```
     Set `UPSTASH_BOX_API_KEY` before starting the agent.
+
+  </Tab>
+  <Tab value="Ascii Box">
+    ```ts
+    import { createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+    import { box } from "@opencoredev/sandbox-sdk/box";
+
+    export const workspace = createMastraWorkspace({
+      provider: box(),
+    });
+    ```
+    Set `BOX_API_KEY` before starting the agent.
 
   </Tab>
 </Tabs>

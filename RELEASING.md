@@ -36,9 +36,9 @@ Releases are published manually. The only publishable workspace package is
 6. Tag the published commit and push the tag:
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
-Replace `v0.1.0` with the version being published. Never commit npm credentials or environment
+Replace `vX.Y.Z` with the version being published. Never commit npm credentials or environment
 files.

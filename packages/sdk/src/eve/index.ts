@@ -9,7 +9,6 @@ import type {
   ManagedSandboxProvider,
   ManagedSandboxSession,
   SandboxNetworkPolicy,
-  SandboxProvider,
 } from "../core/provider";
 import { toAISandboxSession } from "../ai/index";
 
@@ -18,7 +17,7 @@ export interface EveSandboxUseOptions {
 }
 
 export interface CreateEveSandboxBackendOptions {
-  provider: SandboxProvider<unknown>;
+  provider: import("../core/sandbox").AnySandboxProvider;
   ports?: ReadonlyArray<number>;
   cwd?: string;
   env?: Readonly<Record<string, string>>;
@@ -184,7 +183,7 @@ function unsupportedNetwork(provider: string): SandboxError {
   });
 }
 
-function requireManaged(provider: SandboxProvider<unknown>): ManagedSandboxProvider {
+function requireManaged(provider: import("../core/sandbox").AnySandboxProvider): ManagedSandboxProvider {
   if (!provider.managed) {
     throw new SandboxError({
       code: "unsupported",

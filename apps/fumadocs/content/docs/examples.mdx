@@ -1,0 +1,36 @@
+---
+title: Examples
+description: Run focused examples for adapters, core operations, and agent integrations.
+---
+
+Each example is a TypeScript file in `packages/sdk/examples`. This page lists what each file proves.
+
+## Core
+
+- **[Adapter create](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/adapter-create.ts)**: `memory().create()`.
+- **[Shell tag](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/shell-tag.ts)**: `sandbox.$`.
+- **[Run code](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/run-code.ts)**: `sandbox.runCode`.
+- **[Git clone](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/git-clone.ts)**: clone with `run`.
+- **[Reconnect](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/reconnect.ts)**: `connectSandbox` where supported.
+- **[Automatic cleanup](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/automatic-cleanup.ts)**: `await using` calls `stop()`.
+- **[Capability checks](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/capability-checks.ts)**: fail before unsupported snapshot work.
+
+## Adapters
+
+- **[Memory](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/memory.ts)**: in-process files. Not a security boundary.
+- **[Local](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/local-command.ts)**: AgentOS VM.
+- **[E2B](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/e2b.ts)**, **[Daytona](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/daytona.ts)**, **[Vercel](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/vercel.ts)**, **[Upstash](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/upstash.ts)**, **[Ascii Box](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/box.ts)**, **[Railway](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/railway.ts)**.
+
+Railway is experimental. `liveTest` is `null` for every shipped adapter.
+
+## Agents
+
+- **[AI SDK](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/ai-sdk-agent.ts)**, **[Harness](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/ai-sdk-harness.ts)**, **[Eve](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/eve.ts)**, **[Mastra](https://github.com/opencoredev/sandbox-sdk/blob/main/packages/sdk/examples/mastra.ts)**.
+
+These need managed sessions. Railway is not eligible.
+
+## Next
+
+- [First sandbox](/docs/get-started/first-sandbox)
+- [Adapters](/docs/providers)
+- [Live tests](/docs/reference/live-tests)

@@ -1,7 +1,7 @@
 # Sandbox SDK documentation
 
-The [sandbox-sdk.app](https://sandbox-sdk.app) website and documentation, built with Next.js and
-Fumadocs.
+The [sandbox-sdk.app](https://sandbox-sdk.app) website and documentation, built with TanStack Start
+and Fumadocs.
 
 From the repository root:
 
@@ -10,5 +10,5 @@ bun install
 bun run dev
 ```
 
-The site is statically exported for deployment. Documentation lives in `content/docs`; application
-routes and components live in `src`.
+The site is a prerendered SPA. Documentation lives in `content/docs`. Application routes and
+components live in `src`.

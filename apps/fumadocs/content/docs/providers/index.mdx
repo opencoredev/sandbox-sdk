@@ -1,20 +1,30 @@
 ---
-title: Overview
+title: Provider catalog
 description: Compare Sandbox SDK providers by runtime, persistence, previews, and snapshots.
 icon: providers
 ---
 
-Every provider supports files, foreground commands, and cleanup. Background processes, streaming, previews, and snapshots vary; check capabilities before depending on them.
+Choose the runtime that fits the job. Sandbox SDK keeps files and foreground commands familiar while each provider keeps its own persistence, preview, and snapshot model.
+
+This page covers the shipped catalog and the limits that matter before you choose.
+
+<ProviderCatalog />
+
+## Compare technical limits
+
+No shipped adapter has a dated live-test row. Check capabilities before depending on background processes, streaming, previews, or snapshots.
 
 | Provider                                 | Vendor documentation                    | Best for                             | Runtime         | Persistence    | Preview                 | Snapshot             |
 | ---------------------------------------- | --------------------------------------- | ------------------------------------ | --------------- | -------------- | ----------------------- | -------------------- |
 | [Local](/docs/providers/local)           | <ProviderDocsLink provider="local" />   | Development, CI, self-hosting        | AgentOS VM      | Process-scoped | Private bridge          | Filesystem + restore |
+| [Memory](/docs/providers/memory)         | In-process                              | Unit tests and docs examples         | Current process | Ephemeral      | Unsupported             | Unsupported          |
 | [E2B](/docs/providers/e2b)               | <ProviderDocsLink provider="e2b" />     | Hosted coding agents                 | Linux sandbox   | Ephemeral      | Authenticated           | Template             |
 | [Daytona](/docs/providers/daytona)       | <ProviderDocsLink provider="daytona" /> | Persistent workspaces, GPUs          | Linux workspace | Persistent     | Public or authenticated | Native API           |
 | [Vercel Sandbox](/docs/providers/vercel) | <ProviderDocsLink provider="vercel" />  | Coding agents, persistent workspaces | Linux sandbox   | Default on     | Public                  | Filesystem           |
 | [Upstash Box](/docs/providers/upstash)   | <ProviderDocsLink provider="upstash" /> | Durable serverless boxes             | Linux container | Persistent     | Public or bearer token  | Filesystem           |
 | [Ascii Box](/docs/providers/box)         | <ProviderDocsLink provider="box" />     | Full cloud VMs and app previews      | Linux VM        | Persistent     | Public by default       | Native lifecycle     |
 | [Railway](/docs/providers/railway)       | <ProviderDocsLink provider="railway" /> | Durable jobs and private networking  | Linux VM        | Until cleanup  | CLI tunnel only         | Checkpoint           |
+| [Cloudflare](/docs/providers/cloudflare) | Official Worker SDK                     | Worker-bound containers              | Worker + DO     | Until destroy  | Custom domain           | Unsupported          |
 
 Optional semantics differ. Check the generated [compatibility matrix](/docs/reference/compatibility) before depending on stdin, restore, resume, networking, GPUs, or a custom image.
 
@@ -24,7 +34,7 @@ Optional semantics differ. Check the generated [compatibility matrix](/docs/refe
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await using sandbox = await createSandbox({ provider: e2b() });
+await using sandbox = await e2b().create();
 console.log((await sandbox.run("node --version")).stdout);
 ```
 

@@ -1,0 +1,35 @@
+---
+title: Cloudflare adapter map
+description: Worker-binding map for @opencoredev/sandbox-sdk/cloudflare. Rechecked against Cloudflare docs on 2026-08-18.
+---
+
+The shipped adapter is [Cloudflare](/docs/providers/cloudflare). This page is the capability map.
+
+Checked against https://developers.cloudflare.com/sandbox/api/ on 2026-08-18. This is not a fork of `@cloudflare/sandbox`.
+
+## Shape
+
+Cloudflare sandboxes run inside Workers. You bind a Durable Object container and call `getSandbox(env.Sandbox, id)`. That is not `e2b().create()` from a Node process.
+
+Local Cloudflare dev needs Docker. Production preview URLs need a custom wildcard domain. `.workers.dev` does not support preview subdomains.
+
+## Official surface that maps
+
+| Cloudflare | Portable capability | Notes |
+| --- | --- | --- |
+| `writeFile` / `readFile` / `exists` / `mkdir` / `deleteFile` | `files.*` | Present |
+| `ls` via `exec` | `files.list` | Official files API has no `listFiles` |
+| `exec` | `process.run` | Present |
+| `exposePort` | `ports.expose` | Preview URLs need a custom domain |
+| `destroy` | `sandbox.destroy` | Present |
+| `setKeepAlive(false)` | `stop` | Does not destroy. Idle sleep still applies |
+
+## Not mapped
+
+Official backups are directory snapshots to R2. Normalized snapshots throw `unsupported`. PTY, GPU, and `startProcess` are not mapped.
+
+There is no Node-only create path.
+
+## Verdict
+
+`@opencoredev/sandbox-sdk/cloudflare` is experimental. `liveTest` is `null`. Eve, Mastra, and Harness are not eligible.

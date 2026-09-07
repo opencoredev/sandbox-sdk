@@ -1,64 +1,62 @@
 ---
 title: Package exports
-description: Import the core API, provider adapters, metadata, and testing helpers from stable entry points.
+description: Import the core API, adapters, metadata, testing helpers, and the CLI.
 ---
+
+The happy path is the adapter factory. `createSandbox({ provider })` stays for this major.
 
 ## Core
 
-```ts title="app.ts"
-import { createSandbox, withSandbox, supports, SandboxError } from "@opencoredev/sandbox-sdk";
+```ts
+import {
+  createSandbox,
+  defineAdapter,
+  withSandbox,
+  supports,
+  SandboxError,
+} from "@opencoredev/sandbox-sdk";
+import type {
+  CreateSandboxOptions,
+  SandboxAdapter,
+  SandboxHooks,
+  SandboxProvider,
+  SandboxRuntime,
+} from "@opencoredev/sandbox-sdk";
 ```
 
-`createSandbox()` returns an async-disposable sandbox for the recommended `await using` lifecycle. `withSandbox()` remains available for callback-style cleanup and backward compatibility.
+`defineAdapter()` lifts a runtime provider into `adapter.create()`. Hooks are opt-in and redact tokens.
 
-## Providers
+## Adapters
 
-```ts title="providers.ts"
+```ts
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { local } from "@opencoredev/sandbox-sdk/local";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
-import { daytona } from "@opencoredev/sandbox-sdk/daytona";
-import { vercel } from "@opencoredev/sandbox-sdk/vercel";
-import { upstash } from "@opencoredev/sandbox-sdk/upstash";
-import { box } from "@opencoredev/sandbox-sdk/box";
-import { railway } from "@opencoredev/sandbox-sdk/railway";
 ```
 
-Each adapter export includes its options type, native sandbox type, and capability declaration.
+Also exported: `daytona`, `vercel`, `upstash`, `box`, `railway`, `cloudflare`. `agentos` is a deprecated alias for Local.
 
-The former `@opencoredev/sandbox-sdk/agentos` entry remains as a deprecated compatibility alias.
-New code should use `local()`, which is powered by AgentOS under the hood.
+Memory is not a security boundary. Railway and Cloudflare are experimental. Every shipped adapter records `liveTest: null`.
 
-## Metadata
+## Metadata and testing
 
-```ts title="metadata.ts"
+```ts
 import { providers, getProviderMetadata } from "@opencoredev/sandbox-sdk/metadata";
-```
-
-Metadata includes package names, environment variables, status, declared capabilities, port behavior, snapshot behavior, and runtime limitations.
-
-## Testing
-
-```ts title="provider.test.ts"
-import { conformanceCases, runConformance } from "@opencoredev/sandbox-sdk/testing";
-```
-
-The testing export also provides `ConformanceResult` and `ConformanceSubject` types.
-
-## Experimental integrations
-
-```ts title="integrations.ts"
 import {
-  createSandboxToolApproval,
-  createSandboxTools,
-  toAISandboxSession,
-} from "@opencoredev/sandbox-sdk/ai";
-import { createSandboxHarnessProvider } from "@opencoredev/sandbox-sdk/ai/harness";
-import { createEveSandboxBackend } from "@opencoredev/sandbox-sdk/eve";
-import { createMastraSandbox, createMastraWorkspace } from "@opencoredev/sandbox-sdk/mastra";
+  posixConformanceCommands,
+  requiredConformanceCases,
+  runConformance,
+} from "@opencoredev/sandbox-sdk/testing";
 ```
 
-These are isolated optional-peer entry points. Core consumers do not load or install AI SDK, Harness, Eve, or Mastra. `/ai` and `/ai/harness` require Node.js 22 or newer; `/mastra` requires Node.js 22.13 or newer; `/eve` requires Node.js 24 or newer.
+## CLI
+
+The `sandbox-sdk` binary lists adapters, checks env names, and runs memory commands. It does not print secrets. See [CLI](/docs/guides/cli).
+
+## Integrations
+
+`/ai`, `/ai/harness`, `/eve`, and `/mastra` are optional peers. Railway and Cloudflare are not eligible.
 
 ## Read next
 
-Start with the [Sandbox API](/docs/api/sandboxes).
+[First sandbox](/docs/get-started/first-sandbox) and [Migrate from 0.2](/docs/guides/migrate-0-2).

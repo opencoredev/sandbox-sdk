@@ -1,9 +1,11 @@
 import { BoxApi, Configuration, type Box as NativeBox } from "@asciidev/box-sdk";
 import { SandboxError } from "../../core/errors";
+import { defineAdapter } from "../../core/adapter";
 import type { SandboxProvider } from "../../core/provider";
 import type { CommandInput } from "../../core/types";
 import { withManagedSessions } from "../../internal/managed-provider";
 import {
+  assertNotAborted,
   commandString,
   portResult,
   toUint8Array,
@@ -40,7 +42,9 @@ export interface AsciiBoxSandbox {
 
 export { boxCapabilities } from "../capabilities";
 
-export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> {
+export function box(
+  options: BoxOptions = {},
+): import("../../core/adapter").SandboxAdapter<AsciiBoxSandbox> {
   const readyTimeoutMs = options.readyTimeout ?? 600_000;
   const publicPorts = options.public ?? true;
 
@@ -239,8 +243,11 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
             );
           },
           snapshots: unsupportedSnapshots("box"),
-          async stop() {
+          async destroy() {
             await destroyBox(client, id, readyTimeoutMs);
+          },
+          async stop() {
+            await client.stop({ boxId: id });
           },
         };
       } catch (error) {
@@ -250,7 +257,8 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
     },
   };
 
-  return withManagedSessions(provider, [], {
+  return defineAdapter(
+    withManagedSessions(provider, [], {
     async stop(sandbox) {
       await sandbox.raw.client.stop({ boxId: sandbox.id });
       sandbox.raw.box = await waitForState(
@@ -272,7 +280,8 @@ export function box(options: BoxOptions = {}): SandboxProvider<AsciiBoxSandbox> 
     async destroy(sandbox) {
       await destroyBox(sandbox.raw.client, sandbox.id, sandbox.raw.readyTimeoutMs);
     },
-  });
+    }),
+  );
 }
 
 interface NativeDirectoryEntry {
@@ -455,10 +464,6 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function assertNotAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 function shellQuote(value: string): string {

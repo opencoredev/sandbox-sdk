@@ -40,7 +40,9 @@ Eve runs `bootstrap` once for a template identity. Each durable session starts f
 
 ## Choose a provider
 
-<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash"]}>
+Eve requires a provider with managed session support. Railway and Cloudflare do not expose that surface, so the Eve adapter rejects them before creating a backend session.
+
+<Tabs items={["Local", "E2B", "Daytona", "Vercel", "Upstash", "Ascii Box"]}>
   <Tab value="Local">
     ```ts
     import { local } from "@opencoredev/sandbox-sdk/local";
@@ -70,6 +72,12 @@ Eve runs `bootstrap` once for a template identity. Each durable session starts f
     ```ts
     import { upstash } from "@opencoredev/sandbox-sdk/upstash";
     const backend = createEveSandboxBackend({ provider: upstash({ runtime: "node" }) });
+    ```
+  </Tab>
+  <Tab value="Ascii Box">
+    ```ts
+    import { box } from "@opencoredev/sandbox-sdk/box";
+    const backend = createEveSandboxBackend({ provider: box() });
     ```
   </Tab>
 </Tabs>

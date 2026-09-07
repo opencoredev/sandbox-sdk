@@ -36,11 +36,7 @@ import type {
 } from "@mastra/core/workspace";
 import type { RequestContext } from "@mastra/core/di";
 import { isSandboxError, SandboxError } from "../core/errors";
-import type {
-  ManagedSandboxProvider,
-  ManagedSandboxSession,
-  SandboxProvider,
-} from "../core/provider";
+import type { ManagedSandboxProvider, ManagedSandboxSession } from "../core/provider";
 import type { Sandbox, SandboxDirectoryEntry, SandboxProcess } from "../core/types";
 
 type WorkspaceOptions = Omit<
@@ -49,7 +45,7 @@ type WorkspaceOptions = Omit<
 >;
 
 export interface CreateMastraSandboxOptions extends Omit<MastraSandboxOptions, "processes"> {
-  provider: SandboxProvider<unknown>;
+  provider: import("../core/sandbox").AnySandboxProvider;
   id?: string;
   identity?: string;
   cwd?: string;
@@ -70,7 +66,7 @@ export interface CreateMastraFilesystemOptions extends MastraFilesystemOptions {
   instructions?: InstructionsOption;
 }
 
-/** Create a Mastra sandbox backed by any managed Sandbox SDK provider. */
+/** Create a Mastra sandbox backed by an eligible managed Sandbox SDK provider. */
 export function createMastraSandbox(options: CreateMastraSandboxOptions): SandboxSDKMastraSandbox {
   return new SandboxSDKMastraSandbox(options);
 }
@@ -702,7 +698,7 @@ export class SandboxSDKMastraFilesystem extends MastraFilesystem {
   }
 }
 
-function requireManaged(provider: SandboxProvider<unknown>): ManagedSandboxProvider {
+function requireManaged(provider: import("../core/sandbox").AnySandboxProvider): ManagedSandboxProvider {
   if (!provider.managed) {
     throw new SandboxError({
       code: "unsupported",

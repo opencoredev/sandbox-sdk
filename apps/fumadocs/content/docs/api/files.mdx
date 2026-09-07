@@ -39,6 +39,19 @@ await sandbox.files.remove("src/generated");
 
 Paths containing null bytes or `..` segments are rejected consistently.
 
+## Stat, move, copy, and watch
+
+```ts title="files.ts"
+const stat = await sandbox.files.stat("main.ts");
+await sandbox.files.copy("main.ts", "main.bak.ts");
+await sandbox.files.move("main.bak.ts", "backup/main.ts");
+await using watcher = await sandbox.files.watch(".", (event) => {
+  console.log(event.type, event.path);
+});
+```
+
+`stat`/`move`/`copy` use native APIs on E2B and Vercel and shell fallbacks everywhere else. `watch` uses E2B `watchDir` and polls on other adapters.
+
 ## Read next
 
 Execute a file with [Commands](/docs/api/commands).

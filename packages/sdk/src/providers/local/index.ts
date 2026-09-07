@@ -1,4 +1,4 @@
-import type { SandboxProvider } from "../../core/provider";
+import { defineAdapter } from "../../core/adapter";
 import {
   agentos as createAgentOsRuntime,
   type AgentOsProviderOptions,
@@ -19,6 +19,8 @@ export { localCapabilities } from "../capabilities";
  * AgentOS is an implementation detail of the Local provider. Outbound networking and host bindings
  * are denied by default; pass native options under `agentOs` to configure the VM explicitly.
  */
-export function local(options: LocalOptions = {}): SandboxProvider<LocalSandbox> {
-  return createAgentOsRuntime(options);
+export function local(
+  options: LocalOptions = {},
+): import("../../core/adapter").SandboxAdapter<LocalSandbox> {
+  return defineAdapter(createAgentOsRuntime(options));
 }

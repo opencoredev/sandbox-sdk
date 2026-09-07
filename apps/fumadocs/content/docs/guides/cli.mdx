@@ -1,0 +1,19 @@
+---
+title: CLI
+description: List adapters, check env names, and run one memory command.
+---
+
+The `sandbox-sdk` binary does not print secret values. Live create is labeled.
+
+This page covers the four commands.
+
+```bash
+sandbox-sdk adapters
+sandbox-sdk doctor
+sandbox-sdk capabilities --adapter memory
+sandbox-sdk run --adapter memory -- echo ready
+```
+
+`doctor` reports whether required env names are set. It does not print values.
+
+`run` defaults to memory. Other adapters require `--live`. This CLI only executes memory without extra provider SDKs.

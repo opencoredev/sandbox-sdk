@@ -1,0 +1,30 @@
+---
+title: Example
+description: Replace this page. State env vars and limits in the same register as capabilities.
+---
+
+State what this adapter is in one sentence.
+
+## Install
+
+```bash
+bun add @opencoredev/sandbox-sdk <official-sdk>
+```
+
+## Authentication
+
+List every required env var. Do not paste example secrets.
+
+## Run a command
+
+```ts
+import { example } from "@opencoredev/sandbox-sdk/example";
+
+await using sandbox = await example().create();
+```
+
+## Limits
+
+- `stop()` vs `destroy()`: replace with the native mapping.
+- `liveTest` is `null` until a dated run exists.
+- Name ports, snapshots, PTY, and command timeouts that are unsupported.

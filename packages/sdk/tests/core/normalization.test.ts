@@ -10,12 +10,18 @@ test("normalizes errors from every public runtime surface", async () => {
   };
   const provider: SandboxProvider<{}> = {
     id: "local",
-    capabilities: defineCapabilities({}),
+    capabilities: defineCapabilities({
+      "process.run": "in-process",
+      "ports.expose": "public",
+    }),
     async create() {
       return {
         id: "fake",
         raw: {},
-        capabilities: defineCapabilities({}),
+        capabilities: defineCapabilities({
+          "process.run": "in-process",
+          "ports.expose": "public",
+        }),
         files: { write: fail, read: fail, list: fail, mkdir: fail, remove: fail, exists: fail },
         run: fail,
         start: fail,

@@ -11,13 +11,14 @@
       "dependsOn": ["^lint"]
     },
     "typecheck": {
-      "dependsOn": ["^build", "^typecheck"]
+      "dependsOn": ["build", "^typecheck"]
     },
     "test": { "dependsOn": ["build"] },
     "test:live": {
       "cache": false
     },
     "dev": {
+      "dependsOn": ["^build"],
       "cache": false,
       "persistent": true
     }

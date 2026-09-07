@@ -15,25 +15,58 @@ const iconProps = {
   xmlns: "http://www.w3.org/2000/svg",
 } as const;
 
-export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
+const providerColors: Record<string, { background: string; foreground: string }> = {
+  local: { background: "#0F766E", foreground: "#FFFFFF" },
+  memory: { background: "#7C3AED", foreground: "#FFFFFF" },
+  agentos: { background: "#334155", foreground: "#FFFFFF" },
+  e2b: { background: "#F97316", foreground: "#FFFFFF" },
+  daytona: { background: "#2563EB", foreground: "#FFFFFF" },
+  vercel: { background: "#111111", foreground: "#FFFFFF" },
+  upstash: { background: "#00C98D", foreground: "#FFFFFF" },
+  box: { background: "#A855F7", foreground: "#FFFFFF" },
+  railway: { background: "#7C3AED", foreground: "#FFFFFF" },
+  cloudflare: { background: "#FFFFFF", foreground: "#F4811F" },
+};
+
+export function ProviderLogo({ id, className }: { id: string; className?: string }) {
+  const colors = providerColors[id] ?? providerColors.agentos!;
+  let logo: ReactNode;
+
   switch (id) {
-    case "agentos":
-      return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
     case "e2b":
-      return <E2BLogo {...props} />;
+      logo = <E2BLogo />;
+      break;
     case "daytona":
-      return <DaytonaLogo {...props} />;
+      logo = <DaytonaLogo />;
+      break;
     case "vercel":
-      return <VercelLogo {...props} />;
+      logo = <VercelLogo />;
+      break;
     case "upstash":
-      return <UpstashLogo {...props} />;
+      logo = <UpstashLogo />;
+      break;
     case "box":
-      return <BoxLogo {...props} />;
+      logo = <BoxLogo />;
+      break;
     case "railway":
-      return <RailwayLogo {...props} />;
+      logo = <RailwayLogo />;
+      break;
+    case "cloudflare":
+      logo = <CloudflareLogo />;
+      break;
     default:
-      return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
+      logo = <HugeiconsIcon icon={ServerStack01Icon} />;
   }
+
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-flex size-5 shrink-0 items-center justify-center rounded-[5px] shadow-sm ring-1 ring-black/10 [&>svg]:size-3.5 ${className ?? ""}`}
+      style={{ backgroundColor: colors.background, color: colors.foreground }}
+    >
+      {logo}
+    </span>
+  );
 }
 
 export function resolveDocsIcon(icon: string | undefined): ReactNode {
@@ -41,6 +74,7 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "providers":
       return <HugeiconsIcon icon={GridViewIcon} />;
     case "local":
+    case "memory":
     case "agentos":
     case "e2b":
     case "daytona":
@@ -48,9 +82,12 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "upstash":
     case "box":
     case "railway":
+    case "cloudflare":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;
+    case "agents":
+      return <HugeiconsIcon icon={ArtificialIntelligence04Icon} />;
     case "ai-sdk":
     case "ai-sdk-harness":
       return <VercelLogo />;
@@ -113,6 +150,21 @@ function BoxLogo(props: IconProps) {
       <path
         fill="currentColor"
         d="M20.986 0c-.017.068-4.012 16.011-2.276 19.746 1.735 3.734 7.526 7.373 7.554 7.391-.016-.003-6.152-.864-9.968.546v-5.017h-5.032v5.032h4.991c-.182.069-.36.14-.53.219-3.732 1.734-7.37 7.519-7.391 7.554.006-.044.954-6.809-.78-10.539C5.817 21.196.021 17.554 0 17.541c.025.004 6.803.956 10.539-.78C14.275 15.023 20.963.053 20.986 0Z"
+      />
+    </svg>
+  );
+}
+
+function CloudflareLogo(props: IconProps) {
+  return (
+    <svg {...iconProps} {...props} viewBox="0 0 256 116">
+      <path
+        fill="#F4811F"
+        d="M176.332 108.348c1.593-5.31 1.062-10.622-1.593-13.809-2.656-3.187-6.374-5.31-11.154-5.842L71.17 87.634c-.531 0-1.062-.53-1.593-.53-.531-.532-.531-1.063 0-1.594.531-1.062 1.062-1.594 2.124-1.594l92.946-1.062c11.154-.53 22.839-9.56 27.087-20.182l5.312-13.809c0-.532.531-1.063 0-1.594C191.203 20.182 166.772 0 138.091 0 111.535 0 88.697 16.995 80.73 40.896c-5.311-3.718-11.684-5.843-19.12-5.31-12.747 1.061-22.838 11.683-24.432 24.43-.531 3.187 0 6.374.532 9.56C16.996 70.107 0 87.103 0 108.348c0 2.124 0 3.718.531 5.842 0 1.063 1.062 1.594 1.594 1.594h170.489c1.062 0 2.125-.53 2.125-1.594l1.593-5.842Z"
+      />
+      <path
+        fill="#FAAD3F"
+        d="M205.544 48.863h-2.656c-.531 0-1.062.53-1.593 1.062l-3.718 12.747c-1.593 5.31-1.062 10.623 1.594 13.809 2.655 3.187 6.373 5.31 11.153 5.843l19.652 1.062c.53 0 1.062.53 1.593.53.53.532.53 1.063 0 1.594-.531 1.063-1.062 1.594-2.125 1.594l-20.182 1.062c-11.154.53-22.838 9.56-27.087 20.182l-1.063 4.78c-.531.532 0 1.594 1.063 1.594h70.108c1.062 0 1.593-.531 1.593-1.593 1.062-4.25 2.124-9.03 2.124-13.81 0-27.618-22.838-50.456-50.456-50.456"
       />
     </svg>
   );

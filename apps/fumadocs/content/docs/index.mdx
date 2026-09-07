@@ -1,72 +1,24 @@
 ---
-title: Quickstart
-description: Install Sandbox SDK, run a Local sandbox, and switch to a cloud provider.
+title: Overview
+description: One TypeScript API across sandbox adapters you already pay for.
 ---
 
-Sandbox SDK uses one TypeScript API for Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, and Railway Sandboxes.
+Sandbox SDK creates a sandbox, moves files, and runs commands through one TypeScript client. You still choose the adapter, own that account, and supply credentials.
 
-## Install
+This page covers where to go next.
 
-```bash title="Terminal"
-bun add @opencoredev/sandbox-sdk
-```
+**[Compare adapters](/docs/get-started/compare)**: what is portable and what throws `unsupported`.
 
-Use Node.js 22 or 24, or Bun 1.3 or newer.
+**[Install](/docs/get-started/install)**: package, runtime floor, and peers.
 
-Local is included and needs no account or API key. Cloud providers need their official SDK and credentials; each [provider page](/docs/providers) has the setup details.
+**[First sandbox](/docs/get-started/first-sandbox)**: `e2b().create()` or `memory().create()`.
 
-## Run your first sandbox
+**[Operations](/docs/api/sandboxes)**: files, commands, git, processes, ports.
 
-```ts title="quickstart.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+**[Providers](/docs/providers)**: choose the runtime, persistence model, and optional capabilities.
 
-await using sandbox = await createSandbox({ provider: local() });
+**[Agents](/docs/integrations)**: install the agent skill or connect AI SDK, HarnessAgent, Eve, and Mastra.
 
-await sandbox.files.write("hello.mjs", `console.log("hello from the sandbox")`);
-const result = await sandbox.run("node /workspace/hello.mjs");
-console.log(result.stdout);
-```
+**[Migrate from 0.2](/docs/guides/migrate-0-2)**: what stays, what throws, and the new factory.
 
-```bash title="Terminal"
-bun quickstart.ts
-```
-
-`await using` stops the sandbox when the current scope exits, including when an operation throws. Call `createSandbox()` without `await using` only when the sandbox must outlive the current scope and your application will stop it explicitly.
-
-Node.js 24 and Bun run `await using` directly. When targeting Node.js 22, compile TypeScript to ES2022 or use `withSandbox()` in uncompiled JavaScript.
-
-## What you can do
-
-| Capability      | Shared API          | Typical use                                     |
-| --------------- | ------------------- | ----------------------------------------------- |
-| Commands        | `sandbox.run()`     | Builds, tests, scripts, and one-off jobs        |
-| Files           | `sandbox.files`     | Seed a project and collect artifacts            |
-| Processes       | `sandbox.processes` | Dev servers and long-running workers            |
-| Ports           | `sandbox.ports`     | Preview a service or call it from your app      |
-| Snapshots       | `sandbox.snapshots` | Cache setup and restore workspace state         |
-| Native features | `sandbox.raw`       | Use provider-specific APIs without losing types |
-
-## Switch providers
-
-Change the provider import and factory. The sandbox calls do not change.
-
-```diff title="provider.ts"
-- import { local } from "@opencoredev/sandbox-sdk/local";
-+ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
-
-- const provider = local();
-+ const provider = e2b();
-```
-
-Install the E2B package and set `E2B_API_KEY` before running that version. The [provider overview](/docs/providers) lists the requirements for every adapter.
-
-## Add the agent skill
-
-Install the Sandbox SDK skill through [skills.sh](https://skills.sh/docs/cli) when a coding agent will work with the SDK:
-
-```bash title="Terminal"
-npx skills add opencoredev/sandbox-sdk --skill sandbox-sdk
-```
-
-The skill works with Codex, Claude Code, Cursor, and other agents supported by the skills.sh CLI. See [Agent skill](/docs/agent-skill) for project and global installation.
+Do not assume ports, snapshots, or live tests. Railway is experimental.

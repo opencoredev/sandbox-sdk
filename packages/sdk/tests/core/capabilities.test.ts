@@ -17,4 +17,12 @@ describe("capabilities", () => {
       expect((error as SandboxError).code).toBe("unsupported");
     }
   });
+
+  test("fails closed for a plain capability map with missing keys", () => {
+    const capabilities = { "files.read": "full" } as typeof localCapabilities;
+    const communitySandbox = { provider: "community", capabilities };
+    expect(supports(communitySandbox, "ports.expose")).toBe(false);
+    expect(capabilityMode(communitySandbox, "ports.expose")).toBe(false);
+    expect(() => requireCapability(communitySandbox, "ports.expose")).toThrow(SandboxError);
+  });
 });

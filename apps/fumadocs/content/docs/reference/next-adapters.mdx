@@ -1,0 +1,39 @@
+---
+title: Next adapters
+description: Keep, defer, or reject names for a later wave. No adapter ships from this page.
+---
+
+This note records the next-wave investigation. It adds no package dependencies.
+
+A name passes only with a public API that can do files and exec. Follow-up issues are not opened here.
+
+## Verdicts
+
+| Name | Verdict | Kind | Public docs checked | Files+exec | Official TypeScript SDK | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Runloop | defer | sandbox product | https://docs.runloop.ai/ 200 | unverified this pass | unverified this pass | Coding-agent sandbox vendor. Confirm TS client and file APIs before filing a follow-up. |
+| Morph | reject | not a sandbox | https://docs.morphllm.com/ 200; docs.morph.so NXDOMAIN | no | n/a | Public Morph docs describe a code-apply model, not a VM sandbox. |
+| Fly Machines | defer | general compute | https://docs.machines.dev/ 200 | machine exec only | HTTP API; not a sandbox SDK | Compute product. Do not add unless a files+exec sandbox surface appears. |
+| Northflank | defer | general compute | https://northflank.com/docs 200 | unverified | unverified | Platform/compute. Same gate as Fly. |
+| CodeSandbox | defer | sandbox product | https://codesandbox.io/docs 403 | unverified this pass | unverified this pass | Product exists. Re-check when docs are readable. |
+| Beam | defer | general compute | https://docs.beam.cloud/ 200 | unverified | Python-first historically | Confirm a stable TS files+exec API before any issue. |
+| Agent37 | reject | no public API | none | no | no | Rejected unless a public API appears. |
+| Islo | reject | no public API | none | no | no | Rejected unless a public API appears. |
+
+## Gate
+
+Do not file an adapter issue until all of these are yes:
+
+- public docs
+- files write/read and command exec
+- official TypeScript client, or a stable HTTP API small enough to wrap
+- credentials a user can mint
+- not a general app-hosting product unless the sandbox subset is documented
+
+Cloudflare shipped as a Worker-binding adapter. See [Cloudflare](/docs/providers/cloudflare).
+
+Modal is deferred: Python files+exec exists, official TypeScript was not confirmed. See [Modal adapter map](/docs/reference/modal-adapter).
+
+CreateOS (PR 9) stays off 1.0.0. See [CreateOS decision](/docs/reference/createos).
+
+Blaxel is rejected for 1.0.0. Official SDK still exists. Closed PR 5 is not on the Sandbox 2 contract. See [Blaxel decision](/docs/reference/blaxel).

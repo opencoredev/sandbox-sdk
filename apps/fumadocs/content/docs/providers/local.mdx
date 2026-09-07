@@ -21,10 +21,9 @@ No credentials are required.
 ## Run a command
 
 ```ts title="local.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await using sandbox = await createSandbox({ provider: local() });
+await using sandbox = await local().create();
 const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
@@ -67,6 +66,8 @@ await sandbox.snapshots.restore(snapshot);
 - The guest is WebAssembly/V8-based. Do not assume Docker, browsers, package managers, or arbitrary Linux executables are available.
 - Sandboxes, suspended sessions, and snapshots live only as long as the host process.
 - `sandbox.raw` provides typed access to the current AgentOS VM.
+- `stop()` and `destroy()` both dispose the VM.
+- `liveTest` is `null`. No dated live run is published.
 
 <Callout type="warn" title="Beta runtime">
   AgentOS is beta. Your application still owns authentication, authorization, quotas, host

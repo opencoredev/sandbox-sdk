@@ -1,0 +1,25 @@
+---
+title: CreateOS decision
+description: PR 9 stays out of 1.0.0 until a dated live run and a green Vercel check.
+---
+
+Checked 2026-08-18. PR: https://github.com/opencoredev/sandbox-sdk/pull/9
+
+State: open, mergeable, last updated 2026-07-28. Vercel check **failed**. Greptile succeeded. No CreateOS live run. The PR is not rebased onto the Sandbox 2 contract (`defineAdapter`, `stop` vs `destroy`, open adapter ids).
+
+## Capability facts from the PR
+
+- Files list/mkdir/remove go through shell. The native SDK exposes upload/download.
+- stdin is unsupported.
+- Snapshots are unsupported.
+- `liveTest` would be `null`.
+
+## Decision
+
+Keep CreateOS off 1.0.0.
+
+Do not merge a failed Vercel check. Do not merge without a Sandbox 2 rebase and a dated live row, or an explicit `liveTest: null` plus experimental status.
+
+This session did not close the PR. Closing GitHub still needs Leo.
+
+If credentials never arrive, close PR 9 and leave CreateOS on the investigate list.

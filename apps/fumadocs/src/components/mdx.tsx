@@ -3,6 +3,7 @@ import type { MDXComponents } from "mdx/types";
 
 import { ProviderCapabilityMatrix } from "@/components/capability-table";
 import { ProviderAISDKExample } from "@/components/provider-ai-sdk-example";
+import { ProviderCatalog } from "@/components/provider-catalog";
 import { ProviderDocsLink } from "@/components/provider-docs-link";
 
 export function getMDXComponents(components?: MDXComponents) {
@@ -10,6 +11,7 @@ export function getMDXComponents(components?: MDXComponents) {
     ...defaultMdxComponents,
     ProviderAISDKExample,
     ProviderCapabilityMatrix,
+    ProviderCatalog,
     ProviderDocsLink,
     ...components,
   } satisfies MDXComponents;

@@ -15,7 +15,7 @@ export function commandString(input: CommandInput): string {
   return [input.command, ...(input.args ?? [])].map(shellQuote).join(" ");
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
@@ -34,7 +34,7 @@ export function portResult(
     request,
     toJSON: () => ({
       port,
-      url: authenticated ? redactUrl(url) : url,
+      url: redactUrl(url),
       public: isPublic,
       authenticated,
     }),
@@ -45,6 +45,12 @@ function redactUrl(url: string): string {
   const parsed = new URL(url);
   for (const key of parsed.searchParams.keys()) parsed.searchParams.set(key, "[REDACTED]");
   return parsed.toString();
+}
+
+export function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException("Aborted", "AbortError");
 }
 
 export function unsupported(provider: string, operation: string): never {

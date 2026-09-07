@@ -1,0 +1,22 @@
+---
+title: Modal adapter map
+description: Capability map for a future Modal wrapper. No adapter ships from this page.
+---
+
+Checked on 2026-08-18 against https://modal.com/docs/guide/sandboxes and https://modal.com/docs/sdk/py/latest/Sandbox.
+
+## Official surface (Python)
+
+Modal documents `Sandbox.create`, command exec, file access, snapshots, networking, and GPU options. That is a real sandbox product with files+exec in Python.
+
+## TypeScript
+
+The same pages do not document a TypeScript Sandbox client. `npmjs.com/package/modal` returned 403 from this environment, so a JS package was not confirmed.
+
+LEO-120 required a current official TypeScript files+exec API before code. That gate failed.
+
+## Verdict
+
+Move Modal to the investigate list. Do not ship `@opencoredev/sandbox-sdk/modal` yet. Do not fake GPU, snapshots, or ports.
+
+Re-open the adapter only after a documented TS or HTTP files+exec client exists. `liveTest` would start as `null`.

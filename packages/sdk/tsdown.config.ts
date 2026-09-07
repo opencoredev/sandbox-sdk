@@ -3,6 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   entry: [
     "src/index.ts",
+    "src/cli.ts",
     "src/metadata.ts",
     "src/testing/index.ts",
     "src/providers/local/index.ts",
@@ -13,6 +14,8 @@ export default defineConfig({
     "src/providers/upstash/index.ts",
     "src/providers/box/index.ts",
     "src/providers/railway/index.ts",
+    "src/providers/cloudflare/index.ts",
+    "src/providers/memory/index.ts",
     "src/ai/index.ts",
     "src/ai/harness.ts",
     "src/eve/index.ts",

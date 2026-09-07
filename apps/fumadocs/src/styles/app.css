@@ -1,0 +1,278 @@
+@import url("https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap");
+@import "tailwindcss";
+@import "fumadocs-ui/css/solar.css";
+@import "fumadocs-ui/css/preset.css";
+
+@source "../../node_modules/fumadocs-ui/dist/**/*.js";
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Landing visual engine: Geist families, Tailwind font utilities, and the
+   landing color tokens. The Satoshi import and the fumadocs presets above stay
+   in place for the docs pages.
+   --------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Pixel Square";
+  src: url("/fonts/GeistPixel-Square.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Sibling face of Square. Draws each stroke as separated square dots, for the
+   footer wordmark only. */
+@font-face {
+  font-family: "Geist Pixel Grid";
+  src: url("/fonts/GeistPixel-Grid.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-pixel: "Geist Pixel Square", monospace;
+  --font-pixel-grid: "Geist Pixel Grid", monospace;
+  --font-sans: "Geist", ui-sans-serif, system-ui;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
+.landing-root {
+  --landing-bg: #0a0a0c;
+  --landing-surface: #111216;
+  --landing-chip: #17181c;
+  --landing-ink: #ffffff;
+  --landing-body: #c7cdd6;
+  --landing-muted: #9aa3b0;
+  --landing-dim: #697180;
+  --landing-line: rgba(255, 255, 255, 0.09);
+  --landing-accent: #efa43b;
+  --landing-accent-ink: #231503;
+}
+
+/* ---------------------------------------------------------------------------
+   AdapterCarousel. Focus-shift stage: a side card, the focused card, and a
+   second side card, filling the rail edge to edge with a 24px gap between
+   them. At the 1152px reference stage that is 322 + 24 + 460 + 24 + 322, so
+   the slot centres sit on a uniform 415px pitch.
+
+   Horizontal geometry scales with the rail: the component measures the stage
+   and writes --adapter-x and --adapter-w per card. Vertical geometry does not
+   scale, so the block height matches the artboard at every viewport.
+   --------------------------------------------------------------------------- */
+
+.adapter-stage {
+  position: relative;
+  width: 100%;
+  max-width: 1152px;
+  height: 509.5px;
+  margin-inline: auto;
+  /* The row is flush to both rail lines, so a card entering or leaving has no
+     margin to travel in. It slides under the rail edge instead. */
+  overflow: hidden;
+}
+
+.adapter-track {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adapter-card {
+  position: absolute;
+  left: 0;
+  top: 65.5px;
+  height: 330px;
+  width: var(--adapter-w);
+  max-width: 100%;
+  opacity: var(--adapter-o);
+  transform: translate3d(var(--adapter-x), 0, 0);
+  transition:
+    transform 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 700ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.adapter-card[data-state="parked"] {
+  pointer-events: none;
+}
+
+.adapter-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #0d0e12;
+  /* Inset rather than a border, so the art fills the full 330px card box and
+     the outer and inner measurements agree. */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+
+.adapter-art {
+  position: absolute;
+  inset: 0;
+}
+
+.adapter-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(5, 6, 8, 0) 45%, rgba(5, 6, 8, 0.78) 100%);
+}
+
+.adapter-copy {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.adapter-card[data-state="focused"] .adapter-copy-focused,
+.adapter-card[data-state="side"] .adapter-copy-side {
+  opacity: 1;
+}
+
+.adapter-text {
+  position: absolute;
+  right: 24px;
+  bottom: 24px;
+  left: 24px;
+}
+
+.adapter-name {
+  font-size: 13px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.adapter-headline {
+  margin-top: 8px;
+  max-width: 400px;
+  font-size: 21px;
+  line-height: 27px;
+  color: #ffffff;
+}
+
+.adapter-name-side {
+  position: absolute;
+  bottom: 20px;
+  left: 24px;
+  font-size: 14px;
+  line-height: 20px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.adapter-hit {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.adapter-dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 437.5px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.adapter-dot {
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition:
+    width 450ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 450ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.adapter-dot[aria-current="true"] {
+  width: 26px;
+  background: #ffffff;
+}
+
+@media (max-width: 1023px) {
+  /* One centered card, sized from the container rather than the slot scale. */
+  .adapter-card {
+    left: 50%;
+    width: min(460px, 100%);
+    height: auto;
+    aspect-ratio: 460 / 330;
+    transform: translate3d(-50%, 0, 0);
+  }
+
+  .adapter-card[data-state="side"],
+  .adapter-card[data-state="parked"] {
+    display: none;
+  }
+}
+
+@media (max-width: 639px) {
+  .adapter-stage {
+    /* The card no longer hangs off a 56px top offset, so keep an equivalent
+       gap from whatever sits above the section. */
+    height: auto;
+    padding-top: 24px;
+  }
+
+  .adapter-track {
+    position: static;
+  }
+
+  .adapter-card {
+    position: relative;
+    left: auto;
+    top: auto;
+    width: 100%;
+    aspect-ratio: 1.4 / 1;
+    transform: none;
+  }
+
+  .adapter-dots {
+    position: static;
+    height: auto;
+    margin-top: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adapter-card,
+  .adapter-copy,
+  .adapter-dot {
+    transition-duration: 1ms;
+  }
+}

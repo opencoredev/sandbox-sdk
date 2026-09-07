@@ -19,10 +19,9 @@ Set `DAYTONA_API_KEY`, or pass `apiKey` to `daytona()`. `DAYTONA_API_URL` and `D
 ## Run a command
 
 ```ts title="daytona.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
-await using sandbox = await createSandbox({ provider: daytona() });
+await using sandbox = await daytona().create();
 const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
@@ -71,6 +70,8 @@ const response = preview.request ? await preview.request("/") : await fetch(prev
 - The filesystem persists with the Daytona workspace.
 - Custom images, PTY, network controls, and GPU configuration remain available through `sandbox.raw`.
 - Some binary and streaming methods require a Node.js-compatible runtime.
+- `stop()` calls the native stop API when present. `destroy()` deletes the workspace.
+- `liveTest` is `null`. No dated live run is published.
 
 ## Read next
 

@@ -5,21 +5,17 @@ import type {
 } from "@ai-sdk/harness";
 import type { Experimental_SandboxSession } from "ai";
 import { SandboxError } from "../core/errors";
-import type {
-  ManagedSandboxSession,
-  SandboxNetworkPolicy,
-  SandboxProvider,
-} from "../core/provider";
+import type { ManagedSandboxSession, SandboxNetworkPolicy } from "../core/provider";
 import { toAISandboxSession } from "./index";
 
 export interface CreateSandboxHarnessProviderOptions {
-  provider: SandboxProvider<unknown>;
+  provider: import("../core/sandbox").AnySandboxProvider;
   ports?: ReadonlyArray<number>;
   cwd?: string;
   env?: Readonly<Record<string, string>>;
 }
 
-/** Create an AI SDK Harness sandbox provider backed by any managed sandbox-sdk provider. */
+/** Create an AI SDK Harness sandbox provider backed by an eligible managed provider. */
 export function createSandboxHarnessProvider(
   options: CreateSandboxHarnessProviderOptions,
 ): HarnessV1SandboxProvider {
@@ -94,7 +90,7 @@ function toCoreNetworkPolicy(policy: HarnessV1NetworkPolicy): SandboxNetworkPoli
   };
 }
 
-function requireManaged(provider: SandboxProvider<unknown>) {
+function requireManaged(provider: import("../core/sandbox").AnySandboxProvider) {
   if (!provider.managed) {
     throw new SandboxError({
       code: "unsupported",

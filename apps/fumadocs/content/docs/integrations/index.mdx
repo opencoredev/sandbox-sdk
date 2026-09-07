@@ -1,12 +1,21 @@
 ---
 title: Overview
-description: Choose the agent integration that matches your runtime and session model.
-icon: integrations
+description: Connect an agent runtime to a managed sandbox session.
+icon: agents
 ---
 
-Sandbox SDK connects the same provider adapters to AI SDK tool-loop agents, established coding-agent harnesses, Eve, and Mastra workspaces.
+Sandbox SDK connects agent runtimes to the same file, command, process, and lifecycle API.
 
-## Choose an integration
+This page covers the installable skill and four runtime integrations.
+
+## Choose how the agent runs
+
+| Path | Use it when | Start here |
+| --- | --- | --- |
+| [Agent skill](/docs/integrations/skill) | A coding agent needs Sandbox SDK instructions | Install the skill |
+| Runtime integration | Your application creates and manages the agent | Compare below |
+
+## Choose a runtime integration
 
 | Integration                                       | Use it when                                                 | Agent runtime                            | Session model                                          |
 | ------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
@@ -16,6 +25,8 @@ Sandbox SDK connects the same provider adapters to AI SDK tool-loop agents, esta
 | [Mastra](/docs/integrations/mastra)               | You want Mastra workspace file, command, and process tools  | Mastra `Agent` with a shared `Workspace` | Mastra-owned managed sandbox session                   |
 
 AI SDK's model providers and harness adapters solve different problems. A model provider supplies the model used by `ToolLoopAgent`; a harness adapter supplies a complete agent runtime used by `HarnessAgent`.
+
+HarnessAgent, Eve, and Mastra require managed session support. Local, E2B, Daytona, Vercel Sandbox, Upstash Box, and Ascii Box provide it. Railway and Cloudflare do not.
 
 ## Run shell commands without an agent
 

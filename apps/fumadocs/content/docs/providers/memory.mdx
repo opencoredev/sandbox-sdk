@@ -1,0 +1,18 @@
+---
+title: Memory
+description: In-process test adapter with files and a tiny command table. Not a security boundary.
+icon: memory
+---
+
+`memory()` creates a sandbox with no VM, no account, and no network. Use it in unit tests and docs examples.
+
+```ts title="memory.ts"
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using sandbox = await memory({ files: { "hello.txt": "hi" } }).create();
+console.log(await sandbox.files.text("hello.txt"));
+```
+
+It implements files and a small `run` table (`echo`, `cat`, `ls`, `mkdir`, `rm`, `stat`, `find`, `true`, `false`, `pwd`). Ports, processes, snapshots, PTY, and metrics throw `unsupported`.
+
+Do not treat Memory as isolation. It shares the current process. `stop()` is a no-op. `destroy()` clears files. `liveTest` is `null`.

@@ -38,6 +38,9 @@ export const e2bCapabilities = defineCapabilities({
   "snapshot.create": "template",
   "snapshot.delete": "template",
   "sandbox.resume": "memory",
+  "sandbox.connect": "native",
+  "sandbox.list": "native",
+  "sandbox.timeout": "native",
   "filesystem.persistent": "ephemeral",
   "image.custom": "template",
   "network.policy": "native",
@@ -56,6 +59,8 @@ export const daytonaCapabilities = defineCapabilities({
   "process.pty": "native",
   "ports.expose": "authenticated",
   "ports.authenticatedRequest": "authenticated",
+  "sandbox.connect": "native",
+  "sandbox.list": "native",
   "filesystem.persistent": "persistent",
   "image.custom": "native",
   "network.policy": "native",
@@ -76,6 +81,9 @@ export const vercelCapabilities = defineCapabilities({
   "snapshot.create": "filesystem",
   "snapshot.delete": "filesystem",
   "sandbox.resume": "persistent",
+  "sandbox.connect": "native",
+  "sandbox.list": "native",
+  "sandbox.timeout": "native",
   "filesystem.persistent": "persistent",
   "network.policy": "native",
 });
@@ -106,6 +114,27 @@ export const boxCapabilities = defineCapabilities({
   "process.run": "separate-streams",
   "ports.expose": "public",
   "ports.authenticatedRequest": "authenticated",
+  "sandbox.resume": "persistent",
+  "filesystem.persistent": "persistent",
+});
+
+export const memoryCapabilities = defineCapabilities({
+  "files.read": "memory",
+  "files.write": "memory",
+  "files.list": "memory",
+  "files.remove": "memory",
+  "process.run": "in-process",
+  "filesystem.persistent": "ephemeral",
+});
+
+export const cloudflareCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "combined-stream",
+  "ports.expose": "public",
+  "sandbox.connect": "native",
   "sandbox.resume": "persistent",
   "filesystem.persistent": "persistent",
 });

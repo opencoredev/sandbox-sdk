@@ -1,5 +1,14 @@
 {
   "title": "Sandbox SDK",
   "root": true,
-  "pages": ["index", "providers", "integrations", "agent-skill", "reference", "api"]
+  "pages": [
+    "index",
+    "get-started",
+    "providers",
+    "integrations",
+    "guides",
+    "examples",
+    "reference",
+    "api"
+  ]
 }

@@ -1,4 +1,4 @@
 {
   "title": "SDK Reference",
-  "pages": ["capabilities", "errors", "compatibility", "package-exports"]
+  "pages": ["capabilities", "errors", "compatibility", "live-tests", "next-adapters", "cloudflare-adapter", "modal-adapter", "createos", "blaxel", "package-exports"]
 }

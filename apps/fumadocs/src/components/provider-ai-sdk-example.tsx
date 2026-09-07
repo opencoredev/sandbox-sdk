@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 
 const providers = {
@@ -73,14 +74,13 @@ export async function runSandboxAgent(model: LanguageModel) {
         This provider works with AI SDK <code>ToolLoopAgent</code> through the normalized sandbox
         session. Pass the language model from your existing AI SDK provider or AI Gateway setup.
       </p>
-      <DynamicCodeBlock
-        lang="ts"
-        code={code}
-        codeblock={{ title: "sandbox-agent.ts" }}
-      />
+      <DynamicCodeBlock lang="ts" code={code} codeblock={{ title: "sandbox-agent.ts" }} />
       <p>
-        See the <a href="/docs/integrations/ai-sdk">AI SDK guide</a> for approval flows, direct
-        session access, and HarnessAgent alternatives.
+        See the{" "}
+        <Link to="/docs/$" params={{ _splat: "integrations/ai-sdk" }}>
+          AI SDK guide
+        </Link>{" "}for approval flows,
+        direct session access, and HarnessAgent alternatives.
       </p>
     </>
   );

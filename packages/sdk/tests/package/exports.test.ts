@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { exists } from "node:fs/promises";
+import { exists, readFile } from "node:fs/promises";
 import packageJson from "../../package.json";
 
 test("every public export points to built JavaScript and declarations", async () => {
@@ -7,6 +7,12 @@ test("every public export points to built JavaScript and declarations", async ()
     expect(await exists(new URL(`../../${value.import}`, import.meta.url))).toBe(true);
     expect(await exists(new URL(`../../${value.types}`, import.meta.url))).toBe(true);
   }
+});
+
+test("packed README names the shipped Memory and Cloudflare adapters", async () => {
+  const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
+  expect(readme).toContain("docs/providers/memory");
+  expect(readme).toContain("docs/providers/cloudflare");
 });
 
 test("core and self-hosted built entries import independently", async () => {
@@ -18,9 +24,13 @@ test("core and self-hosted built entries import independently", async () => {
   expect(await import(agentosEntry)).toHaveProperty("agentos");
 });
 
-test("Box built entry imports independently", async () => {
+test("provider built entries import independently", async () => {
   const boxEntry = "../../dist/providers/box/index.mjs";
+  const cloudflareEntry = "../../dist/providers/cloudflare/index.mjs";
+  const memoryEntry = "../../dist/providers/memory/index.mjs";
   expect(await import(boxEntry)).toHaveProperty("box");
+  expect(await import(cloudflareEntry)).toHaveProperty("cloudflare");
+  expect(await import(memoryEntry)).toHaveProperty("memory");
 });
 
 test("experimental integration entries import independently", async () => {

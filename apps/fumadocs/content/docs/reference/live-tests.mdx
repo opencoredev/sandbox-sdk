@@ -1,0 +1,24 @@
+---
+title: Live tests
+description: Dated live-test evidence, or an explicit null row. Never inferred.
+---
+
+Live tests stay out of `bun test`. The package metadata field `liveTest` is the only published evidence.
+
+This page repeats that field. A missing date is `null`, not a pass.
+
+| Adapter | liveTest |
+| --- | --- |
+| local | `null` |
+| memory | `null` |
+| e2b | `null` |
+| daytona | `null` |
+| vercel | `null` |
+| upstash | `null` |
+| box | `null` |
+| railway | `null` |
+| cloudflare | `null` |
+
+Railway and Cloudflare are experimental. CreateOS, Modal, and Blaxel are not shipped adapters and cannot claim live tests.
+
+The generated [compatibility](/compatibility) page renders the same metadata.

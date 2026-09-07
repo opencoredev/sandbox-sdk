@@ -10,6 +10,30 @@ import type { SandboxNetworkPolicy } from "../core/provider";
 
 type TemplateFile = { path: string; content: Uint8Array };
 
+type ManagedLifecycle<TRaw> = {
+  stop?: (sandbox: Sandbox<TRaw>) => Promise<void>;
+  resume?: (sandbox: Sandbox<TRaw>, signal?: AbortSignal) => Promise<void>;
+  destroy?: (sandbox: Sandbox<TRaw>) => Promise<void>;
+  setPorts?: (
+    sandbox: Sandbox<TRaw>,
+    ports: ReadonlyArray<number>,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  setNetworkPolicy?: (sandbox: Sandbox<TRaw>, policy: SandboxNetworkPolicy) => Promise<void>;
+};
+
+function throwIfAborted(signal: AbortSignal | undefined, provider: string): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  if (reason instanceof Error) throw reason;
+  throw new SandboxError({
+    code: "terminated",
+    provider,
+    operation: "managed.resume",
+    message: "Managed sandbox resume was aborted",
+  });
+}
+
 /**
  * Shared managed lifecycle for built-in providers. Provider-native implementations
  * can replace this optional surface without changing `createSandbox()`.
@@ -17,17 +41,7 @@ type TemplateFile = { path: string; content: Uint8Array };
 export function withManagedSessions<TRaw>(
   provider: SandboxProvider<TRaw>,
   configuredPorts: ReadonlyArray<number> = [],
-  lifecycle: {
-    stop?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    resume?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    destroy?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    setPorts?: (
-      sandbox: Sandbox<TRaw>,
-      ports: ReadonlyArray<number>,
-      signal?: AbortSignal,
-    ) => Promise<void>;
-    setNetworkPolicy?: (sandbox: Sandbox<TRaw>, policy: SandboxNetworkPolicy) => Promise<void>;
-  } = {},
+  lifecycle: ManagedLifecycle<TRaw> = {},
 ): SandboxProvider<TRaw> {
   const sessions = new Map<string, ManagedSandboxSession>();
   const templates = new Map<string, Promise<TemplateFile[]>>();
@@ -93,6 +107,7 @@ export function withManagedSessions<TRaw>(
       }
     },
     async resume(options) {
+      throwIfAborted(options.signal, provider.id);
       const session = sessions.get(options.sessionId);
       if (!session) {
         throw new SandboxError({
@@ -102,7 +117,7 @@ export function withManagedSessions<TRaw>(
           message: `Managed sandbox session not found: ${options.sessionId}`,
         });
       }
-      await session.resume();
+      await session.resume({ signal: options.signal });
       return session;
     },
   };
@@ -114,17 +129,7 @@ function createManagedSession<TRaw>(
   sandbox: Sandbox<TRaw>,
   initialPorts: Set<number>,
   sessions: Map<string, ManagedSandboxSession>,
-  lifecycle: {
-    stop?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    resume?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    destroy?: (sandbox: Sandbox<TRaw>) => Promise<void>;
-    setPorts?: (
-      sandbox: Sandbox<TRaw>,
-      ports: ReadonlyArray<number>,
-      signal?: AbortSignal,
-    ) => Promise<void>;
-    setNetworkPolicy?: (sandbox: Sandbox<TRaw>, policy: SandboxNetworkPolicy) => Promise<void>;
-  },
+  lifecycle: ManagedLifecycle<TRaw>,
 ): ManagedSandboxSession {
   let destroyed = false;
   let stopped = false;
@@ -166,10 +171,12 @@ function createManagedSession<TRaw>(
       await lifecycle.stop?.(sandbox);
       stopped = true;
     },
-    async resume() {
+    async resume(options?: { signal?: AbortSignal }) {
       assertActive();
+      throwIfAborted(options?.signal, sandbox.provider);
       if (!stopped) return;
-      await lifecycle.resume?.(sandbox);
+      await lifecycle.resume?.(sandbox, options?.signal);
+      throwIfAborted(options?.signal, sandbox.provider);
       stopped = false;
     },
     async destroy() {

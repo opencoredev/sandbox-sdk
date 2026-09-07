@@ -1,0 +1,58 @@
+---
+title: Cloudflare Sandbox
+description: Wrap a Worker-bound Cloudflare sandbox. There is no Node-only create path.
+icon: cloudflare
+---
+
+Cloudflare sandboxes run inside Workers. You bind a Durable Object container and call `getSandbox(env.Sandbox, id)`. That is not `e2b().create()` from a Bun script.
+
+This is not a fork of `@cloudflare/sandbox`. Local Cloudflare dev needs Docker. `liveTest` is `null`. The adapter is experimental.
+
+## Install
+
+```bash
+bun add @opencoredev/sandbox-sdk @cloudflare/sandbox
+```
+
+## Create from a Worker binding
+
+```ts
+import { cloudflare } from "@opencoredev/sandbox-sdk/cloudflare";
+import type { CloudflareSandboxClient } from "@opencoredev/sandbox-sdk/cloudflare";
+
+declare const env: { Sandbox: unknown };
+declare function getSandbox(namespace: unknown, id: string): CloudflareSandboxClient;
+
+await using sandbox = await cloudflare({
+  namespace: env.Sandbox,
+  getSandbox,
+}).create();
+console.log((await sandbox.run("node --version")).stdout);
+```
+
+Pass the official `getSandbox` from `@cloudflare/sandbox` in a Worker. Same id returns the same container.
+
+## Limits
+
+- `stop()` clears `keepAlive` when the official client has `setKeepAlive`. It does not call `destroy()`.
+- `destroy()` calls official `destroy()`.
+- Official files API has no `listFiles`. The adapter lists with `ls -1Ap`.
+- Normalized snapshots throw `unsupported`. Official R2 backups stay on `sandbox.raw`.
+- Background processes throw `unsupported`.
+- `exposePort()` needs a custom wildcard domain in production. `.workers.dev` does not support preview subdomains.
+- Eve, Mastra, and Harness are not eligible. The adapter has no managed session surface.
+- There is no Node-only create path.
+
+## Options
+
+| Option | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `namespace` | Worker binding | required | Durable Object namespace from `env` |
+| `getSandbox` | function | required | Official Cloudflare `getSandbox` |
+| `id` | `string` | generated | Cloudflare sandbox id |
+| `sleepAfter` | `string` | official default | Idle sleep, for example `10m` |
+| `keepAlive` | `boolean` | official default | Prevent automatic sleep |
+
+## Read next
+
+[Adapter map](/docs/reference/cloudflare-adapter) and official [Cloudflare Sandbox docs](https://developers.cloudflare.com/sandbox/).

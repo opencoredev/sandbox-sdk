@@ -28,17 +28,13 @@ You can also pass `token` and `environmentId` to `railway()`. The explicit optio
 ## Run a command
 
 ```ts title="railway.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { railway } from "@opencoredev/sandbox-sdk/railway";
 
-await using sandbox = await createSandbox({
-  provider: railway({ idleTimeoutMinutes: 5 }),
-});
-
+await using sandbox = await railway({ idleTimeoutMinutes: 5 }).create();
 console.log((await sandbox.run("node --version")).stdout);
 ```
 
-`sandbox.stop()` destroys the Railway sandbox. Keep work inside an `await using` scope so cleanup also runs when an operation throws.
+`stop()` releases the SDK wrapper and leaves the sandbox to its configured idle timeout. `destroy()` calls native destroy. The adapter is experimental. `liveTest` is `null`.
 
 ## Run an AI SDK agent
 

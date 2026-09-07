@@ -1,13 +1,16 @@
 {
   "name": "@opencoredev/sandbox-sdk",
-  "version": "0.2.0",
-  "description": "One TypeScript SDK for every sandbox provider.",
+  "version": "1.0.0",
+  "description": "One TypeScript API across sandbox providers.",
   "homepage": "https://sandbox-sdk.app",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
     "directory": "packages/sdk"
+  },
+  "bin": {
+    "sandbox-sdk": "./dist/cli.mjs"
   },
   "files": [
     "dist",
@@ -54,6 +57,14 @@
       "types": "./dist/providers/railway/index.d.mts",
       "import": "./dist/providers/railway/index.mjs"
     },
+    "./cloudflare": {
+      "types": "./dist/providers/cloudflare/index.d.mts",
+      "import": "./dist/providers/cloudflare/index.mjs"
+    },
+    "./memory": {
+      "types": "./dist/providers/memory/index.d.mts",
+      "import": "./dist/providers/memory/index.mjs"
+    },
     "./metadata": {
       "types": "./dist/metadata.d.mts",
       "import": "./dist/metadata.mjs"
@@ -86,7 +97,7 @@
   "scripts": {
     "build": "tsdown",
     "prepack": "bun run build",
-    "dev": "tsdown --watch src",
+    "dev": "tsdown --no-clean --watch src",
     "lint": "oxlint src tests examples",
     "typecheck": "tsc --noEmit",
     "test": "bun test tests --parallel=1 --timeout=15000",

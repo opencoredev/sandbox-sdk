@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { SandboxProvider } from "../../src/core/provider";
+import type { AnySandboxProvider } from "../../src/core/sandbox";
 import { createMastraWorkspace } from "../../src/mastra";
 import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
@@ -16,7 +16,7 @@ const vercelAuthenticated = Boolean(
 interface LiveMastraCase {
   name: string;
   enabled: boolean;
-  provider: () => SandboxProvider<unknown>;
+  provider: () => AnySandboxProvider;
 }
 
 const cases: LiveMastraCase[] = [
@@ -145,7 +145,7 @@ for (const live of cases) {
   );
 }
 
-function vercelProvider(): SandboxProvider<unknown> {
+function vercelProvider(): AnySandboxProvider {
   const options = { persistent: true, ports: [port] };
   if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {
     return vercel({

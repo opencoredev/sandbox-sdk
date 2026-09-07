@@ -1,0 +1,16 @@
+---
+title: Stop and destroy
+description: stop() is not destroy(). Disposal always stops.
+---
+
+A retry is the same sandbox having another command. A destroy ends the sandbox identity.
+
+This page covers when to stop and when to delete.
+
+**stop()**: idempotent. Vercel persistent sandboxes keep filesystem state.
+
+**destroy()**: permanent. Throws `unsupported` if the adapter has no delete API.
+
+**await using**: calls `stop()`.
+
+Managed resume accepts an `AbortSignal`. An aborted resume does not mark the session running again.

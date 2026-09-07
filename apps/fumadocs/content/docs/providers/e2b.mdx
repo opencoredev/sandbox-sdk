@@ -19,10 +19,9 @@ Set `E2B_API_KEY`, or pass `apiKey` to `e2b()`.
 ## Run a command
 
 ```ts title="e2b.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await using sandbox = await createSandbox({ provider: e2b() });
+await using sandbox = await e2b().create();
 const result = await sandbox.run("node --version");
 console.log(result.stdout);
 ```
@@ -67,6 +66,8 @@ const response = await preview.request!("/");
 - Files are ephemeral unless captured in an E2B template snapshot.
 - Managed resume keeps the live sandbox reference in the current process.
 - PTY, templates, and native network controls remain available through `sandbox.raw`.
+- `stop()` pauses when the native SDK exposes pause, otherwise it kills. `destroy()` always kills.
+- `liveTest` is `null`. No dated live run is published.
 
 ## Read next
 

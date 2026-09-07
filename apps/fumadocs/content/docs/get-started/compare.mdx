@@ -1,0 +1,16 @@
+---
+title: Compare adapters
+description: What is portable across adapters, and what stays native.
+---
+
+Sandbox SDK normalizes files, commands, and cleanup. Ports, snapshots, PTY, GPU, and persistence stay adapter-specific.
+
+This page covers which surface you can share and which calls throw `unsupported`.
+
+**Portable**: files, `run`, `$`, `runCode`, git helpers, `stop()`.
+
+**Capability-gated**: processes, ports, snapshots, PTY, timeout extension, connect, list.
+
+**Not claimed**: identical behavior, live tests without a dated row, or eligibility of every adapter for Eve, Mastra, or Harness.
+
+See the [provider pages](/docs/providers) for env vars and limits. Railway and Cloudflare are experimental and have no dated live-test row.

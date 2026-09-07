@@ -1,13 +1,15 @@
 import { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { normalizeError, SandboxError } from "../../core/errors";
-import type { SandboxProvider } from "../../core/provider";
+import { defineAdapter } from "../../core/adapter";
+import type { SandboxRuntime } from "../../core/provider";
 import type {
   CommandInput,
   ProcessOutputEvent,
   SandboxProcess,
   SandboxSnapshot,
+  SandboxSummary,
 } from "../../core/types";
-import { portResult, toUint8Array, unsupported } from "../../internal/provider-utils";
+import { assertNotAborted, portResult, toUint8Array, unsupported } from "../../internal/provider-utils";
 import { vercelCapabilities } from "../capabilities";
 import { withManagedSessions } from "../../internal/managed-provider";
 
@@ -27,176 +29,236 @@ export type VercelOptions = VercelBaseOptions &
 
 export { vercelCapabilities } from "../capabilities";
 
-export function vercel(options: VercelOptions = {}): SandboxProvider<VercelSandbox> {
-  return withManagedSessions(
+export function vercel(
+  options: VercelOptions = {},
+): import("../../core/adapter").SandboxAdapter<VercelSandbox> {
+  const credentials =
+    options.token && options.teamId && options.projectId
+      ? {
+          token: options.token,
+          teamId: options.teamId,
+          projectId: options.projectId,
+        }
+      : {};
+  const buildRuntime = (raw: VercelSandbox): SandboxRuntime<VercelSandbox> => {
+    const exposed = new Set(options.ports ?? []);
+    const snapshots = new Map<string, VercelSnapshot>();
+    return {
+      id: raw.name,
+      raw,
+      capabilities: vercelCapabilities,
+      files: {
+        async write(path, value) {
+          await raw.fs.writeFile(path, await toUint8Array(value));
+        },
+        async read(path) {
+          return new Uint8Array(await raw.fs.readFile(path));
+        },
+        async list(path) {
+          const entries = await raw.fs.readdir(path, {
+            withFileTypes: true,
+          });
+          return Promise.all(
+            entries.map(async (entry) => {
+              const entryPath = `${path.replace(/\/$/, "")}/${entry.name}`;
+              const info = await raw.fs.lstat(entryPath);
+              return {
+                name: entry.name,
+                path: entryPath,
+                type: entry.isFile()
+                  ? ("file" as const)
+                  : entry.isDirectory()
+                    ? ("directory" as const)
+                    : entry.isSymbolicLink()
+                      ? ("symlink" as const)
+                      : ("unknown" as const),
+                size: entry.isFile() ? info.size : undefined,
+              };
+            }),
+          );
+        },
+        async mkdir(path) {
+          await raw.fs.mkdir(path, { recursive: true });
+        },
+        async remove(path) {
+          await raw.fs.rm(path, { recursive: true, force: true });
+        },
+        exists: (path) => raw.fs.exists(path),
+        async stat(path) {
+          const stats = await raw.fs.lstat(path);
+          return {
+            path,
+            type: stats.isSymbolicLink()
+              ? ("symlink" as const)
+              : stats.isDirectory()
+                ? ("directory" as const)
+                : stats.isFile()
+                  ? ("file" as const)
+                  : ("unknown" as const),
+            size: stats.size,
+            modifiedAt: stats.mtime ? new Date(stats.mtime) : undefined,
+          };
+        },
+        async move(source, destination) {
+          await raw.fs.rename(source, destination);
+        },
+      },
+      async run(command, runOptions) {
+        try {
+          const result = await runCommand(raw, command, runOptions, false);
+          const [stdout, stderr] = await Promise.all([
+            result.stdout({ signal: runOptions.signal }),
+            result.stderr({ signal: runOptions.signal }),
+          ]);
+          if (
+            runOptions.timeout !== undefined &&
+            result.exitCode === 137 &&
+            result.durationMs !== undefined &&
+            result.durationMs >= runOptions.timeout
+          ) {
+            throw new SandboxError({
+              code: "timeout",
+              provider: "vercel",
+              operation: "process.run",
+              message: `Command timed out after ${runOptions.timeout}ms`,
+            });
+          }
+          return {
+            stdout,
+            stderr,
+            exitCode: result.exitCode,
+            success: result.exitCode === 0,
+            durationMs: result.durationMs,
+          };
+        } catch (error) {
+          throw normalizeError("vercel", "process.run", error);
+        }
+      },
+      async start(command, runOptions) {
+        const handle = await runCommand(raw, command, runOptions, true);
+        const events: ProcessOutputEvent[] = [];
+        let running = true;
+        const stream = handle.logs({ signal: runOptions.signal });
+        const completed = handle.wait().then((result) => ({ exitCode: result.exitCode }));
+        const process: SandboxProcess = {
+          id: handle.cmdId,
+          async status() {
+            return running ? "running" : "exited";
+          },
+          async *output() {
+            try {
+              for await (const event of stream) {
+                const normalized = {
+                  stream: event.stream,
+                  data: event.data,
+                  timestamp: new Date(),
+                } satisfies ProcessOutputEvent;
+                events.push(normalized);
+                yield normalized;
+              }
+            } finally {
+              running = false;
+            }
+          },
+          async write() {
+            unsupported("vercel", "process.stdin");
+          },
+          wait: () => completed,
+          async kill(signal = "SIGTERM") {
+            await handle.kill(signal as Parameters<typeof handle.kill>[0]);
+            running = false;
+          },
+        };
+        return process;
+      },
+      async expose(port) {
+        if (!exposed.has(port)) {
+          exposed.add(port);
+          await raw.update({ ports: [...exposed] });
+        }
+        const url = raw.domain(port);
+        return portResult(port, url, true, false);
+      },
+      snapshots: {
+        async create() {
+          const snapshot = await raw.snapshot();
+          snapshots.set(snapshot.snapshotId, snapshot);
+          return {
+            id: snapshot.snapshotId,
+            mode: "filesystem",
+            createdAt: snapshot.createdAt,
+          } satisfies SandboxSnapshot;
+        },
+        async delete(snapshot) {
+          const id = typeof snapshot === "string" ? snapshot : snapshot.id;
+          const native =
+            snapshots.get(id) ?? (await VercelSnapshot.get({ snapshotId: id, ...credentials }));
+          await native.delete();
+          snapshots.delete(id);
+        },
+        async restore() {
+          unsupported("vercel", "snapshot.restore");
+        },
+      },
+      extendTimeout: async (ms) => {
+        await raw.extendTimeout(ms);
+      },
+      async destroy() {
+        await raw.delete();
+      },
+      async stop() {
+        if (raw.status !== "stopped") await raw.stop();
+      },
+    };
+  };
+  return defineAdapter(
+    withManagedSessions(
     {
       id: "vercel",
       capabilities: vercelCapabilities,
       async create(createOptions) {
-        const credentials =
-          options.token && options.teamId && options.projectId
-            ? {
-                token: options.token,
-                teamId: options.teamId,
-                projectId: options.projectId,
-              }
-            : {};
-        const exposed = new Set(options.ports ?? []);
+        assertNotAborted(createOptions.signal);
         const raw = await VercelSandbox.create({
           ...credentials,
           runtime: options.runtime ?? "node24",
           name: options.name,
-          ports: [...exposed],
+          ports: [...(options.ports ?? [])],
           persistent: options.persistent,
           timeout: createOptions.timeout,
           env: { ...createOptions.env },
           signal: createOptions.signal,
         });
-        const snapshots = new Map<string, VercelSnapshot>();
         await raw.fs.mkdir(createOptions.cwd, { recursive: true });
-        return {
-          id: raw.name,
-          raw,
-          capabilities: vercelCapabilities,
-          files: {
-            async write(path, value) {
-              await raw.fs.writeFile(path, await toUint8Array(value));
-            },
-            async read(path) {
-              return new Uint8Array(await raw.fs.readFile(path));
-            },
-            async list(path) {
-              const entries = await raw.fs.readdir(path, {
-                withFileTypes: true,
-              });
-              return Promise.all(
-                entries.map(async (entry) => {
-                  const entryPath = `${path.replace(/\/$/, "")}/${entry.name}`;
-                  const info = await raw.fs.lstat(entryPath);
-                  return {
-                    name: entry.name,
-                    path: entryPath,
-                    type: entry.isFile()
-                      ? ("file" as const)
-                      : entry.isDirectory()
-                        ? ("directory" as const)
-                        : entry.isSymbolicLink()
-                          ? ("symlink" as const)
-                          : ("unknown" as const),
-                    size: entry.isFile() ? info.size : undefined,
-                  };
-                }),
-              );
-            },
-            async mkdir(path) {
-              await raw.fs.mkdir(path, { recursive: true });
-            },
-            async remove(path) {
-              await raw.fs.rm(path, { recursive: true, force: true });
-            },
-            exists: (path) => raw.fs.exists(path),
-          },
-          async run(command, runOptions) {
-            try {
-              const result = await runCommand(raw, command, runOptions, false);
-              const [stdout, stderr] = await Promise.all([
-                result.stdout({ signal: runOptions.signal }),
-                result.stderr({ signal: runOptions.signal }),
-              ]);
-              if (
-                runOptions.timeout !== undefined &&
-                result.exitCode === 137 &&
-                result.durationMs !== undefined &&
-                result.durationMs >= runOptions.timeout
-              ) {
-                throw new SandboxError({
-                  code: "timeout",
-                  provider: "vercel",
-                  operation: "process.run",
-                  message: `Command timed out after ${runOptions.timeout}ms`,
-                });
-              }
-              return {
-                stdout,
-                stderr,
-                exitCode: result.exitCode,
-                success: result.exitCode === 0,
-                durationMs: result.durationMs,
-              };
-            } catch (error) {
-              throw normalizeError("vercel", "process.run", error);
-            }
-          },
-          async start(command, runOptions) {
-            const handle = await runCommand(raw, command, runOptions, true);
-            const events: ProcessOutputEvent[] = [];
-            let running = true;
-            const stream = handle.logs({ signal: runOptions.signal });
-            const completed = handle.wait().then((result) => ({ exitCode: result.exitCode }));
-            const process: SandboxProcess = {
-              id: handle.cmdId,
-              async status() {
-                return running ? "running" : "exited";
-              },
-              async *output() {
-                try {
-                  for await (const event of stream) {
-                    const normalized = {
-                      stream: event.stream,
-                      data: event.data,
-                      timestamp: new Date(),
-                    } satisfies ProcessOutputEvent;
-                    events.push(normalized);
-                    yield normalized;
-                  }
-                } finally {
-                  running = false;
-                }
-              },
-              async write() {
-                unsupported("vercel", "process.stdin");
-              },
-              wait: () => completed,
-              async kill(signal = "SIGTERM") {
-                await handle.kill(signal as Parameters<typeof handle.kill>[0]);
-                running = false;
-              },
-            };
-            return process;
-          },
-          async expose(port) {
-            if (!exposed.has(port)) {
-              exposed.add(port);
-              await raw.update({ ports: [...exposed] });
-            }
-            const url = raw.domain(port);
-            return portResult(port, url, true, false);
-          },
-          snapshots: {
-            async create() {
-              const snapshot = await raw.snapshot();
-              snapshots.set(snapshot.snapshotId, snapshot);
-              return {
-                id: snapshot.snapshotId,
-                mode: "filesystem",
-                createdAt: snapshot.createdAt,
-              } satisfies SandboxSnapshot;
-            },
-            async delete(snapshot) {
-              const id = typeof snapshot === "string" ? snapshot : snapshot.id;
-              const native =
-                snapshots.get(id) ?? (await VercelSnapshot.get({ snapshotId: id, ...credentials }));
-              await native.delete();
-              snapshots.delete(id);
-            },
-            async restore() {
-              unsupported("vercel", "snapshot.restore");
-            },
-          },
-          async stop() {
-            if (raw.status !== "stopped") await raw.stop();
-          },
-        };
+        return buildRuntime(raw);
+      },
+      async connect(connectOptions) {
+        const raw = await VercelSandbox.get({ name: connectOptions.id, ...credentials });
+        await raw.fs.mkdir(connectOptions.cwd, { recursive: true });
+        return buildRuntime(raw);
+      },
+      async list(listOptions) {
+        const result = await VercelSandbox.list({
+          ...credentials,
+          signal: listOptions?.signal,
+        });
+        const summaries: SandboxSummary[] = [];
+        for await (const item of result) {
+          summaries.push({
+            id: item.name,
+            provider: "vercel",
+            name: item.name,
+            state:
+              item.status === "running"
+                ? "running"
+                : item.status === "pending"
+                  ? "pending"
+                  : item.status === "stopped" || item.status === "stopping"
+                    ? "stopped"
+                    : "unknown",
+            createdAt: new Date(item.createdAt),
+          });
+        }
+        return summaries;
       },
     },
     options.ports,
@@ -216,6 +278,7 @@ export function vercel(options: VercelOptions = {}): SandboxProvider<VercelSandb
                 : { allow: [...(policy.allowedHosts ?? [])] },
         }),
     },
+    ),
   );
 }
 

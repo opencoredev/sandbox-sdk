@@ -25,6 +25,19 @@ if (!result.success) console.error(result.stderr);
 
 Nonzero exits return a result. Infrastructure failures, timeouts, and cancellation throw `SandboxError`.
 
+## Tagged template and code snippets
+
+```ts title="shell.ts"
+const pkgs = ["zod", "ms"];
+await sandbox.$`npm install ${pkgs}`;
+await sandbox.runCode('print("hello")', { language: "python" });
+await sandbox.run("npm test", {
+  onStdout: (chunk) => process.stdout.write(chunk),
+});
+```
+
+`sandbox.$` quotes interpolations and throws `CommandFailedError` on nonzero exit. `runCode` writes a temp file and runs the language interpreter.
+
 ## Using argument arrays
 
 ```ts title="arguments.ts"

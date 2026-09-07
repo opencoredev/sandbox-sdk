@@ -1,0 +1,77 @@
+{
+  "framework": null,
+  "buildCommand": "bun run build",
+  "outputDirectory": "dist/client",
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/docs",
+      "permanent": true
+    },
+    {
+      "source": "/docs/quickstart",
+      "destination": "/docs/get-started/first-sandbox",
+      "permanent": true
+    },
+    {
+      "source": "/docs/install",
+      "destination": "/docs/get-started/install",
+      "permanent": true
+    },
+    {
+      "source": "/docs/compare",
+      "destination": "/docs/get-started/compare",
+      "permanent": true
+    },
+    {
+      "source": "/docs/cli",
+      "destination": "/docs/guides/cli",
+      "permanent": true
+    },
+    {
+      "source": "/docs/hooks",
+      "destination": "/docs/api/hooks",
+      "permanent": true
+    },
+    {
+      "source": "/docs/providers/agentos",
+      "destination": "/docs/guides/migrate-agentos",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agent-skill",
+      "destination": "/docs/integrations/skill",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents",
+      "destination": "/docs/integrations",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents/skill",
+      "destination": "/docs/integrations/skill",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents/ai-sdk",
+      "destination": "/docs/integrations/ai-sdk",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents/harness",
+      "destination": "/docs/integrations/ai-sdk-harness",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents/eve",
+      "destination": "/docs/integrations/eve",
+      "permanent": true
+    },
+    {
+      "source": "/docs/agents/mastra",
+      "destination": "/docs/integrations/mastra",
+      "permanent": true
+    }
+  ]
+}

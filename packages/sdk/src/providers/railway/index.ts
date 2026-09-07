@@ -5,9 +5,10 @@ import {
   type SandboxTemplate,
 } from "railway";
 import { SandboxError } from "../../core/errors";
+import { defineAdapter } from "../../core/adapter";
 import type { SandboxProvider } from "../../core/provider";
 import type { ProcessOutputEvent, SandboxProcess, SandboxSnapshot } from "../../core/types";
-import { commandString, unsupported } from "../../internal/provider-utils";
+import { assertNotAborted, commandString, unsupported } from "../../internal/provider-utils";
 import { railwayCapabilities } from "../capabilities";
 
 interface RailwayBaseOptions {
@@ -26,13 +27,15 @@ export type RailwayOptions = RailwayBaseOptions &
 
 export { railwayCapabilities } from "../capabilities";
 
-export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySandbox> {
+export function railway(
+  options: RailwayOptions = {},
+): import("../../core/adapter").SandboxAdapter<RailwaySandbox> {
   const credentials = {
     token: options.token,
     environmentId: options.environmentId,
   };
 
-  return {
+  const provider: SandboxProvider<RailwaySandbox> = {
     id: "railway",
     capabilities: railwayCapabilities,
     async create(createOptions) {
@@ -195,12 +198,17 @@ export function railway(options: RailwayOptions = {}): SandboxProvider<RailwaySa
             unsupported("railway", "snapshot.restore");
           },
         },
-        async stop() {
+        async destroy() {
           await raw.destroy();
+        },
+        async stop() {
+          // The Railway SDK has no pause API. Releasing this wrapper leaves the
+          // sandbox running until its configured idle timeout.
         },
       };
     },
   };
+  return defineAdapter(provider);
 }
 
 function timeoutSeconds(timeout?: number): number | undefined {
@@ -249,10 +257,6 @@ async function awaitCreation(
       (error) => finish(() => reject(error)),
     );
   });
-}
-
-function assertNotAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 export type { RailwaySandbox, SandboxTemplate as RailwaySandboxTemplate };

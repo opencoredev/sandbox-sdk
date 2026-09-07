@@ -14,14 +14,14 @@ export function defineCapabilities(
 }
 
 export function supports(sandbox: Pick<Sandbox, "capabilities">, capability: Capability): boolean {
-  return sandbox.capabilities[capability] !== false;
+  return Boolean(sandbox.capabilities[capability]);
 }
 
 export function capabilityMode(
   sandbox: Pick<Sandbox, "capabilities">,
   capability: Capability,
 ): CapabilityMode | false {
-  return sandbox.capabilities[capability];
+  return sandbox.capabilities[capability] ?? false;
 }
 
 export function requireCapability(
@@ -29,7 +29,7 @@ export function requireCapability(
   capability: Capability,
 ): CapabilityMode {
   const mode = sandbox.capabilities[capability];
-  if (mode === false) {
+  if (!mode) {
     throw new SandboxError({
       code: "unsupported",
       provider: sandbox.provider,

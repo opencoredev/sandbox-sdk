@@ -1,6 +1,7 @@
 import { Box, type BoxConfig, type ExecStreamChunk } from "@upstash/box";
 import { SandboxError } from "../../core/errors";
-import type { SandboxNetworkPolicy, SandboxProvider } from "../../core/provider";
+import { defineAdapter } from "../../core/adapter";
+import type { SandboxNetworkPolicy } from "../../core/provider";
 import type {
   CommandInput,
   ProcessOutputEvent,
@@ -10,6 +11,7 @@ import type {
 } from "../../core/types";
 import { withManagedSessions } from "../../internal/managed-provider";
 import {
+  assertNotAborted,
   commandString,
   portResult,
   toUint8Array,
@@ -24,10 +26,13 @@ export type UpstashOptions = Omit<BoxConfig, "env"> & {
 
 export { upstashCapabilities } from "../capabilities";
 
-export function upstash(options: UpstashOptions = {}): SandboxProvider<Box> {
+export function upstash(
+  options: UpstashOptions = {},
+): import("../../core/adapter").SandboxAdapter<Box> {
   const { public: publicPorts = true, ...boxOptions } = options;
 
-  return withManagedSessions(
+  return defineAdapter(
+    withManagedSessions(
     {
       id: "upstash",
       capabilities: upstashCapabilities,
@@ -207,8 +212,12 @@ export function upstash(options: UpstashOptions = {}): SandboxProvider<Box> {
               unsupported("upstash", "snapshot.restore");
             },
           },
-          async stop() {
+          async destroy() {
             await raw.delete();
+          },
+          async stop() {
+            if (typeof raw.pause === "function") await raw.pause();
+            else await raw.delete();
           },
         };
       },
@@ -220,6 +229,7 @@ export function upstash(options: UpstashOptions = {}): SandboxProvider<Box> {
       destroy: (sandbox) => sandbox.raw.delete(),
       setNetworkPolicy: (sandbox, policy) => sandbox.raw.updateNetworkPolicy(networkPolicy(policy)),
     },
+    ),
   );
 }
 
@@ -258,10 +268,6 @@ function replacePathPrefix(path: string, from: string, to: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function assertNotAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 function assertCommandSucceeded(exitCode: number | null, output: string, operation: string): void {

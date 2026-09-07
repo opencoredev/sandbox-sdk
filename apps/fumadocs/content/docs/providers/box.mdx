@@ -25,10 +25,9 @@ Pass `apiKey` to `box()` only when environment-based configuration is not availa
 ## Run a command
 
 ```ts title="box.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { box } from "@opencoredev/sandbox-sdk/box";
 
-await using sandbox = await createSandbox({ provider: box() });
+await using sandbox = await box().create();
 await sandbox.files.write("hello.txt", "hello from Box");
 console.log((await sandbox.run("cat hello.txt")).stdout);
 ```
@@ -48,11 +47,11 @@ const preview = await sandbox.ports.expose(3000);
 const response = await preview.request!("/health");
 ```
 
-The adapter requests a public Box URL by default because that mode passed end-to-end live validation. Pass `box({ public: false })` to request Box's native token-gated mode; the adapter removes `_token` from `preview.url` and keeps it inside `request()`.
+The adapter requests a public Box URL by default. Pass `box({ public: false })` to request Box's native token-gated mode; the adapter removes `_token` from `preview.url` and keeps it inside `request()`.
 
 ## Managed lifecycle
 
-The managed provider surface maps `stop()` to Box archive/snapshot, `resume()` to native resume, and `destroy()` to deletion. Normal `sandbox.stop()` performs full cleanup: it archives a running Box when required, waits for that transition, then deletes it.
+The managed provider surface maps `stop()` to Box archive/snapshot, `resume()` to native resume, and `destroy()` to deletion. Normal `sandbox.stop()` calls the native archive operation and preserves the Box for resume. Only `sandbox.destroy()` deletes it.
 
 Use `sandbox.raw.client` for native prompts, events, desktop streaming, forks, and snapshot inspection. The current native Box model is available at `sandbox.raw.box`.
 
@@ -68,7 +67,9 @@ Use `sandbox.raw.client` for native prompts, events, desktop streaming, forks, a
 | `public`       | `boolean`        | `true`                          | Returns ungated hosted URLs when true.        |
 | `readyTimeout` | `number`         | `600000`                        | Limits the provisioning wait in milliseconds. |
 
-Per-sandbox values passed to `createSandbox({ env })` are sent through Box's native `env` field. Box accepts at most 100 variables and 64 KB total.
+Per-sandbox values passed to `createSandbox({ env })` or `box().create({ env })` are sent through Box's native `env` field. Box accepts at most 100 variables and 64 KB total.
+
+`stop()` archives. `destroy()` deletes. Commands cap at 60 seconds. `liveTest` is `null`.
 
 ## Read next
 
