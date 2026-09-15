@@ -35,7 +35,7 @@ if (supports(sandbox, "snapshot.restore")) {
 }
 ```
 
-Only Local exposes normalized in-place restore. E2B and Vercel restore flows create new native sandboxes, so those operations remain on `sandbox.raw`. Railway normalizes checkpoint creation and deletion, while booting from a checkpoint creates a new sandbox. Daytona and Ascii Box lifecycle snapshots remain provider-specific.
+Only Local exposes normalized in-place restore. E2B and Vercel restore flows create new native sandboxes, so those operations remain on `sandbox.raw`. Railway normalizes checkpoint creation and deletion, while booting from a checkpoint creates a new sandbox. Tenki snapshots capture disk and memory, and booting from one creates a new session. Daytona and Ascii Box lifecycle snapshots remain provider-specific.
 
 ## Read next
 

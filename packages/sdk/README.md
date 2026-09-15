@@ -2,7 +2,7 @@
   <img alt="Sandbox SDK with supported provider logos" src="https://raw.githubusercontent.com/opencoredev/sandbox-sdk/main/Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, or Railway Sandboxes.
+Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, or Tenki.
 
 ## Install
 
@@ -37,6 +37,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
 | [Ascii Box](https://sandbox-sdk.app/docs/providers/box)         | Persistent cloud VM     | Full VMs and protected app previews     |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
+| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
 
 Local is included. Cloud providers use their official SDKs and credentials.
 

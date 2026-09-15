@@ -1,0 +1,123 @@
+---
+title: Tenki
+description: Run Tenki's full Linux VMs through the normalized SDK API.
+icon: tenki
+---
+
+Tenki provides disposable full Linux VMs with byte-safe files, streamed commands with stdin, public preview URLs, VM snapshots that capture disk and memory, pause and resume, persistent volumes, and typed templates.
+
+## Installation
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk ai zod @tenkicloud/sandbox
+```
+
+## Authentication
+
+Create a workspace API key in the Tenki dashboard, then set it on the server that creates sandboxes.
+
+```bash title=".env"
+TENKI_API_KEY=tk_your_key
+```
+
+The official SDK also reads `TENKI_AUTH_TOKEN` and `TENKI_API_ENDPOINT`. Pass `authToken` and `baseUrl` to `tenki()` only when environment-based configuration is not available.
+
+## Run a command
+
+```ts title="tenki.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using sandbox = await createSandbox({
+  provider: tenki({ idleTimeoutMinutes: 5 }),
+});
+
+await sandbox.files.write("hello.txt", "hello from Tenki");
+console.log((await sandbox.run("cat hello.txt")).stdout);
+```
+
+String commands run through `bash -c`. Pass `{ command, args }` to skip the shell. Commands have no default timeout; set `timeout` per call when you need one. `sandbox.stop()` terminates the session, so keep work inside an `await using` scope.
+
+## Run an AI SDK agent
+
+<ProviderAISDKExample provider="tenki" />
+
+## Working directory
+
+Tenki's file API only reaches `/home/tenki`, while commands can run anywhere. When the sandbox `cwd` is outside that home, such as the default `/workspace`, the adapter creates the real directory at `/home/tenki/workspace` and symlinks `/workspace` to it. Commands run in `/workspace` with `PWD` set so shells report that path, file operations are translated to the mirror, and both observe the same tree.
+
+Pass `cwd: "/home/tenki/project"` to skip the symlink entirely. The mapping needs passwordless `sudo` in the guest, which the Tenki base image provides.
+
+File operations accept paths under the sandbox `cwd` or `/home/tenki`. Other absolute paths such as `/tmp/result` are rejected with `invalid_input` because the guest file API cannot reach them; use `run()` for files elsewhere in the guest.
+
+## Stream a process
+
+```ts title="process.ts"
+const process = await sandbox.processes.start("python3 -i");
+await process.write("print(6 * 7)\n");
+
+for await (const event of process.output()) {
+  console.log(event.stream, event.data);
+}
+```
+
+Tenki exposes the running process, so normalized `write()`, `kill()`, and separate stdout and stderr streams are all supported. `kill()` accepts signal names such as `SIGTERM` or `SIGKILL`. It delivers the signal and waits briefly for the process to exit so trailing output reaches `output()`. The signal is never escalated: a process that ignores `SIGTERM` keeps running, `status()` keeps reporting it, and `wait()` keeps waiting, so call `kill("SIGKILL")` when it must go.
+
+## Expose a preview
+
+Bind the server to `0.0.0.0`, then expose its port.
+
+```ts title="preview.ts"
+const preview = await sandbox.ports.expose(3000);
+const response = await fetch(new URL("/health", preview.url));
+```
+
+Preview URLs are public HTTPS routes on `tenki.sh`. Sessions created with `allowInbound: false` reject exposure.
+
+## Snapshots
+
+```ts title="snapshot.ts"
+const snapshot = await sandbox.snapshots.create({ name: "after-deps" });
+await sandbox.snapshots.delete(snapshot);
+```
+
+Snapshots capture disk and memory, so a restored session resumes with its processes intact. Creation waits until the snapshot is `READY`, which usually takes about a minute. Restoring creates a new session, so pass `tenki({ snapshotId: snapshot.id })` instead of calling in-place `restore()`.
+
+## Pause and resume
+
+The managed provider surface maps `stop()` to Tenki pause, `resume()` to resume, and `destroy()` to termination. `stop()` resolves once the session reaches `PAUSED`, so a `resume()` right after it does not race the in-flight pause. A paused session keeps its files and memory while compute charges stop. Idle sessions pause automatically after `idleTimeoutMinutes` unless `sticky` is set.
+
+## Runtime
+
+The Tenki SDK streams command output over gRPC on HTTP/2 and runs on Node.js 18 or newer and Bun 1.3 or newer. Use `@tenkicloud/sandbox` 1.0.6 or newer on Bun.
+
+## Options
+
+| Option               | Type                         | Default                   | Behavior                                                 |
+| -------------------- | ---------------------------- | ------------------------- | -------------------------------------------------------- |
+| `authToken`          | `string`                     | `TENKI_API_KEY`           | Authenticates Tenki API requests.                        |
+| `baseUrl`            | `string`                     | `https://api.tenki.cloud` | Overrides the API endpoint.                              |
+| `client`             | `TenkiClient`                | Created per provider      | Reuses an existing `TenkiSandbox` client.                |
+| `name`               | `string`                     | Generated by Tenki        | Names the session in the dashboard.                      |
+| `cpuCores`           | `number`                     | `2`                       | Sets vCPUs from 1 to 16.                                 |
+| `memoryMb`           | `number`                     | `4096`                    | Sets memory from 512 to 65536 MB.                        |
+| `diskSizeGb`         | `number`                     | `5`                       | Sets the root disk size.                                 |
+| `idleTimeoutMinutes` | `number`                     | Plan default              | Pauses the session after the configured idle period.     |
+| `maxDurationMs`      | `number`                     | Plan default              | Terminates the session after the configured lifetime.    |
+| `sticky`             | `boolean`                    | `false`                   | Disables idle pauses and the maximum duration.           |
+| `allowInbound`       | `boolean`                    | `true`                    | Enables port exposure.                                   |
+| `allowOutbound`      | `boolean`                    | `true`                    | Enables outbound network access.                         |
+| `metadata`           | `Record<string, string>`     | None                      | Attaches key-value pairs to the session.                 |
+| `tags`               | `string[]`                   | None                      | Tags the session for filtering.                          |
+| `volumes`            | `VolumeMountConfig[]`        | None                      | Attaches persistent volumes at creation.                 |
+| `githubToken`        | `string`                     | None                      | Enables private clones through the native git helpers.   |
+| `waitTimeoutMs`      | `number`                     | `createSandbox` timeout   | Bounds the wait for the session to become ready.         |
+| `image`              | `string \| TemplateImageRef` | Tenki base image          | Boots from a registry image; excludes the other sources. |
+| `snapshotId`         | `string`                     | None                      | Boots from a snapshot; excludes the other sources.       |
+| `fromTemplateSpec`   | `string \| Template`         | None                      | Runs a typed template spec; excludes the other sources.  |
+
+Per-sandbox values passed to `createSandbox({ env })` become session environment variables. Use `sandbox.raw` for git helpers, volumes, SSH, Unix socket bridging, and other native session operations.
+
+## Read next
+
+See [Ports](/docs/api/ports), compare exact modes in [Compatibility](/docs/reference/compatibility), or read the official [Tenki documentation](https://tenki.cloud/docs/sandbox).

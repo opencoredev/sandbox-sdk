@@ -4,6 +4,7 @@ import {
   e2bCapabilities,
   localCapabilities,
   railwayCapabilities,
+  tenkiCapabilities,
   upstashCapabilities,
   vercelCapabilities,
 } from "./providers/capabilities";
@@ -173,6 +174,25 @@ export const providers: readonly ProviderMetadata[] = [
       "Creates and deletes named Railway checkpoints. Booting from a checkpoint creates a new sandbox and remains on raw.",
     runtimeLimitations:
       "Railway Sandboxes are in Priority Boarding and the provider SDK may introduce breaking changes between releases.",
+  },
+  {
+    id: "tenki",
+    displayName: "Tenki",
+    officialUrl: "https://tenki.cloud/docs/sandbox",
+    packageName: "@tenkicloud/sandbox",
+    packageVersion: "1.0.6",
+    capabilities: tenkiCapabilities,
+    environmentVariables: ["TENKI_API_KEY", "TENKI_AUTH_TOKEN", "TENKI_API_ENDPOINT"],
+    technicalStatus: "supported",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Returns a public HTTPS preview URL on tenki.sh. Sessions created with allowInbound false reject exposure.",
+    snapshotBehavior:
+      "Creates and deletes VM snapshots that capture disk and memory. Restoring boots a new session through tenki({ snapshotId }).",
+    runtimeLimitations:
+      "Runs on Node.js 18 or newer and Bun 1.3 or newer with @tenkicloud/sandbox 1.0.6 or newer. The file API is rooted at /home/tenki: other working directories are symlinked into it, and file paths outside the cwd or /home/tenki are rejected.",
   },
 ];
 

@@ -1,3 +1,9 @@
+## Unreleased
+
+- Add the Tenki provider adapter with files, streamed processes with stdin, public
+  preview URLs, disk-plus-memory snapshots, pause/resume, package export, live-test entry point,
+  and provider documentation.
+
 ## @opencoredev/sandbox-sdk@0.2.0
 
 - Add Ascii Box and Railway Sandbox provider adapters, package exports, capabilities, examples,

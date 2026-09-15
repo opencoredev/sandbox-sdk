@@ -31,6 +31,8 @@ export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
       return <BoxLogo {...props} />;
     case "railway":
       return <RailwayLogo {...props} />;
+    case "tenki":
+      return <TenkiLogo {...props} />;
     default:
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
   }
@@ -48,6 +50,7 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "upstash":
     case "box":
     case "railway":
+    case "tenki":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;
@@ -124,6 +127,25 @@ function RailwayLogo(props: IconProps) {
       <path
         fill="currentColor"
         d="M.113 10.27A13.026 13.026 0 0 0 0 11.48h18.23c-.064-.125-.15-.237-.235-.347-3.117-4.027-4.793-3.677-7.19-3.78-.8-.034-1.34-.048-4.524-.048-1.704 0-3.555.005-5.358.01-.234.63-.459 1.24-.567 1.737h9.342v1.216H.113v.002Zm18.26 2.426H.009c.02.326.05.645.094.961h16.955c.754 0 1.179-.429 1.315-.96Zm-17.318 4.28S3.865 23.878 11.985 24c4.855 0 9.027-2.883 10.92-7.024H1.056ZM11.988 0C7.5 0 3.593 2.466 1.531 6.108l4.75-.005v-.002c3.71 0 3.849.016 4.573.047l.448.016c1.563.052 3.485.22 4.996 1.364.82.621 2.007 1.99 2.712 2.965.654.902.842 1.94.396 2.934-.408.914-1.289 1.458-2.353 1.458H.391s.099.42.249.886h22.748A12.026 12.026 0 0 0 24 12.005C24 5.377 18.621 0 11.988 0Z"
+      />
+    </svg>
+  );
+}
+
+function TenkiLogo(props: IconProps) {
+  return (
+    <svg {...iconProps} {...props} viewBox="0 0 160 168">
+      <path
+        fill="currentColor"
+        d="M121.079 52.916 77.5 24.337c-4.333-2.842-4.062-9.297.494-11.764L99.699.822a7 7 0 0 1 6.982.295l49.778 32.644a7 7 0 0 1 3.092 5.747l-.107 59.652a7 7 0 0 1-3.586 6.017l-21.705 11.751c-4.556 2.466-10.084-.849-10.075-6.041l.094-52.225a7 7 0 0 0-3.093-5.746Z"
+      />
+      <path
+        fill="currentColor"
+        d="m64.013 91.828-.125 69.299c-.009 5.192 5.52 8.508 10.075 6.041l30.662-16.6a7 7 0 0 0 3.586-6.017l.138-76.727a7 7 0 0 0-3.093-5.747L41.23 20.089a7 7 0 0 0-6.982-.295L3.586 36.395c-4.556 2.467-4.826 8.922-.493 11.763L60.92 86.081a7 7 0 0 1 3.093 5.747Z"
+      />
+      <path
+        fill="currentColor"
+        d="M24.451 108.439a6 6 0 0 0 2.732 5.029l21.28 13.822a3 3 0 0 1 1.454 2.674l-.04 21.513c-.005 2.532-2.834 4.049-4.966 2.663L2.803 126.788a6 6 0 0 1-2.733-5.028l.091-52.789c.005-2.531 2.834-4.048 4.966-2.663l17.916 11.637a3 3 0 0 1 1.453 2.675l-.045 27.819Z"
       />
     </svg>
   );

@@ -36,6 +36,11 @@ const providers = {
     importPath: "@opencoredev/sandbox-sdk/railway",
     factory: "railway({ idleTimeoutMinutes: 5 })",
   },
+  tenki: {
+    importName: "tenki",
+    importPath: "@opencoredev/sandbox-sdk/tenki",
+    factory: "tenki({ idleTimeoutMinutes: 10 })",
+  },
 } as const;
 
 export function ProviderAISDKExample({ provider }: { provider: keyof typeof providers }) {
@@ -73,11 +78,7 @@ export async function runSandboxAgent(model: LanguageModel) {
         This provider works with AI SDK <code>ToolLoopAgent</code> through the normalized sandbox
         session. Pass the language model from your existing AI SDK provider or AI Gateway setup.
       </p>
-      <DynamicCodeBlock
-        lang="ts"
-        code={code}
-        codeblock={{ title: "sandbox-agent.ts" }}
-      />
+      <DynamicCodeBlock lang="ts" code={code} codeblock={{ title: "sandbox-agent.ts" }} />
       <p>
         See the <a href="/docs/integrations/ai-sdk">AI SDK guide</a> for approval flows, direct
         session access, and HarnessAgent alternatives.

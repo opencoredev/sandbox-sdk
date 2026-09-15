@@ -125,3 +125,22 @@ export const railwayCapabilities = defineCapabilities({
   "image.custom": "template",
   "network.policy": "native",
 });
+
+export const tenkiCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "separate-streams",
+  "process.background": "full",
+  "process.stdin": "full",
+  "process.cancel": "full",
+  "ports.expose": "public",
+  "snapshot.create": "memory",
+  "snapshot.delete": "memory",
+  "sandbox.resume": "memory",
+  "filesystem.persistent": "persistent",
+  "image.custom": "template",
+  "network.policy": "native",
+});

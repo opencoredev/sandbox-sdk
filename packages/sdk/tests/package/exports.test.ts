@@ -23,6 +23,11 @@ test("Box built entry imports independently", async () => {
   expect(await import(boxEntry)).toHaveProperty("box");
 });
 
+test("Tenki built entry imports independently", async () => {
+  const tenkiEntry = "../../dist/providers/tenki/index.mjs";
+  expect(await import(tenkiEntry)).toHaveProperty("tenki");
+});
+
 test("experimental integration entries import independently", async () => {
   const aiEntry = "../../dist/ai/index.mjs";
   const harnessEntry = "../../dist/ai/harness.mjs";
