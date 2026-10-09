@@ -97,8 +97,14 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
       const nearest = Math.round((el.scrollLeft - m.start) / m.pitch);
       if (nearest < N || nearest >= 2 * N) {
         const shift = nearest < N ? N : -N;
+        // the outer copy is about to be hidden, so carry focus over to the same card in the middle set
+        const focused = el.children[nearest]?.contains(document.activeElement);
         el.scrollLeft += shift * m.pitch;
         setCurrent(nearest + shift);
+        if (focused)
+          requestAnimationFrame(() =>
+            el.children[nearest + shift]?.querySelector("a")?.focus({ preventScroll: true }),
+          );
       }
     };
     const onScroll = () => {
