@@ -4,6 +4,7 @@ import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 
 import { Provider } from "@/components/provider";
+import { fontVariables } from "@/lib/fonts";
 import { socialImage } from "@/lib/shared";
 
 import "./global.css";
@@ -68,7 +69,7 @@ export const metadata: Metadata = {
 
 export default function Layout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={inter.className} suppressHydrationWarning>
+    <html lang="en" className={`${inter.className} ${fontVariables}`} suppressHydrationWarning>
       <head>
         {process.env.NODE_ENV === "development" && (
           <Script
