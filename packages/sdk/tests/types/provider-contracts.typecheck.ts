@@ -9,6 +9,7 @@ import { daytona } from "../../src/providers/daytona";
 import { e2b } from "../../src/providers/e2b";
 import { local, type LocalSandbox } from "../../src/providers/local";
 import { railway } from "../../src/providers/railway";
+import { smol } from "../../src/providers/smol";
 import { tenki, type TenkiSession } from "../../src/providers/tenki";
 import { vercel } from "../../src/providers/vercel";
 import { upstash } from "../../src/providers/upstash";
@@ -21,6 +22,7 @@ const vercelContract: SandboxProvider<VercelNative> = vercel();
 const upstashContract: SandboxProvider<UpstashNative> = upstash();
 const boxContract: SandboxProvider<AsciiBoxSandbox> = box({ apiKey: "test" });
 const railwayContract: SandboxProvider<import("railway").Sandbox> = railway();
+const smolContract: SandboxProvider<import("smolmachines").Machine> = smol();
 const tenkiContract: SandboxProvider<TenkiSession> = tenki();
 void [
   localContract,
@@ -31,6 +33,7 @@ void [
   upstashContract,
   boxContract,
   railwayContract,
+  smolContract,
   tenkiContract,
 ];
 

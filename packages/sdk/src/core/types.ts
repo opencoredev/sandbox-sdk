@@ -7,6 +7,7 @@ export const providerNames = [
   "box",
   "railway",
   "tenki",
+  "smol",
 ] as const;
 export type ProviderName = (typeof providerNames)[number];
 

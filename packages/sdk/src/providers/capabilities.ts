@@ -144,3 +144,18 @@ export const tenkiCapabilities = defineCapabilities({
   "image.custom": "template",
   "network.policy": "native",
 });
+
+/** A Smol microVM supports native Linux commands and byte-exact file I/O. */
+export const smolCapabilities = defineCapabilities({
+  "files.read": "full",
+  "files.write": "full",
+  "files.list": "full",
+  "files.remove": "full",
+  "process.run": "separate-streams",
+  "process.stream": "separate-streams",
+  "process.background": "full",
+  "process.cancel": "full",
+  "filesystem.persistent": "ephemeral",
+  "image.custom": "native",
+  "network.policy": "native",
+});

@@ -81,6 +81,10 @@
     "./mastra": {
       "types": "./dist/mastra/index.d.mts",
       "import": "./dist/mastra/index.mjs"
+    },
+    "./smol": {
+      "types": "./dist/providers/smol/index.d.mts",
+      "import": "./dist/providers/smol/index.mjs"
     }
   },
   "publishConfig": {
@@ -125,7 +129,8 @@
     "eve": "^0.22",
     "railway": "3.5.7",
     "tsdown": "^0.16.6",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "smolmachines": "^1.25.1"
   },
   "peerDependencies": {
     "@ai-sdk/harness": "^1.0.0",
@@ -138,7 +143,8 @@
     "ai": "^7.0.0",
     "e2b": "^2.32.0",
     "eve": "^0.22.0",
-    "railway": "^3.5.7"
+    "railway": "^3.5.7",
+    "smolmachines": "^1.25.1"
   },
   "peerDependenciesMeta": {
     "e2b": {
@@ -172,6 +178,9 @@
       "optional": true
     },
     "eve": {
+      "optional": true
+    },
+    "smolmachines": {
       "optional": true
     }
   },

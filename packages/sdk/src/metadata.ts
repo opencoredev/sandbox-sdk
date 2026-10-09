@@ -4,6 +4,7 @@ import {
   e2bCapabilities,
   localCapabilities,
   railwayCapabilities,
+  smolCapabilities,
   tenkiCapabilities,
   upstashCapabilities,
   vercelCapabilities,
@@ -193,6 +194,26 @@ export const providers: readonly ProviderMetadata[] = [
       "Creates and deletes VM snapshots that capture disk and memory. Restoring boots a new session through tenki({ snapshotId }).",
     runtimeLimitations:
       "Runs on Node.js 18 or newer and Bun 1.3 or newer with @tenkicloud/sandbox 1.0.6 or newer. The file API is rooted at /home/tenki: other working directories are symlinked into it, and file paths outside the cwd or /home/tenki are rejected.",
+  },
+
+  {
+    id: "smol",
+    displayName: "Smol Machines",
+    officialUrl: "https://github.com/smol-machines/smol",
+    packageName: "smolmachines",
+    packageVersion: "1.25.1",
+    capabilities: smolCapabilities,
+    environmentVariables: ["SMOL_CLOUD_TOKEN"],
+    technicalStatus: "experimental",
+    providerReviewed: false,
+    sponsor: false,
+    liveTest: null,
+    portBehavior:
+      "Local ports prepublished at creation have a localhost URL; cloud creation waits for listeners, so normalized cloud exposure is unavailable.",
+    snapshotBehavior:
+      "Portable checkpoints, branching, and restore are available through sandbox.raw; restore produces a new machine.",
+    runtimeLimitations:
+      "Local requires supported virtualization; cloud requires a token. Cloud request abort does not guarantee termination of a running guest command.",
   },
 ];
 

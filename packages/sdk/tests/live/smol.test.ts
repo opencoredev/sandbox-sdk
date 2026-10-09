@@ -1,0 +1,138 @@
+import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Machine } from "smolmachines";
+import { createSandbox } from "../../src";
+import { smol } from "../../src/providers/smol";
+import { runConformance } from "../../src/testing";
+
+test.skipIf(!Machine.localAvailability().available)(
+  "Smol local VM runs the normalized sandbox contract",
+  async () => {
+    const results = await runConformance({
+      create: {
+        provider: smol({ target: "local", image: "public.ecr.aws/docker/library/node:22" }),
+        timeout: 180_000,
+      },
+      commands: {
+        success: "true",
+        stdout: "printf stdout",
+        stderr: "printf stderr >&2",
+        nonzero: "exit 3",
+        timeout: "sleep 2",
+        background: "sleep 60",
+        stdin: "cat",
+      },
+    });
+    const failed = results.filter((result) => result.status === "failed");
+    expect(failed).toEqual([]);
+    expect(results.filter((result) => result.status === "passed").length).toBeGreaterThan(12);
+  },
+  300_000,
+);
+
+test.skipIf(!Machine.localAvailability().available)(
+  "Smol local process emits output and exposes native checkpoint methods",
+  async () => {
+    const sandbox = await createSandbox({
+      provider: smol({ target: "local", image: "public.ecr.aws/docker/library/node:22" }),
+      env: { GREETING: "from-sandbox" },
+      timeout: 180_000,
+    });
+    try {
+      expect(typeof sandbox.raw.checkpoint).toBe("function");
+      expect((await sandbox.run('printf "%s" "$GREETING"')).stdout).toBe("from-sandbox");
+      const process = await sandbox.processes.start("printf 'live-stream\\n'");
+      const output = [];
+      for await (const event of process.output()) output.push(event.data);
+      expect(output.join("")).toContain("live-stream");
+      expect(await process.wait()).toEqual({ exitCode: 0 });
+    } finally {
+      await sandbox.stop();
+    }
+  },
+  180_000,
+);
+
+test.skipIf(!Machine.localAvailability().available)(
+  "Smol native checkpoint restores guest files",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "sandbox-sdk-smol-"));
+    const sandbox = await createSandbox({
+      provider: smol({
+        target: "local",
+        image: "public.ecr.aws/docker/library/node:22",
+        machine: { branchable: true },
+      }),
+      timeout: 180_000,
+    });
+    let restored: Machine | undefined;
+    try {
+      await sandbox.files.write("checkpoint.txt", "before");
+      const artifact = join(root, "agent.smolcheckpoint");
+      const info = await sandbox.raw.checkpoint(artifact);
+      expect(info.sizeBytes).toBeGreaterThan(0);
+      await sandbox.files.write("checkpoint.txt", "after");
+      restored = await Machine.restoreCheckpoint(artifact, `sdk-smol-${crypto.randomUUID()}`, {
+        target: "local",
+        handleSignals: false,
+      });
+      expect((await restored.readFile("/workspace/checkpoint.txt")).toString()).toBe("before");
+    } finally {
+      try {
+        await restored?.delete();
+      } finally {
+        try {
+          await sandbox.stop();
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      }
+    }
+  },
+  300_000,
+);
+
+test.skipIf(!Machine.localAvailability().available)(
+  "Smol local published port serves a live guest process",
+  async () => {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("No free host port");
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const sandbox = await createSandbox({
+      provider: smol({
+        target: "local",
+        image: "public.ecr.aws/docker/library/node:22",
+        machine: { ports: [{ host: address.port, guest: 3000 }] },
+      }),
+      timeout: 180_000,
+    });
+    try {
+      const proc = await sandbox.processes.start(
+        `node -e 'require("http").createServer((_,res)=>res.end("smol-port-ok")).listen(3000,"0.0.0.0")'`,
+      );
+      try {
+        const exposed = await sandbox.ports.expose(3000);
+        let response: Response | undefined;
+        for (let i = 0; i < 100; i++) {
+          try {
+            response = await exposed.request?.("/health");
+            break;
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        expect(await response?.text()).toBe("smol-port-ok");
+      } finally {
+        await proc.kill();
+      }
+    } finally {
+      await sandbox.stop();
+    }
+  },
+  180_000,
+);

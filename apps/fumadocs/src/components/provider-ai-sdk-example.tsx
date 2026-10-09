@@ -36,6 +36,11 @@ const providers = {
     importPath: "@opencoredev/sandbox-sdk/railway",
     factory: "railway({ idleTimeoutMinutes: 5 })",
   },
+  smol: {
+    importName: "smol",
+    importPath: "@opencoredev/sandbox-sdk/smol",
+    factory: 'smol({ target: "local" })',
+  },
   tenki: {
     importName: "tenki",
     importPath: "@opencoredev/sandbox-sdk/tenki",

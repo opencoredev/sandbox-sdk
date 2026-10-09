@@ -71,6 +71,7 @@
         "e2b": "^2.32.0",
         "eve": "^0.22",
         "railway": "3.5.7",
+        "smolmachines": "^1.25.1",
         "tsdown": "^0.16.6",
         "typescript": "^6.0.3",
       },
@@ -86,6 +87,7 @@
         "e2b": "^2.32.0",
         "eve": "^0.22.0",
         "railway": "^3.5.7",
+        "smolmachines": "^1.25.1",
       },
       "optionalPeers": [
         "@ai-sdk/harness",
@@ -99,6 +101,7 @@
         "e2b",
         "eve",
         "railway",
+        "smolmachines",
       ],
     },
   },
@@ -1866,6 +1869,14 @@
     "sisteransi": ["sisteransi@1.0.5", "", {}, "sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg=="],
 
     "smart-buffer": ["smart-buffer@4.2.0", "", {}, "sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg=="],
+
+    "smolmachines": ["smolmachines@1.25.1", "", { "optionalDependencies": { "smolmachines-darwin-arm64": "1.25.1", "smolmachines-linux-arm64-gnu": "1.25.1", "smolmachines-linux-x64-gnu": "1.25.1" } }, "sha512-/mClkd7CHMtECQwbDXQ5tLEbHgWtz4ENHMrzQsLl18hkyCCPg+2zN+JYVIFoGoshcqIIkxXr2HnzbPGbtjsrUg=="],
+
+    "smolmachines-darwin-arm64": ["smolmachines-darwin-arm64@1.25.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-aai6qlyho+SIGHjWzBjRK1nnFg7p48nkhrx5TxxUZ055ML757YWfI+7W219UPFkwntCJsA7jCRWZ0rs4N9PLog=="],
+
+    "smolmachines-linux-arm64-gnu": ["smolmachines-linux-arm64-gnu@1.25.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-gGIAW98ywNESsBjBsnUtSIyCvvRkffY4XaZjOi3o0xpwqOkkiXDd16X9O9Cxr57ySK4afjupnZYdm8NMU+nxYA=="],
+
+    "smolmachines-linux-x64-gnu": ["smolmachines-linux-x64-gnu@1.25.1", "", { "os": "linux", "cpu": "x64" }, "sha512-1YZTsV/s2LL7uZxrikGSdRZeWCBAHOWtQUUydKVd/HHPxEjO0qgPJtSQ7E06xnCVzXGyTf4lhrjlk9/DvhXafw=="],
 
     "socks": ["socks@2.8.9", "", { "dependencies": { "ip-address": "^10.1.1", "smart-buffer": "^4.2.0" } }, "sha512-LJhUYUvItdQ0LkJTmPeaEObWXAqFyfmP85x0tch/ez9cahmhlBBLbIqDFnvBnUJGagb0JbIQrkBs1wJ+yRYpEw=="],
 

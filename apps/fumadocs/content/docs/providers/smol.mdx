@@ -1,0 +1,84 @@
+---
+title: Smol Machines
+description: Run full Linux microVMs locally or in the cloud for sandboxed agents.
+icon: smol
+---
+
+Smol Machines runs OCI images inside isolated Linux microVMs. The same provider works locally on a supported virtualization host and in the Smol cloud. It uses the native `smolmachines` SDK, and a `Machine` is available on `sandbox.raw` for checkpointing, branching, and lifecycle operations.
+
+## Install
+
+```bash title="Terminal"
+bun add @opencoredev/sandbox-sdk smolmachines
+```
+
+## Start a local VM
+
+```ts title="smol-local.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { smol } from "@opencoredev/sandbox-sdk/smol";
+
+await using sandbox = await createSandbox({
+  provider: smol({ target: "local", image: "node:22" }),
+});
+await sandbox.files.write("hello.txt", "hello from the VM");
+console.log((await sandbox.run("cat hello.txt")).stdout);
+```
+
+The local target requires virtualization support on the host. `sandbox.stop()` deletes the VM, including its files. Use `await using` or `try/finally` for cleanup.
+
+## Run in Smol's cloud
+
+Set `SMOL_CLOUD_TOKEN`, then change only the target:
+
+```ts title="smol-cloud.ts"
+const sandbox = await createSandbox({
+  provider: smol({ target: "cloud", image: "node:22", ttlSeconds: 3600 }),
+});
+try {
+  console.log((await sandbox.run("node --version")).stdout);
+} finally {
+  await sandbox.stop();
+}
+```
+
+You can pass `apiKey`, `baseUrl`, and native `resources` to `smol()` instead of relying on environment defaults. The target is always explicit: a cloud token in your environment will not silently move local work to the cloud.
+
+## Control network access
+
+Outbound networking is disabled by default. To let an agent install packages or reach an approved service, set Smol's native network settings explicitly:
+
+```ts
+const provider = smol({
+  target: "local",
+  resources: { network: true, allowHosts: ["registry.npmjs.org"] },
+});
+```
+
+Use an allowlist when the workload needs only specific hosts. This policy is enforced by the VM's native network layer.
+
+## Run an AI SDK agent
+
+<ProviderAISDKExample provider="smol" />
+
+## Stream output and use checkpoints
+
+On the local target, `sandbox.processes.start()` streams stdout and stderr, supports `wait()` and `kill()`, and bounds output retained while no consumer is reading. Stdin is not part of the normalized Smol process handle.
+
+For checkpoints and warm branches, use the native machine:
+
+```ts title="checkpoint.ts"
+// Create the VM with machine: { branchable: true } first.
+const checkpoint = await sandbox.raw.checkpoint("/tmp/my-agent.smolcheckpoint");
+console.log(checkpoint.path);
+```
+
+Restoring a checkpoint creates a different VM, so normalized `sandbox.snapshots.restore()` is unavailable. Read the native Smol SDK documentation for cloud checkpoint IDs and branching.
+
+## Capability differences
+
+The provider runs commands and reads and writes binary files on both targets. Locally, it also provides normalized background processes and cancellation. Cloud `processes.start()` and command cancellation are not advertised: aborting a cloud request may leave its guest command running.
+
+Ports must be published when the VM is created. On a local VM you can pass `machine: { ports: [{ host: 8080, guest: 3000 }] }` and then call `sandbox.ports.expose(3000)` after starting a service. Creation returns after the guest agent is ready so the service can start without deadlocking on port readiness. Cloud creation waits for the published listener, so cloud `sandbox.ports.expose()` is unavailable; advanced configurations can pass native `machine.ports` and use `sandbox.raw.endpoint(port)` once a listener is ready. Use a custom image that starts the listener on boot when publishing cloud ports.
+
+Images need `sh`, `find` with `-printf`, `mkdir`, `rm`, and `test` for the normalized API. The default `node:22` image includes them.
