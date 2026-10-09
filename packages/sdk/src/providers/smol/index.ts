@@ -89,13 +89,17 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
         workdir: createOptions.cwd,
         env: { ...createOptions.env },
       };
-      const raw = await awaitMachine(Machine.create(config, connection), createOptions);
-      try {
-        await assertSuccess(raw, ["mkdir", "-p", "--", createOptions.cwd], "sandbox.create.cwd");
-      } catch (error) {
-        await raw.delete().catch(() => undefined);
-        throw error;
-      }
+      const raw = await awaitMachine(
+        Machine.create(config, connection),
+        createOptions,
+        (machine, signal) =>
+          assertSuccess(
+            machine,
+            ["mkdir", "-p", "--", createOptions.cwd],
+            "sandbox.create.cwd",
+            signal,
+          ),
+      );
       const processes = new Set<SandboxProcess>();
       const runtimeEnv = { ...createOptions.env };
       return {
@@ -159,6 +163,14 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
             ...runOptions,
             env: { ...runtimeEnv, ...runOptions.env },
           });
+          if (result.stdoutTruncated || result.stderrTruncated) {
+            throw new SandboxError({
+              code: "process_failed",
+              provider: "smol",
+              operation: "process.run",
+              message: "Command output was truncated",
+            });
+          }
           return {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -265,8 +277,14 @@ async function runCommand(
   }
 }
 
-async function assertSuccess(machine: Machine, args: string[], operation: string): Promise<void> {
-  const result = await machine.exec(args);
+async function assertSuccess(
+  machine: Machine,
+  args: string[],
+  operation: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await machine.exec(args, { signal });
+  signal?.throwIfAborted();
   if (!result.success)
     throw new Error(`${operation}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
 }
@@ -274,19 +292,23 @@ async function assertSuccess(machine: Machine, args: string[], operation: string
 async function awaitMachine(
   pending: Promise<Machine>,
   options: { signal?: AbortSignal; timeout?: number },
+  initialize: (machine: Machine, signal: AbortSignal) => Promise<void>,
 ): Promise<Machine> {
   const { signal, timeout } = options;
-  if (timeout === undefined && !signal) return pending;
-  let done = false;
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   const stopped = new Promise<never>((_, reject) => {
-    abort = () => reject(signal?.reason ?? new Error("Sandbox creation aborted"));
+    const cancel = (reason: unknown) => {
+      controller.abort(reason);
+      reject(reason);
+    };
+    abort = () => cancel(signal?.reason ?? new Error("Sandbox creation aborted"));
     signal?.addEventListener("abort", abort, { once: true });
     if (timeout !== undefined)
       timer = setTimeout(
         () =>
-          reject(
+          cancel(
             new SandboxError({
               code: "timeout",
               provider: "smol",
@@ -299,13 +321,19 @@ async function awaitMachine(
     if (signal?.aborted) abort();
   });
   const creation = pending.then(async (machine) => {
-    if (done) await machine.delete();
-    return machine;
+    try {
+      controller.signal.throwIfAborted();
+      await initialize(machine, controller.signal);
+      controller.signal.throwIfAborted();
+      return machine;
+    } catch (error) {
+      await machine.delete().catch(() => undefined);
+      throw error;
+    }
   });
   try {
     return await Promise.race([creation, stopped]);
   } finally {
-    done = true;
     if (timer) clearTimeout(timer);
     if (signal && abort) signal.removeEventListener("abort", abort);
     void creation.catch(() => undefined);
@@ -377,9 +405,16 @@ function startLocalProcess(
       return state;
     },
     async *output() {
-      let nextIndex = firstIndex;
+      let nextIndex = 0;
       while (!streamDone || nextIndex < firstIndex + queue.length) {
-        if (nextIndex < firstIndex) nextIndex = firstIndex;
+        if (nextIndex < firstIndex) {
+          throw new SandboxError({
+            code: "process_failed",
+            provider: "smol",
+            operation: "process.output",
+            message: "Process output exceeded the 1024-event buffer; earlier output was lost",
+          });
+        }
         if (nextIndex < firstIndex + queue.length) {
           yield queue[nextIndex - firstIndex]!;
           nextIndex++;

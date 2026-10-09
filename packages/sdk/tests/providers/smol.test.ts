@@ -183,3 +183,113 @@ test("Smol output readers each receive every event, including trailing output af
     await sandbox.stop();
   }
 });
+
+test("Smol aborts during working-directory setup and deletes the VM", async () => {
+  let setupStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    setupStarted = resolve;
+  });
+  const stalled = {
+    ...fake,
+    async exec(_args: string[], options: { signal: AbortSignal }) {
+      setupStarted();
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(stalled as unknown as Machine);
+  const controller = new AbortController();
+  const creation = createSandbox({ provider: smol(), signal: controller.signal });
+  await started;
+  controller.abort(new Error("Canceled during setup"));
+  await expect(creation).rejects.toThrow("Canceled during setup");
+  expect(deleted).toBe(1);
+});
+
+test("Smol creation timeout includes working-directory setup", async () => {
+  const stalled = {
+    ...fake,
+    async exec(_args: string[], options: { signal: AbortSignal }) {
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(stalled as unknown as Machine);
+  await expect(createSandbox({ provider: smol(), timeout: 20 })).rejects.toMatchObject({
+    code: "timeout",
+  });
+  expect(deleted).toBe(1);
+});
+
+test("Smol run reports truncated stdout and stderr", async () => {
+  for (const field of ["stdoutTruncated", "stderrTruncated"] as const) {
+    const truncated = {
+      ...fake,
+      async exec(args: string[], options: unknown) {
+        const result = await fake.exec(args, options);
+        return args[0] === "sh" ? { ...result, [field]: true } : result;
+      },
+    };
+    spyOn(Machine, "create").mockResolvedValue(truncated as unknown as Machine);
+    const sandbox = await createSandbox({ provider: smol() });
+    try {
+      await expect(sandbox.run("printf test")).rejects.toMatchObject({ code: "process_failed" });
+    } finally {
+      await sandbox.stop();
+    }
+  }
+});
+
+test("Smol reports output buffer overflow instead of silently dropping events", async () => {
+  const streaming = {
+    ...fake,
+    async *execStream() {
+      for (let i = 0; i < 1025; i++) yield { kind: "stdout" as const, data: `${i}` };
+      yield { kind: "exit" as const, exitCode: 0 };
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(streaming as unknown as Machine);
+  const sandbox = await createSandbox({ provider: smol() });
+  try {
+    const process = await sandbox.processes.start("produce output");
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
+    await expect(async () => {
+      for await (const _event of process.output()) {
+        /* consume all output */
+      }
+    }).toThrow("earlier output was lost");
+  } finally {
+    await sandbox.stop();
+  }
+});
+
+test("Smol propagates caller abort to a local process", async () => {
+  const streaming = {
+    ...fake,
+    async *execStream(_args: string[], options: { signal: AbortSignal }) {
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      yield { kind: "stderr" as const, data: "stopped" };
+      yield { kind: "exit" as const, exitCode: 137 };
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(streaming as unknown as Machine);
+  const sandbox = await createSandbox({ provider: smol() });
+  try {
+    const controller = new AbortController();
+    const process = await sandbox.processes.start("wait", { signal: controller.signal });
+    controller.abort();
+    expect(await process.wait()).toEqual({ exitCode: 137 });
+    expect(await process.status()).toBe("killed");
+    const output = [];
+    for await (const event of process.output()) output.push(event.data);
+    expect(output).toEqual(["stopped"]);
+  } finally {
+    await sandbox.stop();
+  }
+});

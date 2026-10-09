@@ -1,14 +1,17 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { Machine } from "smolmachines";
 import { providers } from "../src/metadata";
 
 const id = process.argv[2];
 const provider = providers.find((item) => item.id === id);
 if (!provider || id === "local" || id === "agentos")
-  throw new Error(`Unknown hosted live provider: ${id}`);
+  throw new Error(`Unknown live provider: ${id}`);
 
 const started = new Date();
 const missingCredentials = (() => {
   switch (id) {
+    case "smol":
+      return !Machine.localAvailability().available;
     case "e2b":
       return !process.env.E2B_API_KEY;
     case "daytona":
