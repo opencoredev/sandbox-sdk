@@ -170,7 +170,7 @@ function Hero() {
           },
           {
             label: "Create",
-            code: "await createSandbox({ provider: local() })",
+            code: "await using sandbox = await createSandbox({ provider: local() })",
             note: "await using stops it when the scope ends, even on errors",
           },
           {

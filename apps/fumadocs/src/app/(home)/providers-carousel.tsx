@@ -106,14 +106,21 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
       window.clearTimeout(settle);
       settle = window.setTimeout(recentre, 160);
     };
+    // a resize changes the card pitch, so keep the selected card centred rather than reading the old offset
+    const onResize = () => {
+      const m = geometry();
+      if (!m) return;
+      el.scrollLeft = m.start + currentRef.current * m.pitch;
+      update();
+    };
     update();
     el.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
+    window.addEventListener("resize", onResize);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
       el.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
+      window.removeEventListener("resize", onResize);
     };
   }, [geometry]);
 

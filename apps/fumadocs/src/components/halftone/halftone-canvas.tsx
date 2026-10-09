@@ -71,17 +71,30 @@ export function HalftoneCanvas({
     if (!host) return;
     // A fresh canvas every mount: a disposed renderer releases its WebGL context,
     // and asking the same element again would hand back that dead context.
-    const canvas = document.createElement("canvas");
-    canvas.setAttribute("aria-hidden", "true");
-    canvas.style.cssText = "display:block;width:100%;height:100%";
-    host.appendChild(canvas);
+    const makeCanvas = () => {
+      const c = document.createElement("canvas");
+      c.setAttribute("aria-hidden", "true");
+      c.style.cssText = "display:block;width:100%;height:100%";
+      host.appendChild(c);
+      return c;
+    };
+    let canvas = makeCanvas();
     const source = document.createElement("canvas");
     const sctx = source.getContext("2d");
     if (!sctx) {
       canvas.remove();
       return;
     }
-    let halftone = createHalftone(canvas, { cell, fill, shape, glow, ground });
+    // a failed shader leaves a WebGL context behind, and a canvas can't switch to 2D, so swap in a fresh one
+    const renderer = () => {
+      const made = createHalftone(canvas, { cell, fill, shape, glow, ground });
+      if (!made && !canvas.getContext("2d")) {
+        canvas.remove();
+        canvas = makeCanvas();
+      }
+      return made;
+    };
+    let halftone = renderer();
     let lost = false;
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -129,9 +142,9 @@ export function HalftoneCanvas({
     };
     const onRestored = () => {
       lost = false;
-      halftone = createHalftone(canvas, { cell, fill, shape, glow, ground });
+      halftone = renderer();
       size();
-      draw(stillAt);
+      if (still) draw(stillAt);
     };
     canvas.addEventListener("webglcontextlost", onLost);
     canvas.addEventListener("webglcontextrestored", onRestored);
@@ -145,7 +158,8 @@ export function HalftoneCanvas({
       size();
       if (still) draw(stillAt);
     });
-    ro.observe(canvas);
+    // observe the host, which outlives any canvas swapped in for the 2D fallback
+    ro.observe(host);
     const detach = () => canvas.remove();
 
     if (still) {
@@ -163,7 +177,8 @@ export function HalftoneCanvas({
     if (parallax) window.addEventListener("pointermove", onPointer, { passive: true });
 
     // the loop runs only while the canvas is on screen and the tab is open, so play time pauses too
-    let t = stillAt > 4 ? 0 : stillAt;
+    // carry on from the opening still, so the first animated frame matches it
+    let t = stillAt;
     let last = 0;
     let acc = 1;
     let raf = 0;
@@ -192,7 +207,7 @@ export function HalftoneCanvas({
       visible = entry?.isIntersecting ?? false;
       sync();
     });
-    io.observe(canvas);
+    io.observe(host);
     document.addEventListener("visibilitychange", sync);
 
     return () => {

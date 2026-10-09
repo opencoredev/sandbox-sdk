@@ -479,7 +479,9 @@
   background: var(--panel);
   font-family: var(--mono);
   font-size: 13px;
-  white-space: nowrap;
+  line-height: 1.6;
+  /* long lines wrap at spaces instead of hiding behind a scroll */
+  white-space: normal;
   scrollbar-width: none;
 }
 .stepNote {
