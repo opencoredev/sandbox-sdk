@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { Machine } from "smolmachines";
-import { createSandbox } from "../../src";
+import { capabilityNames, createSandbox, supports } from "../../src";
 import { smol } from "../../src/providers/smol";
 
 const files = new Map<string, Uint8Array>();
@@ -64,6 +64,9 @@ test("Smol cloud creates a VM with explicit target and byte-exact files", async 
   });
   expect(provider.capabilities["process.background"]).toBe(false);
   expect(provider.capabilities["process.cancel"]).toBe(false);
+  for (const name of capabilityNames) expect(provider.capabilities[name]).toBeDefined();
+  expect(supports({ capabilities: provider.capabilities }, "ports.expose")).toBe(false);
+  expect(supports({ capabilities: provider.capabilities }, "process.background")).toBe(false);
   const sandbox = await createSandbox({ provider, env: { FOO: "bar" } });
   try {
     expect(create).toHaveBeenCalledWith(
@@ -115,10 +118,67 @@ test("Smol local ports are available only when prepublished", async () => {
   spyOn(Machine, "create").mockResolvedValue(fake as unknown as Machine);
   const provider = smol({ machine: { ports: [{ host: 8901, guest: 3000 }] } });
   expect(provider.capabilities["ports.expose"]).toBe("localhost");
+  for (const name of capabilityNames) expect(provider.capabilities[name]).toBeDefined();
+  expect(supports({ capabilities: provider.capabilities }, "process.stdin")).toBe(false);
   const sandbox = await createSandbox({ provider });
   try {
     expect((await sandbox.ports.expose(3000)).url).toBe("http://127.0.0.1:3000");
     await expect(sandbox.ports.expose(3001)).rejects.toMatchObject({ code: "unsupported" });
+  } finally {
+    await sandbox.stop();
+  }
+});
+
+test("Smol local stream failures reject wait and output", async () => {
+  const broken = {
+    ...fake,
+    async *execStream() {
+      yield { kind: "stdout" as const, data: "before" };
+      throw new Error("stream lost");
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(broken as unknown as Machine);
+  const sandbox = await createSandbox({ provider: smol() });
+  try {
+    const process = await sandbox.processes.start("echo before");
+    await expect(process.wait()).rejects.toThrow("stream lost");
+    const chunks: string[] = [];
+    try {
+      for await (const event of process.output()) chunks.push(String(event.data));
+      throw new Error("stream error was swallowed");
+    } catch (error) {
+      expect(String(error)).toContain("stream lost");
+    }
+    expect(chunks).toEqual(["before"]);
+  } finally {
+    await sandbox.stop();
+  }
+});
+
+test("Smol output readers each receive every event, including trailing output after kill", async () => {
+  const streaming = {
+    ...fake,
+    async *execStream(_args: string[], options: { signal: AbortSignal }) {
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      yield { kind: "stdout" as const, data: "shutdown" };
+      yield { kind: "exit" as const, exitCode: 0 };
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(streaming as unknown as Machine);
+  const sandbox = await createSandbox({ provider: smol() });
+  try {
+    const process = await sandbox.processes.start("wait");
+    const first = process.output()[Symbol.asyncIterator]();
+    const second = process.output()[Symbol.asyncIterator]();
+    const firstChunk = first.next();
+    const secondChunk = second.next();
+    await process.kill();
+    expect((await firstChunk).value?.data).toBe("shutdown");
+    expect((await secondChunk).value?.data).toBe("shutdown");
+    expect((await first.next()).done).toBe(true);
+    expect((await second.next()).done).toBe(true);
   } finally {
     await sandbox.stop();
   }

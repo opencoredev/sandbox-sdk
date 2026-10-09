@@ -15,6 +15,7 @@ import {
   unsupported,
   unsupportedSnapshots,
 } from "../../internal/provider-utils";
+import { capabilityNames } from "../../core/types";
 import { smolCapabilities } from "../capabilities";
 
 /** Smol's local engine and hosted cloud share the same machine API. */
@@ -39,8 +40,12 @@ export interface SmolOptions {
 
 export { smolCapabilities } from "../capabilities";
 
+const COMPLETE_CAPABILITIES = Object.fromEntries(
+  capabilityNames.map((name) => [name, smolCapabilities[name]]),
+) as CapabilityMap;
+
 const CLOUD_CAPABILITIES: CapabilityMap = {
-  ...smolCapabilities,
+  ...COMPLETE_CAPABILITIES,
   "process.background": false,
   "process.stream": false,
   "process.cancel": false,
@@ -54,8 +59,8 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
     target === "cloud"
       ? CLOUD_CAPABILITIES
       : publishedPorts.length
-        ? { ...smolCapabilities, "ports.expose": "localhost" }
-        : smolCapabilities;
+        ? { ...COMPLETE_CAPABILITIES, "ports.expose": "localhost" }
+        : COMPLETE_CAPABILITIES;
   const connection: ConnectOptions = {
     ...options.connection,
     target,
@@ -170,7 +175,10 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
             env: { ...runtimeEnv, ...runOptions.env },
           });
           processes.add(proc);
-          void proc.wait().finally(() => processes.delete(proc));
+          void proc.wait().then(
+            () => processes.delete(proc),
+            () => processes.delete(proc),
+          );
           return proc;
         },
         async expose(port) {
@@ -320,6 +328,9 @@ function startLocalProcess(
   if (options.signal?.aborted) onAbort();
   const queue: ProcessOutputEvent[] = [];
   const listeners = new Set<() => void>();
+  let firstIndex = 0;
+  let streamDone = false;
+  let streamError: unknown;
   let state: "running" | "exited" | "killed" = "running";
   let exitCode = -1;
   const notify = () => {
@@ -335,26 +346,30 @@ function startLocalProcess(
         if (event.kind === "stdout" || event.kind === "stderr") {
           queue.push({ stream: event.kind, data: event.data, timestamp: new Date() });
           // Bound memory when callers never consume output from long-running agents.
-          if (queue.length > 1024) queue.shift();
+          if (queue.length > 1024) {
+            queue.shift();
+            firstIndex++;
+          }
           notify();
         } else if (event.kind === "exit") {
           exitCode = event.exitCode;
         } else {
-          queue.push({ stream: "stderr", data: event.message, timestamp: new Date() });
-          notify();
+          throw new Error(event.message);
         }
       }
+      return { exitCode };
     } catch (error) {
       if (!controller.signal.aborted) {
-        queue.push({ stream: "stderr", data: String(error), timestamp: new Date() });
-        notify();
+        streamError = error;
+        throw error;
       }
+      return { exitCode };
     } finally {
       state = controller.signal.aborted ? "killed" : "exited";
+      streamDone = true;
       options.signal?.removeEventListener("abort", onAbort);
       notify();
     }
-    return { exitCode };
   })();
   return {
     id: crypto.randomUUID(),
@@ -362,13 +377,17 @@ function startLocalProcess(
       return state;
     },
     async *output() {
-      while (queue.length || state === "running") {
-        if (queue.length) {
-          yield queue.shift()!;
+      let nextIndex = firstIndex;
+      while (!streamDone || nextIndex < firstIndex + queue.length) {
+        if (nextIndex < firstIndex) nextIndex = firstIndex;
+        if (nextIndex < firstIndex + queue.length) {
+          yield queue[nextIndex - firstIndex]!;
+          nextIndex++;
         } else {
           await new Promise<void>((resolve) => listeners.add(resolve));
         }
       }
+      if (streamError) throw streamError;
     },
     async write() {
       unsupported("smol", "process.stdin");
@@ -377,10 +396,7 @@ function startLocalProcess(
       return finished;
     },
     async kill() {
-      if (state === "running") {
-        state = "killed";
-        controller.abort(new Error("Process killed"));
-      }
+      if (!streamDone) controller.abort(new Error("Process killed"));
       await finished;
     },
   };
