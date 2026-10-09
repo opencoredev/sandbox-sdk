@@ -215,8 +215,9 @@ function Swap() {
           Change one line. Keep the rest.
         </h2>
         <p className={styles.sectionLede}>
-          The provider is the only thing that changes. Every call after createSandbox works the same
-          everywhere.
+          The provider is the only thing that changes. The calls after createSandbox stay the same,
+          and the <Link href="/compatibility">compatibility table</Link> shows what each provider
+          supports.
         </p>
       </div>
       <div className={styles.codePair}>

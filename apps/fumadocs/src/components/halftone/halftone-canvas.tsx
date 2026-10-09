@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import { createHalftone, type HalftoneStyle, type Scope } from "./halftone";
 
@@ -44,6 +44,13 @@ interface HalftoneCanvasProps {
   className?: string;
 }
 
+const REDUCED = "(prefers-reduced-motion: reduce)";
+const subscribeMotion = (change: () => void) => {
+  const query = window.matchMedia(REDUCED);
+  query.addEventListener("change", change);
+  return () => query.removeEventListener("change", change);
+};
+
 /** A painted scene drawn as an animated halftone. Pauses off screen and in hidden tabs. */
 export function HalftoneCanvas({
   paint,
@@ -64,6 +71,12 @@ export function HalftoneCanvas({
   paintRef.current = paint;
   scopeRef.current = scope;
   frameRef.current = onFrame;
+  // follows the setting live, so turning on reduced motion stops a canvas that is already playing
+  const still = useSyncExternalStore(
+    subscribeMotion,
+    () => window.matchMedia(REDUCED).matches,
+    () => false,
+  );
 
   const { cell, fill, shape, glow, ground } = style;
   useEffect(() => {
@@ -96,7 +109,6 @@ export function HalftoneCanvas({
     };
     let halftone = renderer();
     let lost = false;
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     let dpr = 1;
     const size = () => {
@@ -220,7 +232,7 @@ export function HalftoneCanvas({
       halftone?.dispose();
       detach();
     };
-  }, [cell, fill, shape, glow, ground, fps, stillAt, parallax, zoom]);
+  }, [cell, fill, shape, glow, ground, fps, stillAt, parallax, zoom, still]);
 
   return <div ref={ref} className={className} aria-hidden="true" />;
 }

@@ -243,6 +243,16 @@
   line-height: 1.55;
   text-wrap: pretty;
 }
+.sectionLede a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 150ms ease;
+}
+.sectionLede a:hover {
+  text-decoration-color: currentColor;
+}
 .eyebrow {
   color: var(--faint);
   font-family: var(--mono);
@@ -274,7 +284,8 @@
     background-color 150ms ease,
     transform 120ms ease;
 }
-.primary {
+/* .page scope so it beats the page-wide link colour */
+.page .primary {
   color: #1a1206;
   background: var(--amber);
 }

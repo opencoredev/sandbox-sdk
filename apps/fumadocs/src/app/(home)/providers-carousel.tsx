@@ -148,7 +148,7 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
               className={`${styles.card} ${isCurrent ? styles.cardActive : ""}`}
               aria-roledescription="slide"
               aria-label={`${(i % N) + 1} of ${N}: ${p.name}`}
-              aria-hidden={clone || undefined}
+              aria-hidden={(clone && !isCurrent) || undefined}
             >
               <div className={styles.cardArt}>
                 {/* only the cards in view get a WebGL canvas, so the page holds at most five */}
@@ -175,7 +175,15 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
                 <button
                   type="button"
                   className={styles.cardSelect}
-                  onClick={() => go(i)}
+                  onClick={() => {
+                    go(i);
+                    // this button unmounts once the card is current, so hand focus to the card's guide link
+                    requestAnimationFrame(() =>
+                      track.current?.children[i]
+                        ?.querySelector("a")
+                        ?.focus({ preventScroll: true }),
+                    );
+                  }}
                   aria-label={`Show ${p.name}`}
                   tabIndex={clone ? -1 : 0}
                 />
