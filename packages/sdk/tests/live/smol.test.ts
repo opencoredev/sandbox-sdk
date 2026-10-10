@@ -136,3 +136,28 @@ test.skipIf(!Machine.localAvailability().available)(
   },
   180_000,
 );
+
+test.skipIf(!Machine.localAvailability().available)(
+  "Smol Alpine lists files with BusyBox find and stat",
+  async () => {
+    const sandbox = await createSandbox({
+      provider: smol({ target: "local", image: "alpine:3.22" }),
+      timeout: 180_000,
+    });
+    try {
+      await sandbox.files.write("name\n with spaces.txt", "hello");
+      await sandbox.files.mkdir("nested");
+      const entries = await sandbox.files.list();
+      expect(entries).toContainEqual({
+        name: "name\n with spaces.txt",
+        path: "/workspace/name\n with spaces.txt",
+        type: "file",
+        size: 5,
+      });
+      expect(entries.find((entry) => entry.name === "nested")?.type).toBe("directory");
+    } finally {
+      await sandbox.stop();
+    }
+  },
+  180_000,
+);

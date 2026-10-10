@@ -13,12 +13,21 @@ const fake = {
   async exec(args: string[], options: unknown) {
     calls.push({ args, options });
     if (args[0] === "find") {
-      const entries = encoder.encode(["file.txt", "f", "5", "nested", "d", "0", ""].join("\0"));
+      const entries = encoder.encode(["/workspace/file.txt", "/workspace/nested", ""].join("\0"));
       return {
         success: true,
         exitCode: 0,
         stdout: "",
         stdoutBytes: entries,
+        stderr: "",
+        stdoutTruncated: false,
+      };
+    }
+    if (args[0] === "stat") {
+      return {
+        success: true,
+        exitCode: 0,
+        stdout: "81a4 5\n41ed 0\n",
         stderr: "",
         stdoutTruncated: false,
       };
@@ -289,6 +298,80 @@ test("Smol propagates caller abort to a local process", async () => {
     const output = [];
     for await (const event of process.output()) output.push(event.data);
     expect(output).toEqual(["stopped"]);
+  } finally {
+    await sandbox.stop();
+  }
+});
+
+test("Smol lists unusual filenames and large directories without losing metadata", async () => {
+  let statCalls = 0;
+  const listing = {
+    ...fake,
+    async exec(args: string[], options: unknown) {
+      if (args[0] === "find") {
+        const paths = [
+          "/workspace/odd\n name",
+          ...Array.from({ length: 63 }, (_, i) => `/workspace/f${i}`),
+          "/workspace/alias",
+        ];
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stdoutBytes: encoder.encode(`${paths.join("\0")}\0`),
+          stderr: "",
+          stdoutTruncated: false,
+        };
+      }
+      if (args[0] === "stat") {
+        statCalls++;
+        const paths = args.slice(4);
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: `${paths.map((path) => (path.endsWith("/alias") ? "a1ff 4" : "81a4 5")).join("\n")}\n`,
+          stderr: "",
+          stdoutTruncated: false,
+        };
+      }
+      return fake.exec(args, options);
+    },
+  };
+  spyOn(Machine, "create").mockResolvedValue(listing as unknown as Machine);
+  const sandbox = await createSandbox({ provider: smol() });
+  try {
+    const entries = await sandbox.files.list();
+    expect(entries).toHaveLength(65);
+    expect(entries[0]).toEqual({
+      name: "odd\n name",
+      path: "/workspace/odd\n name",
+      type: "file",
+      size: 5,
+    });
+    expect(entries.at(-1)).toEqual({
+      name: "alias",
+      path: "/workspace/alias",
+      type: "symlink",
+      size: undefined,
+    });
+    expect(statCalls).toBe(2);
+  } finally {
+    await sandbox.stop();
+  }
+});
+
+test("Smol Cloud rejects control characters in file routes without writing another path", async () => {
+  spyOn(Machine, "create").mockResolvedValue(fake as unknown as Machine);
+  const write = spyOn(fake, "writeFile");
+  const sandbox = await createSandbox({ provider: smol({ target: "cloud" }) });
+  try {
+    await expect(sandbox.files.write("line\n break.txt", "contents")).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(sandbox.files.read("line\n break.txt")).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    expect(write).not.toHaveBeenCalled();
   } finally {
     await sandbox.stop();
   }

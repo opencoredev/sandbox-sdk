@@ -77,7 +77,7 @@ Restoring a checkpoint creates a different VM, so normalized `sandbox.snapshots.
 
 ## Capability differences
 
-The provider runs commands and reads and writes binary files on both targets. Locally, it also provides normalized background processes and cancellation. Cloud `processes.start()` and command cancellation are not advertised: aborting a cloud request may leave its guest command running.
+The provider runs commands and reads and writes binary files on both targets. File listing works with GNU and BusyBox tools, including Alpine images. On Cloud, file reads and writes reject paths containing control characters because the Cloud file route can normalize them to a different path. Locally, it also provides normalized background processes and cancellation. Cloud `processes.start()` and command cancellation are not advertised: aborting a cloud request may leave its guest command running.
 
 Ports must be published when the VM is created. On a local VM you can pass `machine: { ports: [{ host: 8080, guest: 3000 }] }` and then call `sandbox.ports.expose(3000)` after starting a service. Creation returns after the guest agent is ready so the service can start without deadlocking on port readiness. Cloud creation waits for the published listener, so cloud `sandbox.ports.expose()` is unavailable; advanced configurations can pass native `machine.ports` and use `sandbox.raw.endpoint(port)` once a listener is ready. Use a custom image that starts the listener on boot when publishing cloud ports.
 

@@ -108,38 +108,59 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
         capabilities,
         files: {
           async write(path, value) {
+            assertCloudFilePath(target, path);
             await assertSuccess(raw, ["mkdir", "-p", "--", dirname(path)], "files.write.mkdir");
             await raw.writeFile(path, await toUint8Array(value));
           },
           async read(path) {
+            assertCloudFilePath(target, path);
             return new Uint8Array(await raw.readFile(path));
           },
           async list(path) {
-            const result = await raw.exec(
-              ["find", path, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\\0%y\\0%s\\0"],
+            // BusyBox find (Alpine) has -print0 but no GNU -printf. Keep the
+            // names separate from the line-oriented stat output so filenames
+            // containing newlines cannot change which metadata belongs to them.
+            const found = await raw.exec(
+              ["find", path, "-mindepth", "1", "-maxdepth", "1", "-print0"],
               { output: "b64" },
             );
-            if (result.exitCode !== 0) throw new Error(`files.list: ${result.stderr}`);
-            if (result.stdoutTruncated) throw new Error("files.list output was truncated");
-            const parts = new TextDecoder().decode(result.stdoutBytes).split("\0");
-            parts.pop();
+            if (found.exitCode !== 0) throw new Error(`files.list: ${found.stderr}`);
+            if (found.stdoutTruncated) throw new Error("files.list output was truncated");
+            const listing = new TextDecoder().decode(found.stdoutBytes);
+            if (listing && !listing.endsWith("\0"))
+              throw new Error("files.list: incomplete find output");
+            const paths = listing ? listing.slice(0, -1).split("\0") : [];
+            const prefix = `${path.replace(/\/+$/, "") || "/"}${path === "/" ? "" : "/"}`;
             const entries = [];
-            for (let index = 0; index < parts.length; index += 3) {
-              const name = parts[index]!;
-              const kind = parts[index + 1];
-              entries.push({
-                name,
-                path: `${path.replace(/\/$/, "")}/${name}`,
-                type:
-                  kind === "d"
+            for (let offset = 0; offset < paths.length; offset += 64) {
+              const batch = paths.slice(offset, offset + 64);
+              const metadata = await raw.exec(["stat", "-c", "%f %s", "--", ...batch]);
+              if (metadata.exitCode !== 0) throw new Error(`files.list: ${metadata.stderr}`);
+              if (metadata.stdoutTruncated) throw new Error("files.list metadata was truncated");
+              const lines = metadata.stdout.trimEnd().split("\n");
+              if (lines.length !== batch.length) throw new Error("files.list: incomplete metadata");
+              for (let index = 0; index < batch.length; index++) {
+                const fullPath = batch[index]!;
+                const match = /^([0-9a-fA-F]+) ([0-9]+)$/.exec(lines[index]!);
+                if (!fullPath.startsWith(prefix) || !match)
+                  throw new Error("files.list: invalid file metadata");
+                const name = fullPath.slice(prefix.length);
+                const mode = Number.parseInt(match[1]!, 16) & 0xf000;
+                const type =
+                  mode === 0x4000
                     ? ("directory" as const)
-                    : kind === "f"
+                    : mode === 0x8000
                       ? ("file" as const)
-                      : kind === "l"
+                      : mode === 0xa000
                         ? ("symlink" as const)
-                        : ("unknown" as const),
-                size: kind === "f" ? Number(parts[index + 2]) : undefined,
-              });
+                        : ("unknown" as const);
+                entries.push({
+                  name,
+                  path: fullPath,
+                  type,
+                  size: type === "file" ? Number(match[2]) : undefined,
+                });
+              }
             }
             return entries;
           },
@@ -215,6 +236,21 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
       };
     },
   };
+}
+
+function assertCloudFilePath(target: "local" | "cloud", path: string): void {
+  // The Cloud file route normalizes URL-encoded control characters before
+  // passing the path to the guest. Fail instead of reading or writing another file.
+  if (
+    target === "cloud" &&
+    Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+  )
+    throw new SandboxError({
+      code: "invalid_input",
+      provider: "smol",
+      operation: "files.path",
+      message: "Cloud file paths cannot contain control characters",
+    });
 }
 
 function argv(input: CommandInput): string[] {
