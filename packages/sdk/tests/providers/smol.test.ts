@@ -360,17 +360,19 @@ test("Smol lists unusual filenames and large directories without losing metadata
   }
 });
 
-test("Smol Cloud rejects control characters in file routes without writing another path", async () => {
+test("Smol Cloud rejects ambiguous file paths without writing another path", async () => {
   spyOn(Machine, "create").mockResolvedValue(fake as unknown as Machine);
   const write = spyOn(fake, "writeFile");
   const sandbox = await createSandbox({ provider: smol({ target: "cloud" }) });
   try {
-    await expect(sandbox.files.write("line\n break.txt", "contents")).rejects.toMatchObject({
-      code: "invalid_input",
-    });
-    await expect(sandbox.files.read("line\n break.txt")).rejects.toMatchObject({
-      code: "invalid_input",
-    });
+    for (const path of ["line\n break.txt", "fragment#name.txt", "query?name.txt", "percent%20name.txt"]) {
+      await expect(sandbox.files.write(path, "contents")).rejects.toMatchObject({
+        code: "invalid_input",
+      });
+      await expect(sandbox.files.read(path)).rejects.toMatchObject({
+        code: "invalid_input",
+      });
+    }
     expect(write).not.toHaveBeenCalled();
   } finally {
     await sandbox.stop();

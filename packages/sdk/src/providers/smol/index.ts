@@ -239,17 +239,20 @@ export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
 }
 
 function assertCloudFilePath(target: "local" | "cloud", path: string): void {
-  // The Cloud file route normalizes URL-encoded control characters before
-  // passing the path to the guest. Fail instead of reading or writing another file.
+  // Until the Cloud forwarding fix is deployed, the URL-based file route
+  // strips controls and interprets decoded #, ?, and % before reaching the node.
+  // Reject ambiguous paths rather than reading or writing a different file.
   if (
     target === "cloud" &&
-    Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    Array.from(path).some(
+      (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || "#?%".includes(char),
+    )
   )
     throw new SandboxError({
       code: "invalid_input",
       provider: "smol",
       operation: "files.path",
-      message: "Cloud file paths cannot contain control characters",
+      message: "Cloud file paths cannot contain URL control or reserved characters",
     });
 }
 
