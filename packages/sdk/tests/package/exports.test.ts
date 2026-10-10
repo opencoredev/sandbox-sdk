@@ -28,6 +28,11 @@ test("Tenki built entry imports independently", async () => {
   expect(await import(tenkiEntry)).toHaveProperty("tenki");
 });
 
+test("Smol built entry imports independently", async () => {
+  const smolEntry = "../../dist/providers/smol/index.mjs";
+  expect(await import(smolEntry)).toHaveProperty("smol");
+});
+
 test("experimental integration entries import independently", async () => {
   const aiEntry = "../../dist/ai/index.mjs";
   const harnessEntry = "../../dist/ai/harness.mjs";

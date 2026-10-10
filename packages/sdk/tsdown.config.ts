@@ -14,6 +14,7 @@ export default defineConfig({
     "src/providers/box/index.ts",
     "src/providers/railway/index.ts",
     "src/providers/tenki/index.ts",
+    "src/providers/smol/index.ts",
     "src/ai/index.ts",
     "src/ai/harness.ts",
     "src/eve/index.ts",

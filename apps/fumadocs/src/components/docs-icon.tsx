@@ -18,6 +18,7 @@ const iconProps = {
 export function ProviderLogo({ id, ...props }: IconProps & { id: string }) {
   switch (id) {
     case "agentos":
+    case "smol":
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
     case "e2b":
       return <E2BLogo {...props} />;
@@ -51,6 +52,7 @@ export function resolveDocsIcon(icon: string | undefined): ReactNode {
     case "box":
     case "railway":
     case "tenki":
+    case "smol":
       return <ProviderLogo id={icon} />;
     case "integrations":
       return <HugeiconsIcon icon={PlugSocketIcon} />;
