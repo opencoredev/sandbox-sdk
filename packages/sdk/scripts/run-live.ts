@@ -11,7 +11,7 @@ const started = new Date();
 const missingCredentials = (() => {
   switch (id) {
     case "smol":
-      return !Machine.localAvailability().available;
+      return !Machine.localAvailability().available && process.env.SMOL_TEST_CLOUD !== "1";
     case "e2b":
       return !process.env.E2B_API_KEY;
     case "daytona":
