@@ -81,4 +81,4 @@ The provider runs commands and reads and writes binary files on both targets. Fi
 
 Ports must be published when the VM is created. On a local VM you can pass `machine: { ports: [{ host: 8080, guest: 3000 }] }` and then call `sandbox.ports.expose(3000)` after starting a service. Creation returns after the guest agent is ready so the service can start without deadlocking on port readiness. Cloud creation waits for the published listener, so cloud `sandbox.ports.expose()` is unavailable; advanced configurations can pass native `machine.ports` and use `sandbox.raw.endpoint(port)` once a listener is ready. Use a custom image that starts the listener on boot when publishing cloud ports.
 
-Images need `sh`, `find` with `-printf`, `mkdir`, `rm`, and `test` for the normalized API. The default `node:22` image includes them.
+Images need `sh`, `find` with `-mindepth`, `-maxdepth`, and `-print0`, `stat -c`, `mkdir`, `rm`, and `test` for the normalized API. The default `node:22` image includes them.
