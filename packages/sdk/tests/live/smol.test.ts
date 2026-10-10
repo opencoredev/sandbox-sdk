@@ -13,7 +13,7 @@ test.skipIf(!Machine.localAvailability().available)(
   async () => {
     const results = await runConformance({
       create: {
-        provider: smol({ target: "local", image: "public.ecr.aws/docker/library/node:22" }),
+        provider: smol({ target: "local", image: "mirror.gcr.io/library/node:22" }),
         timeout: 180_000,
       },
       commands: {
@@ -37,7 +37,7 @@ test.skipIf(!Machine.localAvailability().available)(
   "Smol local process emits output and exposes native checkpoint methods",
   async () => {
     const sandbox = await createSandbox({
-      provider: smol({ target: "local", image: "public.ecr.aws/docker/library/node:22" }),
+      provider: smol({ target: "local", image: "mirror.gcr.io/library/node:22" }),
       env: { GREETING: "from-sandbox" },
       timeout: 180_000,
     });
@@ -63,7 +63,7 @@ test.skipIf(!Machine.localAvailability().available)(
     const sandbox = await createSandbox({
       provider: smol({
         target: "local",
-        image: "public.ecr.aws/docker/library/node:22",
+        image: "mirror.gcr.io/library/node:22",
         machine: { branchable: true },
       }),
       timeout: 180_000,
@@ -106,7 +106,7 @@ test.skipIf(!Machine.localAvailability().available)(
     const sandbox = await createSandbox({
       provider: smol({
         target: "local",
-        image: "public.ecr.aws/docker/library/node:22",
+        image: "mirror.gcr.io/library/node:22",
         machine: { ports: [{ host: address.port, guest: 3000 }] },
       }),
       timeout: 180_000,
@@ -118,15 +118,19 @@ test.skipIf(!Machine.localAvailability().available)(
       try {
         const exposed = await sandbox.ports.expose(3000);
         let response: Response | undefined;
-        for (let i = 0; i < 100; i++) {
+        let lastError: unknown;
+        for (let i = 0; i < 600; i++) {
           try {
             response = await exposed.request?.("/health");
             break;
-          } catch {
+          } catch (error) {
+            lastError = error;
             await new Promise((resolve) => setTimeout(resolve, 100));
           }
         }
-        expect(await response?.text()).toBe("smol-port-ok");
+        if (!response)
+          throw new Error(`Published port ${exposed.url} did not respond: ${String(lastError)}`);
+        expect(await response.text()).toBe("smol-port-ok");
       } finally {
         await proc.kill();
       }
