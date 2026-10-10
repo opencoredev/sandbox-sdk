@@ -165,3 +165,36 @@ test.skipIf(!Machine.localAvailability().available)(
   },
   180_000,
 );
+
+test.skipIf(process.env.SMOL_TEST_CLOUD !== "1")(
+  "Smol Cloud VM runs commands and preserves byte-exact files",
+  async () => {
+    const sandbox = await createSandbox({
+      provider: smol({
+        target: "cloud",
+        image: "node:22-alpine",
+        ttlSeconds: 600,
+        resources: { cpus: 1, memoryMb: 1024, network: true },
+      }),
+      timeout: 180_000,
+    });
+    try {
+      const bytes = new Uint8Array([0, 255, 1]);
+      await sandbox.files.write("nested/odd name.bin", bytes);
+      expect(await sandbox.files.read("nested/odd name.bin")).toEqual(bytes);
+      expect(await sandbox.files.list("nested")).toContainEqual({
+        name: "odd name.bin",
+        path: "/workspace/nested/odd name.bin",
+        type: "file",
+        size: bytes.length,
+      });
+      expect((await sandbox.run("printf cloud-ok")).stdout).toBe("cloud-ok");
+      await expect(sandbox.processes.start("sleep 60")).rejects.toMatchObject({
+        code: "unsupported",
+      });
+    } finally {
+      await sandbox.stop();
+    }
+  },
+  240_000,
+);
