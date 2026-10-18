@@ -50,3 +50,21 @@ test.each(["lifetime", "idle"])("fresh local clients destroy %s-expired containe
     expect(calls).toContain("DELETE /containers/expired?force=1&v=1");
   } finally { call.mockRestore(); exec.mockRestore(); }
 });
+
+test("local usage exposes creation phase and first-command timings", async () => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const call = vi.spyOn(Docker.prototype, "call").mockImplementation(async (_, path) => {
+    if (path.startsWith("/containers/create")) return { Id: "timed" };
+    return { Id: "timed", Created: new Date().toISOString(), Config: { Labels: { "sandbox-sdk": "1" } }, State: { Running: true, StartedAt: new Date().toISOString() } };
+  });
+  const exec = vi.spyOn(Docker.prototype, "exec").mockResolvedValue(0);
+  try {
+    const provider = local(); const created = await provider.create({ labels: {} });
+    await provider.exec(created.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, onChunk() {} });
+    const usage = await provider.usage?.(created.id);
+    for (const key of ["createInspectMs", "createContainerMs", "createStartMs", "createPrerequisiteMs", "firstCommandMs"]) {
+      expect(usage?.[key]).toEqual(expect.any(Number)); expect(usage?.[key]).toBeGreaterThanOrEqual(0);
+    }
+  } finally { call.mockRestore(); exec.mockRestore(); }
+});

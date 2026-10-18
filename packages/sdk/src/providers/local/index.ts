@@ -31,6 +31,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
   const client = new Docker(options.dockerHost); const image = options.image ?? "node:22-bookworm";
   const destroying = new Map<string, Promise<void>>();
   const timers = new Set<string>();
+  const timings = new Map<string, Record<string, number>>();
   const inspect = (id: string) => client.call("GET", `/containers/${encode(id)}/json`);
   async function raw(id: string, command: string[], stdin?: string) {
     let stdout = ""; let stderr = "";
@@ -53,23 +54,30 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       for (const value of [input.idleTimeoutMs, input.timeoutMs]) if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw failure("Timeouts must be positive milliseconds", "invalid_argument");
       const resources = limits(input.size);
       if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
+      const phases: Record<string, number> = {}; let phase = performance.now();
       const source = input.from ?? image;
       try { await client.call("GET", `/images/${encode(source)}/json`); }
       catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; if (input.from) throw failure("Snapshot image not found", "not_found"); await client.call("POST", `/images/create?fromImage=${encode(source)}`); }
+      phases.createInspectMs = performance.now() - phase;
       if (input.signal?.aborted) throw failure("Creation aborted after image pull", "aborted");
       const ports = [...new Set(input.ports ?? [3000])];
       const bindings = Object.fromEntries(ports.map(port => [`${port}/tcp`, [{ HostIp: "127.0.0.1", HostPort: "" }]]));
+      phase = performance.now();
       const created = object(await client.call("POST", `/containers/create?name=${encode(input.key ? name(input.key) : `sandbox-sdk-${randomUUID()}`)}`, {
         Image: source, WorkingDir: "/workspace", Cmd: ["sh", "-c", "mkdir -p /workspace; exec sleep infinity"],
         Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", ...(input.timeoutMs === undefined ? {} : { [deadlineLabel]: String(Date.now() + input.timeoutMs) }), ...(input.idleTimeoutMs === undefined ? {} : { [idleLabel]: String(input.idleTimeoutMs) }) },
         ExposedPorts: Object.fromEntries(ports.map(port => [`${port}/tcp`, {}])),
         HostConfig: { ...resources, NetworkMode: input.network === "none" ? "none" : "bridge", PortBindings: input.network === "none" ? {} : bindings, Init: true },
       }));
-      const id = string(created.Id);
+      phases.createContainerMs = performance.now() - phase;
+      const id = string(created.Id); timings.set(id, phases);
       if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) timers.add(id);
       try {
+        phase = performance.now();
         await client.call("POST", `/containers/${encode(id)}/start`);
+        phases.createStartMs = performance.now() - phase; phase = performance.now();
         await raw(id, ["sh", "-c", "mkdir -p /workspace; command -v node git tar setsid nohup mkfifo sed >/dev/null"]);
+        phases.createPrerequisiteMs = performance.now() - phase;
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         return await provider.connect(id);
       } catch (error) { await provider.destroy(id); throw error; }
@@ -107,9 +115,10 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
         } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; }
       })();
       destroying.set(id, task);
-      try { await task; } finally { destroying.delete(id); timers.delete(id); }
+      try { await task; } finally { destroying.delete(id); timers.delete(id); timings.delete(id); }
     },
     async exec(id, input) {
+      const started = performance.now();
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
       const pidfile = `/tmp/.sandbox-sdk-exec-${randomUUID()}`;
       let cancelled = false;
@@ -133,6 +142,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       } finally {
         clearTimeout(timer); input.signal?.removeEventListener("abort", cancel);
         await raw(id, ["rm", "-f", pidfile]).catch(() => {});
+        const phases = timings.get(id); if (phases && phases.firstCommandMs === undefined) phases.firstCommandMs = performance.now() - started;
       }
     },
     files: {
@@ -151,7 +161,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       return { url: `http://127.0.0.1:${string(entry.HostPort)}/` };
     },
     native(id) { return { id, client }; },
-    async usage(id) { const value = object(await inspect(id)); const state = object(value.State); return { runningMs: state.Running && !state.Paused ? Math.max(0, Date.now() - Date.parse(string(state.StartedAt))) : 0 }; },
+    async usage(id) { const value = object(await inspect(id)); const state = object(value.State); return { ...timings.get(id), runningMs: state.Running && !state.Paused ? Math.max(0, Date.now() - Date.parse(string(state.StartedAt))) : 0 }; },
     async pause(id) { await provider.connect(id); await client.call("POST", `/containers/${encode(id)}/pause`); },
     async resume(id) { await provider.connect(id); await client.call("POST", `/containers/${encode(id)}/unpause`); },
     async snapshot(id) { await provider.connect(id); const value = object(await client.call("POST", `/commit?container=${encode(id)}&pause=true`, { Labels: { "sandbox-sdk": "1", "sandbox-sdk.local.snapshot": "1" } })); return { id: string(value.Id) }; },
