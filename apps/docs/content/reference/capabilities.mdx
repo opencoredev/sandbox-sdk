@@ -7,27 +7,27 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
-| | Local | E2B | Vercel Sandbox | Daytona | Memory |
-| --- | --- | --- | --- | --- | --- |
-| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No |
-| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No |
-| `terminal()` | No | No | No | No | No |
-| `network: "none"` | Yes | Yes | Yes | Yes | Yes |
-| `network: { allow }` | No | Yes | Yes | Yes | Yes |
-| `size` presets | Yes | No | Yes | Yes | No |
-| `size` with exact numbers | No | No | No | Yes | No |
-| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes |
-| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes |
-| `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
-| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes |
-| Key mode | exact | best-effort | exact | best-effort | exact |
+| | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | Yes, with memory | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | Yes | No |
+| `terminal()` | No | No | No | No | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | Yes | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes | Yes |
+| `size` presets | Yes | No | Yes | Yes | Yes | No |
+| `size` with exact numbers | No | No | No | Yes | Yes | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | No | Yes |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes | Yes |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | No | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes | Yes |
+| Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
 
 ## Notes
 
-- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B pauses the microVM with its memory. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B and Tenki pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
 - **Size.** Local and Vercel Sandbox take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
 - **Network.** Local enforces `"none"` but has no per-host filter, so `{ allow }` fails there. Memory records the policy and has no network to enforce it on.
-- **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
+- **Timeouts.** Tenki supports a native hard lifetime but rejects idle timeouts, which its current API no longer enforces. Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
 

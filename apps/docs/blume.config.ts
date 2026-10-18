@@ -15,7 +15,7 @@ It is not a hosted service: it calls each provider's own SDK with your keys, and
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, or \`@daytonaio/sdk\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@tenkicloud/sandbox\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -69,6 +69,7 @@ export default defineConfig({
               icon: "/integrations/vercel.svg",
             },
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.png" },
+            { label: "Tenki", root: "/providers/tenki", icon: "server" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],

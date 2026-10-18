@@ -127,10 +127,11 @@ export const providerArt: ProviderArt[] = [
     paint: providerScenes.railway,
   },
   {
-    kind: "soon",
+    kind: "launch",
     id: "tenki",
     name: "Tenki",
     line: "Coding agents on full Linux VMs, with disk and memory snapshots.",
+    href: "/docs/providers/tenki",
     paint: providerScenes.tenki,
   },
 ];
