@@ -18,6 +18,7 @@ export const state = {
   creates: [] as BoxConfig[],
   snapshots: new Map<string, string>(),
   delayMs: 0,
+  envWrites: [] as { path: string; mode: number; directoryMode: number }[],
 };
 export class MockBox {
   readonly id = crypto.randomUUID();
@@ -97,6 +98,12 @@ export class MockBox {
     },
     write: async (settings: { path: string; content: string; encoding?: "base64" }) => {
       await fs.writeFile(this.map(settings.path), settings.content, settings.encoding ?? "utf8");
+      if (settings.path.endsWith("/env") && settings.path.includes("/upstash-runs/"))
+        state.envWrites.push({
+          path: settings.path,
+          mode: (await fs.stat(this.map(settings.path))).mode & 0o777,
+          directoryMode: (await fs.stat(this.map(posix.dirname(settings.path)))).mode & 0o777,
+        });
     },
     mkdir: async (path: string, settings?: { parents?: boolean }) => {
       await fs.mkdir(this.map(path), { recursive: settings?.parents });
@@ -280,4 +287,5 @@ export async function cleanup() {
   state.snapshots.clear();
   state.creates.length = 0;
   state.delayMs = 0;
+  state.envWrites.length = 0;
 }

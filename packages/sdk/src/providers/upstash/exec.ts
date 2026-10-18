@@ -63,13 +63,23 @@ export async function execute(box: Box, input: ExecInput): Promise<ExecResult> {
 export async function startProcess(box: Box, input: Omit<ExecInput, "timeoutMs">) {
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;
-  await box.files.mkdir(dir, { parents: true });
-  const env = Object.entries(input.env)
-    .map(([key, value]) => quote(`${key}=${value}`))
-    .join(" ");
-  const wrapper = `echo $$ > ${quote(`${dir}/pid`)}; cd ${quote(input.cwd)} || exit 1; env ${env} sh -c ${quote(input.command)}; code=$?; printf '%s' "$code" > ${quote(`${dir}/exit`)}; exit "$code"`;
+  const envPath = `${dir}/env`;
+  // command() has no env option, unlike session(). Keep values in a private
+  // file so the durable shell's command line contains only the bootstrap path.
+  const wrapper = `chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} || exit 1; echo $$ > ${quote(`${dir}/pid`)}; cd ${quote(input.cwd)} || exit 1; sh -c ${quote(input.command)}; code=$?; printf '%s' "$code" > ${quote(`${dir}/exit`)}; exit "$code"`;
   let pid: number | undefined;
   try {
+    const prepared = await box.exec.command(
+      `umask 077; mkdir -p /tmp/.sandbox-sdk/upstash-runs && mkdir ${quote(dir)} && : > ${quote(envPath)}`,
+    );
+    if (prepared.exitCode !== 0) throw new Error("Durable process environment setup failed");
+    await box.files.write({
+      path: envPath,
+      content:
+        Object.entries(input.env)
+          .map(([key, value]) => `export ${quote(`${key}=${value}`)}`)
+          .join("\n") + "\n",
+    });
     const result = await box.exec.command(
       `nohup setsid sh -c ${quote(wrapper)} > /dev/null 2>&1 < /dev/null &`,
     );
@@ -88,6 +98,7 @@ export async function startProcess(box: Box, input: Omit<ExecInput, "timeoutMs">
     }
     if (pid === undefined) throw new Error("Durable process PID missing");
   } catch (error) {
+    await box.files.remove(envPath).catch(() => {});
     // Without a confirmed PID, stopping the box is the only safe cleanup.
     await box.pause();
     throw error;

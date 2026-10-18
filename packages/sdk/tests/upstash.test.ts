@@ -15,6 +15,45 @@ afterEach(async () => {
   await cleanup();
 });
 describe("Upstash Box mappings", () => {
+  test("keeps secrets out of command text and argv for runs and processes", async () => {
+    const secret = "private-token-9ec5e94f";
+    const value = "override 'quotes' $literal\n雪";
+    const box = await createSandbox(factory(), {
+      secrets: { TOKEN: secret },
+      env: { CHECK_OVERRIDE: "base" },
+    });
+    try {
+      const commands = vi.spyOn(box.native.exec, "command");
+      const sessions = vi.spyOn(box.native.exec, "session");
+      const command = `node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.env.TOKEN + process.env.CHECK_OVERRIDE).digest("hex"))'`;
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(secret + value),
+      );
+      const expected = Buffer.from(digest).toString("hex");
+      expect((await box.run(command, { env: { CHECK_OVERRIDE: value } })).stdout).toBe(expected);
+      const process = await box.start(command, {
+        name: "secret-check",
+        env: { CHECK_OVERRIDE: value },
+      });
+      expect(await process.wait()).toMatchObject({ exitCode: 0 });
+      expect((await process.logs()).text).toContain(expected);
+      expect(state.envWrites.length).toBeGreaterThan(0);
+      for (const file of state.envWrites) {
+        expect(file).toMatchObject({ mode: 0o600, directoryMode: 0o700 });
+        expect(await box.files.exists(file.path)).toBe(false);
+      }
+      expect(commands).toHaveBeenCalled();
+      expect(sessions).toHaveBeenCalled();
+      for (const [command] of commands.mock.calls) expect(command).not.toContain(secret);
+      for (const [options] of sessions.mock.calls) {
+        expect(options.cmd ?? "").not.toContain(secret);
+        for (const arg of options.argv ?? []) expect(arg).not.toContain(secret);
+      }
+    } finally {
+      await box.destroy();
+    }
+  });
   test("lazy credentials, native sizes, network and protected preview", async () => {
     const provider = factory();
     expect(state.creates).toEqual([]);
