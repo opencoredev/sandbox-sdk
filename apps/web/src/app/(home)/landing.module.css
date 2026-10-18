@@ -122,8 +122,9 @@
   letter-spacing: -0.01em;
 }
 .brandMark {
-  width: 18px;
-  height: 18px;
+  /* 16px lands the 32-unit mark grid on whole pixels */
+  width: 16px;
+  height: 16px;
   color: var(--amber);
 }
 .navLinks {

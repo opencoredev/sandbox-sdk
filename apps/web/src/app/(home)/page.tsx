@@ -47,11 +47,14 @@ const HARBOR_DOTS: HalftoneStyle = {
 const CARD_DOTS: HalftoneStyle = { cell: 5, fill: 0.8, shape: "square", glow: 0.12, ground: INK };
 const EMBER_DOTS: HalftoneStyle = { cell: 13, fill: 0.62, shape: "square", glow: 0.4, ground: INK };
 
+/** The scope mark: four corner brackets framing one lit cell. Source: public/brand. */
 function Mark({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M2 11V2h9" fill="none" stroke="currentColor" strokeWidth="3" />
-      <path d="M18 9v9H9" fill="none" stroke="currentColor" strokeWidth="3" />
+    <svg className={className} viewBox="0 0 32 32" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M2 2h10v4H6v6H2zM30 2v10h-4V6h-6V2zM2 30V20h4v6h6v4zM30 30H20v-4h6v-6h4zM12 12h8v8h-8z"
+      />
     </svg>
   );
 }
