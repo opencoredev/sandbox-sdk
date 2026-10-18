@@ -69,6 +69,7 @@ export default defineConfig({
             { label: "Compare providers", root: "/providers", icon: "table-2" },
             { label: "Local (Docker)", root: "/providers/local", icon: "/integrations/docker.svg" },
             { label: "E2B", root: "/providers/e2b", icon: "/integrations/e2b.svg" },
+            { label: "Rivet agentOS", root: "/providers/agentos", icon: "cpu" },
             {
               label: "Vercel Sandbox",
               root: "/providers/vercel",

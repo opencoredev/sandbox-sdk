@@ -38,6 +38,8 @@ export interface ExecInput {
 export interface ExecResult { exitCode: number | null; timedOut: boolean }
 export interface FileInfo { path: string; type: "file" | "directory" | "symlink"; size: number; modifiedAt: number }
 export interface ProviderFiles {
+  /** Use primitive file transfers when guest tar is incompatible with GNU archives. */
+  readonly transfer?: "files";
   readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array): Promise<void>;
@@ -62,6 +64,8 @@ export interface NativeProcess {
 export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly name: string;
   readonly keyMode: "exact" | "best-effort";
+  /** Omission uses native hooks or the portable shell process-record shim. */
+  readonly processMode?: "shell" | "unsupported";
   readonly capabilities: ReadonlySet<C>;
   create(input: CreateInput): Promise<SandboxInfo>;
   find(key: string): Promise<SandboxInfo | undefined>;

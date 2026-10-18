@@ -1,7 +1,46 @@
 ---
 title: Local
-description: Run sandboxes as Docker containers on your own machine or CI runner. Real Linux, no cloud account, previews on 127.0.0.1.
+description: Choose Docker for real Linux or Rivet agentOS for a small local runtime without Docker. Both run on your machine with no cloud account.
 ---
+
+Local sandboxes have two options. Neither needs an account or API key. Docker remains the default.
+
+| | Docker | Rivet agentOS |
+| --- | --- | --- |
+| Factory | `local()` from `/local` | `agentos()` from `/agentos` |
+| Runtime | Real Linux container | Small runtime that starts quickly; Rust, V8 and WebAssembly |
+| Setup | Running Docker Engine | Install `@rivet-dev/agentos-core@0.4.1` |
+| Commands | Native Linux programs | Bundled shell tools, Node compatibility layer, npm, WebAssembly Git |
+| Best for | Development, CI, native dependencies, dev servers | Lightweight command and file tasks without Docker |
+| SDK background processes and previews | Yes | Unsupported; native process and HTTP APIs are available |
+| Survives your app restarting | Yes | No |
+
+## Without Docker
+
+Install agentOS alongside the SDK:
+
+```package-install
+npm i @opencoredev/sandbox-sdk @rivet-dev/agentos-core@0.4.1
+```
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+await box.files.write("hello.cjs", "console.log(6 * 7)");
+console.log((await box.run("node hello.cjs")).stdout);
+```
+
+This prints `42`. Rivet publishes sidecars for Linux glibc and macOS on x64 and arm64; native Windows is not supported. agentOS starts a native Rust sidecar on your machine. JavaScript runs in V8 isolates; shell tools and Git run as WebAssembly against a virtual filesystem and process table. It does not boot Linux or run arbitrary Linux binaries. Pure JavaScript npm packages can work; packages that need native addons, system libraries, or unimplemented Node APIs may fail. Choose Docker for those workloads.
+
+The first sandbox downloads Rivet's pinned Git package (about 18 MB) for file checkpoints and Git operations. Rivet caches it by digest. Clone, commit, status, and checkpoints work; local Git push stalls in agentOS 0.4.1. Choose Docker for workflows that need push. To use a pre-downloaded package offline, pass `agentos({ gitPackagePath: "/absolute/path/git.aospkg" })`. The agentOS npm package loads dynamically only when creating a sandbox.
+
+Keys and reconnects work across provider factories in the same application process. Files and processes disappear when that process exits. `close()` detaches a handle; it does not dispose the VM. Use `destroy()` for cleanup. There are no SDK pause, snapshot, terminal, size, idle-timeout, or hard-lifetime options. Command timeouts and cancellation are supported.
+
+`network: "none"` denies guest egress; `network: { allow: ["registry.npmjs.org"] }` permits literal hostnames. The default, `"all"`, permits outbound networking within agentOS's own network restrictions. Guest listeners stay inside the VM. `box.preview()` and `box.start()` throw `unsupported`: embedded agentOS has no preview URLs, and the SDK process-record shim needs shell features this adapter does not support. Use `box.native.process.spawn()` and `box.native.network.httpRequest()` when you need those native APIs. See [agentOS](/providers/agentos) for the adapter reference.
+
+## With Docker
 
 `local()` runs each sandbox as a Docker container on the machine your code runs on. It is real Linux with real networking, so it behaves like the cloud providers, and it needs no account or key. Use it while you develop and in CI.
 

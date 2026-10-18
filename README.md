@@ -30,7 +30,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 
 | Provider                                                        | Runtime                 | Best for                                |
 | --------------------------------------------------------------- | ----------------------- | --------------------------------------- |
-| [Local](https://sandbox-sdk.app/docs/providers/local)           | AgentOS VM              | Development, CI, and self-hosting       |
+| [Local](https://sandbox-sdk.app/docs/providers/local)           | Docker or Rivet agentOS  | Development, CI, and self-hosting       |
 | [E2B](https://sandbox-sdk.app/docs/providers/e2b)               | Hosted Linux sandbox    | Coding agents and isolated jobs         |
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs            |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Coding agents and persistent workspaces |
@@ -39,7 +39,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
 
-Local is included. Cloud providers use their official SDKs and credentials.
+Local defaults to Docker. For the Docker-free runtime, install `@rivet-dev/agentos-core@0.4.1` and import `agentos` from `@opencoredev/sandbox-sdk/agentos`. See the [Local guide](https://sandbox-sdk.app/docs/providers/local) for compatibility limits. Cloud providers use their official SDKs and credentials.
 
 ## Documentation
 

@@ -9,7 +9,7 @@ import type { SandboxBase } from "./types.js";
  * live must be explicitly true to run a cloud provider. memory skips real git
  * and HTTP probes, since it never executes host programs or opens sockets.
  */
-export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[] }) {
+export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[]; unsupported?: { processes?: string; previews?: string; gitPush?: string } }) {
   describe("Sandbox SDK conformance", () => {
     const cleanup: SandboxBase<unknown>[] = [];
     const temp: string[] = [];
@@ -89,7 +89,8 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       let writes = 0;
       try { await expect.poll(async () => { await box.files.write("watch/file", `different-${writes++}`); return events; }, { timeout: 10_000, interval: 50 }).toContain("modified"); } finally { stop(); }
     });
-    test("process logs, cursors, fresh client reattach, stop and exit-before-ready", async () => {
+    test("process logs, cursors, fresh client reattach, stop and exit-before-ready", async context => {
+      if (options.unsupported?.processes) { context.skip(options.unsupported.processes); return; }
       const { provider, box } = await setup();
       const process = await box.start("echo READY; sleep 5", { name: "dev", ready: { log: /READY/ }, readyTimeoutMs: 2000 });
       expect(process.ready).toBe(true); const page = await process.logs(); expect(page.text).toContain("READY");
@@ -100,13 +101,15 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       await client.process("dev").stop({ graceMs: 10 }); expect((await process.wait()).exitCode).not.toBe(null);
       await expect(box.start("exit 3", { name: "early", ready: { log: /never/ }, readyTimeoutMs: 1000 })).rejects.toMatchObject({ code: "process_exited" });
     });
-    test("readiness timeout preserves the process", async () => {
+    test("readiness timeout preserves the process", async context => {
+      if (options.unsupported?.processes) { context.skip(options.unsupported.processes); return; }
       const { box } = await setup();
       await expect(box.start("sleep 5", { name: "unready", ready: { log: /never/ }, readyTimeoutMs: 30 })).rejects.toMatchObject({ code: "timeout" });
       expect(box.process("unready").ready).toBe(false); expect((await box.processes())[0]?.status).toBe("running"); await box.process("unready").stop({ graceMs: 10 });
     });
     test("preview and capability gating", async () => {
-      const { provider, box } = await setup(); expect(["http:", "https:"]).toContain(new URL((await box.preview(3000)).url).protocol);
+      const { provider, box } = await setup(); if (options.unsupported?.previews) await expect(box.preview(3000)).rejects.toMatchObject({ code: "unsupported" });
+      else expect(["http:", "https:"]).toContain(new URL((await box.preview(3000)).url).protocol);
       for (const [capability, method] of [["pause", "pause"], ["snapshot", "snapshot"], ["terminal", "terminal"]] as const) expect(method in box).toBe(provider.capabilities.has(capability));
       if (!provider.capabilities.has("network-policy")) await expect(createSandbox(provider, { network: "none" })).rejects.toMatchObject({ code: "unsupported" });
       if (!provider.capabilities.has("size")) await expect(createSandbox(provider, { size: "small" })).rejects.toMatchObject({ code: "unsupported" });
@@ -120,7 +123,8 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       const ephemeral = await createSandbox(provider); await ephemeral[Symbol.asyncDispose](); await expect(provider.connect(ephemeral.id)).rejects.toMatchObject({ code: "not_found" });
     });
     test("usage counters", async () => { const { box } = await setup(); await box.run("echo abc"); expect(await box.usage()).toMatchObject({ commands: 1, bytesOut: 4 }); });
-    test("local bare git clone and commit (live Linux providers only)", async context => {
+    test("local bare git clone, commit and push (live providers only)", async context => {
+      if (options.unsupported?.gitPush) { context.skip(options.unsupported.gitPush); return; }
       const { provider, box } = await setup(); if (provider.name === "memory") { context.skip(); return; }
       expect((await box.run("git init --bare /tmp/sdk-bare")).ok).toBe(true);
       expect((await box.git.clone("/tmp/sdk-bare", { dir: "repo" })).ok).toBe(true);
@@ -129,6 +133,7 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect((await box.git.status("repo")).stdout).toBe(""); expect((await box.git.push("repo", { branch: "HEAD" })).ok).toBe(true);
     });
     test("real HTTP preview probe (live Linux providers only)", async context => {
+      if (options.unsupported?.previews) { context.skip(options.unsupported.previews); return; }
       const { provider, box } = await setup(); if (provider.name === "memory") { context.skip(); return; }
       const proc = await box.start("node -e 'require(\"http\").createServer((_,r)=>r.end(\"ok\")).listen(3000,\"0.0.0.0\")'", { name: "http", ready: { http: { port: 3000 } } });
       expect(proc.ready).toBe(true); expect((await box.preview(3000, { waitMs: 2000 })).url).toBeTruthy(); await proc.stop();

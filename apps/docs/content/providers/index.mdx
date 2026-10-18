@@ -2,6 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Tenki, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Boat, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
@@ -25,6 +26,7 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
 | [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
 | [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
+| [Local (agentOS)](/providers/agentos) | `agentos()` from `/agentos` | `@rivet-dev/agentos-core@0.4.1` | None | Local command and file tasks without Docker |
 | [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
@@ -32,6 +34,10 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
+| | Local | E2B | Vercel Sandbox | Daytona | Memory | Local (agentOS) |
+| Key mode | exact | best-effort | exact | best-effort | exact | exact, in-process |
+| Network allow list | No | Yes | Yes | Yes | Yes | Yes, literal hosts |
+| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Fake | Unsupported |
 | | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
 | Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | Yes | No |
 | | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
@@ -79,7 +85,7 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
 
 <CardGroup cols={2}>
   <Card title="Local" href="/providers/local" icon="/integrations/docker.svg">
-    Docker containers on your machine. Previews on `127.0.0.1`, deadlines enforced on reconnect.
+    Docker for real Linux or agentOS for a small runtime without Docker. No cloud account.
   </Card>
   <Card title="E2B" href="/providers/e2b" icon="/integrations/e2b.svg">
     MicroVMs that pause with memory, network allow lists, and a lifetime a reconnect can't extend.

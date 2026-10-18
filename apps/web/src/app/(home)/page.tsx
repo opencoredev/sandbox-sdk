@@ -210,6 +210,8 @@ function Providers() {
         </h2>
         <p className={styles.sectionLede}>
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Upstash Box run in the cloud.
+          Two local runtimes, three clouds, and a fake for tests.
+          Local runs on Docker or agentOS. E2B, Vercel Sandbox, and Daytona run in the cloud. memory() is an
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Tenki run in the cloud. memory() is an
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Boat run in the cloud. memory() is an
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Railway run in the cloud. memory() is an

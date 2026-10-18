@@ -7,6 +7,10 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
+| | Local | E2B | Vercel Sandbox | Daytona | Memory | Local (agentOS) |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes | Yes, literal hosts |
+| Key mode | exact | best-effort | exact | best-effort | exact | exact, in-process |
+agentOS supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local](/providers/local) for both runtime choices.
 | | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
 | `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | Yes, with memory | No |
 | | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |

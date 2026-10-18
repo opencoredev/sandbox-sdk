@@ -147,6 +147,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
   const controllers = new Map<string, { state(status: ProcessInfo["status"]): void; access(url: string): void; ready(value: boolean): void; launch(fn: () => Promise<void>): void }>();
   async function start(command: string, options: StartOptions): Promise<ProcessHandle> {
     return safe(async () => {
+      if (provider.processMode === "unsupported") throw new SandboxError("Background processes are unsupported. This runtime cannot run the SDK process-record shim. Use its native process API or another provider.", { code: "unsupported" });
       const dir = nameOf(options.name);
       if (await files.exists(`${dir}/spec.json`) && !(await files.exists(`${dir}/exit`))) invalid(`Process ${options.name} is already running`);
       const handle = process(options.name); const controller = controllers.get(options.name);

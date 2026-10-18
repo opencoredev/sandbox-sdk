@@ -69,6 +69,10 @@
     "./tenki": {
       "types": "./dist/providers/tenki/index.d.ts",
       "import": "./dist/providers/tenki/index.js"
+    },
+    "./agentos": {
+      "types": "./dist/providers/agentos/index.d.ts",
+      "import": "./dist/providers/agentos/index.js"
     }
   },
   "scripts": {
@@ -90,7 +94,8 @@
     "zod": "^4.6.7",
     "railway": "3.16.0",
     "@boatdev/sdk": "1.9.9",
-    "@tenkicloud/sandbox": "^1.4.1"
+    "@tenkicloud/sandbox": "^1.4.1",
+    "@rivet-dev/agentos-core": "0.4.1"
   },
   "peerDependencies": {
     "@daytonaio/sdk": "^0.225.0",
@@ -104,7 +109,8 @@
     "zod": "^4.6.7",
     "railway": "^3.16.0",
     "@boatdev/sdk": "^1.9.9",
-    "@tenkicloud/sandbox": "^1.4.1"
+    "@tenkicloud/sandbox": "^1.4.1",
+    "@rivet-dev/agentos-core": "0.4.1"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -141,6 +147,9 @@
       "optional": true
     },
     "@tenkicloud/sandbox": {
+      "optional": true
+    },
+    "@rivet-dev/agentos-core": {
       "optional": true
     }
   },
