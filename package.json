@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "bench"
   ],
   "type": "module",
   "scripts": {
@@ -17,7 +18,8 @@
     "test:live:ai-gateway": "bun packages/sdk/scripts/run-ai-gateway-live.ts local",
     "test:live:ai-gateway:vercel": "bun packages/sdk/scripts/run-ai-gateway-live.ts vercel",
     "format": "oxfmt --write .",
-    "check": "bun run format && bun run lint && bun run typecheck && bun run test"
+    "check": "bun run format && bun run lint && bun run typecheck && bun run test",
+    "bench": "bun run --cwd bench bench"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

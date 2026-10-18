@@ -1,0 +1,18 @@
+{
+  "name": "@sandbox-sdk/bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "bun src/cli.ts",
+    "lint": "oxlint src tests",
+    "typecheck": "tsc --noEmit",
+    "test": "timeout 120s vitest run --maxWorkers=2"
+  },
+  "dependencies": {
+    "@opencoredev/sandbox-sdk": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}
