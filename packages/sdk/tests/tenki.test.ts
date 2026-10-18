@@ -144,6 +144,24 @@ describe("Tenki mappings", () => {
     });
     expect(tenkiState.boxes.size).toBe(0);
   });
+  test("huge output uses bounded native capture while streaming all bytes", async () => {
+    const box = await createSandbox(factory());
+    tenkiState.retainedPeakBytes = 0;
+    const bytes = 2 * 1024 * 1024;
+    const handle = box.run(
+      `printf begin; sleep .05; head -c ${bytes} /dev/zero | tr '\\0' x; printf end; printf err >&2`,
+      { maxOutputBytes: 1024 },
+    );
+    let streamed = 0;
+    for await (const chunk of handle) streamed += Buffer.byteLength(chunk.text);
+    const result = await handle;
+    expect(result).toMatchObject({ exitCode: 0, truncated: true, stderr: "err" });
+    expect(result.stdout).toMatch(/^begin.*end$/s);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThan(1200);
+    expect(streamed).toBe(bytes + 11);
+    // The mock deliberately retains chunks just like native run(), even when drained.
+    expect(tenkiState.retainedPeakBytes).toBeLessThan(128 * 1024);
+  });
   test("stalled termination streams settle after the cancellation grace period", async () => {
     const box = await createSandbox(factory());
     const run = MockSession.prototype.run;
