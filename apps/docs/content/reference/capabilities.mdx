@@ -7,6 +7,15 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
+| | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | Yes, filesystem only | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | No | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | No | Yes |
+| `size` presets | Yes | No | Yes | Yes | No | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes, destroys VM; whole minutes | Yes |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | Yes, up to 10 | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | SDK marker file | Yes |
 | | Local | E2B | Vercel Sandbox | Daytona | Upstash Box | Memory |
 | --- | --- | --- | --- | --- | --- | --- |
 | `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | Yes, processes end | No |
@@ -31,6 +40,8 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 - **Upstash Box.** Uses native size presets, pause/resume, full disk snapshots, and network policy. Custom idle deadlines and hard lifetimes are unsupported. Keys and labels live in sandbox metadata; listing SDK boxes reads this metadata and may wake idle boxes.
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+
+Railway supports filesystem snapshots. It rejects all common sizes because Railway cannot set disk size, and rejects outbound network restrictions and hard lifetimes. Its idle timeout rounds up to whole minutes and destroys the VM. Preview ports must be declared at creation. See [Railway](/providers/railway).
 
 ## Capability names
 

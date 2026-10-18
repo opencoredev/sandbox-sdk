@@ -57,6 +57,10 @@
     "./upstash": {
       "types": "./dist/providers/upstash/index.d.ts",
       "import": "./dist/providers/upstash/index.js"
+    },
+    "./railway": {
+      "types": "./dist/providers/railway/index.d.ts",
+      "import": "./dist/providers/railway/index.js"
     }
   },
   "scripts": {
@@ -75,7 +79,8 @@
     "ai": "^7.0.143",
     "e2b": "2.56.0",
     "vitest": "^3.2.4",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "railway": "3.16.0"
   },
   "peerDependencies": {
     "@daytonaio/sdk": "^0.225.0",
@@ -86,7 +91,8 @@
     "ai": "^7.0.143",
     "e2b": "^2.56.0",
     "vitest": ">=3",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "railway": "^3.16.0"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -114,6 +120,9 @@
       "optional": true
     },
     "@upstash/box": {
+      "optional": true
+    },
+    "railway": {
       "optional": true
     }
   },

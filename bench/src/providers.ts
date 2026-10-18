@@ -16,6 +16,7 @@ export interface SkippedProvider {
 export type LoadedProvider = ReadyProvider | SkippedProvider;
 const credentials: Record<string, string[]> = {
   e2b: ["E2B_API_KEY"],
+  railway: ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"],
   vercel: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"],
   daytona: ["DAYTONA_API_KEY"],
   upstash: ["UPSTASH_BOX_API_KEY"],

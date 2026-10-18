@@ -2,6 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
+description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Upstash Box, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
 
@@ -20,12 +21,21 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel |
 | <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
 | [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
+| [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
+| | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
+| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | No | No |
+| Block all network | Yes | Yes | Yes | Yes | No | Yes |
+| Network allow list | No | Yes | Yes | Yes | No | Yes |
+| Size presets | Yes | No | Yes | Yes | No | No |
+| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes, destroys VM | Yes |
+| Ports declared up front | Yes | No | Yes, up to 15 | No | Yes, up to 10 | No |
+| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Public `https://` | Fake |
 | | Local | E2B | Vercel Sandbox | Daytona | Upstash Box | Memory |
 | --- | --- | --- | --- | --- | --- | --- |
 | Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
@@ -64,6 +74,8 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="Upstash Box" href="/providers/upstash" icon="box">
     Durable cloud containers with filesystem snapshots and protected previews.
+  <Card title="Railway" href="/providers/railway" icon="train-front">
+    Ephemeral Linux VMs with filesystem checkpoints and declared public preview ports.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

@@ -121,9 +121,10 @@ export const providerArt: ProviderArt[] = [
     paint: providerScenes.boat,
   },
   {
-    kind: "soon",
+    kind: "launch",
     id: "railway",
     name: "Railway",
+    href: "/docs/providers/railway",
     line: "Durable jobs and private networking on Linux VMs.",
     paint: providerScenes.railway,
   },
