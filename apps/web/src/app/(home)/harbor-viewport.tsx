@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState, type ReactNode } from "react";
 
-import { ProviderLogo } from "@/components/docs-icon";
+import { ProviderLogo } from "@/components/provider-logo";
 import { HalftoneCanvas, type FrameInfo } from "@/components/halftone/halftone-canvas";
 import type { HalftoneStyle } from "@/components/halftone/halftone";
 import {
@@ -21,10 +21,7 @@ const FACTORY: Record<HarborProvider["id"], string> = {
   e2b: "e2b()",
   daytona: "daytona()",
   vercel: "vercel()",
-  upstash: "upstash()",
-  box: "box()",
-  railway: "railway()",
-  tenki: "tenki()",
+  memory: "memory()",
   local: "local()",
 };
 

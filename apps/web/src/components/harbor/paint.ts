@@ -57,16 +57,16 @@ function lamp(t: number, delay: number) {
 }
 
 /** The providers the crane loads, one per cycle, each in its brand colour. */
+/** The 1.0 providers. The crane lands one per slot, so keep at least as many as SLOTS. */
 export const HARBOR_PROVIDERS = [
   { id: "e2b", name: "E2B", hue: "#ff5a1f" },
   { id: "daytona", name: "Daytona", hue: "#2f6bff" },
   { id: "vercel", name: "Vercel Sandbox", hue: "#e6e6e6" },
-  { id: "upstash", name: "Upstash Box", hue: "#00c98d" },
-  { id: "box", name: "Boat", hue: "#5a86ff" },
-  { id: "railway", name: "Railway", hue: "#8b5cf6" },
-  { id: "tenki", name: "Tenki", hue: "#4f86f0" },
+  { id: "memory", name: "Memory", hue: "#8fc79a" },
   { id: "local", name: "Local", hue: "#e8a33c" },
 ] as const;
+
+export type HarborProviderId = (typeof HARBOR_PROVIDERS)[number]["id"];
 
 const HUES = HARBOR_PROVIDERS.map((p) => p.hue);
 

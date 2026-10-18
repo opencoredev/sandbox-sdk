@@ -1,9 +1,6 @@
 # deps
 /node_modules
 
-# generated content
-.source
-
 # test & build
 /coverage
 /.next/
