@@ -8,19 +8,14 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - give an AI agent tools to run commands, read and edit files, and start dev servers (AI SDK, Mastra, or the OpenAI Agents SDK);
 - run code a user or a model wrote, such as an AI app builder with a live preview;
 - keep one long-lived sandbox per user or project and find it again by key;
-- switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Upstash Box without rewriting code;
-- switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Railway without rewriting code;
-- switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Boat without rewriting code;
+- switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, and Tenki without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
 It is not a hosted service: it calls each provider's own SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@upstash/box\`).
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`railway\`).
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@boatdev/sdk\`).
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@tenkicloud/sandbox\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, \`@upstash/box\`, \`railway\`, \`@boatdev/sdk\`, \`@tenkicloud/sandbox\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -32,8 +27,7 @@ Source: [github.com/opencoredev/sandbox-sdk](https://github.com/opencoredev/sand
 export default defineConfig({
   title: "Sandbox SDK",
   description:
-    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, E2B, Vercel Sandbox, Daytona, and Upstash Box, called with your own keys.",
-    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, E2B, Vercel Sandbox, Daytona, and Railway, called with your own keys.",
+    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, and Tenki, called with your own keys.",
   logo: { image: "/logo.svg", text: "Sandbox SDK", href: "https://sandbox-sdk.app" },
   content: {
     root: "content",
@@ -68,18 +62,18 @@ export default defineConfig({
           items: [
             { label: "Compare providers", root: "/providers", icon: "table-2" },
             { label: "Local (Docker)", root: "/providers/local", icon: "/integrations/docker.svg" },
+            { label: "Local (agentOS)", root: "/providers/agentos", icon: "/integrations/agentos.svg" },
             { label: "E2B", root: "/providers/e2b", icon: "/integrations/e2b.svg" },
-            { label: "Rivet agentOS", root: "/providers/agentos", icon: "cpu" },
             {
               label: "Vercel Sandbox",
               root: "/providers/vercel",
               icon: "/integrations/vercel.svg",
             },
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
-            { label: "Upstash Box", root: "/providers/upstash", icon: "box" },
-            { label: "Railway", root: "/providers/railway", icon: "train-front" },
-            { label: "Boat", root: "/providers/boat", icon: "sailboat" },
-            { label: "Tenki", root: "/providers/tenki", icon: "server" },
+            { label: "Upstash Box", root: "/providers/upstash", icon: "/integrations/upstash.svg" },
+            { label: "Railway", root: "/providers/railway", icon: "/integrations/railway.svg" },
+            { label: "Boat", root: "/providers/boat", icon: "/integrations/boat.svg" },
+            { label: "Tenki", root: "/providers/tenki", icon: "/integrations/tenki.svg" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],

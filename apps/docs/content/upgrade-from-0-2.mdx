@@ -193,7 +193,7 @@ In 0.2, `local()` ran an AgentOS VM bundled with the package. In 1.0 it runs a D
 
 ## 9. Removed
 
-- **Providers:** Upstash Box, Ascii Box, Railway, and Tenki. Pin `@opencoredev/sandbox-sdk@0.2` if you depend on one, or write an adapter with the provider contract from `@opencoredev/sandbox-sdk/provider`.
+- **Providers:** Ascii Box has no 1.0 adapter. Pin `@opencoredev/sandbox-sdk@0.2` if you depend on it, or write an adapter with the provider contract from `@opencoredev/sandbox-sdk/provider`. Upstash Box, Railway, and Tenki have new 1.0 adapters.
 - **Helpers:** `withSandbox`, `supports`, `requireCapability`, `capabilityMode`, `isSandboxError`, `redactSensitive`. Use `box.capabilities.has(...)` and `error instanceof SandboxError`.
 - **`sandbox.raw`** is now `box.native`.
 - **The `/eve` integration.** The agent tool subpaths are `/ai`, `/mastra`, and `/openai`. See [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).

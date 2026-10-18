@@ -2,11 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
-description: Compare Local, E2B, Vercel Sandbox, Daytona, Tenki, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
-description: Compare Local, E2B, Vercel Sandbox, Daytona, Boat, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
-description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
-description: Compare Local, E2B, Vercel Sandbox, Daytona, Upstash Box, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Tenki, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -20,60 +16,37 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | Provider | Factory | Install | Credentials | Best for |
 | --- | --- | --- | --- | --- |
 | <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local) | `local()` from `/local` | Docker | None | Development and CI |
+| <img src="/integrations/agentos.svg" alt="" /> [Local (agentOS)](/providers/agentos) | `agentos()` from `/agentos` | `@rivet-dev/agentos-core@0.4.1` | None | Local command and file tasks without Docker |
 | <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | `E2B_API_KEY` | Pause with memory, hard lifetimes |
 | <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel |
 | <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
-| [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
-| [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
-| [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
-| [Local (agentOS)](/providers/agentos) | `agentos()` from `/agentos` | `@rivet-dev/agentos-core@0.4.1` | None | Local command and file tasks without Docker |
-| [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
+| <img src="/integrations/e2b.png" alt="" /> [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | `E2B_API_KEY` | Pause with memory, hard lifetimes |
+| <img src="/integrations/daytona.png" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
+| <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
+| [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
+| <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
+| <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
+| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
-| | Local | E2B | Vercel Sandbox | Daytona | Memory | Local (agentOS) |
-| Key mode | exact | best-effort | exact | best-effort | exact | exact, in-process |
-| Network allow list | No | Yes | Yes | Yes | Yes | Yes, literal hosts |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Fake | Unsupported |
-| | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
-| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | Yes | No |
-| | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
-| Key mode | exact | best-effort | exact | best-effort | exact | best-effort |
-| Snapshots | Yes | Yes | Yes | Yes | No | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes | No |
-| Network allow list | No | Yes | Yes | Yes | Yes | No |
-| Size presets | Yes | No | Yes | Yes | No | Yes |
-| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes | No |
-| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | Yes | No |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Fake | Token in URL |
-| | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
-| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | No | No |
-| Block all network | Yes | Yes | Yes | Yes | No | Yes |
-| Network allow list | No | Yes | Yes | Yes | No | Yes |
-| Size presets | Yes | No | Yes | Yes | No | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes, destroys VM | Yes |
-| Ports declared up front | Yes | No | Yes, up to 15 | No | Yes, up to 10 | No |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Public `https://` | Fake |
-| | Local | E2B | Vercel Sandbox | Daytona | Upstash Box | Memory |
-| --- | --- | --- | --- | --- | --- | --- |
-| Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
-| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | Yes, processes end | No |
-| Snapshots | Yes | Yes | Yes | Yes | Yes | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes | Yes |
-| Network allow list | No | Yes | Yes | Yes | Yes | Yes |
-| Size presets | Yes | No | Yes | Yes | Yes | No |
-| Exact CPU, memory, disk | No | No | No | Yes | Yes | No |
-| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | Yes | Yes |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Public `https://` | Fake |
-| Exact CPU, memory, disk | No | No | No | Yes | No | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | No | Yes |
-| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | No | Yes |
-| Ports declared up front | Yes | No | Yes, up to 15 | No | No | No |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Needs a bearer header | Fake |
-| Terminal | No | No | No | No | No | No |
+|  | Local | Local (agentOS) | E2B | Vercel Sandbox | Daytona | Upstash Box | Railway | Boat | Tenki | Memory |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
+| Pause and resume | Yes | No | Yes | Partly, processes end | Partly, processes end | Yes, processes end | No | No | Yes | No |
+| Snapshots | Yes | No | Yes | Yes | Yes | Yes | Yes | No | Yes | No |
+| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | Yes | Yes |
+| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | Yes | Yes |
+| Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | No |
+| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | Yes | No |
+| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, in minutes | No | Yes, destroys VM | No | No | Yes |
+| Hard lifetime | Partly, on reconnect or reap | No | Yes | No | Yes, in minutes | No | No | No | Yes | Yes |
+| Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No |
+| Preview URL | `127.0.0.1` only | Unsupported | Public `https://` | Public `https://` | Needs a token header | Needs a bearer header | Public `https://` | Token in URL | Public `https://` | Fake |
+| Terminal | No | No | No | No | No | No | No | No | No | No |
 
 Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
 
@@ -96,13 +69,16 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.svg">
     Exact machine sizes, idle auto-stop, and previews protected by a token header.
   </Card>
-  <Card title="Upstash Box" href="/providers/upstash" icon="box">
+  <Card title="Upstash Box" href="/providers/upstash" icon="/integrations/upstash.svg">
     Durable cloud containers with filesystem snapshots and protected previews.
-  <Card title="Railway" href="/providers/railway" icon="train-front">
+  </Card>
+  <Card title="Railway" href="/providers/railway" icon="/integrations/railway.svg">
     Ephemeral Linux VMs with filesystem checkpoints and declared public preview ports.
-  <Card title="Boat" href="/providers/boat" icon="sailboat">
+  </Card>
+  <Card title="Boat" href="/providers/boat" icon="/integrations/boat.svg">
     Persistent cloud VMs with size presets and token-protected previews.
-  <Card title="Tenki" href="/providers/tenki" icon="server">
+  </Card>
+  <Card title="Tenki" href="/providers/tenki" icon="/integrations/tenki.svg">
     Full Linux VMs with disk and memory snapshots, pause, and exact machine sizes.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
