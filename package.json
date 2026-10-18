@@ -4,7 +4,8 @@
   "workspaces": [
     "apps/*",
     "packages/*",
-    "bench"
+    "bench",
+    "examples/*"
   ],
   "type": "module",
   "scripts": {

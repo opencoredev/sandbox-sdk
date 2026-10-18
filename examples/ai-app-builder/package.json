@@ -1,0 +1,38 @@
+{
+  "name": "@sandbox-sdk/example-ai-app-builder",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "dry-run": "bun scripts/dry-run.ts",
+    "typecheck": "next typegen && tsc --noEmit",
+    "lint": "oxlint app lib scripts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.82",
+    "@ai-sdk/openai": "^4.0.96",
+    "@ai-sdk/react": "^4.0.147",
+    "@opencoredev/sandbox-sdk": "workspace:*",
+    "ai": "^7.0.143",
+    "geist": "1.7.2",
+    "next": "16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "oxlint": "^1.74.0",
+    "typescript": "^6.0.3"
+  },
+  "optionalDependencies": {
+    "@daytonaio/sdk": "^0.225.0",
+    "@vercel/sandbox": "3.8.0",
+    "e2b": "2.56.0"
+  }
+}
