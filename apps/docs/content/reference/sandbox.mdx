@@ -32,7 +32,7 @@ await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 
 - `network?: "all" | "none" | { allow: string[] }`: defaults to `"all"`. Fails with `unsupported` if the provider can't enforce it.
 - `ports?: number[]`: ports to preview. Required by Vercel (up to 15) and Local (defaults to `[3000]`). E2B, Daytona, and Memory ignore it.
 - `idleTimeoutMs?: number`: stop after this long idle. Fails with `unsupported` where the provider has no idle timer.
-- `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability table](/providers#capabilities).
+- `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability matrix](/reference/capabilities).
 - `labels?: Record<string, string>`: your labels. The SDK adds `sandbox-sdk`.
 - `from?: string`: a snapshot ID to start from. Needs the `"snapshot"` capability.
 - `signal?: AbortSignal`: abort creation. A sandbox that arrives after the abort is destroyed.
@@ -129,7 +129,7 @@ Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the 
 
 ### Optional capabilities
 
-Present on the type only when the provider supports them. The [capability table](/providers#capabilities) lists which provider has which.
+Present on the type only when the provider supports them. The [capability matrix](/reference/capabilities) lists which provider has which.
 
 | Method | Returns |
 | --- | --- |

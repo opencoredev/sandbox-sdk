@@ -1,0 +1,59 @@
+---
+title: Integrations
+description: Use Sandbox SDK with agent frameworks (AI SDK, Mastra, OpenAI Agents SDK) and web frameworks (Next.js, Hono). Each page shows the wiring and where keys stay.
+---
+
+Sandbox SDK is a server-side TypeScript library with no framework dependency. These pages show how it fits into the tools you already use: which subpath to import, where the sandbox is created, and where keys stay.
+
+Every integration follows the same rules. Provider keys stay on the server. A sandbox that should outlive one request gets a `key`. A sandbox you're done with is destroyed, or reaped later.
+
+## Agent frameworks
+
+Each framework gets `sandboxTools(box)` from its own subpath. The tools, their output, and their options are identical across frameworks, so switching frameworks doesn't change what the model sees.
+
+<CardGroup cols={3}>
+  <Card title="AI SDK" href="/integrations/ai-sdk" icon="/integrations/vercel.svg">
+    A tool set for `generateText` and `streamText`, with live output in `useChat`.
+  </Card>
+  <Card title="Mastra" href="/integrations/mastra" icon="/integrations/mastra.svg">
+    A tool map for `new Agent`.
+  </Card>
+  <Card title="OpenAI Agents" href="/integrations/openai-agents" icon="/integrations/openai.svg">
+    A tool array for the OpenAI Agents SDK.
+  </Card>
+</CardGroup>
+
+Using another framework? `@opencoredev/sandbox-sdk/tools` exports `createSandboxTools` and `toolSchemas`, the Zod schemas behind every tool. Convert them with `z.toJSONSchema`. See [Agent tools](/reference/agent-tools#other-integrations).
+
+## Web frameworks
+
+<CardGroup cols={2}>
+  <Card title="Next.js" href="/integrations/nextjs" icon="/integrations/nextjs.svg">
+    Route handlers and server actions that keep one sandbox per project.
+  </Card>
+  <Card title="Hono" href="/integrations/hono" icon="/integrations/hono.svg">
+    The same pattern on Node or Bun, with streamed command output.
+  </Card>
+</CardGroup>
+
+## Providers
+
+The provider is a separate choice from the framework. Every integration works with every provider.
+
+<CardGroup cols={3}>
+  <Card title="Local" href="/providers/local" icon="/integrations/docker.svg">
+    Docker on your machine.
+  </Card>
+  <Card title="E2B" href="/providers/e2b" icon="/integrations/e2b.png">
+    Hosted microVMs.
+  </Card>
+  <Card title="Vercel Sandbox" href="/providers/vercel" icon="/integrations/vercel.svg">
+    MicroVMs on Vercel.
+  </Card>
+  <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.png">
+    Sized, long-lived workspaces.
+  </Card>
+  <Card title="Memory" href="/providers/memory" icon="memory-stick">
+    For unit tests.
+  </Card>
+</CardGroup>

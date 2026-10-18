@@ -1,80 +1,111 @@
 ---
-title: Quickstart
-description: Install Sandbox SDK, start a sandbox in Docker, run a command, and open a preview URL. About five minutes.
+title: Overview
+description: Sandboxes for your agents and your users. Any provider, one line. Sandbox SDK is one TypeScript API over Docker, E2B, Vercel Sandbox, and Daytona.
 ---
 
-By the end of this page you have a Linux sandbox running in Docker on your machine, a command's output in your terminal, and a dev server you can open in the browser. Then you switch to a cloud provider by changing one import.
+Sandbox SDK gives your code an isolated Linux machine to run commands in, write files to, and start dev servers on. You use the same TypeScript API whether that machine is a Docker container on your laptop or a microVM at E2B, Vercel, or Daytona. Changing providers is one import.
 
-Sandbox SDK calls each provider's own SDK with your keys. Nothing runs between you and the provider, and nothing gets installed inside the sandbox.
+It is for two kinds of app. One gives an AI agent a computer: the model runs tests, edits code, and starts a server. The other runs code your users write, such as an app builder with a live preview. Both need a machine that can't touch your servers, and both need it to come back when the user does.
 
-Coming from 0.2? Read [Upgrade from 0.2](/upgrade-from-0-2) first.
-
-## 1. Install
-
-```package-install
-npm i @opencoredev/sandbox-sdk
-```
-
-You need Node 22 or newer, or Bun 1.3 or newer. The package is ESM only. The `local()` provider also needs Docker running. Check with `docker info`.
-
-## 2. Run a command
-
-```ts title="hello.ts"
+```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
 await using box = await createSandbox(local());
 
-const result = await box.run("node --version && uname -sm");
-console.log(result.exitCode, result.output);
+const result = await box.run("node --version");
+console.log(result.output);
 ```
 
-Run it with `npx tsx hello.ts` or `bun hello.ts`. The first run pulls the `node:22-bookworm` image, so it takes a minute. After that you see `0` and the Node and kernel versions.
+That starts a sandbox, runs one command, prints its output, and deletes the sandbox when the block ends. Swap `local()` for `e2b()`, `vercel()`, or `daytona()` and nothing else changes.
 
-`await using` destroys the sandbox when the block ends, even if your code throws. A failing command does not throw: check `result.ok` or `result.exitCode`.
+## Start here
 
-## 3. Start a server and open it
+<CardGroup cols={2}>
+  <Card title="Install" href="/getting-started/installation" icon="package">
+    Add the package, and a provider's SDK when you use one.
+  </Card>
+  <Card title="Quickstart" href="/getting-started/quickstart" icon="rocket">
+    Run your first sandbox in memory with no account, then in Docker.
+  </Card>
+  <Card title="Choose a provider" href="/getting-started/choose-a-provider" icon="route">
+    Pick where sandboxes run, based on what your app needs.
+  </Card>
+  <Card title="Compare providers" href="/providers" icon="table-2">
+    See which features each provider supports, side by side.
+  </Card>
+</CardGroup>
 
-```ts title="preview.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+## What you can build
 
-await using box = await createSandbox(local(), { ports: [3000] });
+<CardGroup cols={2}>
+  <Card title="Give your agent a sandbox" href="/guides/give-your-agent-a-sandbox" icon="bot">
+    Hand a model ready-made tools to run commands, edit files, and start servers.
+  </Card>
+  <Card title="Build an AI app builder" href="/guides/build-an-ai-app-builder" icon="wand-sparkles">
+    A chat that writes an app in a sandbox and shows it running in an iframe.
+  </Card>
+  <Card title="One sandbox per user" href="/guides/per-user-sandboxes" icon="users">
+    Give each user a sandbox that is still there on their next request.
+  </Card>
+  <Card title="Dev servers and previews" href="/guides/dev-servers-and-previews" icon="monitor-play">
+    Start a server, wait until it answers, and show its URL.
+  </Card>
+</CardGroup>
 
-await box.files.write("server.mjs", `
-  import { createServer } from "node:http";
-  createServer((req, res) => res.end("hello from the sandbox")).listen(3000);
-`);
+## Providers
 
-const server = await box.start("node server.mjs", {
-  name: "web",
-  ready: { port: 3000 },
-});
+<CardGroup cols={3}>
+  <Card title="Local" href="/providers/local" icon="/integrations/docker.svg">
+    Docker on your machine or CI runner. No account.
+  </Card>
+  <Card title="E2B" href="/providers/e2b" icon="/integrations/e2b.png">
+    Hosted microVMs that pause with memory intact.
+  </Card>
+  <Card title="Vercel Sandbox" href="/providers/vercel" icon="/integrations/vercel.svg">
+    MicroVMs on Vercel, with exact keys and OIDC auth.
+  </Card>
+  <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.png">
+    Custom machine sizes and idle auto-stop.
+  </Card>
+  <Card title="Memory" href="/providers/memory" icon="memory-stick">
+    An in-process fake for unit tests.
+  </Card>
+  <Card title="Write a provider" href="/providers/custom" icon="plug">
+    Adapt any other sandbox service to the same API.
+  </Card>
+</CardGroup>
 
-console.log(server.url);
-await new Promise((resolve) => setTimeout(resolve, 60_000));
-```
+## Works with your stack
 
-`start` returns once port 3000 answers. `server.url` is an `http://127.0.0.1:<port>/` URL that Docker maps to port 3000 in the container. Open it within the minute and you see "hello from the sandbox". When the script ends, the sandbox is destroyed.
+<CardGroup cols={3}>
+  <Card title="AI SDK" href="/integrations/ai-sdk" icon="/integrations/vercel.svg">
+    Tools for `generateText` and `streamText`.
+  </Card>
+  <Card title="Mastra" href="/integrations/mastra" icon="/integrations/mastra.svg">
+    A tool map for a Mastra agent.
+  </Card>
+  <Card title="OpenAI Agents" href="/integrations/openai-agents" icon="/integrations/openai.svg">
+    A tool array for the OpenAI Agents SDK.
+  </Card>
+  <Card title="Next.js" href="/integrations/nextjs" icon="/integrations/nextjs.svg">
+    Route handlers that keep a sandbox per project.
+  </Card>
+  <Card title="Hono" href="/integrations/hono" icon="/integrations/hono.svg">
+    The same pattern on Node or Bun.
+  </Card>
+  <Card title="All integrations" href="/integrations" icon="layout-grid">
+    Everything in one place.
+  </Card>
+</CardGroup>
 
-## 4. Switch providers
+## How it differs
 
-Swap the import and the factory. Everything after `createSandbox` stays the same.
+- **Your keys, no middleman.** The SDK calls each provider's own SDK with your credentials. Nothing runs between you and the provider, and nothing is installed inside the sandbox.
+- **It never quietly ignores an option.** If you ask a provider for a network allow list or a machine size it can't enforce, `createSandbox` fails with `unsupported` instead of handing you an open sandbox.
+- **Failed commands are results.** A non-zero exit code comes back as `ok: false`. The SDK throws only when the sandbox or the provider fails.
+- **Sandboxes come back.** Give a sandbox a `key` and the next request, on any server, gets the same one. Background processes and their logs live inside the sandbox, so they survive a redeploy.
 
-```ts title="hello-e2b.ts"
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+The SDK is not an isolation layer of its own. The provider you choose supplies the security boundary. See [Security](/reference/security).
 
-await using box = await createSandbox(e2b());
-
-const result = await box.run("node --version && uname -sm");
-console.log(result.exitCode, result.output);
-```
-
-Install the provider SDK next to this package (`npm i e2b`) and set `E2B_API_KEY` in your server's environment. Each provider page lists its install command and keys.
-
-## Next steps
-
-- [Sandboxes and keys](/concepts/sandboxes-and-keys): keep one sandbox per user and reattach to it.
-- [Give your agent a sandbox](/guides/give-your-agent-a-sandbox): hand a model `run`, `read_file`, and `edit_file` tools.
-- [Providers](/providers): pick where your sandboxes run.
+Coming from 0.2? Read [Upgrade from 0.2](/upgrade-from-0-2).

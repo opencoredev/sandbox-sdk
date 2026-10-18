@@ -1,0 +1,136 @@
+---
+title: Quickstart
+description: Run your first sandbox in memory with no account and no Docker, then run the same code in a real Linux container, then on a cloud provider.
+---
+
+By the end of this page you have run the same code three ways: in memory with nothing installed, in a Docker container on your machine, and on a cloud provider. Only the provider line changes.
+
+Haven't installed the package yet? See [Install](/getting-started/installation).
+
+## 1. Run a sandbox in memory
+
+The `memory()` provider runs inside your own process. It has no machine, no network, and needs no account, so it is the quickest way to see the API.
+
+```ts title="hello.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory());
+
+await box.files.write("hello.txt", "hello from the sandbox\n");
+const result = await box.run("cat hello.txt && pwd");
+
+console.log(result.ok, result.output);
+```
+
+Run it with `npx tsx hello.ts` or `bun hello.ts`. You see `true`, the file's text, and `/workspace`, the directory every command starts in.
+
+Three things to notice:
+
+- `await using` deletes the sandbox when the block ends, even if your code throws.
+- `box.run` resolves with a result. A command that fails sets `ok: false` and a non-zero `exitCode`. It does not throw.
+- Relative paths like `hello.txt` resolve against `/workspace`.
+
+Memory only understands a few shell built-ins, which is why this example sticks to `cat` and `pwd`. For real programs, use a real machine.
+
+## 2. Run it in Docker
+
+`local()` runs each sandbox as a Docker container: real Linux, real networking, still no account. Start Docker and check it with `docker info`.
+
+```ts title="hello-local.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+The only change is the provider import. The first run pulls the `node:22-bookworm` image, so it takes a minute. After that you see `0` and the Node and kernel versions.
+
+## 3. Start a server and open it
+
+A real machine can run a dev server. `box.start` launches it in the background and waits until it answers.
+
+```ts title="preview.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { ports: [3000] });
+
+await box.files.write("server.mjs", `
+  import { createServer } from "node:http";
+  createServer((req, res) => res.end("hello from the sandbox")).listen(3000);
+`);
+
+const server = await box.start("node server.mjs", {
+  name: "web",
+  ready: { port: 3000 },
+});
+
+console.log(server.url);
+await new Promise((resolve) => setTimeout(resolve, 60_000));
+```
+
+`start` returns once port 3000 answers. `server.url` is an `http://127.0.0.1:<port>/` URL that Docker maps to port 3000 in the container. Open it within the minute and you see "hello from the sandbox". When the script ends, the sandbox is destroyed.
+
+## 4. Move to a cloud provider
+
+Swap the import and the factory. Everything after `createSandbox` stays the same.
+
+<ProviderTabs>
+<ProviderTab provider="e2b">
+
+```ts title="hello-e2b.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+Install `e2b` and set `E2B_API_KEY` on your server. See [E2B](/providers/e2b).
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```ts title="hello-vercel.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+Install `@vercel/sandbox`. Inside Vercel it uses OIDC. Outside, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`. See [Vercel Sandbox](/providers/vercel).
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```ts title="hello-daytona.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+Install `@daytonaio/sdk` and set `DAYTONA_API_KEY` on your server. See [Daytona](/providers/daytona).
+
+</ProviderTab>
+</ProviderTabs>
+
+Keys stay on the server. Never import a provider in code that ships to the browser.
+
+## Next steps
+
+- [Choose a provider](/getting-started/choose-a-provider): which one fits your app.
+- [Give your agent a sandbox](/guides/give-your-agent-a-sandbox): hand a model `run`, `read_file`, and `edit_file` tools.
+- [One sandbox per user](/guides/per-user-sandboxes): keep a sandbox between requests with a `key`.

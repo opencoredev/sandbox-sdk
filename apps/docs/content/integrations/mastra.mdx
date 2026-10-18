@@ -1,0 +1,67 @@
+---
+title: Mastra
+description: Give a Mastra agent sandbox tools with sandboxTools from @opencoredev/sandbox-sdk/mastra. A tool map for new Agent, with abort support.
+---
+
+`sandboxTools(box)` from `@opencoredev/sandbox-sdk/mastra` returns a Mastra tool map. Pass it as `tools` to `new Agent` and the agent can run commands, read and edit files, and start dev servers in the sandbox.
+
+For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
+
+## Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk @mastra/core zod
+```
+
+Needs Mastra 1.78 and Zod 4.6. Install a provider SDK too if you use a cloud provider.
+
+## Run an agent
+
+```ts title="agent.ts"
+import { Agent } from "@mastra/core/agent";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/mastra";
+
+await using box = await createSandbox(e2b());
+
+const coder = new Agent({
+  id: "coder",
+  name: "Coder",
+  instructions: "You work inside a Linux sandbox. Verify every change by running it.",
+  model: "anthropic/claude-opus-5-5",
+  tools: sandboxTools(box),
+});
+
+const result = await coder.generate("Create a Vite React app in /workspace/app and start it on port 5173.");
+console.log(result.text);
+```
+
+The agent writes the app, runs `npm install`, and starts the dev server with `start_process`, which waits until the port answers and returns its URL. `result.text` holds the agent's final answer.
+
+## Limit the tools
+
+The same options work on every framework. This agent can only read and search:
+
+```ts title="reviewer.ts"
+import { Agent } from "@mastra/core/agent";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/mastra";
+
+await using box = await createSandbox(local(), { network: "none" });
+
+const reviewer = new Agent({
+  id: "reviewer",
+  name: "Reviewer",
+  instructions: "Read the code in /workspace and report problems. Do not change files.",
+  model: "anthropic/claude-opus-5-5",
+  tools: sandboxTools(box, { allow: ["read_file", "search", "list_files"] }),
+});
+```
+
+`search` and `list_files` are optional tools, so `allow` turns them on. The full option list is in [Agent tools](/reference/agent-tools#options).
+
+## What Mastra gets
+
+Each tool has an `id`, a description that tells the model when not to use it, a Zod input schema, and an output of `{ text }`. The model sees `text` through `toModelOutput`: a verdict line and capped output. Aborting the agent run aborts the command inside the sandbox too.

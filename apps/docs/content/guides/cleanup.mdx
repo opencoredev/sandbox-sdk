@@ -1,0 +1,172 @@
+---
+title: Clean up sandboxes
+description: Stop paying for sandboxes nobody uses. Pick the right limits for your provider, schedule a reaper, scope it with labels, and check what is still running.
+---
+
+Cloud sandboxes cost money while they run, and a keyed sandbox is meant to outlive the request that made it. If your app forgets one, it keeps running. This guide sets up two layers of protection: limits the provider enforces on its own, and a reaper you run on a schedule.
+
+For what `close`, `destroy`, and `await using` do, see [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup).
+
+## 1. Label every sandbox
+
+Labels let you find your sandboxes later without touching anyone else's. The SDK adds `sandbox-sdk` to every sandbox it creates, and you add your own:
+
+```ts title="create.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), {
+  key: "user:123",
+  labels: { app: "builder", env: "production" },
+});
+```
+
+Use one label per app and environment, so a staging cron job can never reap production sandboxes.
+
+## 2. Set the limits your provider enforces
+
+A limit the provider enforces holds even if your server crashes. Set the ones your provider supports on every keyed sandbox:
+
+<ProviderTabs>
+<ProviderTab provider="e2b">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), {
+  key: "user:123",
+  timeoutMs: 60 * 60_000,
+});
+```
+
+E2B kills the sandbox when `timeoutMs` runs out, and reconnecting never pushes the deadline back. It has no idle timer, so `idleTimeoutMs` fails with `unsupported`.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), {
+  key: "user:123",
+  idleTimeoutMs: 15 * 60_000,
+  timeoutMs: 8 * 60 * 60_000,
+});
+```
+
+Daytona stops an idle sandbox and keeps its disk, and deletes it at the lifetime limit. Both work in whole minutes: idle rounds up, lifetime rounds down.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), {
+  key: "user:123",
+  labels: { app: "builder" },
+});
+```
+
+Vercel Sandbox accepts neither limit, because its session timeout resets on every resume. Rely on the reaper below.
+
+</ProviderTab>
+<ProviderTab provider="local">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), {
+  key: "user:123",
+  idleTimeoutMs: 30 * 60_000,
+  timeoutMs: 4 * 60 * 60_000,
+});
+```
+
+Docker has no timer. The SDK stores both deadlines on the container and enforces them when a client reconnects or the reaper runs.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory(), { idleTimeoutMs: 1_000 });
+```
+
+Timers run in your process. Everything is gone when the process exits anyway.
+
+</ProviderTab>
+</ProviderTabs>
+
+## 3. Schedule a reaper
+
+`reapSandboxes` destroys every sandbox that matches and returns how many it removed. Run it from a cron job, a scheduled function, or a queue worker:
+
+```ts title="reap.ts"
+import { reapSandboxes } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const removed = await reapSandboxes(vercel(), {
+  labels: { app: "builder", env: "production" },
+  olderThanMs: 24 * 60 * 60_000,
+  idleOnly: true,
+});
+
+console.log(`reaped ${removed} sandboxes`);
+```
+
+- `labels` limits reaping to your app. Always pass it.
+- `olderThanMs` skips sandboxes younger than this, measured from creation.
+- `idleOnly: true` skips any sandbox with an SDK command in flight or an SDK background process running. Commands started outside the SDK aren't seen.
+
+Run it about as often as your shortest acceptable waste. Hourly is a good start. On Next.js, a [cron route](/integrations/nextjs#5-reap-forgotten-sandboxes) works.
+
+## 4. See what is running
+
+`listSandboxes` returns every sandbox this SDK created, filtered by labels. It never lists sandboxes other tools made in the same account.
+
+```ts title="list.ts"
+import { listSandboxes } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const boxes = await listSandboxes(e2b(), { labels: { app: "builder" } });
+for (const b of boxes) console.log(b.id, b.key, b.state, new Date(b.createdAt));
+```
+
+`state` is `"running"`, `"paused"`, or `"stopped"`. A count that keeps growing means a code path creates keyed sandboxes it never cleans up.
+
+## 5. Destroy what you're done with
+
+When a user deletes a project or an account, destroy its sandbox instead of waiting for the reaper:
+
+```ts title="delete-project.ts"
+import { connectSandbox, listSandboxes } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const provider = e2b();
+const [info] = (await listSandboxes(provider, { labels: { app: "builder" } })).filter(
+  (b) => b.key === "project:42",
+);
+
+if (info) {
+  const box = await connectSandbox(provider, info.id);
+  await box.destroy();
+}
+```
+
+Looking the sandbox up first means a project that never had one doesn't get one created just to be deleted.
+
+A sandbox without a key is destroyed automatically at the end of its `await using` block.
+
+## Checklist
+
+- Every sandbox has an app label.
+- Every keyed sandbox has the limits its provider supports.
+- A reaper runs on a schedule for each provider you use, scoped by label.
+- Deleting a user or project destroys its sandbox.

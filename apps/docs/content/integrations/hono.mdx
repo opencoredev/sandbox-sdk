@@ -1,0 +1,82 @@
+---
+title: Hono
+description: Use Sandbox SDK from Hono routes on Node or Bun. Keep one sandbox per project, stream command output with hono/streaming, and return preview URLs.
+---
+
+Hono routes run on your server, so they can create sandboxes and hold provider keys. The pattern is the same as any server: get the sandbox by key, do the work, close the handle.
+
+## Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk hono e2b
+```
+
+This page uses [E2B](/providers/e2b), which reads `E2B_API_KEY`. Any provider works the same way. Run the app on Node 22+ or Bun 1.3+. Edge runtimes can't load the provider SDKs.
+
+## An app with three routes
+
+```ts title="src/app.ts"
+import { Hono } from "hono";
+import { streamText } from "hono/streaming";
+import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const projectSandbox = (projectId: string) =>
+  createSandbox(e2b(), {
+    key: `project:${projectId}`,
+    timeoutMs: 2 * 60 * 60_000,
+    labels: { app: "my-app" },
+  });
+
+const app = new Hono();
+
+// Run one command and return its result
+app.post("/projects/:id/run", async (c) => {
+  const { command } = await c.req.json<{ command: string }>();
+  await using box = await projectSandbox(c.req.param("id"));
+  const result = await box.run(command, { timeoutMs: 60_000 });
+  return c.json({ ok: result.ok, exitCode: result.exitCode, output: result.output });
+});
+
+// Stream a long command's output as it arrives
+app.post("/projects/:id/install", (c) =>
+  streamText(c, async (stream) => {
+    await using box = await projectSandbox(c.req.param("id"));
+    for await (const chunk of box.run("npm install", { cwd: "app" })) {
+      await stream.write(chunk.text);
+    }
+  }),
+);
+
+// Start the dev server, or find the running one, and return its URL
+app.get("/projects/:id/preview", async (c) => {
+  await using box = await projectSandbox(c.req.param("id"));
+  const running = (await box.processes()).some((p) => p.name === "dev" && p.status === "running");
+  if (!running) {
+    await box.start("npm run dev -- --port 3000", { name: "dev", cwd: "app", ready: { port: 3000 } });
+  }
+  const preview = await box.preview(3000, { waitMs: 10_000 });
+  return c.json({ url: preview.url });
+});
+
+app.onError((error, c) => {
+  if (error instanceof SandboxError) {
+    return c.json({ code: error.code, message: error.message }, error.retryable ? 503 : 500);
+  }
+  throw error;
+});
+
+export default app;
+```
+
+Each route gets the project's sandbox by key, so requests from any server instance share one sandbox per project. `await using` closes the handle when the handler finishes. In the streaming route the handle lives inside the stream callback, so it closes only after the last chunk is written.
+
+`timeoutMs` makes E2B delete a project's sandbox two hours after it was created, even if your server goes away.
+
+## Errors
+
+A command that fails is not an error: `/run` returns `ok: false` and the output. `SandboxError` means the sandbox or the provider failed. The error handler above maps `retryable` errors, such as a provider outage or quota, to 503. Never send `error.cause` to the browser. See [Errors](/reference/errors).
+
+## Check ownership
+
+These routes run whatever command they're sent. In a real app, authenticate the request and check that the user owns the project before you call `projectSandbox`. A sandbox is isolated from your server, but it still costs money and can reach the network unless you [restrict it](/guides/machine-size-and-network).

@@ -1,22 +1,24 @@
 ---
 title: Give your agent a sandbox
-description: Hand an AI SDK, Mastra, or OpenAI Agents SDK agent a set of sandbox tools with sandboxTools, then limit what it can touch.
+description: Hand an AI SDK, Mastra, or OpenAI Agents SDK agent ready-made sandbox tools with sandboxTools, see what the model gets back, and limit what it can touch.
 ---
 
 You want a model to run commands, read and edit files, and start a dev server, without writing tool definitions by hand. `sandboxTools(box)` returns ready tools in your framework's own format.
 
 Each framework has its own subpath, so you only load the one you use:
 
-| Framework | Import | Returns |
-| --- | --- | --- |
-| AI SDK | `@opencoredev/sandbox-sdk/ai` | A tool set for `tools` |
-| Mastra | `@opencoredev/sandbox-sdk/mastra` | A tool map for `new Agent` |
-| OpenAI Agents SDK | `@opencoredev/sandbox-sdk/openai` | A tool array for `new Agent` |
+| Framework | Import | Returns | Page |
+| --- | --- | --- | --- |
+| AI SDK | `@opencoredev/sandbox-sdk/ai` | A tool set for `tools` | [AI SDK](/integrations/ai-sdk) |
+| Mastra | `@opencoredev/sandbox-sdk/mastra` | A tool map for `new Agent` | [Mastra](/integrations/mastra) |
+| OpenAI Agents SDK | `@opencoredev/sandbox-sdk/openai` | A tool array for `new Agent` | [OpenAI Agents](/integrations/openai-agents) |
 
-## AI SDK
+The tools behave the same in every framework. This page uses the AI SDK. The framework pages show the same agent in Mastra and the OpenAI Agents SDK.
+
+## Hand the model the tools
 
 ```package-install
-npm i @opencoredev/sandbox-sdk ai
+npm i @opencoredev/sandbox-sdk ai zod
 ```
 
 ```ts title="agent.ts"
@@ -41,58 +43,6 @@ console.log(text);
 The model string goes through the Vercel AI Gateway, so set `AI_GATEWAY_API_KEY` on your server. Any AI SDK provider works in its place.
 
 The agent calls `run` to execute the tests, `read_file` to look at the failure, and `edit_file` to change it. You get its final summary in `text`.
-
-## Mastra
-
-```package-install
-npm i @opencoredev/sandbox-sdk @mastra/core
-```
-
-```ts title="agent.ts"
-import { Agent } from "@mastra/core/agent";
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { e2b } from "@opencoredev/sandbox-sdk/e2b";
-import { sandboxTools } from "@opencoredev/sandbox-sdk/mastra";
-
-await using box = await createSandbox(e2b());
-
-const coder = new Agent({
-  id: "coder",
-  name: "Coder",
-  instructions: "You work inside a Linux sandbox. Verify every change by running it.",
-  model: "anthropic/claude-opus-5-5",
-  tools: sandboxTools(box),
-});
-
-const result = await coder.generate("Create a Vite React app in /workspace/app and start it on port 5173.");
-console.log(result.text);
-```
-
-## OpenAI Agents SDK
-
-```package-install
-npm i @opencoredev/sandbox-sdk @openai/agents
-```
-
-```ts title="agent.ts"
-import { Agent, run } from "@openai/agents";
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { e2b } from "@opencoredev/sandbox-sdk/e2b";
-import { sandboxTools } from "@opencoredev/sandbox-sdk/openai";
-
-await using box = await createSandbox(e2b());
-
-const coder = new Agent({
-  name: "Coder",
-  instructions: "You work inside a Linux sandbox. Verify every change by running it.",
-  tools: sandboxTools(box),
-});
-
-const result = await run(coder, "Find every TODO in /workspace and list them by file.");
-console.log(result.finalOutput);
-```
-
-This uses `OPENAI_API_KEY` and the Agents SDK's default model.
 
 ## The tools
 

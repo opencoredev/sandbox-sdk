@@ -1,0 +1,71 @@
+---
+title: OpenAI Agents
+description: Give an OpenAI Agents SDK agent sandbox tools with sandboxTools from @opencoredev/sandbox-sdk/openai. A strict tool array for new Agent.
+---
+
+`sandboxTools(box)` from `@opencoredev/sandbox-sdk/openai` returns a tool array for the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/). Pass it as `tools` to `new Agent` and the agent can run commands, read and edit files, and start dev servers in the sandbox.
+
+For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
+
+## Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk @openai/agents zod
+```
+
+Needs `@openai/agents` 0.20 and Zod 4.6. Install a provider SDK too if you use a cloud provider.
+
+## Run an agent
+
+```ts title="agent.ts"
+import { Agent, run } from "@openai/agents";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/openai";
+
+await using box = await createSandbox(e2b());
+
+const coder = new Agent({
+  name: "Coder",
+  instructions: "You work inside a Linux sandbox. Verify every change by running it.",
+  tools: sandboxTools(box),
+});
+
+const result = await run(coder, "Find every TODO in /workspace and list them by file.");
+console.log(result.finalOutput);
+```
+
+This uses `OPENAI_API_KEY` and the Agents SDK's default model. The agent searches with the `run` tool, for example `grep -rn TODO`, and answers in `result.finalOutput`. Allow the optional `search` tool to give it a dedicated search.
+
+## Keep a sandbox across runs
+
+Give the sandbox a `key` and later runs pick up where the last one stopped:
+
+```ts title="session.ts"
+import { Agent, run } from "@openai/agents";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/openai";
+
+const userId = "user_123";
+
+await using box = await createSandbox(e2b(), {
+  key: `agent:${userId}`,
+  timeoutMs: 2 * 60 * 60_000,
+});
+
+const coder = new Agent({
+  name: "Coder",
+  instructions: "Your project is in /workspace/app.",
+  tools: sandboxTools(box, { root: "/workspace/app" }),
+});
+
+const result = await run(coder, "Add a README that explains how to run the project.");
+console.log(result.finalOutput, box.created);
+```
+
+With a key, `await using` closes the handle and leaves the sandbox running. `box.created` is `false` on every run after the first. `timeoutMs` makes E2B delete it two hours after it was created.
+
+## What the Agents SDK gets
+
+Each tool is a `strict` function tool with a Zod schema, so the model's arguments are validated before the tool runs. A tool returns its compact text result: a verdict line and capped output. Aborting the run aborts the command inside the sandbox too.
