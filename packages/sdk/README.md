@@ -234,3 +234,5 @@ Secret filtering protects each command stream and the interleaved `output` and a
 Process line cursors include unfinished fragments from both streams. Pass the opaque string unchanged when resuming, including from another client. Malformed serialized cursors fail with `invalid_argument`.
 
 Durable process logs preserve UTF-8 code points across shell-reader blocks. The fallback requires the standard Linux `dd`, `tail`, and `od` utilities.
+
+Process log pages use bounded remote ranges under the rotation lock. `maxBytes` is an upper bound; a page may stop at 64 KiB even when a larger budget is requested. Follow `nextCursor` while `truncated` is true. Reads include bounded framing lookaround and never download the entire 10 MiB log. Memory providers may implement the optional `files.readRange` primitive.

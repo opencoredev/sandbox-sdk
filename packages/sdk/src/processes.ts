@@ -58,13 +58,30 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
     let launch: (() => Promise<void>) | undefined;
     async function readEvents(options: { after?: string; maxBytes?: number } = {}) {
       status = (await info(name)).status;
-      const bytes = await files.read(`${dir}/out.log`, { as: "bytes" });
-      const base = await files.exists(`${dir}/base`) ? Number(await files.read(`${dir}/base`)) : 0;
       const position = linePosition(options.after).offset;
-      const after = position === undefined ? base : Number(position), max = options.maxBytes ?? 16384;
-      if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(max) || max < 1 || max > 1_048_576) invalid("Invalid log cursor or maxBytes");
-      const decoded = decodePage(bytes, Math.max(0, after - base), max, base);
-      return { events: decoded.events.map(event => ({ ...event, text: redactor.text(event.text) })), nextCursor: String(base + decoded.offset), truncated: after < base || decoded.offset < bytes.length };
+      const requested = position === undefined ? undefined : Number(position), max = options.maxBytes ?? 16384;
+      if ((requested !== undefined && (!Number.isSafeInteger(requested) || requested < 0)) || !Number.isSafeInteger(max) || max < 1 || max > 1_048_576) invalid("Invalid log cursor or maxBytes");
+      // A page includes a record-sized lookbehind/lookahead, never the full log.
+      const budget = Math.min(max, 65_536), lookaround = 32_770;
+      let base: number, start: number, size: number, bytes: Uint8Array;
+      if (provider.name === "memory" && provider.files.readRange) {
+        base = Number(await files.read(`${dir}/base`)); size = (await files.stat(`${dir}/out.log`)).size;
+        start = Math.max(0, (requested ?? base) - base - lookaround);
+        bytes = await provider.files.readRange(id, `${dir}/out.log`, { offset: start, length: budget + lookaround * 2 });
+      } else {
+        // Share the writer's lock so rotation cannot pair a new base with an old file.
+        let wire = "";
+        const result = await provider.exec(id, { command: `while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep .01; done; trap 'rmdir ${quote(`${dir}/lock`)}' EXIT; b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); a=${requested ?? '"$b"'}; s=$((a-b-${lookaround})); [ "$s" -ge 0 ] || s=0; printf '%s %s %s\\n' "$b" "$s" "$n"; dd if=${quote(`${dir}/out.log`)} bs=1 skip="$s" count=${budget + lookaround * 2} 2>/dev/null | base64`, cwd: "/workspace", env: { ...env, ...defaults }, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") { wire += chunk.text; if (Buffer.byteLength(wire) > 262_144) invalid("Oversized log page"); } } });
+        if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Log range read failed. Retry the log request.", { code: "provider" });
+        const newline = wire.indexOf("\n"); const header = wire.slice(0, newline).split(" ").map(Number);
+        base = header[0] ?? NaN; start = header[1] ?? NaN; size = header[2] ?? NaN;
+        if (newline < 0 || ![base, start, size].every(value => Number.isSafeInteger(value) && value >= 0)) invalid("Invalid remote log page");
+        bytes = Buffer.from(wire.slice(newline + 1), "base64");
+      }
+      const after = Math.max(base, requested ?? base);
+      const decoded = decodePage(bytes, Math.max(0, after - base - start), budget, base + start);
+      const offset = base + start + decoded.offset;
+      return { events: decoded.events.map(event => ({ ...event, text: redactor.text(event.text) })), nextCursor: String(offset), truncated: (requested ?? base) < base || offset < base + size };
     }
     const handle: ProcessHandle = {
       name, get status() { return status; }, get url() { return url; }, get ready() { return ready; },

@@ -30,6 +30,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
     }
   }
   const files: Provider["files"] = {
+    async readRange(id, path, options) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(options.offset, options.offset + options.length); },
     async read(id, path) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(); },
     async write(id, path, data) { const m = machine(id); mkdir(id, posix.dirname(path)); m.nodes.set(posix.resolve("/", path), { data: data.slice(), modifiedAt: Math.max(now(), (m.nodes.get(path)?.modifiedAt ?? 0) + 1) }); },
     async stat(id, path) { const value = node(id, path); return { path: posix.resolve("/", path), type: value.data === null ? "directory" : "file", size: value.data?.length ?? 0, modifiedAt: value.modifiedAt }; },
