@@ -3,6 +3,7 @@
  *
  *   bun scripts/check-snippets.ts   check against packages/sdk/dist (build the SDK first)
  *
+ * Fences inside <ProviderTab> blocks are checked too: they sit unindented, like any fence.
  * Each page becomes its own small project under .snippets/<page>/. A fence whose
  * title looks like a file path (title="lib/sandbox.ts") is written to that path, so
  * pages can import between their own snippets ("@/lib/sandbox" maps to the page
@@ -10,7 +11,7 @@
  * "./kv" come from scripts/snippet-stubs/. Opt a fence out with check="skip".
  *
  * The SDK and its optional peers (ai, zod, @mastra/core, @openai/agents) resolve
- * from packages/sdk, as they would from one deduplicated node_modules in an app.
+ * from packages/sdk, and hono from apps/docs, as they would from one deduplicated node_modules in an app.
  * Otherwise the workspace's second copy of `ai` gives snippets a different
  * `schemaSymbol` than the SDK's declarations, and valid tool maps fail to type-check.
  */
@@ -114,6 +115,15 @@ const sdkManifest: { peerDependencies?: Record<string, string> } = JSON.parse(
 for (const peer of Object.keys(sdkManifest.peerDependencies ?? {})) {
   const installed = join(sdkDir, "node_modules", peer);
   if (existsSync(installed)) linkModule(peer, realpathSync(installed));
+}
+// Web frameworks the integration pages use. They aren't SDK peers, so they come from the docs package.
+for (const name of ["hono"]) {
+  const installed = join(docsDir, "node_modules", name);
+  if (!existsSync(installed)) {
+    console.error(`snippets: ${name} is not installed in apps/docs. Run bun install.`);
+    process.exit(1);
+  }
+  linkModule(name, realpathSync(installed));
 }
 
 const origins = new Map<string, Snippet>();
