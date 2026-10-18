@@ -853,6 +853,10 @@
   gap: 16px;
   padding: 40px clamp(20px, 6vw, 72px) 56px;
 }
+.footerBrand .brand {
+  /* the nav's side padding would push the mark off the paragraph's left edge */
+  padding: 0;
+}
 .footerBrand p {
   max-width: 36ch;
   color: var(--muted);
