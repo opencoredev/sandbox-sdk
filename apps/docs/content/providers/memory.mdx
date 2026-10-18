@@ -74,7 +74,8 @@ Returns a provider with an extra `register(name, handler)` method. Each `memory(
 
 - No real shell, git, terminals, or sockets. `box.git` and checks against a real HTTP server don't work.
 - No pause or snapshots.
-- `size` and `network` are accepted but have no effect, since there is no machine and no network.
+- `size` fails with `unsupported`, since there is no machine to size. `network` is accepted and recorded, since there is no network to restrict.
+- The shell understands a small set of commands. Pipes, `&&`, and redirects it doesn't implement fail with exit code 127 and a message naming the unsupported syntax.
 - State is lost when the process exits.
 
 Test those paths against [Local](/providers/local) instead.

@@ -103,7 +103,7 @@ Returns a provider for `createSandbox`, `connectSandbox`, `listSandboxes`, and `
 
 ## Limitations
 
-- `idleTimeoutMs` and `timeoutMs` fail with `unsupported`. Docker has no timer that survives your process, so use [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule instead.
+- `idleTimeoutMs` and `timeoutMs` are stored on the container. Docker has no timer of its own, so the deadline is enforced when a client reconnects (an expired container is destroyed and you get `not_found`) or when [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Run the reaper on a schedule if nothing reconnects. Idle time counts from the last SDK command or file operation, and running background processes keep a sandbox from going idle.
 - Network allow lists fail with `unsupported`. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) when you need one.
 - Isolation is a container, not a VM. Don't run untrusted code from strangers on a machine that holds secrets.
 - Preview URLs are reachable only on the Docker host.

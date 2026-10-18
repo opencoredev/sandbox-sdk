@@ -49,14 +49,14 @@ await using box = await createSandbox(daytona(), {
 - `idleTimeoutMs` stops the sandbox after this long without activity, using the provider's own idle handling.
 - `timeoutMs` is the hard maximum lifetime. The provider ends the sandbox when it runs out, whatever it is doing.
 
-Both are enforced by the provider, so they hold even after your server crashes. That also means a provider without the timer can't honor them, and `createSandbox` fails with `unsupported` instead of ignoring them:
+Most providers enforce both themselves, so they hold even after your server crashes. Local has no timer of its own: it stores the deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs. A provider that can't honor a limit at all makes `createSandbox` fail with `unsupported` instead of ignoring it:
 
 | Provider | `idleTimeoutMs` | `timeoutMs` |
 | --- | --- | --- |
 | Daytona | Yes, rounded up to whole minutes | Yes, rounded down to whole minutes, at least one minute |
 | E2B | No | Yes |
 | Vercel | No | No |
-| Local | No | No |
+| Local | Yes, on reconnect or reap | Yes, on reconnect or reap |
 | Memory | Yes, in your process | Yes, in your process |
 
 Set the limits your provider supports on every keyed sandbox. Where it supports neither, run [`reapSandboxes`](#find-and-reap-sandboxes) on a schedule. A forgotten keyed sandbox is the most common source of surprise bills.

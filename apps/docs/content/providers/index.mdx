@@ -44,10 +44,10 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 | `terminal()` | No | No | No | No | No |
 | `network: "none"` | Yes | Yes | Yes | Yes | Yes |
 | `network: { allow }` | No | Yes | Yes | Yes | Yes |
-| `size` presets | Yes | No | Yes | Yes | Accepted, not enforced |
-| `size` with exact numbers | No | No | No | Yes | Accepted, not enforced |
-| `idleTimeoutMs` | No | No | No | Yes, whole minutes | Yes |
-| `timeoutMs` (hard lifetime) | No | Yes | No | Yes, whole minutes | Yes |
+| `size` presets | Yes | No | Yes | Yes | No |
+| `size` with exact numbers | No | No | No | Yes | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes |
 | `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
 | Key mode | exact | best-effort | exact | best-effort | exact |
 
@@ -55,7 +55,7 @@ Notes on the cells that need them:
 
 - **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B pauses the microVM with its memory. Vercel and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
 - **Size.** Local and Vercel take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping.
-- **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process.
+- **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
 
 ## Check at runtime
