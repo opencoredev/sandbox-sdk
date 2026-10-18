@@ -95,3 +95,19 @@ Truncated foreground output includes a generated name and `cursor=0` for `proces
 `onEvent` receives redacted foreground chunks and requested log pages before model formatting. Framework cancellation signals stop foreground runs; returning an AI preliminary iterator aborts and awaits its command. AI SDK also receives those foreground chunks as preliminary results; its `toModelOutput` returns only the final compact result to the model. Consumers that fall behind AI preliminary output have a bounded 1 MB queue. Background startup waits for a supplied `port`; without a port it confirms launch only. A readiness timeout returns `ready=false` and leaves the process available for logs or stopping. Preview access headers stay server-side. Registered sandbox secrets are redacted from every model result, including file contents, errors, and preview URLs; raw `box.files.read` remains unchanged. Tools require handles created or connected by this SDK so their secret redactor is available.
 
 Framework API references checked for these adapters: [AI SDK tool](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool), [Mastra createTool](https://mastra.ai/reference/tools/create-tool), and [OpenAI Agents tools](https://openai.github.io/openai-agents-js/guides/tools/).
+
+## Local Docker
+
+Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `createSandbox`. Docker Engine must be running and accessible at `unix:///var/run/docker.sock`. Set `DOCKER_HOST` or `local({ dockerHost })` to another absolute `unix://` socket. Remote TCP engines are unsupported because preview URLs must reach this machine.
+
+The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
+
+Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom sizes are rejected because their required `diskGb` limit cannot be enforced portably. Idle and hard lifetime options are also rejected: Docker does not provide durable timers for these restrictions.
+
+`network: "none"` uses Docker's isolated network namespace with loopback only. Domain allow-lists fail with `unsupported`. The default network is Docker bridge. Declare preview ports at creation; each maps to an ephemeral host port bound exclusively to `127.0.0.1`. Omitting `ports` declares port 3000. Previews are accessible on the Docker host. They are unavailable with network `none`.
+
+Keys map to SHA-256 container names for Docker-enforced uniqueness. Discovery is restricted to containers labeled `sandbox-sdk=1`. Pause/resume use Docker pause/unpause. Snapshots use Docker commit and persist as local images until explicitly removed through Docker. `close()` leaves the container and detached background processes running. `destroy()` removes the container and anonymous volumes, while preserving the shared base image.
+
+Exec streams Docker's framed stdout/stderr, closes stdin after the supplied input, and kills the command's process group on timeout or abort. Files transfer through Node exec with base64 encoding, preserving binary bytes; core directory upload/download uses tar. Usage combines core command/output counters with container creation time. No Docker CLI, dockerode dependency, or container-side SDK daemon is required.
+
+Run live verification with `timeout 1200s env SANDBOX_LOCAL_LIVE=1 bunx vitest run packages/sdk/tests/local.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000`. The suite creates labeled containers and removes its containers and snapshot images.

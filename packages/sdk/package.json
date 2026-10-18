@@ -37,6 +37,10 @@
     "./openai": {
       "types": "./dist/openai.d.ts",
       "import": "./dist/openai.js"
+    },
+    "./local": {
+      "types": "./dist/providers/local/index.d.ts",
+      "import": "./dist/providers/local/index.js"
     }
   },
   "scripts": {

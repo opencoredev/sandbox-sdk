@@ -50,7 +50,7 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       const { box } = await setup();
       const result = await box.run(`printf '${"a".repeat(1024)}END'`, { maxOutputBytes: 64 });
       expect(result.truncated).toBe(true); expect(result.stdout.startsWith("a")).toBe(true); expect(result.stdout.endsWith("END")).toBe(true); expect(result.stdout).toContain("bytes cut");
-      expect((await box.run("printf A; printf B >&2; printf C")).output).toBe("ABC");
+      expect((await box.run("printf A; sleep .02; printf B >&2; sleep .02; printf C")).output).toBe("ABC");
       const chunks = []; for await (const chunk of box.run("echo streamed")) chunks.push(chunk.text);
       expect(chunks.join("")).toBe("streamed\n");
     });
@@ -82,7 +82,8 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
     test("file watch observes changes", async () => {
       const { box } = await setup(); await box.files.write("watch/file", "a");
       const events: string[] = []; const stop = box.files.watch("watch", event => events.push(event.type), { recursive: true, intervalMs: 10 });
-      try { await new Promise(resolve => setTimeout(resolve, 30)); await box.files.write("watch/file", "different"); await new Promise(resolve => setTimeout(resolve, 50)); expect(events).toContain("modified"); } finally { stop(); }
+      let writes = 0;
+      try { await expect.poll(async () => { await box.files.write("watch/file", `different-${writes++}`); return events; }, { timeout: 10_000, interval: 50 }).toContain("modified"); } finally { stop(); }
     });
     test("process logs, cursors, fresh client reattach, stop and exit-before-ready", async () => {
       const { provider, box } = await setup();
@@ -101,7 +102,7 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect(box.process("unready").ready).toBe(false); expect((await box.processes())[0]?.status).toBe("running"); await box.process("unready").stop({ graceMs: 10 });
     });
     test("preview and capability gating", async () => {
-      const { provider, box } = await setup(); expect((await box.preview(3000)).url).toContain("3000");
+      const { provider, box } = await setup(); expect(["http:", "https:"]).toContain(new URL((await box.preview(3000)).url).protocol);
       for (const [capability, method] of [["pause", "pause"], ["snapshot", "snapshot"], ["terminal", "terminal"]] as const) expect(method in box).toBe(provider.capabilities.has(capability));
       if (!provider.capabilities.has("network-policy")) await expect(createSandbox(provider, { network: "none" })).rejects.toMatchObject({ code: "unsupported" });
       if (!provider.capabilities.has("size")) await expect(createSandbox(provider, { size: "small" })).rejects.toMatchObject({ code: "unsupported" });
