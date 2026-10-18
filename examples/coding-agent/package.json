@@ -1,0 +1,30 @@
+{
+  "name": "@sandbox-sdk/example-coding-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dry-run": "bun src/index.ts --dry-run",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.82",
+    "@ai-sdk/openai": "^4.0.96",
+    "@opencoredev/sandbox-sdk": "workspace:*",
+    "ai": "^7.0.143",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "oxlint": "^1.74.0",
+    "typescript": "^6.0.3"
+  },
+  "optionalDependencies": {
+    "@daytonaio/sdk": "^0.225.0",
+    "@vercel/sandbox": "3.8.0",
+    "e2b": "2.56.0"
+  }
+}
