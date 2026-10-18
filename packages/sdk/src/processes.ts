@@ -205,11 +205,14 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         controller?.state("running");
         if (!options.ready) { controller?.ready(true); return; }
         const end = Date.now() + (options.readyTimeoutMs ?? 60_000);
-        let readyCursor: string | undefined; let readyTail = "";
+        let readyCursor: string | undefined; let readyTail = ""; let exited = false;
+        const lastLines = () => readyTail.replace(/\n$/, "").split("\n").slice(-50).join("\n");
         do {
           const page = await handle.logs({ after: readyCursor, maxBytes: 1_048_576 }); readyCursor = page.nextCursor;
-          readyTail = (readyTail + page.text).slice(-1_048_576);
-          if (await files.exists(`${dir}/exit`)) throw new SandboxError(`Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${page.text.split("\n").slice(-50).join("\n")}`, { code: "process_exited" });
+          readyTail = Buffer.from(readyTail + page.text).subarray(-262_144).toString();
+          exited = await files.exists(`${dir}/exit`);
+          if (exited && page.truncated) continue;
+          if (exited) throw new SandboxError(`Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${lastLines()}`, { code: "process_exited" });
           if ("log" in options.ready) { options.ready.log.lastIndex = 0; if (options.ready.log.test(readyTail)) { controller?.ready(true); return; } }
           else if (port) {
             try {
@@ -219,8 +222,8 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
             } catch (error) { if (!(error instanceof SandboxError) || error.code !== "port_not_ready") throw error; }
           }
           if (Date.now() >= end) break; await delay(25);
-        } while (Date.now() <= end);
-        throw new SandboxError(`Process is still running but readiness timed out. No readiness signal arrived. Inspect logs: ${(await handle.logs()).text.split("\n").slice(-50).join("\n")}`, { code: "timeout" });
+        } while (exited || Date.now() <= end);
+        throw new SandboxError(`Process is still running but readiness timed out. No readiness signal arrived. Inspect logs: ${lastLines()}`, { code: "timeout" });
       };
       controller?.launch(launch); await launch(); return handle;
     });

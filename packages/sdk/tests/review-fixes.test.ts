@@ -51,3 +51,27 @@ test("line cursors remain resumable for large escaped pending fragments", async 
     expect(resumed[0]).toContain("tail");
   } finally { await box.destroy(); }
 });
+
+test.each(["exit", "timeout"])("readiness %s errors retain the last 50 lines across empty pages", async mode => {
+  const provider = memory({ handlers: { async early({ stdout }) {
+    stdout(Array.from({ length: 70 }, (_, n) => `diagnostic-${n + 1}\n`).join(""));
+    await new Promise(resolve => setTimeout(resolve, mode === "exit" ? 120 : 400)); return 7;
+  } } });
+  const box = await createSandbox(provider);
+  try {
+    let failure: unknown;
+    try { await box.start("early", { name: "early", ready: { log: /NEVER/ }, readyTimeoutMs: 220 }); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(SandboxError);
+    if (!(failure instanceof SandboxError)) throw new Error("Expected readiness failure");
+    expect(failure.code).toBe(mode === "exit" ? "process_exited" : "timeout");
+    expect(failure.message).toContain("diagnostic-21\n"); expect(failure.message).toContain("diagnostic-70");
+    expect(failure.message).not.toContain("diagnostic-20\n");
+  } finally { await box.destroy(); }
+});
+
+test("exit-before-ready diagnostics drain remaining bounded pages", async () => {
+  const box = await createSandbox(memory({ handlers: { pages({ stdout }) { stdout("x".repeat(100_000) + "\nlast-diagnostic\n"); return 7; } } }));
+  try {
+    await expect(box.start("pages", { name: "pages", ready: { log: /NEVER/ }, readyTimeoutMs: 1000 })).rejects.toMatchObject({ code: "process_exited", message: expect.stringContaining("last-diagnostic") });
+  } finally { await box.destroy(); }
+});
