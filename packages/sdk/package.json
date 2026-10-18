@@ -8,7 +8,8 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./provider": { "types": "./dist/provider.d.ts", "import": "./dist/provider.js" },
     "./memory": { "types": "./dist/memory.d.ts", "import": "./dist/memory.js" },
-    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" },
+    "./daytona": { "types": "./dist/providers/daytona/index.d.ts", "import": "./dist/providers/daytona/index.js" }
   },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
@@ -17,7 +18,7 @@
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts"
   },
-  "devDependencies": { "vitest": "^3.2.4" },
-  "peerDependencies": { "vitest": ">=3" },
-  "peerDependenciesMeta": { "vitest": { "optional": true } }
+  "devDependencies": { "vitest": "^3.2.4", "@daytonaio/sdk": "^0.225.0" },
+  "peerDependencies": { "vitest": ">=3", "@daytonaio/sdk": "^0.225.0" },
+  "peerDependenciesMeta": { "vitest": { "optional": true }, "@daytonaio/sdk": { "optional": true } }
 }
