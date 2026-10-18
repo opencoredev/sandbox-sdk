@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { createSandbox } from "../src/index.js";
+import { createSandbox, connectSandbox } from "../src/index.js";
 import { shellProvider } from "./shell-provider.js";
 describe("real Linux primitive transport", () => {
   test("hidden git index yields applicable diffs, git helpers clone/commit/push", async () => {
@@ -28,6 +28,14 @@ describe("real Linux primitive transport", () => {
     try {
       expect(await box.run("(sleep 0.2; echo survived > child) & wait", { timeoutMs: 30 })).toMatchObject({ timedOut: true });
       await new Promise(resolve => setTimeout(resolve, 250)); expect(await box.files.exists("child")).toBe(false);
+    } finally { await box.destroy(); }
+  });
+  test("fresh clients stop descendants with portable POSIX kill syntax", async () => {
+    const provider = await shellProvider(); const box = await createSandbox(provider);
+    try {
+      await box.start("(sleep 0.3; echo survived > stopped-child) & wait", { name: "tree" });
+      const client = await connectSandbox(provider, box.id); await client.process("tree").stop({ graceMs: 10 });
+      await new Promise(resolve => setTimeout(resolve, 350)); expect(await box.files.exists("stopped-child")).toBe(false);
     } finally { await box.destroy(); }
   });
   test("fallback durable logs retain stream identity and redact at rest", async () => {
