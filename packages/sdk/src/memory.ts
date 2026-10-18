@@ -67,8 +67,9 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
         if (match) { word += env[match[1] ?? match[2] ?? ""] ?? ""; index += match[0].length; active = true; continue; }
       }
       if (mode === "plain" && /\s/.test(char)) { flush(); continue; }
+      if (mode === "plain" && "><".includes(char) && active && /^\d+$/.test(word)) { const fd = word; word = ""; active = false; tokens.push({ text: fd + char, operator: true }); continue; }
       if (mode === "plain" && char === ">" && command.slice(index, index + 3) === ">&2") { flush(); tokens.push({ text: ">&2", operator: true }); index += 2; continue; }
-      if (mode === "plain" && ";&>|".includes(char)) { flush(); let op = char; if (command[index + 1] === char) op += command[++index]; tokens.push({ text: op, operator: true }); continue; }
+      if (mode === "plain" && ";&>|<".includes(char)) { flush(); let op = char; if (command[index + 1] === char) op += command[++index]; tokens.push({ text: op, operator: true }); continue; }
       word += char; active = true;
     }
     if (mode !== "plain") throw fail("Unclosed shell quote", "invalid_argument"); flush(); return tokens;
@@ -80,7 +81,20 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
     const timer = setTimeout(abort, input.timeoutMs);
     let cwd = input.cwd; const env = { ...m.env, ...input.env }; let exitCode = 0; let exited = false;
     try {
-      const tokens = tokenize(input.command, env); let segment: { text: string; operator: boolean }[] = []; let previous = ";";
+      const tokens = tokenize(input.command, env);
+      const unsupported = tokens.find(token => token.operator && ![";", "&&", "||", ">", ">&2"].includes(token.text));
+      const badRedirect = tokens.find((token, index) => token.operator && token.text === ">" && (!tokens[index + 1] || tokens[index + 1]?.operator || (tokens[index + 2] && !tokens[index + 2]?.operator)));
+      const badConditional = tokens.find((token, index) => token.operator && ["&&", "||"].includes(token.text) && (!tokens[index - 1] || [";", "&&", "||"].includes(tokens[index - 1]?.text ?? "") || !tokens[index + 1] || tokens[index + 1]?.operator));
+      let redirects = 0;
+      const compoundRedirect = tokens.find(token => {
+        if (!token.operator) return false;
+        if ([";", "&&", "||"].includes(token.text)) redirects = 0;
+        else if ([">", ">&2"].includes(token.text)) return ++redirects > 1;
+        return false;
+      });
+      const bad = unsupported ?? badRedirect ?? badConditional ?? compoundRedirect;
+      if (bad) { input.onChunk({ stream: "stderr", text: `Unsupported shell syntax: ${bad.text} (memory provider)\n` }); return { exitCode: 127, timedOut: false }; }
+      let segment: { text: string; operator: boolean }[] = []; let previous = ";";
       async function runSegment(next: string) {
         const parts = segment; segment = [];
         const stderrIndex = parts.findIndex(part => part.operator && part.text === ">&2");
