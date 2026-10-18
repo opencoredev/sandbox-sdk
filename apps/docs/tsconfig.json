@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["blume.config.ts", "themes", "scripts"],
+  "exclude": ["dist", ".snippets", ".blume", ".blume-verify", "scripts/spec-types", "scripts/snippet-stubs"]
+}
