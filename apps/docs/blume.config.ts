@@ -62,13 +62,13 @@ export default defineConfig({
           items: [
             { label: "Compare providers", root: "/providers", icon: "table-2" },
             { label: "Local (Docker)", root: "/providers/local", icon: "/integrations/docker.svg" },
-            { label: "E2B", root: "/providers/e2b", icon: "/integrations/e2b.png" },
+            { label: "E2B", root: "/providers/e2b", icon: "/integrations/e2b.svg" },
             {
               label: "Vercel Sandbox",
               root: "/providers/vercel",
               icon: "/integrations/vercel.svg",
             },
-            { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.png" },
+            { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],

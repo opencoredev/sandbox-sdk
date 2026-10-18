@@ -3,10 +3,10 @@ import type { ComponentMarkdown } from "blume";
 /** Display names and logos for <ProviderTab provider="...">, shared by the page and Markdown output. */
 export const PROVIDERS = {
   local: { name: "Local", logo: "/integrations/docker.svg" },
-  e2b: { name: "E2B", logo: "/integrations/e2b.png" },
+  e2b: { name: "E2B", logo: "/integrations/e2b.svg" },
   vercel: { name: "Vercel Sandbox", logo: "/integrations/vercel.svg" },
-  daytona: { name: "Daytona", logo: "/integrations/daytona.png" },
-  memory: { name: "Memory", logo: undefined },
+  daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
+  memory: { name: "Memory", logo: "/integrations/memory.svg" },
 } as const satisfies Record<string, { name: string; logo: string | undefined }>;
 
 export type ProviderKey = keyof typeof PROVIDERS;

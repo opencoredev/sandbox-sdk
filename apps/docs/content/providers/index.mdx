@@ -16,10 +16,10 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | Provider | Factory | Install | Credentials | Best for |
 | --- | --- | --- | --- | --- |
 | <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local) | `local()` from `/local` | Docker | None | Development and CI |
-| <img src="/integrations/e2b.png" alt="" /> [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | `E2B_API_KEY` | Pause with memory, hard lifetimes |
+| <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | `E2B_API_KEY` | Pause with memory, hard lifetimes |
 | <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel |
-| <img src="/integrations/daytona.png" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
-| [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
+| <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
+| <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
@@ -52,13 +52,13 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   <Card title="Local" href="/providers/local" icon="/integrations/docker.svg">
     Docker containers on your machine. Previews on `127.0.0.1`, deadlines enforced on reconnect.
   </Card>
-  <Card title="E2B" href="/providers/e2b" icon="/integrations/e2b.png">
+  <Card title="E2B" href="/providers/e2b" icon="/integrations/e2b.svg">
     MicroVMs that pause with memory, network allow lists, and a lifetime a reconnect can't extend.
   </Card>
   <Card title="Vercel Sandbox" href="/providers/vercel" icon="/integrations/vercel.svg">
     Named sandboxes with exact keys, OIDC inside Vercel, and up to 15 declared ports.
   </Card>
-  <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.png">
+  <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.svg">
     Exact machine sizes, idle auto-stop, and previews protected by a token header.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">

@@ -179,21 +179,79 @@ header a.bg-accent:hover {
 
 /* ---------- brand marks ---------- */
 
-/* Provider and framework logos are real artwork, recolored for the dark page. */
-.blume-nav-link img[src*="/integrations/"] {
-  width: 1rem;
-  height: 1rem;
-  object-fit: contain;
+/*
+ * Provider and framework logos are one monochrome set drawn on Lucide's 24px
+ * grid (public/integrations/*.svg), so they sit beside line icons as equals.
+ * Blume renders path icons as <img>, where currentColor can't reach the SVG,
+ * so each file is used as a mask over a currentColor fill and the image's own
+ * pixels are pushed out of its box. A new mark needs its file and one line in
+ * each list below; anything not listed keeps rendering as a plain image.
+ * Mask URLs carry the /docs base: Blume splices this file into generated CSS,
+ * so a root-relative URL would miss deployment.base.
+ */
+img[src*="/integrations/agentos."] { mask-image: url("/docs/integrations/agentos.svg"); }
+img[src*="/integrations/boat."] { mask-image: url("/docs/integrations/boat.svg"); }
+img[src*="/integrations/daytona."] { mask-image: url("/docs/integrations/daytona.svg"); }
+img[src*="/integrations/docker."] { mask-image: url("/docs/integrations/docker.svg"); }
+img[src*="/integrations/e2b."] { mask-image: url("/docs/integrations/e2b.svg"); }
+img[src*="/integrations/hono."] { mask-image: url("/docs/integrations/hono.svg"); }
+img[src*="/integrations/mastra."] { mask-image: url("/docs/integrations/mastra.svg"); }
+img[src*="/integrations/memory."] { mask-image: url("/docs/integrations/memory.svg"); }
+img[src*="/integrations/nextjs."] { mask-image: url("/docs/integrations/nextjs.svg"); }
+img[src*="/integrations/openai."] { mask-image: url("/docs/integrations/openai.svg"); }
+img[src*="/integrations/railway."] { mask-image: url("/docs/integrations/railway.svg"); }
+img[src*="/integrations/tenki."] { mask-image: url("/docs/integrations/tenki.svg"); }
+img[src*="/integrations/upstash."] { mask-image: url("/docs/integrations/upstash.svg"); }
+img[src*="/integrations/vercel."] { mask-image: url("/docs/integrations/vercel.svg"); }
+
+:is(
+  img[src*="/integrations/agentos."],
+  img[src*="/integrations/boat."],
+  img[src*="/integrations/daytona."],
+  img[src*="/integrations/docker."],
+  img[src*="/integrations/e2b."],
+  img[src*="/integrations/hono."],
+  img[src*="/integrations/mastra."],
+  img[src*="/integrations/memory."],
+  img[src*="/integrations/nextjs."],
+  img[src*="/integrations/openai."],
+  img[src*="/integrations/railway."],
+  img[src*="/integrations/tenki."],
+  img[src*="/integrations/upstash."],
+  img[src*="/integrations/vercel."]
+),
+.provider-logo {
+  background-color: currentColor;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  object-position: -9999px 0;
 }
 
-/* Inline marks in tables. Card icons keep Blume's own 20px box. */
+/* Provider tabs pass their logo in as a custom property. */
+.provider-logo {
+  mask-image: var(--sbx-mark);
+}
+
+/* Same 14px box and muted color as Blume's sidebar icons. */
+.blume-nav-link img[src*="/integrations/"] {
+  width: 14px;
+  height: 14px;
+}
+
+/* Icons follow their row: the current page's icon takes the link's ink. */
+.blume-nav-link[aria-current="page"] :is(svg, img) {
+  color: inherit;
+}
+
+/* Inline marks in tables. Card icons keep Blume's own 20px box and accent. */
 article :where(td, th) img[src*="/integrations/"] {
   display: inline-block;
   width: 1.05em;
   height: 1.05em;
-  object-fit: contain;
   vertical-align: -0.15em;
   margin: 0 0.35em 0 0;
+  color: var(--sbx-muted);
 }
 
 /* ---------- provider tabs ---------- */
@@ -202,30 +260,12 @@ article :where(td, th) img[src*="/integrations/"] {
   font-size: 0.8125rem;
 }
 
-/* Background-image spans, never <img>, so Blume's click-to-zoom can't grab them. */
+/* Masked spans, never <img>, so Blume's click-to-zoom can't grab them. */
 .provider-logo {
   display: inline-block;
   flex-shrink: 0;
   width: 1rem;
   height: 1rem;
-  background: center / contain no-repeat;
-}
-
-/* Memory has no brand mark: a hairline square stands in for it. */
-.provider-logo[data-provider="memory"] {
-  width: 0.75rem;
-  height: 0.75rem;
-  margin: 0 0.125rem;
-  border: 1px solid currentColor;
-}
-
-.provider-tabs [role="tab"]:not([aria-selected="true"]) .provider-logo {
-  opacity: 0.7;
-  transition: opacity 150ms ease;
-}
-
-.provider-tabs [role="tab"]:hover .provider-logo {
-  opacity: 1;
 }
 
 /* The fallback label shows only when JavaScript is off (see ProviderTabs). */
@@ -243,10 +283,4 @@ article :where(td, th) img[src*="/integrations/"] {
 
 .provider-tabs [role="tab"][aria-selected="true"] {
   color: var(--sbx-ink);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .provider-tabs [role="tab"] .provider-logo {
-    transition: none;
-  }
 }

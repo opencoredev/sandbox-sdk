@@ -15,13 +15,13 @@ const { name, logo } = PROVIDERS[provider];
 const label = title ?? name;
 // Logos live in public/, which is served under the docs base path (/docs).
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-const style = logo ? `background-image: url("${base}${logo}")` : undefined;
+const style = logo ? `--sbx-mark: url("${base}${logo}")` : undefined;
 ---
 
 {/*
-  Logos are background-image spans, not <img>: Blume binds click-to-zoom to
-  every `.prose img`, and a tab icon must only switch tabs. Memory has no
-  brand, so it gets a plain square.
+  Logos are masked spans, not <img>: Blume binds click-to-zoom to every
+  `.prose img`, and a tab icon must only switch tabs. The mask takes the tab's
+  text color (see "brand marks" in theme.css).
 */}
 <Tab title={label}>
   <p class="provider-tab-fallback">
