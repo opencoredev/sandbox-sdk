@@ -1,0 +1,23 @@
+{
+  "name": "@opencoredev/sandbox-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["dist"],
+  "engines": { "node": ">=22", "bun": ">=1.3" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./provider": { "types": "./dist/provider.d.ts", "import": "./dist/provider.js" },
+    "./memory": { "types": "./dist/memory.d.ts", "import": "./dist/memory.js" },
+    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src tests scripts",
+    "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
+    "check:size": "bun scripts/size.ts"
+  },
+  "devDependencies": { "vitest": "^3.2.4" },
+  "peerDependencies": { "vitest": ">=3" },
+  "peerDependenciesMeta": { "vitest": { "optional": true } }
+}
