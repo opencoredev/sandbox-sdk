@@ -936,6 +936,14 @@
     flex: 1 1 100%;
     justify-content: center;
   }
+  /* keep the install command on one line instead of breaking inside the package name */
+  .command {
+    gap: 10px;
+    max-width: 100%;
+    padding: 0 12px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 900px) {
