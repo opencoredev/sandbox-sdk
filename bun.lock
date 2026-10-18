@@ -42,6 +42,16 @@
         "typescript": "^6.0.3",
       },
     },
+    "bench": {
+      "name": "@sandbox-sdk/bench",
+      "dependencies": {
+        "@opencoredev/sandbox-sdk": "workspace:*",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "vitest": "^3.2.4",
+      },
+    },
     "packages/sdk": {
       "name": "@opencoredev/sandbox-sdk",
       "version": "1.0.0",
@@ -332,6 +342,8 @@
     "@rollup/rollup-win32-x64-gnu": ["@rollup/rollup-win32-x64-gnu@4.64.9", "", { "os": "win32", "cpu": "x64" }, "sha512-FB77txy1PiAcJgG72nOLA6R0S3PRZahs8Spx0z2yseDUkoMmJcrQghiebJ2JHZ74cCOVlX/MYd4dUbJtJJ8fow=="],
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.64.9", "", { "os": "win32", "cpu": "x64" }, "sha512-IoIgQLpK1DbOcQf1vX+i5oe5LXypsCVb1j/mU6BLAbOGmXH4E+j4kMfgZRwPYUohVBurNyVMgIKVM5dR6xA0kA=="],
+
+    "@sandbox-sdk/bench": ["@sandbox-sdk/bench@workspace:bench"],
 
     "@sandbox-sdk/web": ["@sandbox-sdk/web@workspace:apps/web"],
 
