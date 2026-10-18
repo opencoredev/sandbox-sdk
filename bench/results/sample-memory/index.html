@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandbox SDK benchmark</title><style>
+  :root{color-scheme:light dark}*{box-sizing:border-box}body{font:15px system-ui,sans-serif;color:var(--foreground,#e8e8ec);background:var(--background,#101115);margin:0;padding:32px;max-width:1200px}h1{font-size:28px;margin:0 0 12px}h2{font-size:20px}p{color:var(--muted-foreground,#aaaeb9);line-height:1.5}section{margin:32px 0}.row{display:grid;grid-template-columns:240px 1fr 190px;align-items:center;gap:16px;margin:18px 0;font-size:14px}.track{position:relative;height:18px;background:var(--muted,#292b32)}.bar{height:100%;background:var(--chart-1,#efa43b);min-width:2px}i{position:absolute;top:-3px;height:24px;width:2px;background:var(--foreground,#fff)}code{font-size:12px}details{margin-top:28px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}@media(max-width:650px){body{padding:18px}.row{grid-template-columns:1fr 140px;gap:8px}.track{grid-row:2;grid-column:1/-1}.row span{overflow-wrap:anywhere}h1{font-size:24px}}</style></head><body><h1>Sandbox SDK benchmark</h1><p>SDK 1.0.0 · 2026-10-18T04:25:11.139Z<br>AMD Ryzen 9 9955HX 16-Core Processor · 32 CPUs · 92.0 GiB · linux 7.0.0-31-generic<br>20 measured runs · 2 warmups · concurrency 1</p><section><h2>Wall latency (ms)</h2><p>p50 bars · p95 markers · independent scale per panel</p><div class="row"><span>memory / cold</span><div class="track"><div class="bar" style="width:3.2228243489192385%"></div><i style="left:3.9508654468010476%"></i></div><code>1.0163 / 1.2459</code></div><div class="row"><span>memory / command</span><div class="track"><div class="bar" style="width:0.38460532267755276%"></div><i style="left:0.8630574263341443%"></i></div><code>0.1213 / 0.2722</code></div><div class="row"><span>memory / files-1kb</span><div class="track"><div class="bar" style="width:0.23633723893853914%"></div><i style="left:0.4670807721279439%"></i></div><code>0.0745 / 0.1473</code></div><div class="row"><span>memory / files-10mb</span><div class="track"><div class="bar" style="width:80.17235843667329%"></div><i style="left:100%"></i></div><code>25.2827 / 31.5354</code></div><div class="row"><span>memory / destroy</span><div class="track"><div class="bar" style="width:0.7533871806786616%"></div><i style="left:1.327471358022767%"></i></div><code>0.2376 / 0.4186</code></div></section><section><h2>Process CPU (ms per call)</h2><p>p50 bars · p95 markers · independent scale per panel</p><div class="row"><span>memory / raw-cpu</span><div class="track"><div class="bar" style="width:0.6000705965407696%"></div><i style="left:0.9177550300035296%"></i></div><code>0.0002 / 0.0003</code></div><div class="row"><span>memory / sdk-cpu</span><div class="track"><div class="bar" style="width:58.665725379456404%"></div><i style="left:100%"></i></div><code>0.0166 / 0.0283</code></div><div class="row"><span>memory / overhead-cpu</span><div class="track"><div class="bar" style="width:57.85386516060712%"></div><i style="left:99.08224496999647%"></i></div><code>0.0164 / 0.0281</code></div></section><p>Memory is an offline fake. These results do not predict cloud performance. CPU uses mocked native calls and process-wide counters; negative overhead can occur from measurement noise.</p><ul><li>memory region: unknown</li><li>memory/dev-server: Memory does not launch Node or bind sockets</li><li>memory/preview-first-byte: Memory previews use .memory.invalid; no HTTP request made</li></ul><details><summary>Full results and methodology</summary><pre># Sandbox SDK provider benchmark
+
+SDK 1.0.0 · 2026-10-18T04:25:11.139Z
+AMD Ryzen 9 9955HX 16-Core Processor · 32 logical CPUs · 92.0 GiB RAM · linux 7.0.0-31-generic · x64 · Bun 1.4.2 (Node API 26.3.0)
+
+Runs: 20; warmups: 2; concurrency: 1.
+
+| Provider | Scenario | Unit | n | Fail | Skip | p50 | p95 | p99 | Mean | Min | Max |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| memory | cold | ms | 20 | 0 | 0 | 1.0163 | 1.2459 | 1.6912 | 1.0335 | 0.6206 | 1.6912 |
+| memory | command | ms | 20 | 0 | 0 | 0.1213 | 0.2722 | 0.8985 | 0.1828 | 0.0413 | 0.8985 |
+| memory | files-1kb | ms | 20 | 0 | 0 | 0.0745 | 0.1473 | 0.1758 | 0.0807 | 0.0359 | 0.1758 |
+| memory | files-10mb | ms | 20 | 0 | 0 | 25.2827 | 31.5354 | 37.5457 | 25.6332 | 12.8362 | 37.5457 |
+| memory | dev-server | ms | 0 | 0 | 20 | — | — | — | — | — | — |
+| memory | preview-first-byte | ms | 0 | 0 | 20 | — | — | — | — | — | — |
+| memory | destroy | ms | 20 | 0 | 0 | 0.2376 | 0.4186 | 1.3406 | 0.3004 | 0.1339 | 1.3406 |
+| memory | raw-cpu | cpu-ms/call | 20 | 0 | 0 | 0.0002 | 0.0003 | 0.0003 | 0.0002 | 0.0001 | 0.0003 |
+| memory | sdk-cpu | cpu-ms/call | 20 | 0 | 0 | 0.0166 | 0.0283 | 0.0286 | 0.0177 | 0.0097 | 0.0286 |
+| memory | overhead-cpu | cpu-ms/call | 20 | 0 | 0 | 0.0164 | 0.0281 | 0.0285 | 0.0175 | 0.0095 | 0.0285 |
+
+## Notes
+
+- percentiles: Nearest rank; successful measured samples only. Warmups excluded. Null statistics mean no successful samples.
+- cold: Fresh sandbox create through first successful true command; includes SDK initialization, excludes provider module/factory load. Image/cache state is provider controlled.
+- files: Binary 1024 and 10485760 bytes; combined write+read with byte equality validation included in timing.
+- cpu: 100 mocked-native calls per batch; process.cpuUsage user+system / 100 in ms/call. SDK minus raw is paired per batch; order alternates; serial after latency workers. Includes SDK bookkeeping, excludes fixture setup. Other host activity, GC and JIT can add noise.
+- memory region: unknown.
+- memory/dev-server: Memory does not launch Node or bind sockets
+- memory/preview-first-byte: Memory previews use .memory.invalid; no HTTP request made
+</pre></details></body></html>
