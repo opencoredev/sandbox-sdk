@@ -55,6 +55,7 @@ function parseProvider(value: unknown): Provider {
   return value as Provider;
 }
 export function missingCredentials(name: string, env: NodeJS.ProcessEnv): string[] {
+  if (name === "vercel" && env.VERCEL_OIDC_TOKEN?.trim() && !env.VERCEL_TOKEN) return [];
   return (credentials[name] ?? []).filter((key) => !env[key]?.trim());
 }
 export async function loadProvider(

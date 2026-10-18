@@ -303,3 +303,13 @@ it("local benchmarks include mocked native CPU measurements", async () => {
     expect(report.metrics.find(metric => metric.scenario === scenario)?.stats.count).toBe(1);
   }
 });
+
+it("accepts Vercel OIDC without requiring token, team, or project", async () => {
+  let imports = 0;
+  const result = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: "oidc-test" }, async () => { imports++; return { vercel: memory }; });
+  expect(result.kind).toBe("ready"); expect(imports).toBe(1);
+  const tokenFirst = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: "oidc-test", VERCEL_TOKEN: "token-test" });
+  expect(tokenFirst).toMatchObject({ kind: "skipped", note: expect.stringContaining("VERCEL_TEAM_ID") });
+  const blank = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: " " }, async () => { throw new Error("Must not import"); });
+  expect(blank).toMatchObject({ kind: "skipped", note: expect.stringContaining("VERCEL_TOKEN") });
+});
