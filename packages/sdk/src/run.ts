@@ -19,7 +19,15 @@ export class BufferCap {
     if (this.tail.length > this.limit - headSize) this.tail = this.tail.subarray(this.tail.length - (this.limit - headSize));
   }
   get truncated() { return this.total > this.limit; }
-  text() { return this.head.toString() + (this.truncated ? `\n[${this.total - this.limit} bytes cut]\n` : "") + this.tail.toString(); }
+  text() {
+    if (!this.truncated) return Buffer.concat([this.head, this.tail]).toString();
+    // Decode the head in streaming mode to discard an incomplete trailing code point.
+    const head = new TextDecoder().decode(this.head, { stream: true });
+    let start = 0;
+    while (start < this.tail.length && ((this.tail[start] ?? 0) & 0xc0) === 0x80) start++;
+    const tail = this.tail.subarray(start).toString();
+    return head + `\n[${this.total - Buffer.byteLength(head) - Buffer.byteLength(tail)} bytes cut]\n` + tail;
+  }
 }
 /** Bounded independent subscriptions; slow consumers see the most recent 1 MB. */
 export class OutputBus {
