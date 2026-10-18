@@ -8,9 +8,12 @@ import type { SandboxBase } from "./types.js";
 /** Register a provider-independent Vitest suite. Call inside a test module.
  * live must be explicitly true to run a cloud provider. memory skips real git
  * and HTTP probes, since it never executes host programs or opens sockets.
+ * Live runs give each case 120 seconds by default, since real providers boot
+ * machines and cross the network; pass timeoutMs to change it.
  */
-export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[]; unsupported?: { processes?: string; previews?: string; gitPush?: string } }) {
-  describe("Sandbox SDK conformance", () => {
+export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[]; timeoutMs?: number; unsupported?: { processes?: string; previews?: string; gitPush?: string } }) {
+  const timeout = options.timeoutMs ?? (options.live ? 120_000 : undefined);
+  describe("Sandbox SDK conformance", { timeout }, () => {
     const cleanup: SandboxBase<unknown>[] = [];
     const temp: string[] = [];
     async function setup() {
