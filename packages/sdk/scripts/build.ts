@@ -5,6 +5,9 @@ const entrypoints = Object.values(pkg.exports).map((target) =>
   target.import.replace("./dist/", "src/").replace(/\.js$/, ".ts"),
 );
 
+// Optional peers (provider SDKs, agent frameworks) stay external, so adding a peer is the only step.
+const external = Object.keys(pkg.peerDependencies).flatMap((name) => [name, `${name}/*`]);
+
 const result = await Bun.build({
   entrypoints,
   outdir: "dist",
@@ -13,7 +16,7 @@ const result = await Bun.build({
   format: "esm",
   splitting: true,
   minify: true,
-  external: ["@daytonaio/sdk", "@daytonaio/sdk/*", "@mastra/core", "@mastra/core/*", "@openai/agents", "@openai/agents/*", "@vercel/sandbox", "@vercel/sandbox/*", "ai", "ai/*", "e2b", "e2b/*", "vitest", "vitest/*", "zod", "zod/*"],
+  external,
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);
