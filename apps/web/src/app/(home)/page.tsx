@@ -204,10 +204,10 @@ function Providers() {
     <section className={styles.section} aria-labelledby="providers-title">
       <div className={styles.sectionHead}>
         <h2 id="providers-title" className={styles.title}>
-          Docker, three clouds, and a fake for tests.
+          Docker, four clouds, and a fake for tests.
         </h2>
         <p className={styles.sectionLede}>
-          Local runs on Docker. E2B, Vercel Sandbox, and Daytona run in the cloud. memory() is an
+          Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Boat run in the cloud. memory() is an
           in-process fake for unit tests that never touches the network. Cards marked coming soon
           have no 1.0 adapter yet.
         </p>
@@ -466,7 +466,7 @@ function Footer() {
             <span>Sandbox SDK</span>
           </Link>
           <p>
-            A TypeScript SDK for Docker, E2B, Vercel, and Daytona sandboxes. MIT licensed, built by
+            A TypeScript SDK for Docker, E2B, Vercel, Daytona, and Boat sandboxes. MIT licensed, built by
             OpenCore.
           </p>
         </div>

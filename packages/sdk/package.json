@@ -53,6 +53,10 @@
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
       "import": "./dist/providers/daytona/index.js"
+    },
+    "./boat": {
+      "types": "./dist/providers/boat/index.d.ts",
+      "import": "./dist/providers/boat/index.js"
     }
   },
   "scripts": {
@@ -70,7 +74,8 @@
     "zod": "^4.6.7",
     "e2b": "2.56.0",
     "@vercel/sandbox": "3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "@daytonaio/sdk": "^0.225.0",
+    "@boatdev/sdk": "1.9.9"
   },
   "peerDependencies": {
     "@mastra/core": "^1.78.0",
@@ -80,7 +85,8 @@
     "zod": "^4.6.7",
     "e2b": "^2.56.0",
     "@vercel/sandbox": "^3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "@daytonaio/sdk": "^0.225.0",
+    "@boatdev/sdk": "^1.9.9"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -105,6 +111,9 @@
       "optional": true
     },
     "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@boatdev/sdk": {
       "optional": true
     }
   },

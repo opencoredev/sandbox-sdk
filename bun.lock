@@ -123,6 +123,7 @@
       "name": "@opencoredev/sandbox-sdk",
       "version": "1.0.0",
       "devDependencies": {
+        "@boatdev/sdk": "1.9.9",
         "@daytonaio/sdk": "^0.225.0",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
@@ -133,6 +134,7 @@
         "zod": "^4.6.7",
       },
       "peerDependencies": {
+        "@boatdev/sdk": "^1.9.9",
         "@daytonaio/sdk": "^0.225.0",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
@@ -143,6 +145,7 @@
         "zod": "^4.6.7",
       },
       "optionalPeers": [
+        "@boatdev/sdk",
         "@daytonaio/sdk",
         "@mastra/core",
         "@openai/agents",
@@ -280,6 +283,8 @@
     "@babel/parser": ["@babel/parser@7.29.9", "", { "dependencies": { "@babel/types": "^7.29.8" }, "bin": "./bin/babel-parser.js" }, "sha512-CjXrNHTnvqBVqHgdBysY3vk2T8tpJHb5/RMeHJBTyVa9xgugCB0CJTx/3oO8RV2QRQP391RWpB7D6hLjm8V9uA=="],
 
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
+
+    "@boatdev/sdk": ["@boatdev/sdk@1.9.9", "", {}, "sha512-VsemzYh6sfLA+XFH5To22rGfwL+rXVy6TlXZ0Zi2bAheh6Iw8c1vdNWdmQxOHV/lSd5eVia3iDx+Cve4Lmlf6Q=="],
 
     "@braintree/sanitize-url": ["@braintree/sanitize-url@7.1.2", "", {}, "sha512-jigsZK+sMF/cuiB7sERuo9V7N9jx+dhmHHnQyDSVdpZwVutaBu7WvNYqMDLSgFgfB30n452TP3vjDAvFC973mA=="],
 
