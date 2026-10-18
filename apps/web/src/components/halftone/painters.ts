@@ -114,8 +114,9 @@ export const providerArt: ProviderArt[] = [
     paint: providerScenes.upstash,
   },
   {
-    kind: "soon",
+    kind: "launch",
     id: "boat",
+    href: "/docs/providers/boat",
     name: "Boat",
     line: "Persistent cloud VMs for long-running agents.",
     paint: providerScenes.boat,

@@ -1,0 +1,120 @@
+---
+title: Boat
+description: Run persistent cloud VMs for long-running agents through Boat's official TypeScript SDK. Size presets, durable processes, and previews with token URLs.
+---
+
+`boat()` runs each sandbox on [Boat](https://boat.dev), a persistent Ubuntu VM with Node.js, Git, and Docker installed. It suits agents that keep a workspace and run background services across requests.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @boatdev/sdk
+```
+
+The adapter needs `@boatdev/sdk` 1.9.9 or later. Run it on a server and keep the API key out of browser bundles.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+await using box = await createSandbox(boat());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+Set `BOAT_API_KEY` to your Boat API key. The adapter creates a sandbox with `noEnv: true`, so it receives none of your account's saved secrets or credentials. Variables passed in `env` and `secrets` still apply.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+const provider = boat({ requestTimeoutMs: 90_000 });
+await using box = await createSandbox(provider, { size: "medium" });
+```
+
+- `apiKey` overrides `BOAT_API_KEY`.
+- `apiUrl` overrides `BOAT_API_BASE`. The default is `https://boat.dev/api/v1`.
+- `requestTimeoutMs` sets the deadline for each API request. It defaults to 90 seconds. Command timeouts are separate.
+
+## Keys
+
+Key mode is **best-effort**. Boat has no label API, so the adapter stores the key and labels as compressed metadata in the sandbox's display name. A new client searches every page of Boat's sandbox list, including stopped sandboxes.
+
+Two concurrent requests with the same key can create two VMs. Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) when you need exact get-or-create.
+
+The encoded name must fit Boat's 120-character limit. Keys or labels that exceed it fail with `unsupported` before a VM is created. The labels are recoverable metadata, not secrets. Renaming the sandbox in Boat removes it from SDK lookup and listing. Keep its SDK-generated name.
+
+## Size
+
+| Preset | Boat type | CPUs | Memory | Disk |
+| --- | --- | --- | --- | --- |
+| `small` | `small` | 2 | 4096 MiB | 12 GB |
+| `medium` | `default` | 4 | 8192 MiB | 50 GB |
+| `large` | `large` | 8 | 16384 MiB | 125 GB |
+
+Omitting `size` uses Boat's default size. Custom `{ cpu, memoryMb, diskGb }` sizes fail with `unsupported`. Your account's size and quota limits still apply.
+
+## Network
+
+The adapter accepts `network: "all"`. `"none"` and allow lists fail with `unsupported`; it does not install firewall rules inside the VM.
+
+## Idle and lifetime limits
+
+`idleTimeoutMs` and `timeoutMs` fail with `unsupported`. Boat's auto-stop deadline can move when an integrated agent works, so it does not enforce the SDK's hard lifetime or activity-based idle timer.
+
+Boat still applies its default one-hour auto-stop. Configure longer sessions through Boat's native API if needed, and check your account's limits. Native changes do not add an SDK lifetime guarantee.
+
+`box.close()` leaves the VM running. `box.destroy()` requests deletion of the VM and its snapshots. Boat removes it from lookup immediately and purges stored data asynchronously.
+
+## Pause and snapshots
+
+This adapter does not expose `pause()`, `resume()`, `snapshot()`, or `from`. Boat's native stop and snapshot features remain available through `box.native.client`. A Boat stop ends processes; it does not freeze them. `/workspace` and the SDK's `/tmp` process records are not guaranteed to survive a native stop and resume.
+
+## Previews
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+await using box = await createSandbox(boat());
+await box.start("npx serve -l 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+console.log(preview.url);
+```
+
+Boat returns an HTTPS URL with an access token in the query string. Use the whole URL and treat it as a secret. No extra headers or up-front port declarations are needed. Boat does not report an expiry here, so `expiresAt` is unset.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `BOAT_API_KEY` | Your Boat API key. Required. |
+| `BOAT_API_BASE` | API base URL. Optional. |
+
+## API reference
+
+### `boat(options?)`
+
+- `apiKey?: string`. Defaults to `BOAT_API_KEY`.
+- `apiUrl?: string`. Defaults to `BOAT_API_BASE`, then `https://boat.dev/api/v1`.
+- `requestTimeoutMs?: number`. Defaults to `90_000`.
+
+Returns a provider. `box.native.sandbox` is Boat's sandbox metadata, and `box.native.client` is the official SDK's `BoatApi` client.
+
+## Limitations
+
+- Keys are best-effort, and encoded key/label metadata must fit a 120-character display name.
+- No custom sizes, network policies, idle timers, or hard lifetimes.
+- No SDK pause, snapshots, or terminals.
+- Boat's native auto-stop still applies. Keep a VM running if you need its background processes and `/tmp` records.
+- Commands use Boat's detached API and attach stream. Timeout and abort stop the command's process tree before returning.
+- File primitives run Node.js through the command API, so directory-heavy workloads make more API calls than a native filesystem client.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

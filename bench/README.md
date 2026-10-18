@@ -5,7 +5,7 @@ Run the harness from the repository root with Bun. Build the SDK first so its wo
 ```sh
 bun install
 bun run --cwd packages/sdk build
-bun bench --providers memory,local,e2b,vercel,daytona --runs 50 --out results/
+bun bench --providers memory,local,e2b,vercel,daytona,boat --runs 50 --out results/
 ```
 
 The command writes `bench/results/results.json`, `results.md`, and `index.html`. Open the HTML file directly for a self-contained chart, or use the Markdown table. Results include failures and skipped scenarios; an unavailable provider gets a skip note. Exit status is 1 when every provider is skipped, a measured scenario fails, a warmup fails, or cleanup fails. Partial results are still written after scenario failures.
@@ -25,7 +25,7 @@ The command writes `bench/results/results.json`, `results.md`, and `index.html`.
 
 The harness imports `@opencoredev/sandbox-sdk/<name>` dynamically and calls its named factory with no arguments. Build/install providers and their native dependencies before running. Missing entry points skip. Factory configuration errors fail the run.
 
-Cloud providers never load without credentials: E2B requires `E2B_API_KEY`; Vercel accepts `VERCEL_OIDC_TOKEN` alone, or `VERCEL_TOKEN` with `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` (explicit token authentication takes precedence); Daytona requires `DAYTONA_API_KEY`. Local and memory need no keys. Unknown providers skip until their credential policy is added to `src/providers.ts`. No cloud providers are exercised by the tests.
+Cloud providers never load without credentials: E2B requires `E2B_API_KEY`; Vercel accepts `VERCEL_OIDC_TOKEN` alone, or `VERCEL_TOKEN` with `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` (explicit token authentication takes precedence); Daytona requires `DAYTONA_API_KEY`; Boat requires `BOAT_API_KEY`. Local and memory need no keys. Unknown providers skip until their credential policy is added to `src/providers.ts`. No cloud providers are exercised by the tests.
 
 One sandbox is created per warmup or measured iteration and reused for the latency scenarios. Every acquired sandbox is destroyed in `finally`, including after failures; failed cleanup is retried once and unresolved IDs are reported. Creation uses an abort signal and tracks raw adapter arrivals so late sandboxes are deleted and unresolved IDs are reported. Timed-out work is drained before another iteration starts or CPU measurements begin. The cleanup grace period is the greater of 1,000 ms and `--timeout-ms`; if work cannot settle, remaining iterations and providers stop and the report flags the outstanding work. Late creation and CPU-fixture setup retain cleanup callbacks. A creation lifetime is requested only from memory, E2B, and Daytona. Local and Vercel rely on tracked cleanup instead; no provider receives an idle timeout. Reports disclose this policy. A provider or network outage can prevent deletion, so inspect `cleanupFailures` after live runs. On scenario failure the iteration skips subsequent work and proceeds to cleanup.
 

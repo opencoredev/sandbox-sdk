@@ -2,6 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
+description: Compare Local, E2B, Vercel Sandbox, Daytona, Boat, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Upstash Box, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
@@ -22,12 +23,22 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
 | [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
 | [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
+| [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
+| | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
+| Key mode | exact | best-effort | exact | best-effort | exact | best-effort |
+| Snapshots | Yes | Yes | Yes | Yes | No | No |
+| Block all network | Yes | Yes | Yes | Yes | Yes | No |
+| Network allow list | No | Yes | Yes | Yes | Yes | No |
+| Size presets | Yes | No | Yes | Yes | No | Yes |
+| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes | No |
+| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | Yes | No |
+| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Fake | Token in URL |
 | | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
 | Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | No | No |
 | Block all network | Yes | Yes | Yes | Yes | No | Yes |
@@ -76,6 +87,8 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
     Durable cloud containers with filesystem snapshots and protected previews.
   <Card title="Railway" href="/providers/railway" icon="train-front">
     Ephemeral Linux VMs with filesystem checkpoints and declared public preview ports.
+  <Card title="Boat" href="/providers/boat" icon="sailboat">
+    Persistent cloud VMs with size presets and token-protected previews.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

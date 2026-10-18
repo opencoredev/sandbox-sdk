@@ -61,6 +61,10 @@
     "./railway": {
       "types": "./dist/providers/railway/index.d.ts",
       "import": "./dist/providers/railway/index.js"
+    },
+    "./boat": {
+      "types": "./dist/providers/boat/index.d.ts",
+      "import": "./dist/providers/boat/index.js"
     }
   },
   "scripts": {
@@ -80,7 +84,8 @@
     "e2b": "2.56.0",
     "vitest": "^3.2.4",
     "zod": "^4.6.7",
-    "railway": "3.16.0"
+    "railway": "3.16.0",
+    "@boatdev/sdk": "1.9.9"
   },
   "peerDependencies": {
     "@daytonaio/sdk": "^0.225.0",
@@ -92,7 +97,8 @@
     "e2b": "^2.56.0",
     "vitest": ">=3",
     "zod": "^4.6.7",
-    "railway": "^3.16.0"
+    "railway": "^3.16.0",
+    "@boatdev/sdk": "^1.9.9"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -123,6 +129,9 @@
       "optional": true
     },
     "railway": {
+      "optional": true
+    },
+    "@boatdev/sdk": {
       "optional": true
     }
   },

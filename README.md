@@ -35,7 +35,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs            |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Coding agents and persistent workspaces |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
-| [Ascii Box](https://sandbox-sdk.app/docs/providers/box)         | Persistent cloud VM     | Full VMs and protected app previews     |
+| [Boat](https://sandbox-sdk.app/docs/providers/boat) | Persistent cloud VM | Long-running agents and protected previews |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
 

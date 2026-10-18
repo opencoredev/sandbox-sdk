@@ -10,6 +10,7 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - keep one long-lived sandbox per user or project and find it again by key;
 - switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Upstash Box without rewriting code;
 - switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Railway without rewriting code;
+- switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Boat without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
 It is not a hosted service: it calls each provider's own SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
@@ -18,6 +19,7 @@ It is not a hosted service: it calls each provider's own SDK with your keys, and
 
 1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@upstash/box\`).
 1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`railway\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@boatdev/sdk\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -74,6 +76,7 @@ export default defineConfig({
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
             { label: "Upstash Box", root: "/providers/upstash", icon: "box" },
             { label: "Railway", root: "/providers/railway", icon: "train-front" },
+            { label: "Boat", root: "/providers/boat", icon: "sailboat" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],

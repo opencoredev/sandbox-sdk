@@ -210,6 +210,7 @@ function Providers() {
         </h2>
         <p className={styles.sectionLede}>
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Upstash Box run in the cloud.
+          Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Boat run in the cloud. memory() is an
           Local runs on Docker. E2B, Vercel Sandbox, Daytona, and Railway run in the cloud. memory() is an
           in-process fake for unit tests that never touches the network. Cards marked coming soon
           have no 1.0 adapter yet.
@@ -474,6 +475,7 @@ function Footer() {
             A TypeScript SDK for Docker, E2B, Vercel, Daytona, and Upstash Box sandboxes. MIT
             licensed, built by OpenCore.
             A TypeScript SDK for Docker, E2B, Vercel, Daytona, and Railway sandboxes. MIT licensed, built by
+            A TypeScript SDK for Docker, E2B, Vercel, Daytona, and Boat sandboxes. MIT licensed, built by
             OpenCore.
           </p>
         </div>

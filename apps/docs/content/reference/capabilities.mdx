@@ -7,6 +7,15 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
+| | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | Yes | No |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes | No |
+| `size` presets | Yes | No | Yes | Yes | No | Yes |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes | No |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes | Encoded name, up to 120 characters |
+| Key mode | exact | best-effort | exact | best-effort | exact | best-effort |
 | | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
 | `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No | No |
 | `snapshot()` and `from` | Yes | Yes | Yes | Yes | Yes, filesystem only | No |
@@ -38,6 +47,7 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 - **Network.** Local enforces `"none"` but has no per-host filter, so `{ allow }` fails there. Memory records the policy and has no network to enforce it on.
 - **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Upstash Box.** Uses native size presets, pause/resume, full disk snapshots, and network policy. Custom idle deadlines and hard lifetimes are unsupported. Keys and labels live in sandbox metadata; listing SDK boxes reads this metadata and may wake idle boxes.
+- **Boat.** Size presets only. No SDK pause, snapshots, terminals, network policy, idle timer, or hard lifetime. Boat's default auto-stop still applies. Keys and labels share a compressed 120-character display name; [Boat](/providers/boat) explains the limit.
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
 
