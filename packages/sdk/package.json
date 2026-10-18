@@ -49,6 +49,10 @@
     "./vercel": {
       "types": "./dist/providers/vercel/index.d.ts",
       "import": "./dist/providers/vercel/index.js"
+    },
+    "./daytona": {
+      "types": "./dist/providers/daytona/index.d.ts",
+      "import": "./dist/providers/daytona/index.js"
     }
   },
   "scripts": {
@@ -65,7 +69,8 @@
     "vitest": "^3.2.4",
     "zod": "^4.6.7",
     "e2b": "2.56.0",
-    "@vercel/sandbox": "3.8.0"
+    "@vercel/sandbox": "3.8.0",
+    "@daytonaio/sdk": "^0.225.0"
   },
   "peerDependencies": {
     "@mastra/core": "^1.78.0",
@@ -74,7 +79,8 @@
     "vitest": ">=3",
     "zod": "^4.6.7",
     "e2b": "^2.56.0",
-    "@vercel/sandbox": "^3.8.0"
+    "@vercel/sandbox": "^3.8.0",
+    "@daytonaio/sdk": "^0.225.0"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -96,6 +102,9 @@
       "optional": true
     },
     "@vercel/sandbox": {
+      "optional": true
+    },
+    "@daytonaio/sdk": {
       "optional": true
     }
   },
