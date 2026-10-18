@@ -209,31 +209,75 @@ describe("Tenki mappings", () => {
     expect(tenkiState.retainedPeakBytes).toBeLessThan(128 * 1024);
   });
   test("stalled termination streams settle after the cancellation grace period", async () => {
-    const box = await createSandbox(factory());
+    const provider = factory();
+    const box = await createSandbox(provider);
     const run = MockSession.prototype.run;
     let transportSignal: AbortSignal | undefined;
+    const events: string[] = [];
     vi.spyOn(MockSession.prototype, "run").mockImplementation(
       function (this: MockSession, argv, options) {
         const handle = run.call(this, argv, options);
+        if (argv[2]?.includes("PID unavailable")) {
+          return Object.assign(
+            Promise.resolve(handle).then((result) => {
+              if (result.exitCode === 0) events.push("kill confirmed");
+              return result;
+            }),
+            { ...handle },
+          );
+        }
         if (!argv[2]?.includes("subprocess.Popen")) return handle;
         transportSignal = options?.signal;
+        transportSignal?.addEventListener("abort", () => events.push("transport aborted"), {
+          once: true,
+        });
         void Promise.resolve(handle).catch(() => {});
         return Object.assign(new Promise<ProcessRunResult>(() => {}), {
           ...handle,
-          stdout: new ReadableStream<Uint8Array>(),
-          stderr: new ReadableStream<Uint8Array>(),
+          stdout: new ReadableStream<Uint8Array>({
+            cancel() {
+              events.push("stdout cancelled");
+            },
+          }),
+          stderr: new ReadableStream<Uint8Array>({
+            cancel() {
+              events.push("stderr cancelled");
+            },
+          }),
         });
       },
     );
     const started = Date.now();
-    const pending = Promise.resolve(box.run("sleep 20", { timeoutMs: 50 }));
-    const result = await Promise.race([
-      pending,
-      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1800)),
-    ]);
-    expect(result).toMatchObject({ timedOut: true, exitCode: null });
-    expect(Date.now() - started).toBeLessThan(1800);
-    expect(transportSignal?.aborted).toBe(true);
+    // Exercise the adapter deadline: box.run's timer also includes activity-file
+    // setup and may expire before the supervisor is ever launched.
+    const pending = provider.exec(box.id, {
+      command: "sleep 20",
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 50,
+      onChunk() {},
+    });
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        pending,
+        new Promise<"hung">((resolve) => {
+          watchdog = setTimeout(() => resolve("hung"), 1800);
+        }),
+      ]);
+      expect(result).toMatchObject({ timedOut: true, exitCode: null });
+      expect(Date.now() - started).toBeLessThan(1800);
+      expect(transportSignal).toBeInstanceOf(AbortSignal);
+      expect(transportSignal?.aborted).toBe(true);
+      expect(events).toEqual([
+        "kill confirmed",
+        "transport aborted",
+        "stdout cancelled",
+        "stderr cancelled",
+      ]);
+    } finally {
+      clearTimeout(watchdog);
+    }
   });
   test("literal SDK paths in user commands are preserved", async () => {
     const box = await createSandbox(factory());
