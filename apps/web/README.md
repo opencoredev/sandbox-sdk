@@ -1,7 +1,7 @@
-# Sandbox SDK documentation
+# Sandbox SDK website
 
-The [sandbox-sdk.app](https://sandbox-sdk.app) website and documentation, built with Next.js and
-Fumadocs.
+The landing page at [sandbox-sdk.app](https://sandbox-sdk.app), built with Next.js and statically
+exported. The docs are a separate Blume app in `apps/docs`, served under `/docs`.
 
 From the repository root:
 
@@ -10,5 +10,11 @@ bun install
 bun run dev
 ```
 
-The site is statically exported for deployment. Documentation lives in `content/docs`; application
-routes and components live in `src`.
+Links to `/docs` 404 in development unless you point this app at the docs dev server:
+
+```bash
+DOCS_ORIGIN=http://localhost:4000 bun run dev
+```
+
+`next.config.mjs` then proxies `/docs` and `/docs/*` to that origin. In production the host routes
+`/docs` to the docs app, so the rewrite only runs in development.

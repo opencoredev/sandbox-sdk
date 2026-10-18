@@ -153,7 +153,7 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
               key={i}
               className={`${styles.card} ${isCurrent ? styles.cardActive : ""}`}
               aria-roledescription="slide"
-              aria-label={`${(i % N) + 1} of ${N}: ${p.name}`}
+              aria-label={`${(i % N) + 1} of ${N}: ${p.name}${p.kind === "soon" ? ", coming soon" : ""}`}
               aria-hidden={(clone && !isCurrent) || undefined}
             >
               <div className={styles.cardArt}>
@@ -169,11 +169,16 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
                 )}
               </div>
               <div className={styles.cardText}>
-                <p className={styles.cardName}>{p.name}</p>
+                <p className={styles.cardName}>
+                  {p.name}
+                  {p.kind === "soon" && <span className={styles.cardSoon}>Coming soon</span>}
+                </p>
                 <p className={styles.cardLine}>{p.line}</p>
-                <Link href={p.href} className={styles.cardLink} tabIndex={isCurrent ? 0 : -1}>
-                  Provider guide {arrow}
-                </Link>
+                {p.kind === "launch" && (
+                  <Link href={p.href} className={styles.cardLink} tabIndex={isCurrent ? 0 : -1}>
+                    Provider guide {arrow}
+                  </Link>
+                )}
               </div>
               {isCurrent ? (
                 brackets
@@ -183,12 +188,12 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
                   className={styles.cardSelect}
                   onClick={() => {
                     go(i);
-                    // this button unmounts once the card is current, so hand focus to the card's guide link
-                    requestAnimationFrame(() =>
-                      track.current?.children[i]
-                        ?.querySelector("a")
-                        ?.focus({ preventScroll: true }),
-                    );
+                    // this button unmounts once the card is current, so hand focus to the card's
+                    // guide link, or to the carousel when the provider has no guide yet
+                    requestAnimationFrame(() => {
+                      const link = track.current?.children[i]?.querySelector("a");
+                      (link ?? track.current)?.focus({ preventScroll: true });
+                    });
                   }}
                   aria-label={`Show ${p.name}`}
                   tabIndex={clone ? -1 : 0}

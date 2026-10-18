@@ -1,23 +1,17 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 
-import { Provider } from "@/components/provider";
 import { fontVariables } from "@/lib/fonts";
 import { socialImage } from "@/lib/shared";
 
 import "./global.css";
 
-const inter = Inter({
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
   metadataBase: new URL("https://sandbox-sdk.app"),
   title: { default: "Sandbox SDK", template: "%s · Sandbox SDK" },
   description:
-    "An open-source TypeScript SDK for running files, commands, processes, ports, and snapshots across sandbox providers.",
+    "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on Docker, E2B, Vercel, or Daytona from one TypeScript SDK.",
   applicationName: "Sandbox SDK",
   icons: {
     icon:
@@ -44,16 +38,15 @@ export const metadata: Metadata = {
     "TypeScript sandbox SDK",
     "code execution sandbox",
     "AI agent sandbox",
+    "Docker",
     "E2B",
     "Daytona",
     "Vercel Sandbox",
-    "Upstash Box",
   ],
   alternates: { canonical: "/" },
   openGraph: {
     title: "Sandbox SDK",
-    description:
-      "One open-source TypeScript API for isolated files, commands, processes, ports, and snapshots.",
+    description: "Sandboxes for your agents and your users. Any provider, one line.",
     url: "https://sandbox-sdk.app",
     siteName: "Sandbox SDK",
     type: "website",
@@ -62,14 +55,14 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Sandbox SDK",
-    description: "One open-source TypeScript API for every sandbox provider.",
+    description: "Sandboxes for your agents and your users. Any provider, one line.",
     images: [socialImage],
   },
 };
 
 export default function Layout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${inter.className} ${fontVariables}`} suppressHydrationWarning>
+    <html lang="en" className={fontVariables} suppressHydrationWarning>
       <head>
         {process.env.NODE_ENV === "development" && (
           <Script
@@ -80,7 +73,7 @@ export default function Layout({ children }: LayoutProps<"/">) {
         )}
       </head>
       <body className="flex flex-col min-h-screen">
-        <Provider>{children}</Provider>
+        {children}
         <Analytics />
       </body>
     </html>
