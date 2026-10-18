@@ -53,6 +53,10 @@
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
       "import": "./dist/providers/daytona/index.js"
+    },
+    "./upstash": {
+      "types": "./dist/providers/upstash/index.d.ts",
+      "import": "./dist/providers/upstash/index.js"
     }
   },
   "scripts": {
@@ -63,24 +67,26 @@
     "check:size": "bun scripts/size.ts"
   },
   "devDependencies": {
+    "@daytonaio/sdk": "^0.225.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
-    "ai": "^7.0.143",
-    "vitest": "^3.2.4",
-    "zod": "^4.6.7",
-    "e2b": "2.56.0",
+    "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "ai": "^7.0.143",
+    "e2b": "2.56.0",
+    "vitest": "^3.2.4",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
+    "@daytonaio/sdk": "^0.225.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
-    "ai": "^7.0.143",
-    "vitest": ">=3",
-    "zod": "^4.6.7",
-    "e2b": "^2.56.0",
+    "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "^3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "ai": "^7.0.143",
+    "e2b": "^2.56.0",
+    "vitest": ">=3",
+    "zod": "^4.6.7"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -105,6 +111,9 @@
       "optional": true
     },
     "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@upstash/box": {
       "optional": true
     }
   },

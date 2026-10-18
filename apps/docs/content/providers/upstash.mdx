@@ -1,0 +1,118 @@
+---
+title: Upstash Box
+description: Run durable cloud containers on Upstash Box with filesystem snapshots, native network policies, and protected preview URLs.
+---
+
+`upstash()` runs each sandbox on [Upstash Box](https://upstash.com/docs/box/overall/how-it-works). Boxes retain files between sessions and pause when idle, which suits workspaces that users return to later.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @upstash/box
+```
+
+The adapter needs `@upstash/box` 0.7.9 or later within 0.7. Run this code on a server using Node.js 22 or Bun. Keep your API key out of browser bundles.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await using box = await createSandbox(upstash());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+The provider reads `UPSTASH_BOX_API_KEY` and creates a small box using Upstash's default runtime. Commands and relative files use `/workspace`.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+const provider = upstash({ runtime: "node", requestTimeoutMs: 60_000 });
+await using box = await createSandbox(provider, { size: "medium" });
+```
+
+`apiKey` overrides the environment key. `baseUrl` selects the Box API endpoint and otherwise uses `UPSTASH_BOX_BASE_URL` when set. `runtime` selects an Upstash runtime, such as `node` or `python`. `requestTimeoutMs` configures native command request and live-session handshake deadlines. It does not bound provisioning or the box's lifetime. `enableTelemetry: false` disables the native SDK's telemetry headers.
+
+## Keys
+
+Key mode is **best-effort**. The adapter stores keys and labels in `/tmp/.sandbox-sdk/upstash.json` inside the box. It uses one native `sandbox-sdk` label to discover initialized boxes, then reads their metadata. Arbitrary SDK labels are preserved without using Upstash's limited native label slots.
+
+Two concurrent calls with the same key can create two boxes. Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) when exact get-or-create matters. Discovery reads metadata from each SDK box and may wake paused boxes. SDK labels do not appear individually in the Upstash dashboard.
+
+## Size
+
+| Preset | vCPUs | Memory | Storage |
+| --- | --- | --- | --- |
+| `small` | 2 | 4 GB | 5 GB |
+| `medium` | 4 | 8 GB | 10 GB |
+| `large` | 8 | 16 GB | 20 GB |
+
+Presets map directly to Upstash's native sizes. Exact `{ cpu, memoryMb, diskGb }` sizes fail with `unsupported`.
+
+## Network
+
+`network: "none"` uses Upstash's `deny-all` policy. An allow list uses a custom native policy with `allowedDomains`. Entries must be plain DNS hostnames without schemes, ports, or wildcards. An empty allow list blocks all outbound traffic.
+
+## Idle and lifetime limits
+
+Upstash controls automatic idle pause. The adapter cannot set a custom idle deadline or hard lifetime on durable boxes. Both `idleTimeoutMs` and `timeoutMs` fail with `unsupported` before creating a box. Command `timeoutMs` still works and kills the command's process tree.
+
+## Pause and snapshots
+
+`box.pause()` and `box.resume()` call Upstash's native lifecycle methods. Files persist. Running processes end on pause. The adapter installs a native startup command that marks unfinished SDK process records failed with exit code 137 on resume, including automatic resume. Restart processes when returning to a workspace.
+
+`box.snapshot()` captures the full filesystem and returns the native snapshot ID. Pass it as `from` to `createSandbox` to create an independent box. The adapter replaces the restored SDK metadata with the new box's key and labels. Snapshots remain in Upstash after you destroy their source box; delete them through the native SDK when no longer needed.
+
+## Previews
+
+Previews require a bearer token by default. Send the returned headers with requests:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await using box = await createSandbox(upstash(), { key: "project:42" });
+const preview = await box.preview(3000);
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+Proxy protected previews through your server when displaying them in an iframe. For a public preview, explicitly use `upstash({ public: true })`. Ports do not need to be declared at creation. Upstash does not report an expiry, so `expiresAt` is unset. Reuse one provider instance to keep preview credentials stable: repeated calls share a cached URL. A different provider instance or a direct native `getPublicURL()` call can replace the URL's credentials, invalidating earlier headers.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `UPSTASH_BOX_API_KEY` | Your Box API key from the Upstash console. Required unless `apiKey` is set. |
+| `UPSTASH_BOX_BASE_URL` | Optional native SDK API endpoint override. |
+
+## API reference
+
+### `upstash(options?)`
+
+- `apiKey?: string`. Defaults to `UPSTASH_BOX_API_KEY`.
+- `baseUrl?: string`. Defaults to `UPSTASH_BOX_BASE_URL`, then `https://us-east-1.box.upstash.com`.
+- `runtime?: Runtime`. An Upstash runtime name.
+- `requestTimeoutMs?: number`. Uses the native SDK default when omitted.
+- `enableTelemetry?: boolean`. Uses the native SDK default when omitted.
+- `public?: boolean`. Defaults to `false`; previews require bearer authentication.
+
+Returns a provider. `box.native` is the Upstash SDK's `Box` object.
+
+## Limitations
+
+- Keys are best-effort, and discovery may wake boxes.
+- No custom idle deadlines, hard lifetimes, or exact resource sizes.
+- No terminal capability through Sandbox SDK. The native SDK has live terminal sessions.
+- Process records and logs use the shared `/tmp/.sandbox-sdk/procs` layout.
+- Live sessions require Node-compatible WebSockets. Losing a foreground session connection terminates its command.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)

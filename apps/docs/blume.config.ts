@@ -8,14 +8,14 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - give an AI agent tools to run commands, read and edit files, and start dev servers (AI SDK, Mastra, or the OpenAI Agents SDK);
 - run code a user or a model wrote, such as an AI app builder with a live preview;
 - keep one long-lived sandbox per user or project and find it again by key;
-- switch between Docker on your own machine, E2B, Vercel Sandbox, and Daytona without rewriting code;
+- switch between Docker on your own machine, E2B, Vercel Sandbox, Daytona, and Upstash Box without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
 It is not a hosted service: it calls each provider's own SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, or \`@daytonaio/sdk\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a cloud provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, or \`@upstash/box\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -27,7 +27,7 @@ Source: [github.com/opencoredev/sandbox-sdk](https://github.com/opencoredev/sand
 export default defineConfig({
   title: "Sandbox SDK",
   description:
-    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, E2B, Vercel Sandbox, and Daytona, called with your own keys.",
+    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, E2B, Vercel Sandbox, Daytona, and Upstash Box, called with your own keys.",
   logo: { image: "/logo.svg", text: "Sandbox SDK", href: "https://sandbox-sdk.app" },
   content: {
     root: "content",
@@ -69,6 +69,7 @@ export default defineConfig({
               icon: "/integrations/vercel.svg",
             },
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
+            { label: "Upstash Box", root: "/providers/upstash", icon: "box" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],

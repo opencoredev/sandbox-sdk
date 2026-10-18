@@ -18,6 +18,7 @@ const credentials: Record<string, string[]> = {
   e2b: ["E2B_API_KEY"],
   vercel: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"],
   daytona: ["DAYTONA_API_KEY"],
+  upstash: ["UPSTASH_BOX_API_KEY"],
 };
 const regionKeys: Record<string, string> = {
   e2b: "E2B_REGION",
