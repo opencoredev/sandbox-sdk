@@ -1,0 +1,361 @@
+/** Official API (verified against @upstash/box 0.7.9 declarations):
+ * https://upstash.com/docs/box/overall/how-it-works
+ * https://upstash.com/docs/box/overall/quickstart
+ * https://upstash.com/docs/box/overall/live-sessions
+ * https://upstash.com/docs/box/overall/files
+ * https://upstash.com/docs/box/overall/network-policy
+ * https://upstash.com/docs/box/overall/snapshots
+ * https://upstash.com/docs/box/overall/preview
+ * https://www.npmjs.com/package/@upstash/box
+ */
+import { posix } from "node:path";
+import type { Box, BoxConfig, BoxData, FileStat, NetworkPolicy } from "@upstash/box";
+import type {
+  Provider,
+  SandboxInfo,
+  Labels,
+  FileInfo,
+  CreateInput,
+  Preview,
+} from "../../provider.js";
+import { SandboxError } from "../../errors.js";
+import { upstashError, unsupported } from "./errors.js";
+import { execute, startProcess } from "./exec.js";
+
+export type UpstashOptions = Pick<
+  BoxConfig,
+  "apiKey" | "baseUrl" | "runtime" | "enableTelemetry"
+> & {
+  /** Native SDK operation timeout, not a sandbox lifetime. */
+  requestTimeoutMs?: number;
+  /** Default previews require a bearer token. */
+  public?: boolean;
+};
+export type UpstashCapability = "pause" | "snapshot" | "size" | "network-policy";
+export type UpstashProvider = Provider<Box, UpstashCapability>;
+const marker = "sandbox-sdk";
+const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
+// Upstash reruns initCommand on automatic as well as explicit resume. Disk
+// snapshots retain process records, but cannot restore those OS processes.
+const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/upstash-runs; true`;
+type Metadata = { version: 1; key?: string; labels: Labels };
+function metadata(text: string): Metadata {
+  const value: unknown = JSON.parse(text);
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("version" in value) ||
+    value.version !== 1 ||
+    !("labels" in value) ||
+    !value.labels ||
+    typeof value.labels !== "object" ||
+    Array.isArray(value.labels) ||
+    ("key" in value && typeof value.key !== "string")
+  )
+    throw new Error("Invalid sandbox metadata");
+  const labels: Labels = {};
+  for (const [key, item] of Object.entries(value.labels)) {
+    if (typeof item !== "string") throw new Error("Invalid sandbox label");
+    Object.defineProperty(labels, key, {
+      value: item,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return {
+    version: 1,
+    labels,
+    ...("key" in value && typeof value.key === "string" ? { key: value.key } : {}),
+  };
+}
+function info(data: BoxData, meta: Metadata): SandboxInfo {
+  return {
+    id: data.id,
+    key: meta.key,
+    labels: meta.labels,
+    createdAt: data.created_at * 1000,
+    state:
+      data.status === "paused"
+        ? "paused"
+        : data.status === "running" || data.status === "idle"
+          ? "running"
+          : "stopped",
+  };
+}
+function fileInfo(path: string, file: FileStat): FileInfo {
+  if (file.type === "other") unsupported("Special filesystem entries are not supported");
+  return { path, type: file.type, size: file.size, modifiedAt: Date.parse(file.mod_time) };
+}
+function network(input: CreateInput["network"]): NetworkPolicy {
+  if (typeof input !== "object") return { mode: input === "none" ? "deny-all" : "allow-all" };
+  if (!input.allow.length) return { mode: "deny-all" };
+  if (
+    input.allow.some(
+      (host) =>
+        host.length > 253 ||
+        !/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(
+          host,
+        ),
+    )
+  )
+    unsupported("Network allow entries must be DNS hostnames");
+  return { mode: "custom", allowedDomains: input.allow };
+}
+
+export function upstash(options: UpstashOptions = {}): UpstashProvider {
+  const boxes = new Map<string, Box>();
+  const monitors = new Map<string, Set<() => void>>();
+  const previews = new Map<string, Map<number, Promise<Preview>>>();
+  const detach = (id: string) => {
+    for (const stop of monitors.get(id) ?? []) stop();
+    monitors.delete(id);
+  };
+  const connection = () => {
+    const apiKey = options.apiKey ?? process.env.UPSTASH_BOX_API_KEY;
+    if (!apiKey)
+      throw new SandboxError(
+        "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or apiKey.",
+        { code: "auth", provider: "upstash" },
+      );
+    return { apiKey, baseUrl: options.baseUrl, enableTelemetry: options.enableTelemetry };
+  };
+  const sdk = async () => {
+    const config = connection();
+    const { Box } = await import("@upstash/box");
+    return { Box, config };
+  };
+  async function safe<T>(action: () => Promise<T>, id?: string, file = false): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      throw upstashError(error, id, file);
+    }
+  }
+  async function box(id: string) {
+    const cached = boxes.get(id);
+    if (cached) return cached;
+    const { Box, config } = await sdk();
+    const value = await Box.get(id, { ...config, timeout: options.requestTimeoutMs });
+    boxes.set(id, value);
+    return value;
+  }
+  const onFile = <T>(id: string, action: (value: Box) => Promise<T>) =>
+    safe(async () => action(await box(id)), id, true);
+  const readMetadata = async (value: Box) => metadata(await value.files.read(metadataPath));
+  const provider: UpstashProvider = {
+    name: "upstash",
+    keyMode: "best-effort",
+    capabilities: new Set<UpstashCapability>(["pause", "snapshot", "size", "network-policy"]),
+    create: (input) =>
+      safe(async () => {
+        if (input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined)
+          unsupported(
+            "Custom idle deadlines and hard lifetimes are not available on durable boxes",
+          );
+        if (input.size !== undefined && typeof input.size !== "string")
+          unsupported(
+            "Use small, medium, or large; exact CPU, memory, and disk sizes are unavailable",
+          );
+        const policy = network(input.network);
+        const { Box, config } = await sdk();
+        const params: BoxConfig = {
+          ...config,
+          runtime: options.runtime,
+          size: input.size,
+          env: input.env,
+          labels: [],
+          initCommand,
+          networkPolicy: policy,
+          timeout: options.requestTimeoutMs,
+        };
+        const value =
+          input.from === undefined
+            ? await Box.create(params)
+            : await Box.fromSnapshot(input.from, params);
+        boxes.set(value.id, value);
+        try {
+          if (input.signal?.aborted)
+            throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
+              code: "aborted",
+              provider: "upstash",
+            });
+          await value.files.mkdir("/workspace", { parents: true });
+          await value.files.mkdir(posix.dirname(metadataPath), { parents: true });
+          const meta: Metadata = {
+            version: 1,
+            key: input.key,
+            labels: { ...input.labels, "sandbox-sdk": "1" },
+          };
+          await value.files.write({ path: metadataPath, content: JSON.stringify(meta) });
+          // Publish discovery only after metadata and the workspace are ready. Native
+          // labels allow five short strings; durable metadata preserves arbitrary labels.
+          await value.labels.add(marker);
+          const data = (await Box.list(config)).find((data) => data.id === value.id);
+          if (!data) throw new Error("Created box missing from provider listing");
+          return info(data, meta);
+        } catch (error) {
+          await value.delete();
+          boxes.delete(value.id);
+          throw error;
+        }
+      }),
+    list: (labels) =>
+      safe(async () => {
+        const { Box, config } = await sdk();
+        const result: SandboxInfo[] = [];
+        for (const data of await Box.list({ ...config, label: marker })) {
+          if (!data.labels?.includes(marker) || data.status === "deleted") continue;
+          try {
+            const meta = await readMetadata(await box(data.id));
+            if (Object.entries(labels).every(([key, value]) => meta.labels[key] === value))
+              result.push(info(data, meta));
+          } catch (error) {
+            if (upstashError(error).code !== "not_found") throw error;
+          }
+        }
+        return result;
+      }),
+    async find(key) {
+      return (await provider.list({})).find((value) => value.key === key);
+    },
+    connect: (id) =>
+      safe(async () => {
+        const { Box, config } = await sdk();
+        const data = (await Box.list(config)).find((data) => data.id === id);
+        if (!data) throw Object.assign(new Error("Missing box"), { statusCode: 404 });
+        const value = await box(id);
+        return info(data, await readMetadata(value));
+      }, id),
+    destroy: (id) =>
+      safe(async () => {
+        try {
+          await (await box(id)).delete();
+        } catch (error) {
+          if (upstashError(error).code !== "not_found") throw error;
+        } finally {
+          detach(id);
+          previews.delete(id);
+          boxes.delete(id);
+        }
+      }, id),
+    exec: (id, input) => safe(async () => execute(await box(id), input), id),
+    startProcess: (id, input) =>
+      safe(async () => {
+        const hook = await startProcess(await box(id), input);
+        let active = monitors.get(id);
+        if (!active) {
+          active = new Set();
+          monitors.set(id, active);
+        }
+        active.add(hook.detach);
+        void hook
+          .wait()
+          .finally(() => active.delete(hook.detach))
+          .catch(() => {});
+        return {
+          pid: hook.pid,
+          wait: () => safe(hook.wait, id),
+          stop: (settings) => safe(() => hook.stop(settings), id),
+        };
+      }, id),
+    async close(id) {
+      detach(id);
+      boxes.delete(id);
+    },
+    files: {
+      read: (id, path) =>
+        onFile(
+          id,
+          async (value) =>
+            new Uint8Array(
+              Buffer.from(await value.files.read(path, { encoding: "base64" }), "base64"),
+            ),
+        ),
+      readRange: (id, path, settings) =>
+        onFile(
+          id,
+          async (value) =>
+            new Uint8Array(
+              Buffer.from(
+                await value.files.read(path, { ...settings, encoding: "base64" }),
+                "base64",
+              ),
+            ),
+        ),
+      write: (id, path, data) =>
+        onFile(id, async (value) => {
+          await value.files.mkdir(posix.dirname(path), { parents: true });
+          await value.files.write({
+            path,
+            content: Buffer.from(data).toString("base64"),
+            encoding: "base64",
+          });
+        }),
+      list: (id, path) =>
+        onFile(id, async (value) =>
+          Promise.all(
+            (await value.files.list(path)).map(async (entry) => {
+              const full = posix.join(path, entry.name);
+              return fileInfo(full, await value.files.stat(full));
+            }),
+          ),
+        ),
+      stat: (id, path) => onFile(id, async (value) => fileInfo(path, await value.files.stat(path))),
+      remove: (id, path, settings) => onFile(id, (value) => value.files.remove(path, settings)),
+      mkdir: (id, path) => onFile(id, (value) => value.files.mkdir(path, { parents: true })),
+    },
+    previewUrl: (id, port) => {
+      let ports = previews.get(id);
+      if (!ports) {
+        ports = new Map();
+        previews.set(id, ports);
+      }
+      const cached = ports.get(port);
+      if (cached) return cached;
+      // Recreating a native public URL rotates its auth credentials. Cache the
+      // promise as well as the result so concurrent readiness probes share it.
+      const pending = safe(async () => {
+        const link = await (
+          await box(id)
+        ).getPublicURL(port, options.public ? undefined : { bearerToken: true });
+        if (!options.public && !link.token)
+          throw new Error("Protected preview returned no bearer token");
+        return {
+          url: link.url,
+          ...(link.token ? { headers: { Authorization: `Bearer ${link.token}` } } : {}),
+        };
+      }, id);
+      ports.set(port, pending);
+      void pending.catch(() => ports.delete(port));
+      return pending;
+    },
+    pause: (id) =>
+      safe(async () => {
+        detach(id);
+        await (await box(id)).pause();
+      }, id),
+    resume: (id) =>
+      safe(async () => {
+        const value = await box(id);
+        await value.resume();
+      }, id),
+    snapshot: (id) =>
+      safe(
+        async () => ({
+          id: (await (await box(id)).snapshot({ name: `sdk-${crypto.randomUUID()}` })).id,
+        }),
+        id,
+      ),
+    native(id) {
+      const value = boxes.get(id);
+      if (!value)
+        throw new SandboxError(
+          "Sandbox is not connected. No native object is cached. Connect first.",
+          { code: "not_found", provider: "upstash", sandboxId: id },
+        );
+      return value;
+    },
+  };
+  return provider;
+}

@@ -106,7 +106,8 @@ export const providerArt: ProviderArt[] = [
     paint: providerScenes.daytona,
   },
   {
-    kind: "soon",
+    kind: "launch",
+    href: "/docs/providers/upstash",
     id: "upstash",
     name: "Upstash Box",
     line: "Durable serverless boxes with filesystem snapshots.",

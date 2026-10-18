@@ -11,7 +11,7 @@ import type { Report } from "./model.js";
 async function main() {
   if (process.argv.slice(2).includes("--help")) {
     process.stdout.write(
-      "bun bench --providers memory,local,e2b,vercel,daytona --runs 50 --out results/\nOptions: --warmup 2 --concurrency 1 --timeout-ms 30000 --max-sandboxes 100 --yes\nOutput paths are relative to bench/. Cloud budget includes warmups.\n",
+      "bun bench --providers memory,local,e2b,vercel,daytona,upstash --runs 50 --out results/\nOptions: --warmup 2 --concurrency 1 --timeout-ms 30000 --max-sandboxes 100 --yes\nOutput paths are relative to bench/. Cloud budget includes warmups.\n",
     );
     return;
   }
