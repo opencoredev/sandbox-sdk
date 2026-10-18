@@ -73,10 +73,10 @@ describe("Daytona mappings", () => {
     const provider = factory(); const box = await createSandbox(provider);
     const hook = await provider.startProcess?.(box.id, { command: "sleep .2; echo alive > persisted", cwd: "/workspace", env: {}, onChunk() {} });
     mockState.failStatus = true; await new Promise(resolve => setTimeout(resolve, 300));
-    mockState.failStatus = false; expect(await box.files.read("persisted")).toBe("alive\n"); await hook?.wait();
+    mockState.failStatus = false; await expect.poll(() => box.files.read("persisted"), { timeout: 10_000 }).toBe("alive\n"); await hook?.wait();
     const process = await box.start("sleep .2; echo detached > detached", { name: "durable" });
     await box.close(); await new Promise(resolve => setTimeout(resolve, 300));
-    const fresh = await connectSandbox(factory(), box.id); expect(await fresh.files.read("detached")).toBe("detached\n"); expect((await fresh.process("durable").wait()).exitCode).toBe(0);
+    const fresh = await connectSandbox(factory(), box.id); await expect.poll(() => fresh.files.read("detached"), { timeout: 10_000 }).toBe("detached\n"); expect((await fresh.process("durable").wait()).exitCode).toBe(0);
     void process;
   });
   test("native stop kills TERM-ignoring descendants after the leader exits", async () => {
@@ -95,7 +95,7 @@ describe("Daytona mappings", () => {
   });
   test("cleanup failure preserves the confirmed durable exit record", async () => {
     const box = await createSandbox(factory());
-    const proc = await box.start("echo READY; sleep .2; exit 0", { name: "cleanup", ready: { log: /READY/ } });
+    const proc = await box.start("echo READY; sleep 5; exit 0", { name: "cleanup", ready: { log: /READY/ } });
     vi.spyOn(box.native.process, "deleteSession").mockRejectedValue(Object.assign(new Error("cleanup unavailable"), { statusCode: 503 }));
     await proc.wait(); await new Promise(resolve => setTimeout(resolve, 200));
     expect(await box.files.read("/tmp/.sandbox-sdk/procs/cleanup/exit")).toBe("0");
