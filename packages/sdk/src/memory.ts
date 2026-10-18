@@ -15,7 +15,7 @@ export interface MemoryNative { readonly files: Map<string, Node> }
  * sockets. Preview URLs use memory.invalid and must never be fetched. Register
  * handlers with memory({handlers}) or provider.register(name, handler).
  */
-export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } {
+export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "network-policy"> & { register(name: string, handler: CommandHandler): void } {
   const machines = new Map<string, Machine>(); const handlers = new Map<string, CommandHandler>();
   const fail = (message: string, code: "not_found" | "file_not_found" | "invalid_argument") => new SandboxError(`${message}. Memory resource does not exist or request is invalid. Check the path or ID.`, { code, provider: "memory" });
   const machine = (id: string) => { const value = machines.get(id); if (!value) throw fail(`Sandbox ${id} not found`, "not_found"); if (value.idleTimeoutMs) { clearTimeout(value.idleTimer); value.idleTimer = setTimeout(() => { if (value.active.size) machine(id); else void provider.destroy(id); }, value.idleTimeoutMs); value.idleTimer.unref?.(); } return value; };
@@ -114,10 +114,11 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
       await runSegment(";"); return { exitCode: timedOut ? null : exitCode, timedOut };
     } finally { m.active.delete(controller); clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
   }
-  const provider: Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
-    name: "memory", keyMode: "exact", capabilities: new Set<"size" | "network-policy">(["size", "network-policy"]), files,
+  const provider: Provider<MemoryNative, "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
+    name: "memory", keyMode: "exact", capabilities: new Set<"network-policy">(["network-policy"]), files,
     register(name, handler) { handlers.set(name, handler); },
     async create(input: CreateInput) {
+      if (input.size !== undefined) throw new SandboxError("Memory cannot enforce machine size. Omit size or choose a provider with size support.", { code: "unsupported", provider: "memory" });
       if (input.key) { const existing = [...machines.values()].find(m => m.info.key === input.key); if (existing) throw new SandboxError("Key already exists. Another caller created it. Find the existing sandbox.", { code: "provider", provider: "memory" }); }
       const id = `mem-${crypto.randomUUID()}`; const info: SandboxInfo = { id, key: input.key, labels: { ...input.labels }, state: "running", createdAt: now() };
       machines.set(id, { info, nodes: new Map(), env: { ...input.env }, processes: new Map(), nextPid: 100, active: new Set(), idleTimeoutMs: input.idleTimeoutMs });
