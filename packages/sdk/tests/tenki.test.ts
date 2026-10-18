@@ -143,6 +143,12 @@ describe("Tenki mappings", () => {
     });
     expect(tenkiState.boxes.size).toBe(0);
   });
+  test("literal SDK paths in user commands are preserved", async () => {
+    const box = await createSandbox(factory());
+    expect((await box.run("printf '%s' '/tmp/.sandbox-sdk/value'")).stdout).toBe(
+      "/tmp/.sandbox-sdk/value",
+    );
+  });
   test("command environment and stdin never enter the supervisor argv", async () => {
     const box = await createSandbox(factory(), { secrets: { TOKEN: "private-argv-check" } });
     const argv = await box.run("cat /proc/$PPID/cmdline");

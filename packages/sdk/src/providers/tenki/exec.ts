@@ -38,9 +38,7 @@ export async function execute(box: Session, input: ExecInput) {
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
   const spec = Buffer.from(
     JSON.stringify({
-      // The SDK owns this reserved namespace. Detached log writers must use
-      // durable paths directly: /tmp may vanish before resume can repair its link.
-      command: input.command.replaceAll("/tmp/.sandbox-sdk/", "/home/tenki/.sandbox-sdk/"),
+      command: input.command,
       cwd: input.cwd,
       env: input.env,
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),

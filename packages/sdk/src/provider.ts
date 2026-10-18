@@ -66,6 +66,8 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly keyMode: "exact" | "best-effort";
   /** Omission uses native hooks or the portable shell process-record shim. */
   readonly processMode?: "shell" | "unsupported";
+  /** Durable absolute directory for core-owned process records. */
+  readonly processRecordRoot?: string;
   readonly capabilities: ReadonlySet<C>;
   create(input: CreateInput): Promise<SandboxInfo>;
   find(key: string): Promise<SandboxInfo | undefined>;

@@ -113,6 +113,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
   const provider: TenkiProvider = {
     name: "tenki",
     keyMode: "best-effort",
+    processRecordRoot: "/home/tenki/.sandbox-sdk/procs",
     capabilities: new Set<TenkiCapability>(["pause", "snapshot", "size", "network-policy"]),
     create: (input) =>
       safe(undefined, async () => {
