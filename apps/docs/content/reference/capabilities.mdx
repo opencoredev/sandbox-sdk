@@ -7,20 +7,20 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
-| | Local | E2B | Vercel Sandbox | Daytona | Memory |
-| --- | --- | --- | --- | --- | --- |
-| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No |
-| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No |
-| `terminal()` | No | No | No | No | No |
-| `network: "none"` | Yes | Yes | Yes | Yes | Yes |
-| `network: { allow }` | No | Yes | Yes | Yes | Yes |
-| `size` presets | Yes | No | Yes | Yes | No |
-| `size` with exact numbers | No | No | No | Yes | No |
-| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes |
-| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes |
-| `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
-| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes |
-| Key mode | exact | best-effort | exact | best-effort | exact |
+| | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | Yes, filesystem only | No |
+| `terminal()` | No | No | No | No | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | No | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | No | Yes |
+| `size` presets | Yes | No | Yes | Yes | No | No |
+| `size` with exact numbers | No | No | No | Yes | No | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes, destroys VM; whole minutes | Yes |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | No | Yes |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | Yes, up to 10 | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | SDK marker file | Yes |
+| Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
 
 ## Notes
 
@@ -30,6 +30,8 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 - **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+
+Railway supports filesystem snapshots. It rejects all common sizes because Railway cannot set disk size, and rejects outbound network restrictions and hard lifetimes. Its idle timeout rounds up to whole minutes and destroys the VM. Preview ports must be declared at creation. See [Railway](/providers/railway).
 
 ## Capability names
 

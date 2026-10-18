@@ -2,7 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local, E2B, Vercel Sandbox, Daytona, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
+description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -19,26 +19,27 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/e2b.png" alt="" /> [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | `E2B_API_KEY` | Pause with memory, hard lifetimes |
 | <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel |
 | <img src="/integrations/daytona.png" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
+| [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
 | [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
-| | Local | E2B | Vercel Sandbox | Daytona | Memory |
-| --- | --- | --- | --- | --- | --- |
-| Key mode | exact | best-effort | exact | best-effort | exact |
-| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | No |
-| Snapshots | Yes | Yes | Yes | Yes | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes |
-| Network allow list | No | Yes | Yes | Yes | Yes |
-| Size presets | Yes | No | Yes | Yes | No |
-| Exact CPU, memory, disk | No | No | No | Yes | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes |
-| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | Yes |
-| Ports declared up front | Yes | No | Yes, up to 15 | No | No |
-| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Fake |
-| Terminal | No | No | No | No | No |
+| | Local | E2B | Vercel Sandbox | Daytona | Railway | Memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
+| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | No | No |
+| Snapshots | Yes | Yes | Yes | Yes | Yes | No |
+| Block all network | Yes | Yes | Yes | Yes | No | Yes |
+| Network allow list | No | Yes | Yes | Yes | No | Yes |
+| Size presets | Yes | No | Yes | Yes | No | No |
+| Exact CPU, memory, disk | No | No | No | Yes | No | No |
+| Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | Yes, destroys VM | Yes |
+| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | No | Yes |
+| Ports declared up front | Yes | No | Yes, up to 15 | No | Yes, up to 10 | No |
+| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Public `https://` | Fake |
+| Terminal | No | No | No | No | No | No |
 
 Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
 
@@ -60,6 +61,9 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="Daytona" href="/providers/daytona" icon="/integrations/daytona.png">
     Exact machine sizes, idle auto-stop, and previews protected by a token header.
+  </Card>
+  <Card title="Railway" href="/providers/railway" icon="train-front">
+    Ephemeral Linux VMs with filesystem checkpoints and declared public preview ports.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

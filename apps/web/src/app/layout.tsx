@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://sandbox-sdk.app"),
   title: { default: "Sandbox SDK", template: "%s · Sandbox SDK" },
   description:
-    "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on Docker, E2B, Vercel, or Daytona from one TypeScript SDK.",
+    "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on Docker, E2B, Vercel, Daytona, or Railway from one TypeScript SDK.",
   applicationName: "Sandbox SDK",
   icons: {
     icon:
@@ -42,6 +42,7 @@ export const metadata: Metadata = {
     "E2B",
     "Daytona",
     "Vercel Sandbox",
+    "Railway",
   ],
   alternates: { canonical: "/" },
   openGraph: {

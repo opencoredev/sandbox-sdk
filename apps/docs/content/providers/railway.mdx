@@ -1,0 +1,133 @@
+---
+title: Railway
+description: Run ephemeral Linux VMs on Railway with streaming commands, filesystem checkpoints, idle destruction, and public previews on declared ports.
+---
+
+`railway()` runs each sandbox as an isolated Linux VM on [Railway](https://railway.com). Use it for coding agents, builds, and jobs that need an ephemeral filesystem or access to services in a Railway environment.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk railway
+```
+
+The adapter needs `railway` 3.16.0 or later. Run this code on a server. Keep the API token out of browser bundles.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+The provider reads `RAILWAY_API_TOKEN` and `RAILWAY_ENVIRONMENT_ID` from the environment. Create a token in your Railway account and choose the environment where the sandboxes should run. See Railway's [sandbox quickstart](https://docs.railway.com/sandboxes/quickstart) for setup.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+const provider = railway({
+  token: process.env.RAILWAY_API_TOKEN,
+  environmentId: process.env.RAILWAY_ENVIRONMENT_ID,
+  networkIsolation: "PRIVATE",
+});
+
+await using box = await createSandbox(provider, {
+  env: { NODE_ENV: "development" },
+  idleTimeoutMs: 15 * 60_000,
+});
+```
+
+- `token` and `environmentId` override the environment variables.
+- `authType: "project-token"` uses a Railway project token instead of the default bearer token.
+- `networkIsolation: "PRIVATE"` joins the environment's private network. The default, `"ISOLATED"`, keeps the VM off that network. Both modes allow outbound internet access.
+- `region` chooses a Railway region for a fresh sandbox. Omit it for templates and checkpoint restores, which boot where their data lives.
+- `template` accepts a Railway SDK `SandboxTemplate`. `checkpoint` accepts a Railway checkpoint name. Set one or neither. The common `from` option overrides either.
+
+The default Railway image includes Ubuntu, Node, and git. Custom templates need `sh`, GNU `stat`, `rm`, `setsid`, and git for the SDK's file metadata and process features.
+
+## Keys
+
+Key mode is **best-effort**. Railway has no sandbox labels API, so the adapter stores the key and labels in `/tmp/.sandbox-sdk/railway.json`. Discovery paginates the environment's sandboxes and reads this file from running VMs. Only VMs with the SDK marker are listed. Labels do not become Railway dashboard labels.
+
+Keep that file intact. Two clients creating the same key at the same time can still create two VMs. Use a [`locator` with a lock](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) when you need exact lookup.
+
+## Size
+
+Railway can set CPU and memory but has no documented disk-size setting. The adapter rejects all common `size` values, including presets, because each includes a disk requirement. Omit `size` to use Railway's plan defaults.
+
+## Network
+
+Only `network: "all"` is supported. Railway's isolation mode controls private-network membership and keeps outbound internet access enabled. `network: "none"` and host allow lists fail with `unsupported`.
+
+Publishing preview ports automatically selects `PRIVATE` networking. If you explicitly select `ISOLATED` and request preview ports, creation fails.
+
+## Idle and lifetime limits
+
+`idleTimeoutMs` rounds up to whole minutes and maps to Railway's native idle destruction. Your plan's range still applies. Railway defers idle teardown while an exec is active; detached background work outside an active session does not keep a VM alive on its own.
+
+Railway destroys an idle VM and its filesystem. Save a checkpoint if you need those files later. Omit `idleTimeoutMs` for the plan default. Hard `timeoutMs` lifetimes fail with `unsupported`, because an idle timeout cannot enforce a wall-clock lifetime.
+
+## Snapshots
+
+`box.snapshot()` saves a Railway filesystem checkpoint and returns its name as `id`. Pass that value as `from` to create a new sandbox. Files survive; running processes and memory do not. The new sandbox receives its own key and labels. Inherited running process records become failed with exit code 137, because those processes do not survive the restore.
+
+Checkpoints remain in Railway after the source VM is destroyed. Manage their retention through Railway's SDK or CLI. Pause, resume, and terminals are not supported.
+
+## Previews
+
+Declare preview ports when creating a sandbox. Railway accepts up to ten unique ports and publishes an HTTPS domain for each:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway(), { ports: [3000] });
+const dev = await box.start(
+  "node -e 'require(\"http\").createServer((_, res) => res.end(\"hello\")).listen(3000, \"0.0.0.0\")'",
+  { name: "web", ready: { http: { port: 3000 } } },
+);
+console.log(dev.url);
+```
+
+Servers must bind to `0.0.0.0`. Preview URLs are public and need no token header. Ports cannot be added after creation. Requesting an undeclared port fails with `unsupported`.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `RAILWAY_API_TOKEN` | Railway API token. Required unless `token` is supplied. |
+| `RAILWAY_ENVIRONMENT_ID` | Environment where sandboxes run. Required unless `environmentId` is supplied. |
+
+## API reference
+
+### `railway(options?)`
+
+- `token?: string`. Defaults to `RAILWAY_API_TOKEN`.
+- `environmentId?: string`. Defaults to `RAILWAY_ENVIRONMENT_ID`.
+- `authType?: "bearer" \| "project-token"`. Defaults to bearer authentication.
+- `region?: string`. A Railway region identifier for fresh sandboxes.
+- `networkIsolation?: "ISOLATED" \| "PRIVATE"`. Defaults to isolated networking, or private networking when preview ports are declared.
+- `template?: SandboxTemplate`. A Railway template. Mutually exclusive with `checkpoint`.
+- `checkpoint?: string`. A Railway checkpoint name. Mutually exclusive with `template`.
+
+Returns a provider. `box.native` is the Railway SDK's `Sandbox` object. Commands stream without accumulating a second copy of their output in Railway's client. If command termination cannot be confirmed after a transport failure, the adapter destroys the VM before returning an error.
+
+## Limitations
+
+- Keys and labels require reading the SDK marker file from running VMs.
+- No common machine size, outbound network restrictions, hard lifetime, pause, or terminal.
+- Idle timeouts destroy the VM rather than preserving it.
+- Previews are public and require declared ports and private-network membership.
+- Checkpoints preserve files only and need their own retention policy.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)
