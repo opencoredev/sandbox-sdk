@@ -100,8 +100,9 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       options.signal?.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(abort, timeoutMs);
       const activePath = `/tmp/.sandbox-sdk/runs/${crypto.randomUUID()}`;
+      const interleaved = chunkRedactor(redactor, chunk => { output.add(chunk.text); bus.emit(chunk); }, true);
       const filter = chunkRedactor(redactor, chunk => {
-        (chunk.stream === "stdout" ? stdout : stderr).add(chunk.text); output.add(chunk.text); bus.emit(chunk);
+        (chunk.stream === "stdout" ? stdout : stderr).add(chunk.text); interleaved.push(chunk);
       });
       try {
         if (timedOut) controller.abort();
@@ -111,12 +112,12 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
           timeoutMs, signal: controller.signal, onChunk: chunk => filter.push(chunk),
         });
         timedOut ||= result.timedOut;
-        filter.flush(); count(stdout.total + stderr.total);
+        filter.flush(); interleaved.flush(); count(stdout.total + stderr.total);
         return { ok: !timedOut && result.exitCode === 0, exitCode: timedOut ? null : result.exitCode,
           stdout: stdout.text(), stderr: stderr.text(), output: output.text(), durationMs: Date.now() - started,
           truncated: stdout.truncated || stderr.truncated || output.truncated, timedOut, cwd, command: redactor.text(command) };
       } catch (error) {
-        filter.flush();
+        filter.flush(); interleaved.flush();
         const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped;
       } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); await provider.files.remove(id, activePath, { recursive: false }).catch(() => {}); bus.end(); }
     }

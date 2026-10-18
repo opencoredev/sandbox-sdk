@@ -228,3 +228,5 @@ The offline Daytona tests replace the SDK transport with an SDK-shaped mock back
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
 
 A command timeout or abort returns a `timedOut` result only after the adapter confirms termination. Cancellation or remote cleanup failures throw `SandboxError`, including `outcome_unknown` when termination cannot be confirmed.
+
+Secret filtering protects each command stream and the interleaved `output` and async chunks, including secrets split between stdout and stderr.

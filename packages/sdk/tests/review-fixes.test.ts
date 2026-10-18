@@ -14,3 +14,13 @@ test.each(["outcome_unknown", "provider"] satisfies ("outcome_unknown" | "provid
   try { await expect(box.run("cancel", { timeoutMs: 20 })).rejects.toMatchObject({ code }); }
   finally { await box.destroy(); }
 });
+
+test("redacts secrets spanning stdout and stderr in output and subscriptions", async () => {
+  const provider = memory({ handlers: { split({ stdout, stderr }) { stdout("ab"); stderr("cd"); return 0; } } });
+  const box = await createSandbox(provider, { secrets: { TOKEN: "abcd" } });
+  try {
+    expect((await box.run("split")).output).toBe("[REDACTED]");
+    const chunks = []; for await (const chunk of box.run("split")) chunks.push(chunk.text);
+    expect(chunks.join("")).toBe("[REDACTED]");
+  } finally { await box.destroy(); }
+});
