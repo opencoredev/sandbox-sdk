@@ -6,9 +6,13 @@ export function encodeChunk(chunk: OutputChunk): string[] {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? ""; const complete = index < lines.length - 1;
     // Small records allow bounded pending writes and cursor reads of large lines.
-    for (let offset = 0; offset < line.length; offset += 8192) {
-      const end = Math.min(line.length, offset + 8192);
+    for (let offset = 0; offset < line.length;) {
+      let end = Math.min(line.length, offset + 8192);
+      const last = line.charCodeAt(end - 1);
+      if (end < line.length && last >= 0xd800 && last <= 0xdbff) end--;
+
       records.push((complete && end === line.length ? prefix : prefix.toLowerCase()) + line.slice(offset, end) + "\n");
+      offset = end;
     }
     if (!line && complete) records.push(prefix + "\n");
   }
@@ -22,7 +26,15 @@ export function decodePage(bytes: Uint8Array, offset: number, max: number, base:
     const prefix = buffer[start];
     if (position === start) position++;
     const delimiter = buffer.indexOf(10, position); if (delimiter < 0) break;
-    const end = Math.min(delimiter, position + max - kept);
+    let end = Math.min(delimiter, position + max - kept);
+    const continuation = (at: number) => ((buffer[at] ?? 0) & 0xc0) === 0x80;
+    while (end > position && end < delimiter && continuation(end)) end--;
+    if (end === position && position < delimiter) {
+      if (kept) break;
+      // A budget smaller than one code point must still make progress (at most 4 bytes).
+      end++;
+      while (end < delimiter && continuation(end)) end++;
+    }
     let text = buffer.subarray(position, end).toString(); kept += end - position; position = end;
     if (position === delimiter && (prefix === 79 || prefix === 69) && kept < max) { text += "\n"; kept++; position++; }
     else if (position === delimiter && prefix !== 79 && prefix !== 69) position++;

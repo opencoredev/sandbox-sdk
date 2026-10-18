@@ -1,14 +1,43 @@
 {
   "name": "@opencoredev/sandbox-sdk",
   "version": "1.0.0",
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.3" },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./provider": { "types": "./dist/provider.d.ts", "import": "./dist/provider.js" },
-    "./memory": { "types": "./dist/memory.d.ts", "import": "./dist/memory.js" },
-    "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "import": "./dist/provider.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js"
+    },
+    "./ai": {
+      "types": "./dist/ai.d.ts",
+      "import": "./dist/ai.js"
+    },
+    "./mastra": {
+      "types": "./dist/mastra.d.ts",
+      "import": "./dist/mastra.js"
+    },
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "import": "./dist/openai.js"
+    }
   },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
@@ -17,7 +46,39 @@
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts"
   },
-  "devDependencies": { "vitest": "^3.2.4" },
-  "peerDependencies": { "vitest": ">=3" },
-  "peerDependenciesMeta": { "vitest": { "optional": true } }
+  "devDependencies": {
+    "@mastra/core": "^1.78.0",
+    "@openai/agents": "^0.20.0",
+    "ai": "^7.0.143",
+    "vitest": "^3.2.4",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@mastra/core": "^1.78.0",
+    "@openai/agents": "^0.20.0",
+    "ai": "^7.0.143",
+    "vitest": ">=3",
+    "zod": "^4.6.7"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "@mastra/core": {
+      "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "bun": ">=1.3",
+    "node": ">=22"
+  }
 }
