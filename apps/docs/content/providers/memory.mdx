@@ -52,7 +52,7 @@ console.log(result.stdout);
 - `handlers` maps a program name to a function. The function gets the parsed `args`, `cwd`, `env`, `stdin`, an abort `signal`, `stdout` and `stderr` writers, and `files` to read, write, and list the fake files. It returns the exit code. A handler must stop when `signal` aborts, and must not touch the real world.
 - `provider.register(name, handler)` adds a handler after creation.
 
-These programs are built in: `echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, and `printenv`. Your handlers replace a built-in with the same name. The shell understands quotes, `$VAR` for environment variables, `;`, `&&`, `||`, and redirection. It is a small subset, not a full POSIX shell: there are no variable assignments, pipes, or subshells.
+These programs are built in: `echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, and `printenv`. Your handlers replace a built-in with the same name. The shell understands quotes, `$VAR` for environment variables, `cd`, `export` (it sets the environment of the programs that follow, but `$VAR` expands before it runs), `;`, `&&`, `||`, `>` to write a file, and `>&2`. It is a small subset, not a full POSIX shell: there are no inline variable assignments, pipes, or subshells.
 
 ## Keys
 
@@ -75,7 +75,7 @@ Returns a provider with an extra `register(name, handler)` method. Each `memory(
 - No real shell, git, terminals, or sockets. `box.git` and checks against a real HTTP server don't work.
 - No pause or snapshots.
 - `size` fails with `unsupported`, since there is no machine to size. `network` is accepted and recorded, since there is no network to restrict.
-- The shell understands a small set of commands. Pipes, `&&`, and redirects it doesn't implement fail with exit code 127 and a message naming the unsupported syntax.
+- The shell understands a small set of syntax: `;`, `&&`, `||`, `>`, and `>&2`. Anything else, such as pipes, `<`, `>>`, or a trailing `&`, fails with exit code 127 and a message naming the unsupported syntax. A program with no handler also exits 127.
 - State is lost when the process exits.
 
 Test those paths against [Local](/providers/local) instead.

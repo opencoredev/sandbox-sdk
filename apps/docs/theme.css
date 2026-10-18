@@ -160,7 +160,9 @@ header a.bg-accent {
   color: var(--sbx-ink);
   border: 1px solid var(--sbx-line);
   font-weight: 500;
-  transition: border-color 150ms ease, color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease;
 }
 
 header a.bg-accent:hover {
@@ -173,4 +175,78 @@ header a.bg-accent:hover {
   background: transparent;
   color: var(--sbx-ink);
   box-shadow: inset 2px 0 0 var(--sbx-accent);
+}
+
+/* ---------- brand marks ---------- */
+
+/* Provider and framework logos are real artwork, recolored for the dark page. */
+.blume-nav-link img[src*="/integrations/"] {
+  width: 1rem;
+  height: 1rem;
+  object-fit: contain;
+}
+
+/* Inline marks in tables. Card icons keep Blume's own 20px box. */
+article :where(td, th) img[src*="/integrations/"] {
+  display: inline-block;
+  width: 1.05em;
+  height: 1.05em;
+  object-fit: contain;
+  vertical-align: -0.15em;
+  margin: 0 0.35em 0 0;
+}
+
+/* ---------- provider tabs ---------- */
+
+.provider-tabs [role="tab"] {
+  font-size: 0.8125rem;
+}
+
+/* Background-image spans, never <img>, so Blume's click-to-zoom can't grab them. */
+.provider-logo {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  background: center / contain no-repeat;
+}
+
+/* Memory has no brand mark: a hairline square stands in for it. */
+.provider-logo[data-provider="memory"] {
+  width: 0.75rem;
+  height: 0.75rem;
+  margin: 0 0.125rem;
+  border: 1px solid currentColor;
+}
+
+.provider-tabs [role="tab"]:not([aria-selected="true"]) .provider-logo {
+  opacity: 0.7;
+  transition: opacity 150ms ease;
+}
+
+.provider-tabs [role="tab"]:hover .provider-logo {
+  opacity: 1;
+}
+
+/* The fallback label shows only when JavaScript is off (see ProviderTabs). */
+.provider-tab-fallback {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Inline tabs draw code flush; give fences back the frame they have in the article. */
+.provider-tabs blume-tabs [data-blume-tab-panel] > pre {
+  border: 1px solid var(--sbx-line);
+  margin: 1.25rem 0;
+}
+
+.provider-tabs [role="tab"][aria-selected="true"] {
+  color: var(--sbx-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-tabs [role="tab"] .provider-logo {
+    transition: none;
+  }
 }

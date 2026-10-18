@@ -38,20 +38,50 @@ Secrets are redacted from `message`, `cause`, and logs.
 
 ## Codes
 
-| Code | When |
-| --- | --- |
-| `auth` | Missing or rejected credentials |
-| `not_found` | The sandbox ID doesn't exist |
-| `quota` | The provider's limits or billing stopped the request |
-| `unavailable` | The provider is down or unreachable |
-| `unsupported` | The provider can't do what you asked, such as a size or network policy |
-| `timeout` | A provider operation took too long |
-| `aborted` | Your `signal` fired |
-| `outcome_unknown` | The request may or may not have happened, for example a create that lost its connection. Check before retrying. |
-| `process_exited` | A process exited before it was ready. The message includes the exit code and the last 50 log lines. |
-| `port_not_ready` | A preview or readiness check never got an answer |
-| `edit_not_found` | `files.edit` found no match |
-| `edit_not_unique` | `files.edit` found more than one match. The message lists their line numbers. |
-| `file_not_found` | The path doesn't exist |
-| `invalid_argument` | The request itself is invalid |
-| `provider` | Any other provider failure |
+`code` is one of these fifteen strings, exported as the `ErrorCode` type.
+
+| Code | When | What to do |
+| --- | --- | --- |
+| `auth` | Missing or rejected credentials | Check the provider's environment variables or factory options. On Vercel, a token also needs team and project IDs. |
+| `not_found` | The sandbox ID doesn't exist, for example in `connectSandbox` or after a Local deadline passed | Create a new sandbox. With a `key`, `createSandbox` does this for you. |
+| `quota` | The provider's limits or billing stopped the request | Wait, reap unused sandboxes, or raise your plan. Usually retryable. |
+| `unavailable` | The provider is down or unreachable | Retry with backoff. Usually retryable. |
+| `unsupported` | The provider can't do what you asked, such as a size or network policy | Change the option or the provider. The message says what the provider allows. See [Capabilities](/reference/capabilities). |
+| `timeout` | A provider operation took too long, or a process's readiness check timed out | For readiness, raise `readyTimeoutMs` and read the log tail in the message. The process keeps running. |
+| `aborted` | Your `signal` fired | Nothing, unless you want to retry with a fresh signal. A sandbox that arrived late was destroyed. |
+| `outcome_unknown` | The request may or may not have happened, for example a create or a kill that lost its connection | Check the sandbox's state before retrying. If in doubt, destroy it. |
+| `process_exited` | A process exited before it was ready | Read the exit code and the last 50 log lines in the message, fix the command, and start it again. |
+| `port_not_ready` | A preview's `waitMs` ran out before the URL answered with a 2xx | Check that the server listens on `0.0.0.0` and the right port, then read its logs. |
+| `edit_not_found` | `files.edit` found no match | Read the file again and use text that is in it. |
+| `edit_not_unique` | `files.edit` found more than one match. The message lists their line numbers. | Add surrounding lines to `find` so it matches once. |
+| `file_not_found` | The path doesn't exist | Check the path. Relative paths resolve against `/workspace`. |
+| `invalid_argument` | The request itself is invalid, such as a bad port, a non-positive timeout, or an invalid environment variable name | Fix the input. Retrying won't help. |
+| `provider` | Any other provider failure, or an adapter that declares a capability without its method | Read `message` and `cause`. Report it if it looks like an SDK bug. |
+
+## Retrying
+
+Check `error.retryable`, not the code. Each adapter sets it: `quota` and `unavailable` are usually retryable, and so is a provider `timeout` on E2B and Daytona. Everything else defaults to `false`.
+
+```ts
+import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+async function createWithRetry(attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await createSandbox(e2b(), { key: "user:123" });
+    } catch (error) {
+      if (!(error instanceof SandboxError) || !error.retryable || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
+    }
+  }
+}
+
+await using box = await createWithRetry();
+```
+
+With a `key`, retrying `createSandbox` is safe: if the first attempt did create a sandbox, the retry finds it.
+
+## In agent tools
+
+When a tool call fails with `SandboxError`, the model gets the same message plus `code`, `retryable`, and a `Next:` line with the hint, so it can decide whether to try again.

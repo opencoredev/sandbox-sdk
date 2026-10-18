@@ -1,0 +1,86 @@
+---
+title: Capabilities
+description: The full capability matrix. Which options and methods each provider accepts, the exact limits, how TypeScript gates optional methods, and how to check at runtime.
+---
+
+Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This page lists what each provider accepts. For a quicker overview, see [Compare providers](/providers).
+
+## Matrix
+
+| | Local | E2B | Vercel Sandbox | Daytona | Memory |
+| --- | --- | --- | --- | --- | --- |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No |
+| `terminal()` | No | No | No | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes |
+| `size` presets | Yes | No | Yes | Yes | No |
+| `size` with exact numbers | No | No | No | Yes | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes |
+| Key mode | exact | best-effort | exact | best-effort | exact |
+
+## Notes
+
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B pauses the microVM with its memory. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
+- **Size.** Local and Vercel Sandbox take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
+- **Network.** Local enforces `"none"` but has no per-host filter, so `{ allow }` fails there. Memory records the policy and has no network to enforce it on.
+- **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
+- **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox.
+- **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+
+## Capability names
+
+`box.capabilities` is a `ReadonlySet` of these names:
+
+| Capability | Means |
+| --- | --- |
+| `"pause"` | `pause()` and `resume()` exist |
+| `"snapshot"` | `snapshot()` exists and `createSandbox` accepts `from` |
+| `"terminal"` | `terminal()` exists |
+| `"network-policy"` | `network` accepts `"none"`, and maybe `{ allow }` |
+| `"size"` | `size` accepts presets, and maybe exact numbers |
+
+A capability means the provider supports the feature in general. The matrix has the finer limits: for example, Local declares `"network-policy"` but only accepts `"none"`.
+
+## Checked by TypeScript
+
+Methods for optional capabilities exist on the sandbox type only when the provider declares them. Calling `box.pause()` on Memory is a type error, not a runtime surprise.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { key: "project:42" });
+
+await box.run("npm install");
+await box.pause();
+```
+
+## Check at runtime
+
+When the provider is chosen at runtime, read `box.capabilities`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+console.log([...box.capabilities]);
+```
+
+This prints `[ "pause", "snapshot", "network-policy" ]`.
+
+## What fails, and when
+
+Each of these makes `createSandbox` throw `unsupported` before the provider is called, or right after creation when only the provider can tell:
+
+- `size` on a provider without `"size"`, or a size it can't honor. The message names what the provider allows.
+- `network` other than `"all"` on a provider without `"network-policy"`, or a policy it can't enforce. E2B reads the settings back after creation and destroys the sandbox if they don't match.
+- `from` on a provider without `"snapshot"`.
+- `idleTimeoutMs` or `timeoutMs` on a provider that can't enforce it.
+- `keyMode: "exact"` on a best-effort provider without `locator.withLock`.
+
+Error codes are listed in [Errors](/reference/errors).

@@ -1,0 +1,98 @@
+---
+title: AI SDK
+description: Give an AI SDK agent sandbox tools with sandboxTools from @opencoredev/sandbox-sdk/ai. Works with generateText, streamText, and useChat, and streams command output.
+---
+
+`sandboxTools(box)` from `@opencoredev/sandbox-sdk/ai` returns an AI SDK tool set. Pass it as `tools` to `generateText` or `streamText` and the model can run commands, read and edit files, and start dev servers in the sandbox.
+
+For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
+
+## Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk ai zod
+```
+
+Needs AI SDK 7 and Zod 4.6. Install a provider SDK too if you use a cloud provider.
+
+## Run an agent
+
+```ts title="agent.ts"
+import { generateText, stepCountIs } from "ai";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(e2b());
+await box.git.clone("https://github.com/acme/web.git", { dir: "app", depth: 1 });
+
+const { text } = await generateText({
+  model: "anthropic/claude-opus-5-5",
+  tools: sandboxTools(box, { root: "/workspace/app" }),
+  stopWhen: stepCountIs(30),
+  prompt: "Run the tests in /workspace/app and fix the first failure.",
+});
+
+console.log(text);
+```
+
+The model string goes through the Vercel AI Gateway, so set `AI_GATEWAY_API_KEY` on your server. Any AI SDK provider works in its place.
+
+The agent calls `run` to execute the tests, `read_file` to look at the failure, and `edit_file` to change it. You get its final summary in `text`. `stopWhen` caps the number of steps, so a confused model can't loop forever.
+
+## Stream to a chat UI
+
+With `streamText`, return the stream from a route. Don't use `await using` here, because the stream outlives the function body. Close the sandbox when the response finishes instead.
+
+```ts title="app/api/chat/route.ts"
+import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from "ai";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+export async function POST(request: Request) {
+  const { messages, chatId }: { messages: UIMessage[]; chatId: string } = await request.json();
+
+  const box = await createSandbox(e2b(), { key: `chat:${chatId}`, timeoutMs: 60 * 60_000 });
+
+  const result = streamText({
+    model: "anthropic/claude-opus-5-5",
+    messages: await convertToModelMessages(messages),
+    tools: sandboxTools(box),
+    stopWhen: stepCountIs(30),
+    onFinish: () => box.close(),
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+The `key` gives each chat its own sandbox, so a follow-up message finds the files the last one left. `timeoutMs` makes E2B delete a forgotten chat's sandbox after an hour.
+
+## Live output
+
+The AI SDK tools are streaming tools. While a command runs, each chunk of output arrives as a preliminary tool result, so a `useChat` UI shows output as it happens. The model only sees the final, compact result through `toModelOutput`.
+
+To send full output somewhere else, such as a log panel or your own database, pass `onEvent`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(local());
+
+const tools = sandboxTools(box, {
+  onEvent: (event) => process.stdout.write(`[${event.tool}] ${event.text}`),
+});
+```
+
+Events carry redacted output. Secrets passed to `createSandbox` never appear.
+
+## Cancellation
+
+When the AI SDK aborts a tool call, for example because the user stopped the stream, the tool aborts the command inside the sandbox too.
+
+## A full example
+
+[Build an AI app builder](/guides/build-an-ai-app-builder) puts this together with Next.js, Vercel Sandbox, and a live preview. The repository's `examples/coding-agent` is a command-line agent that clones a repo, works on a task, and prints the diff.

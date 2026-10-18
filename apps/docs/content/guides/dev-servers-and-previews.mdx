@@ -1,0 +1,150 @@
+---
+title: Dev servers and previews
+description: Start a dev server in a sandbox, wait until it answers, show its preview URL to a user, follow its logs, and restart it after a resume, on every provider.
+---
+
+You want to run a dev server in a sandbox and show it to someone, in an iframe or a new tab. That takes three steps: start the server in the background, wait until it answers, and get a URL the browser can open. `box.start` and `box.preview` do all three.
+
+For the full process API, see [Processes and previews](/concepts/processes-and-previews).
+
+## 1. Start the server and wait for it
+
+```ts title="dev.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42", ports: [5173] });
+
+const dev = await box.start("npx vite --port 5173 --host", {
+  name: "dev",
+  cwd: "app",
+  ready: { http: { port: 5173, path: "/" } },
+  readyTimeoutMs: 90_000,
+});
+
+console.log(dev.url);
+```
+
+`start` resolves only when an HTTP request to port 5173 gets a response. Because `ready` names a port, `dev.url` is a preview URL the SDK already checked from outside the sandbox.
+
+Bind the server to `0.0.0.0` (here, `--host`). A server that listens only on `localhost` inside the sandbox can't be reached from outside.
+
+If the server crashes on boot, `start` throws `process_exited` with the exit code and the last 50 log lines. Show them to the user, or to the agent, so they can fix the error.
+
+## 2. Get a URL the browser can open
+
+How a preview reaches the browser depends on the provider:
+
+<ProviderTabs>
+<ProviderTab provider="local">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42", ports: [5173] });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+Returns `http://127.0.0.1:<port>/`. Declare the port in `ports` at creation, or it fails with `unsupported`. The URL works only on the machine running Docker, so put a tunnel in front of it to reach it from another device.
+
+</ProviderTab>
+<ProviderTab provider="e2b">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { key: "project:42" });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+Returns a public `https://` URL on E2B's host. No need to declare ports. Put it straight into an iframe.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { key: "project:42", ports: [5173] });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+Returns a public `https://` URL. Vercel only routes ports declared at creation, up to 15. A port you didn't declare fails with `invalid_argument`.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), { key: "project:42" });
+const preview = await box.preview(5173);
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+Daytona previews are private. `preview.headers` holds an `X-Daytona-Preview-Token` that every request must send. A browser can't add headers to an iframe, so proxy the preview through your server and add the header there.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory());
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+Returns a URL on the `memory.invalid` host. Assert on it in tests. Never fetch it: the host doesn't resolve.
+
+</ProviderTab>
+</ProviderTabs>
+
+Pass `waitMs` to make `preview` request the URL from outside until it answers with a 2xx status. Use it before you hand a URL to a browser, so the user never sees a connection error. If the URL comes with `expiresAt`, fetch a new one before that time.
+
+## 3. Follow the logs
+
+Logs live in a file inside the sandbox. Read them in pages with a cursor, from any server:
+
+```ts title="logs.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42" });
+
+const page = await box.process("dev").logs({ maxBytes: 16_384 });
+console.log(page.text);
+// Store page.nextCursor and pass it as `after` next time
+```
+
+To follow output live, iterate `box.process("dev").lines()`. Each line has its own cursor, so a reconnecting client resumes from the exact line it stopped at.
+
+## 4. Restart after a resume
+
+On Vercel Sandbox and Daytona, a paused or stopped sandbox comes back with its files but without its processes. Check the status and restart:
+
+```ts title="ensure-dev.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { key: "project:42", ports: [5173] });
+
+const dev = box.process("dev");
+const info = (await box.processes()).find((p) => p.name === "dev");
+if (info && info.status !== "running") await dev.restart();
+```
+
+`restart()` stops the process if it's still running and starts the same command again. Local and E2B keep processes through a pause, so they don't need this.
+
+## Stop it
+
+`await box.process("dev").stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it twice is safe. Destroying the sandbox stops everything in it.

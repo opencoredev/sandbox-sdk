@@ -1,0 +1,90 @@
+---
+title: Install
+description: Install Sandbox SDK, and the SDK of each cloud provider you use. Requirements, optional packages, and where your keys must stay.
+---
+
+Sandbox SDK is one npm package. The core has no runtime dependencies. Each cloud provider needs its own official SDK installed next to it, and you only install the ones you use.
+
+## 1. Install the package
+
+```package-install
+npm i @opencoredev/sandbox-sdk
+```
+
+That is enough for the [Memory](/providers/memory) provider, which runs in your process, and for [Local](/providers/local), which needs Docker running on the same machine.
+
+## 2. Add a provider SDK
+
+Install the SDK for each cloud provider you plan to use. The adapter loads it the first time that provider does something, so a provider you never call costs nothing.
+
+<ProviderTabs>
+<ProviderTab provider="local">
+
+No package. Start Docker Engine (Docker Desktop, OrbStack, and Colima all work) and check it with `docker info`.
+
+</ProviderTab>
+<ProviderTab provider="e2b">
+
+```package-install
+npm i e2b
+```
+
+Needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```package-install
+npm i @vercel/sandbox
+```
+
+Needs `@vercel/sandbox` 3.8 or later. Inside a Vercel deployment it authenticates with OIDC. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```package-install
+npm i @daytonaio/sdk
+```
+
+Needs `@daytonaio/sdk` 0.225 or later. Set `DAYTONA_API_KEY` on your server.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+No package. Install the SDK as a dev dependency if you only use it in tests.
+
+</ProviderTab>
+</ProviderTabs>
+
+## 3. Add an agent framework (optional)
+
+Agent tools live on their own subpaths and need their framework and `zod`. Skip this if you aren't giving a model tools.
+
+| Framework | Install | Import from |
+| --- | --- | --- |
+| [AI SDK](/integrations/ai-sdk) | `ai` 7 and `zod` 4.6 | `@opencoredev/sandbox-sdk/ai` |
+| [Mastra](/integrations/mastra) | `@mastra/core` 1.78 and `zod` 4.6 | `@opencoredev/sandbox-sdk/mastra` |
+| [OpenAI Agents](/integrations/openai-agents) | `@openai/agents` 0.20 and `zod` 4.6 | `@opencoredev/sandbox-sdk/openai` |
+
+These are optional peer dependencies. Importing the package root never loads them.
+
+## Requirements
+
+- Node 22 or newer, or Bun 1.3 or newer.
+- ESM only. Use `import`, not `require`.
+- TypeScript is optional. Types ship with the package.
+- A server. Provider keys must never reach a browser bundle, so call the SDK from a route handler, a server action, a worker, or a script.
+
+## What the package exports
+
+| Import | What it gives you |
+| --- | --- |
+| `@opencoredev/sandbox-sdk` | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
+| `/local`, `/e2b`, `/vercel`, `/daytona`, `/memory` | One provider factory each |
+| `/ai`, `/mastra`, `/openai` | `sandboxTools` for each agent framework |
+| `/tools` | The framework-neutral tool definitions and their Zod schemas |
+| `/provider` | The adapter contract, for [writing a provider](/providers/custom) |
+| `/testing` | `runConformance`, the suite every provider passes |
+
+Next: the [Quickstart](/getting-started/quickstart).

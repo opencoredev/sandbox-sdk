@@ -1,0 +1,117 @@
+---
+title: Choose a provider
+description: Decide where your sandboxes run. Start with Local or Memory while you build, then pick E2B, Vercel Sandbox, or Daytona based on what your app needs.
+---
+
+A provider is the company or tool that actually runs your sandboxes. Your code doesn't depend on the choice: every provider takes the same calls, so you can start with one and switch later by changing an import.
+
+Start with [Local](/providers/local) while you build and [Memory](/providers/memory) in unit tests. Neither needs an account. Pick a cloud provider when you deploy.
+
+## Pick by what you need
+
+| You need | Use | Why |
+| --- | --- | --- |
+| To develop or run CI with no cloud account | [Local](/providers/local) | Real Linux in Docker on your own machine |
+| Unit tests that start no machine | [Memory](/providers/memory) | Runs in your process, no network |
+| Sandboxes that pause with running processes and memory intact | [E2B](/providers/e2b) | Pauses the whole microVM |
+| A hard lifetime limit that a reconnect can't extend | [E2B](/providers/e2b) or [Daytona](/providers/daytona) | Enforced by the provider, even if your server crashes |
+| To deploy on Vercel with no extra keys | [Vercel Sandbox](/providers/vercel) | OIDC auth inside Vercel deployments |
+| Get-or-create by key with no race, and no extra store | [Vercel Sandbox](/providers/vercel) or [Local](/providers/local) | The provider enforces unique names |
+| Exact CPU, memory, and disk numbers | [Daytona](/providers/daytona) | The only provider that sizes disk |
+| Workspaces that stop on their own when idle | [Daytona](/providers/daytona) | Native auto-stop, in minutes |
+| A network allow list for untrusted code | [E2B](/providers/e2b), [Vercel Sandbox](/providers/vercel), or [Daytona](/providers/daytona) | Local can block all traffic but can't filter by host |
+| A service that isn't listed | [Write a provider](/providers/custom) | A small adapter gets you the whole API |
+
+The [comparison page](/providers) puts every feature side by side, and the [capability matrix](/reference/capabilities) has the exact limits.
+
+## The same call on each provider
+
+Each provider is a factory you import from its own subpath and pass to `createSandbox`. Options you don't pass fall back to the provider's defaults.
+
+<ProviderTabs>
+<ProviderTab provider="local">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local({ image: "node:22-bookworm" }), {
+  key: "user:123",
+  ports: [3000],
+});
+```
+
+Needs Docker on the machine that runs your code. Preview URLs work only on that machine.
+
+</ProviderTab>
+<ProviderTab provider="e2b">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b({ template: "base" }), {
+  key: "user:123",
+  timeoutMs: 30 * 60_000,
+});
+```
+
+Reads `E2B_API_KEY`. Machine size comes from the template, so `size` is not accepted.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), {
+  key: "user:123",
+  ports: [3000],
+  size: "small",
+});
+```
+
+Uses OIDC inside Vercel, or `VERCEL_TOKEN` with team and project IDs. Declare every port you'll preview, up to 15.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), {
+  key: "user:123",
+  size: { cpu: 2, memoryMb: 4096, diskGb: 20 },
+  idleTimeoutMs: 15 * 60_000,
+});
+```
+
+Reads `DAYTONA_API_KEY`. Previews need a token header, so proxy them through your server.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory(), { key: "user:123" });
+```
+
+No machine. Files live in a map and commands run through handlers you write.
+
+</ProviderTab>
+</ProviderTabs>
+
+## Things that differ between providers
+
+Most of your code won't notice the provider. These four things can:
+
+- **Keys.** Local, Vercel Sandbox, and Memory guarantee that two requests with the same `key` get one sandbox. E2B and Daytona find sandboxes by searching, so a race can create two. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+- **Pause.** Local and E2B keep running processes through a pause. Vercel Sandbox and Daytona keep the disk and end the processes, so you restart them.
+- **Previews.** Local and Vercel Sandbox need `ports` declared up front. Daytona previews need a header, so a browser can't load them directly.
+- **Limits.** Idle and lifetime limits are enforced differently, and Vercel Sandbox has neither. See [Clean up sandboxes](/guides/cleanup).
+
+When you ask for something a provider can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. You find out in development, not in production.
