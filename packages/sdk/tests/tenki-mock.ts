@@ -78,10 +78,11 @@ export class MockSession {
     const args = supervised ? [...argv] : argv.map((arg) => this.rewrite(arg));
     // Normalize VM-local paths before encoding spool records, just as the mock
     // normalizes native stdout below. Production guests need no path mapping.
-    if (supervised && args[2]) args[2] = args[2].replace(
-      "base64.b64encode(data)",
-      `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
-    );
+    if (supervised && args[2])
+      args[2] = args[2].replace(
+        "base64.b64encode(data)",
+        `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
+      );
     // /tmp is private to each fake VM; prepare creates a symlink there.
     if (args[0] === "sh" && args[2]?.includes("mkdir -p"))
       args[2] = args[2].replace(" /tmp;", ` ${join(this.root, "tmp")};`);
@@ -210,13 +211,16 @@ export class MockTenki {
   async list() {
     return [...tenkiState.boxes.values()];
   }
-  async createSnapshotAndWait(id: string) {
+  async createSnapshot(id: string) {
     const box = await this.get(id);
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-tenki-snapshot-"));
     await promisify(execFile)("cp", ["-a", `${box.root}/.`, root]);
     const snapshot = crypto.randomUUID();
     tenkiState.snapshots.set(snapshot, root);
     return { id: snapshot };
+  }
+  async waitSnapshotReady(id: string) {
+    return { id };
   }
 }
 export async function cleanupTenki() {
