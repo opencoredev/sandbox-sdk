@@ -58,6 +58,6 @@ import { myProvider } from "./my-provider";
 runConformance(() => myProvider(), { live: false });
 ```
 
-Set `live: true` to run the parts that need a real machine and network.
+Set `live: true` to run the parts that need a real machine and network. Live runs give each case 120 seconds, since real providers boot machines and cross the network. Pass `timeoutMs` to change that.
 
 The built-in adapters in [`packages/sdk/src/providers`](https://github.com/opencoredev/sandbox-sdk/tree/main/packages/sdk/src/providers) are working examples to copy from.
