@@ -3,8 +3,6 @@ title: Agent tools
 description: sandboxTools for the AI SDK, Mastra, and the OpenAI Agents SDK. Tool list, parameters, output format, and options.
 ---
 
-{/* TODO(SBX-32): generate the options table from the SandboxToolsOptions type once packages/sdk lands. */}
-
 Guide: [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
 
 ## `sandboxTools(box, options?)`
@@ -25,30 +23,63 @@ const tools = sandboxTools(box, { root: "/workspace/app", deny: ["stop_process"]
 console.log(Object.keys(tools));
 ```
 
+Each adapter needs its framework and `zod` installed: AI SDK 7, Mastra 1.78, or OpenAI Agents 0.20, with Zod 4.6. They are optional peers and never load from the SDK root.
+
 ### Options
 
-- `root?: string`: every path the model passes must resolve inside this directory.
-- `allow?: string[]`: only these tools. Also how you turn on optional tools.
-- `deny?: string[]`: every default tool except these.
-- `beforeRun?: (command: string) => string | false`: called before each command. Return a string to run instead, or `false` to refuse.
-- Per-tool limits, such as a lower timeout for `run` or a smaller output cap.
-- `onEvent?`: receives full output as it streams, for your UI. With the AI SDK this also drives preliminary tool results.
+- `root?: string`: file paths and working directories the model passes must resolve inside this directory, with no symlink components. It is not an OS boundary: shell commands keep the sandbox's full privileges and can use absolute paths.
+- `allow?: ToolName[]`: only these tools. Also how you turn on optional tools.
+- `deny?: ToolName[]`: every allowed tool except these. `deny` wins over `allow`.
+- `beforeRun?: (command: string) => boolean | string | Promise<boolean | string>`: called before `run` and `start_process`. Return `true` to allow, a string to run instead, or `false` to refuse.
+- `limits?: Partial<Record<ToolName, ToolLimits>>`: per-tool limits. See below.
+- `onEvent?: (event: ToolEvent) => void`: receives redacted output as it streams, for your UI. Each event is `{ tool, kind: "output", stream, text }`. With the AI SDK, the same chunks also arrive as preliminary tool results.
+
+### Limits
+
+| Field | Default | Applies to |
+| --- | --- | --- |
+| `timeoutMs` | `30_000` | Commands. A `timeoutMs` the model passes can't exceed it. |
+| `maxOutputBytes` | `16_384` | Every result. At least 256. |
+| `maxReadBytes` | `1_048_576` | `read_file` |
+| `maxMatches` | `100` | `search` |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(local());
+const tools = sandboxTools(box, {
+  limits: { run: { timeoutMs: 120_000, maxOutputBytes: 8_192 } },
+});
+```
+
+### Other integrations
+
+`@opencoredev/sandbox-sdk/tools` exports `createSandboxTools` and `toolSchemas`, the Zod schemas behind every tool. Convert them with `z.toJSONSchema` for a framework without an adapter.
 
 ## Default tools
 
 | Tool | Parameters | Notes |
 | --- | --- | --- |
 | `run` | `command`, `cwd?`, `timeoutMs?` | Waits for exit. Use `start_process` for servers. |
-| `read_file` | `path`, `offset?`, `limit?` | Numbered lines and a content hash |
+| `read_file` | `path`, `offset?`, `limit?` | Numbered lines and a SHA-256. `offset` is a zero-based line index. Binary files return metadata only. |
 | `write_file` | `path`, `content` | Whole-file write |
 | `edit_file` | `path`, `find`, `replace` | `find` must match exactly once |
-| `start_process` | `name`, `command`, `cwd?`, `port?` | Waits for ready, returns the URL |
+| `start_process` | `name`, `command`, `cwd?`, `port?` | With `port`, waits for it and returns the URL. Without, confirms the launch only. |
 | `process_logs` | `name`, `cursor?` | Returns text and the next cursor |
 | `stop_process` | `name` | |
 
 ## Optional tools
 
-Turn these on with `allow`: `search`, `list_files`, `changes`, `preview`.
+Turn these on with `allow`:
+
+| Tool | Parameters | Notes |
+| --- | --- | --- |
+| `search` | `query`, `path?`, `glob?` | Literal text, not a regular expression |
+| `list_files` | `path?`, `glob?` | Recursive |
+| `changes` | none | Files added, modified, or removed since the tools were created |
+| `preview` | `port`, `path?` | The URL only. Access headers stay on your server. |
 
 ## Output format
 
@@ -63,4 +94,4 @@ added 214 packages in 9s
 - Failures start with `FAILED exit=<code>`.
 - Output is ANSI-stripped and capped at 16 KB as head plus tail, with a `[N bytes cut, use process_logs]` marker.
 - Errors use the [`SandboxError`](/reference/errors) message format.
-- Secrets passed to `createSandbox` never appear.
+- Secrets passed to `createSandbox` never appear, including in file contents read by `read_file`. Raw `box.files.read` is not redacted.

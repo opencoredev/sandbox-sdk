@@ -32,7 +32,7 @@ try {
 | `hint` | `string` | The next step on its own, for UIs |
 | `provider` | `string` | Provider name |
 | `sandboxId` | `string \| undefined` | The sandbox involved, when there is one |
-| `cause` | `unknown` | The provider's original error |
+| `cause` | `unknown` | A redacted string from the underlying failure, when there is one. The provider's error object is never attached, because it can hold credentials. |
 
 Secrets are redacted from `message`, `cause`, and logs.
 
@@ -48,7 +48,7 @@ Secrets are redacted from `message`, `cause`, and logs.
 | `timeout` | A provider operation took too long |
 | `aborted` | Your `signal` fired |
 | `outcome_unknown` | The request may or may not have happened, for example a create that lost its connection. Check before retrying. |
-| `process_exited` | A process exited before it was ready. Carries the exit code and the last 50 log lines. |
+| `process_exited` | A process exited before it was ready. The message includes the exit code and the last 50 log lines. |
 | `port_not_ready` | A preview or readiness check never got an answer |
 | `edit_not_found` | `files.edit` found no match |
 | `edit_not_unique` | `files.edit` found more than one match. The message lists their line numbers. |

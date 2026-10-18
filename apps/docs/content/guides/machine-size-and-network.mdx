@@ -17,9 +17,17 @@ await using custom = await createSandbox(daytona(), {
 });
 ```
 
-`size` takes a preset (`"small"`, `"medium"`, or `"large"`) or exact numbers. Each provider maps the presets to its own machine settings, and its provider page lists the mapping.
+`size` takes a preset (`"small"`, `"medium"`, or `"large"`) or exact numbers. Each provider maps the presets to its own machine settings:
 
-When a provider can't give you the size you asked for, creation fails with code `unsupported`, and the error message names the sizes that provider allows:
+| Preset | Local | Vercel | Daytona |
+| --- | --- | --- | --- |
+| `small` | 1 CPU, 1024 MiB | 1 vCPU, 2048 MiB | 1 CPU, 1024 MiB, 10 GiB disk |
+| `medium` | 2 CPUs, 4096 MiB | 2 vCPUs, 4096 MiB | 2 CPUs, 4096 MiB, 20 GiB disk |
+| `large` | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 40 GiB disk |
+
+Only Daytona accepts exact numbers, because it is the only provider that can set disk size. E2B takes no `size` at all: the machine comes from the E2B template.
+
+When a provider can't give you the size you asked for, creation fails with code `unsupported`, and the error message says what that provider allows. Vercel, for example, takes presets only:
 
 ```ts
 import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
@@ -67,4 +75,6 @@ Use an allow list whenever a model or a user's code runs in the sandbox. A short
 
 A network policy is only useful if it holds. When a provider has no way to enforce `"none"` or an allow list, `createSandbox` throws `SandboxError` with code `unsupported` rather than create an open sandbox. The same goes for `size`.
 
-Check ahead of time with `box.capabilities`, which includes `"network-policy"` and `"size"` when the provider supports them, or look at the matrix on the [providers overview](/providers). Previews and the ports you declare in `ports` keep working under any network policy, because they are inbound.
+Local is the case to know: it enforces `"none"` but has no allow lists, so `{ allow }` fails there. E2B, Vercel, and Daytona enforce both. Check ahead of time with `box.capabilities`, which includes `"network-policy"` and `"size"` when the provider supports them in some form, and use the matrix on the [providers overview](/providers) for the exact limits.
+
+Previews are inbound, so an allow list doesn't block them. The exception is Local with `network: "none"`, where the container has no network at all and previews fail.

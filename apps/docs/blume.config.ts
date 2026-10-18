@@ -60,7 +60,12 @@ export default defineConfig({
         },
         {
           label: "Reference",
-          items: ["/reference/sandbox", "/reference/agent-tools", "/reference/errors"],
+          items: [
+            "/reference/sandbox",
+            "/reference/agent-tools",
+            "/reference/errors",
+            "/reference/benchmarks",
+          ],
         },
       ],
     },

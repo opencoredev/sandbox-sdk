@@ -23,7 +23,7 @@ const dev = await box.start("npm run dev -- --port 3000", {
 console.log(dev.status, dev.url);
 ```
 
-`start` resolves when the readiness check passes. Because `ready` names a port, `dev.url` is a preview URL that the SDK has already checked from outside the sandbox. Vercel needs every port declared in `ports` at creation. Other providers ignore that option.
+`start` resolves when the readiness check passes. Because `ready` names a port, `dev.url` is a preview URL that the SDK has already checked from outside the sandbox. Vercel and Local need every port declared in `ports` at creation. E2B, Daytona, and Memory ignore that option.
 
 `name` is required and unique within a sandbox. It is how you find the process later.
 
@@ -116,7 +116,7 @@ await box.process("dev").stop();
 
 ## Previews
 
-`box.preview(port)` returns a URL for any port, whether or not you started the server with `start`.
+`box.preview(port)` returns a URL for a port, whether or not you started the server with `start`. On Vercel and Local the port must be in `ports`; elsewhere any port works.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";

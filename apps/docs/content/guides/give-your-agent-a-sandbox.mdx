@@ -148,9 +148,9 @@ const { text } = await generateText({
 console.log(text);
 ```
 
-- `root` keeps every path inside one directory. The model can't read or write outside it.
+- `root` keeps every file path and working directory the model passes inside one directory. It is not a security boundary: a shell command can still `cd` out or use an absolute path, so rely on the sandbox and `beforeRun` for that.
 - `allow` and `deny` pick which tools exist. Here the model can read, edit, search, and run, but can't start processes.
-- `beforeRun` sees each command before it runs. Return `false` to refuse it, or a string to run instead.
+- `beforeRun` sees each `run` and `start_process` command before it runs. Return `false` to refuse it, a string to run instead, or `true` to allow it.
 - Pair tools with a [network policy](/guides/machine-size-and-network) so a command can't reach hosts you didn't allow.
 
 The full option list, including per-tool limits, is in the [agent tools reference](/reference/agent-tools).

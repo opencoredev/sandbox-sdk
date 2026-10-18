@@ -1,0 +1,65 @@
+---
+title: Benchmarks
+description: Measure cold start, command latency, file transfer, previews, and SDK overhead on each provider with the bun bench harness in the repo.
+---
+
+The repository has a benchmark harness in `bench/`. It creates real sandboxes on the providers you pick, times the same scenarios on each, and writes a report. Use it to compare providers from your own region and machine before you choose one.
+
+The harness lives in the repo, not in the npm package. Run it from a clone of [opencoredev/sandbox-sdk](https://github.com/opencoredev/sandbox-sdk).
+
+## Run it
+
+```sh
+bun install
+bun run --cwd packages/sdk build
+bun bench --providers memory,local,e2b,vercel,daytona --runs 50 --out results/
+```
+
+The SDK must be built first, because the harness imports each provider from `@opencoredev/sandbox-sdk/<name>`. Results go to `bench/results/`: `results.json`, a `results.md` table, and an `index.html` chart you can open directly.
+
+A provider without credentials is skipped with a note, not failed. Memory and Local need no keys. The cloud providers need:
+
+| Provider | Variables |
+| --- | --- |
+| E2B | `E2B_API_KEY` |
+| Vercel | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`. OIDC alone is not enough here. |
+| Daytona | `DAYTONA_API_KEY` |
+
+Each provider is created with its factory's defaults, so the environment variables on its provider page apply.
+
+## What it measures
+
+| Scenario | What is timed |
+| --- | --- |
+| `cold` | `createSandbox` through the first successful `true` command |
+| `command` | One `true` command on a running sandbox |
+| `files-1kb`, `files-10mb` | Writing and reading back 1 KB and 10 MB, with a byte check |
+| `dev-server` | Starting a small Node HTTP server on port 3000 with `box.start` until it logs that it is ready |
+| `preview-first-byte` | Resolving the preview URL and reading the first byte of the response |
+| `destroy` | Deleting the sandbox |
+| `raw-cpu`, `sdk-cpu`, `overhead-cpu` | CPU time per call in your process, for a mocked native call alone, through the SDK, and the difference |
+
+Latency results report p50, p95, p99, mean, min, and max. Warmups and failures are excluded from the statistics and counted separately. Memory skips the two server scenarios, since it has no sockets. Its numbers check the harness and the SDK's own overhead, not real provider speed.
+
+## Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--providers` | `memory` | Comma-separated provider names |
+| `--runs` | `50` | Measured iterations per provider, one sandbox each |
+| `--warmup` | `2` | Extra iterations left out of the results |
+| `--concurrency` | `1` | Iterations in flight at once, from 1 to 32. Providers still run one after another. |
+| `--timeout-ms` | `30000` | Deadline for each scenario and cleanup attempt |
+| `--max-sandboxes` | `100` | Most cloud sandboxes the run may create, warmups included |
+| `--yes` | off | Allow a run that needs more than `--max-sandboxes` |
+| `--out` | `results` | Output directory, relative to `bench/` |
+
+## Cost and cleanup
+
+Cloud runs create billable sandboxes: `--runs` plus `--warmup` per provider. `--max-sandboxes` stops a run that would create more than you expect unless you pass `--yes`.
+
+The harness destroys every sandbox it creates, even after a failure, and retries a failed delete once. A provider outage can still leave a sandbox behind. Check `cleanupFailures` in `results.json` after a live run.
+
+To record where you ran, set `BENCH_REGION_<PROVIDER>`, for example `BENCH_REGION_E2B=us-east`. It only labels the report and doesn't change where sandboxes are created.
+
+The full methodology and JSON schema are in [`bench/README.md`](https://github.com/opencoredev/sandbox-sdk/blob/main/bench/README.md).

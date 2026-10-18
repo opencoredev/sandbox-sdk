@@ -55,7 +55,7 @@ console.log(server.url);
 await new Promise((resolve) => setTimeout(resolve, 60_000));
 ```
 
-`start` returns once port 3000 answers. `server.url` is a `localhost` URL that maps to the container. Open it within the minute and you see "hello from the sandbox". When the script ends, the sandbox is destroyed.
+`start` returns once port 3000 answers. `server.url` is an `http://127.0.0.1:<port>/` URL that Docker maps to port 3000 in the container. Open it within the minute and you see "hello from the sandbox". When the script ends, the sandbox is destroyed.
 
 ## 4. Switch providers
 

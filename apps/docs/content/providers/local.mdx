@@ -1,6 +1,6 @@
 ---
 title: Local
-description: Run sandboxes as Docker containers on your own machine or CI runner. Real Linux, no cloud account, previews on localhost.
+description: Run sandboxes as Docker containers on your own machine or CI runner. Real Linux, no cloud account, previews on 127.0.0.1.
 ---
 
 `local()` runs each sandbox as a Docker container on the machine your code runs on. It is real Linux with real networking, so it behaves like the cloud providers, and it needs no account or key. Use it while you develop and in CI.
@@ -13,7 +13,7 @@ Writing unit tests that shouldn't start containers? Use [Memory](/providers/memo
 npm i @opencoredev/sandbox-sdk
 ```
 
-`local()` needs no extra package, only a running Docker daemon. Check with `docker info`. Docker Desktop, OrbStack, Colima, and a plain Linux Docker Engine all work.
+`local()` needs no extra package, only a running Docker Engine. The adapter talks to the Docker API over a Unix socket. It doesn't need the Docker CLI, and it installs nothing inside the container.
 
 ## Basic usage
 
@@ -26,7 +26,7 @@ const result = await box.run("cat /etc/os-release");
 console.log(result.stdout);
 ```
 
-The default image is `node:22-bookworm` with git installed. The first run pulls it.
+The default image is `node:22-bookworm`. The first run pulls it, and later runs reuse it.
 
 ## Configuration
 
@@ -34,40 +34,80 @@ The default image is `node:22-bookworm` with git installed. The first run pulls 
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await using box = await createSandbox(local({ image: "python:3.13-bookworm" }));
-const result = await box.run("python --version");
+const provider = local({
+  image: "node:24-bookworm",
+  dockerHost: "unix:///var/run/docker.sock",
+});
+
+await using box = await createSandbox(provider);
+const result = await box.run("node --version");
 console.log(result.stdout);
 ```
 
-`image` picks any image from a registry Docker can pull from. It needs a POSIX shell, and git if you use `box.git` or `files.changes()`.
-
-{/* TODO(SBX-32): list the remaining local() options once the adapter lands. */}
+- `image` picks the container image. The SDK pulls it if it's missing. It must contain `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, GNU `sed`, and the usual Linux utilities, because file operations and process records run through them. `createSandbox` checks for them and fails if one is missing. To add a language, build your own image `FROM node:22-bookworm`.
+- `dockerHost` is the Docker socket, as an absolute `unix://` URL. It defaults to `DOCKER_HOST`, then `unix:///var/run/docker.sock`. Docker Desktop, OrbStack, and Colima all work. If yours puts the socket elsewhere, point `DOCKER_HOST` at it. Remote `tcp://` engines are rejected, because preview URLs must reach the machine your code runs on.
 
 ## Keys
 
-Key mode is **exact**. The key becomes part of the container name, and Docker refuses duplicate names, so concurrent calls with the same key always share one container.
+Key mode is **exact**. The container name is a SHA-256 hash of the key, and Docker refuses duplicate names, so concurrent calls with the same key always share one container. Discovery only sees containers labeled `sandbox-sdk=1`.
+
+## Size
+
+| Preset | CPUs | Memory |
+| --- | --- | --- |
+| `small` | 1 | 1024 MiB |
+| `medium` | 2 | 4096 MiB |
+| `large` | 4 | 8192 MiB |
+
+Memory is a hard limit with swap disabled. Leave `size` out to get Docker's defaults, which means no limit. Exact sizes such as `{ cpu, memoryMb, diskGb }` fail with `unsupported`, because Docker can't limit disk size portably.
+
+## Network
+
+The default is Docker's bridge network. `network: "none"` gives the container a loopback interface and nothing else. An allow list, `network: { allow: [...] }`, fails with `unsupported`: Docker has no per-host egress filter.
+
+## Pause and snapshots
+
+`box.pause()` and `box.resume()` use `docker pause` and `docker unpause`. Processes freeze in place and continue on resume.
+
+`box.snapshot()` commits the container to a local image and returns its ID. Pass it as `from` to start a new sandbox from that image. Snapshot images stay in Docker until you remove them with `docker image rm`.
 
 ## Previews
 
-Declared ports map to free ports on the host, and `box.preview(port)` returns a `http://localhost:<port>` URL. The URL works only on the machine that runs Docker. To reach it from another device, put a tunnel in front of it.
+Declare the ports you will preview when you create the sandbox. Each one maps to a free port on `127.0.0.1`, and `box.preview(port)` returns `http://127.0.0.1:<port>/`. If you leave `ports` out, the SDK declares port 3000.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { ports: [3000, 5173] });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+The URL works only on the machine that runs Docker. To reach it from another device, put a tunnel in front of it. Previewing a port you didn't declare fails with `unsupported`, and so does any preview with `network: "none"`.
 
 ## Environment variables
 
-None. `local()` uses whatever Docker context your shell is set to, including `DOCKER_HOST`.
+| Variable | Purpose |
+| --- | --- |
+| `DOCKER_HOST` | The Docker socket, as `unix:///path/to/docker.sock`. Optional. |
 
 ## API reference
 
 ### `local(options?)`
 
 - `image?: string`. Defaults to `node:22-bookworm`.
+- `dockerHost?: string`. An absolute `unix://` socket URL. Defaults to `DOCKER_HOST`, then `unix:///var/run/docker.sock`.
 
-Returns a provider for `createSandbox`, `connectSandbox`, `listSandboxes`, and `reapSandboxes`.
+Returns a provider for `createSandbox`, `connectSandbox`, `listSandboxes`, and `reapSandboxes`. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
 ## Limitations
 
-- Isolation is a container, not a VM. Don't run untrusted code from strangers on a machine that holds secrets. Use a cloud provider such as [E2B](/providers/e2b) for that.
-- Preview URLs are `localhost` only.
-- Sandboxes stop when Docker stops. Containers survive a restart of your app, so keys and `box.process(name)` keep working.
+- `idleTimeoutMs` and `timeoutMs` fail with `unsupported`. Docker has no timer that survives your process, so use [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule instead.
+- Network allow lists fail with `unsupported`. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) when you need one.
+- Isolation is a container, not a VM. Don't run untrusted code from strangers on a machine that holds secrets.
+- Preview URLs are reachable only on the Docker host.
+- `close()` leaves the container and its background processes running. They survive a restart of your app, so keys and `box.process(name)` keep working. They stop when Docker stops.
 
 ## Next steps
 

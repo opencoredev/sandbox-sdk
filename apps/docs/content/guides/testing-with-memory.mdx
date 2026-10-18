@@ -84,9 +84,9 @@ Each handler gets `args`, `cwd`, `env`, `stdin`, a `signal`, `stdout` and `stder
 
 ## What memory() does not do
 
-- No real shell. Pipes, globs, and programs without a handler are not available.
-- No git. `box.git` and `files.changes()` need a real provider.
-- No terminals, and no real sockets.
+- No real shell. Pipes, globs, variable assignments, and programs without a handler are not available.
+- No git. `box.git` needs a real provider. `files.mark()` and `files.changes()` do work, from in-memory copies of the files.
+- No terminals, no real sockets, and no pause or snapshots.
 
 For those, run the same test against [`local()`](/providers/local) in CI. It needs Docker but no cloud keys.
 

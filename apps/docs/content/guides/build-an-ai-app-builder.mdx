@@ -34,8 +34,6 @@ export async function projectSandbox(projectId: string) {
   const box = await createSandbox(vercel(), {
     key: `project:${projectId}`,
     ports: [3000],
-    idleTimeoutMs: 15 * 60_000,
-    timeoutMs: 2 * 60 * 60_000,
     labels: { app: "builder", projectId },
   });
 
@@ -48,6 +46,8 @@ export async function projectSandbox(projectId: string) {
 ```
 
 The key makes this safe to call on every request. The first call creates the sandbox and scaffolds a Next.js app in `/workspace/app`. Later calls find the same sandbox. Vercel needs port 3000 declared here so it can be previewed.
+
+Vercel rejects `idleTimeoutMs` and `timeoutMs`, so this sandbox has no lifetime limit of its own. The [reaper](#before-you-ship) below cleans up the ones users abandon. The two labels plus the SDK's own tags use four of the five tags Vercel allows.
 
 ## 3. Stream the agent
 
@@ -150,6 +150,7 @@ Type "a todo app with a dark theme" and send it. The model scaffolds pages, runs
 
 ## Before you ship
 
-- **Reap forgotten sandboxes.** Run [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule with `labels: { app: "builder" }`.
-- **Limit the network.** Pass `network: { allow: [...] }` so generated code can only reach the registries it needs. See [Machine size and network](/guides/machine-size-and-network).
+- **Reap forgotten sandboxes.** Run [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule with `labels: { app: "builder" }` and `idleOnly: true`.
+- **Restart the server after a resume.** A stopped Vercel sandbox resumes on the next call without its processes. If `box.process("dev").status` is `"failed"`, call `restart()` before you return the preview.
+- **Limit the network.** Pass `network: { allow: [...] }` so generated code can only reach the hosts it needs: the npm registry, plus `fonts.googleapis.com` and `fonts.gstatic.com` if apps use `next/font/google`. See [Machine size and network](/guides/machine-size-and-network).
 - **Show diffs.** [`box.files.changes()`](/concepts/files-and-git#see-what-changed) gives you a patch of everything the model changed since the sandbox was created.

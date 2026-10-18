@@ -1,9 +1,9 @@
 ---
 title: Memory
-description: An in-process fake provider for tests. Files in a map, commands from handlers you write, fake preview URLs, and no network.
+description: An in-process fake provider for tests. Files in a map, a small shell with handlers you can extend, fake preview URLs, and no network.
 ---
 
-`memory()` is a provider that runs inside your own process. No machine starts. Files live in a map, commands are answered by handler functions you register, and preview URLs are fake. It exists for fast unit tests.
+`memory()` is a provider that runs inside your own process. No machine starts. Files live in a map, commands run through a small built-in shell and handler functions you register, and preview URLs are fake. It exists for fast unit tests.
 
 The full walkthrough is in [Testing with memory()](/guides/testing-with-memory).
 
@@ -21,29 +21,42 @@ No other package is needed.
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 
+await using box = await createSandbox(memory());
+await box.files.write("hello.txt", "hi\n");
+const result = await box.run("cat hello.txt && echo done");
+console.log(result.stdout);
+```
+
+This prints `hi` and `done`.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
 const provider = memory({
   handlers: {
-    echo: ({ args, stdout }) => {
-      stdout(`${args.join(" ")}\n`);
+    npm: ({ args, stdout }) => {
+      stdout(`npm ${args.join(" ")}: ok\n`);
       return 0;
     },
   },
 });
 
 await using box = await createSandbox(provider);
-await box.files.write("hello.txt", "hi");
-const result = await box.run("echo hello");
-console.log(result.stdout, await box.files.read("hello.txt"));
+const result = await box.run("npm test");
+console.log(result.stdout);
 ```
 
-## Configuration
-
-- `handlers` maps a program name to a function. The function gets the parsed arguments, `cwd`, `env`, `stdin`, a `signal`, `stdout` and `stderr` writers, and access to the fake files. It returns the exit code.
+- `handlers` maps a program name to a function. The function gets the parsed `args`, `cwd`, `env`, `stdin`, an abort `signal`, `stdout` and `stderr` writers, and `files` to read, write, and list the fake files. It returns the exit code. A handler must stop when `signal` aborts, and must not touch the real world.
 - `provider.register(name, handler)` adds a handler after creation.
+
+These programs are built in: `echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, and `printenv`. Your handlers replace a built-in with the same name. The shell understands quotes, `$VAR` for environment variables, `;`, `&&`, `||`, and redirection. It is a small subset, not a full POSIX shell: there are no variable assignments, pipes, or subshells.
 
 ## Keys
 
-Key mode is **exact**. Keys live in the provider's in-process map, so they reset when the process exits.
+Key mode is **exact**. Keys live in the provider instance, so they reset when the process exits.
 
 ## Previews
 
@@ -55,11 +68,13 @@ Key mode is **exact**. Keys live in the provider's in-process map, so they reset
 
 - `handlers?: Record<string, CommandHandler>`
 
-Returns a provider with an extra `register(name, handler)` method.
+Returns a provider with an extra `register(name, handler)` method. Each `memory()` call has its own files and processes. `box.native` is `{ files }`, the map that holds the fake file system.
 
 ## Limitations
 
-- No real shell, git, terminals, or sockets.
+- No real shell, git, terminals, or sockets. `box.git` and checks against a real HTTP server don't work.
+- No pause or snapshots.
+- `size` and `network` are accepted but have no effect, since there is no machine and no network.
 - State is lost when the process exits.
 
 Test those paths against [Local](/providers/local) instead.

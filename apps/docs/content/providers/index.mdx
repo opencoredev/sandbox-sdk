@@ -2,21 +2,21 @@
 title: Providers
 sidebar:
   label: Overview
-description: Choose where your sandboxes run. Compare Local, E2B, Vercel, Daytona, and Memory by key mode, SDK, and credentials.
+description: Choose where your sandboxes run. Compare Local, E2B, Vercel, Daytona, and Memory by key mode, credentials, and the features each one can enforce.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
 
-Each provider uses that company's own SDK with your credentials. Install the SDK next to Sandbox SDK. It is loaded only when you create a sandbox with that provider, so unused providers cost nothing.
+Each provider uses that company's own SDK with your credentials. Install the SDK next to Sandbox SDK. It is loaded on the provider's first operation, so unused providers cost nothing.
 
 ## Choose a provider
 
 | You want | Use |
 | --- | --- |
 | To develop locally or run CI with no cloud account | [Local](/providers/local) |
-| Fast hosted microVMs with pause and snapshots | [E2B](/providers/e2b) |
-| Named sandboxes on the Vercel platform | [Vercel](/providers/vercel) |
-| Long-lived workspaces with labels and token-protected previews | [Daytona](/providers/daytona) |
+| Hosted microVMs that pause with memory intact and enforce a hard lifetime | [E2B](/providers/e2b) |
+| Sandboxes on the Vercel platform, with exact keys and OIDC auth inside Vercel | [Vercel](/providers/vercel) |
+| Custom machine sizes, idle auto-stop, and token-protected previews | [Daytona](/providers/daytona) |
 | Unit tests with no machines at all | [Memory](/providers/memory) |
 
 Start with `local()` while you build. Move to a cloud provider when you deploy.
@@ -27,17 +27,40 @@ Start with `local()` while you build. Move to a cloud provider when you deploy.
 | --- | --- | --- | --- | --- |
 | [Local](/providers/local) | `local()` from `/local` | Docker | exact | None |
 | [E2B](/providers/e2b) | `e2b()` from `/e2b` | `e2b` | best-effort | `E2B_API_KEY` |
-| [Vercel](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | exact | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` |
+| [Vercel](/providers/vercel) | `vercel()` from `/vercel` | `@vercel/sandbox` | exact | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` |
 | [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | best-effort | `DAYTONA_API_KEY` |
 | [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | exact | None |
 
 Key mode decides how reliable [get-or-create by key](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) is. With a best-effort provider, pass a `locator` if two requests for the same key can arrive at once.
 
-{/* TODO(SBX-32): add pause, snapshot, terminal, network-policy, and size columns once each adapter declares its capabilities. */}
+## Capabilities
 
-## Optional features
+Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This table shows what each provider accepts.
 
-Pause and resume, snapshots, terminals, network policies, and machine sizes depend on the provider. Each provider page lists what it supports. In code, the same set is on `box.capabilities`, and methods like `box.pause()` only exist on the type when the provider has them:
+| | Local | E2B | Vercel | Daytona | Memory |
+| --- | --- | --- | --- | --- | --- |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No |
+| `terminal()` | No | No | No | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes |
+| `size` presets | Yes | No | Yes | Yes | Accepted, not enforced |
+| `size` with exact numbers | No | No | No | Yes | Accepted, not enforced |
+| `idleTimeoutMs` | No | No | No | Yes, whole minutes | Yes |
+| `timeoutMs` (hard lifetime) | No | Yes | No | Yes, whole minutes | Yes |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
+| Key mode | exact | best-effort | exact | best-effort | exact |
+
+Notes on the cells that need them:
+
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B pauses the microVM with its memory. Vercel and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
+- **Size.** Local and Vercel take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping.
+- **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process.
+- **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+
+## Check at runtime
+
+`box.capabilities` holds the same set at runtime: `"pause"`, `"snapshot"`, `"terminal"`, `"network-policy"`, and `"size"`. Methods like `box.pause()` only exist on the type when the provider declares them:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -47,6 +70,10 @@ await using box = await createSandbox(e2b());
 console.log([...box.capabilities]);
 ```
 
+This prints `[ "pause", "snapshot", "network-policy" ]`.
+
+A capability means the provider supports the feature in general. The table above has the finer limits: for example, Local declares `"network-policy"` but only accepts `"none"`.
+
 ## Write your own
 
-Each provider is a small adapter, about 200 to 400 lines, over a fixed set of primitives: create, find, connect, list, destroy, exec, file operations, and preview URLs. Everything else, including runs, processes, `$`, git, and readiness checks, comes from the core. The contract is exported from `@opencoredev/sandbox-sdk/provider`, and `runConformance` from `/testing` checks your adapter against the same suite the built-in ones pass. See [Testing with memory()](/guides/testing-with-memory#check-a-custom-provider).
+Each provider is a small adapter over a fixed set of primitives: create, find, connect, list, destroy, exec, file operations, and preview URLs. Everything else, including runs, processes, `$`, git, and readiness checks, comes from the core. The contract is exported from `@opencoredev/sandbox-sdk/provider`, and `runConformance` from `/testing` checks your adapter against the same suite the built-in ones pass. See [Testing with memory()](/guides/testing-with-memory#check-a-custom-provider).
