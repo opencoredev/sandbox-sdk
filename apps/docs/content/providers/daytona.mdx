@@ -1,0 +1,78 @@
+---
+title: Daytona
+description: Run sandboxes on Daytona through @daytonaio/sdk. Labels for lookup, and preview URLs protected by a token header.
+---
+
+`daytona()` runs each sandbox on [Daytona](https://daytona.io). Daytona sandboxes suit long-lived workspaces that a user returns to over days.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @daytonaio/sdk
+```
+
+Run this code on a server. The API key must never reach a browser bundle.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+The provider reads `DAYTONA_API_KEY` from the environment.
+
+## Configuration
+
+{/* TODO(SBX-32): list daytona() options (target, API URL) once the adapter lands. */}
+
+Pass no options to use the defaults of the Daytona SDK.
+
+## Keys
+
+Key mode is **best-effort**. The key is stored as a Daytona label and found by label search, so two requests with the same key at the same moment can create two sandboxes. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+
+Your own `labels` become Daytona labels too, so you can filter sandboxes in the Daytona dashboard by them.
+
+## Previews
+
+Daytona preview URLs require a token. `box.preview(port)` returns it in `headers`, so send those headers with every request:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), { key: "project:42" });
+
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+A browser can't add headers to an iframe or a link, so to show a Daytona preview to a user, proxy it through your server and add the headers there.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `DAYTONA_API_KEY` | Your Daytona API key, from the Daytona dashboard |
+
+## API reference
+
+### `daytona(options?)`
+
+Returns a provider. `box.native` is the Daytona SDK's `Sandbox` object.
+
+## Limitations
+
+- Keys are best-effort. Use a `locator` for exact get-or-create.
+- Previews need a header, so they can't be embedded directly in an iframe.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

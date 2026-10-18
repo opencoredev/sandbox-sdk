@@ -1,0 +1,80 @@
+---
+title: Quickstart
+description: Install Sandbox SDK, start a sandbox in Docker, run a command, and open a preview URL. About five minutes.
+---
+
+By the end of this page you have a Linux sandbox running in Docker on your machine, a command's output in your terminal, and a dev server you can open in the browser. Then you switch to a cloud provider by changing one import.
+
+Sandbox SDK calls each provider's own SDK with your keys. Nothing runs between you and the provider, and nothing gets installed inside the sandbox.
+
+Coming from 0.2? Read [Upgrade from 0.2](/upgrade-from-0-2) first.
+
+## 1. Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk
+```
+
+You need Node 22 or newer, or Bun 1.3 or newer. The package is ESM only. The `local()` provider also needs Docker running. Check with `docker info`.
+
+## 2. Run a command
+
+```ts title="hello.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+Run it with `npx tsx hello.ts` or `bun hello.ts`. The first run pulls the `node:22-bookworm` image, so it takes a minute. After that you see `0` and the Node and kernel versions.
+
+`await using` destroys the sandbox when the block ends, even if your code throws. A failing command does not throw: check `result.ok` or `result.exitCode`.
+
+## 3. Start a server and open it
+
+```ts title="preview.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { ports: [3000] });
+
+await box.files.write("server.mjs", `
+  import { createServer } from "node:http";
+  createServer((req, res) => res.end("hello from the sandbox")).listen(3000);
+`);
+
+const server = await box.start("node server.mjs", {
+  name: "web",
+  ready: { port: 3000 },
+});
+
+console.log(server.url);
+await new Promise((resolve) => setTimeout(resolve, 60_000));
+```
+
+`start` returns once port 3000 answers. `server.url` is a `localhost` URL that maps to the container. Open it within the minute and you see "hello from the sandbox". When the script ends, the sandbox is destroyed.
+
+## 4. Switch providers
+
+Swap the import and the factory. Everything after `createSandbox` stays the same.
+
+```ts title="hello-e2b.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+
+const result = await box.run("node --version && uname -sm");
+console.log(result.exitCode, result.output);
+```
+
+Install the provider SDK next to this package (`npm i e2b`) and set `E2B_API_KEY` in your server's environment. Each provider page lists its install command and keys.
+
+## Next steps
+
+- [Sandboxes and keys](/concepts/sandboxes-and-keys): keep one sandbox per user and reattach to it.
+- [Give your agent a sandbox](/guides/give-your-agent-a-sandbox): hand a model `run`, `read_file`, and `edit_file` tools.
+- [Providers](/providers): pick where your sandboxes run.

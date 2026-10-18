@@ -1,0 +1,176 @@
+/*
+ * Sandbox SDK docs theme.
+ * Tokens are copied from the landing page (apps/web/src/app/(home)/landing.module.css):
+ * ink page, one panel surface, hairline borders, square corners, and a single
+ * amber accent for the current page, links, and code keywords.
+ */
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --sbx-bg: #0b0b0c;
+  --sbx-surface: #111214;
+  --sbx-surface-2: #16171a;
+  --sbx-ink: #ecebe8;
+  /* long-form body text: the landing --text, eased toward --ink for reading */
+  --sbx-body: color-mix(in oklab, #ecebe8 82%, #0b0b0c);
+  --sbx-muted: #8d8e93;
+  --sbx-faint: #808289;
+  --sbx-line: #23252a;
+  --sbx-line-soft: #1a1b1f;
+  --sbx-accent: #e8a33c;
+
+  --blume-background: var(--sbx-bg);
+  --blume-foreground: var(--sbx-body);
+  --blume-muted: var(--sbx-surface);
+  --blume-muted-foreground: var(--sbx-muted);
+  --blume-border: var(--sbx-line);
+  --blume-accent: var(--sbx-accent);
+  --blume-accent-foreground: #1a1206;
+  --blume-action: var(--sbx-accent);
+  --blume-action-foreground: #1a1206;
+  --blume-code-background: var(--sbx-surface);
+  --blume-code-highlight: rgb(232 163 60 / 10%);
+  --blume-code-highlight-border: rgb(232 163 60 / 60%);
+  --blume-code-word: rgb(232 163 60 / 16%);
+  --blume-code-word-border: rgb(232 163 60 / 45%);
+  --blume-code-add: rgb(120 200 140 / 10%);
+  --blume-code-add-border: rgb(120 200 140 / 55%);
+  --blume-code-remove: rgb(230 120 110 / 10%);
+  --blume-code-remove-border: rgb(230 120 110 / 55%);
+  --blume-radius: 0px;
+  --blume-content-width: 44rem;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(232 163 60 / 28%);
+  color: var(--sbx-ink);
+}
+
+/* ---------- prose ---------- */
+
+.prose {
+  color: var(--sbx-body);
+  font-size: 15.5px;
+  line-height: 1.7;
+}
+
+.prose :where(h1, h2, h3, h4, strong) {
+  color: var(--sbx-ink);
+}
+
+.prose :where(h1) {
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.prose :where(h2) {
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  padding-top: 0.25rem;
+}
+
+.prose :where(h3) {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.prose :where(a):not(:where(.not-prose, .not-prose *, h1 a, h2 a, h3 a, h4 a)) {
+  color: var(--sbx-ink);
+  text-decoration-line: underline;
+  text-decoration-color: rgb(232 163 60 / 55%);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 150ms ease;
+}
+
+.prose :where(a):not(:where(.not-prose, .not-prose *, h1 a, h2 a, h3 a, h4 a)):hover {
+  text-decoration-color: var(--sbx-accent);
+}
+
+/* inline code: a quiet chip, white text, no backticks */
+.prose :where(:not(pre) > code) {
+  color: var(--sbx-ink);
+  background: var(--sbx-surface-2);
+  border: 1px solid var(--sbx-line);
+  border-radius: 0;
+  padding: 0.1em 0.35em;
+  font-size: 0.86em;
+  font-weight: 400;
+}
+
+.prose :where(:not(pre) > code)::before,
+.prose :where(:not(pre) > code)::after {
+  content: none;
+}
+
+/* code blocks sit on the raised surface with a hairline */
+.prose :where(pre) {
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* tables: hairlines only, muted header */
+.prose :where(table) {
+  font-size: 14px;
+}
+
+.prose :where(thead th) {
+  color: var(--sbx-muted);
+  font-weight: 500;
+}
+
+.prose :where(td, th) {
+  border-color: var(--sbx-line);
+}
+
+.prose :where(hr) {
+  border-color: var(--sbx-line);
+}
+
+/* ---------- chrome: square corners, like the landing frame ---------- */
+
+:where(
+  .rounded,
+  .rounded-sm,
+  .rounded-md,
+  .rounded-lg,
+  .rounded-xl,
+  .rounded-full,
+  .rounded-blume,
+  [class*="rounded-["],
+  .blume-nav-link,
+  .blume-nav-summary,
+  .blume-nav-summary-link
+) {
+  border-radius: 0 !important;
+}
+
+/* the header CTA reads as a quiet outlined link, not a filled pill */
+header a.bg-accent {
+  background: transparent;
+  color: var(--sbx-ink);
+  border: 1px solid var(--sbx-line);
+  font-weight: 500;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+header a.bg-accent:hover {
+  opacity: 1;
+  border-color: var(--sbx-accent);
+}
+
+/* current page: amber tick on the left instead of a filled row */
+.blume-nav-link[aria-current="page"] {
+  background: transparent;
+  color: var(--sbx-ink);
+  box-shadow: inset 2px 0 0 var(--sbx-accent);
+}

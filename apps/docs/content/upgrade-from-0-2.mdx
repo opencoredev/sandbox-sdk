@@ -1,0 +1,227 @@
+---
+title: Upgrade from 0.2
+description: Move code from Sandbox SDK 0.2 to 1.0. Covers createSandbox, run, files, processes, ports, snapshots, the local provider, and removed providers.
+---
+
+1.0 keeps the idea of 0.2, one API over many sandbox providers, and changes most of the surface. Commands return richer results and never throw on a non-zero exit. Sandboxes can be found again by key. Processes survive a server restart. `local()` now runs Docker. This page maps each 0.2 call to its 1.0 form.
+
+## Overview of changes
+
+1. `createSandbox` takes the provider as its first argument.
+2. `stop()` is split into `close()` and `destroy()`.
+3. `run` results have new fields, and `timeout` is `timeoutMs`.
+4. `files.text` and `files.read` merge into `files.read`.
+5. `processes.start` becomes `box.start`, with names, readiness, and logs.
+6. `ports.expose` becomes `box.preview`.
+7. `snapshots.*` becomes `box.snapshot()` and `createSandbox(provider, { from })`.
+8. `local()` runs Docker instead of an AgentOS VM.
+9. Some providers and helpers are gone.
+
+## 1. createSandbox
+
+### Before
+
+```ts check="skip"
+await using sandbox = await createSandbox({ provider: e2b(), cwd: "/workspace", env: { CI: "1" } });
+```
+
+### After
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { env: { CI: "1" } });
+```
+
+### Key changes
+
+- The provider is the first argument. Options are the second and all optional.
+- `cwd` is gone. Every sandbox works in `/workspace`. Pass `cwd` per command.
+- New options: `key`, `size`, `secrets`, `network`, `ports`, `idleTimeoutMs`, `timeoutMs`, `labels`, and `from`. See [Sandboxes and keys](/concepts/sandboxes-and-keys).
+- `withSandbox(options, callback)` is removed. Use `await using`.
+
+## 2. stop, close, and destroy
+
+### Before
+
+```ts check="skip"
+await sandbox.stop();
+```
+
+### After
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const box = await createSandbox(e2b());
+await box.destroy();
+```
+
+### Key changes
+
+- `destroy()` does what `stop()` did: it deletes the sandbox.
+- `close()` is new. It detaches and leaves the sandbox running.
+- `await using` calls `close()` when you passed a `key` and `destroy()` otherwise. In 0.2 it always stopped the sandbox. See [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup).
+
+## 3. run
+
+### Before
+
+```ts check="skip"
+const result = await sandbox.run("npm test", { timeout: 60_000 });
+if (!result.success) console.log(result.stderr);
+
+await sandbox.run({ command: "git", args: ["checkout", branch] });
+```
+
+### After
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const branch = "main";
+await using box = await createSandbox(e2b());
+
+const result = await box.run("npm test", { timeoutMs: 60_000 });
+if (!result.ok) console.log(result.output);
+
+await box.$`git checkout ${branch}`;
+```
+
+### Key changes
+
+- `success` is now `ok`. `exitCode` is `null` when the command was killed.
+- New fields: `output` (both streams interleaved), `truncated`, `timedOut`, `cwd`, `command`.
+- `timeout` is `timeoutMs` and defaults to 120 seconds. Output is capped at 1 MB per stream.
+- A timeout resolves with `timedOut: true` instead of throwing.
+- The `{ command, args }` form is gone. Use the `$` tag, which escapes every value.
+- `run` can be iterated to stream output. See [Running commands](/concepts/running-commands).
+
+## 4. files
+
+| 0.2 | 1.0 |
+| --- | --- |
+| `files.text(path)` | `files.read(path)` |
+| `files.read(path)` (bytes) | `files.read(path, { as: "bytes" })` |
+| `files.write(path, value)` | `files.write(path, value)`, or `files.write({ ...many })` |
+| `files.list(path)` | `files.list(path, { recursive, glob })` |
+| `files.mkdir(path)` | Not needed. `write` creates directories. |
+| `files.remove(path)` | `files.remove(path, { recursive })` |
+| `files.exists(path)` | `files.exists(path)` |
+
+`write` accepts a string or a `Uint8Array`. `ArrayBuffer`, `Blob`, and streams are no longer accepted. List entries now carry `modifiedAt`, and `name` is gone (take it from `path`).
+
+New in 1.0: `edit`, `stat`, `upload`, `download`, `search`, `watch`, `mark`, and `changes`, plus `box.git`. See [Files and git](/concepts/files-and-git).
+
+## 5. processes
+
+### Before
+
+```ts check="skip"
+const proc = await sandbox.processes.start("npm run dev");
+for await (const event of proc.output()) console.log(event.data);
+await proc.kill();
+```
+
+### After
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+
+const dev = await box.start("npm run dev", { name: "dev", ready: { port: 3000 } });
+for await (const line of dev.lines()) {
+  console.log(line.text);
+  if (line.text.includes("ready")) break;
+}
+await dev.stop();
+```
+
+### Key changes
+
+- Every process has a `name`. Find it again with `box.process(name)`, even from another server.
+- `ready` waits for a port, an HTTP response, or a log line before `start` returns.
+- `output()` becomes `lines()` and `logs()`, both resumable from a cursor.
+- `kill()` becomes `stop()`, which sends SIGTERM and then SIGKILL.
+- `write()` to a process's stdin is removed. Use [`box.terminal()`](/reference/sandbox#optional-capabilities) on providers that support it.
+
+## 6. ports
+
+### Before
+
+```ts check="skip"
+const port = await sandbox.ports.expose(3000);
+console.log(port.url);
+```
+
+### After
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { ports: [3000] });
+
+const preview = await box.preview(3000, { waitMs: 10_000 });
+console.log(preview.url, preview.headers);
+```
+
+### Key changes
+
+- `preview` returns `url`, plus `headers` and `expiresAt` when the provider needs them. Send `headers` with every request.
+- `public`, `authenticated`, and `request()` are gone.
+- Declare ports in `createSandbox(provider, { ports })`. Vercel requires it.
+
+## 7. snapshots
+
+| 0.2 | 1.0 |
+| --- | --- |
+| `snapshots.create()` | `box.snapshot()` |
+| `snapshots.restore(id)` | `createSandbox(provider, { from: id })` |
+| `snapshots.delete(id)` | Use the provider's own SDK through `box.native` |
+
+`snapshot()` exists only on providers that support it, so TypeScript reports a call on one that doesn't. In 0.2 that was a runtime error.
+
+## 8. local()
+
+In 0.2, `local()` ran an AgentOS VM bundled with the package. In 1.0 it runs a Docker container from `node:22-bookworm`. Install Docker and make sure `docker info` works. The AgentOS dependency is gone, so installs are much smaller. See [Local](/providers/local).
+
+## 9. Removed
+
+- **Providers:** Upstash Box, Ascii Box, Railway, and Tenki. Pin `@opencoredev/sandbox-sdk@0.2` if you depend on one, or write an adapter with the provider contract from `@opencoredev/sandbox-sdk/provider`.
+- **Helpers:** `withSandbox`, `supports`, `requireCapability`, `capabilityMode`, `isSandboxError`, `redactSensitive`. Use `box.capabilities.has(...)` and `error instanceof SandboxError`.
+- **`sandbox.raw`** is now `box.native`.
+- **The `/eve` integration.** The agent tool subpaths are `/ai`, `/mastra`, and `/openai`. See [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
+
+## Complete example
+
+```ts title="0.2" check="skip"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using sandbox = await createSandbox({ provider: e2b() });
+await sandbox.files.write("app/index.js", "console.log('hi')");
+const result = await sandbox.run("node index.js", { cwd: "app", timeout: 10_000 });
+console.log(result.success, result.stdout);
+const port = await sandbox.ports.expose(3000);
+console.log(port.url);
+```
+
+```ts title="1.0"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { ports: [3000] });
+await box.files.write("app/index.js", "console.log('hi')");
+const result = await box.run("node index.js", { cwd: "app", timeoutMs: 10_000 });
+console.log(result.ok, result.stdout);
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+Stuck on something this page doesn't cover? Open an issue on [GitHub](https://github.com/opencoredev/sandbox-sdk/issues).

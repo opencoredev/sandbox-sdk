@@ -1,0 +1,76 @@
+---
+title: Vercel
+description: Run sandboxes on Vercel Sandbox through @vercel/sandbox. Named sandboxes give exact keys, and ports are declared when you create the sandbox.
+---
+
+`vercel()` runs each sandbox on [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), Vercel's hosted Linux microVMs. Named sandboxes make get-or-create by key exact.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @vercel/sandbox
+```
+
+Run this code on a server or in a Vercel Function. Tokens must never reach a browser bundle.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { ports: [3000] });
+const result = await box.run("node --version");
+console.log(result.stdout);
+```
+
+## Configuration
+
+Credentials come from the environment, the same way `@vercel/sandbox` reads them. Inside a Vercel deployment, the project's OIDC token is used automatically. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`.
+
+{/* TODO(SBX-32): list vercel() options once the adapter lands. */}
+
+## Keys
+
+Key mode is **exact**. The key becomes the sandbox name, and Vercel enforces unique names, so concurrent calls with the same key share one sandbox.
+
+## Ports and previews
+
+Vercel can only route to ports declared when the sandbox is created. List every port you will preview:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { ports: [3000, 5173] });
+
+const dev = await box.start("npx vite --port 5173 --host", { name: "vite", ready: { port: 5173 } });
+console.log(dev.url);
+```
+
+A port you didn't declare can't be previewed, so add it here, not later.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `VERCEL_OIDC_TOKEN` | Set for you inside Vercel deployments and by `vercel env pull` |
+| `VERCEL_TOKEN` | An access token, outside Vercel |
+| `VERCEL_TEAM_ID` | The team that owns the sandboxes |
+| `VERCEL_PROJECT_ID` | The project sandboxes are billed to |
+
+## API reference
+
+### `vercel(options?)`
+
+Returns a provider. `box.native` is the `@vercel/sandbox` `Sandbox` object.
+
+## Limitations
+
+- Ports must be declared in `createSandbox(provider, { ports })`.
+- Sandbox lifetime is capped by your Vercel plan. Check the limit before you set a long `timeoutMs`.
+
+## Next steps
+
+- [Build an AI app builder](/guides/build-an-ai-app-builder): a full example on Vercel.
+- [Processes and previews](/concepts/processes-and-previews)

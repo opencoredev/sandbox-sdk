@@ -1,0 +1,90 @@
+---
+title: E2B
+description: Run sandboxes as E2B microVMs. Native commands, pause and resume, and snapshots, through the official e2b SDK.
+---
+
+`e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM. It runs commands through E2B's native command API, and can pause with its memory and files intact.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk e2b
+```
+
+Run this code on a server. The API key must never reach a browser bundle.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+const result = await box.run("python3 -c 'print(2 + 2)'");
+console.log(result.stdout);
+```
+
+The provider reads `E2B_API_KEY` from the environment.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b({ template: "base" }));
+```
+
+`template` picks the E2B template to boot. Build your own template with the E2B CLI to bake in dependencies, so sandboxes start ready.
+
+{/* TODO(SBX-32): list the remaining e2b() options once the adapter lands. */}
+
+## Keys
+
+Key mode is **best-effort**. The key is stored in sandbox metadata and found by search, so two requests with the same key at the same moment can create two sandboxes. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+
+## Pause and snapshots
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { key: "user:123" });
+await box.run("npm install", { cwd: "app" });
+
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(e2b(), { from: id });
+```
+
+A paused sandbox keeps its memory and file system and stops using compute. `idleTimeoutMs` uses E2B's own auto-pause.
+
+## Previews
+
+`box.preview(port)` returns E2B's public URL for that port. You don't need to declare ports up front.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `E2B_API_KEY` | Your E2B API key, from the E2B dashboard |
+
+## API reference
+
+### `e2b(options?)`
+
+- `template?: string`. The E2B template to start from.
+
+`box.native` is the E2B SDK's `Sandbox` object.
+
+## Limitations
+
+- Keys are best-effort. Use a `locator` for exact get-or-create.
+- E2B sets CPU and memory per template. Build a template with the machine you need.
+
+## Next steps
+
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)
+- [Give your agent a sandbox](/guides/give-your-agent-a-sandbox)

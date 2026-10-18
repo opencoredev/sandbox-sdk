@@ -1,0 +1,57 @@
+---
+title: Errors
+description: SandboxError, its codes, and when each one happens. A non-zero exit code is never an error.
+---
+
+The SDK throws only when the sandbox, the provider, or the request fails. A command that exits non-zero, times out, or is aborted resolves normally with `ok: false`. When the SDK does throw, it always throws `SandboxError`.
+
+```ts
+import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+try {
+  await using box = await createSandbox(e2b(), { network: "none" });
+  await box.files.edit("app/index.ts", { find: "foo()", replace: "bar()" });
+} catch (error) {
+  if (!(error instanceof SandboxError)) throw error;
+  if (error.retryable) {
+    console.warn("try again:", error.message);
+  } else {
+    console.error(error.code, error.message, error.hint);
+  }
+}
+```
+
+## Fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `code` | see below | What kind of failure |
+| `message` | `string` | "What happened. Why. What to do next." |
+| `retryable` | `boolean` | Whether the same call can succeed if you retry it |
+| `hint` | `string` | The next step on its own, for UIs |
+| `provider` | `string` | Provider name |
+| `sandboxId` | `string \| undefined` | The sandbox involved, when there is one |
+| `cause` | `unknown` | The provider's original error |
+
+Secrets are redacted from `message`, `cause`, and logs.
+
+## Codes
+
+| Code | When |
+| --- | --- |
+| `auth` | Missing or rejected credentials |
+| `not_found` | The sandbox ID doesn't exist |
+| `quota` | The provider's limits or billing stopped the request |
+| `unavailable` | The provider is down or unreachable |
+| `unsupported` | The provider can't do what you asked, such as a size or network policy |
+| `timeout` | A provider operation took too long |
+| `aborted` | Your `signal` fired |
+| `outcome_unknown` | The request may or may not have happened, for example a create that lost its connection. Check before retrying. |
+| `process_exited` | A process exited before it was ready. Carries the exit code and the last 50 log lines. |
+| `port_not_ready` | A preview or readiness check never got an answer |
+| `edit_not_found` | `files.edit` found no match |
+| `edit_not_unique` | `files.edit` found more than one match. The message lists their line numbers. |
+| `file_not_found` | The path doesn't exist |
+| `invalid_argument` | The request itself is invalid |
+| `provider` | Any other provider failure |
