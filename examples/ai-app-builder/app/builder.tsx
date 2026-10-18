@@ -249,7 +249,7 @@ export function Builder({ provider, model }: { provider: string; model: string }
             key={src}
             src={src}
             title="App preview"
-            sandbox="allow-scripts allow-forms allow-same-origin"
+            sandbox="allow-scripts allow-forms"
           />
         ) : (
           <div className="placeholder">
