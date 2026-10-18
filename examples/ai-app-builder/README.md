@@ -41,7 +41,7 @@ To try it without a model or API key, set `AI_MODEL=scripted`. A fake model repl
 - `app/preview/[[...path]]/route.ts` proxies `box.preview(3000)`. Provider access headers, such as Daytona's preview token, stay on the server, and a local Docker preview bound to `127.0.0.1` works from any device that can reach the Next server.
 - `app/api/sandbox/route.ts` destroys the session's sandbox when you click **New sandbox**.
 
-The preview iframe is sandboxed without `allow-same-origin`, so code the agent writes can't read the builder's cookies or storage. Generated apps that need `localStorage` won't have it here. To give them storage, serve previews from a separate origin (for example the provider's preview URL) and add `allow-same-origin` there.
+The preview iframe runs on the builder's own origin so generated apps can use `localStorage`. That is fine for a local tool. If you deploy this for other people, serve previews from a separate origin.
 
 ## Check the sandbox side without a model
 
