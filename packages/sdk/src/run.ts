@@ -117,7 +117,6 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
           truncated: stdout.truncated || stderr.truncated || output.truncated, timedOut, cwd, command: redactor.text(command) };
       } catch (error) {
         filter.flush();
-        if (timedOut) return { ok: false, exitCode: null, stdout: stdout.text(), stderr: stderr.text(), output: output.text(), durationMs: Date.now() - started, truncated: stdout.truncated || stderr.truncated, timedOut: true, cwd, command: redactor.text(command) };
         const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped;
       } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); await provider.files.remove(id, activePath, { recursive: false }).catch(() => {}); bus.end(); }
     }

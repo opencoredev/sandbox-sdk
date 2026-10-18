@@ -226,3 +226,5 @@ Previews are private. `preview()` returns the URL and `X-Daytona-Preview-Token` 
 The offline Daytona tests replace the SDK transport with an SDK-shaped mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
 
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
+
+A command timeout or abort returns a `timedOut` result only after the adapter confirms termination. Cancellation or remote cleanup failures throw `SandboxError`, including `outcome_unknown` when termination cannot be confirmed.
