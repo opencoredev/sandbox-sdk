@@ -155,15 +155,15 @@ export async function measureProvider(
           if (!Buffer.from(bytes).equals(read))
             throw new Error(`File round trip corrupted ${size} bytes`);
         });
-      if (loaded.name === "memory") {
+      if (loaded.name === "memory" || loaded.name === "agentos") {
         record(
           "dev-server",
-          { kind: "skipped", note: "Memory does not launch Node or bind sockets" },
+          { kind: "skipped", note: loaded.name === "agentos" ? "agentOS adapter does not support SDK background-process handles" : "Memory does not launch Node or bind sockets" },
           warmup,
         );
         record(
           "preview-first-byte",
-          { kind: "skipped", note: "Memory previews use .memory.invalid; no HTTP request made" },
+          { kind: "skipped", note: loaded.name === "agentos" ? "Embedded agentOS has no preview URL service" : "Memory previews use .memory.invalid; no HTTP request made" },
           warmup,
         );
       } else {

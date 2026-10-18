@@ -63,7 +63,7 @@ export async function loadProvider(
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
 ): Promise<LoadedProvider> {
-  if (!(name in credentials) && name !== "local" && name !== "memory")
+  if (!(name in credentials) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
       kind: "skipped",
       name,

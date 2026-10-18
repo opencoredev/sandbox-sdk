@@ -77,7 +77,7 @@ export const providerArt: ProviderArt[] = [
     kind: "launch",
     id: "local",
     name: "Local",
-    line: "Docker on your machine. Real Linux, ports on localhost, no account.",
+    line: "Docker or agentOS on your machine. No cloud account.",
     href: "/docs/providers/local",
     paint: providerScenes.local,
   },

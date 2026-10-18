@@ -7,20 +7,22 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
-| | Local | E2B | Vercel Sandbox | Daytona | Memory |
-| --- | --- | --- | --- | --- | --- |
-| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No |
-| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No |
-| `terminal()` | No | No | No | No | No |
-| `network: "none"` | Yes | Yes | Yes | Yes | Yes |
-| `network: { allow }` | No | Yes | Yes | Yes | Yes |
-| `size` presets | Yes | No | Yes | Yes | No |
-| `size` with exact numbers | No | No | No | Yes | No |
-| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes |
-| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes |
-| `ports` must be declared | Yes | No | Yes, up to 15 | No | No |
-| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes |
-| Key mode | exact | best-effort | exact | best-effort | exact |
+| | Local | E2B | Vercel Sandbox | Daytona | Memory | Local (agentOS) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | No | No |
+| `snapshot()` and `from` | Yes | Yes | Yes | Yes | No | No |
+| `terminal()` | No | No | No | No | No | No |
+| `network: "none"` | Yes | Yes | Yes | Yes | Yes | Yes |
+| `network: { allow }` | No | Yes | Yes | Yes | Yes | Yes, literal hosts |
+| `size` presets | Yes | No | Yes | Yes | No | No |
+| `size` with exact numbers | No | No | No | Yes | No | No |
+| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | Yes, whole minutes | Yes | No |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes | No |
+| `ports` must be declared | Yes | No | Yes, up to 15 | No | No | No |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes | Yes |
+| Key mode | exact | best-effort | exact | best-effort | exact | exact, in-process |
+
+agentOS supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local](/providers/local) for both runtime choices.
 
 ## Notes
 

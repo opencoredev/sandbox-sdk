@@ -109,7 +109,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     }),
     upload: (source, target, options) => safe(async () => {
       const root = resolve(source);
-      if (provider.name !== "memory" && (await local.lstat(root)).isDirectory()) {
+      if (provider.name !== "memory" && fs.transfer !== "files" && (await local.lstat(root)).isDirectory()) {
         const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-upload-"));
         const archive = `/tmp/.sandbox-sdk/upload-${crypto.randomUUID()}.tar`;
         try {
@@ -131,7 +131,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
       await visit(root, target);
     }),
     download: (source, target) => safe(async () => {
-      if (provider.name !== "memory" && (await fs.stat(id, pathOf(source))).type === "directory") {
+      if (provider.name !== "memory" && fs.transfer !== "files" && (await fs.stat(id, pathOf(source))).type === "directory") {
         const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-download-"));
         const archive = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}.tar`;
         try {

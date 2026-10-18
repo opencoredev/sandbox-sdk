@@ -53,6 +53,10 @@
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
       "import": "./dist/providers/daytona/index.js"
+    },
+    "./agentos": {
+      "types": "./dist/providers/agentos/index.d.ts",
+      "import": "./dist/providers/agentos/index.js"
     }
   },
   "scripts": {
@@ -63,14 +67,15 @@
     "check:size": "bun scripts/size.ts"
   },
   "devDependencies": {
+    "@daytonaio/sdk": "^0.225.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
-    "ai": "^7.0.143",
-    "vitest": "^3.2.4",
-    "zod": "^4.6.7",
-    "e2b": "2.56.0",
+    "@rivet-dev/agentos-core": "0.4.1",
     "@vercel/sandbox": "3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "ai": "^7.0.143",
+    "e2b": "2.56.0",
+    "vitest": "^3.2.4",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@mastra/core": "^1.78.0",
@@ -80,7 +85,8 @@
     "zod": "^4.6.7",
     "e2b": "^2.56.0",
     "@vercel/sandbox": "^3.8.0",
-    "@daytonaio/sdk": "^0.225.0"
+    "@daytonaio/sdk": "^0.225.0",
+    "@rivet-dev/agentos-core": "0.4.1"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -105,6 +111,9 @@
       "optional": true
     },
     "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@rivet-dev/agentos-core": {
       "optional": true
     }
   },
