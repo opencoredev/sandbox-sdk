@@ -16,7 +16,7 @@ describe("core safety guarantees", () => {
       const chunks: string[] = []; for await (const chunk of box.run("chunks")) chunks.push(chunk.text);
       expect(chunks.join("")).not.toContain(token);
       const connected = await connectSandbox(provider, box.id); expect((await connected.run("printenv TOKEN")).stdout).toBe("[REDACTED]\n");
-      await expect(box.run("fail")).rejects.toMatchObject({ message: "failure [REDACTED]", code: "provider" });
+      await expect(box.run("fail")).rejects.toMatchObject({ message: "failure [REDACTED]. Provider request failed. Check the provider settings and retry.", code: "provider" });
     } finally { await box.destroy(); }
   });
   test("background logs redact secrets split across native chunks", async () => {
@@ -96,5 +96,26 @@ describe("core safety guarantees", () => {
     const running = Promise.resolve(box.run("sleep 0.1")); await pause(20);
     expect(await reapSandboxes(provider, { idleOnly: true })).toBe(0); await running; expect(await reapSandboxes(provider, { idleOnly: true })).toBe(1);
   });
+
+  test("compound secret restart inputs survive reattachment", async () => {
+    const provider = memory({ handlers: { compound({ env, stdout }) { stdout(env.CUSTOM ?? "missing"); return 0; } } });
+    const box = await createSandbox(provider, { secrets: { TOKEN: "secret-value" } });
+    try {
+      const first = await box.start("compound", { name: "compound", env: { CUSTOM: "prefix-secret-value-suffix" } }); await first.wait();
+      const second = (await connectSandbox(provider, box.id)).process("compound"); await second.restart(); await second.wait();
+      expect((await second.logs()).text).toBe("prefix-[REDACTED]-suffix");
+    } finally { await box.destroy(); }
+  });
+  test("unfinished process lines retain at most 1 MB", async () => {
+    const provider = memory({ handlers: { async long({ stdout }) { for (let i = 0; i < 40; i++) { stdout("x".repeat(65536)); await pause(1); } return 0; } } });
+    const box = await createSandbox(provider);
+    try { const process = await box.start("long", { name: "long" }); const lines = []; for await (const line of process.lines()) lines.push(line); expect(Buffer.byteLength(lines[0]?.text ?? "")).toBeLessThanOrEqual(1_048_576); expect(lines[0]?.text).toContain("line truncated"); }
+    finally { await box.destroy(); }
+  });
+  test("native exact-name races preserve created flags across adapter clients", async () => {
+    const base = memory(); const [first, second] = await Promise.all([createSandbox({ ...base }, { key: "race" }), createSandbox({ ...base }, { key: "race" })]);
+    expect(first.id).toBe(second.id); expect([first.created, second.created].filter(Boolean)).toHaveLength(1); await first.destroy();
+  });
+  test("memory honors hard lifetime", async () => { const provider = memory(); const box = await createSandbox(provider, { timeoutMs: 20 }); await pause(40); await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" }); });
 
 });

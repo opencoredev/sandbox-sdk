@@ -8,7 +8,7 @@ export interface CommandContext {
 }
 export type CommandHandler = (context: CommandContext) => number | Promise<number>;
 interface Node { data: Uint8Array | null; modifiedAt: number }
-interface Machine { info: SandboxInfo; nodes: Map<string, Node>; env: Record<string, string>; processes: Map<number, { controller: AbortController; result: Promise<ExecResult> }>; nextPid: number; idleTimeoutMs?: number; idleTimer?: ReturnType<typeof setTimeout>; lifetimeTimer?: ReturnType<typeof setTimeout> }
+interface Machine { info: SandboxInfo; nodes: Map<string, Node>; env: Record<string, string>; processes: Map<number, { controller: AbortController; result: Promise<ExecResult> }>; nextPid: number; active: Set<AbortController>; idleTimeoutMs?: number; idleTimer?: ReturnType<typeof setTimeout>; lifetimeTimer?: ReturnType<typeof setTimeout> }
 export interface MemoryOptions { handlers?: Record<string, CommandHandler> }
 export interface MemoryNative { readonly files: Map<string, Node> }
 /** Offline fake. No git, shell programs outside the handler table, PTYs, or real
@@ -18,7 +18,7 @@ export interface MemoryNative { readonly files: Map<string, Node> }
 export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } {
   const machines = new Map<string, Machine>(); const handlers = new Map<string, CommandHandler>();
   const fail = (message: string, code: "not_found" | "file_not_found" | "invalid_argument") => new SandboxError(`${message}. Memory resource does not exist or request is invalid. Check the path or ID.`, { code, provider: "memory" });
-  const machine = (id: string) => { const value = machines.get(id); if (!value) throw fail(`Sandbox ${id} not found`, "not_found"); if (value.idleTimeoutMs) { clearTimeout(value.idleTimer); value.idleTimer = setTimeout(() => { void provider.destroy(id); }, value.idleTimeoutMs); value.idleTimer.unref?.(); } return value; };
+  const machine = (id: string) => { const value = machines.get(id); if (!value) throw fail(`Sandbox ${id} not found`, "not_found"); if (value.idleTimeoutMs) { clearTimeout(value.idleTimer); value.idleTimer = setTimeout(() => { if (value.active.size) machine(id); else void provider.destroy(id); }, value.idleTimeoutMs); value.idleTimer.unref?.(); } return value; };
   const node = (id: string, path: string) => { const value = machine(id).nodes.get(posix.resolve("/", path)); if (!value) throw fail(`File ${path} not found`, "file_not_found"); return value; };
   const now = () => Date.now();
   function mkdir(id: string, path: string) {
@@ -73,7 +73,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
     if (mode !== "plain") throw fail("Unclosed shell quote", "invalid_argument"); flush(); return tokens;
   }
   async function execute(id: string, input: ExecInput): Promise<ExecResult> {
-    const m = machine(id); const controller = new AbortController(); let timedOut = false;
+    const m = machine(id); const controller = new AbortController(); m.active.add(controller); let timedOut = false;
     const abort = () => { timedOut = true; controller.abort(); };
     input.signal?.addEventListener("abort", abort, { once: true }); if (input.signal?.aborted) abort();
     const timer = setTimeout(abort, input.timeoutMs);
@@ -111,22 +111,22 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
         else segment.push(token);
       }
       await runSegment(";"); return { exitCode: timedOut ? null : exitCode, timedOut };
-    } finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
+    } finally { m.active.delete(controller); clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
   }
   const provider: Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
     name: "memory", keyMode: "exact", capabilities: new Set<"size" | "network-policy">(["size", "network-policy"]), files,
     register(name, handler) { handlers.set(name, handler); },
     async create(input: CreateInput) {
-      if (input.key) { const existing = [...machines.values()].find(m => m.info.key === input.key); if (existing) return existing.info; }
+      if (input.key) { const existing = [...machines.values()].find(m => m.info.key === input.key); if (existing) throw new SandboxError("Key already exists. Another caller created it. Find the existing sandbox.", { code: "provider", provider: "memory" }); }
       const id = `mem-${crypto.randomUUID()}`; const info: SandboxInfo = { id, key: input.key, labels: { ...input.labels }, state: "running", createdAt: now() };
-      machines.set(id, { info, nodes: new Map(), env: { ...input.env }, processes: new Map(), nextPid: 100, idleTimeoutMs: input.idleTimeoutMs });
+      machines.set(id, { info, nodes: new Map(), env: { ...input.env }, processes: new Map(), nextPid: 100, active: new Set(), idleTimeoutMs: input.idleTimeoutMs });
       if (input.timeoutMs) { const m = machine(id); m.lifetimeTimer = setTimeout(() => { void provider.destroy(id); }, input.timeoutMs); m.lifetimeTimer.unref?.(); }
       mkdir(id, "/workspace"); mkdir(id, "/tmp"); return info;
     },
     async find(key) { return [...machines.values()].find(m => m.info.key === key)?.info; },
     async connect(id) { return machine(id).info; },
     async list(labels) { return [...machines.values()].map(m => m.info).filter(info => Object.entries(labels).every(([key, value]) => info.labels[key] === value)); },
-    async destroy(id) { const m = machines.get(id); if (!m) return; clearTimeout(m.idleTimer); clearTimeout(m.lifetimeTimer); for (const proc of m.processes.values()) proc.controller.abort(); await Promise.allSettled([...m.processes.values()].map(proc => proc.result)); machines.delete(id); },
+    async destroy(id) { const m = machines.get(id); if (!m) return; clearTimeout(m.idleTimer); clearTimeout(m.lifetimeTimer); for (const controller of m.active) controller.abort(); for (const proc of m.processes.values()) proc.controller.abort(); await Promise.allSettled([...m.processes.values()].map(proc => proc.result)); machines.delete(id); },
     exec: execute,
     async previewUrl(id, port) { machine(id); return { url: `https://${id}-${port}.memory.invalid/` }; },
     native(id) { return { files: machine(id).nodes }; },

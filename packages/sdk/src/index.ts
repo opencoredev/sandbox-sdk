@@ -37,10 +37,14 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
         if (stored) { try { info = await provider.connect(stored); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; } }
         info ??= await provider.find(options.key);
       }
-      const created = !info;
+      let created = !info;
       if (!info) {
         const { secrets, locator: _locator, keyMode: _keyMode, ...input } = options;
-        const pending = provider.create({ ...input, env: { ...options.env, ...secrets }, labels: { ...options.labels, ...sdkLabel } });
+        const pending = provider.create({ ...input, env: { ...options.env, ...secrets }, labels: { ...options.labels, ...sdkLabel } }).catch(async error => {
+          // A native unique-name conflict can race the initial lookup on another client.
+          if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) { const existing = await provider.find(options.key); if (existing) { created = false; return existing; } }
+          throw error;
+        });
         if (options.signal) {
           const signal = options.signal;
           let abort = () => {};
@@ -48,10 +52,10 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
             abort = () => reject(new SandboxError("Creation aborted. The signal was cancelled. Any late sandbox will be destroyed.", { code: "aborted" }));
             signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
           });
-          const arrival = pending.then(async value => { if (signal.aborted) { await provider.destroy(value.id); throw new SandboxError("Creation aborted. Late sandbox destroyed. Retry with a fresh signal.", { code: "aborted" }); } return value; });
+          const arrival = pending.then(async value => { if (signal.aborted) { if (created) await provider.destroy(value.id); throw new SandboxError("Creation aborted. Late sandbox destroyed. Retry with a fresh signal.", { code: "aborted" }); } return value; });
           try { info = await Promise.race([arrival, cancellation]); } finally { signal.removeEventListener("abort", abort); }
         } else info = await pending;
-        owned = info;
+        if (created) owned = info;
       }
       if (options.signal?.aborted) { if (owned) await provider.destroy(owned.id); owned = undefined; throw new SandboxError("Creation aborted. Sandbox arrived after cancellation and was destroyed. Retry with a fresh signal.", { code: "aborted" }); }
       if (options.key) await options.locator?.set(options.key, info.id);
@@ -72,7 +76,7 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
 export function connectSandbox<N, C extends Capability>(provider: Provider<N, C>, id: string, options?: Pick<CreateOptions, "secrets">): Promise<Sandbox<N, C>>;
 export async function connectSandbox(provider: Provider, id: string, options: Pick<CreateOptions, "secrets"> = {}): Promise<SandboxBase<unknown>> {
   const redactor = new Redactor(); redactor.add(Object.values(options.secrets ?? {}));
-  try { const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor); }
+  try { validate(provider, options); const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor); }
   catch (error) { throw redactor.error(error, provider.name, id); }
 }
 export async function listSandboxes(provider: Provider, options: { labels?: Labels } = {}): Promise<SandboxInfo[]> {

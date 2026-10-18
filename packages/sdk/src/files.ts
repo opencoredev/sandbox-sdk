@@ -29,14 +29,14 @@ export function globMatch(path: string, glob: string) {
   const pattern = glob.split(/(\*\*\/|\*\*|\*|\?)/).map(part => part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "." : part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")).join("");
   return new RegExp(`^${pattern}$`).test(path) || (!glob.includes("/") && new RegExp(`^${pattern}$`).test(posix.basename(path)));
 }
-export function makeFiles(provider: Provider, id: string, redactor: Redactor): Files {
-  const fs = provider.files;
+export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}): Files & Disposable {
+  const fs = provider.files; const watchers = new Set<() => void>();
   const hostExec = promisify(execFile);
   async function remote(command: string) {
     const result = await provider.exec(id, { command, cwd: "/workspace", env: defaults, timeoutMs: 120_000, onChunk() {} });
     if (result.exitCode !== 0) throw new SandboxError("File transfer failed. The remote archive command failed. Ensure tar is installed and paths are accessible.", { code: "provider" });
   }
-  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
+  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   async function list(path = ".", options: { recursive?: boolean; glob?: string } = {}): Promise<FileInfo[]> {
     const root = pathOf(path); const result: FileInfo[] = [];
     async function visit(dir: string) {
@@ -61,9 +61,9 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor): F
     await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path); await fs.mkdir(id, posix.dirname(dest)); await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
   }
   const gitDir = "/tmp/.sandbox-sdk/changes.git";
-  async function git(command: string): Promise<string> {
+  async function git(command: string, stdin?: string): Promise<string> {
     let output = "";
-    const result = await provider.exec(id, { command: `git --git-dir=${quote(gitDir)} --work-tree=/workspace ${command}`, cwd: "/workspace", env: { ...defaults, GIT_INDEX_FILE: `${gitDir}/sdk.index` }, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") output += chunk.text; } });
+    const result = await provider.exec(id, { command: `git --git-dir=${quote(gitDir)} --work-tree=/workspace ${command}`, cwd: "/workspace", env: { ...defaults, GIT_INDEX_FILE: `${gitDir}/sdk.index` }, stdin, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") output += chunk.text; } });
     if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git could not update the hidden index. Ensure git is installed and /workspace is readable.", { code: "provider" });
     return output;
   }
@@ -72,7 +72,12 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor): F
       const result = await provider.exec(id, { command: `git init --bare ${quote(gitDir)}`, cwd: "/workspace", env: defaults, timeoutMs: 10_000, onChunk() {} });
       if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git is unavailable. Install git in the sandbox image.", { code: "unsupported" });
     }
-    await git("add --all -- ."); return (await git("write-tree")).trim();
+    // Feed individual files: git add would collapse nested repositories into gitlinks.
+    const paths: string[] = [];
+    async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git") continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
+    await collect("/workspace"); await git("read-tree --empty");
+    if (paths.length) await git("update-index --add --remove -z --stdin", paths.join("\0") + "\0");
+    return (await git("write-tree")).trim();
   }
   async function filesExist(path: string) { try { await fs.stat(id, path); return true; } catch (error) { if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code)) return false; throw error; } }
   async function snapshot(): Promise<Record<string, string>> {
@@ -89,6 +94,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor): F
     return parsed;
   }
   return {
+    [Symbol.dispose]() { for (const stop of watchers) stop(); },
     read, write,
     list: (path, options) => safe(() => list(path, options)),
     stat: path => safe(() => fs.stat(id, pathOf(path))),
@@ -154,6 +160,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor): F
       return result;
     }),
     watch(path, callback, options = {}) {
+      guard();
       let stopped = false; let previous: Map<string, string> | undefined; let timer: ReturnType<typeof setTimeout>;
       const poll = async () => {
         try {
@@ -166,7 +173,8 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor): F
         } catch (error) { options.onError?.(redactor.error(error, provider.name, id)); }
         if (!stopped) { timer = setTimeout(() => void poll(), options.intervalMs ?? 250); timer.unref?.(); }
       };
-      void poll(); return () => { stopped = true; clearTimeout(timer); };
+      const stop = () => { stopped = true; clearTimeout(timer); watchers.delete(stop); };
+      watchers.add(stop); void poll(); return stop;
     },
     mark: (name = `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`) => safe(async () => { await write(checkpoint(name), provider.name === "memory" ? JSON.stringify(await snapshot()) : await tree()); return name; }),
     changes: (options = {}) => safe(async () => {

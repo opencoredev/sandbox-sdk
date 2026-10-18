@@ -4,6 +4,7 @@ import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
 test("capability methods are absent from unsupported provider types", async () => {
   const box = await createSandbox(memory());
+  // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
   if (false) {
     // @ts-expect-error memory has no pause capability
     await box.pause();

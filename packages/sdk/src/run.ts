@@ -50,16 +50,17 @@ export class OutputBus {
 export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => void) {
   const queue: OutputChunk[] = [];
   function drain(final = false) {
+    const secrets = redactor.secrets;
     while (queue.length) {
       const first = queue[0]; if (!first) break;
       const text = queue.filter(chunk => chunk.stream === first.stream).map(chunk => chunk.text).join("");
-      const secret = redactor.secrets.find(secret => text.startsWith(secret));
+      const secret = secrets.find(secret => text.startsWith(secret));
       if (secret) {
         emit({ stream: first.stream, text: "[REDACTED]" });
         let remaining = secret.length;
         for (const chunk of queue) if (chunk.stream === first.stream && remaining) { const count = Math.min(remaining, chunk.text.length); chunk.text = chunk.text.slice(count); remaining -= count; }
       } else {
-        if (!final && redactor.secrets.some(secret => secret.startsWith(text))) {
+        if (!final && secrets.some(secret => secret.startsWith(text))) {
           if (queue.reduce((size, chunk) => size + Buffer.byteLength(chunk.text), 0) <= 1_048_576) break;
           // A stalled stream must not retain arbitrary output from another stream.
           // Conservatively redact its ambiguous prefix, preserving arrival order.
@@ -67,20 +68,21 @@ export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => 
         }
         // Emit up to the next potentially secret-leading character.
         let count = 1;
-        while (count < first.text.length && !redactor.secrets.some(secret => secret.startsWith(first.text[count] ?? ""))) count++;
+        while (count < first.text.length && !secrets.some(secret => secret.startsWith(first.text[count] ?? ""))) count++;
         emit({ stream: first.stream, text: first.text.slice(0, count) }); first.text = first.text.slice(count);
       }
       for (let index = queue.length - 1; index >= 0; index--) if (!queue[index]?.text) queue.splice(index, 1);
     }
   }
-  return { push(chunk: OutputChunk) { queue.push({ ...chunk }); drain(); }, flush() { drain(true); } };
+  return { push(chunk: OutputChunk) { if (!redactor.secrets.length) { emit(chunk); return; } queue.push({ ...chunk }); drain(); }, flush() { drain(true); } };
 }
-export function makeRun(provider: Provider, id: string, redactor: Redactor, baseEnv: Record<string, string>, count: (bytes: number) => void) {
+export function makeRun(provider: Provider, id: string, redactor: Redactor, baseEnv: Record<string, string>, count: (bytes: number) => void, guard: () => void = () => {}) {
   return (command: string, initial: RunOptions = {}): RunHandle => {
     let options = { ...initial }; let promise: Promise<RunResult> | undefined;
     const bus = new OutputBus();
     const begin = () => promise ??= execute().catch(error => { const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped; });
     async function execute(): Promise<RunResult> {
+      guard();
       const timeoutMs = options.timeoutMs ?? 120_000; const max = options.maxOutputBytes ?? 1_048_576;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(max) || max < 1) invalid("timeoutMs and maxOutputBytes must be positive");
       const cwd = pathOf(options.cwd); const started = Date.now();

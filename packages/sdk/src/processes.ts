@@ -21,7 +21,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
   const handles = new Map<string, ProcessHandle>();
   const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   const nameOf = (name: string) => { if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) invalid("Process name must contain 1–128 letters, numbers, hyphens or underscores"); return `${root}/${name}`; };
-  const exec = (command: string, processEnv: Record<string, string> = {}) => provider.exec(id, { command, cwd: "/workspace", env: { ...env, ...processEnv, ...defaults }, timeoutMs: 10_000, onChunk() {} });
+  const exec = (command: string, processEnv: Record<string, string> = {}, stdin?: string) => provider.exec(id, { command, stdin, cwd: "/workspace", env: { ...env, ...processEnv, ...defaults }, timeoutMs: 10_000, onChunk() {} });
   async function info(name: string): Promise<ProcessInfo> {
     const dir = nameOf(name); const raw: unknown = JSON.parse(await files.read(`${dir}/spec.json`));
     if (!raw || typeof raw !== "object" || !("command" in raw) || typeof raw.command !== "string" || !("startedAt" in raw) || typeof raw.startedAt !== "number") invalid("Invalid process record");
@@ -65,9 +65,10 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
       async *lines(options = {}) {
         let cursor = options.after; const pending = { stdout: "", stderr: "" };
         do {
-          const page = await safe(() => readEvents({ after: cursor })); cursor = page.nextCursor;
+          const page = await safe(() => readEvents({ after: cursor, maxBytes: 1_048_576 })); cursor = page.nextCursor;
           for (const event of page.events) {
             pending[event.stream] += event.text;
+            if (Buffer.byteLength(pending[event.stream]) > 1_048_576) pending[event.stream] = "[line truncated]" + Buffer.from(pending[event.stream]).subarray(-1_048_550).toString();
             if (pending[event.stream].endsWith("\n")) { yield { text: pending[event.stream].slice(0, -1), stream: event.stream, cursor: event.cursor }; pending[event.stream] = ""; }
           }
           if (!page.truncated && status !== "running" && status !== "starting") {
@@ -87,13 +88,13 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         status = "exited";
       }),
       restart: () => safe(async () => { await handle.stop(); if (!launch) {
-        const current = await info(name); const raw: unknown = JSON.parse(await files.read(`${dir}/spec.json`));
+        const current = await info(name); const raw: unknown = JSON.parse(await files.read(`${dir}/restart.json`));
         if (!raw || typeof raw !== "object") invalid("Invalid process restart record");
         const options: StartOptions = { name };
         if ("cwd" in raw && typeof raw.cwd === "string") options.cwd = raw.cwd;
         if ("env" in raw && raw.env && typeof raw.env === "object") {
           options.env = {};
-          for (const [key, value] of Object.entries(raw.env)) if (typeof value === "string") options.env[key] = value === "[REDACTED]" ? env[key] ?? "" : value;
+          for (const [key, value] of Object.entries(raw.env)) if (typeof value === "string") options.env[key] = value;
         }
         if ("readyTimeoutMs" in raw && typeof raw.readyTimeoutMs === "number") options.readyTimeoutMs = raw.readyTimeoutMs;
         if ("readiness" in raw && raw.readiness && typeof raw.readiness === "object") {
@@ -102,7 +103,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           else if ("port" in ready && typeof ready.port === "number") options.ready = { port: ready.port };
           else if ("http" in ready && ready.http && typeof ready.http === "object" && "port" in ready.http && typeof ready.http.port === "number") options.ready = { http: { port: ready.http.port, path: "path" in ready.http && typeof ready.http.path === "string" ? ready.http.path : undefined } };
         }
-        await start(current.command, options);
+        await start("command" in raw && typeof raw.command === "string" ? raw.command : current.command, options);
       } else await launch(); }),
       wait: () => safe(async () => { while (!(await files.exists(`${dir}/exit`))) await delay(25); const current = await info(name); status = current.status; return { exitCode: current.exitCode, signal: current.exitCode === 143 ? "SIGTERM" : current.exitCode === 137 ? "SIGKILL" : null }; }),
     };
@@ -121,6 +122,9 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
       const launch = async () => {
         controller?.state("starting"); controller?.ready(false);
         await files.write(`${dir}/spec.json`, JSON.stringify({ command: redactor.text(command), cwd: pathOf(options.cwd), env: Object.fromEntries(Object.entries(options.env ?? {}).map(([key, value]) => [key, redactor.text(value)])), startedAt: Date.now(), port, readiness: options.ready && ("log" in options.ready ? { log: options.ready.log.source, flags: options.ready.log.flags } : options.ready), readyTimeoutMs: options.readyTimeoutMs }));
+        const restart = JSON.stringify({ command, cwd: pathOf(options.cwd), env: options.env, readiness: options.ready && ("log" in options.ready ? { log: options.ready.log.source, flags: options.ready.log.flags } : options.ready), readyTimeoutMs: options.readyTimeoutMs });
+        if (provider.name === "memory") await files.write(`${dir}/restart.json`, restart);
+        else await exec(`umask 077; cat > ${quote(`${dir}/restart.json`)}`, {}, restart);
         const priorBase = await files.exists(`${dir}/base`) ? Number(await files.read(`${dir}/base`)) + (await files.stat(`${dir}/out.log`)).size : 0;
         await files.write(`${dir}/out.log`, ""); await files.write(`${dir}/base`, String(priorBase));
         if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
@@ -152,10 +156,13 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           // No resident daemon: a detached process group writes durable records itself.
           const sedPath = `${dir}/redact.sed`;
           const patterns = redactor.secrets.flatMap(secret => secret.split("\n")).filter(Boolean);
-          await files.write(sedPath, patterns.map(secret => `s|${secret.replace(/[\\[\].*^$|]/g, "\\$&")}|[REDACTED]|g`).join("\n") + "\n");
+          await files.write(sedPath, patterns.flatMap(secret => {
+            const escape = (text: string) => text.replace(/[\\[\].*^$|]/g, "\\$&");
+            return [`s|${escape(secret)}|[REDACTED]|g`, ...Array.from({ length: secret.length - 1 }, (_, index) => [`s|${escape(secret.slice(0, secret.length - 1 - index))}$|[REDACTED]|`, `s|^${escape(secret.slice(index + 1))}|[REDACTED]|`]).flat()];
+          }).join("\n") + "\n");
           await exec(`chmod 600 ${quote(sedPath)}`);
           const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
-          const reader = (stream: string, fifo: string) => `(sed -u -f ${quote(sedPath)} < ${quote(fifo)} | while IFS= read -r line || [ -n "$line" ]; do append ${stream} "$line"; done) &`;
+          const reader = (stream: string, fifo: string) => `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
           const wrapper = `trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; cd ${quote(pathOf(options.cwd))} || exit 1; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; sh -c ${quote(command)} > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
           if (provider.startProcess) {
             const hook = await provider.startProcess(id, { command: wrapper, cwd: "/workspace", env: { ...env, ...options.env, ...defaults }, onChunk() {} });

@@ -33,7 +33,8 @@ export class Redactor {
   get secrets() { return [...this.values].sort((a, b) => b.length - a.length); }
   get maxLength() { return Math.max(1, ...[...this.values].map(value => value.length)); }
   error(error: unknown, provider: string, sandboxId?: string): SandboxError {
-    const message = error instanceof Error ? error.message : String(error);
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = error instanceof SandboxError ? detail : `${detail}. Provider request failed. Check the provider settings and retry.`;
     const options: ErrorOptions = error instanceof SandboxError ? error : { code: "provider" };
     return new SandboxError(this.text(message), {
       code: options.code, retryable: options.retryable, hint: this.text(options.hint ?? "Check the provider and retry."), provider, sandboxId,

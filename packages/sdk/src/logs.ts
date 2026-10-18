@@ -15,7 +15,7 @@ export function encodeChunk(chunk: OutputChunk): string[] {
   return records;
 }
 export function decodePage(bytes: Uint8Array, offset: number, max: number, base: number) {
-  const buffer = Buffer.from(bytes); const events: (OutputChunk & { cursor: string })[] = [];
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength); const events: (OutputChunk & { cursor: string })[] = [];
   let position = Math.min(offset, buffer.length), kept = 0;
   while (position < buffer.length && kept < max) {
     const start = position === 0 ? 0 : buffer.lastIndexOf(10, position - 1) + 1;
