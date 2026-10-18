@@ -1,5 +1,6 @@
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
+import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
@@ -21,14 +22,17 @@ with tempfile.TemporaryFile() as f:
   p.wait()
  with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed},m)
 `;
-export async function raw(box: Session, argv: string[], stdin?: Uint8Array) {
+export async function raw(box: Session, argv: string[], stdin?: Uint8Array, timeoutMs = 30_000) {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       if (stdin) controller.enqueue(stdin);
       controller.close();
     },
   });
-  const result = await box.run(argv, { privileged: true, stdin: stream, timeoutMs: 30_000 });
+  const result = await deadline(
+    (signal) => box.run(argv, { privileged: true, stdin: stream, timeoutMs, signal }),
+    timeoutMs,
+  );
   if (result.exitCode !== 0 || result.timedOut)
     throw failure("Guest operation failed", result.timedOut ? "timeout" : "provider");
   return new TextDecoder().decode(result.stdout);
@@ -62,13 +66,21 @@ export async function execute(box: Session, input: ExecInput) {
       controller.close();
     },
   });
-  const handle = box.run(["python3", "-c", supervisor], { privileged: true, stdin });
+  const transport = new AbortController();
+  const handle = box.run(["python3", "-c", supervisor], { privileged: true, stdin, signal: transport.signal });
+  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
   async function drain(stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr") {
     const decoder = new TextDecoder();
-    for await (const data of stream) {
-      const text = decoder.decode(data, { stream: true });
-      if (text) input.onChunk({ stream: kind, text });
-    }
+    const reader = stream.getReader();
+    readers.push(reader);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text) input.onChunk({ stream: kind, text });
+      }
+    } finally { reader.releaseLock(); }
     const text = decoder.decode();
     if (text) input.onChunk({ stream: kind, text });
   }
@@ -94,7 +106,7 @@ else: raise RuntimeError('PID unavailable')
 try: os.killpg(pid,signal.SIGKILL)
 except ProcessLookupError: pass`,
       marker,
-    ]);
+    ], undefined, 1000);
   }
   try {
     if (input.signal?.aborted) cancel();
@@ -103,13 +115,15 @@ except ProcessLookupError: pass`,
       try {
         await killGroup();
       } catch {
-        await box.close();
+        await deadline(() => box.close(), 1000).catch(() => {});
         throw failure(
           "Process cancellation could not be confirmed; the VM was terminated",
           "outcome_unknown",
         );
       }
-      await completion;
+      await deadline(() => completion, 250).catch(() => {});
+      transport.abort();
+      for (const reader of readers) void reader.cancel().catch(() => {});
       return { exitCode: null, timedOut: true };
     }
     const value: unknown = JSON.parse(await raw(box, ["cat", `${marker}.exit`]));
@@ -128,12 +142,16 @@ except ProcessLookupError: pass`,
     try {
       await killGroup();
     } catch {
-      await box.close();
+      await deadline(() => box.close(), 1000).catch(() => {});
     }
     throw error;
   } finally {
+    transport.abort();
+    for (const reader of readers) {
+      try { void reader.cancel().catch(() => {}); } catch {}
+    }
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
-    await raw(box, ["rm", "-f", marker, `${marker}.exit`]).catch(() => {});
+    await raw(box, ["rm", "-f", marker, `${marker}.exit`], undefined, 250).catch(() => {});
   }
 }

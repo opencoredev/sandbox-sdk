@@ -1,3 +1,4 @@
+import type { ProcessRunResult } from "@tenkicloud/sandbox";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanupTenki, MockSession, MockTenki, tenkiState } from "./tenki-mock.js";
 import { tenki } from "../src/providers/tenki/index.js";
@@ -142,6 +143,31 @@ describe("Tenki mappings", () => {
       code: "unsupported",
     });
     expect(tenkiState.boxes.size).toBe(0);
+  });
+  test("stalled termination streams settle after the cancellation grace period", async () => {
+    const box = await createSandbox(factory());
+    const run = MockSession.prototype.run;
+    let transportSignal: AbortSignal | undefined;
+    vi.spyOn(MockSession.prototype, "run").mockImplementation(function (argv, options) {
+      const handle = run.call(this, argv, options);
+      if (!argv[2]?.includes("subprocess.Popen")) return handle;
+      transportSignal = options?.signal;
+      void Promise.resolve(handle).catch(() => {});
+      return Object.assign(new Promise<ProcessRunResult>(() => {}), {
+        ...handle,
+        stdout: new ReadableStream<Uint8Array>(),
+        stderr: new ReadableStream<Uint8Array>(),
+      });
+    });
+    const started = Date.now();
+    const pending = Promise.resolve(box.run("sleep 20", { timeoutMs: 50 }));
+    const result = await Promise.race([
+      pending,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1800)),
+    ]);
+    expect(result).toMatchObject({ timedOut: true, exitCode: null });
+    expect(Date.now() - started).toBeLessThan(1800);
+    expect(transportSignal?.aborted).toBe(true);
   });
   test("literal SDK paths in user commands are preserved", async () => {
     const box = await createSandbox(factory());
