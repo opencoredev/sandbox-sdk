@@ -63,3 +63,12 @@ describe("real Linux primitive transport", () => {
   });
 
 });
+
+test("fallback logs preserve UTF-8 split at a 4096-byte reader boundary", async () => {
+  const box = await createSandbox(await shellProvider());
+  try {
+    const proc = await box.start(`node -e 'process.stdout.write("a".repeat(4095)+"😀\\n")'`, { name: "utf8" }); await proc.wait();
+    const lines = []; for await (const line of proc.lines()) lines.push(line.text);
+    expect(lines).toEqual(["a".repeat(4095) + "😀"]);
+  } finally { await box.destroy(); }
+});

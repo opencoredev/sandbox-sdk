@@ -232,3 +232,5 @@ A command timeout or abort returns a `timedOut` result only after the adapter co
 Secret filtering protects each command stream and the interleaved `output` and async chunks, including secrets split between stdout and stderr.
 
 Process line cursors include unfinished fragments from both streams. Pass the opaque string unchanged when resuming, including from another client. Malformed serialized cursors fail with `invalid_argument`.
+
+Durable process logs preserve UTF-8 code points across shell-reader blocks. The fallback requires the standard Linux `dd`, `tail`, and `od` utilities.
