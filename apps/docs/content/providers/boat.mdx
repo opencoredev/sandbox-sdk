@@ -112,7 +112,7 @@ Returns a provider. `box.native.sandbox` is Boat's sandbox metadata, and `box.na
 - No SDK pause, snapshots, or terminals.
 - Boat's native auto-stop still applies. Keep a VM running if you need its background processes and `/tmp` records.
 - Commands use Boat's detached API and attach stream. Timeout and abort stop the command's process tree before returning.
-- File primitives run Node.js through the command API, so directory-heavy workloads make more API calls than a native filesystem client.
+- File writes transfer contents through Boat's files API, then use Node.js to copy them to the destination. Other file primitives run Node.js through the command API, so directory-heavy workloads make more API calls than a native filesystem client.
 
 ## Next steps
 

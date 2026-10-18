@@ -17,6 +17,9 @@ const bodySchema = z
     noEnv: z.boolean().optional(),
     type: z.string().optional(),
     port: z.number().optional(),
+    path: z.string().optional(),
+    content: z.string().optional(),
+    encoding: z.enum(["utf8", "base64"]).optional(),
   })
   .passthrough();
 type Chunk = { type: "stdout" | "stderr"; data: string };
@@ -42,6 +45,8 @@ export async function boatMock() {
   const boxes = new Map<string, Box>();
   const creates: unknown[] = [];
   const calls: string[] = [];
+  const commands: string[] = [];
+  const fileWrites: { path: string; mode: number; directoryMode: number }[] = [];
   let status = 0;
   let launchDelayMs = 0;
   let failStream = false;
@@ -60,14 +65,12 @@ export async function boatMock() {
     desktopAvailable: false,
     snapshotAvailable: false,
   });
+  const rewrite = (box: Box, text: string) =>
+    text
+      .replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) => join(box.root, path))
+      .replace(/\.listen\(3000/g, `.listen(${box.port}`);
   function run(box: Box, command: string): Command {
-    const rewrite = (text: string) =>
-      text
-        .replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) =>
-          join(box.root, path),
-        )
-        .replace(/\.listen\(3000/g, `.listen(${box.port}`);
-    const child = spawn("sh", ["-c", rewrite(command)], {
+    const child = spawn("sh", ["-c", rewrite(box, command)], {
       cwd: box.root,
       env: { ...process.env, ...box.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -224,6 +227,32 @@ export async function boatMock() {
         json(res, { ok: true, type: "sandbox.info", sandbox: sandbox(box) });
         return;
       }
+      if (parts[2] === "files" && req.method === "PUT") {
+        const path = body.path;
+        if (!path) throw new Error("Missing file path");
+        const content = Buffer.from(
+          body.encoding === "base64" ? (body.content ?? "") : rewrite(box, body.content ?? ""),
+          body.encoding ?? "utf8",
+        );
+        if (content.length > 5 * 1024 * 1024) throw new Error("Boat file API size limit");
+        if (!path.startsWith("/tmp/") && !path.startsWith("/home/user/"))
+          throw new Error("Boat file API path restriction");
+        await fs.writeFile(join(box.root, path), content);
+        fileWrites.push({
+          path,
+          mode: (await fs.stat(join(box.root, path))).mode & 0o777,
+          directoryMode: (await fs.stat(join(box.root, path, ".."))).mode & 0o777,
+        });
+        json(res, {
+          ok: true,
+          type: "file.written",
+          success: true,
+          path,
+          encoding: body.encoding ?? "utf8",
+          size: content.length,
+        });
+        return;
+      }
       if (parts[2] === "host") {
         json(res, {
           ok: true,
@@ -234,6 +263,7 @@ export async function boatMock() {
         return;
       }
       if (parts[2] === "commands" && parts.length === 3 && req.method === "POST") {
+        commands.push(body.command ?? "");
         if (body.command?.startsWith("sudo mkdir -p /workspace")) {
           await fs.mkdir(join(box.root, "workspace"), { recursive: true });
           json(res, {
@@ -340,6 +370,8 @@ export async function boatMock() {
     boxes,
     creates,
     calls,
+    commands,
+    fileWrites,
     set status(value: number) {
       status = value;
     },

@@ -24,6 +24,7 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
   let finished = false;
   let launchAttempted = false;
   let stdinPath: string | undefined;
+  let envDir: string | undefined;
   async function stop() {
     if (processId === undefined) return;
     try {
@@ -39,9 +40,33 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
     }
   }
   try {
-    const env = Object.entries(input.env)
-      .map(([key, value]) => quote(`${key}=${value}`))
-      .join(" ");
+    // Boat has no per-command env field. Transfer values through its files API,
+    // inside a private directory, never through recorded command text or argv.
+    envDir = `/tmp/.sandbox-sdk/env-${crypto.randomUUID()}`;
+    const envPath = `${envDir}/env`;
+    const prepare =
+      "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
+    const prepared = await api.command({
+      sandboxId: id,
+      commandRequest: {
+        command: `node -e ${quote(prepare)} ${quote(envDir)}`,
+        timeoutSeconds: 60,
+      },
+    });
+    if (!("exitCode" in prepared) || prepared.exitCode !== 0)
+      throw failure("Boat could not prepare command environment", "provider", id);
+    if (cancelled) return { exitCode: null, timedOut: true };
+    await api.writeFile({
+      sandboxId: id,
+      fileWriteRequest: {
+        path: envPath,
+        content:
+          Object.entries(input.env)
+            .map(([key, value]) => `export ${quote(`${key}=${value}`)}`)
+            .join("\n") + "\n",
+        encoding: "utf8",
+      },
+    });
     // A finite pipe supplies stdin and EOF. Values never become shell syntax.
     const bytes = Buffer.from(input.stdin ?? "");
     let source = `printf %s ${quote(bytes.toString("base64"))} | base64 -d | `;
@@ -66,7 +91,7 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
       redirect = ` < ${quote(stdinPath)}`;
     }
     if (cancelled) return { exitCode: null, timedOut: true };
-    const command = `${source}(cd ${quote(input.cwd)} && exec env ${env} sh -c ${quote(input.command)})${redirect}`;
+    const command = `${source}(chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} && /bin/rmdir -- ${quote(envDir)} && cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
     launchAttempted = true;
     const started = await api.command({
       sandboxId: id,
@@ -124,6 +149,13 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
     stream.abort();
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
+    if (envDir)
+      await api
+        .command({
+          sandboxId: id,
+          commandRequest: { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
+        })
+        .catch(() => {});
     if (stdinPath)
       await api
         .command({

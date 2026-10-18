@@ -11,6 +11,47 @@ afterAll(() => mock.dispose());
 runConformance(factory, { live: true });
 
 describe("Boat official SDK transport", () => {
+  test("keeps secrets out of command text and argv for runs and processes", async () => {
+    const secret = "private-token-9ec5e94f";
+    const value = "override 'quotes' $literal\n雪";
+    const before = mock.commands.length;
+    const beforeWrites = mock.fileWrites.length;
+    const box = await createSandbox(factory(), {
+      secrets: { TOKEN: secret },
+      env: { CHECK_OVERRIDE: "base" },
+    });
+    try {
+      const command = `node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.env.TOKEN + process.env.CHECK_OVERRIDE).digest("hex"))'`;
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(secret + value),
+      );
+      const expected = Buffer.from(digest).toString("hex");
+      expect((await box.run(command, { env: { CHECK_OVERRIDE: value } })).stdout).toBe(expected);
+      const process = await box.start(command, {
+        name: "secret-check",
+        env: { CHECK_OVERRIDE: value },
+      });
+      expect(await process.wait()).toMatchObject({ exitCode: 0 });
+      expect((await process.logs()).text).toContain(expected);
+      const envWrites = mock.fileWrites
+        .slice(beforeWrites)
+        .filter((file) => file.path.endsWith("/env"));
+      expect(envWrites.length).toBeGreaterThan(0);
+      for (const file of envWrites) {
+        expect(file).toMatchObject({ mode: 0o600, directoryMode: 0o700 });
+        expect(await box.files.exists(file.path)).toBe(false);
+      }
+      expect(mock.commands.slice(before).length).toBeGreaterThan(0);
+      for (const command of mock.commands.slice(before)) {
+        expect(command).not.toContain(secret);
+        for (const token of command.match(/[A-Za-z0-9+/=]{16,}/g) ?? [])
+          expect(Buffer.from(token, "base64").toString()).not.toContain(secret);
+      }
+    } finally {
+      await box.destroy();
+    }
+  });
   test("maps sizes and isolates account secrets with noEnv", async () => {
     for (const [size, type] of [
       ["small", "small"],
@@ -103,6 +144,20 @@ describe("Boat official SDK transport", () => {
       crypto.getRandomValues(bytes.subarray(0, 65536));
       await box.files.write("large.bin", bytes);
       expect(await box.files.read("large.bin", { as: "bytes" })).toEqual(bytes);
+    } finally {
+      await box.destroy();
+    }
+  });
+  test("native file transfers span chunks without putting contents in commands", async () => {
+    const box = await createSandbox(factory());
+    try {
+      const bytes = new Uint8Array(4 * 1024 * 1024 + 19).fill(0xab);
+      bytes[4 * 1024 * 1024] = 0xcd;
+      const expected = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
+      await box.files.write("multi-chunk.bin", bytes);
+      expect((await box.run("sha256sum multi-chunk.bin")).stdout.trim()).toBe(
+        `${expected}  multi-chunk.bin`,
+      );
     } finally {
       await box.destroy();
     }

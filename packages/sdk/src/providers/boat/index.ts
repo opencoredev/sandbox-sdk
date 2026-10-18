@@ -315,20 +315,45 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
         if (!Number.isSafeInteger(size) || size < 0) throw failure("Invalid Boat file size");
         return readRange(id, path, 0, size);
       },
-      write: async (id, path, data) => {
-        // Bound each shell argument below Linux's per-argument limit.
-        for (let offset = 0; offset < Math.max(data.length, 1); offset += 32_768) {
-          await node(
-            id,
-            "const f=require('fs');f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],Buffer.from(process.argv[2],'base64'),{flag:process.argv[3]})",
-            [
-              path,
-              Buffer.from(data.subarray(offset, offset + 32_768)).toString("base64"),
-              offset ? "a" : "w",
-            ],
-          );
-        }
-      },
+      write: (id, path, data) =>
+        safe(async () => {
+          // Boat's files API only accepts /home/user and /tmp. Stage bytes there,
+          // then copy inside the VM so /workspace and large writes still work.
+          // File contents (including core's redaction rules) never enter argv.
+          const dir = `/tmp/.sandbox-sdk/write-${crypto.randomUUID()}`;
+          const chunkPath = `${dir}/chunk`;
+          try {
+            await node(
+              id,
+              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/chunk','',{flag:'wx',mode:0o600})",
+              [dir],
+            );
+            const chunkSize = 4 * 1024 * 1024;
+            for (let offset = 0; offset < Math.max(data.length, 1); offset += chunkSize) {
+              await (
+                await api()
+              ).writeFile({
+                sandboxId: id,
+                fileWriteRequest: {
+                  path: chunkPath,
+                  content: Buffer.from(data.subarray(offset, offset + chunkSize)).toString(
+                    "base64",
+                  ),
+                  encoding: "base64",
+                },
+              });
+              await node(
+                id,
+                "const f=require('fs');f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],f.readFileSync(process.argv[2]),{flag:process.argv[3]})",
+                [path, chunkPath, offset ? "a" : "w"],
+              );
+            }
+          } finally {
+            await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
+              dir,
+            ]).catch(() => {});
+          }
+        }, id),
       stat: async (id, path) => {
         const value: unknown = JSON.parse(
           await node(
