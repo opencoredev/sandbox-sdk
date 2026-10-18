@@ -13,7 +13,7 @@ const result = await Bun.build({
   format: "esm",
   splitting: true,
   minify: true,
-  external: ["@mastra/core", "@mastra/core/*", "@openai/agents", "@openai/agents/*", "ai", "ai/*", "vitest", "vitest/*", "zod", "zod/*"],
+  external: ["@mastra/core", "@mastra/core/*", "@openai/agents", "@openai/agents/*", "ai", "ai/*", "e2b", "e2b/*", "vitest", "vitest/*", "zod", "zod/*"],
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);

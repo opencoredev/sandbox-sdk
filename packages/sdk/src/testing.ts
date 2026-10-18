@@ -50,7 +50,7 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       const { box } = await setup();
       const result = await box.run(`printf '${"a".repeat(1024)}END'`, { maxOutputBytes: 64 });
       expect(result.truncated).toBe(true); expect(result.stdout.startsWith("a")).toBe(true); expect(result.stdout.endsWith("END")).toBe(true); expect(result.stdout).toContain("bytes cut");
-      expect((await box.run("printf A; sleep .02; printf B >&2; sleep .02; printf C")).output).toBe("ABC");
+      expect((await box.run("printf A; sleep 0.05; printf B >&2; sleep 0.05; printf C")).output).toBe("ABC");
       const chunks = []; for await (const chunk of box.run("echo streamed")) chunks.push(chunk.text);
       expect(chunks.join("")).toBe("streamed\n");
     });

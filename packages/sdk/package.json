@@ -41,6 +41,10 @@
     "./local": {
       "types": "./dist/providers/local/index.d.ts",
       "import": "./dist/providers/local/index.js"
+    },
+    "./e2b": {
+      "types": "./dist/providers/e2b/index.d.ts",
+      "import": "./dist/providers/e2b/index.js"
     }
   },
   "scripts": {
@@ -55,14 +59,16 @@
     "@openai/agents": "^0.20.0",
     "ai": "^7.0.143",
     "vitest": "^3.2.4",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "e2b": "2.56.0"
   },
   "peerDependencies": {
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
     "ai": "^7.0.143",
     "vitest": ">=3",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "e2b": "^2.56.0"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -78,6 +84,9 @@
       "optional": true
     },
     "zod": {
+      "optional": true
+    },
+    "e2b": {
       "optional": true
     }
   },
