@@ -11,4 +11,8 @@ export const kv = {
   async delete(key: string): Promise<void> {
     store.delete(key);
   },
+  // A real store would hold a distributed lock (Redis SET NX, a row lock) while action runs.
+  async withLock<T>(_key: string, action: () => Promise<T>): Promise<T> {
+    return await action();
+  },
 };

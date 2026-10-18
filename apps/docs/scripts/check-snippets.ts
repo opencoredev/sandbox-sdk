@@ -1,35 +1,45 @@
 /**
  * Type-checks every ```ts and ```tsx fence in content/ against the SDK's types.
  *
- *   bun scripts/check-snippets.ts         check against packages/sdk/dist (skips if not built)
- *   bun scripts/check-snippets.ts --spec  check against scripts/spec-types, the API as written in docs/spec.md
+ *   bun scripts/check-snippets.ts   check against packages/sdk/dist (build the SDK first)
  *
  * Each page becomes its own small project under .snippets/<page>/. A fence whose
  * title looks like a file path (title="lib/sandbox.ts") is written to that path, so
  * pages can import between their own snippets ("@/lib/sandbox" maps to the page
  * root). Other fences become snippet-N.ts. Stub modules for local helpers such as
  * "./kv" come from scripts/snippet-stubs/. Opt a fence out with check="skip".
+ *
+ * The SDK and its optional peers (ai, zod, @mastra/core, @openai/agents) resolve
+ * from packages/sdk, as they would from one deduplicated node_modules in an app.
+ * Otherwise the workspace's second copy of `ai` gives snippets a different
+ * `schemaSymbol` than the SDK's declarations, and valid tool maps fail to type-check.
  */
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const docsDir = resolve(import.meta.dirname, "..");
 const contentDir = join(docsDir, "content");
 const outDir = join(docsDir, ".snippets");
 const stubsDir = join(docsDir, "scripts", "snippet-stubs");
-const specTypes = join(docsDir, "scripts", "spec-types", "sandbox-sdk.d.ts");
 const sdkDir = resolve(docsDir, "../../packages/sdk");
 const tsc = join(docsDir, "node_modules", ".bin", "tsc");
 
-const useSpec = process.argv.includes("--spec");
-
-if (!useSpec && !existsSync(join(sdkDir, "dist"))) {
-  console.log(
-    "snippets: skipped. packages/sdk/dist does not exist yet. Build the SDK (bun run build in packages/sdk), " +
-      "or run `bun run snippets --spec` to check against the spec types.",
+if (!existsSync(join(sdkDir, "dist"))) {
+  console.error(
+    "snippets: packages/sdk/dist does not exist. Build the SDK first: bun run --cwd packages/sdk build",
   );
-  process.exit(0);
+  process.exit(1);
 }
 
 interface Snippet {
@@ -81,7 +91,7 @@ function tsconfig(): string {
         types: ["node"],
         paths: { "@/*": ["./*"] },
       },
-      include: ["**/*.ts", "**/*.tsx", ...(useSpec ? [specTypes] : [])],
+      include: ["**/*.ts", "**/*.tsx"],
     },
     null,
     2,
@@ -91,10 +101,19 @@ function tsconfig(): string {
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-if (!useSpec) {
-  // Resolve the SDK through its package.json exports, as a user would.
-  mkdirSync(join(outDir, "node_modules", "@opencoredev"), { recursive: true });
-  symlinkSync(sdkDir, join(outDir, "node_modules", "@opencoredev", "sandbox-sdk"), "dir");
+// Resolve the SDK through its package.json exports, as a user would, and share its peers.
+const linkModule = (name: string, target: string) => {
+  const path = join(outDir, "node_modules", name);
+  mkdirSync(dirname(path), { recursive: true });
+  symlinkSync(target, path, "dir");
+};
+linkModule("@opencoredev/sandbox-sdk", sdkDir);
+const sdkManifest: { peerDependencies?: Record<string, string> } = JSON.parse(
+  readFileSync(join(sdkDir, "package.json"), "utf8"),
+);
+for (const peer of Object.keys(sdkManifest.peerDependencies ?? {})) {
+  const installed = join(sdkDir, "node_modules", peer);
+  if (existsSync(installed)) linkModule(peer, realpathSync(installed));
 }
 
 const origins = new Map<string, Snippet>();
@@ -103,7 +122,9 @@ const projects: string[] = [];
 for (const file of walk(contentDir)) {
   const snippets = extract(file);
   if (snippets.length === 0) continue;
-  const slug = relative(contentDir, file).replace(/\.mdx$/, "").replaceAll("/", "__");
+  const slug = relative(contentDir, file)
+    .replace(/\.mdx$/, "")
+    .replaceAll("/", "__");
   const projectDir = join(outDir, slug);
   mkdirSync(projectDir, { recursive: true });
   cpSync(stubsDir, projectDir, { recursive: true });
@@ -164,9 +185,13 @@ for (const { projectDir, status, output } of results) {
 }
 
 const total = origins.size;
-const mode = useSpec ? "spec types" : "packages/sdk/dist";
+const mode = "packages/sdk/dist";
 if (failures > 0) {
-  console.error(`snippets: ${failures} of ${projects.length} page(s) failed to type-check against ${mode}.`);
+  console.error(
+    `snippets: ${failures} of ${projects.length} page(s) failed to type-check against ${mode}.`,
+  );
   process.exit(1);
 }
-console.log(`snippets: ${total} snippet(s) on ${projects.length} page(s) type-check against ${mode}.`);
+console.log(
+  `snippets: ${total} snippet(s) on ${projects.length} page(s) type-check against ${mode}.`,
+);

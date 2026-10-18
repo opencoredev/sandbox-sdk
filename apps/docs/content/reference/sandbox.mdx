@@ -3,8 +3,6 @@ title: Sandbox API
 description: Every export of @opencoredev/sandbox-sdk and every member of a sandbox handle, with parameters, defaults, and return types.
 ---
 
-{/* TODO(SBX-32): replace the hand-written tables below with <AutoTypeTable path="../../packages/sdk/src/..." name="..." /> once packages/sdk lands, and keep the prose. */}
-
 ```package-install
 npm i @opencoredev/sandbox-sdk
 ```
@@ -26,33 +24,34 @@ await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 
 
 - `provider`: a provider from a subpath factory, such as `e2b()`.
 - `key?: string`: get-or-create key. `box.created` tells you which happened.
-- `locator?: { get(key), set(key, id), delete?(key) }`: your own key store, for exact keys on best-effort providers.
+- `keyMode?: "exact" | "best-effort"`: ask for exact get-or-create. On a best-effort provider this needs `locator.withLock`, or creation fails with `unsupported`.
+- `locator?: { get(key), set(key, id), delete?(key), withLock?(key, action) }`: your own key store. `withLock` runs `action` under a distributed lock. Guide: [Exact and best-effort keys](/concepts/sandboxes-and-keys#exact-and-best-effort-keys).
 - `size?: "small" | "medium" | "large" | { cpu, memoryMb, diskGb }`: machine size. Fails with `unsupported` if the provider can't honor it. Guide: [Machine size and network](/guides/machine-size-and-network).
 - `env?: Record<string, string>`: environment for every command.
-- `secrets?: Record<string, string>`: set as environment variables and redacted from all output, logs, and errors.
+- `secrets?: Record<string, string>`: set as environment variables and redacted from all output, logs, and errors. Names must be valid shell variable names, for `env` too.
 - `network?: "all" | "none" | { allow: string[] }`: defaults to `"all"`. Fails with `unsupported` if the provider can't enforce it.
-- `ports?: number[]`: ports to expose. Required by Vercel, ignored elsewhere.
-- `idleTimeoutMs?: number`: stop or pause after this long idle.
-- `timeoutMs?: number`: hard maximum lifetime.
+- `ports?: number[]`: ports to preview. Required by Vercel (up to 15) and Local (defaults to `[3000]`). E2B, Daytona, and Memory ignore it.
+- `idleTimeoutMs?: number`: stop after this long idle. Fails with `unsupported` where the provider has no idle timer.
+- `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability table](/providers#capabilities).
 - `labels?: Record<string, string>`: your labels. The SDK adds `sandbox-sdk`.
-- `from?: string`: a snapshot ID to start from.
+- `from?: string`: a snapshot ID to start from. Needs the `"snapshot"` capability.
 - `signal?: AbortSignal`: abort creation. A sandbox that arrives after the abort is destroyed.
 
 ### Returns
 
 `Promise<Sandbox>`, typed per provider. Throws `SandboxError` when creation fails.
 
-## `connectSandbox(provider, id)`
+## `connectSandbox(provider, id, options?)`
 
-Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't exist.
+Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't exist. Pass `{ secrets }` to add values to redact. Secrets set at creation are redacted again automatically, because the SDK reads their names back from the sandbox environment.
 
 ## `listSandboxes(provider, options?)`
 
-Returns `{ id, key?, labels, state, createdAt }[]` for sandboxes this SDK created. `labels` filters the list. `state` is `"running"`, `"paused"`, or `"stopped"`. `createdAt` is epoch milliseconds.
+Options: `labels?`. Returns `{ id, key?, labels, state, createdAt }[]` for sandboxes this SDK created. `labels` filters the list. `state` is `"running"`, `"paused"`, or `"stopped"`. `createdAt` is epoch milliseconds.
 
 ## `reapSandboxes(provider, options?)`
 
-Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
+Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. With `idleOnly`, a sandbox counts as idle when it has no SDK command in flight and no running SDK background process. Commands started outside the SDK are not seen. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
 
 ## Sandbox handle
 
@@ -79,7 +78,7 @@ Returns a `RunHandle`: await it for a `RunResult`, or iterate it for `{ stream, 
 | `cwd?: string` | `/workspace` |
 | `env?: Record<string, string>` | none |
 | `timeoutMs?: number` | `120_000` |
-| `maxOutputBytes?: number` | 1 MB per stream |
+| `maxOutputBytes?: number` | `1_048_576` per stream. `output` holds up to twice this. |
 | `stdin?: string` | closed |
 | `signal?: AbortSignal` | none |
 
@@ -99,7 +98,7 @@ Starts a background process and resolves when it is ready. Guide: [Processes and
 - `ready?: { port } | { http: { port, path? } } | { log: RegExp }`
 - `readyTimeoutMs?: number`
 
-Throws `process_exited` if the process exits before it is ready.
+`name` may use letters, numbers, `-`, and `_`, up to 128 characters. Throws `process_exited` if the process exits before it is ready.
 
 ### `ProcessHandle`
 
@@ -107,7 +106,7 @@ Throws `process_exited` if the process exits before it is ready.
 | --- | --- |
 | `name`, `status`, `ready`, `url` | Current state. `url` is set when `ready` named a port. |
 | `lines({ after? })` | Async iterable of `{ text, stream, cursor }` |
-| `logs({ after?, maxBytes? })` | One page: `{ text, nextCursor, truncated }` |
+| `logs({ after?, maxBytes? })` | One page: `{ text, nextCursor, truncated }`. `maxBytes` defaults to 16 KB, at most 1 MB. |
 | `stop({ graceMs? })` | SIGTERM, then SIGKILL. Idempotent. |
 | `restart()` | Stops and starts the same command |
 | `wait()` | Resolves `{ exitCode, signal }` on exit |
@@ -118,7 +117,7 @@ Throws `process_exited` if the process exits before it is ready.
 
 ### `preview(port, options?)`
 
-Returns `{ url, headers?, expiresAt? }`. Options: `path?`, `waitMs?`. With `waitMs`, the URL is checked from outside before it returns.
+Returns `{ url, headers?, expiresAt? }`. Options: `path?`, `waitMs?`. With `waitMs`, the URL is requested from your process until it answers with a 2xx status, or the call throws `port_not_ready`.
 
 ### `usage()`
 
@@ -130,13 +129,13 @@ Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the 
 
 ### Optional capabilities
 
-Present on the type only when the provider supports them.
+Present on the type only when the provider supports them. The [capability table](/providers#capabilities) lists which provider has which.
 
 | Method | Returns |
 | --- | --- |
 | `pause()`, `resume()` | `Promise<void>` |
 | `snapshot()` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. |
-| `terminal({ cols, rows })` | A PTY with `write`, `resize`, `onData`, `close` |
+| `terminal({ cols, rows })` | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0. |
 
 ## Files
 
@@ -154,7 +153,7 @@ Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/fi
 | `upload(localDir, remoteDir, { ignore? })` | `void` |
 | `download(remoteDir, localDir)` | `void` |
 | `search(query, { path?, glob?, maxMatches? })` | `{ path, line, text }[]` |
-| `watch(path, callback, { recursive? })` | A function that stops watching |
+| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`. |
 | `mark(name?)` | The checkpoint name |
 | `changes({ since? })` | `{ added, modified, removed, patch }` |
 
@@ -164,7 +163,7 @@ Every method resolves with a `RunResult`. Tokens go through a temporary credenti
 
 | Method | Options |
 | --- | --- |
-| `clone(url, options?)` | `dir?`, `branch?`, `depth?`, `token?` |
+| `clone(url, options?)` | `dir?` (defaults to `app`), `branch?`, `depth?`, `token?` |
 | `status(dir?)` | |
 | `diff(dir?)` | |
 | `commit(dir, options)` | `message`, `all?`, `author?` |

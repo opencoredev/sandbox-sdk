@@ -48,8 +48,8 @@ How reliable the lookup is depends on the provider.
 
 | Provider | Key mode | How the key is stored |
 | --- | --- | --- |
-| [Local](/providers/local) | exact | Docker container name |
-| [Vercel](/providers/vercel) | exact | Named sandbox |
+| [Local](/providers/local) | exact | Container name, a hash of the key |
+| [Vercel](/providers/vercel) | exact | Sandbox name, a hash of the key |
 | [Memory](/providers/memory) | exact | In-process map |
 | [E2B](/providers/e2b) | best-effort | Sandbox metadata |
 | [Daytona](/providers/daytona) | best-effort | Sandbox labels |
@@ -73,7 +73,27 @@ await using box = await createSandbox(e2b(), {
 });
 ```
 
-The SDK reads the ID from `get`, and writes a new one with `set` after it creates a sandbox. If the stored ID points at a sandbox that no longer exists, the SDK creates a new one and stores that ID instead. Your store must make `set` safe under concurrency, for example with a conditional write.
+The SDK reads the ID from `get`, and writes a new one with `set` after it creates a sandbox. If the stored ID points at a sandbox that no longer exists, the SDK creates a new one and stores that ID instead. Within one process, the SDK also queues calls for the same key, so they never race each other.
+
+Across servers, `get` followed by `set` is not atomic, so these two functions alone can't stop two servers from creating a sandbox each. For a guarantee, add `withLock` and ask for `keyMode: "exact"`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { kv } from "./kv";
+
+await using box = await createSandbox(e2b(), {
+  key: "project:42",
+  keyMode: "exact",
+  locator: {
+    get: (key) => kv.get(key),
+    set: (key, id) => kv.set(key, id),
+    withLock: (key, action) => kv.withLock(`sandbox:${key}`, action),
+  },
+});
+```
+
+`withLock` must run `action` while holding a distributed lock or transaction for that key. `keyMode: "exact"` on a best-effort provider without `withLock` fails with `unsupported`.
 
 ## Reattach by ID
 

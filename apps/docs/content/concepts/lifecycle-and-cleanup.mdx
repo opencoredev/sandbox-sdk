@@ -37,19 +37,29 @@ At the end of the first block the sandbox is destroyed. At the end of the second
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
-await using box = await createSandbox(e2b(), {
+await using box = await createSandbox(daytona(), {
   key: "user:123",
   idleTimeoutMs: 15 * 60_000,
   timeoutMs: 60 * 60_000,
 });
 ```
 
-- `idleTimeoutMs` stops or pauses the sandbox after this long without activity. The SDK uses the provider's own idle handling where it has one.
+- `idleTimeoutMs` stops the sandbox after this long without activity, using the provider's own idle handling.
 - `timeoutMs` is the hard maximum lifetime. The provider ends the sandbox when it runs out, whatever it is doing.
 
-Set both on every keyed sandbox. A forgotten keyed sandbox is the most common source of surprise bills.
+Both are enforced by the provider, so they hold even after your server crashes. That also means a provider without the timer can't honor them, and `createSandbox` fails with `unsupported` instead of ignoring them:
+
+| Provider | `idleTimeoutMs` | `timeoutMs` |
+| --- | --- | --- |
+| Daytona | Yes, rounded up to whole minutes | Yes, rounded down to whole minutes, at least one minute |
+| E2B | No | Yes |
+| Vercel | No | No |
+| Local | No | No |
+| Memory | Yes, in your process | Yes, in your process |
+
+Set the limits your provider supports on every keyed sandbox. Where it supports neither, run [`reapSandboxes`](#find-and-reap-sandboxes) on a schedule. A forgotten keyed sandbox is the most common source of surprise bills.
 
 ## Pause, resume, and snapshot
 
@@ -68,7 +78,9 @@ const result = await copy.run("ls app/node_modules | wc -l");
 console.log(result.stdout);
 ```
 
-The copy starts with `node_modules` already installed. These methods only exist on providers that support them, so TypeScript catches a call on a provider that can't. Check the [providers overview](/providers).
+The copy starts with `node_modules` already installed. These methods only exist on providers that support them, so TypeScript catches a call on a provider that can't. Memory has neither.
+
+What survives a pause differs. Local and E2B keep running processes. Vercel and Daytona stop the machine and keep only the disk, so processes end and you restart them with `box.process(name).restart()`. The [providers overview](/providers#capabilities) has the details.
 
 ## Find and reap sandboxes
 

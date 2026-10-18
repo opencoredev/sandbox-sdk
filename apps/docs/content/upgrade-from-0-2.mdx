@@ -148,7 +148,7 @@ await dev.stop();
 - `ready` waits for a port, an HTTP response, or a log line before `start` returns.
 - `output()` becomes `lines()` and `logs()`, both resumable from a cursor.
 - `kill()` becomes `stop()`, which sends SIGTERM and then SIGKILL.
-- `write()` to a process's stdin is removed. Use [`box.terminal()`](/reference/sandbox#optional-capabilities) on providers that support it.
+- `write()` to a process's stdin is removed. Pass input up front with `box.run(command, { stdin })`. The API reserves [`box.terminal()`](/reference/sandbox#optional-capabilities) for interactive input, but no built-in provider implements it in 1.0.
 
 ## 6. ports
 
@@ -175,7 +175,7 @@ console.log(preview.url, preview.headers);
 
 - `preview` returns `url`, plus `headers` and `expiresAt` when the provider needs them. Send `headers` with every request.
 - `public`, `authenticated`, and `request()` are gone.
-- Declare ports in `createSandbox(provider, { ports })`. Vercel requires it.
+- Declare ports in `createSandbox(provider, { ports })`. Vercel and Local require it. Local declares port 3000 when you leave it out.
 
 ## 7. snapshots
 

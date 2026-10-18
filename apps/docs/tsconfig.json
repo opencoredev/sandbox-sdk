@@ -10,5 +10,5 @@
     "types": ["node"]
   },
   "include": ["blume.config.ts", "themes", "scripts"],
-  "exclude": ["dist", ".snippets", ".blume", ".blume-verify", "scripts/spec-types", "scripts/snippet-stubs"]
+  "exclude": ["dist", ".snippets", ".blume", ".blume-verify", "scripts/snippet-stubs"]
 }

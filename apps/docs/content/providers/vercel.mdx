@@ -1,6 +1,6 @@
 ---
 title: Vercel
-description: Run sandboxes on Vercel Sandbox through @vercel/sandbox. Named sandboxes give exact keys, and ports are declared when you create the sandbox.
+description: Run sandboxes on Vercel Sandbox through @vercel/sandbox. Exact keys, OIDC auth inside Vercel, and ports declared when you create the sandbox.
 ---
 
 `vercel()` runs each sandbox on [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), Vercel's hosted Linux microVMs. Named sandboxes make get-or-create by key exact.
@@ -11,7 +11,7 @@ description: Run sandboxes on Vercel Sandbox through @vercel/sandbox. Named sand
 npm i @opencoredev/sandbox-sdk @vercel/sandbox
 ```
 
-Run this code on a server or in a Vercel Function. Tokens must never reach a browser bundle.
+The adapter needs `@vercel/sandbox` 3.8 or later. Run this code on a server or in a Vercel Function. Tokens must never reach a browser bundle.
 
 ## Basic usage
 
@@ -24,19 +24,48 @@ const result = await box.run("node --version");
 console.log(result.stdout);
 ```
 
+Inside a Vercel deployment, this authenticates with the project's OIDC token and needs no configuration.
+
 ## Configuration
 
-Credentials come from the environment, the same way `@vercel/sandbox` reads them. Inside a Vercel deployment, the project's OIDC token is used automatically. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-{/* TODO(SBX-32): list vercel() options once the adapter lands. */}
+const provider = vercel({
+  token: process.env.MY_VERCEL_TOKEN,
+  teamId: "team_123",
+  projectId: "prj_456",
+});
+
+await using box = await createSandbox(provider, { ports: [3000] });
+```
+
+`token`, `teamId`, and `projectId` override `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`. A token needs both IDs, or creation fails with code `auth`. With no token at all, `@vercel/sandbox` uses OIDC: `VERCEL_OIDC_TOKEN`, which Vercel sets in deployments and `vercel env pull` writes locally.
 
 ## Keys
 
-Key mode is **exact**. The key becomes the sandbox name, and Vercel enforces unique names, so concurrent calls with the same key share one sandbox.
+Key mode is **exact**. The sandbox name is a SHA-256 hash of the key, and Vercel enforces unique names within a project, so concurrent calls with the same key share one sandbox.
+
+Your `labels` become Vercel tags. Vercel allows five tags per sandbox, and the SDK uses one, plus a second for a keyed sandbox. That leaves four labels, or three with a `key`. More fail with `unsupported`.
+
+## Size
+
+| Preset | vCPUs | Memory |
+| --- | --- | --- |
+| `small` | 1 | 2048 MiB |
+| `medium` | 2 | 4096 MiB |
+| `large` | 4 | 8192 MiB |
+
+Vercel gives 2048 MiB of memory per vCPU and has no disk setting. Exact sizes such as `{ cpu, memoryMb, diskGb }` fail with `unsupported`.
+
+## Network
+
+`network: "none"` maps to Vercel's `deny-all` policy. An allow list maps to Vercel's domain rules, which deny everything else. `"all"` is the default.
 
 ## Ports and previews
 
-Vercel can only route to ports declared when the sandbox is created. List every port you will preview:
+Vercel can only route to ports declared when the sandbox is created, up to 15 of them. List every port you will preview:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -48,27 +77,53 @@ const dev = await box.start("npx vite --port 5173 --host", { name: "vite", ready
 console.log(dev.url);
 ```
 
-A port you didn't declare can't be previewed, so add it here, not later.
+`box.preview(port)` on a port you didn't declare fails with `invalid_argument`. Add it to `ports` and create the sandbox again.
+
+## Pause, resume, and snapshots
+
+`box.pause()` stops the Vercel session. `box.resume()` starts a new session from the saved file system. Files survive, but running processes don't. The SDK marks every process that was still running as failed with exit code 137, so `box.process(name).restart()` starts it again:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { key: "project:42", ports: [3000] });
+
+await box.pause();
+await box.resume();
+
+await box.process("dev").restart();
+```
+
+Any SDK call on a stopped sandbox resumes it the same way. `box.snapshot()` also stops the sandbox, and its next command resumes it. Pass the snapshot ID as `from` to start a new sandbox from it. Vercel deletes old snapshots according to its own retention policy.
 
 ## Environment variables
 
 | Variable | Purpose |
 | --- | --- |
 | `VERCEL_OIDC_TOKEN` | Set for you inside Vercel deployments and by `vercel env pull` |
-| `VERCEL_TOKEN` | An access token, outside Vercel |
-| `VERCEL_TEAM_ID` | The team that owns the sandboxes |
-| `VERCEL_PROJECT_ID` | The project sandboxes are billed to |
+| `VERCEL_TOKEN` | An access token, for use outside Vercel |
+| `VERCEL_TEAM_ID` | The team that owns the sandboxes. Required with a token. |
+| `VERCEL_PROJECT_ID` | The project the sandboxes belong to. Required with a token. |
 
 ## API reference
 
 ### `vercel(options?)`
 
+- `token?: string`. Defaults to `VERCEL_TOKEN`.
+- `teamId?: string`. Defaults to `VERCEL_TEAM_ID`.
+- `projectId?: string`. Defaults to `VERCEL_PROJECT_ID`.
+
 Returns a provider. `box.native` is the `@vercel/sandbox` `Sandbox` object.
 
 ## Limitations
 
-- Ports must be declared in `createSandbox(provider, { ports })`.
-- Sandbox lifetime is capped by your Vercel plan. Check the limit before you set a long `timeoutMs`.
+- Ports must be declared in `createSandbox(provider, { ports })`, 15 at most.
+- `timeoutMs` fails with `unsupported`. Vercel's session timeout resets on every resume, so it can't enforce a hard lifetime. Command timeouts in `box.run` still work.
+- `idleTimeoutMs` fails with `unsupported`.
+- At most four labels, or three with a `key`.
+- Resume ends running processes. Restart them with `box.process(name).restart()`.
+- No terminals.
 
 ## Next steps
 
