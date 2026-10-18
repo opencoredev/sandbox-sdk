@@ -7,6 +7,8 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
+| | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
+| `pause()` / `resume()` | Yes | Yes | Yes, processes end | Yes, processes end | Yes, with memory | No |
 | | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
 | `snapshot()` and `from` | Yes | Yes | Yes | Yes | No | No |
 | `network: "none"` | Yes | Yes | Yes | Yes | Yes | No |
@@ -38,13 +40,17 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 | `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | No | Yes |
 | `ports` must be declared | Yes | No | Yes, up to 15 | No | No | No |
 | `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes, stored in the sandbox | Yes |
+| `size` with exact numbers | No | No | No | Yes | Yes | No |
+| `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | Yes | No | Yes, whole minutes | Yes | Yes |
+| `labels` | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes | Yes |
 | Key mode | exact | best-effort | exact | best-effort | best-effort | exact |
 
 ## Notes
 
-- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B pauses the microVM with its memory. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B and Tenki pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
 - **Size.** Local and Vercel Sandbox take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
 - **Network.** Local enforces `"none"` but has no per-host filter, so `{ allow }` fails there. Memory records the policy and has no network to enforce it on.
+- **Timeouts.** Tenki supports a native hard lifetime but rejects idle timeouts, which its current API no longer enforces. Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Timeouts.** Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Upstash Box.** Uses native size presets, pause/resume, full disk snapshots, and network policy. Custom idle deadlines and hard lifetimes are unsupported. Keys and labels live in sandbox metadata; listing SDK boxes reads this metadata and may wake idle boxes.
 - **Boat.** Size presets only. No SDK pause, snapshots, terminals, network policy, idle timer, or hard lifetime. Boat's default auto-stop still applies. Keys and labels share a compressed 120-character display name; [Boat](/providers/boat) explains the limit.

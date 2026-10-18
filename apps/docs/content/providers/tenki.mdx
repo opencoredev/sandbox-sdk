@@ -1,0 +1,136 @@
+---
+title: Tenki
+description: Run coding agents on Tenki Linux VMs with disk and memory snapshots, pause and resume, custom sizes, and preview URLs.
+---
+
+`tenki()` runs each sandbox on a full Linux VM on [Tenki](https://tenki.cloud/products/sandbox). Pause and resume preserve disk and memory. Snapshots let you create another VM from a saved state.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @tenkicloud/sandbox
+```
+
+The adapter uses `@tenkicloud/sandbox` 1.4.1 or later. Run it on a server and keep your API key out of browser bundles.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+console.log((await box.run("uname -a")).stdout);
+```
+
+Set `TENKI_API_KEY` to a workspace API key. The provider starts Tenki's default image and prepares `/workspace`.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+const provider = tenki({ requestTimeoutMs: 30_000 });
+await using box = await createSandbox(provider, {
+  size: "medium",
+  timeoutMs: 30 * 60_000,
+  network: { allow: ["registry.npmjs.org"] },
+});
+```
+
+- `authToken` overrides `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`.
+- `baseUrl` overrides the native SDK's endpoint defaults.
+- `image` selects a Tenki registry image. A `from` snapshot overrides it.
+- `requestTimeoutMs` limits control-plane requests. It defaults to 30 seconds.
+- `waitTimeoutMs` limits readiness waits. Defaults are three minutes for create and resume, five minutes for snapshots.
+
+Custom images need Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`. The adapter uses Tenki's privileged process API for file operations because Tenki's file API rejects paths outside `/home/tenki`.
+
+## Keys
+
+Key mode is **best-effort**. Keys and labels are stored in Tenki session metadata. Concurrent requests can create two VMs with the same key. Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+
+## Size
+
+| Preset | CPUs | Memory | Disk |
+| --- | --- | --- | --- |
+| `small` | 1 | 1024 MiB | 10 GiB |
+| `medium` | 2 | 4096 MiB | 20 GiB |
+| `large` | 4 | 8192 MiB | 40 GiB |
+
+Exact sizes accept whole CPUs from 1 to 128, even `memoryMb` values from 128 to 524288, and whole `diskGb` values from 5 to 100. Workspace quotas can set lower limits. Snapshot resource constraints still apply; the adapter rejects resources that don't match the request.
+
+Without `size`, Tenki uses its image or snapshot defaults. Its base image defaults to 2 CPUs, 4096 MB memory, and a 5 GiB disk.
+
+## Network
+
+`network: "none"` disables outbound access. `network: { allow }` permits only the given DNS names, including a single leading `*.` wildcard. An empty allow list disables outbound access. The adapter checks the returned policy and fails creation if it doesn't match.
+
+Inbound preview access is enabled. Outbound network restrictions do not make a preview private.
+
+## Timeouts
+
+`timeoutMs` sets Tenki's native `maxDurationMs`. The adapter disables sticky mode so it cannot override the limit. `idleTimeoutMs` fails with `unsupported`: Tenki's current SDK marks idle auto-pause as removed.
+
+Command timeouts and cancellation kill the whole command process group before returning a timed-out result. These are separate from VM lifetime.
+
+## Pause and snapshots
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+const provider = tenki();
+await using box = await createSandbox(provider);
+await box.files.write("saved.txt", "ready");
+await box.pause();
+await box.resume();
+const snapshot = await box.snapshot();
+await using copy = await createSandbox(provider, { from: snapshot.id });
+console.log(await copy.files.read("saved.txt"));
+```
+
+The copy reads `ready`. Snapshots capture disk and memory, but exclude attached native volumes.
+
+Tenki clears `/tmp` on pause. The adapter links `/tmp/.sandbox-sdk` to durable storage under `/home/tenki/.sandbox-sdk` and recreates the link on resume and connect, so SDK process records and logs remain available. Active TCP, preview, and SSH connections close on pause. A guest-agent restart can end processes started through its command API even though pause preserves VM memory.
+
+Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the native Tenki client when you no longer need them.
+
+## Previews
+
+`box.preview(port)` exposes the port through Tenki and returns its public URL and expiry when reported. Ports don't need to be declared at creation. Keep authentication in the app you expose.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `TENKI_AUTH_TOKEN` | Workspace API key. Takes precedence over `TENKI_API_KEY`. |
+| `TENKI_API_KEY` | Workspace API key when `TENKI_AUTH_TOKEN` is unset. |
+| `TENKI_API_ENDPOINT` | Optional API endpoint. |
+| `TENKI_API_URL` | Legacy endpoint fallback used by the native SDK. |
+
+## API reference
+
+### `tenki(options?)`
+
+- `authToken?: string`. Defaults to the environment variables above.
+- `baseUrl?: string`. Uses the native SDK's defaults when omitted.
+- `image?: string`. Tenki registry image to start from.
+- `requestTimeoutMs?: number`. Defaults to `30_000`.
+- `waitTimeoutMs?: number`. Overrides readiness and snapshot wait deadlines.
+
+Returns a provider. `box.native` is a typed Tenki `Session`. Its `close()` terminates the VM; use `box.close()` to detach without terminating it.
+
+## Limitations
+
+- Keys are best-effort without a locator.
+- Idle timeouts and terminals are unsupported.
+- Pause closes active connections. Reconnect clients after resume.
+- Custom images must include the tools listed above and support privileged execution.
+- Snapshots have a separate lifecycle from VMs.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)

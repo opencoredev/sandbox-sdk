@@ -2,6 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
+description: Compare Local, E2B, Vercel Sandbox, Daytona, Tenki, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Boat, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Railway, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 description: Compare Local, E2B, Vercel Sandbox, Daytona, Upstash Box, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
@@ -24,12 +25,15 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
 | [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
 | [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
+| [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
+| | Local | E2B | Vercel Sandbox | Daytona | Tenki | Memory |
+| Pause and resume | Yes | Yes | Partly, processes end | Partly, processes end | Yes | No |
 | | Local | E2B | Vercel Sandbox | Daytona | Memory | Boat |
 | Key mode | exact | best-effort | exact | best-effort | exact | best-effort |
 | Snapshots | Yes | Yes | Yes | Yes | No | No |
@@ -55,6 +59,9 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | Block all network | Yes | Yes | Yes | Yes | Yes | Yes |
 | Network allow list | No | Yes | Yes | Yes | Yes | Yes |
 | Size presets | Yes | No | Yes | Yes | Yes | No |
+| Exact CPU, memory, disk | No | No | No | Yes | Yes | No |
+| Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | Yes | Yes |
+| Preview URL | `127.0.0.1` only | Public `https://` | Public `https://` | Needs a token header | Public `https://` | Fake |
 | Exact CPU, memory, disk | No | No | No | Yes | No | No |
 | Idle timeout | Partly, on reconnect or reap | No | No | Yes, in minutes | No | Yes |
 | Hard lifetime | Partly, on reconnect or reap | Yes | No | Yes, in minutes | No | Yes |
@@ -89,6 +96,8 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
     Ephemeral Linux VMs with filesystem checkpoints and declared public preview ports.
   <Card title="Boat" href="/providers/boat" icon="sailboat">
     Persistent cloud VMs with size presets and token-protected previews.
+  <Card title="Tenki" href="/providers/tenki" icon="server">
+    Full Linux VMs with disk and memory snapshots, pause, and exact machine sizes.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

@@ -21,6 +21,7 @@ const credentials: Record<string, string[]> = {
   daytona: ["DAYTONA_API_KEY"],
   upstash: ["UPSTASH_BOX_API_KEY"],
   boat: ["BOAT_API_KEY"],
+  tenki: ["TENKI_API_KEY"],
 };
 const regionKeys: Record<string, string> = {
   e2b: "E2B_REGION",
@@ -58,6 +59,7 @@ function parseProvider(value: unknown): Provider {
   return value as Provider;
 }
 export function missingCredentials(name: string, env: NodeJS.ProcessEnv): string[] {
+  if (name === "tenki" && env.TENKI_AUTH_TOKEN?.trim()) return [];
   if (name === "vercel" && env.VERCEL_OIDC_TOKEN?.trim() && !env.VERCEL_TOKEN) return [];
   return (credentials[name] ?? []).filter((key) => !env[key]?.trim());
 }

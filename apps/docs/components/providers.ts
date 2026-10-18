@@ -7,6 +7,7 @@ export const PROVIDERS = {
   vercel: { name: "Vercel Sandbox", logo: "/integrations/vercel.svg" },
   daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
   upstash: { name: "Upstash Box", logo: undefined },
+  tenki: { name: "Tenki", logo: undefined },
   memory: { name: "Memory", logo: "/integrations/memory.svg" },
 } as const satisfies Record<string, { name: string; logo: string | undefined }>;
 
