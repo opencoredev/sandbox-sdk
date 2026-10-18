@@ -1,0 +1,75 @@
+---
+title: Local
+description: Run sandboxes as Docker containers on your own machine or CI runner. Real Linux, no cloud account, previews on localhost.
+---
+
+`local()` runs each sandbox as a Docker container on the machine your code runs on. It is real Linux with real networking, so it behaves like the cloud providers, and it needs no account or key. Use it while you develop and in CI.
+
+Writing unit tests that shouldn't start containers? Use [Memory](/providers/memory).
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk
+```
+
+`local()` needs no extra package, only a running Docker daemon. Check with `docker info`. Docker Desktop, OrbStack, Colima, and a plain Linux Docker Engine all work.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+The default image is `node:22-bookworm` with git installed. The first run pulls it.
+
+## Configuration
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local({ image: "python:3.13-bookworm" }));
+const result = await box.run("python --version");
+console.log(result.stdout);
+```
+
+`image` picks any image from a registry Docker can pull from. It needs a POSIX shell, and git if you use `box.git` or `files.changes()`.
+
+{/* TODO(SBX-32): list the remaining local() options once the adapter lands. */}
+
+## Keys
+
+Key mode is **exact**. The key becomes part of the container name, and Docker refuses duplicate names, so concurrent calls with the same key always share one container.
+
+## Previews
+
+Declared ports map to free ports on the host, and `box.preview(port)` returns a `http://localhost:<port>` URL. The URL works only on the machine that runs Docker. To reach it from another device, put a tunnel in front of it.
+
+## Environment variables
+
+None. `local()` uses whatever Docker context your shell is set to, including `DOCKER_HOST`.
+
+## API reference
+
+### `local(options?)`
+
+- `image?: string`. Defaults to `node:22-bookworm`.
+
+Returns a provider for `createSandbox`, `connectSandbox`, `listSandboxes`, and `reapSandboxes`.
+
+## Limitations
+
+- Isolation is a container, not a VM. Don't run untrusted code from strangers on a machine that holds secrets. Use a cloud provider such as [E2B](/providers/e2b) for that.
+- Preview URLs are `localhost` only.
+- Sandboxes stop when Docker stops. Containers survive a restart of your app, so keys and `box.process(name)` keep working.
+
+## Next steps
+
+- [Quickstart](/): the full first run with `local()`.
+- [Running commands](/concepts/running-commands)

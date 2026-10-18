@@ -1,0 +1,104 @@
+---
+title: Testing with memory()
+description: Test code that uses sandboxes without Docker or cloud keys. memory() is an in-process fake with files, scripted commands, processes, and fake preview URLs.
+---
+
+Your tests shouldn't start real machines. `memory()` is a provider that runs entirely inside your test process. It keeps files in a map, answers commands from a table of handlers you write, and returns fake preview URLs. It never touches the network.
+
+Write your code against `createSandbox(provider)` and pass `memory()` in tests and a real provider in production.
+
+## Code under test
+
+```ts title="src/scaffold.ts"
+import type { Sandbox } from "@opencoredev/sandbox-sdk";
+
+export async function scaffold(box: Sandbox, name: string) {
+  await box.files.write(`${name}/package.json`, JSON.stringify({ name, private: true }));
+  const install = await box.run("npm install", { cwd: name });
+  if (!install.ok) throw new Error(`install failed: ${install.output}`);
+  return box.files.list(name);
+}
+```
+
+`scaffold` takes any sandbox, so the test decides where it runs.
+
+## Write the test
+
+```ts title="src/scaffold.test.ts"
+import { expect, test } from "vitest";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import { scaffold } from "./scaffold";
+
+test("scaffold writes package.json and installs", async () => {
+  const provider = memory({
+    handlers: {
+      npm: async ({ args, stdout }) => {
+        stdout(`npm ${args.join(" ")}: ok\n`);
+        return 0;
+      },
+    },
+  });
+
+  await using box = await createSandbox(provider);
+  const files = await scaffold(box, "app");
+
+  expect(files.map((f) => f.path)).toContain("/workspace/app/package.json");
+});
+```
+
+The test runs in milliseconds and needs no Docker or API keys.
+
+## Script commands
+
+`memory()` understands a small shell subset, such as `cd`, `export`, and `&&`, plus the handlers you register. A handler is keyed by program name, receives the parsed command, and returns an exit code.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+const provider = memory({
+  handlers: {
+    node: async ({ args, files, stdout, stderr }) => {
+      if (args[0] !== "build.mjs") {
+        stderr("unexpected script\n");
+        return 1;
+      }
+      await files.write("/workspace/dist/index.html", "<h1>built</h1>");
+      stdout("built\n");
+      return 0;
+    },
+  },
+});
+
+await using box = await createSandbox(provider);
+const result = await box.run("node build.mjs");
+console.log(result.ok, await box.files.read("dist/index.html"));
+```
+
+Each handler gets `args`, `cwd`, `env`, `stdin`, a `signal`, `stdout` and `stderr` writers, and `files` to read and write the fake file system. You can also add handlers after creation with `provider.register(name, handler)`.
+
+## Processes and previews
+
+`box.start` works with handlers too. A handler that keeps running until its `signal` aborts behaves like a long-running server, and `stop()` aborts that signal. `box.preview(port)` returns a URL on the `memory.invalid` host. It is there so you can assert on it. Don't fetch it: the host never resolves, so a test that tries fails instead of reaching the internet.
+
+## What memory() does not do
+
+- No real shell. Pipes, globs, and programs without a handler are not available.
+- No git. `box.git` and `files.changes()` need a real provider.
+- No terminals, and no real sockets.
+
+For those, run the same test against [`local()`](/providers/local) in CI. It needs Docker but no cloud keys.
+
+## Check a custom provider
+
+If you write your own provider adapter, `runConformance` from `@opencoredev/sandbox-sdk/testing` runs the same suite every built-in provider passes. It covers create and find by key, commands, `$` escaping, processes, files, git, previews, and cleanup.
+
+```ts title="provider.test.ts"
+import { runConformance } from "@opencoredev/sandbox-sdk/testing";
+import { myProvider } from "./my-provider";
+
+runConformance(() => myProvider(), { live: false });
+```
+
+Set `live: true` to run the parts that need a real machine and network.

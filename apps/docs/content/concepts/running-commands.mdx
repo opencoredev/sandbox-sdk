@@ -1,0 +1,135 @@
+---
+title: Running commands
+description: Run shell commands, stream their output, and build commands safely with the $ tag. Covers defaults, timeouts, and what a result contains.
+---
+
+`box.run` runs one shell command and resolves with its result once the command exits. A non-zero exit code is a normal result, not an error. The SDK throws only when the sandbox or the provider fails.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const result = await box.run("npm test", { cwd: "app", timeoutMs: 300_000 });
+
+if (!result.ok) {
+  console.error(`exit ${result.exitCode}`, result.output);
+}
+```
+
+`result.ok` is `true` only when the command exited with code 0 and did not time out.
+
+## What a result contains
+
+| Field | Meaning |
+| --- | --- |
+| `ok` | `true` when `exitCode` is 0 |
+| `exitCode` | The exit code, or `null` if the command was killed |
+| `stdout`, `stderr` | Each stream on its own |
+| `output` | stdout and stderr interleaved in the order they arrived |
+| `durationMs` | Wall time of the command |
+| `truncated` | `true` if output passed `maxOutputBytes` |
+| `timedOut` | `true` if `timeoutMs` ran out |
+| `cwd` | The absolute directory the command ran in |
+| `command` | The command string |
+
+Show `output` to people and models. It reads like a terminal.
+
+## Defaults
+
+Every command gets these, so a command can't hang on a prompt or flood your server:
+
+- **Timeout.** 120 seconds. Change it with `timeoutMs`.
+- **Output cap.** 1 MB per stream. Past that, the result keeps the start and the end, puts a marker in the middle, and sets `truncated: true`. Change it with `maxOutputBytes`.
+- **No stdin.** stdin is closed unless you pass `stdin`.
+- **Non-interactive env.** `CI=1`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `DEBIAN_FRONTEND=noninteractive`, `TERM=dumb`, and `NO_COLOR=1` are always set.
+- **Working directory.** `/workspace`. A relative `cwd` resolves against it.
+- **No carried state.** Each call is a fresh shell. A `cd` or `export` in one call does not affect the next. Pass `cwd` and `env` instead.
+
+## Timeouts and cancellation
+
+When `timeoutMs` runs out, the SDK kills the whole process group in the sandbox and resolves with `timedOut: true`, `exitCode: null`, `ok: false`, and the output so far. It does not throw.
+
+`signal` does the same for an `AbortSignal`. Use it to stop a command when a user cancels a request.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5_000);
+
+const result = await box.run("sleep 60", { signal: controller.signal });
+console.log(result.timedOut, result.exitCode);
+```
+
+This prints `true null` after five seconds, and the `sleep` process in the sandbox is gone.
+
+## Stream output
+
+The value `run` returns is both a promise and an async iterable. Iterate it to get output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+for await (const chunk of box.run("npm install", { cwd: "app" })) {
+  process.stdout.write(`[${chunk.stream}] ${chunk.text}`);
+}
+```
+
+Each chunk has `stream` (`"stdout"` or `"stderr"`) and `text`. To stream and also get the final result, keep the handle and await it after the loop:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const install = box.run("npm install", { cwd: "app" });
+for await (const chunk of install) process.stdout.write(chunk.text);
+const result = await install;
+console.log(result.ok);
+```
+
+## Build commands with `$`
+
+Never paste user input into a command string. Use the `$` tag: it shell-escapes every interpolated value.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const branch = "feature/it's; rm -rf /";
+const result = await box.$`git checkout -b ${branch}`.cwd("app");
+console.log(result.exitCode);
+```
+
+`branch` reaches git as one argument, quotes and semicolon included. `$` returns the same handle as `run`, with chainable `.cwd(path)`, `.env(vars)`, and `.timeout(ms)`. You can await it or iterate it.
+
+## Secrets
+
+Values you pass as `secrets` to `createSandbox` are set as environment variables in the sandbox and removed from every result, log, and error the SDK produces.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const token = process.env.NPM_TOKEN ?? "";
+
+await using box = await createSandbox(local(), { secrets: { NPM_TOKEN: token } });
+
+const result = await box.run("echo $NPM_TOKEN");
+console.log(result.stdout);
+```
+
+This prints a redaction marker, not the token. Use `env` for values that are safe to show.
+
+For long-running commands like dev servers, use [processes](/concepts/processes-and-previews) instead of `run`.

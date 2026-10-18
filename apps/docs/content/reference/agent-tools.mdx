@@ -1,0 +1,66 @@
+---
+title: Agent tools
+description: sandboxTools for the AI SDK, Mastra, and the OpenAI Agents SDK. Tool list, parameters, output format, and options.
+---
+
+{/* TODO(SBX-32): generate the options table from the SandboxToolsOptions type once packages/sdk lands. */}
+
+Guide: [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
+
+## `sandboxTools(box, options?)`
+
+| Import | Returns |
+| --- | --- |
+| `@opencoredev/sandbox-sdk/ai` | AI SDK tool set |
+| `@opencoredev/sandbox-sdk/mastra` | Mastra tool map |
+| `@opencoredev/sandbox-sdk/openai` | OpenAI Agents SDK tool array |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(local());
+const tools = sandboxTools(box, { root: "/workspace/app", deny: ["stop_process"] });
+console.log(Object.keys(tools));
+```
+
+### Options
+
+- `root?: string`: every path the model passes must resolve inside this directory.
+- `allow?: string[]`: only these tools. Also how you turn on optional tools.
+- `deny?: string[]`: every default tool except these.
+- `beforeRun?: (command: string) => string | false`: called before each command. Return a string to run instead, or `false` to refuse.
+- Per-tool limits, such as a lower timeout for `run` or a smaller output cap.
+- `onEvent?`: receives full output as it streams, for your UI. With the AI SDK this also drives preliminary tool results.
+
+## Default tools
+
+| Tool | Parameters | Notes |
+| --- | --- | --- |
+| `run` | `command`, `cwd?`, `timeoutMs?` | Waits for exit. Use `start_process` for servers. |
+| `read_file` | `path`, `offset?`, `limit?` | Numbered lines and a content hash |
+| `write_file` | `path`, `content` | Whole-file write |
+| `edit_file` | `path`, `find`, `replace` | `find` must match exactly once |
+| `start_process` | `name`, `command`, `cwd?`, `port?` | Waits for ready, returns the URL |
+| `process_logs` | `name`, `cursor?` | Returns text and the next cursor |
+| `stop_process` | `name` | |
+
+## Optional tools
+
+Turn these on with `allow`: `search`, `list_files`, `changes`, `preview`.
+
+## Output format
+
+Results open with one verdict line:
+
+```txt
+OK exit=0 1.2s cwd=/workspace
+output:
+added 214 packages in 9s
+```
+
+- Failures start with `FAILED exit=<code>`.
+- Output is ANSI-stripped and capped at 16 KB as head plus tail, with a `[N bytes cut, use process_logs]` marker.
+- Errors use the [`SandboxError`](/reference/errors) message format.
+- Secrets passed to `createSandbox` never appear.

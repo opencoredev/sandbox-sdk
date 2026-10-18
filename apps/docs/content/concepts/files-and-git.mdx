@@ -1,0 +1,166 @@
+---
+title: Files and git
+description: Read, write, and edit files in a sandbox, move folders in and out, search, watch for changes, see what changed since creation, and use git with tokens kept out of logs.
+---
+
+`box.files` works on the sandbox file system. `box.git` runs git with credentials that never touch the command line. Relative paths resolve against `/workspace`, the same default directory `run` uses.
+
+## Read and write
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+await box.files.write("app/index.ts", 'console.log("hi");\n');
+await box.files.write({
+  "app/package.json": '{ "type": "module" }\n',
+  "app/src/util.ts": "export const one = 1;\n",
+});
+
+const text = await box.files.read("app/index.ts");
+const bytes = await box.files.read("app/index.ts", { as: "bytes" });
+console.log(text, bytes.length);
+```
+
+`write` creates missing directories. It takes a string or a `Uint8Array`, or an object of many paths at once. `read` returns a string unless you ask for bytes.
+
+## Edit in place
+
+`edit` replaces one exact piece of text. It is the safest way to let a model change a file.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+await box.files.write("app/index.ts", "start();\n");
+await box.files.edit("app/index.ts", { find: "start()", replace: "start({ port: 3000 })" });
+```
+
+`find` must match exactly once. If it matches nothing, `edit` throws `SandboxError` with code `edit_not_found`. If it matches more than once, the code is `edit_not_unique` and the message lists the line numbers of every match, so the caller can add context and retry.
+
+## List, inspect, remove
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const entries = await box.files.list("app", { recursive: true, glob: "**/*.ts" });
+for (const entry of entries) console.log(entry.path, entry.type, entry.size);
+
+if (await box.files.exists("app/dist")) {
+  await box.files.remove("app/dist", { recursive: true });
+}
+
+const info = await box.files.stat("app/index.ts");
+console.log(info.modifiedAt);
+```
+
+## Move folders in and out
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+await box.files.upload("./starter", "app", { ignore: [".git", "node_modules"] });
+await box.run("npm install && npm run build", { cwd: "app" });
+await box.files.download("app/dist", "./out");
+```
+
+`upload` copies a local folder into the sandbox as one tar archive, which is much faster than writing files one by one. `download` does the reverse.
+
+## Search
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const matches = await box.files.search("TODO", { path: "app", glob: "*.ts", maxMatches: 200 });
+for (const m of matches) console.log(`${m.path}:${m.line} ${m.text}`);
+```
+
+## Watch for changes
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const stop = box.files.watch("app", (event) => {
+  console.log(event.type, event.path);
+}, { recursive: true });
+
+await box.run("touch app/new.ts");
+stop();
+```
+
+Each event has `type` (`"added"`, `"modified"`, or `"removed"`) and `path`. The function `watch` returns stops watching.
+
+## See what changed
+
+`changes` tells you what files differ from a snapshot the SDK took when it created the sandbox. Use it to show a user what their agent did.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+await box.files.write("app/index.ts", "export {};\n");
+
+const diff = await box.files.changes({ since: "start" });
+console.log(diff.added, diff.modified, diff.removed);
+console.log(diff.patch);
+```
+
+To compare against a later point, set a checkpoint with `mark` and pass its name:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+await box.files.mark("before-agent");
+await box.run("echo changed > app/notes.txt");
+const diff = await box.files.changes({ since: "before-agent" });
+console.log(diff.patch);
+```
+
+This works on every provider. The SDK uses git with a hidden index, so it doesn't touch your project's own git history.
+
+## Git
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const token = process.env.GITHUB_TOKEN ?? "";
+
+await using box = await createSandbox(local());
+
+await box.git.clone("https://github.com/acme/web.git", { dir: "app", branch: "main", depth: 1, token });
+await box.git.checkout("app", { branch: "agent/fix-login", create: true });
+
+await box.files.edit("app/src/login.ts", { find: "timeout: 10", replace: "timeout: 30" });
+
+const status = await box.git.status("app");
+console.log(status.stdout);
+
+await box.git.commit("app", { message: "Raise login timeout", all: true });
+await box.git.push("app", { token, branch: "agent/fix-login" });
+```
+
+Each git method runs through `run` and resolves with a normal command result. A failed push is `ok: false`, not a throw.
+
+`token` goes through a temporary credential helper. It never appears in the command line, the shell history, or any output the SDK returns.

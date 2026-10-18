@@ -1,0 +1,127 @@
+---
+title: Lifecycle and cleanup
+description: Close or destroy sandboxes, set idle and lifetime limits, pause and snapshot where supported, and reap sandboxes your app forgot.
+---
+
+Cloud sandboxes cost money while they run. This page covers how a sandbox ends: when your code is done with it, when it sits idle, and when your app crashed and forgot about it.
+
+## Close or destroy
+
+| Call | The sandbox | Use it when |
+| --- | --- | --- |
+| `box.close()` | Keeps running | You will come back to it, by key or ID |
+| `box.destroy()` | Is deleted | You are done with it |
+
+`close()` only releases local resources such as open streams. `destroy()` deletes the sandbox at the provider.
+
+`await using` picks for you. With a `key`, it calls `close()`, because a keyed sandbox is meant to be found again. Without a key, it calls `destroy()`, because nothing could find that sandbox later.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+{
+  await using scratch = await createSandbox(e2b());
+  await scratch.run("echo one-off");
+}
+
+{
+  await using workspace = await createSandbox(e2b(), { key: "user:123" });
+  await workspace.run("echo still here next time");
+}
+```
+
+At the end of the first block the sandbox is destroyed. At the end of the second it is still running.
+
+## Idle and lifetime limits
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), {
+  key: "user:123",
+  idleTimeoutMs: 15 * 60_000,
+  timeoutMs: 60 * 60_000,
+});
+```
+
+- `idleTimeoutMs` stops or pauses the sandbox after this long without activity. The SDK uses the provider's own idle handling where it has one.
+- `timeoutMs` is the hard maximum lifetime. The provider ends the sandbox when it runs out, whatever it is doing.
+
+Set both on every keyed sandbox. A forgotten keyed sandbox is the most common source of surprise bills.
+
+## Pause, resume, and snapshot
+
+On providers that support them, you can pause a sandbox to stop paying for compute and resume it later with its files intact, or snapshot it and start new sandboxes from the snapshot.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using base = await createSandbox(e2b());
+await base.run("npm create vite@latest app -- --template react && cd app && npm install");
+const { id } = await base.snapshot();
+
+await using copy = await createSandbox(e2b(), { from: id });
+const result = await copy.run("ls app/node_modules | wc -l");
+console.log(result.stdout);
+```
+
+The copy starts with `node_modules` already installed. These methods only exist on providers that support them, so TypeScript catches a call on a provider that can't. Check the [providers overview](/providers).
+
+## Find and reap sandboxes
+
+Every sandbox the SDK creates carries a `sandbox-sdk` label. `listSandboxes` returns only those, so it never lists sandboxes made by other tools in the same account.
+
+```ts
+import { listSandboxes } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const boxes = await listSandboxes(e2b(), { labels: { app: "builder" } });
+for (const b of boxes) console.log(b.id, b.key, b.state, new Date(b.createdAt));
+```
+
+`reapSandboxes` destroys every matching sandbox and returns how many it removed. Run it on a schedule as a safety net:
+
+```ts
+import { reapSandboxes } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const removed = await reapSandboxes(e2b(), {
+  labels: { app: "builder" },
+  olderThanMs: 24 * 60 * 60_000,
+  idleOnly: true,
+});
+console.log(`reaped ${removed} sandboxes`);
+```
+
+`idleOnly: true` leaves out sandboxes that are in use and reaps only idle ones. Scope reaping with `labels` so one app's cron job never deletes another app's sandboxes.
+
+## Usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+await box.run("npm install");
+
+const usage = await box.usage();
+console.log(usage.runningMs, usage.commands, usage.bytesOut);
+```
+
+`usage()` returns `createdAt`, `runningMs`, `commands`, and `bytesOut`, plus cost fields when the provider reports them.
+
+## Cancel creation
+
+Pass `signal` to stop waiting for a slow create. If the provider finishes creating the sandbox after you aborted, the SDK destroys it, so an abandoned create never leaks a running sandbox.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { signal: AbortSignal.timeout(30_000) });
+```
+
+The call throws `SandboxError` with code `aborted` when the signal fires first.

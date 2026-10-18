@@ -1,0 +1,132 @@
+---
+title: Processes and previews
+description: Start long-running processes like dev servers, wait until they are ready, read their logs with cursors, reattach by name, and get preview URLs.
+---
+
+`run` waits for a command to exit. A dev server never exits, so start it with `box.start` instead. You get a handle that knows when the server is ready, keeps its logs, and can be found again by name from another request or another server.
+
+## Start a process
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { ports: [3000] });
+
+const dev = await box.start("npm run dev -- --port 3000", {
+  name: "dev",
+  cwd: "app",
+  ready: { http: { port: 3000, path: "/" } },
+  readyTimeoutMs: 90_000,
+});
+
+console.log(dev.status, dev.url);
+```
+
+`start` resolves when the readiness check passes. Because `ready` names a port, `dev.url` is a preview URL that the SDK has already checked from outside the sandbox. Vercel needs every port declared in `ports` at creation. Other providers ignore that option.
+
+`name` is required and unique within a sandbox. It is how you find the process later.
+
+## Readiness checks
+
+| `ready` | Passes when |
+| --- | --- |
+| `{ port: 3000 }` | Something accepts TCP connections on port 3000 |
+| `{ http: { port: 3000, path: "/health" } }` | An HTTP request to that path gets a response |
+| `{ log: /Local:/ }` | A line of output matches the regular expression |
+
+Without `ready`, `start` returns as soon as the process is running.
+
+Two things can go wrong:
+
+- **The process exits first.** `start` throws `SandboxError` with code `process_exited`. The error includes the exit code and the last 50 log lines, so you can show why it crashed.
+- **The check times out.** The process keeps running. The handle reports `ready: false`, and the error carries the end of the log. Raise `readyTimeoutMs` for slow first builds.
+
+## Read logs
+
+A process writes its output to a log file inside the sandbox. Read it in pages with a cursor:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42" });
+
+const dev = box.process("dev");
+const page = await dev.logs({ maxBytes: 16_384 });
+console.log(page.text);
+
+const next = await dev.logs({ after: page.nextCursor });
+console.log(next.text);
+```
+
+Each page returns `text`, `nextCursor`, and `truncated`. Cursors are plain strings. Store one in your database and a different server process can continue reading where the last one stopped.
+
+To follow output live, iterate `lines`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42" });
+
+for await (const line of box.process("dev").lines()) {
+  console.log(line.stream, line.text);
+  if (line.text.includes("compiled")) break;
+}
+```
+
+Every line carries its own `cursor`, so you can resume from the exact line you stopped at with `lines({ after: line.cursor })`.
+
+## Reattach by name
+
+Process records live inside the sandbox, not in your server's memory. After a deploy or a restart, connect to the sandbox and call `box.process(name)`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "project:42" });
+
+const all = await box.processes();
+for (const p of all) console.log(p.name, p.status, p.ports);
+
+const dev = box.process("dev");
+await dev.restart();
+```
+
+`processes()` returns `name`, `command`, `status`, `pid`, `ports`, `startedAt`, and `exitCode` for each process. `status` is one of `"starting"`, `"running"`, `"exited"`, or `"failed"`.
+
+## Stop and wait
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+
+const job = await box.start("node build.mjs", { name: "build" });
+const exit = await job.wait();
+console.log(exit.exitCode, exit.signal);
+
+await box.process("dev").stop();
+```
+
+`wait()` resolves when the process exits. `stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it on a process that already stopped does nothing.
+
+## Previews
+
+`box.preview(port)` returns a URL for any port, whether or not you started the server with `start`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), { key: "project:42" });
+
+const preview = await box.preview(3000, { path: "/", waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status, preview.expiresAt);
+```
+
+With `waitMs`, the SDK requests the URL from outside the sandbox and returns only once it answers. Some providers need more than a URL: Daytona requires a token header, which arrives in `headers`. A URL that stops working after a while comes with `expiresAt`, in epoch milliseconds. Pass `headers` along whenever they are present.
