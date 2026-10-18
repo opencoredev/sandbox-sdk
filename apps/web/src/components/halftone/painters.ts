@@ -56,70 +56,81 @@ export function glowField({ base, lights, streaks }: GlowField): Painter {
   };
 }
 
-export interface ProviderArt {
+interface ProviderArtBase {
   id: string;
   name: string;
-  /** What it is best for, from the provider overview in the docs. */
+  /** One plain line on what the provider is. */
   line: string;
-  href: string;
   paint: Painter;
 }
 
+/**
+ * A 1.0 provider links to its docs page. The others keep their scenes but are
+ * labelled as coming soon, since 1.0 does not ship an adapter for them.
+ */
+export type ProviderArt =
+  | (ProviderArtBase & { kind: "launch"; href: string })
+  | (ProviderArtBase & { kind: "soon" });
+
 export const providerArt: ProviderArt[] = [
   {
+    kind: "launch",
     id: "local",
     name: "Local",
-    line: "Runs on your machine in an AgentOS VM. No account, no API key.",
+    line: "Docker on your machine. Real Linux, ports on localhost, no account.",
     href: "/docs/providers/local",
     paint: providerScenes.local,
   },
   {
+    kind: "launch",
     id: "e2b",
     name: "E2B",
-    line: "Short-lived Linux sandboxes for coding agents.",
+    line: "Cloud Linux sandboxes that can pause and snapshot.",
     href: "/docs/providers/e2b",
     paint: providerScenes.e2b,
   },
   {
-    id: "daytona",
-    name: "Daytona",
-    line: "Persistent workspaces, with GPUs when you need them.",
-    href: "/docs/providers/daytona",
-    paint: providerScenes.daytona,
-  },
-  {
+    kind: "launch",
     id: "vercel",
     name: "Vercel Sandbox",
-    line: "Persistent sandboxes for coding agents, with public previews.",
+    line: "Named sandboxes on Vercel, with preview URLs for the ports you declare.",
     href: "/docs/providers/vercel",
     paint: providerScenes.vercel,
   },
   {
+    kind: "launch",
+    id: "daytona",
+    name: "Daytona",
+    line: "Long-lived workspaces with labels and token-protected previews.",
+    href: "/docs/providers/daytona",
+    paint: providerScenes.daytona,
+  },
+  {
+    kind: "soon",
     id: "upstash",
     name: "Upstash Box",
     line: "Durable serverless boxes with filesystem snapshots.",
-    href: "/docs/providers/upstash",
     paint: providerScenes.upstash,
   },
   {
+    kind: "soon",
     id: "boat",
     name: "Boat",
     line: "Persistent cloud VMs for long-running agents.",
-    href: "/docs/providers/box",
     paint: providerScenes.boat,
   },
   {
+    kind: "soon",
     id: "railway",
     name: "Railway",
     line: "Durable jobs and private networking on Linux VMs.",
-    href: "/docs/providers/railway",
     paint: providerScenes.railway,
   },
   {
+    kind: "soon",
     id: "tenki",
     name: "Tenki",
     line: "Coding agents on full Linux VMs, with disk and memory snapshots.",
-    href: "/docs/providers/tenki",
     paint: providerScenes.tenki,
   },
 ];

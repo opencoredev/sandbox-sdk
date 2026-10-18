@@ -575,6 +575,10 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+.cardSoon {
+  margin-left: 10px;
+  color: var(--amber);
+}
 .cardLine {
   max-width: 34ch;
   font-size: 19px;

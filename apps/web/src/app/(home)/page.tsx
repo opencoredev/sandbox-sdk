@@ -30,7 +30,11 @@ import { ProvidersCarousel } from "./providers-carousel";
 
 const GITHUB = "https://github.com/opencoredev/sandbox-sdk";
 const NPM = "https://www.npmjs.com/package/@opencoredev/sandbox-sdk";
+const SECURITY = `${GITHUB}/security/policy`;
 const INSTALL = "bun add @opencoredev/sandbox-sdk";
+
+/** Docs live in the Blume app under /docs (apps/docs). */
+const DOCS = { quickstart: "/docs", providers: "/docs/providers" } as const;
 
 const INK: readonly [number, number, number] = [0.043, 0.043, 0.047];
 const HARBOR_DOTS: HalftoneStyle = {
@@ -87,7 +91,7 @@ function Brackets({ tone = "light" }: { tone?: "light" | "amber" }) {
 
 function DocsButton() {
   return (
-    <Link href="/docs" className={styles.primary}>
+    <Link href={DOCS.quickstart} className={styles.primary}>
       Read the docs
       <Arrow />
     </Link>
@@ -125,10 +129,11 @@ function Nav() {
           <span>Sandbox SDK</span>
         </Link>
         <div className={styles.navLinks}>
-          <Link href="/docs">Docs</Link>
-          <Link href="/docs/providers">Providers</Link>
-          <Link href="/compatibility">Compatibility</Link>
-          <Link href="/security">Security</Link>
+          <Link href={DOCS.quickstart}>Docs</Link>
+          <Link href={DOCS.providers}>Providers</Link>
+          <a href={SECURITY} target="_blank" rel="noopener noreferrer">
+            Security
+          </a>
         </div>
         <a href={GITHUB} className={styles.navGithub} target="_blank" rel="noopener noreferrer">
           <GithubMark />
@@ -144,11 +149,12 @@ function Hero() {
     <section className={styles.hero} aria-labelledby="hero-title">
       <div className={styles.heroText}>
         <h1 id="hero-title" className={styles.display} data-reveal>
-          One API for every agent sandbox.
+          Sandboxes for your agents and your users.
         </h1>
         <p className={styles.lede} data-reveal>
-          Run commands, move files, and open ports from TypeScript. Build on Local, then switch to
-          E2B, Daytona, Vercel, or four more by changing one line.
+          Any provider, one line. Run commands, edit files, and serve previews on Docker, E2B,
+          Vercel, or Daytona. The SDK calls each provider with your own keys, with no hosted service
+          in between.
         </p>
         <div className={styles.heroActions} data-reveal>
           <DocsButton />
@@ -166,17 +172,17 @@ function Hero() {
           {
             label: "Install",
             code: INSTALL,
-            note: "Local works out of the box. No account, no keys.",
+            note: "Local needs Docker. Cloud providers use your API key.",
           },
           {
             label: "Create",
-            code: "await using sandbox = await createSandbox({ provider: local() })",
-            note: "await using stops it when the scope ends, even on errors",
+            code: "await using box = await createSandbox(e2b())",
+            note: "Destroyed when the scope ends, even if your code throws.",
           },
           {
             label: "Run",
-            code: 'await sandbox.run("bun test")',
-            note: "Get stdout, stderr, and the exit code back",
+            code: 'const r = await box.run("npm test")',
+            note: "A failing exit code comes back as a result, not a throw.",
           },
         ].map((step) => (
           <div key={step.label} className={styles.step}>
@@ -195,11 +201,12 @@ function Providers() {
     <section className={styles.section} aria-labelledby="providers-title">
       <div className={styles.sectionHead}>
         <h2 id="providers-title" className={styles.title}>
-          Eight providers. Switch any time.
+          Docker, three clouds, and a fake for tests.
         </h2>
         <p className={styles.sectionLede}>
-          Build against Local on your laptop, then point the same code at E2B, Daytona, Vercel
-          Sandbox, Upstash Box, Boat, Railway, or Tenki.
+          Local runs on Docker. E2B, Vercel Sandbox, and Daytona run in the cloud. memory() is an
+          in-process fake for unit tests that never touches the network. Cards marked coming soon
+          have no 1.0 adapter yet.
         </p>
       </div>
       <ProvidersCarousel style={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
@@ -212,12 +219,11 @@ function Swap() {
     <section className={styles.section} aria-labelledby="swap-title">
       <div className={styles.sectionHead}>
         <h2 id="swap-title" className={styles.title}>
-          Change one line. Keep the rest.
+          The provider is the first argument.
         </h2>
         <p className={styles.sectionLede}>
-          The provider is the only thing that changes. The calls after createSandbox stay the same,
-          and the <Link href="/compatibility">compatibility table</Link> shows what each provider
-          supports.
+          Everything after createSandbox stays the same. If a provider can&apos;t pause or snapshot,
+          those methods aren&apos;t on its type, so the compiler tells you before your users do.
         </p>
       </div>
       <div className={styles.codePair}>
@@ -228,10 +234,10 @@ function Swap() {
               'import { createSandbox } from "@opencoredev/sandbox-sdk";',
               'import { local } from "@opencoredev/sandbox-sdk/local";',
               "",
-              "await using sandbox = await createSandbox({ provider: local() });",
+              "await using box = await createSandbox(local());",
               "",
-              'const result = await sandbox.run("node --version");',
-              "console.log(result.stdout);",
+              'const r = await box.run("node --version");',
+              "console.log(r.stdout);",
             ]}
           />
         </div>
@@ -242,11 +248,11 @@ function Swap() {
               '- import { local } from "@opencoredev/sandbox-sdk/local";',
               '+ import { e2b } from "@opencoredev/sandbox-sdk/e2b";',
               "",
-              "- await using sandbox = await createSandbox({ provider: local() });",
-              "+ await using sandbox = await createSandbox({ provider: e2b() });",
+              "- await using box = await createSandbox(local());",
+              "+ await using box = await createSandbox(e2b());",
               "",
-              'const result = await sandbox.run("node --version");',
-              "console.log(result.stdout);",
+              'const r = await box.run("node --version");',
+              "console.log(r.stdout);",
             ]}
             muted={[6, 7]}
           />
@@ -259,38 +265,43 @@ function Swap() {
 const FEATURES: { title: string; body: string; lines: string[]; muted: number[] }[] = [
   {
     title: "Run commands",
-    body: "Get stdout, stderr, and the exit code. Set the working directory, environment, timeout, or an abort signal.",
+    body: "box.$ shell-escapes every value you interpolate. Every command has a timeout and capped output, and stdin is closed unless you pass it.",
     lines: [
-      'const build = await sandbox.run("bun run build", {',
-      '  cwd: "app",',
-      "  timeout: 60_000,",
-      "});",
-      "build.exitCode // 0",
+      "await box.$`git clone ${repo} app`;",
+      "",
+      'const r = await box.run("npm test", { cwd: "app" });',
+      "r.exitCode // 1, not an exception",
+      "r.output   // stdout and stderr, in order",
     ],
-    muted: [4],
+    muted: [3, 4],
   },
   {
-    title: "Move files",
-    body: "Write, read, list, and remove files, text or binary, with the same calls on every provider.",
+    title: "Edit files",
+    body: "Edit by exact match, and get a patch of everything that changed since the sandbox started. An edit that matches twice fails instead of guessing.",
     lines: [
-      'await sandbox.files.write("src/app.ts", code);',
-      'await sandbox.files.text("src/app.ts");',
-      'await sandbox.files.list("src");',
-      'await sandbox.files.exists("dist");',
+      'await box.files.edit("app/a.ts", {',
+      '  find: "foo()",',
+      '  replace: "bar()",',
+      "});",
+      "",
+      "const diff = await box.files.changes({",
+      '  since: "start",',
+      "});",
     ],
     muted: [],
   },
   {
-    title: "Processes and ports",
-    body: "Start a dev server, stream its logs, and expose a port to get a preview URL. Each provider declares what it supports.",
+    title: "Dev servers and previews",
+    body: "start waits until the port answers, then returns a preview URL. Reattach to the process by name from a later request.",
     lines: [
-      'const dev = await sandbox.processes.start("bun dev");',
-      "for await (const event of dev.output()) {}",
-      "",
-      "const preview = await sandbox.ports.expose(3000);",
-      "preview.url",
+      'const dev = await box.start("npm run dev", {',
+      '  name: "dev",',
+      "  ready: { port: 3000 },",
+      "});",
+      "dev.url",
+      'box.process("dev") // from anywhere, later',
     ],
-    muted: [4],
+    muted: [4, 5],
   },
 ];
 
@@ -312,22 +323,32 @@ function Features() {
   );
 }
 
-function Conformance() {
+/** Model-facing output of the run tool, in the format the spec defines. */
+const TOOL_OUTPUT: { text: string; tone?: "pass" | "muted" }[] = [
+  { text: "OK exit=0 4.1s cwd=/workspace/app", tone: "pass" },
+  { text: "output:" },
+  { text: "> vitest run" },
+  { text: "src/cart.test.ts (12 tests)" },
+  { text: "src/checkout.test.ts (8 tests)" },
+  { text: "[38211 bytes cut, use process_logs]", tone: "muted" },
+];
+
+function Agents() {
   return (
-    <section className={styles.split} aria-labelledby="conformance-title">
+    <section className={styles.split} aria-labelledby="agents-title">
       <div className={styles.splitText}>
-        <h2 id="conformance-title" className={styles.title}>
-          Proof it works the same everywhere.
+        <h2 id="agents-title" className={styles.title}>
+          Hand the sandbox to your agent.
         </h2>
         <p className={styles.sectionLede}>
-          The package ships a 19-case conformance suite. Run it against any provider before you rely
-          on it.
+          sandboxTools(box) returns native tools for the AI SDK, Mastra, or the OpenAI Agents SDK.
+          The model gets a one-line verdict and capped output. Your UI can still stream all of it.
         </p>
         <ul className={styles.checks}>
           {[
-            "Files, commands, processes, ports, and snapshots",
-            "Unsupported features report as skipped, not failed",
-            "Imported from @opencoredev/sandbox-sdk/testing",
+            "run, read_file, write_file, edit_file, start_process, process_logs, stop_process",
+            "Keep paths inside a root and approve or rewrite commands in beforeRun",
+            "Secrets you pass in are redacted from output and errors",
           ].map((item) => (
             <li key={item}>
               <span className={styles.check} aria-hidden="true">
@@ -348,22 +369,22 @@ function Conformance() {
       <div className={styles.splitArt}>
         <div className={styles.terminal}>
           <Brackets tone="amber" />
-          <p className={styles.panelTitle}>bun test</p>
+          <p className={styles.panelTitle}>run, as the model sees it</p>
           <ul className={styles.terminalBody}>
-            {[
-              "create and stop",
-              "text files",
-              "nonzero exit",
-              "background process",
-              "ports",
-              "snapshot restore",
-            ].map((name) => (
-              <li key={name}>
-                <span className={styles.pass}>✓</span> {name}
+            {TOOL_OUTPUT.map((line) => (
+              <li
+                key={line.text}
+                className={
+                  line.tone === "pass"
+                    ? styles.pass
+                    : line.tone === "muted"
+                      ? styles.terminalMuted
+                      : undefined
+                }
+              >
+                {line.text}
               </li>
             ))}
-            <li className={styles.terminalMuted}>... 13 more cases</li>
-            <li className={styles.terminalMuted}>0 failed on the Local provider</li>
           </ul>
         </div>
       </div>
@@ -383,7 +404,7 @@ function Closing() {
       />
       <div className={styles.closingText}>
         <h2 id="closing-title" className={styles.title}>
-          Start local. Ship anywhere.
+          Try it on your laptop with Docker.
         </h2>
         <CopyCommand command={INSTALL} />
         <DocsButton />
@@ -441,20 +462,20 @@ function Footer() {
             <Mark className={styles.brandMark} />
             <span>Sandbox SDK</span>
           </Link>
-          <p>One TypeScript sandbox API across eight providers. MIT licensed, built by OpenCore.</p>
+          <p>
+            A TypeScript SDK for Docker, E2B, Vercel, and Daytona sandboxes. MIT licensed, built by
+            OpenCore.
+          </p>
         </div>
         <div className={styles.footerCol}>
           <p className={styles.eyebrow}>Docs</p>
-          <FooterLink href="/docs">Quickstart</FooterLink>
-          <FooterLink href="/docs/providers">Providers</FooterLink>
-          <FooterLink href="/docs/api/sandboxes">API reference</FooterLink>
-          <FooterLink href="/docs/integrations">Integrations</FooterLink>
+          <FooterLink href={DOCS.quickstart}>Quickstart</FooterLink>
+          <FooterLink href={DOCS.providers}>Providers</FooterLink>
         </div>
         <div className={styles.footerCol}>
           <p className={styles.eyebrow}>Project</p>
           <FooterLink href={GITHUB}>GitHub</FooterLink>
-          <FooterLink href="/compatibility">Compatibility</FooterLink>
-          <FooterLink href="/security">Security</FooterLink>
+          <FooterLink href={SECURITY}>Security</FooterLink>
           <FooterLink href={`${GITHUB}/releases`}>Releases</FooterLink>
         </div>
       </div>
@@ -462,7 +483,7 @@ function Footer() {
         {[
           { label: "GitHub", href: GITHUB },
           { label: "npm", href: NPM },
-          { label: "Docs", href: "/docs" },
+          { label: "Docs", href: DOCS.quickstart },
         ].map((l) => (
           <FooterLink key={l.label} href={l.href}>
             {l.label}
@@ -512,7 +533,7 @@ export default function HomePage() {
         <Providers />
         <Swap />
         <Features />
-        <Conformance />
+        <Agents />
         <div className={styles.hatch} aria-hidden="true" />
         <Closing />
         <Footer />
