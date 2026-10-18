@@ -55,18 +55,18 @@ export class OutputBus {
   }
 }
 /** Hold suffixes so secrets split between transport chunks never escape. */
-export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => void) {
+export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => void, interleaved = false) {
   const queue: OutputChunk[] = [];
   function drain(final = false) {
     const secrets = redactor.secrets;
     while (queue.length) {
       const first = queue[0]; if (!first) break;
-      const text = queue.filter(chunk => chunk.stream === first.stream).map(chunk => chunk.text).join("");
+      const text = queue.filter(chunk => interleaved || chunk.stream === first.stream).map(chunk => chunk.text).join("");
       const secret = secrets.find(secret => text.startsWith(secret));
       if (secret) {
         emit({ stream: first.stream, text: "[REDACTED]" });
         let remaining = secret.length;
-        for (const chunk of queue) if (chunk.stream === first.stream && remaining) { const count = Math.min(remaining, chunk.text.length); chunk.text = chunk.text.slice(count); remaining -= count; }
+        for (const chunk of queue) if ((interleaved || chunk.stream === first.stream) && remaining) { const count = Math.min(remaining, chunk.text.length); chunk.text = chunk.text.slice(count); remaining -= count; }
       } else {
         if (!final && secrets.some(secret => secret.startsWith(text))) {
           if (queue.reduce((size, chunk) => size + Buffer.byteLength(chunk.text), 0) <= 1_048_576) break;

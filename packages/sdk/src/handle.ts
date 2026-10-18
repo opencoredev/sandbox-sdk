@@ -4,6 +4,7 @@ import { Redactor, SandboxError, invalid } from "./errors.js";
 import { makeRun, quote, chunkRedactor } from "./run.js";
 import { makeFiles } from "./files.js";
 import { makeGit } from "./git.js";
+import { registerToolRedactor } from "./tool-security.js";
 import { makeProcesses } from "./processes.js";
 export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, created: boolean, options: CreateOptions, redactor: Redactor): Promise<SandboxBase<N>> {
   let closed = false; let destroyed = false; let commands = 0; let bytesOut = 0;
@@ -60,5 +61,6 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
     };
     return handle;
   }) });
+  registerToolRedactor(box, redactor);
   return box;
 }
