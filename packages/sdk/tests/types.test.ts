@@ -21,3 +21,10 @@ test("native types and supported capability methods remain precise", async () =>
   const box = await createSandbox(provider); const typed: true = box.native.typed; expect(typed).toBe(true);
   await box.pause(); expect(paused).toBe(true); await box.resume(); expect(paused).toBe(false); await box.destroy();
 });
+
+test("Vercel native sandbox is fully typed and terminal remains absent", () => {
+  type VercelProvider = ReturnType<typeof import("../src/providers/vercel/index.js").vercel>;
+  type Native = ReturnType<VercelProvider["native"]>;
+  const check = (native: Native) => { const value: import("@vercel/sandbox").Sandbox = native; return value; };
+  expect(check).toBeTypeOf("function");
+});

@@ -45,6 +45,10 @@
     "./e2b": {
       "types": "./dist/providers/e2b/index.d.ts",
       "import": "./dist/providers/e2b/index.js"
+    },
+    "./vercel": {
+      "types": "./dist/providers/vercel/index.d.ts",
+      "import": "./dist/providers/vercel/index.js"
     }
   },
   "scripts": {
@@ -60,7 +64,8 @@
     "ai": "^7.0.143",
     "vitest": "^3.2.4",
     "zod": "^4.6.7",
-    "e2b": "2.56.0"
+    "e2b": "2.56.0",
+    "@vercel/sandbox": "3.8.0"
   },
   "peerDependencies": {
     "@mastra/core": "^1.78.0",
@@ -68,7 +73,8 @@
     "ai": "^7.0.143",
     "vitest": ">=3",
     "zod": "^4.6.7",
-    "e2b": "^2.56.0"
+    "e2b": "^2.56.0",
+    "@vercel/sandbox": "^3.8.0"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -87,6 +93,9 @@
       "optional": true
     },
     "e2b": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
       "optional": true
     }
   },

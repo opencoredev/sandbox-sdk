@@ -83,7 +83,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         if (current.exitCode !== null) return;
         const hook = native.get(name);
         if (hook) await hook.stop({ graceMs: options.graceMs ?? 1000 });
-        else { await exec(`kill -TERM -- -${current.pid} 2>/dev/null || true`); await delay(options.graceMs ?? 1000); await exec(`kill -KILL -- -${current.pid} 2>/dev/null || true`); }
+        else { await exec(`kill -TERM -${current.pid} 2>/dev/null || true`); await delay(options.graceMs ?? 1000); await exec(`kill -KILL -${current.pid} 2>/dev/null || true`); }
         if (!(await files.exists(`${dir}/exit`))) await files.write(`${dir}/exit`, "143");
         status = "exited";
       }),

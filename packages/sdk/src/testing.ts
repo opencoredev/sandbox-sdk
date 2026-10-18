@@ -9,14 +9,14 @@ import type { SandboxBase } from "./types.js";
  * live must be explicitly true to run a cloud provider. memory skips real git
  * and HTTP probes, since it never executes host programs or opens sockets.
  */
-export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean }) {
+export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[] }) {
   describe("Sandbox SDK conformance", () => {
     const cleanup: SandboxBase<unknown>[] = [];
     const temp: string[] = [];
     async function setup() {
       const provider = await factory();
       if (!options.live && !["memory", "local"].includes(provider.name)) throw new SandboxError("Live provider refused. live is false. Enable live explicitly with provider credentials.", { code: "invalid_argument" });
-      const box = await createSandbox(provider); cleanup.push(box); return { provider, box };
+      const box = await createSandbox(provider, { ports: options.ports }); cleanup.push(box); return { provider, box };
     }
     afterEach(async () => { await Promise.all(cleanup.splice(0).map(box => box.destroy())); await Promise.all(temp.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
     test("create, key lookup, connect and labels", async () => {
