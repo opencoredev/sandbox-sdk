@@ -115,7 +115,7 @@ export async function measureProvider(
         const created = await createSandbox(scopedProvider, {
           ports: [3000],
           signal,
-          timeoutMs: Math.min(3_600_000, config["timeout-ms"] * 10),
+          ...(["memory", "e2b", "daytona"].includes(loaded.name) ? { timeoutMs: Math.min(3_600_000, config["timeout-ms"] * 10) } : {}),
           labels: { "sandbox-bench": "1" },
         });
         box = created;
@@ -338,6 +338,7 @@ export async function measureProvider(
     name: loaded.name,
     region: loaded.region,
     metrics,
+    notes: [(["memory", "e2b", "daytona"].includes(loaded.name) ? "Creation lifetime requested; " : "Creation lifetime omitted for this provider; ") + "tracked cleanup destroys acquired and late-arriving sandboxes. No idle timeout requested.", ...(loaded.name === "local" ? ["Local CPU uses mocked Docker exec and an in-memory filesystem; no Docker socket or container is used for CPU measurements."] : [])],
     warmupFailures,
     cleanupFailures,
   };

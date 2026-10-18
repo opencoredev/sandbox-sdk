@@ -285,3 +285,21 @@ describe("late resources", () => {
     }
   });
 });
+
+it("omits unsupported lifetime options from Vercel benchmark creation", async () => {
+  const base = memory();
+  const loaded: ReadyProvider = { ...ready(), name: "vercel", provider: { ...base, async create(input) {
+    if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) throw new Error("Unsupported lifetime");
+    return base.create(input);
+  } } };
+  const report = await measureProvider(loaded, parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "1000"]));
+  expect(report.metrics.find(metric => metric.scenario === "cold")?.stats.count).toBe(1);
+});
+
+it("local benchmarks include mocked native CPU measurements", async () => {
+  const loaded: ReadyProvider = { ...ready(), name: "local" };
+  const report = await measureProvider(loaded, parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "2000"]));
+  for (const scenario of ["raw-cpu", "sdk-cpu", "overhead-cpu"]) {
+    expect(report.metrics.find(metric => metric.scenario === scenario)?.stats.count).toBe(1);
+  }
+});

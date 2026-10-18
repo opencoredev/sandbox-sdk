@@ -25,8 +25,28 @@ describe("local transport", () => {
   });
   test("fails closed before creating resources", async () => {
     const provider = local({ dockerHost: "unix:///nonexistent-sbx25.sock" });
-    for (const options of [{ labels: {}, network: { allow: ["example.com"] } }, { labels: {}, timeoutMs: 1000 }, { labels: {}, idleTimeoutMs: 1000 }, { labels: {}, size: { cpu: 1, memoryMb: 1024, diskGb: 1 } }] satisfies import("../src/provider.js").CreateInput[]) {
+    for (const options of [{ labels: {}, network: { allow: ["example.com"] } }, { labels: {}, size: { cpu: 1, memoryMb: 1024, diskGb: 1 } }] satisfies import("../src/provider.js").CreateInput[]) {
       await expect(provider.create({ ...options, labels: {} })).rejects.toMatchObject({ code: "unsupported" });
     }
   });
+});
+
+test.each(["timeoutMs", "idleTimeoutMs"])("local accepts %s before contacting Docker", async option => {
+  const provider = local({ dockerHost: "unix:///nonexistent-review-fixes.sock" });
+  await expect(provider.create({ labels: {}, [option]: 1000 })).rejects.toMatchObject({ code: "unavailable" });
+});
+
+test.each(["lifetime", "idle"])("fresh local clients destroy %s-expired containers", async mode => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const calls: string[] = [];
+  const call = vi.spyOn(Docker.prototype, "call").mockImplementation(async (method, path) => {
+    calls.push(`${method} ${path}`);
+    return { Id: "expired", Created: new Date(Date.now() - 10_000).toISOString(), Config: { Labels: { "sandbox-sdk": "1", ...(mode === "lifetime" ? { "sandbox-sdk.local.deadline": String(Date.now() - 1000) } : { "sandbox-sdk.local.idle-ms": "100" }) } }, State: { Running: true } };
+  });
+  const exec = vi.spyOn(Docker.prototype, "exec").mockImplementation(async (_, __, options) => { options.onChunk({ stream: "stdout", text: String(Date.now() - 1000) }); return 0; });
+  try {
+    await expect(local().connect("expired")).rejects.toMatchObject({ code: "not_found" });
+    expect(calls).toContain("DELETE /containers/expired?force=1&v=1");
+  } finally { call.mockRestore(); exec.mockRestore(); }
 });

@@ -42,3 +42,23 @@ if (process.env.SANDBOX_LOCAL_LIVE === "1") {
 }
 
 else { test.skip("Docker live suite requires SANDBOX_LOCAL_LIVE=1", () => {}); }
+
+if (process.env.SANDBOX_LOCAL_LIVE === "1") {
+  test("local lifecycle labels survive fresh clients and reap expired idle boxes", async () => {
+    const { connectSandbox, reapSandboxes } = await import("../src/index.js");
+    const labels = { "review-lifecycle": crypto.randomUUID() }; const provider = local(); const ids: string[] = [];
+    try {
+      const lifetime = await createSandbox(provider, { labels, timeoutMs: 10_000, idleTimeoutMs: 30_000 }); ids.push(lifetime.id);
+      expect(Number(lifetime.labels["sandbox-sdk.local.deadline"])).toBeGreaterThan(Date.now());
+      expect((await lifetime.run("true")).ok).toBe(true);
+      await lifetime.close();
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, Number(lifetime.labels["sandbox-sdk.local.deadline"]) - Date.now() + 50)));
+      await expect(connectSandbox(local(), lifetime.id)).rejects.toMatchObject({ code: "not_found" });
+      const idle = await createSandbox(provider, { labels, timeoutMs: 60_000, idleTimeoutMs: 2000 }); ids.push(idle.id);
+      const connected = await connectSandbox(local(), idle.id); expect(connected.id).toBe(idle.id); await connected.close(); await idle.close();
+      await new Promise(resolve => setTimeout(resolve, 2100));
+      expect(await reapSandboxes(local(), { labels, idleOnly: true })).toBe(1);
+      await expect(connectSandbox(local(), idle.id)).rejects.toMatchObject({ code: "not_found" });
+    } finally { for (const id of ids) await provider.destroy(id); }
+  }, 120_000);
+}
