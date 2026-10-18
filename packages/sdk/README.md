@@ -230,3 +230,5 @@ API mappings were checked against Daytona SDK 0.225.0 and the official [client](
 A command timeout or abort returns a `timedOut` result only after the adapter confirms termination. Cancellation or remote cleanup failures throw `SandboxError`, including `outcome_unknown` when termination cannot be confirmed.
 
 Secret filtering protects each command stream and the interleaved `output` and async chunks, including secrets split between stdout and stderr.
+
+Process line cursors include unfinished fragments from both streams. Pass the opaque string unchanged when resuming, including from another client. Malformed serialized cursors fail with `invalid_argument`.

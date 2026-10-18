@@ -24,3 +24,30 @@ test("redacts secrets spanning stdout and stderr in output and subscriptions", a
     expect(chunks.join("")).toBe("[REDACTED]");
   } finally { await box.destroy(); }
 });
+
+test("line cursors preserve other-stream fragments across serialized resume", async () => {
+  const provider = memory({ handlers: { fragments({ stdout, stderr }) { stdout("hel"); stderr("error\n"); stdout("lo\n"); return 0; } } });
+  const box = await createSandbox(provider);
+  try {
+    const proc = await box.start("fragments", { name: "fragments" }); await proc.wait();
+    const iterator = proc.lines()[Symbol.asyncIterator](); const first = await iterator.next(); await iterator.return?.();
+    expect(first.value?.text).toBe("error");
+    const resumed = []; for await (const line of proc.lines({ after: JSON.parse(JSON.stringify(first.value?.cursor)) })) resumed.push(line.text);
+    expect(resumed).toEqual(["hello"]);
+    for (const after of ['{"v":1,"offset":"0","pending":{"stdout":1,"stderr":""}}', '{"v":2}', 'NaN']) {
+      await expect(proc.lines({ after })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
+    }
+  } finally { await box.destroy(); }
+});
+
+test("line cursors remain resumable for large escaped pending fragments", async () => {
+  const provider = memory({ handlers: { large({ stdout, stderr }) { stdout("\u0001".repeat(190_000)); stderr("checkpoint\n"); stdout("tail\n"); return 0; } } });
+  const box = await createSandbox(provider);
+  try {
+    const proc = await box.start("large", { name: "large" }); await proc.wait();
+    const iterator = proc.lines()[Symbol.asyncIterator](); const first = await iterator.next(); await iterator.return?.();
+    expect(Buffer.byteLength(first.value?.cursor ?? "")).toBeLessThanOrEqual(1_048_576);
+    const resumed = []; for await (const line of proc.lines({ after: first.value?.cursor })) resumed.push(line.text);
+    expect(resumed[0]).toContain("tail");
+  } finally { await box.destroy(); }
+});

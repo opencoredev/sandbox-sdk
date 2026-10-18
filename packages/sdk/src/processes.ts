@@ -14,6 +14,15 @@ export interface ProcessHandle {
   restart(): Promise<void>;
   wait(): Promise<{ exitCode: number | null; signal: string | null }>;
 }
+function linePosition(after?: string) {
+  const empty = { stdout: "", stderr: "" };
+  if (after === undefined || /^\d+$/.test(after)) return { offset: after, pending: empty };
+  if (Buffer.byteLength(after) > 1_048_576) invalid("Invalid line cursor");
+  let raw: unknown;
+  try { raw = JSON.parse(after); } catch { invalid("Invalid line cursor"); }
+  if (!raw || typeof raw !== "object" || !("v" in raw) || raw.v !== 1 || !("offset" in raw) || typeof raw.offset !== "string" || !/^\d+$/.test(raw.offset) || !Number.isSafeInteger(Number(raw.offset)) || !("stdout" in raw) || typeof raw.stdout !== "string" || !("stderr" in raw) || typeof raw.stderr !== "string" || Buffer.byteLength(raw.stdout) > 65_536 || Buffer.byteLength(raw.stderr) > 65_536) invalid("Invalid line cursor");
+  return { offset: raw.offset, pending: { stdout: raw.stdout, stderr: raw.stderr } };
+}
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 export function makeProcesses(provider: Provider, id: string, files: Files, redactor: Redactor, env: Record<string, string>) {
   const root = "/tmp/.sandbox-sdk/procs";
@@ -51,7 +60,8 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
       status = (await info(name)).status;
       const bytes = await files.read(`${dir}/out.log`, { as: "bytes" });
       const base = await files.exists(`${dir}/base`) ? Number(await files.read(`${dir}/base`)) : 0;
-      const after = options.after === undefined ? base : Number(options.after), max = options.maxBytes ?? 16384;
+      const position = linePosition(options.after).offset;
+      const after = position === undefined ? base : Number(position), max = options.maxBytes ?? 16384;
       if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(max) || max < 1 || max > 1_048_576) invalid("Invalid log cursor or maxBytes");
       const decoded = decodePage(bytes, Math.max(0, after - base), max, base);
       return { events: decoded.events.map(event => ({ ...event, text: redactor.text(event.text) })), nextCursor: String(base + decoded.offset), truncated: after < base || decoded.offset < bytes.length };
@@ -63,16 +73,21 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         return { text: redactor.text(page.events.map(event => event.text).join("")), nextCursor: page.nextCursor, truncated: page.truncated };
       }),
       async *lines(options = {}) {
-        let cursor = options.after; const pending = { stdout: "", stderr: "" };
+        const position = linePosition(options.after); let cursor = position.offset; const pending = position.pending;
+        const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
         do {
           const page = await safe(() => readEvents({ after: cursor, maxBytes: 1_048_576 })); cursor = page.nextCursor;
           for (const event of page.events) {
             pending[event.stream] += event.text;
-            if (Buffer.byteLength(pending[event.stream]) > 1_048_576) pending[event.stream] = "[line truncated]" + Buffer.from(pending[event.stream]).subarray(-1_048_550).toString();
-            if (pending[event.stream].endsWith("\n")) { yield { text: pending[event.stream].slice(0, -1), stream: event.stream, cursor: event.cursor }; pending[event.stream] = ""; }
+            if (Buffer.byteLength(pending[event.stream]) > 65_536) {
+              const tail = Buffer.from(pending[event.stream]).subarray(-65_510); let start = 0;
+              while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+              pending[event.stream] = "[line truncated]" + tail.subarray(start).toString();
+            }
+            if (pending[event.stream].endsWith("\n")) { const text = pending[event.stream].slice(0, -1); pending[event.stream] = ""; yield { text, stream: event.stream, cursor: checkpoint(event.cursor) }; }
           }
           if (!page.truncated && status !== "running" && status !== "starting") {
-            for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) if (pending[stream]) yield { text: pending[stream], stream, cursor };
+            for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) if (pending[stream]) { const text = pending[stream]; pending[stream] = ""; yield { text, stream, cursor: checkpoint(cursor) }; }
             break;
           }
           if (!page.truncated) await delay(25);
