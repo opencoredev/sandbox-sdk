@@ -8,6 +8,7 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./provider": { "types": "./dist/provider.d.ts", "import": "./dist/provider.js" },
     "./memory": { "types": "./dist/memory.d.ts", "import": "./dist/memory.js" },
+    "./local": { "types": "./dist/providers/local/index.d.ts", "import": "./dist/providers/local/index.js" },
     "./testing": { "types": "./dist/testing.d.ts", "import": "./dist/testing.js" }
   },
   "scripts": {
