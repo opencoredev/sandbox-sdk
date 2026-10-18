@@ -32,6 +32,7 @@ export type ProviderReport =
       name: string;
       region: string | null;
       metrics: Metric[];
+      notes?: string[];
       warmupFailures: string[];
       cleanupFailures: string[];
     };

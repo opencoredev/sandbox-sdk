@@ -25,9 +25,9 @@ The command writes `bench/results/results.json`, `results.md`, and `index.html`.
 
 The harness imports `@opencoredev/sandbox-sdk/<name>` dynamically and calls its named factory with no arguments. Build/install providers and their native dependencies before running. Missing entry points skip. Factory configuration errors fail the run.
 
-Cloud providers never load without credentials: E2B requires `E2B_API_KEY`; Vercel requires `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`; Daytona requires `DAYTONA_API_KEY`. Local and memory need no keys. Unknown providers skip until their credential policy is added to `src/providers.ts`. No cloud providers are exercised by the tests.
+Cloud providers never load without credentials: E2B requires `E2B_API_KEY`; Vercel accepts `VERCEL_OIDC_TOKEN` alone, or `VERCEL_TOKEN` with `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` (explicit token authentication takes precedence); Daytona requires `DAYTONA_API_KEY`. Local and memory need no keys. Unknown providers skip until their credential policy is added to `src/providers.ts`. No cloud providers are exercised by the tests.
 
-One sandbox is created per warmup or measured iteration and reused for the latency scenarios. Every acquired sandbox is destroyed in `finally`, including after failures; failed cleanup is retried once and unresolved IDs are reported. Creation uses an abort signal and tracks raw adapter arrivals so late sandboxes are deleted and unresolved IDs are reported. Timed-out work is drained before another iteration starts or CPU measurements begin. The cleanup grace period is the greater of 1,000 ms and `--timeout-ms`; if work cannot settle, remaining iterations and providers stop and the report flags the outstanding work. Late creation and CPU-fixture setup retain cleanup callbacks. A hard sandbox lifetime is also requested. A provider or network outage can prevent deletion, so inspect `cleanupFailures` after live runs. On scenario failure the iteration skips subsequent work and proceeds to cleanup.
+One sandbox is created per warmup or measured iteration and reused for the latency scenarios. Every acquired sandbox is destroyed in `finally`, including after failures; failed cleanup is retried once and unresolved IDs are reported. Creation uses an abort signal and tracks raw adapter arrivals so late sandboxes are deleted and unresolved IDs are reported. Timed-out work is drained before another iteration starts or CPU measurements begin. The cleanup grace period is the greater of 1,000 ms and `--timeout-ms`; if work cannot settle, remaining iterations and providers stop and the report flags the outstanding work. Late creation and CPU-fixture setup retain cleanup callbacks. A creation lifetime is requested only from memory, E2B, and Daytona. Local and Vercel rely on tracked cleanup instead; no provider receives an idle timeout. Reports disclose this policy. A provider or network outage can prevent deletion, so inspect `cleanupFailures` after live runs. On scenario failure the iteration skips subsequent work and proceeds to cleanup.
 
 ## Measurements
 
@@ -45,7 +45,7 @@ One sandbox is created per warmup or measured iteration and reused for the laten
 
 `results.json` follows the exported `Report` type in `src/model.ts`. `schemaVersion: 1` identifies this format. Top-level fields include ISO `timestamp`, `sdkVersion`, `machine` (CPU, logical CPU count, RAM bytes, OS, architecture and runtime), validated CLI `config`, `plannedCloudSandboxes`, `methodology`, and `providers`.
 
-Each provider is either `{ kind: "skipped", name, note }` or `{ kind: "measured", name, region, metrics, warmupFailures, cleanupFailures }`. Region is null when unknown; set `BENCH_REGION_<UPPERCASE_PROVIDER>` to record the actual configured deployment region. E2B/Vercel/Daytona also read `E2B_REGION`, `VERCEL_REGION`, or `DAYTONA_TARGET` as metadata. These variables do not change factory configuration.
+Each provider is either `{ kind: "skipped", name, note }` or `{ kind: "measured", name, region, metrics, notes?, warmupFailures, cleanupFailures }`. Region is null when unknown; set `BENCH_REGION_<UPPERCASE_PROVIDER>` to record the actual configured deployment region. E2B/Vercel/Daytona also read `E2B_REGION`, `VERCEL_REGION`, or `DAYTONA_TARGET` as metadata. These variables do not change factory configuration.
 
 Each metric contains `scenario`, `unit` (`ms` or `cpu-ms/call`), raw successful `samples`, `stats`, `failures`, and `skipped` notes. Statistics contain `count`, `p50`, `p95`, `p99`, `mean`, `min`, `max`. Percentiles use nearest rank; failures, skips and warmups are excluded. Empty distributions have count 0 and null statistics. Skip and failure array lengths are their counts.
 
@@ -59,3 +59,5 @@ bun run --cwd bench typecheck
 bun run --cwd bench lint
 bun bench --providers memory --runs 20 --out results/sample-memory/
 ```
+
+The local CPU hook runs the local exec adapter against mocked Docker exec with an in-memory filesystem for core bookkeeping. It creates no container and opens no Docker socket. Latency scenarios still use real Docker.

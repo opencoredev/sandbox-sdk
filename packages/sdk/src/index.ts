@@ -87,7 +87,8 @@ export async function reapSandboxes(provider: Provider, options: { olderThanMs?:
   if (options.olderThanMs !== undefined && (!Number.isFinite(options.olderThanMs) || options.olderThanMs < 0)) invalid("olderThanMs must be non-negative");
   let count = 0;
   try { for (const info of await listSandboxes(provider, options)) if (Date.now() - info.createdAt >= (options.olderThanMs ?? 0)) { if (options.idleOnly) {
-      const box = await connectSandbox(provider, info.id);
+      let box;
+      try { box = await connectSandbox(provider, info.id); } catch (error) { if (error instanceof SandboxError && error.code === "not_found") { count++; continue; } throw error; }
       try { if ((await box.processes()).some(process => process.status === "running" || process.status === "starting") || (await box.files.exists("/tmp/.sandbox-sdk/runs") && (await box.files.list("/tmp/.sandbox-sdk/runs")).length > 0)) continue; }
       finally { await box.close(); }
     }

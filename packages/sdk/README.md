@@ -41,7 +41,7 @@ Use `timeout 120s vitest run --maxWorkers=4`. Cloud providers require `live: tru
 
 ## Memory behavior
 
-Each `memory()` instance owns an isolated virtual filesystem and process table. It never launches host programs or contacts the network. The handler table includes echo, printf, cat, ls, pwd, true, false, sleep, exit, and printenv. It supports quotes, variable interpolation, sequential commands, conditional lists, redirection, and per-call cwd/env. It is a shell subset, not a full POSIX shell. Custom handlers must honor their abort signal and must not perform external effects.
+Each `memory()` instance owns an isolated virtual filesystem and process table. It never launches host programs or contacts the network. The handler table includes echo, printf, cat, ls, pwd, true, false, sleep, exit, and printenv. It supports quotes, variable interpolation, `;`, `&&`, `||`, a final stdout redirect (`> file`), stdout-to-stderr (`>&2`), and per-call cwd/env. Pipes, background `&`, append/input redirects, file-descriptor redirects, and malformed stdout redirects return exit code 127 with an `Unsupported shell syntax` stderr message before any command runs. Quoted or escaped operators remain literal arguments. It is a shell subset, not a full POSIX shell. Custom handlers must honor their abort signal and must not perform external effects.
 
 Register handlers with `memory({ handlers })` or `provider.register(name, handler)`. Handlers receive arguments, cwd, environment, stdin, abort signal, stdout/stderr callbacks, and scoped file primitives. Memory uses portable byte snapshots and recursive file transfer instead of Git and tar. Its conformance suite explicitly skips real Git and HTTP probes. Fake previews end in `.memory.invalid`.
 
@@ -102,7 +102,7 @@ Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `crea
 
 The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
 
-Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom sizes are rejected because their required `diskGb` limit cannot be enforced portably. Idle and hard lifetime options are also rejected: Docker does not provide durable timers for these restrictions.
+Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom sizes are rejected because their required `diskGb` limit cannot be enforced portably. Local accepts idle and lifetime options with client/reaper enforcement, described below. Docker provides no native deadline timer.
 
 `network: "none"` uses Docker's isolated network namespace with loopback only. Domain allow-lists fail with `unsupported`. The default network is Docker bridge. Declare preview ports at creation; each maps to an ephemeral host port bound exclusively to `127.0.0.1`. Omitting `ports` declares port 3000. Previews are accessible on the Docker host. They are unavailable with network `none`.
 
@@ -226,3 +226,23 @@ Previews are private. `preview()` returns the URL and `X-Daytona-Preview-Token` 
 The offline Daytona tests replace the SDK transport with an SDK-shaped mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
 
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
+
+A command timeout or abort returns a `timedOut` result only after the adapter confirms termination. Cancellation or remote cleanup failures throw `SandboxError`, including `outcome_unknown` when termination cannot be confirmed.
+
+Secret filtering protects each command stream and the interleaved `output` and async chunks, including secrets split between stdout and stderr.
+
+Process line cursors include unfinished fragments from both streams. Pass the opaque string unchanged when resuming, including from another client. Malformed serialized cursors fail with `invalid_argument`.
+
+Durable process logs preserve UTF-8 code points across shell-reader blocks. The fallback requires the standard Linux `dd`, `tail`, and `od` utilities.
+
+Process log pages use bounded remote ranges under the rotation lock. `maxBytes` is an upper bound; a page may stop at 64 KiB even when a larger budget is requested. Follow `nextCursor` while `truncated` is true. Reads include bounded framing lookaround and never download the entire 10 MiB log. Memory providers may implement the optional `files.readRange` primitive.
+
+Readiness failures include the retained last 50 log lines, even when subsequent cursor pages are empty. The retained diagnostic tail is capped at 256 KiB for unusually long lines.
+
+Local creation stores the absolute lifetime deadline and idle interval in container labels. A fresh `connectSandbox` (including keyed lookup) checks these settings and destroys an expired container before returning `not_found`. Idle time runs from the last SDK command or file operation; active SDK runs and background process records prevent idle expiry. `reapSandboxes` destroys containers selected by its normal age/label/idle filters. Schedule it to enforce cleanup when no client reconnects. These timers are client/reaper enforced: Docker does not stop an unattended container at its deadline, and an existing handle does not check the deadline before every operation. Paused containers defer idle checking until running again; absolute lifetime still applies. Use a scheduled reaper when you need cleanup after disconnecting.
+
+The benchmark requests creation lifetime only from memory, E2B, and Daytona. Local and Vercel runs omit creation lifetime and rely on tracked cleanup, including deletion of late arrivals. No benchmark requests idle timeout. Each report includes this cleanup policy in its notes. Vercel still rejects creation `timeoutMs` because its native timer resets with each resumed session.
+
+For local startup diagnosis, `usage()` includes `createInspectMs` (including any pull), `createContainerMs`, `createStartMs`, `createPrerequisiteMs`, and `firstCommandMs`. Timings are milliseconds from this adapter instance, so a newly connected client has no historical phase timings. First-command timing includes command execution and temporary PID-file cleanup. It measures the first adapter exec, which may be the SDK initialization checkpoint before your first `run`. Compare it with wall-clock `createSandbox` and `run` durations to separate container startup from SDK initialization.
+
+The offline `memory()` provider does not advertise machine size. Explicit `size` options fail with `unsupported`; use a real provider to enforce CPU, memory, and disk limits.

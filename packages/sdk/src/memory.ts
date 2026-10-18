@@ -15,7 +15,7 @@ export interface MemoryNative { readonly files: Map<string, Node> }
  * sockets. Preview URLs use memory.invalid and must never be fetched. Register
  * handlers with memory({handlers}) or provider.register(name, handler).
  */
-export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } {
+export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "network-policy"> & { register(name: string, handler: CommandHandler): void } {
   const machines = new Map<string, Machine>(); const handlers = new Map<string, CommandHandler>();
   const fail = (message: string, code: "not_found" | "file_not_found" | "invalid_argument") => new SandboxError(`${message}. Memory resource does not exist or request is invalid. Check the path or ID.`, { code, provider: "memory" });
   const machine = (id: string) => { const value = machines.get(id); if (!value) throw fail(`Sandbox ${id} not found`, "not_found"); if (value.idleTimeoutMs) { clearTimeout(value.idleTimer); value.idleTimer = setTimeout(() => { if (value.active.size) machine(id); else void provider.destroy(id); }, value.idleTimeoutMs); value.idleTimer.unref?.(); } return value; };
@@ -30,6 +30,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
     }
   }
   const files: Provider["files"] = {
+    async readRange(id, path, options) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(options.offset, options.offset + options.length); },
     async read(id, path) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(); },
     async write(id, path, data) { const m = machine(id); mkdir(id, posix.dirname(path)); m.nodes.set(posix.resolve("/", path), { data: data.slice(), modifiedAt: Math.max(now(), (m.nodes.get(path)?.modifiedAt ?? 0) + 1) }); },
     async stat(id, path) { const value = node(id, path); return { path: posix.resolve("/", path), type: value.data === null ? "directory" : "file", size: value.data?.length ?? 0, modifiedAt: value.modifiedAt }; },
@@ -66,8 +67,9 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
         if (match) { word += env[match[1] ?? match[2] ?? ""] ?? ""; index += match[0].length; active = true; continue; }
       }
       if (mode === "plain" && /\s/.test(char)) { flush(); continue; }
+      if (mode === "plain" && "><".includes(char) && active && /^\d+$/.test(word)) { const fd = word; word = ""; active = false; tokens.push({ text: fd + char, operator: true }); continue; }
       if (mode === "plain" && char === ">" && command.slice(index, index + 3) === ">&2") { flush(); tokens.push({ text: ">&2", operator: true }); index += 2; continue; }
-      if (mode === "plain" && ";&>|".includes(char)) { flush(); let op = char; if (command[index + 1] === char) op += command[++index]; tokens.push({ text: op, operator: true }); continue; }
+      if (mode === "plain" && ";&>|<".includes(char)) { flush(); let op = char; if (command[index + 1] === char) op += command[++index]; tokens.push({ text: op, operator: true }); continue; }
       word += char; active = true;
     }
     if (mode !== "plain") throw fail("Unclosed shell quote", "invalid_argument"); flush(); return tokens;
@@ -79,7 +81,20 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
     const timer = setTimeout(abort, input.timeoutMs);
     let cwd = input.cwd; const env = { ...m.env, ...input.env }; let exitCode = 0; let exited = false;
     try {
-      const tokens = tokenize(input.command, env); let segment: { text: string; operator: boolean }[] = []; let previous = ";";
+      const tokens = tokenize(input.command, env);
+      const unsupported = tokens.find(token => token.operator && ![";", "&&", "||", ">", ">&2"].includes(token.text));
+      const badRedirect = tokens.find((token, index) => token.operator && token.text === ">" && (!tokens[index + 1] || tokens[index + 1]?.operator || (tokens[index + 2] && !tokens[index + 2]?.operator)));
+      const badConditional = tokens.find((token, index) => token.operator && ["&&", "||"].includes(token.text) && (!tokens[index - 1] || [";", "&&", "||"].includes(tokens[index - 1]?.text ?? "") || !tokens[index + 1] || tokens[index + 1]?.operator));
+      let redirects = 0;
+      const compoundRedirect = tokens.find(token => {
+        if (!token.operator) return false;
+        if ([";", "&&", "||"].includes(token.text)) redirects = 0;
+        else if ([">", ">&2"].includes(token.text)) return ++redirects > 1;
+        return false;
+      });
+      const bad = unsupported ?? badRedirect ?? badConditional ?? compoundRedirect;
+      if (bad) { input.onChunk({ stream: "stderr", text: `Unsupported shell syntax: ${bad.text} (memory provider)\n` }); return { exitCode: 127, timedOut: false }; }
+      let segment: { text: string; operator: boolean }[] = []; let previous = ";";
       async function runSegment(next: string) {
         const parts = segment; segment = [];
         const stderrIndex = parts.findIndex(part => part.operator && part.text === ">&2");
@@ -113,10 +128,11 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "siz
       await runSegment(";"); return { exitCode: timedOut ? null : exitCode, timedOut };
     } finally { m.active.delete(controller); clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
   }
-  const provider: Provider<MemoryNative, "size" | "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
-    name: "memory", keyMode: "exact", capabilities: new Set<"size" | "network-policy">(["size", "network-policy"]), files,
+  const provider: Provider<MemoryNative, "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
+    name: "memory", keyMode: "exact", capabilities: new Set<"network-policy">(["network-policy"]), files,
     register(name, handler) { handlers.set(name, handler); },
     async create(input: CreateInput) {
+      if (input.size !== undefined) throw new SandboxError("Memory cannot enforce machine size. Omit size or choose a provider with size support.", { code: "unsupported", provider: "memory" });
       if (input.key) { const existing = [...machines.values()].find(m => m.info.key === input.key); if (existing) throw new SandboxError("Key already exists. Another caller created it. Find the existing sandbox.", { code: "provider", provider: "memory" }); }
       const id = `mem-${crypto.randomUUID()}`; const info: SandboxInfo = { id, key: input.key, labels: { ...input.labels }, state: "running", createdAt: now() };
       machines.set(id, { info, nodes: new Map(), env: { ...input.env }, processes: new Map(), nextPid: 100, active: new Set(), idleTimeoutMs: input.idleTimeoutMs });

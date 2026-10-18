@@ -41,7 +41,7 @@ export function markdown(report: Report): string {
       for (const metric of provider.metrics)
         for (const message of new Set([...metric.skipped, ...metric.failures]))
           rows.push(`- ${provider.name}/${metric.scenario}: ${message}`);
-      for (const message of [...provider.warmupFailures, ...provider.cleanupFailures])
+      for (const message of [...(provider.notes ?? []), ...provider.warmupFailures, ...provider.cleanupFailures])
         rows.push(`- ${provider.name}: ${message}`);
     }
   return rows.join("\n") + "\n";
@@ -73,6 +73,7 @@ export function html(report: Report): string {
               (message) => `${provider.name}/${metric.scenario}: ${message}`,
             ),
           ),
+          ...(provider.notes ?? []),
           ...provider.warmupFailures,
           ...provider.cleanupFailures,
         ],

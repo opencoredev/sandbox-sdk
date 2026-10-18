@@ -14,6 +14,15 @@ export interface ProcessHandle {
   restart(): Promise<void>;
   wait(): Promise<{ exitCode: number | null; signal: string | null }>;
 }
+function linePosition(after?: string) {
+  const empty = { stdout: "", stderr: "" };
+  if (after === undefined || /^\d+$/.test(after)) return { offset: after, pending: empty };
+  if (Buffer.byteLength(after) > 1_048_576) invalid("Invalid line cursor");
+  let raw: unknown;
+  try { raw = JSON.parse(after); } catch { invalid("Invalid line cursor"); }
+  if (!raw || typeof raw !== "object" || !("v" in raw) || raw.v !== 1 || !("offset" in raw) || typeof raw.offset !== "string" || !/^\d+$/.test(raw.offset) || !Number.isSafeInteger(Number(raw.offset)) || !("stdout" in raw) || typeof raw.stdout !== "string" || !("stderr" in raw) || typeof raw.stderr !== "string" || Buffer.byteLength(raw.stdout) > 65_536 || Buffer.byteLength(raw.stderr) > 65_536) invalid("Invalid line cursor");
+  return { offset: raw.offset, pending: { stdout: raw.stdout, stderr: raw.stderr } };
+}
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 export function makeProcesses(provider: Provider, id: string, files: Files, redactor: Redactor, env: Record<string, string>) {
   const root = "/tmp/.sandbox-sdk/procs";
@@ -49,12 +58,30 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
     let launch: (() => Promise<void>) | undefined;
     async function readEvents(options: { after?: string; maxBytes?: number } = {}) {
       status = (await info(name)).status;
-      const bytes = await files.read(`${dir}/out.log`, { as: "bytes" });
-      const base = await files.exists(`${dir}/base`) ? Number(await files.read(`${dir}/base`)) : 0;
-      const after = options.after === undefined ? base : Number(options.after), max = options.maxBytes ?? 16384;
-      if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(max) || max < 1 || max > 1_048_576) invalid("Invalid log cursor or maxBytes");
-      const decoded = decodePage(bytes, Math.max(0, after - base), max, base);
-      return { events: decoded.events.map(event => ({ ...event, text: redactor.text(event.text) })), nextCursor: String(base + decoded.offset), truncated: after < base || decoded.offset < bytes.length };
+      const position = linePosition(options.after).offset;
+      const requested = position === undefined ? undefined : Number(position), max = options.maxBytes ?? 16384;
+      if ((requested !== undefined && (!Number.isSafeInteger(requested) || requested < 0)) || !Number.isSafeInteger(max) || max < 1 || max > 1_048_576) invalid("Invalid log cursor or maxBytes");
+      // A page includes a record-sized lookbehind/lookahead, never the full log.
+      const budget = Math.min(max, 65_536), lookaround = 32_770;
+      let base: number, start: number, size: number, bytes: Uint8Array;
+      if (provider.name === "memory" && provider.files.readRange) {
+        base = Number(await files.read(`${dir}/base`)); size = (await files.stat(`${dir}/out.log`)).size;
+        start = Math.max(0, (requested ?? base) - base - lookaround);
+        bytes = await provider.files.readRange(id, `${dir}/out.log`, { offset: start, length: budget + lookaround * 2 });
+      } else {
+        // Share the writer's lock so rotation cannot pair a new base with an old file.
+        let wire = "";
+        const result = await provider.exec(id, { command: `while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep .01; done; trap 'rmdir ${quote(`${dir}/lock`)}' EXIT; b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); a=${requested ?? '"$b"'}; s=$((a-b-${lookaround})); [ "$s" -ge 0 ] || s=0; printf '%s %s %s\\n' "$b" "$s" "$n"; dd if=${quote(`${dir}/out.log`)} bs=1 skip="$s" count=${budget + lookaround * 2} 2>/dev/null | base64`, cwd: "/workspace", env: { ...env, ...defaults }, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") { wire += chunk.text; if (Buffer.byteLength(wire) > 262_144) invalid("Oversized log page"); } } });
+        if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Log range read failed. Retry the log request.", { code: "provider" });
+        const newline = wire.indexOf("\n"); const header = wire.slice(0, newline).split(" ").map(Number);
+        base = header[0] ?? NaN; start = header[1] ?? NaN; size = header[2] ?? NaN;
+        if (newline < 0 || ![base, start, size].every(value => Number.isSafeInteger(value) && value >= 0)) invalid("Invalid remote log page");
+        bytes = Buffer.from(wire.slice(newline + 1), "base64");
+      }
+      const after = Math.max(base, requested ?? base);
+      const decoded = decodePage(bytes, Math.max(0, after - base - start), budget, base + start);
+      const offset = base + start + decoded.offset;
+      return { events: decoded.events.map(event => ({ ...event, text: redactor.text(event.text) })), nextCursor: String(offset), truncated: (requested ?? base) < base || offset < base + size };
     }
     const handle: ProcessHandle = {
       name, get status() { return status; }, get url() { return url; }, get ready() { return ready; },
@@ -63,16 +90,21 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         return { text: redactor.text(page.events.map(event => event.text).join("")), nextCursor: page.nextCursor, truncated: page.truncated };
       }),
       async *lines(options = {}) {
-        let cursor = options.after; const pending = { stdout: "", stderr: "" };
+        const position = linePosition(options.after); let cursor = position.offset; const pending = position.pending;
+        const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
         do {
           const page = await safe(() => readEvents({ after: cursor, maxBytes: 1_048_576 })); cursor = page.nextCursor;
           for (const event of page.events) {
             pending[event.stream] += event.text;
-            if (Buffer.byteLength(pending[event.stream]) > 1_048_576) pending[event.stream] = "[line truncated]" + Buffer.from(pending[event.stream]).subarray(-1_048_550).toString();
-            if (pending[event.stream].endsWith("\n")) { yield { text: pending[event.stream].slice(0, -1), stream: event.stream, cursor: event.cursor }; pending[event.stream] = ""; }
+            if (Buffer.byteLength(pending[event.stream]) > 65_536) {
+              const tail = Buffer.from(pending[event.stream]).subarray(-65_510); let start = 0;
+              while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+              pending[event.stream] = "[line truncated]" + tail.subarray(start).toString();
+            }
+            if (pending[event.stream].endsWith("\n")) { const text = pending[event.stream].slice(0, -1); pending[event.stream] = ""; yield { text, stream: event.stream, cursor: checkpoint(event.cursor) }; }
           }
           if (!page.truncated && status !== "running" && status !== "starting") {
-            for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) if (pending[stream]) yield { text: pending[stream], stream, cursor };
+            for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) if (pending[stream]) { const text = pending[stream]; pending[stream] = ""; yield { text, stream, cursor: checkpoint(cursor) }; }
             break;
           }
           if (!page.truncated) await delay(25);
@@ -162,7 +194,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           }).join("\n") + "\n");
           await exec(`chmod 600 ${quote(sedPath)}`);
           const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
-          const reader = (stream: string, fifo: string) => `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
+          const reader = (stream: string, fifo: string) => `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; need=0; for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1); do if [ "$byte" -ge 240 ]; then need=3; elif [ "$byte" -ge 224 ]; then need=2; elif [ "$byte" -ge 192 ]; then need=1; elif [ "$byte" -ge 128 ]; then [ "$need" -le 0 ] || need=$((need-1)); else need=0; fi; done; if [ "$need" -gt 0 ]; then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .); rest=\${rest%.}; chunk="$chunk$rest"; fi; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
           const wrapper = `trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; cd ${quote(pathOf(options.cwd))} || exit 1; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; sh -c ${quote(command)} > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
           if (provider.startProcess) {
             const hook = await provider.startProcess(id, { command: wrapper, cwd: "/workspace", env: { ...env, ...options.env, ...defaults }, onChunk() {} });
@@ -173,11 +205,14 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         controller?.state("running");
         if (!options.ready) { controller?.ready(true); return; }
         const end = Date.now() + (options.readyTimeoutMs ?? 60_000);
-        let readyCursor: string | undefined; let readyTail = "";
+        let readyCursor: string | undefined; let readyTail = ""; let exited = false;
+        const lastLines = () => readyTail.replace(/\n$/, "").split("\n").slice(-50).join("\n");
         do {
           const page = await handle.logs({ after: readyCursor, maxBytes: 1_048_576 }); readyCursor = page.nextCursor;
-          readyTail = (readyTail + page.text).slice(-1_048_576);
-          if (await files.exists(`${dir}/exit`)) throw new SandboxError(`Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${page.text.split("\n").slice(-50).join("\n")}`, { code: "process_exited" });
+          readyTail = Buffer.from(readyTail + page.text).subarray(-262_144).toString();
+          exited = await files.exists(`${dir}/exit`);
+          if (exited && page.truncated) continue;
+          if (exited) throw new SandboxError(`Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${lastLines()}`, { code: "process_exited" });
           if ("log" in options.ready) { options.ready.log.lastIndex = 0; if (options.ready.log.test(readyTail)) { controller?.ready(true); return; } }
           else if (port) {
             try {
@@ -187,8 +222,8 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
             } catch (error) { if (!(error instanceof SandboxError) || error.code !== "port_not_ready") throw error; }
           }
           if (Date.now() >= end) break; await delay(25);
-        } while (Date.now() <= end);
-        throw new SandboxError(`Process is still running but readiness timed out. No readiness signal arrived. Inspect logs: ${(await handle.logs()).text.split("\n").slice(-50).join("\n")}`, { code: "timeout" });
+        } while (exited || Date.now() <= end);
+        throw new SandboxError(`Process is still running but readiness timed out. No readiness signal arrived. Inspect logs: ${lastLines()}`, { code: "timeout" });
       };
       controller?.launch(launch); await launch(); return handle;
     });

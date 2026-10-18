@@ -38,6 +38,7 @@ export interface ExecInput {
 export interface ExecResult { exitCode: number | null; timedOut: boolean }
 export interface FileInfo { path: string; type: "file" | "directory" | "symlink"; size: number; modifiedAt: number }
 export interface ProviderFiles {
+  readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array): Promise<void>;
   list(id: string, path: string): Promise<FileInfo[]>;

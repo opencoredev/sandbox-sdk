@@ -14,6 +14,21 @@ export interface OverheadFixture {
 export type OverheadHook = () => Promise<OverheadFixture>;
 const mockedNativeCall = async () => ({ exitCode: 0, timedOut: false });
 export const overheadHooks: Record<string, OverheadHook> = {
+  async local() {
+    const { local } = await import("@opencoredev/sandbox-sdk/local");
+    const adapter = local({ dockerHost: "unix:///var/run/docker.sock" });
+    const client = adapter.native("mock-local").client;
+    // No socket is opened: both paths reach the same mocked Docker exec.
+    client.exec = async () => (await mockedNativeCall()).exitCode;
+    const backing = memory();
+    const box = await createSandbox(backing);
+    backing.exec = (_id, input) => adapter.exec("mock-local", input);
+    return {
+      async sdkCall() { if (!(await box.run("true")).ok) throw new Error("Mocked local command failed"); },
+      async rawCall() { await client.exec("mock-local", ["true"], { onChunk() {} }); },
+      dispose: () => box.destroy(),
+    };
+  },
   async memory() {
     const provider = memory();
     const box = await createSandbox(provider);

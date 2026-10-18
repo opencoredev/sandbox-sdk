@@ -6,6 +6,9 @@ import { Docker, object, string, number, array, encode, failure, parse } from ".
 export interface LocalOptions { image?: string; dockerHost?: string }
 export interface LocalNative { readonly id: string; readonly client: Docker }
 type LocalCapability = "pause" | "snapshot" | "size" | "network-policy";
+const deadlineLabel = "sandbox-sdk.local.deadline";
+const idleLabel = "sandbox-sdk.local.idle-ms";
+const activity = "/tmp/.sandbox-sdk-activity";
 const keyLabel = "sandbox-sdk.local.key";
 const name = (key: string) => `sandbox-sdk-${createHash("sha256").update(key).digest("hex")}`;
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
@@ -27,10 +30,13 @@ function info(value: unknown): SandboxInfo {
 export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCapability> {
   const client = new Docker(options.dockerHost); const image = options.image ?? "node:22-bookworm";
   const destroying = new Map<string, Promise<void>>();
+  const timers = new Set<string>();
+  const timings = new Map<string, Record<string, number>>();
   const inspect = (id: string) => client.call("GET", `/containers/${encode(id)}/json`);
   async function raw(id: string, command: string[], stdin?: string) {
     let stdout = ""; let stderr = "";
-    const code = await client.exec(id, command, { stdin, onChunk(chunk) { if (chunk.stream === "stdout") stdout += chunk.text; else stderr += chunk.text; } });
+    const tracked = timers.has(id) ? ["sh", "-c", `touch ${activity}; "$@"; code=$?; touch ${activity}; exit "$code"`, "sh", ...command] : command;
+    const code = await client.exec(id, tracked, { stdin, onChunk(chunk) { if (chunk.stream === "stdout") stdout += chunk.text; else stderr += chunk.text; } });
     if (code !== 0) throw failure(`Container operation exited ${code}: ${stderr}`, stderr.includes("ENOENT") || stderr.includes("No such file") ? "file_not_found" : "provider");
     return stdout;
   }
@@ -45,52 +51,74 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
     name: "local", keyMode: "exact", capabilities: new Set<LocalCapability>(["pause", "snapshot", "size", "network-policy"]),
     async create(input) {
       if (typeof input.network === "object") throw failure("Network allow-lists cannot be enforced by this Docker adapter", "unsupported");
-      if (input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined) throw failure("Docker has no durable idle or lifetime timer; omit idleTimeoutMs and timeoutMs", "unsupported");
+      for (const value of [input.idleTimeoutMs, input.timeoutMs]) if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw failure("Timeouts must be positive milliseconds", "invalid_argument");
       const resources = limits(input.size);
       if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
+      const phases: Record<string, number> = {}; let phase = performance.now();
       const source = input.from ?? image;
       try { await client.call("GET", `/images/${encode(source)}/json`); }
       catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; if (input.from) throw failure("Snapshot image not found", "not_found"); await client.call("POST", `/images/create?fromImage=${encode(source)}`); }
+      phases.createInspectMs = performance.now() - phase;
       if (input.signal?.aborted) throw failure("Creation aborted after image pull", "aborted");
       const ports = [...new Set(input.ports ?? [3000])];
       const bindings = Object.fromEntries(ports.map(port => [`${port}/tcp`, [{ HostIp: "127.0.0.1", HostPort: "" }]]));
+      phase = performance.now();
       const created = object(await client.call("POST", `/containers/create?name=${encode(input.key ? name(input.key) : `sandbox-sdk-${randomUUID()}`)}`, {
         Image: source, WorkingDir: "/workspace", Cmd: ["sh", "-c", "mkdir -p /workspace; exec sleep infinity"],
-        Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "" },
+        Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", ...(input.timeoutMs === undefined ? {} : { [deadlineLabel]: String(Date.now() + input.timeoutMs) }), ...(input.idleTimeoutMs === undefined ? {} : { [idleLabel]: String(input.idleTimeoutMs) }) },
         ExposedPorts: Object.fromEntries(ports.map(port => [`${port}/tcp`, {}])),
         HostConfig: { ...resources, NetworkMode: input.network === "none" ? "none" : "bridge", PortBindings: input.network === "none" ? {} : bindings, Init: true },
       }));
-      const id = string(created.Id);
+      phases.createContainerMs = performance.now() - phase;
+      const id = string(created.Id); timings.set(id, phases);
+      if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) timers.add(id);
       try {
+        phase = performance.now();
         await client.call("POST", `/containers/${encode(id)}/start`);
+        phases.createStartMs = performance.now() - phase; phase = performance.now();
         await raw(id, ["sh", "-c", "mkdir -p /workspace; command -v node git tar setsid nohup mkfifo sed >/dev/null"]);
+        phases.createPrerequisiteMs = performance.now() - phase;
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         return await provider.connect(id);
       } catch (error) { await provider.destroy(id); throw error; }
     },
     async find(key) { try { const found = await provider.connect(name(key)); return found.key === key ? found : undefined; } catch (error) { if (error instanceof SandboxError && error.code === "not_found") return undefined; throw error; } },
-    async connect(id) { return info(await inspect(id)); },
+    async connect(id) {
+      const current = info(await inspect(id));
+      const deadline = Number(current.labels[deadlineLabel] ?? Infinity), idle = Number(current.labels[idleLabel] ?? Infinity);
+      if (Number.isFinite(deadline) || Number.isFinite(idle)) timers.add(current.id);
+      let expired = Date.now() >= deadline;
+      if (!expired && Number.isFinite(idle) && current.state === "running") {
+        let last = "";
+        const code = await client.exec(current.id, ["node", "-e", `const f=require('fs'), p='/tmp/.sandbox-sdk';const busy=(f.existsSync(p+'/runs')&&f.readdirSync(p+'/runs').length)||(f.existsSync(p+'/procs')&&f.readdirSync(p+'/procs').some(n=>!f.existsSync(p+'/procs/'+n+'/exit')));process.stdout.write(String(busy?Date.now():f.existsSync('${activity}')?f.statSync('${activity}').mtimeMs:${current.createdAt}))`], { onChunk(chunk) { if (chunk.stream === "stdout") last += chunk.text; } });
+        if (code !== 0 || !Number.isFinite(Number(last))) throw failure("Could not check local idle deadline", "provider");
+        expired = Date.now() - Number(last) >= idle;
+      }
+      if (expired) { await provider.destroy(current.id); throw failure("Local sandbox deadline expired; create another sandbox", "not_found"); }
+      return current;
+    },
     async list(labels) {
       const filters = encode(JSON.stringify({ label: Object.entries({ ...labels, "sandbox-sdk": "1" }).map(([k, v]) => `${k}=${v}`) }));
       const containers = array(await client.call("GET", `/containers/json?all=1&filters=${filters}`));
       const result: SandboxInfo[] = [];
-      for (const item of containers) { try { result.push(await provider.connect(string(object(item).Id))); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; } }
+      for (const item of containers) { try { result.push(info(await inspect(string(object(item).Id)))); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; } }
       return result;
     },
     async destroy(id) {
       const pending = destroying.get(id); if (pending) return pending;
       const task = (async () => {
         try {
-          const current = await provider.connect(id);
+          const current = info(await inspect(id));
           if (current.state === "paused") await client.call("POST", `/containers/${encode(id)}/unpause`);
           if (current.state !== "stopped") await client.call("POST", `/containers/${encode(id)}/stop?t=1`);
           await client.call("DELETE", `/containers/${encode(id)}?force=1&v=1`);
         } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; }
       })();
       destroying.set(id, task);
-      try { await task; } finally { destroying.delete(id); }
+      try { await task; } finally { destroying.delete(id); timers.delete(id); timings.delete(id); }
     },
     async exec(id, input) {
+      const started = performance.now();
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
       const pidfile = `/tmp/.sandbox-sdk-exec-${randomUUID()}`;
       let cancelled = false;
@@ -98,7 +126,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       input.signal?.addEventListener("abort", cancel, { once: true });
       const timer = setTimeout(cancel, input.timeoutMs);
       // The wrapper writes its session leader PID before running any user code.
-      const command = ["setsid", "--wait", "sh", "-c", `echo $$ > ${quote(pidfile)}; exec sh -c ${quote(input.command)}`];
+      const command = ["setsid", "--wait", "sh", "-c", `echo $$ > ${quote(pidfile)}; ${timers.has(id) ? `touch ${activity}; trap 'touch ${activity}' EXIT;` : ""} sh -c ${quote(input.command)}`];
       let settled = false;
       const execution = client.exec(id, command, { cwd: input.cwd, env: input.env, stdin: input.stdin, onChunk: input.onChunk }).finally(() => { settled = true; });
       void execution.catch(() => {});
@@ -114,6 +142,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       } finally {
         clearTimeout(timer); input.signal?.removeEventListener("abort", cancel);
         await raw(id, ["rm", "-f", pidfile]).catch(() => {});
+        const phases = timings.get(id); if (phases && phases.firstCommandMs === undefined) phases.firstCommandMs = performance.now() - started;
       }
     },
     files: {
@@ -132,7 +161,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       return { url: `http://127.0.0.1:${string(entry.HostPort)}/` };
     },
     native(id) { return { id, client }; },
-    async usage(id) { const value = object(await inspect(id)); const state = object(value.State); return { runningMs: state.Running && !state.Paused ? Math.max(0, Date.now() - Date.parse(string(state.StartedAt))) : 0 }; },
+    async usage(id) { const value = object(await inspect(id)); const state = object(value.State); return { ...timings.get(id), runningMs: state.Running && !state.Paused ? Math.max(0, Date.now() - Date.parse(string(state.StartedAt))) : 0 }; },
     async pause(id) { await provider.connect(id); await client.call("POST", `/containers/${encode(id)}/pause`); },
     async resume(id) { await provider.connect(id); await client.call("POST", `/containers/${encode(id)}/unpause`); },
     async snapshot(id) { await provider.connect(id); const value = object(await client.call("POST", `/commit?container=${encode(id)}&pause=true`, { Labels: { "sandbox-sdk": "1", "sandbox-sdk.local.snapshot": "1" } })); return { id: string(value.Id) }; },

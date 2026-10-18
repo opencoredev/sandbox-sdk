@@ -63,3 +63,29 @@ describe("real Linux primitive transport", () => {
   });
 
 });
+
+test("fallback logs preserve UTF-8 split at a 4096-byte reader boundary", async () => {
+  const box = await createSandbox(await shellProvider());
+  try {
+    const proc = await box.start(`node -e 'process.stdout.write("a".repeat(4095)+"😀\\n")'`, { name: "utf8" }); await proc.wait();
+    const lines = []; for await (const line of proc.lines()) lines.push(line.text);
+    expect(lines).toEqual(["a".repeat(4095) + "😀"]);
+  } finally { await box.destroy(); }
+});
+
+test("log pages use bounded remote reads without downloading out.log", async () => {
+  const provider = await shellProvider(); const box = await createSandbox(provider);
+  try {
+    const proc = await box.start("true", { name: "bounded" }); await proc.wait();
+    await box.files.write("/tmp/.sandbox-sdk/procs/bounded/out.log", ("O" + "a".repeat(8000) + "\n").repeat(1200));
+    const original = provider.files.read;
+    provider.files.read = async (id, path) => { if (path.endsWith("out.log")) throw new Error("Whole log downloaded"); return original(id, path); };
+    let cursor: string | undefined;
+    for (let n = 0; n < 3; n++) {
+      const page = await proc.logs({ after: cursor, maxBytes: 16 });
+      expect(page.text).toBe("a".repeat(16)); expect(page.truncated).toBe(true); cursor = page.nextCursor;
+    }
+    await box.files.write("/tmp/.sandbox-sdk/procs/bounded/base", "10000000");
+    expect(await proc.logs({ after: "0", maxBytes: 16 })).toMatchObject({ text: "a".repeat(16), truncated: true });
+  } finally { await box.destroy(); }
+});
