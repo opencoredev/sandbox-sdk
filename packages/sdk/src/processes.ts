@@ -25,7 +25,7 @@ function linePosition(after?: string) {
 }
 export const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 export function makeProcesses(provider: Provider, id: string, files: Files, redactor: Redactor, env: Record<string, string>) {
-  const root = "/tmp/.sandbox-sdk/procs";
+  const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
   const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };

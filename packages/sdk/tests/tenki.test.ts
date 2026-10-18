@@ -1,3 +1,4 @@
+import type { ProcessRunResult } from "@tenkicloud/sandbox";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanupTenki, MockSession, MockTenki, tenkiState } from "./tenki-mock.js";
 import { tenki } from "../src/providers/tenki/index.js";
@@ -33,7 +34,6 @@ describe("Tenki mappings", () => {
     expect(tenkiState.configs[0]).toMatchObject({
       authToken: "key",
       baseUrl: "https://api.example.test",
-      timeoutMs: 5000,
     });
     expect(tenkiState.creates[0]).toMatchObject({
       cpuCores: 2,
@@ -93,6 +93,53 @@ describe("Tenki mappings", () => {
     expect(await provider.find("forged")).toBeUndefined();
     expect(Number(tenkiState.creates[0]?.metadata?.["sandbox-sdk-created-at"])).toBeGreaterThan(0);
   });
+  test("request deadlines reject stalled creates and clean up late sessions", async () => {
+    const close = vi.spyOn(MockSession.prototype, "close");
+    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(
+      () => new Promise<MockSession>(() => {}),
+    );
+    const started = Date.now();
+    await expect(
+      createSandbox(tenki({ authToken: "key", requestTimeoutMs: 20 })),
+    ).rejects.toMatchObject({ code: "timeout" });
+    expect(Date.now() - started).toBeLessThan(500);
+    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return MockSession.create(params ?? {});
+    });
+    await expect(
+      createSandbox(tenki({ authToken: "key", requestTimeoutMs: 20 })),
+    ).rejects.toMatchObject({ code: "timeout" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(close).toHaveBeenCalledOnce();
+    expect(tenkiState.boxes.size).toBe(0);
+  });
+  test("control-plane methods and readiness waits enforce adapter deadlines", async () => {
+    const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 20 });
+    const box = await createSandbox(provider);
+    const current = tenkiState.boxes.get(box.id);
+    if (!current) throw new Error("Missing mock session");
+    vi.spyOn(MockTenki.prototype, "list").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.list({})).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(MockTenki.prototype, "get").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(current, "pause").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.pause?.(box.id)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(current, "resume").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.resume?.(box.id)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(current, "exposePort").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.previewUrl(box.id, 3000)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(MockTenki.prototype, "createSnapshot").mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    await expect(provider.snapshot?.(box.id)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(current, "close").mockImplementationOnce(() => new Promise(() => {}));
+    await expect(provider.destroy(box.id)).rejects.toMatchObject({ code: "timeout" });
+    vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    await expect(createSandbox(provider)).rejects.toMatchObject({ code: "timeout" });
+  });
   test("readiness failure and cancellation clean up allocated VMs", async () => {
     tenkiState.failReady = true;
     await expect(createSandbox(factory())).rejects.toMatchObject({ code: "provider" });
@@ -142,6 +189,57 @@ describe("Tenki mappings", () => {
       code: "unsupported",
     });
     expect(tenkiState.boxes.size).toBe(0);
+  });
+  test("huge output uses bounded native capture while streaming all bytes", async () => {
+    const box = await createSandbox(factory());
+    tenkiState.retainedPeakBytes = 0;
+    const bytes = 2 * 1024 * 1024;
+    const handle = box.run(
+      `printf begin; sleep .05; head -c ${bytes} /dev/zero | tr '\\0' x; printf end; printf err >&2`,
+      { maxOutputBytes: 1024 },
+    );
+    let streamed = 0;
+    for await (const chunk of handle) streamed += Buffer.byteLength(chunk.text);
+    const result = await handle;
+    expect(result).toMatchObject({ exitCode: 0, truncated: true, stderr: "err" });
+    expect(result.stdout).toMatch(/^begin.*end$/s);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThan(1200);
+    expect(streamed).toBe(bytes + 11);
+    // The mock deliberately retains chunks just like native run(), even when drained.
+    expect(tenkiState.retainedPeakBytes).toBeLessThan(128 * 1024);
+  });
+  test("stalled termination streams settle after the cancellation grace period", async () => {
+    const box = await createSandbox(factory());
+    const run = MockSession.prototype.run;
+    let transportSignal: AbortSignal | undefined;
+    vi.spyOn(MockSession.prototype, "run").mockImplementation(
+      function (this: MockSession, argv, options) {
+        const handle = run.call(this, argv, options);
+        if (!argv[2]?.includes("subprocess.Popen")) return handle;
+        transportSignal = options?.signal;
+        void Promise.resolve(handle).catch(() => {});
+        return Object.assign(new Promise<ProcessRunResult>(() => {}), {
+          ...handle,
+          stdout: new ReadableStream<Uint8Array>(),
+          stderr: new ReadableStream<Uint8Array>(),
+        });
+      },
+    );
+    const started = Date.now();
+    const pending = Promise.resolve(box.run("sleep 20", { timeoutMs: 50 }));
+    const result = await Promise.race([
+      pending,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1800)),
+    ]);
+    expect(result).toMatchObject({ timedOut: true, exitCode: null });
+    expect(Date.now() - started).toBeLessThan(1800);
+    expect(transportSignal?.aborted).toBe(true);
+  });
+  test("literal SDK paths in user commands are preserved", async () => {
+    const box = await createSandbox(factory());
+    expect((await box.run("printf '%s' '/tmp/.sandbox-sdk/value'")).stdout).toBe(
+      "/tmp/.sandbox-sdk/value",
+    );
   });
   test("command environment and stdin never enter the supervisor argv", async () => {
     const box = await createSandbox(factory(), { secrets: { TOKEN: "private-argv-check" } });

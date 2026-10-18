@@ -23,6 +23,7 @@ export const tenkiState = {
   snapshots: new Map<string, string>(),
   failReady: false,
   delayMs: 0,
+  retainedPeakBytes: 0,
 };
 export class MockSession {
   readonly id = crypto.randomUUID();
@@ -75,6 +76,13 @@ export class MockSession {
   run(argv: string[], options: ProcessRunOptions = {}) {
     const supervised = argv[0] === "python3" && argv[2]?.includes("subprocess.Popen");
     const args = supervised ? [...argv] : argv.map((arg) => this.rewrite(arg));
+    // Normalize VM-local paths before encoding spool records, just as the mock
+    // normalizes native stdout below. Production guests need no path mapping.
+    if (supervised && args[2])
+      args[2] = args[2].replace(
+        "base64.b64encode(data)",
+        `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
+      );
     // /tmp is private to each fake VM; prepare creates a symlink there.
     if (args[0] === "sh" && args[2]?.includes("mkdir -p"))
       args[2] = args[2].replace(" /tmp;", ` ${join(this.root, "tmp")};`);
@@ -85,12 +93,18 @@ export class MockSession {
       env: { ...process.env, ...this.params.env, ...options.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
+    let retainedBytes = 0;
+    const retain = (bytes: number) => {
+      retainedBytes += bytes;
+      tenkiState.retainedPeakBytes = Math.max(tenkiState.retainedPeakBytes, retainedBytes);
+    };
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     const stdout = new ReadableStream<Uint8Array>({
       start: (controller) => {
         child.stdout.on("data", (data: Buffer) => {
           const value = Buffer.from(data.toString().split(this.root).join(""));
+          retain(value.length);
           out.push(value);
           controller.enqueue(value);
         });
@@ -100,6 +114,7 @@ export class MockSession {
     const stderr = new ReadableStream<Uint8Array>({
       start: (controller) => {
         child.stderr.on("data", (data: Buffer) => {
+          retain(data.length);
           err.push(data);
           controller.enqueue(data);
         });
@@ -196,13 +211,16 @@ export class MockTenki {
   async list() {
     return [...tenkiState.boxes.values()];
   }
-  async createSnapshotAndWait(id: string) {
+  async createSnapshot(id: string) {
     const box = await this.get(id);
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-tenki-snapshot-"));
     await promisify(execFile)("cp", ["-a", `${box.root}/.`, root]);
     const snapshot = crypto.randomUUID();
     tenkiState.snapshots.set(snapshot, root);
     return { id: snapshot };
+  }
+  async waitSnapshotReady(id: string) {
+    return { id };
   }
 }
 export async function cleanupTenki() {
@@ -215,4 +233,5 @@ export async function cleanupTenki() {
   tenkiState.creates.length = 0;
   tenkiState.failReady = false;
   tenkiState.delayMs = 0;
+  tenkiState.retainedPeakBytes = 0;
 }

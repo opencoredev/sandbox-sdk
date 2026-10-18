@@ -1,34 +1,66 @@
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
+import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
  * A guest supervisor owns the timeout and process group, even if I/O disconnects.
  */
-const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal
+// Never send user output through native run(): Tenki 1.4.1 retains every chunk.
+// One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
+const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time
 v=json.load(sys.stdin)
-with tempfile.TemporaryFile() as f:
+with tempfile.TemporaryFile() as f, open(v['marker']+'.out','wb',buffering=0) as out:
  f.write(base64.b64decode(v['stdin'])); f.seek(0)
- p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,start_new_session=True)
+ p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
  with open(v['marker'],'w') as m: m.write(str(p.pid))
+ sel=selectors.DefaultSelector()
+ sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
+ end=time.monotonic()+v['timeoutMs']/1000
  timed=False
- try: code=p.wait(timeout=v['timeoutMs']/1000)
- except subprocess.TimeoutExpired:
-  timed=True
-  try: os.killpg(p.pid,signal.SIGKILL)
-  except ProcessLookupError: pass
-  p.wait()
+ while sel.get_map() or p.poll() is None:
+  if not timed and time.monotonic()>=end:
+   timed=True
+   try: os.killpg(p.pid,signal.SIGKILL)
+   except ProcessLookupError: pass
+  for key,_ in sel.select(.01):
+   data=os.read(key.fd,16384)
+   if data: out.write((json.dumps([key.data,base64.b64encode(data).decode()])+'\\n').encode())
+   else: sel.unregister(key.fileobj); key.fileobj.close()
+ code=p.wait()
  with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed},m)
 `;
-export async function raw(box: Session, argv: string[], stdin?: Uint8Array) {
+const page = `import sys,json
+pos=int(sys.argv[2]); chunks=[]
+try:
+ with open(sys.argv[1],'rb') as f:
+  f.seek(pos)
+  for _ in range(3):
+   line=f.readline(24000)
+   if not line.endswith(b'\\n'): break
+   chunks.append(json.loads(line)); pos=f.tell()
+except FileNotFoundError: pass
+print(json.dumps({'offset':pos,'chunks':chunks}))
+`;
+export async function raw(
+  box: Session,
+  argv: string[],
+  stdin?: Uint8Array,
+  timeoutMs = 30_000,
+  signal?: AbortSignal,
+) {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       if (stdin) controller.enqueue(stdin);
       controller.close();
     },
   });
-  const result = await box.run(argv, { privileged: true, stdin: stream, timeoutMs: 30_000 });
+  const result = await deadline(
+    (signal) => box.run(argv, { privileged: true, stdin: stream, timeoutMs, signal }),
+    timeoutMs,
+    signal,
+  );
   if (result.exitCode !== 0 || result.timedOut)
     throw failure("Guest operation failed", result.timedOut ? "timeout" : "provider");
   return new TextDecoder().decode(result.stdout);
@@ -38,9 +70,7 @@ export async function execute(box: Session, input: ExecInput) {
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
   const spec = Buffer.from(
     JSON.stringify({
-      // The SDK owns this reserved namespace. Detached log writers must use
-      // durable paths directly: /tmp may vanish before resume can repair its link.
-      command: input.command.replaceAll("/tmp/.sandbox-sdk/", "/home/tenki/.sandbox-sdk/"),
+      command: input.command,
       cwd: input.cwd,
       env: input.env,
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),
@@ -64,57 +94,95 @@ export async function execute(box: Session, input: ExecInput) {
       controller.close();
     },
   });
-  const handle = box.run(["python3", "-c", supervisor], { privileged: true, stdin });
+  const transport = new AbortController();
+  const handle = box.run(["python3", "-c", supervisor], {
+    privileged: true,
+    stdin,
+    signal: transport.signal,
+  });
+  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
   async function drain(stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr") {
     const decoder = new TextDecoder();
-    for await (const data of stream) {
-      const text = decoder.decode(data, { stream: true });
-      if (text) input.onChunk({ stream: kind, text });
+    const reader = stream.getReader();
+    readers.push(reader);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text) input.onChunk({ stream: kind, text });
+      }
+    } finally {
+      reader.releaseLock();
     }
     const text = decoder.decode();
     if (text) input.onChunk({ stream: kind, text });
   }
+  let finished = false;
+  const outputTransport = new AbortController();
+  const native = Promise.resolve(handle).finally(() => {
+    finished = true;
+  });
+  async function output() {
+    let offset = 0;
+    const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+    while (!outputTransport.signal.aborted) {
+      const wasFinished = finished;
+      const value: unknown = JSON.parse(
+        await raw(
+          box,
+          ["python3", "-c", page, `${marker}.out`, String(offset)],
+          undefined,
+          30_000,
+          outputTransport.signal,
+        ),
+      );
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("offset" in value) ||
+        typeof value.offset !== "number" ||
+        !Number.isSafeInteger(value.offset) ||
+        value.offset < offset ||
+        !("chunks" in value) ||
+        !Array.isArray(value.chunks) ||
+        value.chunks.length > 3
+      )
+        throw failure("Invalid output page");
+      const previous = offset;
+      offset = value.offset;
+      for (const chunk of value.chunks) {
+        if (
+          !Array.isArray(chunk) ||
+          chunk.length !== 2 ||
+          (chunk[0] !== "stdout" && chunk[0] !== "stderr") ||
+          typeof chunk[1] !== "string" ||
+          chunk[1].length > 21848
+        )
+          throw failure("Invalid output chunk");
+        const stream = chunk[0] === "stdout" ? "stdout" : "stderr";
+        const text = decoders[stream].decode(Buffer.from(chunk[1], "base64"), { stream: true });
+        if (text && !outputTransport.signal.aborted) input.onChunk({ stream, text });
+      }
+      if (offset === previous) {
+        if (wasFinished) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
+      const text = decoders[stream].decode();
+      if (text && !outputTransport.signal.aborted) input.onChunk({ stream, text });
+    }
+  }
   const completion = Promise.all([
-    Promise.resolve(handle),
+    native,
     drain(handle.stdout, "stdout"),
     drain(handle.stderr, "stderr"),
-  ]);
-  void completion.catch(() => {});
-  async function killGroup() {
-    // Poll after launch: cancellation may arrive before the guest publishes its PID.
-    await raw(box, [
-      "python3",
-      "-c",
-      `import os,sys,time,signal
-p=sys.argv[1]
-for _ in range(3000):
- try:
-  with open(p) as f: pid=int(f.read())
-  break
- except (FileNotFoundError,ValueError): time.sleep(.01)
-else: raise RuntimeError('PID unavailable')
-try: os.killpg(pid,signal.SIGKILL)
-except ProcessLookupError: pass`,
-      marker,
-    ]);
-  }
-  try {
-    if (input.signal?.aborted) cancel();
-    const result = cancelled ? "cancelled" : await Promise.race([completion, cancellation]);
-    if (result === "cancelled") {
-      try {
-        await killGroup();
-      } catch {
-        await box.close();
-        throw failure(
-          "Process cancellation could not be confirmed; the VM was terminated",
-          "outcome_unknown",
-        );
-      }
-      await completion;
-      return { exitCode: null, timedOut: true };
-    }
-    const value: unknown = JSON.parse(await raw(box, ["cat", `${marker}.exit`]));
+    output(),
+  ]).then(async () => {
+    const value: unknown = JSON.parse(
+      await raw(box, ["cat", `${marker}.exit`], undefined, 30_000, outputTransport.signal),
+    );
     if (
       !value ||
       typeof value !== "object" ||
@@ -125,17 +193,70 @@ except ProcessLookupError: pass`,
     )
       throw failure("Invalid command result");
     return { exitCode: value.exitCode, timedOut: value.timedOut };
+  });
+  void completion.catch(() => {});
+  async function killGroup() {
+    // Poll after launch: cancellation may arrive before the guest publishes its PID.
+    await raw(
+      box,
+      [
+        "python3",
+        "-c",
+        `import os,sys,time,signal
+p=sys.argv[1]
+for _ in range(3000):
+ try:
+  with open(p) as f: pid=int(f.read())
+  break
+ except (FileNotFoundError,ValueError): time.sleep(.01)
+else: raise RuntimeError('PID unavailable')
+try: os.killpg(pid,signal.SIGKILL)
+except ProcessLookupError: pass`,
+        marker,
+      ],
+      undefined,
+      1000,
+    );
+  }
+  try {
+    if (input.signal?.aborted) cancel();
+    const result = cancelled ? "cancelled" : await Promise.race([completion, cancellation]);
+    if (result === "cancelled") {
+      try {
+        await killGroup();
+      } catch {
+        await deadline(() => box.close(), 1000).catch(() => {});
+        throw failure(
+          "Process cancellation could not be confirmed; VM termination was requested",
+          "outcome_unknown",
+        );
+      }
+      await deadline(() => completion, 250).catch(() => {});
+      transport.abort();
+      for (const reader of readers) void reader.cancel().catch(() => {});
+      return { exitCode: null, timedOut: true };
+    }
+    return result;
   } catch (error) {
     // A failed stream cannot leave user code running after the caller sees failure.
     try {
       await killGroup();
     } catch {
-      await box.close();
+      await deadline(() => box.close(), 1000).catch(() => {});
     }
     throw error;
   } finally {
+    outputTransport.abort();
+    transport.abort();
+    for (const reader of readers) {
+      try {
+        void reader.cancel().catch(() => {});
+      } catch {}
+    }
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
-    await raw(box, ["rm", "-f", marker, `${marker}.exit`]).catch(() => {});
+    await raw(box, ["rm", "-f", marker, `${marker}.exit`, `${marker}.out`], undefined, 250).catch(
+      () => {},
+    );
   }
 }

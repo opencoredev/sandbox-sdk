@@ -42,7 +42,7 @@ await using box = await createSandbox(provider, {
 - `authToken` overrides `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`.
 - `baseUrl` overrides the native SDK's endpoint defaults.
 - `image` selects a Tenki registry image. A `from` snapshot overrides it.
-- `requestTimeoutMs` limits control-plane requests. It defaults to 30 seconds.
+- `requestTimeoutMs` bounds each control-plane operation (create, get, list, destroy, pause, resume, preview exposure, and snapshot submission). It defaults to 30 seconds. Readiness waits use `waitTimeoutMs` instead.
 - `waitTimeoutMs` limits readiness waits. Defaults are three minutes for create and resume, five minutes for snapshots.
 
 Custom images need Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`. The adapter uses Tenki's privileged process API for file operations because Tenki's file API rejects paths outside `/home/tenki`.
@@ -73,7 +73,11 @@ Inbound preview access is enabled. Outbound network restrictions do not make a p
 
 `timeoutMs` sets Tenki's native `maxDurationMs`. The adapter disables sticky mode so it cannot override the limit. `idleTimeoutMs` fails with `unsupported`: Tenki's current SDK marks idle auto-pause as removed.
 
-Command timeouts and cancellation kill the whole command process group before returning a timed-out result. These are separate from VM lifetime.
+Command timeouts and cancellation kill the whole command process group before returning a timed-out result. After confirming the kill, the adapter allows 250 ms for output and transport cleanup, then aborts the run transport. These are separate from VM lifetime.
+
+The adapter enforces `requestTimeoutMs` locally and rejects expired control-plane operations with code `timeout`. Tenki 1.4.1 does not expose cancellation for these calls, so the server may still complete them. If a timed-out or aborted create later returns a session, the adapter attempts to close it using another `requestTimeoutMs` deadline. If the create never returns an ID or cleanup fails, automatic deletion cannot be confirmed; inspect your Tenki sessions and terminate any unwanted VM. Keep the adapter's host process alive for late cleanup to run.
+
+Command output is spooled to an ordered file inside the VM and streamed back in bounded pages. Result capture still uses `maxOutputBytes` head and tail limits. Spool files consume guest disk until the run finishes and cleanup removes them.
 
 ## Pause and snapshots
 
@@ -93,7 +97,7 @@ console.log(await copy.files.read("saved.txt"));
 
 The copy reads `ready`. Snapshots capture disk and memory, but exclude attached native volumes.
 
-Tenki clears `/tmp` on pause. The adapter links `/tmp/.sandbox-sdk` to durable storage under `/home/tenki/.sandbox-sdk` and recreates the link on resume and connect, so SDK process records and logs remain available. Active TCP, preview, and SSH connections close on pause. A guest-agent restart can end processes started through its command API even though pause preserves VM memory.
+Tenki clears `/tmp` on pause. The adapter links `/tmp/.sandbox-sdk` to durable storage under `/home/tenki/.sandbox-sdk` and recreates the link on resume and connect, so SDK state remains available. Core process records and detached log writers use `/home/tenki/.sandbox-sdk/procs` directly, allowing them to keep writing while the temporary link is absent. Active TCP, preview, and SSH connections close on pause. A guest-agent restart can end processes started through its command API even though pause preserves VM memory.
 
 Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the native Tenki client when you no longer need them.
 

@@ -7,6 +7,7 @@
  */
 import type { Session, CreateOptions } from "@tenkicloud/sandbox";
 import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
+import { deadline } from "./deadline.js";
 import { execute, raw } from "./exec.js";
 import { files } from "./files.js";
 import { tenkiError, failure } from "./errors.js";
@@ -80,8 +81,18 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     | Promise<InstanceType<(typeof import("@tenkicloud/sandbox"))["TenkiSandbox"]>>
     | undefined;
   const boxes = new Map<string, Session>();
+  const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+  const request = <T>(action: () => Promise<T>, signal?: AbortSignal) =>
+    deadline(action, requestTimeoutMs, signal);
+  const wait = (
+    action: (signal: AbortSignal) => Promise<void>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) => deadline(action, timeoutMs, signal);
   async function api() {
     return (client ??= (async () => {
+      if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
+        throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const authToken =
         options.authToken ??
         (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
@@ -91,7 +102,6 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       return new TenkiSandbox({
         authToken,
         baseUrl: options.baseUrl,
-        timeoutMs: options.requestTimeoutMs ?? 30_000,
       });
     })());
   }
@@ -113,6 +123,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
   const provider: TenkiProvider = {
     name: "tenki",
     keyMode: "best-effort",
+    processRecordRoot: "/home/tenki/.sandbox-sdk/procs",
     capabilities: new Set<TenkiCapability>(["pause", "snapshot", "size", "network-policy"]),
     create: (input) =>
       safe(undefined, async () => {
@@ -162,10 +173,21 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           waitReady: false,
         };
         // Admit without waiting so every subsequent failure has an ID to clean up.
-        const value = await (await api()).create(params);
+        const client = await api();
+        // create() has no AbortSignal in Tenki 1.4.1. Keep observing its result
+        // after the caller's deadline so a late allocation can still be closed.
+        const pending = client.create(params);
+        let value: Session;
+        try {
+          value = await request(() => pending, input.signal);
+        } catch (error) {
+          void pending.then((late) => request(() => late.close())).catch(() => {});
+          throw error;
+        }
         boxes.set(value.id, value);
         try {
-          await value.waitReady(options.waitTimeoutMs ?? 180_000, input.signal);
+          const timeoutMs = options.waitTimeoutMs ?? 180_000;
+          await wait((signal) => value.waitReady(timeoutMs, signal), timeoutMs, input.signal);
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           if (
             allocation.cpuCores !== undefined &&
@@ -192,7 +214,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       }),
     list: (labels) =>
       safe(undefined, async () =>
-        (await (await api()).list())
+        (await request(async () => (await api()).list()))
           .filter(
             (value) =>
               value.state !== "TERMINATED" &&
@@ -209,7 +231,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     },
     connect: (id) =>
       safe(id, async () => {
-        const value = await (await api()).get(id);
+        const value = await request(async () => (await api()).get(id));
         const result = info(value);
         if (["TERMINATED", "TERMINATING"].includes(value.state))
           throw failure("Session has terminated", "not_found");
@@ -220,7 +242,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     destroy: (id) =>
       safe(id, async () => {
         try {
-          await (await box(id)).close();
+          await request(async () => (await box(id)).close());
         } catch (error) {
           if (tenkiError(error).code !== "not_found") throw error;
         } finally {
@@ -234,30 +256,36 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     files: files(box, safe),
     previewUrl: (id, port) =>
       safe(id, async () => {
-        const value = await (await box(id)).exposePort(port);
+        const current = await box(id);
+        const value = await request(() => current.exposePort(port));
         return { url: value.previewUrl, expiresAt: value.expiresAt?.getTime() };
       }),
     pause: (id) =>
       safe(id, async () => {
         const value = await box(id);
-        await value.pause();
-        await value.waitPaused(options.waitTimeoutMs ?? 180_000);
+        await request(() => value.pause());
+        const timeoutMs = options.waitTimeoutMs ?? 180_000;
+        await wait((signal) => value.waitPaused(timeoutMs, signal), timeoutMs);
       }),
     resume: (id) =>
       safe(id, async () => {
         const value = await box(id);
-        await value.resume();
-        await value.waitResumed(options.waitTimeoutMs ?? 180_000);
+        await request(() => value.resume());
+        const timeoutMs = options.waitTimeoutMs ?? 180_000;
+        await wait((signal) => value.waitResumed(timeoutMs, signal), timeoutMs);
         await raw(value, prepare);
       }),
     snapshot: (id) =>
-      safe(id, async () => ({
-        id: (
-          await (
-            await api()
-          ).createSnapshotAndWait(id, { timeoutMs: options.waitTimeoutMs ?? 300_000 })
-        ).id,
-      })),
+      safe(id, async () => {
+        const client = await api();
+        const snapshot = await request(() => client.createSnapshot(id, { async: true }));
+        const timeoutMs = options.waitTimeoutMs ?? 300_000;
+        const result = await deadline(
+          (signal) => client.waitSnapshotReady(snapshot.id, timeoutMs, signal),
+          timeoutMs,
+        );
+        return { id: result.id };
+      }),
     native(id) {
       const value = boxes.get(id);
       if (!value) throw failure("Session is detached; connect first", "not_found");
