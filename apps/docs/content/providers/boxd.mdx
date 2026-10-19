@@ -1,0 +1,80 @@
+---
+title: boxd
+description: Persistent Linux machines through the official boxd SDK, with process-group cancellation and HTTPS previews.
+---
+
+`boxd()` runs a persistent, isolated Linux machine through [boxd](https://docs.boxd.sh). The adapter uses `@boxd-sh/sdk` 0.2.17 or later.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @boxd-sh/sdk
+```
+
+Set `BOXD_API_KEY` on your server. Keep the key out of browser bundles.
+
+## Basic usage
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd());
+console.log((await box.run("uname -a")).stdout);
+```
+
+## Configuration
+
+`boxd({ apiKey, baseURL, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. Creation checks these tools and creates `/workspace`.
+
+## Keys and labels
+
+Key mode is **best-effort**. Keys, labels, and creation time live in `/var/lib/sandbox-sdk.json`. Names beginning with `sbxsdk-` identify candidate machines; listing reads their marker files and can wake sleeping machines. A new adapter instance can find the same machine. Keep the generated name and marker file intact, and keep secrets out of labels.
+
+Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create across concurrent requests.
+
+## Size, network, and lifetime
+
+This adapter accepts the service's default size and `network: "all"`. Explicit sizes, `network: "none"`, allow lists, `idleTimeoutMs`, and sandbox `timeoutMs` fail with `unsupported` before allocation.
+
+boxd's empty egress allowlist means unrestricted access. Its host-bound secrets may admit additional destinations. The adapter therefore exposes no network-policy capability. It creates an isolated machine with auto-suspend and auto-destroy disabled; isolation removes metadata access and machine peers, but does not block internet access.
+
+## Commands and files
+
+Commands close stdin, use a detached Python supervisor, and kill the complete process group on timeout or abort. Environment values and stdin travel through a private `0600` specification file inside a `0700` directory, never through command text or arguments. The file is removed before user code starts. Output is spooled in the guest and read in pages of at most three 16 KiB records, keeping native buffered responses bounded.
+
+Files use native upload and bounded reads through Python. Directory listings and file metadata use Python. The adapter checks the byte count confirmed by uploads.
+
+## Pause and snapshots
+
+`pause()` and `resume()` use boxd's suspend-to-memory API. Snapshots, restore through `from`, and terminals are not exposed by this adapter; native APIs remain available through `box.native.client`.
+
+`box.close()` detaches the local handle. `box.destroy()` deletes the machine. The metadata marker survives pause and reconnect.
+
+## Previews
+
+`box.preview(port)` creates or reuses a named HTTPS proxy for that port. Bind your server to `0.0.0.0`. The adapter reads the resulting domain from the proxy list rather than guessing it. No up-front port declarations are required.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `BOXD_API_KEY` | Required API key, overridden by `apiKey` |
+| `BOXD_BASE_URL` | Optional native SDK endpoint, overridden by `baseURL` |
+
+## API reference
+
+`boxd(options?)` returns a provider with the `"pause"` capability. `box.native.machine` is typed boxd machine metadata and `box.native.client` is the official `Boxd` client.
+
+## Limitations
+
+- No explicit sizes, egress restrictions, idle deadlines, hard sandbox lifetimes, snapshot restore, or terminals.
+- Discovery reads guest metadata, which can wake machines and makes list operations more expensive.
+- Guest output spooling uses disk proportional to command output; host output is read in bounded pages.
+- A failed cancellation falls back to deleting the machine. If deletion cannot be confirmed, the adapter reports `outcome_unknown`.
+- Live cloud behavior has a separate opt-in test gated by `SANDBOX_BOXD_LIVE=1` and `BOXD_API_KEY`.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

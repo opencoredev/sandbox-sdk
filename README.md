@@ -2,7 +2,7 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, or Tenki.
+Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, Tenki, or boxd.
 
 ## Install
 
@@ -37,6 +37,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
 | [Boat](https://sandbox-sdk.app/docs/providers/boat) | Persistent cloud VM | Long-running agents and protected previews |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
+| [boxd](https://sandbox-sdk.app/docs/providers/boxd) | Persistent Linux VM | Isolated machines, memory pause, and HTTPS proxies |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
 
 Local defaults to Docker. For the Docker-free runtime, install `@rivet-dev/agentos-core@0.4.1` and import `agentos` from `@opencoredev/sandbox-sdk/agentos`. See the [Local guide](https://sandbox-sdk.app/docs/providers/local) for compatibility limits. Cloud providers use their official SDKs and credentials.

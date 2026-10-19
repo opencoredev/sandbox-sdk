@@ -137,6 +137,14 @@ export const providerArt: ProviderArt[] = [
     href: "/docs/providers/tenki",
     paint: providerScenes.tenki,
   },
+  {
+    kind: "launch",
+    id: "boxd",
+    name: "boxd",
+    line: "Persistent isolated Linux machines with memory pause.",
+    href: "/docs/providers/boxd",
+    paint: providerScenes.local,
+  },
 ];
 
 /** The ember glow behind the closing call to action. */

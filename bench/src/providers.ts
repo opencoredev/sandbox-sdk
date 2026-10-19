@@ -22,6 +22,7 @@ const credentials: Record<string, string[]> = {
   upstash: ["UPSTASH_BOX_API_KEY"],
   boat: ["BOAT_API_KEY"],
   tenki: ["TENKI_API_KEY"],
+  boxd: ["BOXD_API_KEY"],
 };
 const regionKeys: Record<string, string> = {
   e2b: "E2B_REGION",

@@ -190,6 +190,7 @@ header a.bg-accent:hover {
  * so a root-relative URL would miss deployment.base.
  */
 img[src*="/integrations/agentos."] { mask-image: url("/docs/integrations/agentos.svg"); }
+img[src*="/integrations/boxd."] { mask-image: url("/docs/integrations/boxd.svg"); }
 img[src*="/integrations/boat."] { mask-image: url("/docs/integrations/boat.svg"); }
 img[src*="/integrations/daytona."] { mask-image: url("/docs/integrations/daytona.svg"); }
 img[src*="/integrations/docker."] { mask-image: url("/docs/integrations/docker.svg"); }
@@ -207,6 +208,7 @@ img[src*="/integrations/vercel."] { mask-image: url("/docs/integrations/vercel.s
 :is(
   img[src*="/integrations/agentos."],
   img[src*="/integrations/boat."],
+  img[src*="/integrations/boxd."],
   img[src*="/integrations/daytona."],
   img[src*="/integrations/docker."],
   img[src*="/integrations/e2b."],
