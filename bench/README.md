@@ -54,8 +54,8 @@ bun bench --runs 100 --workload-runs 30 --bursts "" \
   --run publication-001 --out results/publication-001
 
 # Isolated burst-only collection: K creates can run together within this global limit.
-bun bench --scenarios burst --runs 1 --bursts 10,25 --concurrency 25 \
-  --max-sandboxes 40 --max-dollars 5 --provider-max-dollars boat=1 \
+bun bench --scenarios burst --runs 1 --bursts 10,25 --burst-cohorts 3 --concurrency 25 \
+  --max-sandboxes 110 --max-dollars 5 --provider-max-dollars boat=1 \
   --run publication-bursts-001 --out results/publication-bursts-001
 ```
 
@@ -70,9 +70,9 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 | `files-1kb`, `files-10mb` | Write + read with byte equality validation; 1,024 / 10,485,760 bytes |
 | `fingerprint` | One guest exec for the hardware script, including one-second CPU steal sample |
 | `perf` | Guest performance probe, with separate metric observations described below |
-| `reconnect` | Close local handle, connect by native ID, first successful command; phase detail retained |
+| `reconnect` | Connect by native ID through first successful command; close the previous handle after sandbox destruction in `reconnect-cleanup` |
 | `pause-resume` | Pause, resume, first command, with pause and resume-ready phases; unsupported providers skip |
-| `snapshot`, `create-from-snapshot` | Snapshot API creation and restored first-command readiness measured separately; teardown separately recorded |
+| `snapshot`, `create-from-snapshot` | Native snapshot API and restored first-command readiness measured separately; setup, total, and teardown separately recorded |
 | `git-clone` | Depth-one clone and pinned fetch of `octocat/Hello-World`, commit `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`; checkout verified |
 | `npm-install` | Committed React 19.1.0 / Vite 6.3.5 fixture and npm lockfile, `npm ci --ignore-scripts --no-audit --no-fund` |
 | `dev-server` | Start fixture Vite server on port 3000 to listening log |
@@ -99,7 +99,7 @@ The HTTP edit loop verifies served file changes, not browser rendering or React 
 
 Sample cost = billed seconds × observed vCPU/RAM/disk allocation rates, or the published fixed VM size/rate. Unknown resources yield null. Sandbox-lifetime totals include setup and idle time; do not sum them with scenario allocations or the performance submetrics. Performance-per-dollar divides each successful throughput score by the observed allocation's estimated per-second rate, then averages those ratios. It is an efficiency estimate (e.g. CPU iterations per currency unit), kept in the provider's stated currency. Local has zero marginal provider charge; its host costs are excluded and it is omitted from ratios that divide by zero.
 
-Distributions retain all successful raw values and report nearest-rank p50/p95/p99, mean/min/max, population standard deviation, and deterministic 2,000-resample percentile bootstrap 95% intervals for p50 and mean. Failure counts remain in every summary. Success rate uses a Wilson 95% interval over successes + failures; skips are counted separately. Empty distributions are null, never zero or NaN. A small pilot validates the harness; it cannot rank providers reliably.
+Distributions retain all successful raw values and report nearest-rank p50/p95/p99, mean/min/max, population standard deviation, and deterministic 2,000-resample percentile bootstrap 95% intervals for p50 and mean. Failure counts remain in every summary. Success rate uses a Wilson 95% interval over successes + independent failures; skips and blocked dependencies are counted separately. Empty distributions are null, never zero or NaN. A small pilot validates the harness; it cannot rank providers reliably.
 
 ## Cleanup and recovery
 
@@ -117,7 +117,7 @@ SIGINT/SIGTERM stop admission and cancel signal-aware operations, then run norma
 
 V2 is an intentional format change. `src/v2-model.ts` owns the model. Existing v1 results/readers and `src/model.ts` remain unchanged; run `bun bench --v1 ...` for the original harness, including mocked-native SDK CPU overhead measurements. See [the v1 reference](README-v1.md). V1 readers must gate on `schemaVersion` and reject v2 rather than interpret it as v1.
 
-V2 top-level fields are `schemaVersion: 2`, `runId`, ISO timestamps, validated `config`, harness `host`, `providers` (ready/skipped plus notes), raw `samples`, `summaries`, `budgets`, `cleanup`, `methodology`, and the serialized pricing table. Each sample includes provider/iteration/scenario/unit, start/end timestamps, client monotonic `durationMs`, native ID, `outcome` (`sample` with numeric value, `failure` or `skipped` with note), phases, host before/after, fingerprint, nullable estimated cost and scenario-specific details. Performance metrics use their native units; their `durationMs` records the enclosing performance probe time. Tool replay details contain per-op milliseconds. Summaries key on provider + scenario + unit and contain stats/CIs, Wilson success intervals, failure/skip counts, estimated cost, per-1000 estimate and performance-per-currency-unit.
+V2 top-level fields are `schemaVersion: 2`, `runId`, ISO timestamps, validated `config`, harness `host`, `providers` (ready/skipped plus notes), raw `samples`, `summaries`, `budgets`, `cleanup`, `methodology`, and the serialized pricing table. Each sample includes provider/iteration/scenario/unit, start/end timestamps, client monotonic `durationMs`, native ID, `outcome` (`sample` with numeric value, `failure` or `skipped` with note, or `blocked` with note and `blocked_by`), phases, host before/after, fingerprint, nullable estimated cost and scenario-specific details. Performance metrics use their native units; their `durationMs` records the enclosing performance probe time. Tool replay details contain per-op milliseconds. Summaries key on provider + scenario + unit and contain stats/CIs, Wilson success intervals, failure/skip counts, estimated cost, per-1000 estimate and performance-per-currency-unit.
 
 ```sh
 bun run --cwd bench test
@@ -129,3 +129,19 @@ bun run --cwd packages/sdk build
 Tests are offline. They exercise real memory-provider cleanup, scheduling limits, seeded order, percentile/bootstrap/Wilson arithmetic, cost conversion and rounding, and fingerprint boundary validation.
 
 See [the validation pilot](PILOT.md) for observed failures, cost projections, and verification limits.
+
+## Publication fairness updates
+
+`--burst-cohorts N` repeats every configured burst size N times (default 3). Each aggregate carries its cohort index in `iteration` and `details.cohort`; cold samples have a unique iteration within that size. Three K=10 plus three K=25 cohorts require 105 sandbox attempts per provider, so the burst command reserves 110. Account and dollar caps still apply; a blocked admission is reported rather than silently reducing K. Three cohorts validate a distribution but are insufficient for a stable tail estimate; use more cohorts only within explicit account and spend budgets.
+
+The comparison uses provider default allocations and images, with the local Docker reference at medium size. It does not normalize resources. Publish the hardware table beside timing results. Image, dependency, CDN and filesystem caches remain uncontrolled. Workloads on the same sandbox share installed files and process state.
+
+A failed lifecycle transition marks later scenarios with outcome `kind: blocked` and `blocked_by: <scenario>`. App prerequisite failures propagate similarly. These rows appear separately from skips and independent failures; success-rate denominators include only successful and independently failed attempts. Latency distributions contain successful values only. Every expected guest performance metric receives a failure row when the probe fails, times out, returns invalid JSON, or omits that metric.
+
+File payloads are prepared once before scheduling. Reconnect preserves the previous handle if attachment fails; successful reconnections defer old-handle cleanup until after destruction because providers cache clients by sandbox ID. `preview-provisioning` measures public URL provisioning separately from `dev-server`. Each `preview-first-byte` row is a single HTTP attempt through its first nonempty chunk; up to three attempts retain failures separately. Reader cancellation and the 500 ms gap between attempts are outside that row’s timing. The edit loop depends on successful provisioning/start and, when collected, a successful first-byte attempt. `snapshot` measures only the native API; `snapshot-setup` exposes cleanup-client loading and durable journal preparation, and `snapshot-total` includes that setup and post-API journal work. Cost projections use the total, not a sum of overlapping snapshot rows.
+
+Reports include configured provider regions, collection start/end, repository/harness/SDK git commits, a dirty-tree indicator, SDK/runtime versions and optional client public-egress geography from ipinfo. The SDK/harness commits identify the latest commits touching their respective directories; the repository commit identifies the complete checkout. A failed location lookup is null. Offline library consumers do not perform this lookup. The client-headroom section summarizes normalized load, host CPU busy fraction and network byte rates during each provider’s samples. Every raw sample has a `headroom` object and a high-load flag when load1/logical CPUs is at least 1 or measured host CPU busy fraction is at least 90%. Raw counters remain available. Overlapping windows and unrelated host traffic prevent attributing these counters solely to a provider; do not sum their traffic rates.
+
+Percentiles use nearest rank. p50 and mean intervals use 2,000 seeded bootstrap resamples; independent success rates use Wilson 95% intervals. At n=100, p99 depends on roughly the two slowest observations and remains unstable. Publish raw data, counts, failures and blocked dependencies rather than presenting a precise tail ranking. Costs remain estimates with per-provider source retrieval dates. EUR and USD remain separate; subscriptions, credits and excluded charges are documented in the pricing table.
+
+These additions extend schema v2: `metadata`, `providers[].configuredRegion`, `samples[].headroom`, blocked outcomes, and `summaries[].blocked`. Consumers must handle the new outcome variant. Older v2 pilot reports lack these fields and are historical artifacts; v1 compatibility is unchanged. The earlier pilot predates these fairness fixes and has not been rerun on cloud accounts.

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { parseV2 } from "./v2-config.js";
 import { loadProvider } from "./providers.js";
 import { runV2, sanitize } from "./v2-runner.js";
+import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
 import { deadline } from "./timing.js";
 async function main() {
@@ -17,7 +18,7 @@ async function main() {
   }
   if (args.includes("--help")) {
     process.stdout.write(
-      "bun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
+      "bun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--burst-cohorts 3 --workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
     );
     return;
   }
@@ -145,7 +146,7 @@ async function main() {
     return;
   }
   const out = resolve(config.out);
-  const report = await runV2(providers, config, (r) => writeV2(r, out));
+  const report = await runV2(providers, config, (r) => writeV2(r, out), collectMetadata(true));
   process.stdout.write(
     `Run ${report.runId}; ${report.samples.length} observations; reports: ${out}\n`,
   );
