@@ -49,12 +49,14 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     try { await box.fs.deleteFile(dir, true); } catch (error) { if (daytonaError(error, box.id, true).code !== "file_not_found") throw error; }
   }
   try {
-    await box.fs.createFolder(dir, "700");
-    await box.fs.uploadFile(Buffer.from(input.stdin ?? ""), `${dir}/stdin`);
+    if (input.stdin !== undefined) {
+      await box.fs.createFolder(dir, "700");
+      await box.fs.uploadFile(Buffer.from(input.stdin), `${dir}/stdin`);
+    }
     if (cancelled) { await cleanup(); return { pid: 0, wait: async () => ({ exitCode: null, signal: "SIGKILL" }), stop: async () => {}, detach() {} }; }
     await box.process.createSession(session); created = true;
     const env = Object.entries(input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
-    const script = `umask 077; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(`${dir}/stdin`)}`;
+    const script = `umask 077; mkdir -p ${quote(dir)} || exit 1; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(input.stdin === undefined ? "/dev/null" : `${dir}/stdin`)}`;
     const response = await box.process.executeSessionCommand(session, { command: `setsid --wait sh -c ${quote(script)}`, runAsync: true, suppressInputEcho: true });
     commandId = response.cmdId;
     if (!commandId) throw new SandboxError("Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });

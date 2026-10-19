@@ -81,6 +81,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
     const timer = setTimeout(abort, input.timeoutMs);
     let cwd = input.cwd; const env = { ...m.env, ...input.env }; let exitCode = 0; let exited = false;
     try {
+      if (input.activityPath) { mkdir(id, posix.dirname(input.activityPath)); await files.write(id, input.activityPath, new Uint8Array([1])); }
       const tokens = tokenize(input.command, env);
       const unsupported = tokens.find(token => token.operator && ![";", "&&", "||", ">", ">&2"].includes(token.text));
       const badRedirect = tokens.find((token, index) => token.operator && token.text === ">" && (!tokens[index + 1] || tokens[index + 1]?.operator || (tokens[index + 2] && !tokens[index + 2]?.operator)));
@@ -126,10 +127,10 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
         else segment.push(token);
       }
       await runSegment(";"); return { exitCode: timedOut ? null : exitCode, timedOut };
-    } finally { m.active.delete(controller); clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
+    } finally { if (input.activityPath) { m.nodes.delete(input.activityPath); if (machines.has(id)) machine(id); } m.active.delete(controller); clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
   }
   const provider: Provider<MemoryNative, "network-policy"> & { register(name: string, handler: CommandHandler): void } = {
-    name: "memory", keyMode: "exact", capabilities: new Set<"network-policy">(["network-policy"]), files,
+    name: "memory", inlineActivity: true, keyMode: "exact", capabilities: new Set<"network-policy">(["network-policy"]), files,
     register(name, handler) { handlers.set(name, handler); },
     async create(input: CreateInput) {
       if (input.size !== undefined) throw new SandboxError("Memory cannot enforce machine size. Omit size or choose a provider with size support.", { code: "unsupported", provider: "memory" });

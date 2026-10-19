@@ -273,3 +273,20 @@ test("transport cancellation kills descendants after their shell has exited", as
     expect(await box.files.exists("orphan")).toBe(false);
   } finally { await box.destroy(); }
 });
+
+test("activity protects background output after the command shell exits", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  try {
+    let ready = () => {};
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const run = box.run("(sleep .5; echo child) & echo ready");
+    const output = (async () => { for await (const chunk of run) if (chunk.text.includes("ready")) ready(); })();
+    await started;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect((await box.files.list("/tmp/.sandbox-sdk/runs")).length).toBe(1);
+    await output;
+    expect((await run).stdout).toContain("child");
+    expect(await box.files.list("/tmp/.sandbox-sdk/runs")).toEqual([]);
+  } finally { await box.destroy(); }
+});

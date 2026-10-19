@@ -51,7 +51,7 @@ export function agentos(options: AgentosOptions = {}): Provider<AgentOs, Agentos
     try { return await action(entry(id).vm); } catch (error) { throw agentosError(error, id, file); }
   }
   const provider: Provider<AgentOs, AgentosCapability> = {
-    name: "agentos", keyMode: "exact", processMode: "unsupported", capabilities: new Set<AgentosCapability>(["network-policy"]),
+    name: "agentos", inlineActivity: true, keyMode: "exact", processMode: "unsupported", capabilities: new Set<AgentosCapability>(["network-policy"]),
     async create(input) {
       if (input.size !== undefined || input.from !== undefined) throw failure("agentOS cannot enforce machine sizes or restore SDK snapshots", "unsupported");
       if (input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined) throw failure("agentOS adapter does not enforce sandbox lifetime or idle deadlines", "unsupported");
@@ -99,11 +99,20 @@ export function agentos(options: AgentosOptions = {}): Provider<AgentOs, Agentos
         // 0.4.1 shell exec does not close supplied stdin. A virtual file gives
         // every command finite input without exposing a host file or pipe.
         const inputPath = `/tmp/.sandbox-sdk/stdin-${randomUUID()}`;
-        await vm.filesystem.mkdir("/tmp/.sandbox-sdk", { recursive: true });
-        await vm.filesystem.writeFile(inputPath, input.stdin ?? "");
+        if (input.stdin !== undefined) {
+          await vm.filesystem.mkdir("/tmp/.sandbox-sdk", { recursive: true });
+          await vm.filesystem.writeFile(inputPath, input.stdin);
+        }
+        let completed = false;
         try {
           if (input.signal?.aborted) return { exitCode: null, timedOut: true };
-          const result = await vm.process.exec(`exec < ${quote(inputPath)}\n${input.command}`, {
+          // agentOS's virtual filesystem cannot relay named pipes. Its VMs are
+          // local to this JS realm, so core's active-run registry covers pipe
+          // drainage after the shell exits as well as guest launch latency.
+          const command = input.activityPath
+            ? `sh -c ${quote(`mkdir -p /tmp/.sandbox-sdk/runs && : > "$2" || exit 1; trap 'rm -f -- "$2"' EXIT; sh -c "$1"`)} sh ${quote(input.command)} ${quote(input.activityPath)}`
+            : input.command;
+          const result = await vm.process.exec(`exec < ${input.stdin === undefined ? "/dev/null" : quote(inputPath)}\n${command}`, {
             cwd: input.cwd, env: input.env, timeoutMs: input.timeoutMs, signal: input.signal,
             output: { capture: "none" },
             onStdout(data) { const text = stdout.decode(data, { stream: true }); if (text) input.onChunk({ stream: "stdout", text }); },
@@ -112,8 +121,9 @@ export function agentos(options: AgentosOptions = {}): Provider<AgentOs, Agentos
           for (const [stream, text] of [["stdout", stdout.decode()], ["stderr", stderr.decode()]] as const) if (text) input.onChunk({ stream, text });
           const timedOut = result.outcome === "timed_out" || result.outcome === "cancelled";
           if (!timedOut && result.exitCode === undefined) throw failure("agentOS did not report a command exit", "outcome_unknown", id);
+          completed = !timedOut && result.exitCode !== undefined && result.exitCode >= 0 && result.exitCode < 128;
           return { exitCode: timedOut ? null : result.exitCode ?? null, timedOut };
-        } finally { await vm.filesystem.remove(inputPath).catch(() => {}); }
+        } finally { if (input.stdin !== undefined) await vm.filesystem.remove(inputPath).catch(() => {}); if (!completed && input.activityPath) await vm.filesystem.remove(input.activityPath).catch(() => {}); }
       });
     },
     files: {
