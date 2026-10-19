@@ -1,5 +1,5 @@
 import { afterEach, describe, test, expect, vi } from "vitest";
-import { cleanupMock, mockState, MockDaytona } from "./daytona-mock.js";
+import { cleanupMock, mockState, MockDaytona, MockSandbox } from "./daytona-mock.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -106,4 +106,83 @@ describe("Daytona mappings", () => {
     await expect(box.run("sleep .2; echo bad > stream-leak")).rejects.toMatchObject({ code: "unavailable", provider: "daytona" });
     mockState.failLogs = false; await new Promise(resolve => setTimeout(resolve, 250)); expect(await box.files.exists("stream-leak")).toBe(false);
   });
+});
+
+test("creation provisions workspace when the native filesystem cannot create root directories", async () => {
+  const create = MockSandbox.create.bind(MockSandbox);
+  vi.spyOn(MockSandbox, "create").mockImplementationOnce(async params => {
+    const guest = await create(params);
+    const mkdir = guest.fs.createFolder;
+    vi.spyOn(guest.fs, "createFolder").mockImplementation(async (path, mode) => {
+      if (path === "/workspace") throw Object.assign(new Error("mkdir /workspace: permission denied"), { statusCode: 400 });
+      return mkdir(path, mode);
+    });
+    return guest;
+  });
+  const box = await createSandbox(factory());
+  await box.files.write("app/file", "writable");
+  expect(await box.files.read("app/file")).toBe("writable");
+  expect((await box.run("git init repo")).ok).toBe(true);
+});
+
+test("session output preserves exact bytes through newline-normalized native logs", async () => {
+  const box = await createSandbox(factory());
+  const logs = box.native.process.getSessionCommandLogs;
+  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation((session, command, stdout, stderr) => logs(session, command,
+    text => stdout(text.endsWith("\n") ? text : text + "\n"),
+    text => stderr(text.endsWith("\n") ? text : text + "\n")));
+  expect(await box.run("printf exact; printf error >&2")).toMatchObject({ stdout: "exact", stderr: "error" });
+  expect((await box.run("printf 'retained\\n'")).stdout).toBe("retained\n");
+});
+
+test("destroy coalesces overlapping native deletions from separate handles", async () => {
+  const provider = factory(); const box = await createSandbox(provider);
+  const second = await connectSandbox(provider, box.id);
+  const remove = box.native.delete.bind(box.native);
+  let active = false;
+  const spy = vi.spyOn(box.native, "delete").mockImplementation(async () => {
+    if (active) throw Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+    active = true; await new Promise(resolve => setTimeout(resolve, 20)); await remove();
+  });
+  await Promise.all([box.destroy(), second.destroy()]);
+  expect(spy).toHaveBeenCalledTimes(1);
+});
+
+test("destroy waits for native deletion completion", async () => {
+  const provider = factory(); const box = await createSandbox(provider);
+  const remove = box.native.delete.bind(box.native);
+  vi.spyOn(box.native, "delete").mockImplementation(async (timeout, wait) => { if (wait) await remove(timeout, wait); });
+  await box.destroy();
+  await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("framed output retains a leading UTF-8 BOM", async () => {
+  const box = await createSandbox(factory());
+  expect((await box.run("python3 -c 'import sys; sys.stdout.buffer.write(bytes([239,187,191,120]))'")).stdout).toBe("\uFEFFx");
+});
+
+test("incomplete base64 output fails closed", async () => {
+  const box = await createSandbox(factory());
+  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => { stdout("O:Y\n"); });
+  await expect(box.run("sleep .1")).rejects.toMatchObject({ code: "provider" });
+});
+
+test("malformed output arriving during exit status lookup cannot report success", async () => {
+  const box = await createSandbox(factory());
+  const launch = box.native.process.executeSessionCommand;
+  vi.spyOn(box.native.process, "executeSessionCommand").mockImplementation(async (session, request) => {
+    const response = await launch(session, request); await new Promise(resolve => setTimeout(resolve, 50)); return response;
+  });
+  let emit = (_text: string) => {};
+  let finish = () => {};
+  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => {
+    emit = stdout; await new Promise<void>(resolve => { finish = resolve; });
+  });
+  const status = box.native.process.getSessionCommand;
+  vi.spyOn(box.native.process, "getSessionCommand").mockImplementation(async (session, command) => {
+    const result = await status(session, command);
+    emit("O:Y\n"); finish(); await new Promise(resolve => setTimeout(resolve, 0));
+    return { ...result, exitCode: 0 };
+  });
+  await expect(box.run("sleep .2")).rejects.toMatchObject({ code: "provider" });
 });

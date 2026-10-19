@@ -4,6 +4,21 @@ import { daytonaError } from "./errors.js";
 import { SandboxError } from "../../errors.js";
 
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+// Session logs are line-normalized by the native transport. Encode each pipe
+// chunk so terminal newlines and byte boundaries survive that normalization.
+const outputBridge = `import base64,os,selectors,subprocess,sys
+p=subprocess.Popen(["sh","-c",sys.argv[1]],stdin=open(sys.argv[2],"rb"),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+s=selectors.DefaultSelector()
+s.register(p.stdout,selectors.EVENT_READ,"O")
+s.register(p.stderr,selectors.EVENT_READ,"E")
+while s.get_map():
+ for key,_ in s.select():
+  data=os.read(key.fileobj.fileno(),4096)
+  if data: print(key.data+":"+base64.b64encode(data).decode(),flush=True)
+  else: s.unregister(key.fileobj)
+code=p.wait()
+sys.exit(code if code>=0 else 128-code)
+`;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 /** Each call has a new session and process group. Stdin comes from a private file
@@ -39,13 +54,33 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     if (cancelled) { await cleanup(); return { pid: 0, wait: async () => ({ exitCode: null, signal: "SIGKILL" }), stop: async () => {}, detach() {} }; }
     await box.process.createSession(session); created = true;
     const env = Object.entries(input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
-    const script = `umask 077; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} sh -c ${quote(input.command)} < ${quote(`${dir}/stdin`)}`;
+    const script = `umask 077; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(`${dir}/stdin`)}`;
     const response = await box.process.executeSessionCommand(session, { command: `setsid --wait sh -c ${quote(script)}`, runAsync: true, suppressInputEcho: true });
     commandId = response.cmdId;
     if (!commandId) throw new SandboxError("Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
     // Observe both promises immediately: stream failures must not become unhandled.
-    const logs = persistent ? Promise.resolve() : box.process.getSessionCommandLogs(session, commandId, text => { if (!finished) input.onChunk({ stream: "stdout", text }); }, text => { if (!finished) input.onChunk({ stream: "stderr", text }); });
-    let logsFinished = false; let logsError: unknown;
+    let pending = ""; let logsError: unknown;
+    const decoders = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
+    const readFrames = (text: string) => {
+      pending += text;
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, newline).replace(/\r$/, ""); pending = pending.slice(newline + 1);
+        if (!line) continue;
+        const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
+        if (!frame || line.length > 5466 || Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]) throw new SandboxError("Session output is malformed. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
+        const stream = frame[1] === "O" ? "stdout" : "stderr";
+        const decoded = decoders[stream].decode(Buffer.from(frame[2] ?? "", "base64"), { stream: true });
+        if (!finished && decoded) input.onChunk({ stream, text: decoded });
+      }
+      if (pending.length > 5466) throw new SandboxError("Session output frame is too large. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
+    };
+    const acceptFrames = (text: string) => { try { if (logsError === undefined) readFrames(text); } catch (error) { logsError = error; } };
+    const logs = persistent ? Promise.resolve() : box.process.getSessionCommandLogs(session, commandId, acceptFrames, text => { if (!finished) input.onChunk({ stream: "stderr", text }); }).then(() => {
+      if (pending.trim()) throw new SandboxError("Session output is incomplete. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
+      for (const stream of ["stdout", "stderr"] as const) { const text = decoders[stream].decode(); if (!finished && text) input.onChunk({ stream, text }); }
+    });
+    let logsFinished = false;
     void logs.then(() => { logsFinished = true; }, error => { logsError = error; logsFinished = true; });
     const started = Date.now();
     while (pid === undefined) {
@@ -78,6 +113,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
             if (daytonaError(error).code === "not_found") return { exitCode: 137, signal: "SIGKILL" };
             await sleep(1000); continue;
           }
+          if (logsError !== undefined && !cancelled) throw logsError;
           if (status.exitCode !== undefined) {
             if (cancelled) cancelDrainStarted ??= Date.now();
             if (logsFinished || (cancelDrainStarted !== undefined && Date.now() - cancelDrainStarted >= 1000)) {

@@ -31,6 +31,8 @@ The organization must have a default region configured in the Daytona Dashboard 
 
 ## Configuration
 
+Creation makes `/workspace` writable by the guest user. The default snapshot needs passwordless `sudo -n` for this one-time directory setup. Creation fails if the workspace remains unwritable.
+
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";

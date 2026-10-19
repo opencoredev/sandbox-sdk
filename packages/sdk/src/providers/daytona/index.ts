@@ -50,6 +50,7 @@ function fileInfo(path: string, file: NativeFile): FileInfo {
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   let client: Promise<Daytona> | undefined;
   const boxes = new Map<string, DaytonaSandbox>();
+  const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
   async function api() {
     return client ??= (async () => {
@@ -87,14 +88,23 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           if (allocation.disk < value.disk) unsupported("Snapshot disk cannot shrink; choose diskGb at least as large as the snapshot");
           await value.stop(); await value.resize(allocation); await value.start();
         }
-        await value.fs.createFolder("/workspace", "755");
+        const workspace = await value.process.executeCommand(
+          'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace',
+          "/", undefined, 10,
+        );
+        if (workspace.exitCode !== 0) throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use a Daytona runtime with sudo -n access.", { code: "provider", provider: "daytona", sandboxId: value.id });
         return info(value);
-      } catch (error) { await value.delete(); boxes.delete(value.id); throw error; }
+      } catch (error) { await value.delete(60, true); boxes.delete(value.id); throw error; }
     }); },
     async list(labels: Labels) { return safe(async () => { const values: SandboxInfo[] = []; for await (const value of (await api()).list({ labels: { ...labels, ...sdkLabel } })) { if (Object.entries({ ...labels, ...sdkLabel }).every(([key, expected]) => value.labels[key] === expected)) { boxes.set(value.id, value); values.push(info(value)); } } return values; }); },
     async find(key) { return (await provider.list({ [keyLabel]: key }))[0]; },
     async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id); },
-    async destroy(id) { return safe(async () => { try { await (await box(id)).delete(); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); } }, id); },
+    async destroy(id) {
+      const existing = deletions.get(id); if (existing) return existing;
+      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); } }, id);
+      deletions.set(id, deletion);
+      try { await deletion; } finally { deletions.delete(id); }
+    },
     exec: (id, input) => safe(async () => execute(await box(id), input), id),
     startProcess: (id, input) => safe(async () => {
       const hook = await sessionProcess(await box(id), input);

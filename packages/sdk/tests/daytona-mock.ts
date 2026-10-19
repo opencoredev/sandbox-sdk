@@ -35,7 +35,7 @@ export class MockSandbox {
     mockState.boxes.set(box.id, box); return box;
   }
   private mapped = (path: string) => join(this.root, path);
-  private rewrite = (text: string) => text.replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, path => this.mapped(path)).replace(/\.listen\(3000/g, `.listen(${this.port}`);
+  private rewrite = (text: string) => text.replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b""))`).replace(/sudo -n install/g, "install").replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, path => this.mapped(path)).replace(/\.listen\(3000/g, `.listen(${this.port}`);
   private file = async (path: string) => {
     try { const s = await fs.lstat(this.mapped(path)); return { name: posix.basename(path), isDir: s.isDirectory(), size: s.size, modTime: s.mtime.toISOString(), modifiedAt: s.mtime.toISOString(), group: "test", owner: "test", permissions: "644", mode: s.isSymbolicLink() ? "Lrwxrwxrwx" : "-rw-r--r--" }; }
     catch { throw missing(); }
@@ -77,7 +77,7 @@ export class MockSandbox {
   async stop() { this.state = "stopped"; }
   async start() { this.state = "started"; }
   async resize(resources: { cpu?: number; memory?: number; disk?: number }) { Object.assign(this, resources); }
-  async delete() { if (!mockState.boxes.has(this.id)) throw missing(); mockState.boxes.delete(this.id); await fs.rm(this.root, { recursive: true, force: true }); }
+  async delete(_timeout = 60, _wait = false) { if (!mockState.boxes.has(this.id)) throw missing(); mockState.boxes.delete(this.id); await fs.rm(this.root, { recursive: true, force: true }); }
   async createSnapshot(name: string) { const root = await fs.mkdtemp(join(tmpdir(), "sdk-daytona-snapshot-")); await fs.cp(this.root, root, { recursive: true }); mockState.snapshots.set(name, root); }
   async getPreviewLink(port: number) { return { url: `http://127.0.0.1:${this.port}/?port=${port}`, token: "mock-preview-token" }; }
 }
