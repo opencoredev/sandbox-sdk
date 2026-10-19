@@ -2,13 +2,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { snapshotCleaner, snapshotsFromDaytonaSandbox } from "./snapshots.js";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseV2 } from "./v2-config.js";
 import { loadProvider } from "./providers.js";
 import { runV2, sanitize } from "./v2-runner.js";
 import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
 import { deadline } from "./timing.js";
-async function main() {
+export async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--v1")) {
     process.argv = process.argv.filter((v) => v !== "--v1");
@@ -158,7 +159,7 @@ async function main() {
   )
     process.exitCode = 1;
 }
-main().catch((error) => {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((error) => {
   process.stderr.write(
     sanitize(error instanceof Error ? error.message : "Benchmark failed") + "\n",
   );

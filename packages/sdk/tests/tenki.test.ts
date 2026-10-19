@@ -371,3 +371,14 @@ test("transition budgets reject unbounded values before allocation", async () =>
     await expect(createSandbox(tenki({ authToken: "key", waitTimeoutMs: value }))).rejects.toMatchObject({ code: "invalid_argument" });
   }
 });
+
+
+test("Tenki listing skips SDK entries with missing creation metadata", async () => {
+  const box = await createSandbox(factory());
+  const native = tenkiState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock session");
+  for (const key of Object.keys(native.metadata)) if (key !== "sandbox-sdk") delete native.metadata[key];
+  expect(await factory().list({})).toEqual([]);
+  vi.spyOn(MockTenki.prototype, "list").mockRejectedValue(Object.assign(new Error("denied"), { name: "UnauthorizedError" }));
+  await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
+});

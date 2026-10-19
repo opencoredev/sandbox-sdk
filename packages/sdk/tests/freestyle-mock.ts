@@ -13,6 +13,7 @@ export const freestyleState = {
   snapshots: new Map<string, string>(),
   rules: [] as CreateTlsRuleOptions[],
   error: 0,
+  listError: 0,
   widen: false,
   delay: 0,
   peak: 0,
@@ -116,6 +117,7 @@ export class MockFreestyle {
     ref: (id: string) => this.get(id),
     get: async (id: string) => this.get(id).record,
     list: async (options?: { limit?: number; offset?: number }) => {
+      if (freestyleState.listError) throw error(freestyleState.listError);
       const vms = [...freestyleState.boxes.values()].map((v) => v.record);
       return {
         vms: vms.slice(options?.offset ?? 0, (options?.offset ?? 0) + (options?.limit ?? 100)),

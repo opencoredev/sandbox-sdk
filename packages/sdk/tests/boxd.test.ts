@@ -328,3 +328,22 @@ test("large binary reads avoid the truncated native download stream", async () =
     expect(exec).toHaveBeenCalledTimes(1);
   } finally { vi.restoreAllMocks(); await box.destroy(); }
 });
+
+
+test("boxd listing skips corrupt or vanished per-machine metadata and preserves auth failures", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const entry = boxdState.boxes.get(box.id);
+    if (!entry) throw new Error("Missing mock machine");
+    const read = vi.spyOn(entry.guest, "read");
+    for (const body of ["{", JSON.stringify({ key: null, labels: { bad: 2 }, createdAt: 1 })]) {
+      read.mockResolvedValue(Buffer.from(body));
+      expect(await factory().list({})).toEqual([]);
+    }
+    read.mockRejectedValue(Object.assign(new Error("gone"), { grpcCode: 5 }));
+    expect(await factory().list({})).toEqual([]);
+    read.mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 16 }));
+    await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
+    read.mockRestore();
+  } finally { await box.destroy(); }
+});
