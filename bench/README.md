@@ -17,6 +17,24 @@ Output paths are relative to `bench/` through the root alias. Each output direct
 
 Use the same SDK commit and harness commit for every provider in a published comparison. Merge SBX-44 before the real run. The pilot exercises the current SDK and is not publication evidence for the SDK after that merge.
 
+## Merge collected results offline
+
+Run `bun bench merge` from the repository root to build `bench/results/publication-final/` from the seven collected publication runs. It writes `results.json`, `samples.ndjson`, `results.md`, and a self-contained `index.html`. The merge does not call providers or collect new data. Generated publication datasets remain local under the existing results ignore rule.
+
+For other v2 runs, pass result directories explicitly. Paths are relative to `bench/`:
+
+```sh
+bun bench merge results/run-a results/run-b --out results/merged --seed 45
+```
+
+`--exclude run-id` can be repeated. The aborted `publication-001` is always excluded. Duplicate run IDs, invalid schemas, different JSON/NDJSON samples, and an output path equal to an input are rejected. Existing output files with these four names are replaced.
+
+The merged schema is `publication-merge-v1`, documented in `results.json.schema` and the report. Every included observation remains, including failures, blocked dependencies and skips. `sourceRunId` and zero-based `sourceSampleIndex` identify its original row. `sourceIteration` preserves the original iteration; `iteration` is reassigned per provider across source runs and burst namespaces. Scenario rows from one sandbox iteration share the new identity. Main, snapshot and burst summaries stay separate.
+
+Distributions and confidence intervals are recomputed from successful samples with the existing statistics code. Raw success rates remain beside rates excluding specifically classified account-limit and client/third-party failures; skips and blocked rows have separate counts. Unknown operation causes remain operation failures. `network-mbps` stays in the data but is labelled not comparable, without a chart or rank. Source commits, flags, regions, seeds, host data, pricing, budget diagnostics and cleanup records remain attached to each source. The default report explicitly discloses the budget-fix top-ups and the discarded run.
+
+Run-cost estimates sum only known `sandbox-lifetime` estimates, which already include restored lifetime. They do not add the overlapping scenario allocations. Missing lifetime costs stay unknown, and the report shows known subtotals plus unpriced counts in native currency. Boxd remains EUR.
+
 ## Collection and budgets
 
 | Flag | Default | Meaning |
