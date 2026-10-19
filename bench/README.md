@@ -103,7 +103,7 @@ Distributions retain all successful raw values and report nearest-rank p50/p95/p
 
 ## Cleanup and recovery
 
-Every created VM carries `sandbox-bench-run=<run ID>` in addition to the SDK label. Creation arrivals are tracked before SDK initialization; late arrivals receive deletion callbacks. Each iteration drains timed-out work before releasing its slot. Destruction runs in `finally` and retries. Snapshot deletion uses narrow provider-native hooks because the SDK has no common snapshot-delete method. Daytona snapshot creation uses its native nameable method: the harness journals a run-owned name before calling it, because the SDK wrapper otherwise loses its generated name on timeout. This path difference is disclosed in report methodology. Only IDs created by this run are journaled. Final cleanup checks both the run label and ownership journal, including snapshots.
+Every created VM carries `sandbox-bench-run=<run ID>` in addition to the SDK label. Creation arrivals are tracked before SDK initialization; late arrivals receive deletion callbacks. Each iteration drains timed-out work before releasing its slot. Destruction runs in `finally` and retries. Snapshot deletion uses narrow provider-native hooks because the SDK has no common snapshot-delete method. Daytona snapshot creation uses its native nameable method: the harness journals a run-owned name before calling it, because the SDK wrapper otherwise loses its generated name on timeout. This path difference is disclosed in report methodology. Only IDs created by this run are journaled. Final cleanup checks both the run label and ownership journal, including snapshots. Daytona source markers remain in the journal until the VM disappears and an exact-source snapshot query is empty; this catches snapshots that materialize after an earlier delete returned. Reap retries only these recorded sources.
 
 ```sh
 bun bench reap --run pilot-001 --out results/pilot-001
@@ -127,3 +127,5 @@ bun run --cwd packages/sdk build
 ```
 
 Tests are offline. They exercise real memory-provider cleanup, scheduling limits, seeded order, percentile/bootstrap/Wilson arithmetic, cost conversion and rounding, and fingerprint boundary validation.
+
+See [the validation pilot](PILOT.md) for observed failures, cost projections, and verification limits.

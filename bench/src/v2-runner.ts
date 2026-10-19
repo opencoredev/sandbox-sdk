@@ -13,7 +13,7 @@ import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
-import { snapshotCleaner, createNamedDaytonaSnapshot } from "./snapshots.js";
+import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromDaytonaSandbox } from "./snapshots.js";
 export const scenarioNames = [
   "command",
   "files-1kb",
@@ -186,7 +186,7 @@ export async function runV2(
   const unsafeProviders = new Set<string>();
   const owned = new Map<
     string,
-    { provider: string; id: string; kind: "sandbox" | "snapshot"; parent: string | null }
+    { provider: string; id: string; kind: "sandbox" | "snapshot" | "snapshot-source"; parent: string | null }
   >();
   let journal = Promise.resolve();
   function persist() {
@@ -524,6 +524,9 @@ export async function runV2(
               throw new Skip("Provider has no snapshot");
             clean = await snapshotCleaner(p.name, p.provider, active.id);
             if (p.name === "daytona") {
+              owned.set(`${p.name}/snapshot-source/${active.id}`, {
+                provider: p.name, id: active.id, kind: "snapshot-source", parent: null,
+              });
               snapshotId = `bench-${config.run.slice(0, 25)}-${crypto.randomUUID().slice(0, 8)}`;
               owned.set(`${p.name}/snapshot/${snapshotId}`, {
                 provider: p.name,
@@ -877,6 +880,20 @@ export async function runV2(
       for (const item of after)
         if (item.labels["sandbox-bench-run"] === config.run) remaining.add(item.id);
     } catch (e) { errors.push(errorNote(e)); }
+    // A timed-out Daytona snapshot can appear after its initial deletion returned.
+    // Retain the source marker until the VM is gone, then query only that owned source.
+    for (const item of [...owned.values()].filter((v) => v.provider === p.name && v.kind === "snapshot-source")) {
+      if (remaining.has(item.id) || errors.length) continue;
+      try {
+        for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(item.id))) {
+          const clean = await snapshotCleaner(p.name, p.provider, item.id);
+          await deadline(config["timeout-ms"], () => clean(snapshot.id));
+        }
+        if ((await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(item.id))).length) throw new Error("Source snapshots are still deleting");
+        owned.delete(`${p.name}/snapshot-source/${item.id}`);
+        await persist();
+      } catch (e) { errors.push(errorNote(e)); }
+    }
     for (const item of owned.values()) if (item.provider === p.name) remaining.add(item.id);
     if (remaining.size) errors.push("Ownership journal or listing still contains resources");
     if (unsafeProviders.has(p.name)) errors.push("Pending work did not settle; late creations remain possible");

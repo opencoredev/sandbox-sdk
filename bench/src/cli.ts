@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { snapshotCleaner } from "./snapshots.js";
+import { snapshotCleaner, snapshotsFromDaytonaSandbox } from "./snapshots.js";
 import { resolve } from "node:path";
 import { parseV2 } from "./v2-config.js";
 import { loadProvider } from "./providers.js";
@@ -43,7 +43,7 @@ async function main() {
         z.object({
           provider: z.string(),
           id: z.string(),
-          kind: z.enum(["sandbox", "snapshot"]),
+          kind: z.enum(["sandbox", "snapshot", "snapshot-source"]),
           parent: z.string().nullable(),
         }),
       ),
@@ -112,6 +112,20 @@ async function main() {
           }
           return result;
         });
+        for (const resource of journal?.resources ?? []) {
+          if (resource.provider !== p.name || resource.kind !== "snapshot-source") continue;
+          // An empty listing does not prove deletion when a journal-owned VM failed to delete.
+          if (errors.length || journal?.resources.some((v) =>
+            v.provider === p.name && v.kind === "sandbox" && v.id === resource.id)) continue;
+          await attempt(async () => {
+            for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(resource.id))) {
+              const clean = await snapshotCleaner(p.name, p.provider, resource.id);
+              await deadline(config["timeout-ms"], () => clean(snapshot.id));
+            }
+            if ((await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(resource.id))).length) throw new Error("Source snapshots are still deleting; retry reap");
+            if (journal) journal.resources = journal.resources.filter((v) => v !== resource);
+          });
+        }
         if (journal) {
           await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
         }

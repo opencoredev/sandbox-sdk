@@ -1,4 +1,4 @@
-import { it, expect } from "vitest";
+import { it, expect, vi } from "vitest";
 import { parseV2 } from "../src/v2-config.js";
 
 it("runs the actual v2 memory consumer, stops at its creation budget, and preserves unrelated resources", async () => {
@@ -128,4 +128,41 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
     expect(report.cleanup[0]?.remaining).toEqual(["owned-snapshot"]);
     expect(report.cleanup[0]?.error).toContain("snapshot deletion unavailable");
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+it("reaps snapshots that materialize after an earlier delete returns", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const snapshots = await import("../src/snapshots.js");
+  const { mkdtemp, rm, readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve("results-test-"));
+  const backing = memory();
+  const deleted: string[] = [];
+  let queries = 0;
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async (id) => { deleted.push(id); });
+  vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
+  vi.spyOn(snapshots, "snapshotsFromDaytonaSandbox").mockImplementation(async () => {
+    expect(await backing.list({})).toHaveLength(0);
+    return ++queries === 1 ? [{ id: "late-snapshot", name: "late-snapshot" }] : [];
+  });
+  const provider = { ...backing,
+    capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
+    snapshot: async () => ({ id: "unused" }),
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "daytona", cloud: false, region: null, provider }],
+      parseV2(["--providers", "daytona", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
+      async () => {},
+    );
+    expect(deleted).toContain("late-snapshot");
+    expect(queries).toBe(2);
+    expect(report.cleanup).toEqual([{ provider: "daytona", remaining: [], error: null }]);
+    expect(JSON.parse(await readFile(resolve(directory, "ownership.json"), "utf8")).resources).toEqual([]);
+  } finally {
+    vi.restoreAllMocks();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
