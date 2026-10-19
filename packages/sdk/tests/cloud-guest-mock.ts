@@ -9,6 +9,8 @@ import { vi } from "vitest";
 const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
 const exec = promisify(execFile);
 export class MockGuest {
+  cancelGraceMs = 0;
+  cancelWithoutTermination = false;
   readonly id = crypto.randomUUID();
   readonly commands: string[] = [];
   readonly inputs: string[] = [];
@@ -59,7 +61,17 @@ export class MockGuest {
       cancel: () => {
         if (child?.pid) {
           try {
-            process.kill(-child.pid, "SIGKILL");
+            if (this.cancelWithoutTermination) {
+              stream._setError(new Error("RPC cancelled before remote termination"));
+            } else if (this.cancelGraceMs) {
+              const pid = child.pid;
+              process.kill(-pid, "SIGTERM");
+              setTimeout(() => {
+                try {
+                  process.kill(-pid, "SIGKILL");
+                } catch {}
+              }, this.cancelGraceMs);
+            } else process.kill(-child.pid, "SIGKILL");
           } catch {}
         }
       },

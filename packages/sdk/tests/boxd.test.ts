@@ -112,7 +112,7 @@ test("plain BoxdError local exec deadline maps to timeout without native details
   );
 });
 
-test("cancellation settles even if native connection setup never settles its stream", async () => {
+test("unconfirmed native cancellation is bounded and reports uncertainty", async () => {
   const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
   const native = box.native.client;
@@ -128,12 +128,108 @@ test("cancellation settles even if native connection setup never settles its str
   const spy = vi.spyOn(native.machines, "streamExec").mockReturnValueOnce(stream);
   try {
     const start = Date.now();
-    expect(await box.run("true", { timeoutMs: 20 })).toMatchObject({ timedOut: true });
-    expect(Date.now() - start).toBeLessThan(500);
+    await expect(box.run("true", { timeoutMs: 20 })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(Date.now() - start).toBeLessThan(2000);
     expect(cancelled).toBe(true);
     expect(boxdState.boxes.has(box.id)).toBe(true);
   } finally {
     spy.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("cancellation waits for the native terminal event", async () => {
+  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
+  const box = await createSandbox(factory());
+  let terminated = false;
+  const stream = new ExecStream({
+    write() {},
+    end() {},
+    resize() {},
+    cancel() {
+      setTimeout(() => {
+        terminated = true;
+        stream._setExit(137);
+      }, 100);
+    },
+  });
+  const spy = vi.spyOn(box.native.client.machines, "streamExec").mockReturnValueOnce(stream);
+  try {
+    expect(await box.run("true", { timeoutMs: 20 })).toMatchObject({ timedOut: true });
+    expect(terminated).toBe(true);
+  } finally {
+    spy.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("stdout and stderr preserve native wire arrival order", async () => {
+  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
+  const box = await createSandbox(factory());
+  const stream = new ExecStream({
+    write() {},
+    resize() {},
+    cancel() {},
+    end() {
+      queueMicrotask(() => {
+        stream.stdout.push(Buffer.from("A"));
+        stream.stdout.push(Buffer.from("B"));
+        stream.stderr.push(Buffer.from("C"));
+        stream.stdout.close();
+        stream.stderr.close();
+        stream._setExit(0);
+      });
+    },
+  });
+  const spy = vi.spyOn(box.native.client.machines, "streamExec").mockReturnValueOnce(stream);
+  try {
+    const chunks: string[] = [];
+    for await (const chunk of box.run("true")) chunks.push(chunk.text);
+    expect(chunks).toEqual(["A", "B", "C"]);
+  } finally {
+    spy.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("cancellation waits through native TERM grace and escalates transport-only cancellation", async () => {
+  for (const unconfirmed of [false, true]) {
+    const box = await createSandbox(factory());
+    const native = boxdState.boxes.get(box.id);
+    if (!native) throw new Error("Missing mock VM");
+    native.guest.cancelGraceMs = 200;
+    native.guest.cancelWithoutTermination = unconfirmed;
+    try {
+      const start = Date.now();
+      expect(
+        await box.run("trap '' TERM; (sleep 2; echo leaked > later) & wait", { timeoutMs: 100 }),
+      ).toMatchObject({ timedOut: true });
+      expect(Date.now() - start).toBeGreaterThan(unconfirmed ? 1000 : 250);
+      expect((await box.run("test ! -e later && echo clean")).stdout).toBe("clean\n");
+    } finally {
+      await box.destroy();
+    }
+  }
+});
+
+test("cleanup failure preserves unconfirmed cancellation", async () => {
+  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
+  const box = await createSandbox(factory());
+  const stream = new ExecStream({ write() {}, end() {}, resize() {}, cancel() {} });
+  const native = box.native.client;
+  const streaming = vi.spyOn(native.machines, "streamExec").mockReturnValueOnce(stream);
+  const exec = vi
+    .spyOn(native.machines, "exec")
+    .mockRejectedValue(new Error("cleanup transport failure"));
+  try {
+    await expect(box.run("true", { timeoutMs: 20 })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+  } finally {
+    streaming.mockRestore();
+    exec.mockRestore();
     await box.destroy();
   }
 });

@@ -1,6 +1,7 @@
-import type { Boxd, ExecStream } from "@boxd-sh/sdk";
-import type { ExecInput, ExecResult, OutputChunk } from "../../provider.js";
+import type { Boxd } from "@boxd-sh/sdk";
+import type { ExecInput, ExecResult } from "../../provider.js";
 import { python, quote } from "./guest.js";
+import { failure } from "./errors.js";
 
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
@@ -8,7 +9,9 @@ import { python, quote } from "./guest.js";
 const launcher = `import sys,json,os,subprocess,tempfile
 v=json.load(sys.stdin)
 a=v.get('activityPath')
+m=v['pidPath']
 try:
+ with open(m,'w') as f: f.write(str(os.getpgrp()))
  if a:
   os.makedirs(os.path.dirname(a),exist_ok=True)
   with open(a,'w') as f: f.write('1')
@@ -20,26 +23,40 @@ try:
   code=p.wait()
   sys.exit(code if code>=0 else 128-code)
 finally:
+ try: os.unlink(m)
+ except FileNotFoundError: pass
  if a:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
 export async function execute(client: Boxd, id: string, input: ExecInput): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
+  const pidPath = `/tmp/sandbox-sdk-${crypto.randomUUID()}.pid`;
   const stream = client.machines.streamExec(id, { command: python(launcher) });
   let cancelled = false;
   let interrupted = false;
+  const completion = stream.wait().then(
+    (exitCode) => ({ kind: "exit", exitCode }) as const,
+    (error: unknown) => ({ kind: "error", error }) as const,
+  );
+  // The SDK pushes each wire frame synchronously into one of these public
+  // queues. Consume at that boundary rather than scheduling two independent
+  // iterators, which loses inter-stream ordering and buffers unbounded output.
+  const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+  for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
+    stream[name].push = (bytes) => {
+      const text = decoders[name].decode(bytes, { stream: true });
+      if (text) input.onChunk({ stream: name, text });
+    };
+  }
   let settleCancellation = () => {};
-  const stopped = new Promise<ExecResult>((resolve) => {
-    settleCancellation = () => resolve({ exitCode: null, timedOut: true });
+  const stopped = new Promise<void>((resolve) => {
+    settleCancellation = resolve;
   });
   const cancel = () => {
+    if (cancelled) return;
     cancelled = true;
     stream.close();
-    // 0.2.17 may never settle wait()/queues when cancelled before credentials
-    // resolve. Native close still prevents launch; settle independently.
-    stream.stdout.close();
-    stream.stderr.close();
     settleCancellation();
   };
   const timer = setTimeout(cancel, input.timeoutMs);
@@ -47,6 +64,7 @@ export async function execute(client: Boxd, id: string, input: ExecInput): Promi
   try {
     stream.write(
       JSON.stringify({
+        pidPath,
         command: input.command,
         cwd: input.cwd,
         env: input.env,
@@ -55,39 +73,83 @@ export async function execute(client: Boxd, id: string, input: ExecInput): Promi
       }),
     );
     stream.end();
-    return await Promise.race([
-      Promise.all([
-        stream.wait(),
-        drain(stream.stdout, "stdout", input.onChunk),
-        drain(stream.stderr, "stderr", input.onChunk),
-      ]).then(([exitCode]) => ({ exitCode: cancelled ? null : exitCode, timedOut: cancelled })),
-      stopped,
+    const outcome = await Promise.race([
+      completion,
+      stopped.then(() => ({ kind: "cancel" }) as const),
     ]);
+    if (cancelled) {
+      // close() only requests TERM/KILL. An RPC error is not an exit ack.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const confirmed = await Promise.race([
+        completion.then((value) =>
+          value.kind === "exit" && value.exitCode >= 0 ? true : new Promise<boolean>(() => {}),
+        ),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), 1000);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!confirmed) {
+        // A transport cancellation error is not a process exit. Escalate only
+        // the positively identified group, never delete an unrelated VM.
+        const result = await client.machines.exec(id, {
+          command: python(
+            `import os,sys,signal,time
+p=sys.argv[1]
+try:
+ with open(p) as f: pgid=int(f.read())
+except FileNotFoundError: sys.exit(1)
+try: os.killpg(pgid,signal.SIGKILL)
+except ProcessLookupError: pass
+end=time.monotonic()+2
+while time.monotonic()<end:
+ alive=False
+ for name in os.listdir('/proc'):
+  if not name.isdigit(): continue
+  try:
+   with open('/proc/'+name+'/stat') as f: fields=f.read().rsplit(')',1)[1].split()
+   if int(fields[2])==pgid and fields[0]!='Z': alive=True
+  except (FileNotFoundError,ProcessLookupError): pass
+ if not alive:
+  os.unlink(p); print('confirmed'); sys.exit(0)
+ time.sleep(.01)
+sys.exit(1)`,
+            pidPath,
+          ),
+          timeout: 5000,
+        });
+        if (result.exitCode !== 0 || result.stdout.trim() !== "confirmed")
+          throw failure("Process termination could not be confirmed", "outcome_unknown", id);
+      }
+    } else if (outcome.kind === "error") {
+      throw outcome.error;
+    }
+    for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
+      const text = decoders[name].decode();
+      if (text) input.onChunk({ stream: name, text });
+    }
+    return {
+      exitCode: cancelled ? null : outcome.kind === "exit" ? outcome.exitCode : null,
+      timedOut: cancelled,
+    };
   } catch (error) {
-    if (cancelled) return { exitCode: null, timedOut: true };
     interrupted = true;
+    if (cancelled)
+      throw failure("Process termination could not be confirmed", "outcome_unknown", id);
     stream.close();
     throw error;
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
     if ((cancelled || interrupted) && input.activityPath)
-      await client.machines.exec(id, {
-        command: `rm -f -- ${quote(input.activityPath)}`,
-        timeout: 5000,
-      });
+      await client.machines
+        .exec(id, {
+          command: `rm -f -- ${quote(input.activityPath)} ${quote(pidPath)}`,
+          timeout: 5000,
+        })
+        .catch((error: unknown) => {
+          // Preserve the primary execution/termination failure during cleanup.
+          if (!interrupted) throw error;
+        });
   }
-}
-async function drain(
-  bytes: ExecStream["stdout"],
-  stream: OutputChunk["stream"],
-  emit: ExecInput["onChunk"],
-) {
-  const decoder = new TextDecoder();
-  for await (const chunk of bytes) {
-    const text = decoder.decode(chunk, { stream: true });
-    if (text) emit({ stream, text });
-  }
-  const text = decoder.decode();
-  if (text) emit({ stream, text });
 }

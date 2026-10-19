@@ -46,14 +46,23 @@ export function cloudRegressions(
       const native = guest(box.id);
       if (!native) throw new Error("Missing mock guest");
       const data = Uint8Array.from({ length: 1024 * 1024 }, (_, i) => i % 251);
-      const calls = () => native.commands.length + native.uploads.length + native.reads.length;
+      const calls = () => ({
+        exec: native.commands.length,
+        upload: native.uploads.length,
+        read: native.reads.length,
+      });
       try {
         await box.files.write("large.bin", data);
         const before = calls();
         expect(
           Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data)),
         ).toBe(true);
-        expect(calls() - before).toBe(1);
+        const after = calls();
+        expect({
+          exec: after.exec - before.exec,
+          upload: after.upload - before.upload,
+          read: after.read - before.read,
+        }).toEqual({ exec: 0, upload: 0, read: 1 });
       } finally {
         await box.destroy();
       }

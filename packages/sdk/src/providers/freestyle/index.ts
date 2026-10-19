@@ -14,7 +14,7 @@ export interface FreestyleOptions {
   baseUrl?: string;
   /** Base snapshot ID or slug. Defaults to freestyle/ubuntu. */
   snapshotId?: string;
-  /** Overall deadline for each native operation, including background polls. Default 30 s. */
+  /** Overall deadline for control/file operations, including background polls. Default 30 s. Commands use their run timeout. */
   requestTimeoutMs?: number;
 }
 export type FreestyleProvider = Provider<Vm, "pause" | "snapshot" | "network-policy">;
@@ -41,6 +41,7 @@ function rules(input: CreateInput): InlineFirewallRule[] {
 export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
   const boxes = new Map<string, Vm>();
+  const installations = new Map<string, Promise<void>>();
   const previews = new Map<string, string>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30000;
   async function api() {
@@ -80,9 +81,10 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     id: string | undefined,
     action: () => Promise<T>,
     signal?: AbortSignal,
+    timeoutMs = requestTimeoutMs,
   ): Promise<T> {
     try {
-      return await deadline(action, requestTimeoutMs, signal ?? operationSignal.getStore());
+      return await deadline(action, timeoutMs, signal ?? operationSignal.getStore());
     } catch (error) {
       throw freestyleError(error, id);
     }
@@ -277,15 +279,37 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     connect: (id) =>
       safe(id, async () => {
         const data = await (await api()).vms.get(id);
-        // Immutable versioned helper: install only if absent on reconnect.
-        const g = await guest(id);
-        await g.raw(
-          python(
-            "import os,sys; p=sys.argv[1]; os.path.exists(p) or open(p,'x').write(sys.argv[2])",
-            supervisorPath,
-            supervisor,
-          ),
-        );
+        // One promise per sandbox in this client; atomic replace also handles
+        // independent clients reconnecting to the same older sandbox.
+        let installation = installations.get(id);
+        if (!installation) {
+          installation = (async () => {
+            const g = await guest(id);
+            await g.raw(
+              python(
+                `import os,sys,tempfile
+p,content=sys.argv[1:]
+try:
+ with open(p) as f: current=f.read()
+except FileNotFoundError: current=None
+if current!=content:
+ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(p))
+ try:
+  with os.fdopen(fd,'w') as f: f.write(content)
+  os.replace(tmp,p)
+ finally:
+  if os.path.exists(tmp): os.unlink(tmp)`,
+                supervisorPath,
+                supervisor,
+              ),
+            );
+          })();
+          installations.set(id, installation);
+          installation.catch(() => {
+            if (installations.get(id) === installation) installations.delete(id);
+          });
+        }
+        await installation;
         return info(data);
       }),
     destroy: (id) =>
@@ -296,6 +320,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
           if (freestyleError(error).code !== "not_found") throw error;
         }
         boxes.delete(id);
+        installations.delete(id);
         for (const key of previews.keys()) if (key.startsWith(id + ":")) previews.delete(key);
       }),
     async close(id) {
@@ -329,6 +354,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
                   return result.stdout;
                 },
                 signal,
+                timeoutMs,
               ),
           },
           input,

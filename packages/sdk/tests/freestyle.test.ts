@@ -9,6 +9,12 @@ import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 const factory = () => freestyle({ apiKey: "mock-key" });
+vi.stubGlobal(
+  "fetch",
+  vi.fn(() => {
+    throw new Error("Cloud HTTP is forbidden in offline provider tests");
+  }),
+);
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 // Only Linux mock transports are used. The name admits the offline transport
 // through conformance's live:false cloud guard and skips real cloud HTTP/git.
@@ -217,8 +223,8 @@ test("abort during native output paging stops all further reads", async () => {
   });
   try {
     expect(
-      await box.run("head -c 2000000 /dev/zero | tr '\\0' x", { signal: c.signal }),
-    ).toMatchObject({ timedOut: true });
+      await box.run("head -c 2000000 /dev/zero | tr '\\0' x; echo END", { signal: c.signal }),
+    ).toMatchObject({ timedOut: true, stdout: expect.stringContaining("END") });
     expect(spy).toHaveBeenCalledTimes(1);
   } finally {
     spy.mockRestore();
@@ -231,6 +237,7 @@ test("cancelled commands remove large output spools after killing the child grou
   const box = await createSandbox(factory());
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing VM");
+  const existing = new Set(await fs.readdir(native.guest.rewrite("/tmp/.sandbox-sdk")));
   try {
     expect(await box.run("head -c 2000000 /dev/zero; sleep 5", { timeoutMs: 150 })).toMatchObject({
       timedOut: true,
@@ -238,13 +245,190 @@ test("cancelled commands remove large output spools after killing the child grou
     await expect
       .poll(
         async () =>
-          (await fs.readdir(native.guest.rewrite("/tmp/.sandbox-sdk"))).filter((n) =>
-            n.startsWith("run-"),
+          (await fs.readdir(native.guest.rewrite("/tmp/.sandbox-sdk"))).filter(
+            (n) => n.startsWith("run-") && !existing.has(n),
           ).length,
         { timeout: 500 },
       )
       .toBe(0);
   } finally {
+    await box.destroy();
+  }
+});
+
+test("run deadline can exceed the native request deadline", async () => {
+  const box = await createSandbox(factory());
+  const provider = freestyle({ apiKey: "mock-key", requestTimeoutMs: 100 });
+  try {
+    const chunks: string[] = [];
+    expect(
+      await provider.exec(box.id, {
+        command: "sleep .3; echo done",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 2000,
+        onChunk: (c) => chunks.push(c.text),
+      }),
+    ).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(chunks.join("")).toBe("done\n");
+  } finally {
+    await box.destroy();
+  }
+});
+
+for (const kind of ["timeout", "abort"] as const)
+  test(`${kind} recovers captured buffered output in one cancellation call`, async () => {
+    const box = await createSandbox(factory());
+    const native = freestyleState.boxes.get(box.id);
+    if (!native) throw new Error("Missing mock VM");
+    const controller = new AbortController();
+    const before = native.guest.commands.length;
+    const reads = native.guest.reads.length;
+    try {
+      const pending = Promise.resolve(
+        box.run("echo captured; echo diagnostic >&2; sleep 5", {
+          timeoutMs: kind === "timeout" ? 300 : 5000,
+          signal: controller.signal,
+        }),
+      );
+      if (kind === "abort") setTimeout(() => controller.abort(), 300);
+      expect(await pending).toMatchObject({
+        timedOut: true,
+        stdout: "captured\n",
+        stderr: "diagnostic\n",
+      });
+      expect(native.guest.commands.length - before).toBe(2);
+      expect(native.guest.reads.length - reads).toBe(0);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+test("concurrent reconnects dedupe helper installation and converge across clients", async () => {
+  const { promises: fs } = await import("node:fs");
+  const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  try {
+    await fs.rm(native.guest.rewrite(supervisorPath));
+    const provider = factory();
+    const before = native.guest.commands.length;
+    await Promise.all(Array.from({ length: 8 }, () => provider.connect(box.id)));
+    expect(native.guest.commands.length - before).toBe(1);
+    await fs.rm(native.guest.rewrite(supervisorPath));
+    const clients = Array.from({ length: 8 }, () => factory());
+    // Warm the mocked dynamic import serially: Vitest can expose importActual
+    // while its async mock factory is resolving concurrent imports.
+    for (const client of clients) await client.list({});
+    await Promise.all(clients.map((client) => client.connect(box.id)));
+    expect((await box.run("echo ready")).stdout).toBe("ready\n");
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("cancellation recovers a bounded tail and applies public output caps", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const before = native.guest.commands.length;
+  freestyleState.peak = 0;
+  try {
+    const result = await box.run(
+      "head -c 2000000 /dev/zero | tr '\\0' x; echo TAIL; echo ERROR >&2; sleep 5",
+      { timeoutMs: 300, maxOutputBytes: 128 },
+    );
+    expect(result).toMatchObject({ timedOut: true, truncated: true });
+    expect(result.stdout).toContain("TAIL");
+    expect(result.stderr).toContain("ERROR");
+    expect(native.guest.commands.length - before).toBe(2);
+    expect(freestyleState.peak).toBeLessThan(70000);
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("abort after supervisor completion recovers output before response delivery", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const controller = new AbortController();
+  const original = native.exec.bind(native);
+  const spy = vi.spyOn(native, "exec").mockImplementationOnce(async (options) => {
+    await original(options);
+    controller.abort();
+    return new Promise(() => {});
+  });
+  const before = native.guest.commands.length;
+  try {
+    expect(await box.run("echo captured", { signal: controller.signal })).toMatchObject({
+      timedOut: true,
+      stdout: "captured\n",
+    });
+    expect(native.guest.commands.length - before).toBe(2);
+  } finally {
+    spy.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("later commands sweep expired completed response spools without extra RPCs", async () => {
+  const { promises: fs } = await import("node:fs");
+  const { join } = await import("node:path");
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  try {
+    await box.run("echo cached");
+    const parent = native.guest.rewrite("/tmp/.sandbox-sdk");
+    const old = (await fs.readdir(parent)).find((n) => n.startsWith("run-"));
+    if (!old) throw new Error("No recovery spool");
+    await fs.writeFile(join(parent, old, "expires"), "0");
+    const before = native.guest.commands.length;
+    await box.run("true");
+    expect(native.guest.commands.length - before).toBe(1);
+    expect((await fs.readdir(parent)).includes(old)).toBe(false);
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("paging cancellation preserves split UTF-8 characters across recovery", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const controller = new AbortController();
+  const record = (bytes: Uint8Array) => ["stdout", Buffer.from(bytes).toString("base64")];
+  const exec = vi
+    .spyOn(native, "exec")
+    .mockResolvedValueOnce({
+      statusCode: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        result: { exitCode: 0, timedOut: false },
+        chunks: [record(Buffer.from("a")), record(Buffer.from("b")), record(Uint8Array.of(0xe2))],
+        offset: 123,
+        size: 150,
+      }),
+    })
+    .mockResolvedValueOnce({
+      statusCode: 0,
+      stderr: "",
+      stdout: JSON.stringify({ chunks: [record(Uint8Array.of(0x82, 0xac))], offset: 123 }),
+    });
+  const read = vi.spyOn(native.fs, "readFile").mockImplementationOnce(async () => {
+    controller.abort();
+    return new Uint8Array();
+  });
+  try {
+    expect(await box.run("true", { signal: controller.signal })).toMatchObject({
+      timedOut: true,
+      stdout: "ab€",
+    });
+  } finally {
+    exec.mockRestore();
+    read.mockRestore();
     await box.destroy();
   }
 });
