@@ -20,6 +20,8 @@ export interface TenkiOptions {
   /** Deadline for control-plane requests, in milliseconds. */
   requestTimeoutMs?: number;
   waitTimeoutMs?: number;
+  /** Resume RPC deadline, separate from readiness. Default: 180 seconds; maximum: 15 minutes. */
+  resumeTimeoutMs?: number;
 }
 export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
 export type TenkiProvider = Provider<Session, TenkiCapability>;
@@ -83,6 +85,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
   const boxes = new Map<string, Session>();
   const destroying = new Map<string, Promise<void>>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+  const resumeTimeoutMs = options.resumeTimeoutMs ?? 180_000;
   const request = <T>(action: () => Promise<T>, signal?: AbortSignal) =>
     deadline(action, requestTimeoutMs, signal);
   const wait = (
@@ -94,6 +97,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     return (client ??= (async () => {
       if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
+      if (!Number.isSafeInteger(resumeTimeoutMs) || resumeTimeoutMs <= 0 || resumeTimeoutMs > 900_000)
+        throw failure("resumeTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
+      if (options.waitTimeoutMs !== undefined && (!Number.isSafeInteger(options.waitTimeoutMs) || options.waitTimeoutMs <= 0 || options.waitTimeoutMs > 900_000))
+        throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
       const authToken =
         options.authToken ??
         (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
@@ -269,14 +276,14 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     pause: (id) =>
       safe(id, async () => {
         const value = await box(id);
-        await request(() => value.pause());
         const timeoutMs = options.waitTimeoutMs ?? 180_000;
+        await deadline(() => value.pause(), timeoutMs);
         await wait((signal) => value.waitPaused(timeoutMs, signal), timeoutMs);
       }),
     resume: (id) =>
       safe(id, async () => {
         const value = await box(id);
-        await request(() => value.resume());
+        await deadline(() => value.resume(), resumeTimeoutMs);
         const timeoutMs = options.waitTimeoutMs ?? 180_000;
         await wait((signal) => value.waitResumed(timeoutMs, signal), timeoutMs);
         await raw(value, prepare);

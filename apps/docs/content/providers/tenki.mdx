@@ -42,8 +42,8 @@ await using box = await createSandbox(provider, {
 - `authToken` overrides `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`.
 - `baseUrl` overrides the native SDK's endpoint defaults.
 - `image` selects a Tenki registry image. A `from` snapshot overrides it.
-- `requestTimeoutMs` bounds each control-plane operation (create, get, list, destroy, pause, resume, preview exposure, and snapshot submission). It defaults to 30 seconds. Readiness waits use `waitTimeoutMs` instead.
-- `waitTimeoutMs` limits readiness waits. Defaults are three minutes for create and resume, five minutes for snapshots.
+- `requestTimeoutMs` bounds ordinary control-plane operations (create, get, list, destroy, preview exposure, and snapshot submission). It defaults to 30 seconds. Pause uses `waitTimeoutMs`; the resume RPC uses `resumeTimeoutMs`.
+- `waitTimeoutMs` limits pause and readiness waits. Defaults are three minutes for create, pause and resume readiness, five minutes for snapshots.
 
 Custom images need Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`. The adapter uses Tenki's privileged process API for file operations because Tenki's file API rejects paths outside `/home/tenki`.
 
@@ -97,6 +97,8 @@ console.log(await copy.files.read("saved.txt"));
 
 The copy reads `ready`. Snapshots capture disk and memory, but exclude attached native volumes.
 
+The native resume RPC can take longer than the normal 30-second control-plane budget. `resumeTimeoutMs` gives it a separate bounded deadline; the adapter waits for readiness and repairs its durable path before returning. A timeout does not cancel the native resume: reconnect and inspect the session before retrying.
+
 Tenki clears `/tmp` on pause. The adapter links `/tmp/.sandbox-sdk` to durable storage under `/home/tenki/.sandbox-sdk` and recreates the link on resume and connect, so SDK state remains available. Core process records and detached log writers use `/home/tenki/.sandbox-sdk/procs` directly, allowing them to keep writing while the temporary link is absent. Active TCP, preview, and SSH connections close on pause. A guest-agent restart can end processes started through its command API even though pause preserves VM memory.
 
 Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the native Tenki client when you no longer need them.
@@ -122,7 +124,8 @@ Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the 
 - `baseUrl?: string`. Uses the native SDK's defaults when omitted.
 - `image?: string`. Tenki registry image to start from.
 - `requestTimeoutMs?: number`. Defaults to `30_000`.
-- `waitTimeoutMs?: number`. Overrides readiness and snapshot wait deadlines.
+- `waitTimeoutMs?: number`. Overrides pause, readiness and snapshot wait deadlines; accepts integers from `1` to `900_000`.
+- `resumeTimeoutMs?: number`. Deadline for the native resume RPC. Defaults to `180_000`; accepts integers from `1` to `900_000`. The readiness wait runs afterward under `waitTimeoutMs`.
 
 Returns a provider. `box.native` is a typed Tenki `Session`. Its `close()` terminates the VM; use `box.close()` to detach without terminating it. Concurrent `destroy()` calls through the same provider share one termination request, including calls from reattached handles.
 

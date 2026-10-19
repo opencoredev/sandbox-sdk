@@ -142,7 +142,7 @@ describe("Tenki mappings", () => {
     expect(tenkiState.boxes.size).toBe(0);
   });
   test("control-plane methods and readiness waits enforce adapter deadlines", async () => {
-    const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 20 });
+    const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 20, resumeTimeoutMs: 100 });
     const box = await createSandbox(provider);
     const current = tenkiState.boxes.get(box.id);
     if (!current) throw new Error("Missing mock session");
@@ -341,4 +341,33 @@ describe("Tenki mappings", () => {
       expect(String(error)).not.toContain("secret-key");
     }
   });
+});
+
+test("resume RPC has its own bounded budget before readiness", async () => {
+  const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 1000, resumeTimeoutMs: 400 });
+  const box = await createSandbox(provider);
+  const resume = vi.spyOn(box.native, "resume").mockImplementationOnce(async () => {
+    await new Promise(resolve => setTimeout(resolve, 150));
+  });
+  await box.resume();
+  expect(resume).toHaveBeenCalledTimes(1);
+  expect((await box.run("echo usable")).stdout).toBe("usable\n");
+  resume.mockImplementationOnce(() => new Promise(() => {}));
+  await expect(box.resume()).rejects.toMatchObject({ code: "timeout" });
+});
+
+
+test("pause RPC uses the lifecycle budget rather than the ordinary request deadline", async () => {
+  const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 400 });
+  const box = await createSandbox(provider);
+  vi.spyOn(box.native, "pause").mockImplementationOnce(async () => {
+    await new Promise(resolve => setTimeout(resolve, 150));
+  });
+  await box.pause();
+});
+test("transition budgets reject unbounded values before allocation", async () => {
+  for (const value of [0, Infinity, -1, 900001]) {
+    await expect(createSandbox(tenki({ authToken: "key", resumeTimeoutMs: value }))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(createSandbox(tenki({ authToken: "key", waitTimeoutMs: value }))).rejects.toMatchObject({ code: "invalid_argument" });
+  }
 });
