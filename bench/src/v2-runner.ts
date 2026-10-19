@@ -10,7 +10,7 @@ import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
 import { resources, parseFingerprint, type Fingerprint } from "./fingerprint.js";
-import { estimateCost, budgetUSD, pricing } from "./pricing.js";
+import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { deadline, PendingWork } from "./timing.js";
@@ -774,8 +774,19 @@ export async function runV2(
       state.reserved -= reserve;
       if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
       else if (p.cloud) {
-        state.estimatedUSD += reserve;
-        state.stop ??= "Unknown cost/resources; reserved estimate charged to budget";
+        // An unpriced iteration (usually a failed create) is charged for its measured
+        // duration at conservative resources; it must not end the provider's run.
+        const settled = settledBudgetUSD(
+          p.name,
+          duration + restoredDurationMs,
+          fp ? resources(fp) : null,
+          state.fp ? resources(state.fp) : null,
+        );
+        if (settled !== null) state.estimatedUSD += settled;
+        else {
+          state.estimatedUSD += reserve;
+          state.stop ??= "Unknown cost/resources; reserved estimate charged to budget";
+        }
       }
       const lifetime = await add(
         "sandbox-lifetime",

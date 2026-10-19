@@ -129,6 +129,18 @@ export function estimateCost(
     p.perSandbox
   );
 }
+// Conservative allocation for iterations without a fingerprint (e.g. a failed create).
+export const fallbackResources: Resources = { cpu: 8, memoryGiB: 16, diskGiB: 100 };
+/** Budget charge for one finished iteration: measured duration at observed, previously observed, or conservative resources. */
+export function settledBudgetUSD(
+  provider: string,
+  durationMs: number,
+  observed: Resources | null,
+  previous: Resources | null,
+): number | null {
+  const cost = estimateCost(provider, durationMs, observed ?? previous ?? fallbackResources);
+  return cost === null ? null : budgetUSD(provider, cost);
+}
 export function budgetUSD(provider: string, cost: number) {
   return cost * (pricing[provider]?.currency === "EUR" ? 2 : 1);
 }

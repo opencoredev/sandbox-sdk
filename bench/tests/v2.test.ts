@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { roundRobin, schedule } from "../src/scheduler.js";
 import { distribution, wilson, shuffle } from "../src/v2-stats.js";
-import { estimateCost } from "../src/pricing.js";
+import { estimateCost, settledBudgetUSD } from "../src/pricing.js";
 import { parseFingerprint, resources } from "../src/fingerprint.js";
 import { parseV2 } from "../src/v2-config.js";
 describe("v2 scheduling", () => {
@@ -33,6 +33,13 @@ describe("v2 scheduling", () => {
   });
 });
 describe("v2 statistics and cost", () => {
+  it("prices an unfingerprinted iteration by duration instead of leaving it unknown", () => {
+    const observed = { cpu: 2, memoryGiB: 4, diskGiB: 20 };
+    expect(settledBudgetUSD("tenki", 30_000, null, null)).toBeGreaterThan(0);
+    expect(settledBudgetUSD("tenki", 30_000, null, observed)).toBe(settledBudgetUSD("tenki", 30_000, observed, null));
+    expect(settledBudgetUSD("tenki", 30_000, null, null)!).toBeGreaterThan(settledBudgetUSD("tenki", 30_000, observed, null)!);
+    expect(settledBudgetUSD("not-a-provider", 30_000, null, null)).toBeNull();
+  });
   it("retains tails and computes population stddev and deterministic CIs", () => {
     const s = distribution([1, 2, 3, 4, 5]);
     expect(s.mean).toBe(3);
