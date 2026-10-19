@@ -63,7 +63,7 @@ export async function raw(
   );
   if (result.exitCode !== 0 || result.timedOut)
     throw failure("Guest operation failed", result.timedOut ? "timeout" : "provider");
-  return new TextDecoder().decode(result.stdout);
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(result.stdout);
 }
 export async function execute(box: Session, input: ExecInput) {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
@@ -102,7 +102,7 @@ export async function execute(box: Session, input: ExecInput) {
   });
   const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
   async function drain(stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr") {
-    const decoder = new TextDecoder();
+    const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
     const reader = stream.getReader();
     readers.push(reader);
     try {
@@ -125,7 +125,10 @@ export async function execute(box: Session, input: ExecInput) {
   });
   async function output() {
     let offset = 0;
-    const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+    const decoders = {
+      stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
+      stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
+    };
     while (!outputTransport.signal.aborted) {
       const wasFinished = finished;
       const value: unknown = JSON.parse(

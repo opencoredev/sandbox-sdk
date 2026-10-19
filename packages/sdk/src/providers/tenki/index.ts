@@ -81,6 +81,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     | Promise<InstanceType<(typeof import("@tenkicloud/sandbox"))["TenkiSandbox"]>>
     | undefined;
   const boxes = new Map<string, Session>();
+  const destroying = new Map<string, Promise<void>>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   const request = <T>(action: () => Promise<T>, signal?: AbortSignal) =>
     deadline(action, requestTimeoutMs, signal);
@@ -239,8 +240,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         boxes.set(id, value);
         return result;
       }),
-    destroy: (id) =>
-      safe(id, async () => {
+    destroy(id) {
+      const pending = destroying.get(id);
+      if (pending) return pending;
+      const operation = safe(id, async () => {
         try {
           await request(async () => (await box(id)).close());
         } catch (error) {
@@ -248,7 +251,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         } finally {
           boxes.delete(id);
         }
-      }),
+      }).finally(() => destroying.delete(id));
+      destroying.set(id, operation);
+      return operation;
+    },
     async close(id) {
       boxes.delete(id);
     },

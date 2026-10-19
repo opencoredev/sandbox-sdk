@@ -77,7 +77,7 @@ Command timeouts and cancellation kill the whole command process group before re
 
 The adapter enforces `requestTimeoutMs` locally and rejects expired control-plane operations with code `timeout`. Tenki 1.4.1 does not expose cancellation for these calls, so the server may still complete them. If a timed-out or aborted create later returns a session, the adapter attempts to close it using another `requestTimeoutMs` deadline. If the create never returns an ID or cleanup fails, automatic deletion cannot be confirmed; inspect your Tenki sessions and terminate any unwanted VM. Keep the adapter's host process alive for late cleanup to run.
 
-Command output is spooled to an ordered file inside the VM and streamed back in bounded pages. Result capture still uses `maxOutputBytes` head and tail limits. Spool files consume guest disk until the run finishes and cleanup removes them.
+Command output is spooled to an ordered file inside the VM and streamed back in bounded pages. Result capture still uses `maxOutputBytes` head and tail limits. Spool files consume guest disk until the run finishes and cleanup removes them. Output preserves leading UTF-8 byte-order marks, CRLF, and trailing newlines.
 
 ## Pause and snapshots
 
@@ -124,7 +124,7 @@ Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the 
 - `requestTimeoutMs?: number`. Defaults to `30_000`.
 - `waitTimeoutMs?: number`. Overrides readiness and snapshot wait deadlines.
 
-Returns a provider. `box.native` is a typed Tenki `Session`. Its `close()` terminates the VM; use `box.close()` to detach without terminating it.
+Returns a provider. `box.native` is a typed Tenki `Session`. Its `close()` terminates the VM; use `box.close()` to detach without terminating it. Concurrent `destroy()` calls through the same provider share one termination request, including calls from reattached handles.
 
 ## Limitations
 
