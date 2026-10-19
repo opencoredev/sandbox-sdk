@@ -106,6 +106,12 @@ Proxy protected previews through your server when displaying them in an iframe. 
 
 Returns a provider. `box.native` is the Upstash SDK's `Box` object.
 
+## File transfer limits
+
+Native reads accept ranges up to 8 MiB. Base64-encoded writes must also fit the request-body limit; a 10 MiB binary payload exceeds it. The adapter transfers binary data in 4 MiB chunks. Large writes stage chunks in a private guest directory, assemble them into a temporary destination file with Python, replace the destination after assembly succeeds, then remove the directory. If submission times out, the guest owns cleanup; an `outcome_unknown` error includes the staging path in case it must be inspected. Destroying the sandbox removes any retained staging. Large reads concatenate bounded byte ranges. Files must remain unchanged during a multi-call read.
+
+Small reads and existing-parent writes use one native file call. Missing parents require a mkdir and another write. Large transfers use additional calls and need guest `python3`; file contents never enter command arguments.
+
 ## Limitations
 
 - Keys are best-effort, and discovery may wake boxes.

@@ -21,6 +21,7 @@ import type {
 import { SandboxError } from "../../errors.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
+import { readFile, writeFile } from "./files.js";
 
 export type UpstashOptions = Pick<
   BoxConfig,
@@ -269,34 +270,10 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
       boxes.delete(id);
     },
     files: {
-      read: (id, path) =>
-        onFile(
-          id,
-          async (value) =>
-            new Uint8Array(
-              Buffer.from(await value.files.read(path, { encoding: "base64" }), "base64"),
-            ),
-        ),
-      readRange: (id, path, settings) =>
-        onFile(
-          id,
-          async (value) =>
-            new Uint8Array(
-              Buffer.from(
-                await value.files.read(path, { ...settings, encoding: "base64" }),
-                "base64",
-              ),
-            ),
-        ),
-      write: (id, path, data) =>
-        onFile(id, async (value) => {
-          await value.files.mkdir(posix.dirname(path), { parents: true });
-          await value.files.write({
-            path,
-            content: Buffer.from(data).toString("base64"),
-            encoding: "base64",
-          });
-        }),
+      writeCreatesParents: true,
+      read: (id, path) => onFile(id, value => readFile(value, path)),
+      readRange: (id, path, range) => onFile(id, value => readFile(value, path, range)),
+      write: (id, path, data) => onFile(id, value => writeFile(value, path, data)),
       list: (id, path) =>
         onFile(id, async (value) =>
           Promise.all(

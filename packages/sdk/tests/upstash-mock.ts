@@ -99,7 +99,7 @@ export class MockBox {
       }
     },
     write: async (settings: { path: string; content: string; encoding?: "base64" }) => {
-      await fs.writeFile(this.map(settings.path), settings.content, settings.encoding ?? "utf8");
+      try { await fs.writeFile(this.map(settings.path), settings.content, settings.encoding ?? "utf8"); } catch { throw missing(); }
       if (settings.path.endsWith("/env") && settings.path.includes("/upstash-runs/"))
         state.envWrites.push({
           path: settings.path,

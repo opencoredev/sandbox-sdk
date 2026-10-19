@@ -227,3 +227,53 @@ test("creation makes an initially unwritable workspace usable for files and git"
     expect((await box.run("git init repo")).ok).toBe(true);
   } finally { if (guest) await fs.chmod(`${guest.root}/workspace`, 0o755).catch(() => {}); }
 });
+
+test("binary files cross the native request limit without enlarging small transfers", async () => {
+  const box = await createSandbox(factory());
+  const nativeRead = box.native.files.read;
+  const nativeWrite = box.native.files.write;
+  const reads = vi.spyOn(box.native.files, "read").mockImplementation(async (path, options) => {
+    if (options?.length === undefined || options.length > 8 * 1024 * 1024)
+      throw Object.assign(new Error("read limit"), { statusCode: 400 });
+    return nativeRead(path, options);
+  });
+  const writes = vi.spyOn(box.native.files, "write").mockImplementation(async (options) => {
+    if (options.content.length > 8 * 1024 * 1024)
+      throw Object.assign(new Error("request body limit"), { statusCode: 400 });
+    if (options.path.includes("/upload-")) {
+      const current = state.boxes.get(box.id);
+      if (!current) throw new Error("Missing mock box");
+      const { stat } = await import("node:fs/promises");
+      const parent = options.path.slice(0, options.path.lastIndexOf("/"));
+      expect((await stat(current.map(parent))).mode & 0o777).toBe(0o700);
+    }
+    return nativeWrite(options);
+  });
+  const data = Uint8Array.from({ length: 10 * 1024 * 1024 }, (_, i) => i % 251);
+  await box.files.write("large.bin", data);
+  expect(Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
+  reads.mockClear(); writes.mockClear();
+  const mkdir = vi.spyOn(box.native.files, "mkdir");
+  await box.files.write("small.bin", "small");
+  expect(await box.files.read("small.bin")).toBe("small");
+  expect(writes).toHaveBeenCalledTimes(1); expect(reads).toHaveBeenCalledTimes(1);
+  expect(mkdir).not.toHaveBeenCalled();
+});
+
+test("an upload timeout cannot delete inputs of a still-running atomic assembly", async () => {
+  const box = await createSandbox(factory());
+  await box.files.write("atomic.bin", "original");
+  const original = box.native.exec.command;
+  let guest: Promise<Awaited<ReturnType<typeof original>>> | undefined;
+  vi.spyOn(box.native.exec, "command").mockImplementation(async command => {
+    if (!command.startsWith("python3 -c")) return original(command);
+    guest = original(command.replace("import os,sys,shutil,tempfile,stat", "import os,sys,shutil,tempfile,stat,time").replace("shutil.copyfileobj(part,out)", "shutil.copyfileobj(part,out); time.sleep(.1)"));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    throw Object.assign(new Error("HTTP request timed out"), { statusCode: 504 });
+  });
+  const data = new Uint8Array(10 * 1024 * 1024).fill(237);
+  await expect(box.files.write("atomic.bin", data)).rejects.toMatchObject({ code: "outcome_unknown", retryable: false });
+  expect(await box.files.read("atomic.bin")).toBe("original");
+  expect((await guest)?.exitCode).toBe(0);
+  expect(Buffer.from(await box.files.read("atomic.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
+});
