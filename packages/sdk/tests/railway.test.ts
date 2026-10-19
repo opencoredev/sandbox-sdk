@@ -85,7 +85,6 @@ test("stat preserves symlinks and range reads preserve binary bytes", async () =
   } finally { await box.destroy(); }
 });
 
-
 test("early successful exit while stdin is flow-controlled preserves the VM and files", async () => {
   const box = await createSandbox(railway(options));
   try {
@@ -95,7 +94,6 @@ test("early successful exit while stdin is flow-controlled preserves the VM and 
     expect((await box.run("echo still-running")).stdout).toBe("still-running\n");
   } finally { await box.destroy(); }
 });
-
 
 test("HTTP storage exhaustion maps to quota rather than a server outage", () => {
   expect(railwayError({ status: 507 }).code).toBe("quota");
@@ -115,5 +113,12 @@ test("checkpoint restore invalidates inherited live process IDs and active runs"
       expect((await restored.processes())[0]).toMatchObject({ name: "old", status: "failed", exitCode: 137 });
       expect(await restored.files.exists("/tmp/.sandbox-sdk/runs")).toBe(false);
     } finally { await restored.destroy(); }
+  } finally { await box.destroy(); }
+});
+
+test("run preserves Railway's native Bash command dialect", async () => {
+  const box = await createSandbox(railway(options));
+  try {
+    expect(await box.run('items=(one two); [[ ${items[1]} == two ]] && printf bash')).toMatchObject({ ok: true, stdout: "bash" });
   } finally { await box.destroy(); }
 });

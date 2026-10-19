@@ -5,6 +5,36 @@ import type { RunHandle, RunOptions, RunResult } from "./types.js";
 export const defaults = { CI: "1", PAGER: "cat", GIT_TERMINAL_PROMPT: "0", DEBIAN_FRONTEND: "noninteractive", TERM: "dumb", NO_COLOR: "1" };
 export const pathOf = (path = ".") => posix.resolve("/workspace", path);
 export const quote = (value: unknown) => `'${String(value).replaceAll("'", "'\\''")}'`;
+// The relays keep activity alive until inherited output pipes close, even when
+// the user shell exits before a background child. All children keep the adapter's
+// process group; timeout/abort still kills the entire group.
+const activityScript = `trap 'rm -rf -- "$2"' EXIT
+mkdir -p /tmp/.sandbox-sdk/runs && (umask 077; mkdir "$2" && mkfifo "$2/out" "$2/err") || exit 1
+cat "$2/out" &
+set -- "$@" "$!"
+cat "$2/err" >&2 &
+set -- "$@" "$!"
+"$3" -c "$1" > "$2/out" 2> "$2/err"
+set -- "$@" "$?"
+wait "$4"
+wait "$5"
+exit "$6"`;
+const activityCommand = (command: string, path: string, shell = "sh") => `sh -c ${quote(activityScript)} sh ${quote(command)} ${quote(path)} ${quote(shell)}`;
+// Guest markers cover independent SDK clients after launch. This registry also
+// covers transport setup/queueing before the guest can publish its marker.
+const activeRuns = new Map<string, Map<string, number>>();
+export const isRunActive = (provider: string, id: string) => (activeRuns.get(provider)?.get(id) ?? 0) > 0;
+function trackRun(provider: string, id: string) {
+  let runs = activeRuns.get(provider);
+  if (!runs) { runs = new Map(); activeRuns.set(provider, runs); }
+  const counts = runs;
+  counts.set(id, (counts.get(id) ?? 0) + 1);
+  return () => {
+    const count = (counts.get(id) ?? 1) - 1;
+    if (count) counts.set(id, count); else counts.delete(id);
+    if (!counts.size) activeRuns.delete(provider);
+  };
+}
 export class BufferCap {
   private head = Buffer.alloc(0);
   private tail = Buffer.alloc(0);
@@ -100,17 +130,23 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       options.signal?.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(abort, timeoutMs);
       const activePath = `/tmp/.sandbox-sdk/runs/${crypto.randomUUID()}`;
+      let completed = false;
+      const finish = trackRun(provider.name, id);
       const interleaved = chunkRedactor(redactor, chunk => { output.add(chunk.text); bus.emit(chunk); }, true);
       const filter = chunkRedactor(redactor, chunk => {
         (chunk.stream === "stdout" ? stdout : stderr).add(chunk.text); interleaved.push(chunk);
       });
       try {
         if (timedOut) controller.abort();
-        if (!timedOut && !provider.inlineActivity) { await provider.files.mkdir(id, "/tmp/.sandbox-sdk/runs"); await provider.files.write(id, activePath, new Uint8Array([1])); }
         const result = timedOut ? { exitCode: null, timedOut: true } : await provider.exec(id, {
-          command, cwd, env: { ...baseEnv, ...options.env, ...defaults }, stdin: options.stdin,
-          timeoutMs, signal: controller.signal, activityPath: provider.inlineActivity ? activePath : undefined, onChunk: chunk => filter.push(chunk),
+          // Pass the exact command as an argument to a fresh shell. User exit,
+          // exec, traps, comments and stdin cannot bypass the parent's cleanup.
+          // Drain both pipes before removing activity: background descendants
+          // can retain stdout/stderr after the command shell itself has exited.
+          command: provider.inlineActivity ? command : activityCommand(command, activePath, provider.commandShell), cwd, env: { ...baseEnv, ...options.env, ...defaults }, stdin: options.stdin,
+          timeoutMs, signal: controller.signal, envMode: options.env === undefined ? "sandbox" : undefined, activityPath: provider.inlineActivity ? activePath : undefined, onChunk: chunk => filter.push(chunk),
         });
+        completed = result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 128 && !result.timedOut && !controller.signal.aborted;
         timedOut ||= result.timedOut;
         filter.flush(); interleaved.flush(); count(stdout.total + stderr.total);
         return { ok: !timedOut && result.exitCode === 0, exitCode: timedOut ? null : result.exitCode,
@@ -119,7 +155,7 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       } catch (error) {
         filter.flush(); interleaved.flush();
         const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped;
-      } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); if (!provider.inlineActivity) await provider.files.remove(id, activePath, { recursive: false }).catch(() => {}); bus.end(); }
+      } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); if (!completed && !provider.inlineActivity) await Promise.resolve().then(() => provider.files.remove(id, activePath, { recursive: true })).catch(() => {}); finish(); bus.end(); }
     }
     const handle: RunHandle = {
       // oxlint-disable-next-line unicorn/no-thenable -- RunHandle is explicitly PromiseLike in the public API.

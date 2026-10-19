@@ -111,6 +111,8 @@ const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{cons
 export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
   let client: Promise<BoatApi> | undefined;
   let nativeClient: BoatApi | undefined;
+  const environmentFiles = new Map<string, Map<string, Promise<string>>>();
+  const environments = new Map<string, Record<string, string>>();
   const boxes = new Map<string, BoatSandbox>();
   async function api() {
     return (client ??= (async () => {
@@ -242,6 +244,7 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           }
         }
         if (!sandbox) throw failure("Boat returned no sandbox after create", "outcome_unknown");
+        environments.set(sandbox.id, { ...input.env });
         try {
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           await sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } });
@@ -299,8 +302,14 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           if (boatError(error).code !== "not_found") throw error;
         }
         boxes.delete(id);
+        environments.delete(id);
+        environmentFiles.delete(id);
       }, id),
-    exec: (id, input) => safe(async () => execute(await api(), id, input), id),
+    exec: (id, input) => safe(async () => {
+      let files = environmentFiles.get(id);
+      if (!files) { files = new Map(); environmentFiles.set(id, files); }
+      return execute(await api(), id, input, environments.get(id), files);
+    }, id),
     files: {
       readRange: (id, path, range) => readRange(id, path, range.offset, range.length),
       read: async (id, path) => {

@@ -6,7 +6,10 @@ import { failure } from "./errors.js";
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
 // the native process group, so cancelling the stream kills all descendants.
-const launcher = `import sys,json,os,subprocess,tempfile,fcntl
+const launcher = `import sys,json,os,subprocess,tempfile,fcntl,selectors,signal
+# Keep the output owner alive through native TERM grace. Caught handlers reset
+# to the default disposition when the user shell execs.
+signal.signal(signal.SIGTERM,lambda *_:None)
 v=json.load(sys.stdin)
 a=v.get('activityPath')
 m=v['pidPath']
@@ -20,9 +23,19 @@ try:
    if a:
     os.makedirs(os.path.dirname(a),exist_ok=True)
     with open(a,'w') as activity: activity.write('1')
-   try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f)
+   try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
    except OSError as e:
     print(str(e),file=sys.stderr); sys.exit(127)
+  # Keep the supervisor and marker until inherited output pipes close, even
+  # after the direct shell exits and only background descendants remain.
+  sel=selectors.DefaultSelector()
+  sel.register(p.stdout,selectors.EVENT_READ,sys.stdout.buffer)
+  sel.register(p.stderr,selectors.EVENT_READ,sys.stderr.buffer)
+  while sel.get_map():
+   for key,_ in sel.select():
+    data=os.read(key.fd,16384)
+    if data: key.data.write(data); key.data.flush()
+    else: sel.unregister(key.fileobj); key.fileobj.close()
   code=p.wait()
   sys.exit(code if code>=0 else 128-code)
 finally:

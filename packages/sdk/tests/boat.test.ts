@@ -11,6 +11,24 @@ afterAll(() => mock.dispose());
 runConformance(factory, { live: true });
 
 describe("Boat official SDK transport", () => {
+  test("unchanged sandbox env needs no per-run upload and reattached env uploads once", async () => {
+    const secret = "sbx44-stable-private-env";
+    const provider = factory();
+    const box = await createSandbox(provider, { secrets: { TOKEN: secret } });
+    try {
+      let before = mock.fileWrites.length;
+      expect((await box.run("true")).ok).toBe(true);
+      expect((await box.$`true`).ok).toBe(true);
+      expect(mock.fileWrites.length).toBe(before);
+      const attached = await connectSandbox(factory(), box.id);
+      before = mock.fileWrites.length;
+      expect((await attached.run("printf %s \"$TOKEN\"")).stdout).toBe("[REDACTED]");
+      expect((await attached.run("true")).ok).toBe(true);
+      expect(mock.fileWrites.slice(before).filter(file => file.path.endsWith("/env"))).toHaveLength(1);
+      await attached.close();
+    } finally { await box.destroy(); }
+  });
+
   test("keeps secrets out of command text and argv for runs and processes", async () => {
     const secret = "private-token-9ec5e94f";
     const value = "override 'quotes' $literal\n雪";

@@ -120,7 +120,7 @@ export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapsh
     return { path, type: (mode & 0xf000) === 0xa000 ? "symlink" : (mode & 0xf000) === 0x4000 ? "directory" : "file", size, modifiedAt };
   }
   const provider: Provider<Sandbox, "snapshot"> = {
-    name: "railway", keyMode: "best-effort", capabilities: new Set(["snapshot"]),
+    name: "railway", commandShell: "bash", keyMode: "best-effort", capabilities: new Set(["snapshot"]),
     create: input => call(undefined, async () => {
       if (input.size !== undefined) unsupported("Railway resources set CPU and memory but cannot set diskGb; size presets and exact sizes are unavailable");
       if (input.network !== undefined && input.network !== "all") unsupported("Railway isolation modes retain outbound internet access");

@@ -1,12 +1,13 @@
 import type { BoatApi } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
+import { defaults } from "../../run.js";
 import { boatError, failure } from "./errors.js";
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** Detached commands have no 600-second limit. Boat's stopCommand kills the
  * command and all descendants. Aborting a stream alone does not stop remote work.
  */
-export async function execute(api: BoatApi, id: string, input: ExecInput): Promise<ExecResult> {
+export async function execute(api: BoatApi, id: string, input: ExecInput, sandboxEnv: Record<string, string> = {}, environmentFiles = new Map<string, Promise<string>>()): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const { followCommand } = await import("@boatdev/sdk");
   const stream = new AbortController();
@@ -42,31 +43,46 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
   try {
     // Boat has no per-command env field. Transfer values through its files API,
     // inside a private directory, never through recorded command text or argv.
-    envDir = `/tmp/.sandbox-sdk/env-${crypto.randomUUID()}`;
-    const envPath = `${envDir}/env`;
-    const prepare =
-      "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
-    const prepared = await api.command({
-      sandboxId: id,
-      commandRequest: {
-        command: `node -e ${quote(prepare)} ${quote(envDir)}`,
-        timeoutSeconds: 60,
-      },
-    });
-    if (!("exitCode" in prepared) || prepared.exitCode !== 0)
-      throw failure("Boat could not prepare command environment", "provider", id);
-    if (cancelled) return { exitCode: null, timedOut: true };
-    await api.writeFile({
-      sandboxId: id,
-      fileWriteRequest: {
-        path: envPath,
-        content:
-          Object.entries(input.env)
-            .map(([key, value]) => `export ${quote(`${key}=${value}`)}`)
-            .join("\n") + "\n",
-        encoding: "utf8",
-      },
-    });
+    const overrides = Object.entries(input.env).filter(([key, value]) =>
+      !Object.entries(defaults).some(([name, setting]) => key === name && value === setting) && sandboxEnv[key] !== value);
+    const fixed = Object.entries(defaults).filter(([key, value]) => input.env[key] === value);
+    let environment = fixed.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("; ");
+    if (environment) environment += "; ";
+    if (overrides.length) {
+      const key = JSON.stringify(overrides);
+      const cached = input.envMode === "sandbox" ? environmentFiles.get(key) : undefined;
+      if (cached) {
+        environment += `. ${quote(await cached)} || exit 1; `;
+      } else {
+        envDir = `/tmp/.sandbox-sdk/env-${crypto.randomUUID()}`;
+        const envPath = `${envDir}/env`;
+        const directory = envDir;
+        const prepare = async () => {
+          const script = "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
+          const result = await api.command({ sandboxId: id, commandRequest: {
+            command: `node -e ${quote(script)} ${quote(directory)}`, timeoutSeconds: 60,
+          } });
+          if (!("exitCode" in result) || result.exitCode !== 0)
+            throw failure("Boat could not prepare command environment", "provider", id);
+          await api.writeFile({ sandboxId: id, fileWriteRequest: {
+            path: envPath, content: overrides.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("\n") + "\n", encoding: "utf8",
+          } });
+          return envPath;
+        };
+        const prepared = prepare();
+        if (input.envMode === "sandbox") environmentFiles.set(key, prepared);
+        try { await prepared; }
+        catch (error) { if (input.envMode === "sandbox") environmentFiles.delete(key); throw error; }
+        if (input.envMode === "sandbox") {
+          // Retain the private file for this sandbox's stable handle env. Only
+          // explicit per-run overrides need another upload and eager deletion.
+          envDir = undefined;
+          environment += `. ${quote(envPath)} || exit 1; `;
+        } else {
+          environment += `chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} && /bin/rmdir -- ${quote(directory)} || exit 1; `;
+        }
+      }
+    }
     // A finite pipe supplies stdin and EOF. Values never become shell syntax.
     const bytes = Buffer.from(input.stdin ?? "");
     let source = `printf %s ${quote(bytes.toString("base64"))} | base64 -d | `;
@@ -91,7 +107,7 @@ export async function execute(api: BoatApi, id: string, input: ExecInput): Promi
       redirect = ` < ${quote(stdinPath)}`;
     }
     if (cancelled) return { exitCode: null, timedOut: true };
-    const command = `${source}(chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} && /bin/rmdir -- ${quote(envDir)} && cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
+    const command = `${source}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
     launchAttempted = true;
     const started = await api.command({
       sandboxId: id,

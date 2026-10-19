@@ -10,6 +10,16 @@ const factory = () => daytona({ apiKey: "offline-test-key" });
 // network control-plane requests run; every conformance case remains enabled.
 runConformance(factory, { live: true });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await cleanupMock(); });
+test("commands without stdin need no directory or empty-file upload", async () => {
+  const box = await createSandbox(factory());
+  const mkdir = vi.spyOn(box.native.fs, "createFolder");
+  const upload = vi.spyOn(box.native.fs, "uploadFile");
+  expect(await box.run("true")).toMatchObject({ ok: true, exitCode: 0 });
+  expect(mkdir).not.toHaveBeenCalled();
+  expect(upload).not.toHaveBeenCalled();
+  expect((await box.run("cat", { stdin: "exact input" })).stdout).toBe("exact input");
+  expect(upload).toHaveBeenCalledTimes(1);
+});
 describe("Daytona mappings", () => {
   test("lazy client, configuration and typed native object", async () => {
     const provider = daytona({ apiKey: "key", apiUrl: "https://api.example.test", target: "us", requestTimeoutMs: 1234 });

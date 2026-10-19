@@ -30,6 +30,8 @@ export interface ExecInput {
   command: string;
   cwd: string;
   env: Record<string, string>;
+  /** Stable handle environment; adapters may reuse private guest env files. */
+  envMode?: "sandbox";
   stdin?: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -72,6 +74,8 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly processMode?: "shell" | "unsupported";
   /** Exec creates/removes input.activityPath without separate file RPCs. */
   readonly inlineActivity?: boolean;
+  /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
+  readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */
   readonly processRecordRoot?: string;
   readonly capabilities: ReadonlySet<C>;
