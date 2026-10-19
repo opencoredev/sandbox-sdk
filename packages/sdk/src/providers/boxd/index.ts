@@ -62,21 +62,29 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           throw failure("Incomplete file upload", "provider", id);
       },
       read: async (path, range) => {
-        if (!range) return c.machines.files.download(id, path);
-        // 0.2.17 has no file range API. One byte-exact native exec reads only
-        // the requested slice; never clamp it or download an unrelated prefix.
-        const result = await c.machines.exec(id, {
-          command: python(
-            "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
-            path,
-            String(range.offset),
-            String(range.length),
-          ),
-          encoding: "buffer",
-          timeout: options.requestTimeoutMs ?? 30000,
-        });
-        if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
-        return new Uint8Array(result.stdout);
+        // The native download stream can truncate its last block or exceed the
+        // request deadline on multi-MiB files. Bounded exec reads avoid it.
+        const parts: Uint8Array[] = [];
+        let offset = range?.offset ?? 0;
+        let remaining = range?.length ?? Infinity;
+        while (remaining > 0) {
+          const length = Math.min(1024 * 1024 + 1, remaining);
+          const result = await c.machines.exec(id, {
+            command: python(
+              "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
+              path, String(offset), String(length),
+            ),
+            encoding: "buffer",
+            timeout: options.requestTimeoutMs ?? 30000,
+          });
+          if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
+          const bytes = new Uint8Array(result.stdout);
+          parts.push(bytes);
+          offset += bytes.length;
+          remaining -= bytes.length;
+          if (bytes.length < length) break;
+        }
+        return new Uint8Array(Buffer.concat(parts));
       },
     };
   }
@@ -222,14 +230,13 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     previewUrl: (id, port) =>
       safe(id, async () => {
         const c = await api();
-        const name = `sdk-${port}`;
-        let found = (await c.machines.proxies.list(id)).find((p) => p.name === name);
-        if (!found) {
-          await c.machines.proxies.create(id, name, port);
-          found = (await c.machines.proxies.list(id)).find((p) => p.name === name);
-        }
-        if (!found) throw failure("Proxy is not ready", "unavailable", id);
-        await c.machines.proxies.setPort(id, port, { name });
+        // Named routes add a second DNS label outside the *.boxd.sh cert.
+        // Use the native default route, whose hostname has a valid wildcard.
+        const found = (await c.machines.proxies.list(id)).find((p) => p.isDefault);
+        if (!found) throw failure("Default proxy is not ready", "unavailable", id);
+        await c.machines.proxies.setPort(id, port);
+        // Default routes otherwise apply a browser challenge to API clients.
+        await c.machines.setBotProtection(id, "off");
         return { url: `https://${found.domain}` };
       }),
     pause: (id) =>

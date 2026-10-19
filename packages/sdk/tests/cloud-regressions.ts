@@ -6,6 +6,7 @@ import type { MockGuest } from "./cloud-guest-mock.js";
 export function cloudRegressions(
   factory: () => Provider,
   guest: (id: string) => MockGuest | undefined,
+  wholeReadViaExec = false,
 ) {
   describe("native round-trip and execution regressions", () => {
     test("invalid cwd fails normally without deleting the VM", async () => {
@@ -41,7 +42,7 @@ export function cloudRegressions(
         await box.destroy();
       }
     });
-    test("1 MiB whole-file read is one native download", async () => {
+    test("1 MiB whole-file read is one native call", async () => {
       const box = await createSandbox(factory());
       const native = guest(box.id);
       if (!native) throw new Error("Missing mock guest");
@@ -62,7 +63,7 @@ export function cloudRegressions(
           exec: after.exec - before.exec,
           upload: after.upload - before.upload,
           read: after.read - before.read,
-        }).toEqual({ exec: 0, upload: 0, read: 1 });
+        }).toEqual({ exec: wholeReadViaExec ? 1 : 0, upload: 0, read: wholeReadViaExec ? 0 : 1 });
       } finally {
         await box.destroy();
       }

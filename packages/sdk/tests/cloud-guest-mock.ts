@@ -224,10 +224,11 @@ export class MockBoxd {
       download: async (id: string, path: string) => this.entry(id).guest.read(path),
     },
     proxies: {
-      list: async () => [{ name: "sdk-3000", domain: "test.boxd.sh", port: 3000 }],
+      list: async () => [{ name: null, domain: "test.boxd.sh", port: 3000, isDefault: true }],
       setPort: async () => {},
       create: async () => ({ name: "sdk-3000", port: 3000 }),
     },
+    setBotProtection: async (_id: string, _mode: string) => {},
     pause: async (id: string) => {
       this.entry(id).machine.status = "suspended";
     },

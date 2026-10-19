@@ -98,7 +98,7 @@ describe("boxd contract", () => {
 });
 
 import { cloudRegressions } from "./cloud-regressions.js";
-cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest);
+cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest, true);
 
 test("plain BoxdError local exec deadline maps to timeout without native details", () => {
   const result = boxdError(
@@ -289,4 +289,28 @@ test("activity protects background output after the command shell exits", async 
     expect((await run).stdout).toContain("child");
     expect(await box.files.list("/tmp/.sandbox-sdk/runs")).toEqual([]);
   } finally { await box.destroy(); }
+});
+
+
+test("preview uses the native default hostname covered by the wildcard certificate", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const proxies = box.native.client.machines.proxies;
+    vi.spyOn(proxies, "list").mockResolvedValueOnce([
+      { name: null, domain: "machine.boxd.sh", port: 3000, isDefault: true, machineId: box.id, machineName: "machine", portMode: "locked" },
+      { name: "sdk-3000", domain: "sdk-3000.machine.boxd.sh", port: 3000, isDefault: false, machineId: box.id, machineName: "machine", portMode: "locked" },
+    ]);
+    const setPort = vi.spyOn(proxies, "setPort");
+    expect(await box.preview(3000)).toMatchObject({ url: "https://machine.boxd.sh" });
+    expect(setPort).toHaveBeenLastCalledWith(box.id, 3000);
+  } finally { await box.destroy(); vi.restoreAllMocks(); }
+});
+test("large binary reads avoid the truncated native download stream", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const data = Uint8Array.from({ length: 10 * 1024 * 1024 }, (_, i) => i % 251);
+    await box.files.write("large.bin", data);
+    vi.spyOn(box.native.client.machines.files, "download").mockRejectedValue(new Error("download truncated: expected 10485760 bytes, got 10424320"));
+    expect(Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
+  } finally { await box.destroy(); vi.restoreAllMocks(); }
 });

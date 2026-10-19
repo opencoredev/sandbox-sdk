@@ -45,7 +45,7 @@ Commands use the native `streamExec()` bidirectional stream. The adapter sends c
 
 A successful `box.run("true")` uses one native exec, including creation and removal of the core activity record. It uploads no supervisor or per-command files. Cancellation may need a separate call to remove its activity record.
 
-Whole-file reads use `machines.files.download()` once; writes use `machines.files.upload()` once when the parent exists. Missing parents trigger directory creation and an upload retry. boxd 0.2.17 has no ranged file-download API, so `readRange` uses one byte-exact native exec to read the complete requested slice, up to EOF. Directory listings and file metadata use Python.
+Whole-file reads and ranges use bounded byte-exact native exec calls. Writes use `machines.files.upload()` once when the parent exists. Missing parents trigger directory creation and an upload retry. Directory listings and file metadata use Python.
 
 ## Pause and snapshots
 
@@ -55,7 +55,7 @@ Whole-file reads use `machines.files.download()` once; writes use `machines.file
 
 ## Previews
 
-`box.preview(port)` creates or reuses a named HTTPS proxy for that port. Bind your server to `0.0.0.0`. The adapter reads the resulting domain from the proxy list rather than guessing it. No up-front port declarations are required.
+`box.preview(port)` pins the machine’s default HTTPS route to that port. Bind your server to `0.0.0.0`. The adapter reads the hostname from the native proxy list. Requesting another port changes the same route, including earlier preview URLs. No up-front port declarations are required.
 
 ## Environment variables
 
@@ -67,6 +67,12 @@ Whole-file reads use `machines.files.download()` once; writes use `machines.file
 ## API reference
 
 `boxd(options?)` returns a provider with the `"pause"` capability. `box.native.machine` is typed boxd machine metadata and `box.native.client` is the official `Boxd` client.
+
+## Preview and file transfer limits
+
+Previews use the machine’s default hostname, `<machine>.boxd.sh`, covered by the provider’s `*.boxd.sh` certificate. Nested named routes can fail TLS while their individual certificates are unavailable. TLS verification stays enabled. The adapter pins the default route to the requested port and disables its browser bot challenge so server-side HTTP clients can connect. A VM has one default route: requesting a different port changes where earlier preview URLs point. Add authentication to any app you expose.
+
+The native SDK streams uploads above 3 MiB, so large writes need no adapter chunking. Native multi-MiB downloads can truncate their final block or exceed the request deadline. The adapter reads binary data through bounded native exec calls instead, with one call for files up to 1 MiB and additional calls for larger files. Files must remain unchanged during a multi-call read.
 
 ## Limitations
 
