@@ -1,6 +1,7 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
+import { shellProvider } from "./shell-provider.js";
 import type { Provider } from "../src/provider.js";
 
 test.each(["outcome_unknown", "provider"] satisfies ("outcome_unknown" | "provider")[])("cancellation propagates %s cleanup failures", async code => {
@@ -74,4 +75,21 @@ test("exit-before-ready diagnostics drain remaining bounded pages", async () => 
   try {
     await expect(box.start("pages", { name: "pages", ready: { log: /NEVER/ }, readyTimeoutMs: 1000 })).rejects.toMatchObject({ code: "process_exited", message: expect.stringContaining("last-diagnostic") });
   } finally { await box.destroy(); }
+});
+
+
+test("HTTP readiness allows a cloud handshake longer than 100ms", async () => {
+  const box = await createSandbox(await shellProvider());
+  const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 150);
+      init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+    });
+    return new Response("ok");
+  });
+  try {
+    const process = await box.start("sleep 5", { name: "http", ready: { http: { port: 3000 } }, readyTimeoutMs: 600 });
+    expect(process.ready).toBe(true);
+    await process.stop();
+  } finally { fetcher.mockRestore(); await box.destroy(); }
 });

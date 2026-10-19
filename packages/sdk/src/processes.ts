@@ -218,7 +218,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           else if (port) {
             try {
               // memory previews are intentionally offline; the native hook's fake URL denotes readiness.
-              const access = await preview(port, provider.name === "memory" ? {} : { path: "http" in options.ready ? options.ready.http.path : undefined, waitMs: Math.max(1, Math.min(100, end - Date.now())) });
+              const access = await preview(port, provider.name === "memory" ? {} : { path: "http" in options.ready ? options.ready.http.path : undefined, waitMs: Math.max(1, Math.min(1000, end - Date.now())) });
               controller?.access(access.url); controller?.ready(true); return;
             } catch (error) { if (!(error instanceof SandboxError) || error.code !== "port_not_ready") throw error; }
           }
