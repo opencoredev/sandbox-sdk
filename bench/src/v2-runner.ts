@@ -899,7 +899,13 @@ export async function runV2(
           const clean = await snapshotCleaner(p.name, p.provider, item.id);
           await deadline(config["timeout-ms"], () => clean(snapshot.id));
         }
-        if ((await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(item.id))).length) throw new Error("Source snapshots are still deleting");
+        const end = Date.now() + Math.min(config["timeout-ms"], 30_000);
+        for (;;) {
+          const budget = end - Date.now();
+          if (budget <= 0) throw new Error("Source snapshots are still deleting");
+          if (!(await deadline(budget, () => snapshotsFromDaytonaSandbox(item.id))).length) break;
+          await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(1000, end - Date.now()))));
+        }
         owned.delete(`${p.name}/snapshot-source/${item.id}`);
         await persist();
       } catch (e) { errors.push(errorNote(e)); }
