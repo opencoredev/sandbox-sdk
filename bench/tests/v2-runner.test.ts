@@ -122,6 +122,9 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
     expect(await backing.list({})).toHaveLength(0);
     const cold = report.samples.find((s) => s.scenario === "cold");
     if (cold?.outcome.kind === "failure") throw new Error(cold.outcome.note);
+    const restored = report.samples.find((s) => s.scenario === "create-from-snapshot");
+    expect(restored?.sandboxId).not.toBe(cold?.sandboxId);
+    expect(report.samples.find((s) => s.scenario === "restore-fingerprint")?.sandboxId).toBe(restored?.sandboxId);
     expect(report.cleanup[0]?.remaining).toEqual(["owned-snapshot"]);
     expect(report.cleanup[0]?.error).toContain("snapshot deletion unavailable");
   } finally { await rm(directory, { recursive: true, force: true }); }

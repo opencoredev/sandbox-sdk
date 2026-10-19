@@ -224,6 +224,7 @@ export async function runV2(
     const ids = new Set<string>();
     let unsafe = false;
     let restoredDurationMs = 0;
+    let restoredCost: number | null = 0;
     const lifeStart = performance.now();
     let reserve = 0;
     const hostStart = await host();
@@ -574,13 +575,14 @@ export async function runV2(
               if (restored) {
                 const restoredBox = restored;
                 const sourceFingerprint: Fingerprint | null = fp;
+                let restoredFingerprint: Fingerprint | null = null;
                 try {
                   await measure("restore-fingerprint", async (signal) => {
                     const script = await readFile(
                       new URL("../probes/fingerprint.py", import.meta.url),
                       "utf8",
                     );
-                    fp = parseFingerprint(
+                    fp = restoredFingerprint = parseFingerprint(
                       await command(
                         restoredBox,
                         `python3 - <<'BENCH_FINGERPRINT'\n${script}\nBENCH_FINGERPRINT`,
@@ -594,7 +596,18 @@ export async function runV2(
                   fp = sourceFingerprint;
                 }
                 await measure("restore-destroy", () => restoredBox.destroy());
-                restoredDurationMs += performance.now() - restoreStart;
+                const restoredMs = performance.now() - restoreStart;
+                restoredDurationMs += restoredMs;
+                const cost = estimateCost(p.name, restoredMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));
+                restoredCost = restoredCost === null || cost === null ? null : restoredCost + cost;
+                for (const sample of report.samples) {
+                  if (sample.provider === p.name && sample.iteration === index &&
+                    ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
+                    sample.sandboxId = restoredBox.id;
+                    sample.fingerprint = restoredFingerprint;
+                    sample.estimatedCost = estimateCost(p.name, sample.durationMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));
+                  }
+                }
               }
               await measure("snapshot-cleanup", async () => {
                 await clean?.(id);
@@ -727,11 +740,10 @@ export async function runV2(
         state.stop = "Cleanup could not drain";
       }
       const duration = performance.now() - lifeStart;
-      const cost = estimateCost(
-        p.name,
-        duration + restoredDurationMs,
-        fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
+      const sourceCost = estimateCost(
+        p.name, duration, fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
       );
+      const cost = sourceCost === null || restoredCost === null ? null : sourceCost + restoredCost;
       state.reserved -= reserve;
       if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
       else if (p.cloud) {
