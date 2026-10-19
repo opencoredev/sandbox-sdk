@@ -114,6 +114,7 @@ Returns a provider. `box.native.sandbox` is Boat's sandbox metadata, and `box.na
 - Boat's native auto-stop still applies. Keep a VM running if you need its background processes and `/tmp` records.
 - Commands use Boat's detached API and attach stream. Timeout and abort stop the command's process tree before returning.
 - Transient `unavailable` failures are surfaced. The native SDK provides no automatic retry or idempotency guarantee for command execution, including file operations implemented as guest commands. The adapter does not replay these calls because a failed response can follow a completed operation.
+- Reads above 1 MiB copy the file into a private guest directory and use the native signed download URL, which has no file-size limit. The adapter checks the byte count and removes staging afterward. Smaller files and ranged reads use bounded guest commands. Signed URLs never receive the account authorization header.
 - File writes transfer contents through Boat's files API, then use Node.js to copy them to the destination. Other file primitives run Node.js through the command API, so directory-heavy workloads make more API calls than a native filesystem client.
 
 ## Next steps

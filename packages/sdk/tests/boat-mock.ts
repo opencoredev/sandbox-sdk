@@ -227,6 +227,19 @@ export async function boatMock() {
         json(res, { ok: true, type: "sandbox.info", sandbox: sandbox(box) });
         return;
       }
+      if (parts[2] === "files" && parts[3] === "download-url" && req.method === "POST") {
+        if (!body.path?.startsWith("/tmp/")) throw new Error("Signed download path restriction");
+        const file = join(box.root, body.path);
+        if ((await fs.stat(join(file, ".."))).mode % 512 !== 0o700) throw new Error("Download staging is not private");
+        json(res, { ok: true, type: "file.download_url", url: `http://${req.headers.host}/sandboxes/${id}/download?path=${encodeURIComponent(body.path)}`, method: "GET", path: body.path, expiresAt: new Date(Date.now() + 300_000).toISOString() });
+        return;
+      }
+      if (parts[2] === "download" && req.method === "GET") {
+        if (req.headers.authorization) throw new Error("Account auth leaked to signed download");
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.end(await fs.readFile(join(box.root, url.searchParams.get("path") ?? "")));
+        return;
+      }
       if (parts[2] === "files" && req.method === "PUT") {
         const path = body.path;
         if (!path) throw new Error("Missing file path");

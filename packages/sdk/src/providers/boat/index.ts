@@ -322,7 +322,31 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           ),
         );
         if (!Number.isSafeInteger(size) || size < 0) throw failure("Invalid Boat file size");
-        return readRange(id, path, 0, size);
+        if (size <= 1024 * 1024) return readRange(id, path, 0, size);
+        return safe(async () => {
+          // Signed downloads have no size limit, but only accept /tmp or
+          // /home/user paths. Snapshot the file into private staging first.
+          const dir = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}`;
+          const staged = `${dir}/file`;
+          try {
+            const copiedSize = Number(await node(id,
+              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[2],{mode:0o700});f.copyFileSync(process.argv[1],process.argv[2]+'/file');process.stdout.write(String(f.statSync(process.argv[2]+'/file').size))",
+              [path, dir],
+            ));
+            if (!Number.isSafeInteger(copiedSize) || copiedSize < 0) throw failure("Invalid staged file size", "provider", id);
+            const link = await (await api()).createDownloadUrl({ sandboxId: id, fileUrlRequest: { path: staged, ttlSeconds: 300 } });
+            const response = await fetch(link.url, { signal: AbortSignal.timeout(options.requestTimeoutMs ?? 90_000) });
+            if (!response.ok) {
+              await response.body?.cancel();
+              throw failure("Signed file download failed", "unavailable", id);
+            }
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            if (bytes.length !== copiedSize) throw failure("Incomplete signed file download", "provider", id);
+            return bytes;
+          } finally {
+            await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [dir]).catch(() => {});
+          }
+        }, id);
       },
       write: (id, path, data) =>
         safe(async () => {

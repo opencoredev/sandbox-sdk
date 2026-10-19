@@ -180,6 +180,19 @@ describe("Boat official SDK transport", () => {
       await box.destroy();
     }
   });
+  test("large binary reads use one native signed download and remove private staging", async () => {
+    const box = await createSandbox(factory());
+    try {
+      const bytes = Uint8Array.from({ length: 10 * 1024 * 1024 }, (_, i) => i % 251);
+      await box.files.write("download.bin", bytes);
+      const before = mock.calls.length;
+      expect(Buffer.from(await box.files.read("download.bin", { as: "bytes" })).equals(Buffer.from(bytes))).toBe(true);
+      const calls = mock.calls.slice(before);
+      expect(calls.filter(call => call.endsWith("/files/download-url"))).toHaveLength(1);
+      expect(calls.filter(call => call.endsWith("/commands")).length).toBeLessThan(10);
+      expect((await box.run("find /tmp/.sandbox-sdk -name 'download-*' | wc -l")).stdout.trim()).toBe("0");
+    } finally { await box.destroy(); }
+  });
   test("rejects unsupported options and metadata overflow before creating", async () => {
     const count = mock.creates.length;
     for (const opts of [
