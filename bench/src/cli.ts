@@ -1,94 +1,150 @@
-import { cpus, totalmem, platform, release, arch } from "node:os";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { parseConfig } from "./config.js";
-import { loadProvider, checkBudget } from "./providers.js";
-import { measureProvider } from "./runner.js";
-import { markdown, writeReport } from "./report.js";
-import type { Report } from "./model.js";
-
+import { snapshotCleaner } from "./snapshots.js";
+import { resolve } from "node:path";
+import { parseV2 } from "./v2-config.js";
+import { loadProvider } from "./providers.js";
+import { runV2, sanitize } from "./v2-runner.js";
+import { writeV2 } from "./v2-report.js";
+import { deadline } from "./timing.js";
 async function main() {
-  if (process.argv.slice(2).includes("--help")) {
+  const args = process.argv.slice(2);
+  if (args.includes("--v1")) {
+    process.argv = process.argv.filter((v) => v !== "--v1");
+    await import("./cli-v1.js");
+    return;
+  }
+  if (args.includes("--help")) {
     process.stdout.write(
-      "bun bench --providers memory,local,e2b,vercel,daytona,upstash --runs 50 --out results/\nOptions: --warmup 2 --concurrency 1 --timeout-ms 30000 --max-sandboxes 100 --yes\nOutput paths are relative to bench/. Cloud budget includes warmups.\n",
+      "bun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
     );
     return;
   }
-  const config = parseConfig(process.argv.slice(2));
+  const reap = args[0] === "reap";
+  if (reap && !args.includes("--run")) throw new Error("reap requires explicit --run");
+  const config = parseV2(reap ? args.slice(1) : args);
   const providers = [];
   for (const name of config.providers) {
-    const provider = await loadProvider(name);
-    providers.push(provider);
-    if (provider.kind === "skipped") process.stderr.write(`SKIP ${name}: ${provider.note}\n`);
-  }
-  const plannedCloudSandboxes = checkBudget(providers, config);
-  const versionData: unknown = JSON.parse(
-    await readFile(new URL("../../packages/sdk/package.json", import.meta.url), "utf8"),
-  );
-  const { version } = z.object({ version: z.string() }).parse(versionData);
-  const report: Report = {
-    schemaVersion: 1,
-    timestamp: new Date().toISOString(),
-    sdkVersion: version,
-    machine: {
-      cpu: cpus()[0]?.model ?? "unknown",
-      logicalCpus: cpus().length,
-      ramBytes: totalmem(),
-      os: `${platform()} ${release()}`,
-      arch: arch(),
-      runtime: `Bun ${process.versions.bun ?? "unknown"} (Node API ${process.versions.node})`,
-    },
-    config,
-    plannedCloudSandboxes,
-    methodology: {
-      percentiles:
-        "Nearest rank; successful measured samples only. Warmups excluded. Null statistics mean no successful samples.",
-      cold: "Fresh sandbox create through first successful true command; includes SDK initialization, excludes provider module/factory load. Image/cache state is provider controlled.",
-      files:
-        "Binary 1024 and 10485760 bytes; combined write+read with byte equality validation included in timing.",
-      cpu: "100 mocked-native calls per batch; process.cpuUsage user+system / 100 in ms/call. SDK minus raw is paired per batch; order alternates; serial after latency workers. Includes SDK bookkeeping, excludes fixture setup. Other host activity, GC and JIT can add noise.",
-    },
-    providers: [],
-  };
-  let unsafeCleanup = false;
-  for (const provider of providers) {
-    if (unsafeCleanup) {
-      report.providers.push({
-        kind: "skipped",
-        name: provider.name,
-        note: "Previous provider cleanup was unsafe; run stopped",
+    try {
+      providers.push(await loadProvider(name));
+    } catch (error) {
+      providers.push({
+        kind: "skipped" as const,
+        name,
+        note: sanitize(error instanceof Error ? error.message : "Factory failed"),
       });
-      continue;
-    }
-    if (provider.kind === "skipped") report.providers.push(provider);
-    else {
-      process.stderr.write(
-        `RUN ${provider.name}: ${config.runs} runs + ${config.warmup} warmups\n`,
-      );
-      const measured = await measureProvider(provider, config);
-      report.providers.push(measured);
-      unsafeCleanup = measured.cleanupFailures.length > 0;
     }
   }
-  await writeReport(report, resolve(config.out));
-  process.stdout.write(markdown(report));
-  process.stderr.write(`Reports: ${resolve(config.out)}\n`);
+  if (reap) {
+    let failed = false;
+    const journalSchema = z.object({
+      runId: z.string(),
+      resources: z.array(
+        z.object({
+          provider: z.string(),
+          id: z.string(),
+          kind: z.enum(["sandbox", "snapshot"]),
+          parent: z.string().nullable(),
+        }),
+      ),
+    });
+    const path = resolve(config.out, "ownership.json");
+    const journal = await readFile(path, "utf8")
+      .then((v) => journalSchema.parse(JSON.parse(v)))
+      .catch((e) => {
+        if (e && typeof e === "object" && "code" in e && e.code === "ENOENT") return null;
+        throw e;
+      });
+    if (journal && journal.runId !== config.run)
+      throw new Error("Ownership journal belongs to a different run; use its --out directory");
+    for (const p of providers) {
+      if (p.kind === "skipped") {
+        process.stderr.write(`SKIP ${p.name}: ${p.note}\n`);
+        continue;
+      }
+      const errors: string[] = [];
+      const attempt = async (work: () => Promise<void>) => {
+        try { await work(); } catch (error) {
+          errors.push(sanitize(error instanceof Error ? error.message : "Reap failed"));
+        }
+      };
+      try {
+        for (const resource of journal?.resources ?? [])
+          if (resource.provider === p.name && resource.kind === "snapshot") await attempt(async () => {
+            const clean = await snapshotCleaner(p.name, p.provider, resource.parent ?? "");
+            try {
+              await deadline(config["timeout-ms"], () => clean(resource.id));
+            } catch (error) {
+              if (
+                !(error instanceof Error && /not.found|404|does not exist/i.test(error.message)) &&
+                !(
+                  error &&
+                  typeof error === "object" &&
+                  "code" in error &&
+                  error.code === "not_found"
+                )
+              )
+                throw error;
+            }
+            if (journal) {
+              journal.resources = journal.resources.filter((v) => v !== resource);
+              await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+            }
+          });
+        const ids = new Set((journal?.resources ?? []).filter((v) => v.provider === p.name && v.kind === "sandbox").map((v) => v.id));
+        const matches = await deadline(config["timeout-ms"], () =>
+          p.provider.list({ "sandbox-bench-run": config.run }),
+        ).catch((error) => { errors.push(sanitize(error instanceof Error ? error.message : "List failed")); return []; });
+        for (const s of matches)
+          if (s.labels["sandbox-bench-run"] === config.run) ids.add(s.id);
+        for (const id of ids) await attempt(async () => {
+          await deadline(config["timeout-ms"], () => p.provider.destroy(id));
+          if (journal) {
+            journal.resources = journal.resources.filter((v) => !(v.provider === p.name && v.kind === "sandbox" && v.id === id));
+            await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+          }
+        });
+        const left = await deadline(config["timeout-ms"], async () => {
+          let result = await p.provider.list({ "sandbox-bench-run": config.run });
+          while (result.some((s) => s.labels["sandbox-bench-run"] === config.run)) {
+            await new Promise((r) => setTimeout(r, 2000));
+            result = await p.provider.list({ "sandbox-bench-run": config.run });
+          }
+          return result;
+        });
+        if (journal) {
+          await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+        }
+        const count = left.filter((s) => s.labels["sandbox-bench-run"] === config.run).length;
+        process.stdout.write(`${p.name}: ${count} leftovers for ${config.run}\n`);
+        if (count || errors.length) failed = true;
+        for (const error of errors) process.stderr.write(`${p.name}: ${error}\n`);
+      } catch (error) {
+        failed = true;
+        process.stderr.write(
+          `${p.name}: ${sanitize(error instanceof Error ? error.message : "Reap failed")}\n`,
+        );
+      }
+    }
+    if (failed) process.exitCode = 1;
+    return;
+  }
+  const out = resolve(config.out);
+  const report = await runV2(providers, config, (r) => writeV2(r, out));
+  process.stdout.write(
+    `Run ${report.runId}; ${report.samples.length} observations; reports: ${out}\n`,
+  );
+  for (const p of report.providers) process.stdout.write(`${p.name}: ${p.kind} ${p.note}\n`);
   if (
-    !providers.some((provider) => provider.kind === "ready") ||
-    report.providers.some(
-      (provider) =>
-        provider.kind === "measured" &&
-        (provider.cleanupFailures.length ||
-          provider.warmupFailures.length ||
-          provider.metrics.some((metric) => metric.failures.length)),
-    )
+    !providers.some((p) => p.kind === "ready") ||
+    report.samples.some((s) => s.outcome.kind === "failure") ||
+    report.cleanup.some((c) => c.error || c.remaining.length)
   )
     process.exitCode = 1;
 }
 main().catch((error) => {
   process.stderr.write(
-    `Benchmark refused/failed: ${error instanceof Error ? error.message : "Unknown error"}\n`,
+    sanitize(error instanceof Error ? error.message : "Benchmark failed") + "\n",
   );
   process.exitCode = 1;
 });

@@ -25,7 +25,7 @@ const schema = z.object({
     .pipe(z.array(z.string().regex(/^[a-z][a-z0-9-]*$/))),
   runs: integer.default(2),
   "workload-runs": integer.optional(),
-  concurrency: integer.max(32).default(2),
+  concurrency: integer.max(32).default(4),
   "provider-concurrency": integer.max(32).default(1),
   "timeout-ms": integer.max(900000).default(180000),
   seed: z.coerce.number().int().default(45),

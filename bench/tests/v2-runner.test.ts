@@ -1,0 +1,128 @@
+import { it, expect } from "vitest";
+import { parseV2 } from "../src/v2-config.js";
+
+it("runs the actual v2 memory consumer, stops at its creation budget, and preserves unrelated resources", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2, summarize } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm, readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve("results-test-"));
+  const provider = memory();
+  const { createSandbox } = await import("@opencoredev/sandbox-sdk");
+  const unrelated = await createSandbox(provider, {
+    labels: { "sandbox-bench-run": "unrelated-run" },
+  });
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      parseV2([
+        "--providers",
+        "memory",
+        "--runs",
+        "2",
+        "--max-sandboxes",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "command",
+        "--out",
+        directory,
+      ]),
+      async () => {},
+    );
+    expect(report.samples.filter((s) => s.scenario === "cold")).toHaveLength(1);
+    const cold = report.samples.find((s) => s.scenario === "cold");
+    if (!cold) throw new Error("Expected a real cold sample");
+    const score = {
+      ...cold,
+      provider: "boat",
+      scenario: "cpu-single",
+      unit: "iterations/s",
+      outcome: { kind: "sample", value: 1000 } satisfies import("../src/v2-model.js").Outcome,
+      estimatedCost: 0.1,
+    };
+    expect(summarize([score], 45)[0]?.performancePerDollar).toBeCloseTo(100000000);
+    expect(summarize([{ ...score, estimatedCost: 10 }], 45)[0]?.performancePerDollar).toBeCloseTo(
+      100000000,
+    );
+    const { projectCosts } = await import("../src/projection.js");
+    const projection = projectCosts({ ...report,
+      providers: [{ name: "boat", kind: "ready", note: "test" }],
+      samples: ["cold", "fingerprint", "perf", "command", "files-1kb", "files-10mb", "reconnect", "pause-resume", "snapshot", "create-from-snapshot", "snapshot-cleanup", "restore-fingerprint", "restore-destroy", "destroy"].map((scenario) => ({ ...score, scenario, durationMs: scenario === "restore-fingerprint" ? 10000 : 1000 })),
+    });
+    expect(projection[0]?.normal100).toBeCloseTo(0.035);
+    expect(report.samples.find((s) => s.scenario === "command")?.outcome.kind).toBe("sample");
+    expect(report.budgets.memory?.stop).toBe("Sandbox budget reached");
+    expect((await readFile(resolve(directory, "samples.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line))).toEqual(report.samples);
+    expect(report.cleanup).toEqual([{ provider: "memory", remaining: [], error: null }]);
+    expect((await provider.list({})).map((s) => s.id)).toEqual([unrelated.id]);
+  } finally {
+    await unrelated.destroy();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+it("retries journal-owned VMs even when listings omit them", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve("results-test-"));
+  const backing = memory();
+  let attempts = 0;
+  const provider = {
+    ...backing,
+    list: async () => [],
+    destroy: async (id: string) => {
+      if (++attempts <= 3) throw new Error("transient destruction failure");
+      await backing.destroy(id);
+    },
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      parseV2(["--providers", "memory", "--runs", "1", "--bursts", "", "--scenarios", "command", "--out", directory]),
+      async () => {},
+    );
+    expect(attempts).toBe(4);
+    expect(await backing.list({})).toHaveLength(0);
+    expect(report.cleanup).toEqual([{ provider: "memory", remaining: [], error: null }]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it("continues VM deletion when snapshot cleanup fails", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve("results-test-"));
+  const backing = memory();
+  const failures = new Map<string, number>();
+  const provider = {
+    ...backing,
+    capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot", "size"]),
+    create: ({ size: _size, ...input }: import("@opencoredev/sandbox-sdk/provider").CreateInput) => { void _size; return backing.create(input); },
+    snapshot: async () => ({ id: "owned-snapshot" }),
+    native: () => ({ client: { call: async () => { throw new Error("snapshot deletion unavailable"); } } }),
+    destroy: async (id: string) => {
+      const n = (failures.get(id) ?? 0) + 1;
+      failures.set(id, n);
+      if (n <= 3) throw new Error("transient destruction failure");
+      await backing.destroy(id);
+    },
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "local", cloud: false, region: null, provider }],
+      parseV2(["--providers", "local", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
+      async () => {},
+    );
+    expect(await backing.list({})).toHaveLength(0);
+    const cold = report.samples.find((s) => s.scenario === "cold");
+    if (cold?.outcome.kind === "failure") throw new Error(cold.outcome.note);
+    expect(report.cleanup[0]?.remaining).toEqual(["owned-snapshot"]);
+    expect(report.cleanup[0]?.error).toContain("snapshot deletion unavailable");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
