@@ -26,6 +26,9 @@ console.log(result.stdout);
 
 The provider reads `DAYTONA_API_KEY` from the environment and starts Daytona's default snapshot.
 
+
+The organization must have a default region configured in the Daytona Dashboard before creating sandboxes. If creation reports that the organization has no default region, open the dashboard, select that organization, and set its default region. `DAYTONA_TARGET` selects a target; it does not configure the organization’s default region.
+
 ## Configuration
 
 ```ts
