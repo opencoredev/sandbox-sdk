@@ -34,6 +34,7 @@ const schema = z.object({
   "provider-max-sandboxes": overrides,
   "provider-max-dollars": overrides,
   "account-limits": overrides,
+  "burst-cohorts": integer.max(100).default(3),
   bursts: z
     .string()
     .default("3")

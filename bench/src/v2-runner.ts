@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider, ReadyProvider } from "./providers.js";
 import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
+import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
+import { collectMetadata, headroom } from "./publication.js";
 import { resources, parseFingerprint, type Fingerprint } from "./fingerprint.js";
 import { estimateCost, budgetUSD, pricing } from "./pricing.js";
 import { roundRobin, schedule } from "./scheduler.js";
@@ -101,7 +103,8 @@ export function summarize(samples: Sample[], seed: number) {
         stats: distribution(values, seed),
         success: wilson(successes.length, successes.length + failures),
         failures,
-        skipped: rows.length - successes.length - failures,
+        skipped: rows.filter((r) => r.outcome.kind === "skipped").length,
+        blocked: rows.filter((r) => r.outcome.kind === "blocked").length,
         estimatedCost: cost,
         per1000: cost === null ? null : (cost / rows.length) * 1000,
         performancePerDollar,
@@ -113,6 +116,7 @@ export async function runV2(
   loaded: LoadedProvider[],
   config: ConfigV2,
   checkpoint: (report: ReportV2) => Promise<void>,
+  metadata = collectMetadata(),
 ) {
   await mkdir(resolve(config.out), { recursive: true });
   await writeFile(join(resolve(config.out), "run.json"), JSON.stringify({ runId: config.run }), { flag: "wx" });
@@ -122,12 +126,14 @@ export async function runV2(
     timestamp: new Date().toISOString(),
     finishedAt: "",
     config,
+    metadata: await metadata,
     host: { cpu: cpus()[0]?.model ?? "unknown", os: process.platform, runtime: process.version },
     samples: [],
     summaries: [],
     providers: loaded.map((p) => ({
       name: p.name,
       kind: p.kind,
+      configuredRegion: p.kind === "ready" ? p.region : null,
       note:
         p.kind === "skipped"
           ? p.note
@@ -141,11 +147,16 @@ export async function runV2(
       "Daytona snapshots use its native nameable API to journal a run-owned snapshot name before creation; the SDK wrapper generates a name internally and loses it on timeout. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
       "Cold/reconnect/resume/restore use client monotonic clock through a successful true command. API-return and readiness phase timestamps are recorded separately. Create API phase includes provider-native readiness but excludes SDK handle initialization.",
-      "All failures retained; percentiles/CI describe successful observations only. Success rate uses Wilson 95% interval (skips excluded). Nearest rank, population stddev, 2000 seeded bootstrap resamples for p50 and mean. No outlier removal.",
+      "Default-size comparison: each provider uses its default image/allocation; local uses medium. This is not a resource-matched hardware comparison. Image, package, CDN and filesystem caches are uncontrolled; installed runtime versions are retained.",
+      "Dependent scenarios share a sandbox. A failed cold/reconnect/resume/snapshot blocks subsequent work; blocked_by rows are reported separately and excluded from independent failure denominators. App install/provision/start/preview prerequisites also propagate blocking. Cleanup still runs.",
+      "Preview provisioning and dev-server start are separate scenarios. Each HTTP attempt is timed through its first chunk only; cancellation and inter-attempt sleeps are outside that measurement. Failed attempts remain failure rows. Snapshot values time native API only; snapshot-setup and snapshot-total expose client setup/journal overhead.",
+      "Repeated burst cohorts retain independent cohort indices. Client-headroom flags use load1/logical CPUs >=1 or sampled host CPU utilization >=90%; overlapping samples share host counters and must not be summed as provider-attributable traffic.",
+      "At n=100, nearest-rank p99 depends on roughly the two slowest observations and is unstable. Bootstrap intervals do not eliminate this tail uncertainty; publish sample counts and raw values.",
+      "All failures retained; percentiles/CI describe successful observations only. Independent success rate uses Wilson 95% interval (skips and blocked dependencies excluded). Nearest rank, population stddev, 2000 seeded bootstrap resamples for p50 and mean. No outlier removal.",
       "Fingerprint includes public ipinfo.io lookup (optional); region and org are observed egress, not a promise about placement. Host counters are cumulative: difference before/after to derive CPU and network load.",
       "CPython fixed LCG iterations/s; all-core uses ceil of min(nproc, cgroup quota), capped at 64 with worker count recorded. Python version and CPU flags retained: runtime differences remain a confounder. 16 MiB memory copy; 64 MiB buffered sequential I/O; fsync writes and 256 random 4 KiB operations at queue depth 1. Reads may be cached; no O_DIRECT. Decimal MB/s.",
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
-      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Unknown resources yield null, never zero.",
+      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
     ],
   };
@@ -223,6 +234,9 @@ export async function runV2(
     const pending = new PendingWork();
     const ids = new Set<string>();
     let unsafe = false;
+    let blockedBy: string | null = null;
+    const dependencies = new Map<string, string>();
+    const reconnectedHandles: Sandbox[] = [];
     let restoredDurationMs = 0;
     let restoredCost: number | null = 0;
     const lifeStart = performance.now();
@@ -305,21 +319,25 @@ export async function runV2(
       before: HostSample,
       details: unknown = null,
       phaseValues: Record<string, number> = {},
+      clock?: PhaseClock,
+      observedAfter?: HostSample,
     ) => {
-      const durationMs = performance.now() - start;
+      const durationMs = clock?.elapsed() ?? performance.now() - start;
+      const hostAfter = observedAfter ?? await host();
       const sample: Sample = {
         provider: p.name,
         iteration: index,
         scenario: burst ? `burst-${burst}/${scenario}` : scenario,
         unit,
-        startedAt,
-        finishedAt: new Date().toISOString(),
+        startedAt: clock?.startedAt ?? startedAt,
+        finishedAt: clock?.finishedAt ?? new Date().toISOString(),
         durationMs,
         sandboxId: box?.id ?? [...ids][0] ?? null,
         outcome,
         phases: { ...phaseValues },
         hostBefore: before,
-        hostAfter: await host(),
+        hostAfter,
+        headroom: headroom(before, hostAfter),
         fingerprint: fp,
         estimatedCost: estimateCost(
           p.name,
@@ -339,27 +357,35 @@ export async function runV2(
       scenario: string,
       action: (signal: AbortSignal) => Promise<T>,
       phaseValues: Record<string, number> = {},
+      clock?: PhaseClock,
+      failureDetails: unknown = null,
     ) {
       const start = performance.now(),
         at = new Date().toISOString(),
         before = await host();
+      const dependency = dependencies.get(scenario) ?? blockedBy;
+      if (dependency && !["destroy", "restore-destroy", "snapshot-cleanup", "snapshot-total", "reconnect-cleanup"].includes(scenario)) {
+        const sample = await add(scenario, "ms", { kind: "blocked", blocked_by: dependency, note: `Blocked by ${dependency}` }, start, at, before, failureDetails);
+        return { kind: "unsuccessful" as const, sample };
+      }
       try {
         const result = await deadline(timeout, (signal) =>
           pending.track(action(AbortSignal.any([signal, stopping.signal]))),
         );
-        await add(
+        const sample = await add(
           scenario,
           "ms",
-          { kind: "sample", value: performance.now() - start },
+          { kind: "sample", value: clock?.elapsed() ?? performance.now() - start },
           start,
           at,
           before,
           result ?? null,
           phaseValues,
+          clock,
         );
-        return result;
+        return { kind: "success" as const, result, sample };
       } catch (error) {
-        await add(
+        const sample = await add(
           scenario,
           "ms",
           error instanceof Skip
@@ -368,15 +394,28 @@ export async function runV2(
           start,
           at,
           before,
-          null,
+          failureDetails,
           phaseValues,
+          clock,
         );
+        if (!(error instanceof Skip)) {
+          if (["cold", "reconnect", "pause-resume", "snapshot"].includes(scenario)) blockedBy ??= scenario;
+          if (scenario === "fingerprint") dependencies.set("perf", scenario);
+          const downstream: Record<string, string[]> = {
+            "create-from-snapshot": ["restore-fingerprint"],
+            "npm-install": ["dev-server", "preview-provisioning", "preview-first-byte", "edit-loop"],
+            "preview-provisioning": ["dev-server", "preview-first-byte", "edit-loop"],
+            "dev-server": ["preview-first-byte", "edit-loop"],
+            "preview-first-byte": ["edit-loop"],
+          };
+          for (const target of downstream[scenario] ?? []) dependencies.set(target, dependencies.get(scenario) ?? scenario);
+        }
         if (!(await pending.drain(timeout))) {
           unsafe = true;
           unsafeProviders.add(p.name);
           state.stop = "Timed-out work did not drain; stopped for cleanup safety";
         }
-        return undefined;
+        return { kind: "unsuccessful" as const, sample };
       }
     }
     try {
@@ -434,7 +473,8 @@ export async function runV2(
       );
       let fixture = false;
       for (const group of groups) {
-        if (unsafe || stopping.signal.aborted) break;
+        if (stopping.signal.aborted) break;
+        if (unsafe) blockedBy ??= "pending-work";
         if (index >= config.runs && !workloadNames.has(group) && group !== "app") continue;
         if (workloadNames.has(group) && index >= (config["workload-runs"] ?? config.runs)) continue;
         const targets =
@@ -455,52 +495,31 @@ export async function runV2(
             );
           });
           if (!targets.slice(1).some(selected)) continue;
+          const preview = await measure("preview-provisioning", () => active.preview(3000));
           await measure("dev-server", async () => {
-            const preview = await p.provider.previewUrl(active.id, 3000);
+            if (preview.kind !== "success") throw new Error("Preview provisioning did not return a URL");
             const h = await active.start("npm run dev", {
-              env: { BENCH_PREVIEW_HOST: new URL(preview.url).hostname },
-              name: "bench-vite",
-              cwd: "/workspace/bench-app",
-              ready: { log: /Local:/ },
-              readyTimeoutMs: timeout,
+              env: { BENCH_PREVIEW_HOST: new URL(preview.result.url).hostname },
+              name: "bench-vite", cwd: "/workspace/bench-app", ready: { log: /Local:/ }, readyTimeoutMs: timeout,
             });
             if (!h.ready) throw new Error("Vite not ready");
           });
-          if (selected("preview-first-byte"))
-            await measure("preview-first-byte", async (signal) => {
-              const preview = await active.preview(3000);
-              const attempts: string[] = [];
-              while (!signal.aborted) {
-                let retry = false;
-                try {
-                  const response = await fetch(preview.url, { headers: preview.headers, signal });
-                  const reader = response.body?.getReader();
-                  try {
-                    const first = await reader?.read();
-                    if (response.ok && first && !first.done && first.value.byteLength)
-                      return { attempts };
-                    if ([404, 502, 503, 504].includes(response.status)) {
-                      attempts.push(`HTTP ${response.status}`);
-                      retry = true;
-                    } else throw new Error(`Preview HTTP ${response.status}, no first byte`);
-                  } finally {
-                    await reader?.cancel();
-                  }
-                } catch (error) {
-                  if (
-                    error instanceof Error &&
-                    /certificate|socket|ECONN|fetch failed/i.test(error.message)
-                  ) {
-                    attempts.push(errorNote(error));
-                    retry = true;
-                  } else throw error;
-                }
-                if (retry) await new Promise((r) => setTimeout(r, 500));
+          if (selected("preview-first-byte")) {
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              const clock = new PhaseClock();
+              const result = await measure("preview-first-byte", async (signal) => {
+                if (preview.kind !== "success") throw new Error("Preview unavailable");
+                await firstByteAttempt(preview.result, signal, clock, (work) => { void pending.track(work); });
+                return { attempt };
+              }, {}, clock, { attempt });
+              if (result.kind === "success") {
+                if (dependencies.get("edit-loop") === "preview-first-byte") dependencies.delete("edit-loop");
+                break;
               }
-              throw new Error(
-                `Preview never served a first byte: ${attempts.slice(-3).join("; ")}`,
-              );
-            });
+              if (dependencies.has("preview-first-byte") || blockedBy || unsafe) break;
+              if (attempt < 3) await new Promise((r) => setTimeout(r, 500));
+            }
+          }
           if (selected("edit-loop"))
             await measure("edit-loop", async (signal) => {
               await active.files.edit("/workspace/bench-app/index.html", {
@@ -516,10 +535,11 @@ export async function runV2(
           continue;
         }
         if (group === "snapshot") {
+          const snapshotTotalStart = performance.now(), snapshotTotalAt = new Date().toISOString(), snapshotTotalHost = await host();
           let snapshotId: string | undefined;
           let snapshotReady = false;
           let clean: ((id: string) => Promise<void>) | undefined;
-          await measure("snapshot", async (signal) => {
+          const setup = await measure("snapshot-setup", async () => {
             if (!p.provider.capabilities.has("snapshot") || !p.provider.snapshot)
               throw new Skip("Provider has no snapshot");
             clean = await snapshotCleaner(p.name, p.provider, active.id);
@@ -536,9 +556,21 @@ export async function runV2(
               });
               await persist();
             }
-            const snap = snapshotId
-              ? await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId)
-              : await p.provider.snapshot(active.id);
+            return true;
+          });
+          if (setup.kind !== "success") {
+            dependencies.set("snapshot", "snapshot-setup");
+          }
+          const snapshotClock = new PhaseClock();
+          const snapshot = await measure("snapshot", async (signal) => {
+            if (!p.provider.snapshot) throw new Skip("Provider has no snapshot");
+            snapshotClock.begin();
+            let snap: { id: string };
+            try {
+              snap = snapshotId
+                ? await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId)
+                : await p.provider.snapshot(active.id);
+            } finally { snapshotClock.finish(); }
             snapshotId = snap.id;
             snapshotReady = true;
             owned.set(`${p.name}/snapshot/${snap.id}`, {
@@ -549,13 +581,14 @@ export async function runV2(
             });
             await persist();
             if (signal.aborted) {
-              await clean(snap.id);
+              await clean?.(snap.id);
               owned.delete(`${p.name}/snapshot/${snap.id}`);
               await persist();
               throw new Error("Late snapshot cleaned after timeout");
             }
             return { snapshotId: snap.id };
-          });
+          }, {}, snapshotClock);
+          await add("snapshot-total", "ms", snapshot.kind === "success" ? { kind: "sample", value: performance.now() - snapshotTotalStart } : setup.kind !== "success" ? setup.sample.outcome : snapshot.sample.outcome, snapshotTotalStart, snapshotTotalAt, snapshotTotalHost);
           if (snapshotId && clean) {
             const id = snapshotId;
             let restored: Sandbox | undefined;
@@ -621,6 +654,32 @@ export async function runV2(
           }
           continue;
         }
+        if (group === "perf") {
+          const probe = await measure("perf", async (signal) => {
+            if (!fp) throw new Error("Fingerprint required to size all-core benchmark");
+            const script = await readFile(new URL("../probes/perf.py", import.meta.url), "utf8");
+            const cores = Math.min(64, Math.ceil(resources(fp).cpu));
+            const output = await command(active,
+              `BENCH_CORES=${cores} python3 - <<'BENCH_PERF'\n${script}\nBENCH_PERF`, timeout, signal);
+            if (signal.aborted) throw new Error("Performance probe aborted");
+            return perfSchema.parse(JSON.parse(output));
+          });
+          // Publish exactly once, after the deadline race has settled. Persistence is not guest work.
+          const source = probe.sample;
+          for (const [metric, unit] of Object.entries(perfMetrics)) {
+            const value = probe.kind === "success" ? probe.result.metrics[metric] : undefined;
+            const outcome: Outcome = probe.kind !== "success" ? source.outcome : value === undefined
+              ? { kind: "failure", note: probe.result.notes.join("; ") || `Probe omitted ${metric}` }
+              : { kind: "sample", value };
+            const clock = new PhaseClock();
+            clock.start = 0; clock.end = source.durationMs;
+            clock.startedAt = source.startedAt; clock.finishedAt = source.finishedAt;
+            await add(metric, unit, outcome, 0, source.startedAt, source.hostBefore,
+              probe.kind === "success" ? probe.result : null, {}, clock, source.hostAfter);
+          }
+          continue;
+        }
+        const reconnectClock = group === "reconnect" ? new PhaseClock() : undefined;
         await measure(group, async (signal) => {
           switch (group) {
             case "command":
@@ -628,22 +687,27 @@ export async function runV2(
             case "files-1kb":
             case "files-10mb": {
               const size = group === "files-1kb" ? 1024 : 10 * 1024 * 1024;
-              const bytes = Uint8Array.from({ length: size }, (_, i) => i % 251),
-                path = `/workspace/bench-${size}.bin`;
+              const bytes = filePayloads.get(size);
+              if (!bytes) throw new Error("Unprepared file payload");
+              const path = `/workspace/bench-${size}.bin`;
               await active.files.write(path, bytes);
-              if (!Buffer.from(bytes).equals(await active.files.read(path, { as: "bytes" })))
+              if (!bytes.equals(await active.files.read(path, { as: "bytes" })))
                 throw new Error("File bytes differ");
               return { bytes: size };
             }
             case "reconnect": {
-              await active.close();
+              const previous = active;
               const start = performance.now();
+              reconnectClock?.begin();
               const connected = await connectSandbox(tracked, active.id);
               const api = performance.now() - start;
               await command(connected, "true", timeout, signal);
+              const firstCommandOKMs = performance.now() - start;
+              reconnectClock?.finish();
+              reconnectedHandles.push(previous);
               active = connected;
               box = connected;
-              return { connectReturnedMs: api, firstCommandOKMs: performance.now() - start };
+              return { connectReturnedMs: api, firstCommandOKMs };
             }
             case "pause-resume": {
               if (!p.provider.capabilities.has("pause") || !p.provider.pause || !p.provider.resume)
@@ -656,50 +720,6 @@ export async function runV2(
               const resumeReturnedMs = performance.now() - r;
               await command(active, "true", timeout, signal);
               return { pauseMs, resumeReturnedMs, resumeReadyMs: performance.now() - r };
-            }
-            case "perf": {
-              if (!fp) throw new Error("Fingerprint required to size all-core benchmark");
-              const perfStart = performance.now(),
-                perfAt = new Date().toISOString(),
-                perfHost = await host();
-              const script = await readFile(new URL("../probes/perf.py", import.meta.url), "utf8");
-              const cores = Math.min(64, Math.ceil(resources(fp).cpu));
-              const output = await command(
-                active,
-                `BENCH_CORES=${cores} python3 - <<'BENCH_PERF'\n${script}\nBENCH_PERF`,
-                timeout,
-                signal,
-              );
-              const data = perfSchema.parse(JSON.parse(output));
-              const start = perfStart,
-                at = perfAt,
-                before = perfHost;
-              for (const [metric, value] of Object.entries(data.metrics))
-                await add(
-                  metric,
-                  metric === "tcp-ms"
-                    ? "ms"
-                    : metric.includes("iops")
-                      ? "IOPS"
-                      : metric.startsWith("cpu")
-                        ? "iterations/s"
-                        : "MB/s",
-                  { kind: "sample", value },
-                  start,
-                  at,
-                  before,
-                  data,
-                );
-              for (const missing of ["network-mbps", "tcp-ms"].filter((n) => !(n in data.metrics)))
-                await add(
-                  missing,
-                  missing === "tcp-ms" ? "ms" : "MB/s",
-                  { kind: "failure", note: data.notes.join("; ") },
-                  start,
-                  at,
-                  before,
-                );
-              return data;
             }
             case "git-clone":
               return command(active, cloneCommand, timeout, signal);
@@ -724,7 +744,7 @@ export async function runV2(
             default:
               throw new Skip(`Unknown scenario ${group}`);
           }
-        });
+        }, {}, reconnectClock);
       }
     } finally {
       await barrier?.();
@@ -742,6 +762,10 @@ export async function runV2(
         unsafeProviders.add(p.name);
         state.stop = "Cleanup could not drain";
       }
+      // Provider clients are cached by sandbox ID, shared across local handles.
+      // Closing an old handle earlier would detach the newly connected handle too.
+      for (const previous of reconnectedHandles)
+        await measure("reconnect-cleanup", () => previous.close());
       const duration = performance.now() - lifeStart;
       const sourceCost = estimateCost(
         p.name, duration, fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
@@ -753,7 +777,7 @@ export async function runV2(
         state.estimatedUSD += reserve;
         state.stop ??= "Unknown cost/resources; reserved estimate charged to budget";
       }
-      await add(
+      const lifetime = await add(
         "sandbox-lifetime",
         "ms",
         { kind: "sample", value: duration },
@@ -763,13 +787,8 @@ export async function runV2(
         { estimatedCost: cost, restoredDurationMs },
         phases,
       );
-      const lifetime = report.samples.at(-1);
-      if (lifetime) lifetime.estimatedCost = cost;
-      if (!box) {
-        const last = report.samples.at(-1);
-        if (last)
-          last.outcome = { kind: "skipped", note: "Creation failed; billed lifetime unknown" };
-      }
+      lifetime.estimatedCost = cost;
+      if (!box) lifetime.outcome = { kind: "skipped", note: "Creation failed; billed lifetime unknown" };
       report.budgets[p.name] = {
         created: state.created,
         estimatedUSD: state.estimatedUSD,
@@ -791,7 +810,8 @@ export async function runV2(
     },
   );
   // Burst cohorts are isolated from normal iterations. K is bounded by configured account limits.
-  for (const k of config.bursts)
+  for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
+   for (const k of config.bursts)
     for (const p of ready) {
       const configured =
         config["account-limits"][p.name] ??
@@ -820,12 +840,13 @@ export async function runV2(
         if (++arrived === k) release();
         await gate;
       };
-      await Promise.all(Array.from({ length: k }, (_, i) => iteration(p, i, k, barrier)));
+      await Promise.all(Array.from({ length: k }, (_, i) => iteration(p, cohortIndex * k + i, k, barrier)));
       const cohort = report.samples.slice(offset).filter((s) => s.scenario === `burst-${k}/cold`);
       const success = cohort.filter((s) => s.outcome.kind === "sample").length;
+      const cohortHostAfter = await host();
       report.samples.push({
         provider: p.name,
-        iteration: 0,
+        iteration: cohortIndex,
         scenario: `burst-${k}/all-ready`,
         unit: "ms",
         startedAt: at,
@@ -844,10 +865,11 @@ export async function runV2(
               },
         phases: {},
         hostBefore: before,
-        hostAfter: await host(),
+        hostAfter: cohortHostAfter,
+        headroom: headroom(before, cohortHostAfter),
         fingerprint: null,
         estimatedCost: null,
-        details: { k, success, attempted: cohort.length },
+        details: { k, cohort: cohortIndex, success, attempted: cohort.length },
       });
     }
   for (const p of ready) {

@@ -48,7 +48,7 @@ it("runs the actual v2 memory consumer, stops at its creation budget, and preser
     );
     const { projectCosts } = await import("../src/projection.js");
     const projection = projectCosts({ ...report,
-      providers: [{ name: "boat", kind: "ready", note: "test" }],
+      providers: [{ name: "boat", kind: "ready", note: "test", configuredRegion: null }],
       samples: ["cold", "fingerprint", "perf", "command", "files-1kb", "files-10mb", "reconnect", "pause-resume", "snapshot", "create-from-snapshot", "snapshot-cleanup", "restore-fingerprint", "restore-destroy", "destroy"].map((scenario) => ({ ...score, scenario, durationMs: scenario === "restore-fingerprint" ? 10000 : 1000 })),
     });
     expect(projection[0]?.normal100).toBeCloseTo(0.035);

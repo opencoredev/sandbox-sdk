@@ -11,7 +11,8 @@ export interface HostSample {
 export type Outcome =
   | { kind: "sample"; value: number }
   | { kind: "failure"; note: string }
-  | { kind: "skipped"; note: string };
+  | { kind: "skipped"; note: string }
+  | { kind: "blocked"; blocked_by: string; note: string };
 export interface Sample {
   provider: string;
   iteration: number;
@@ -25,6 +26,7 @@ export interface Sample {
   phases: Record<string, number>;
   hostBefore: HostSample;
   hostAfter: HostSample;
+  headroom: ReturnType<typeof import("./publication.js").headroom>;
   fingerprint: Fingerprint | null;
   estimatedCost: number | null;
   details: unknown;
@@ -37,6 +39,7 @@ export interface Summary {
   success: ReturnType<typeof wilson>;
   failures: number;
   skipped: number;
+  blocked: number;
   estimatedCost: number | null;
   per1000: number | null;
   performancePerDollar: number | null;
@@ -47,10 +50,11 @@ export interface ReportV2 {
   timestamp: string;
   finishedAt: string;
   config: ConfigV2;
+  metadata: Awaited<ReturnType<typeof import("./publication.js").collectMetadata>>;
   host: { cpu: string; os: string; runtime: string };
   samples: Sample[];
   summaries: Summary[];
-  providers: { name: string; kind: "ready" | "skipped"; note: string }[];
+  providers: { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null }[];
   cleanup: { provider: string; remaining: string[]; error: string | null }[];
   budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;
   methodology: string[];

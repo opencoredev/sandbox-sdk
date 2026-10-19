@@ -1,0 +1,263 @@
+import { it, expect, vi, afterEach } from "vitest";
+import * as fs from "node:fs/promises";
+import { resolve } from "node:path";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import { runV2 } from "../src/v2-runner.js";
+import { parseV2 } from "../src/v2-config.js";
+import { PhaseClock, firstByteAttempt, perfMetrics, filePayloads } from "../src/measurement.js";
+import { headroom, collectMetadata } from "../src/publication.js";
+import { markdownV2, htmlV2 } from "../src/v2-report.js";
+import * as snapshots from "../src/snapshots.js";
+const fingerprint = { cpuModel: "fixture", flags: [], nproc: 64, cpuMax: "200000 100000", quotaCpus: 2,
+  memoryMax: "1073741824", memTotalBytes: 8 * 1024 ** 3, memoryBytes: 1024 ** 3, diskBytes: 10 * 1024 ** 3,
+  df: "", lsblk: "", virtualization: "", hypervisor: false, dmi: "", kernel: "test", distro: "test", user: "test", uid: 1000, sudo: false, stealPercent: 0, egress: null, tools: {}, runtime: "test" };
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, appendFile: vi.fn(original.appendFile), writeFile: vi.fn(original.writeFile) };
+});
+const dirs: string[] = [];
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true }))); });
+async function config(args: string[] = []) {
+  const dir = await fs.mkdtemp(resolve("results-test-")); dirs.push(dir);
+  return parseV2(["--runs", "1", "--bursts", "", "--scenarios", "command", "--out", dir, ...args]);
+}
+function fake(overrides: Partial<Provider> = {}): Provider {
+  const backing = memory();
+  return { ...backing, exec: async (id, input) => {
+    if (input.command.includes("BENCH_FINGERPRINT")) {
+      input.onChunk({ stream: "stdout", text: JSON.stringify(fingerprint) });
+      return { exitCode: 0, timedOut: false };
+    }
+    return backing.exec(id, input);
+  }, ...overrides };
+}
+const ready = (name: string, provider: Provider, region: string | null = null) => ({ kind: "ready" as const, name, provider, region, cloud: false });
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+it("keeps lifetime corrections on their own sample during concurrent appends (finding 1)", async () => {
+  let releaseFailed = () => {}, startHealthy = () => {};
+  const failedGate = new Promise<void>((r) => { releaseFailed = r; });
+  const healthyGate = new Promise<void>((r) => { startHealthy = r; });
+  const append = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).appendFile;
+  vi.spyOn(fs, "appendFile").mockImplementation(async (path, data, options) => {
+    const text = String(data);
+    if (text.includes('"scenario":"sandbox-lifetime"') && text.includes('"provider":"boat"')) {
+      startHealthy(); await failedGate;
+    }
+    if (text.includes('"scenario":"sandbox-lifetime"') && text.includes('"provider":"healthy"')) releaseFailed();
+    await append(path, data, options);
+  });
+  const backing = memory();
+  const failed = fake({ create: async () => { throw new Error("create rejected"); } });
+  const healthy = fake({ create: async (input) => { await healthyGate; return backing.create(input); },
+    exec: backing.exec, destroy: backing.destroy, files: backing.files });
+  const report = await runV2([ready("boat", failed), ready("healthy", healthy)], await config(["--concurrency", "2"]), async () => {});
+  expect(report.samples.find((s) => s.provider === "boat" && s.scenario === "sandbox-lifetime")?.outcome.kind).toBe("skipped");
+  expect(report.samples.find((s) => s.provider === "healthy" && s.scenario === "sandbox-lifetime")?.outcome.kind).toBe("sample");
+  expect(report.samples.find((s) => s.provider === "boat" && s.scenario === "sandbox-lifetime")?.estimatedCost).toBeGreaterThan(0);
+  expect(report.samples.find((s) => s.provider === "healthy" && s.scenario === "sandbox-lifetime")?.estimatedCost).toBeNull();
+});
+
+it.each(["command-error", "timeout", "invalid-json", "missing-metrics"])("records every expected metric failure for %s (finding 2)", async (mode) => {
+  const provider = fake(); const original = provider.exec;
+  provider.exec = async (id, input) => {
+    if (!input.command.includes("BENCH_PERF")) return original(id, input);
+    if (mode === "command-error") throw new Error("probe failed");
+    if (mode === "timeout") return new Promise<import("@opencoredev/sandbox-sdk/provider").ExecResult>((_resolve, reject) => {
+      input.signal?.addEventListener("abort", () => reject(new Error("probe aborted")), { once: true });
+    });
+    input.onChunk({ stream: "stdout", text: mode === "invalid-json" ? "invalid" : JSON.stringify({ metrics: {}, notes: [], workers: 2, method: "fixture" }) });
+    return { exitCode: 0, timedOut: false };
+  };
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "100"]), async () => {});
+  for (const metric of Object.keys(perfMetrics)) {
+    const rows = report.samples.filter((s) => s.scenario === metric);
+    expect(rows).toHaveLength(1); expect(rows[0]?.outcome.kind).toBe("failure");
+    expect(report.summaries.find((s) => s.scenario === metric)?.success?.rate).toBe(0);
+  }
+});
+
+it("attributes downstream work to a failed resume and excludes it from independent reliability (finding 3)", async () => {
+  const provider = fake({ capabilities: new Set(["pause"]), pause: async () => {}, resume: async () => { throw new Error("resume failed"); } });
+  // Seed 3 places resume before command.
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "pause-resume,command", "--seed", "3"]), async () => {});
+  const pause = report.samples.findIndex((s) => s.scenario === "pause-resume");
+  const command = report.samples.findIndex((s) => s.scenario === "command");
+  expect(pause).toBeLessThan(command);
+  expect(report.samples[command]?.outcome).toMatchObject({ kind: "blocked", blocked_by: "pause-resume" });
+  expect(report.summaries.find((s) => s.scenario === "command")).toMatchObject({ failures: 0, blocked: 1, success: null });
+});
+
+it("does not close the working handle when reconnect fails (finding 3)", async () => {
+  let closes = 0;
+  const provider = fake({ connect: async () => { throw new Error("connect failed"); }, close: async () => { closes++; } });
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "reconnect"]), async () => {});
+  expect(report.samples.find((s) => s.scenario === "reconnect")?.outcome.kind).toBe("failure");
+  expect(closes).toBe(0);
+});
+
+it("transfers precomputed file buffers with no payload generation inside the timer (finding 4)", async () => {
+  const provider = fake(); const write = provider.files.write;
+  const transferred: Uint8Array[] = [];
+  const wrapped = { ...provider, files: { ...provider.files, write: async (id: string, path: string, bytes: Uint8Array) => { if (path.endsWith("bench-10485760.bin")) transferred.push(bytes); await write(id, path, bytes); } } } satisfies Provider;
+  const from = vi.spyOn(Uint8Array, "from");
+  const report = await runV2([ready("fixture", wrapped)], await config(["--scenarios", "files-10mb"]), async () => {});
+  expect(report.samples.find((s) => s.scenario === "files-10mb")?.outcome.kind).toBe("sample");
+  expect(transferred[0]).toBe(filePayloads.get(10485760));
+  expect(from.mock.calls.some(([value]) => typeof value === "object" && value !== null && "length" in value && value.length === 10485760)).toBe(false);
+});
+
+it("ends first-byte timing before asynchronous reader cancellation (finding 5)", async () => {
+  let finishCancel = () => {};
+  const cancel = new Promise<void>((r) => { finishCancel = r; });
+  vi.stubGlobal("fetch", async () => new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array([1])); }, cancel() { return cancel; } })));
+  const clock = new PhaseClock(); const cleanups: Promise<void>[] = [];
+  await firstByteAttempt({ url: "https://preview.invalid" }, new AbortController().signal, clock, (p) => { cleanups.push(p); });
+  const elapsed = clock.elapsed(); await wait(40);
+  expect(clock.elapsed()).toBe(elapsed); expect(cleanups).toHaveLength(1);
+  finishCancel(); await Promise.all(cleanups);
+});
+
+it("times only native snapshot API, excluding cleanup-client setup and journals (finding 6)", async () => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockImplementation(async () => { await wait(70); return async () => {}; });
+  const write = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).writeFile;
+  vi.spyOn(fs, "writeFile").mockImplementation(async (path, data, options) => {
+    if (String(path).endsWith("ownership.json")) await wait(40);
+    return write(path, data, options);
+  });
+  const provider = fake({ capabilities: new Set(["snapshot"]), snapshot: async () => { await wait(10); return { id: "fixture-snapshot" }; } });
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "snapshot"]), async () => {});
+  const api = report.samples.find((s) => s.scenario === "snapshot");
+  const total = report.samples.find((s) => s.scenario === "snapshot-total");
+  if (api?.outcome.kind !== "sample" || total?.outcome.kind !== "sample") throw new Error("Expected snapshot timings");
+  expect(total.outcome.value - api.outcome.value).toBeGreaterThanOrEqual(60);
+  expect(api.durationMs).toBe(api.outcome.value);
+  expect(api.outcome.value).toBeLessThan(40);
+});
+
+it("retains configured region, collection metadata and repeated burst cohorts in reports (finding 7/publication)", async () => {
+  const report = await runV2([ready("boat", fake(), "us-fixture")], await config(["--scenarios", "burst", "--bursts", "2", "--burst-cohorts", "3"]), async () => {});
+  expect(report.providers[0]?.configuredRegion).toBe("us-fixture");
+  const rows = report.samples.filter((s) => s.scenario === "burst-2/all-ready");
+  expect(rows.map((s) => s.iteration)).toEqual([0, 1, 2]);
+  expect(report.summaries.find((s) => s.scenario === "burst-2/all-ready")?.stats.count).toBe(3);
+  expect(report.metadata.repositoryCommit).toMatch(/^[a-f0-9]{40}$/);
+  expect(report.metadata.sdkVersion).toBeTruthy();
+  expect(markdownV2(report)).toContain("us-fixture"); expect(htmlV2(report)).toContain("us-fixture");
+  expect(markdownV2(report)).toContain("Client headroom"); expect(htmlV2(report)).toContain("collection metadata");
+});
+
+it("flags high host load and derives CPU/network deltas without treating them as provider-only traffic", () => {
+  const before = { timestamp: "2026-01-01T00:00:00Z", load: [3], cpu: { user: 0, system: 0 }, cpuTicks: [[0, 0, 0, 100, 0]], network: "eth0: 100 0 0 0 0 0 0 0 200" };
+  const after = { ...before, timestamp: "2026-01-01T00:00:02Z", cpuTicks: [[90, 0, 0, 110, 0]], network: "eth0: 300 0 0 0 0 0 0 0 600" };
+  expect(headroom(before, after)).toMatchObject({ highLoad: true, normalizedLoad: 3, hostCpuBusy: 0.9, rxBytesPerSecond: 100, txBytesPerSecond: 200 });
+});
+
+
+it("separates provisioning, dev start and individual retry attempts (finding 5)", async () => {
+  const provider = fake(); const exec = provider.exec;
+  provider.exec = async (id, input) => input.command.includes("npm ci") ? { exitCode: 0, timedOut: false } : exec(id, input);
+  let provisions = 0;
+  provider.previewUrl = async () => { provisions++; await wait(50); return { url: "https://preview.invalid" }; };
+  provider.startProcess = async (_id, input) => {
+    input.onChunk({ stream: "stdout", text: "Local: http://fixture:3000\n" });
+    return { pid: 1, wait: () => new Promise(() => {}), stop: async () => {} };
+  };
+  let requests = 0;
+  vi.stubGlobal("fetch", async () => new Response(new ReadableStream<Uint8Array>({
+    start(c) { c.enqueue(new Uint8Array([1])); }, cancel: () => wait(80),
+  }), { status: ++requests === 1 ? 502 : 200 }));
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "preview-first-byte"]), async () => {});
+  expect(provisions).toBe(1);
+  const provision = report.samples.find((s) => s.scenario === "preview-provisioning");
+  const dev = report.samples.find((s) => s.scenario === "dev-server");
+  expect(provision?.outcome.kind).toBe("sample"); expect(dev?.outcome.kind).toBe("sample");
+  expect(Date.parse(dev?.startedAt ?? "")).toBeGreaterThanOrEqual(Date.parse(provision?.finishedAt ?? ""));
+  const attempts = report.samples.filter((s) => s.scenario === "preview-first-byte");
+  expect(attempts.map((s) => s.outcome.kind)).toEqual(["failure", "sample"]);
+  expect(attempts.map((s) => s.details)).toEqual([{ attempt: 1 }, { attempt: 2 }]);
+  expect(attempts.every((s) => s.durationMs < 80)).toBe(true);
+  expect(Date.parse(attempts[1]?.startedAt ?? "") - Date.parse(attempts[0]?.finishedAt ?? "")).toBeGreaterThanOrEqual(450);
+  expect(report.summaries.find((s) => s.scenario === "preview-first-byte")?.success?.rate).toBe(0.5);
+});
+
+
+it("records client egress geography and runtime/commit metadata without provider calls", async () => {
+  const lookup = vi.fn(async () => Response.json({ ip: "203.0.113.1", region: "fixture-region", country: "ZZ" }));
+  vi.stubGlobal("fetch", lookup);
+  const metadata = await collectMetadata(true);
+  expect(lookup).toHaveBeenCalledOnce();
+  expect(metadata.clientLocation).toEqual({ ip: "203.0.113.1", region: "fixture-region", country: "ZZ" });
+  expect(metadata.harnessCommit).toMatch(/^[a-f0-9]{40}$/); expect(metadata.sdkCommit).toMatch(/^[a-f0-9]{40}$/);
+  expect(metadata.runtimes.node).toBe(process.version);
+});
+
+it("publishes each perf metric once even when metric persistence exceeds the guest deadline", async () => {
+  const append = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).appendFile;
+  vi.spyOn(fs, "appendFile").mockImplementation(async (path, data, options) => {
+    if (String(data).includes('"scenario":"cpu-single"')) await wait(120);
+    return append(path, data, options);
+  });
+  const provider = fake(); const exec = provider.exec;
+  provider.exec = async (id, input) => {
+    if (!input.command.includes("BENCH_PERF")) return exec(id, input);
+    input.onChunk({ stream: "stdout", text: JSON.stringify({ metrics: Object.fromEntries(Object.keys(perfMetrics).map((key) => [key, 1])), notes: [], workers: 2, method: "fixture" }) });
+    return { exitCode: 0, timedOut: false };
+  };
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "80"]), async () => {});
+  for (const metric of Object.keys(perfMetrics)) {
+    const rows = report.samples.filter((s) => s.scenario === metric);
+    expect(rows).toHaveLength(1); expect(rows[0]?.outcome.kind).toBe("sample");
+    const probe = report.samples.find((s) => s.scenario === "perf");
+    expect(probe?.outcome.kind).toBe("sample");
+    expect(rows[0]?.hostAfter).toEqual(probe?.hostAfter);
+    expect(rows[0]?.headroom).toEqual(probe?.headroom);
+  }
+});
+
+it("blocks restored fingerprint after failed restored readiness while still destroying the restore", async () => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake(); let restoredId: string | undefined; let creates = 0;
+  const provider = { ...backing, capabilities: new Set(["snapshot"]), snapshot: async () => ({ id: "fixture-snapshot" }),
+    create: async (input: Parameters<Provider["create"]>[0]) => { const result = await backing.create(input); if (++creates === 2) restoredId = result.id; return result; },
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => { if (id === restoredId) throw new Error("restored VM unavailable"); return backing.exec(id, input); },
+  } satisfies Provider;
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "snapshot"]), async () => {});
+  expect(report.samples.find((s) => s.scenario === "create-from-snapshot")?.outcome.kind).toBe("failure");
+  expect(report.samples.find((s) => s.scenario === "restore-fingerprint")?.outcome).toMatchObject({ kind: "blocked", blocked_by: "create-from-snapshot" });
+  expect(report.samples.find((s) => s.scenario === "restore-destroy")?.outcome.kind).toBe("sample");
+  expect(report.summaries.find((s) => s.scenario === "restore-fingerprint")).toMatchObject({ failures: 0, blocked: 1, success: null });
+});
+
+it.each(["native-failure", "unsupported", "setup-failure"])("preserves the %s outcome in snapshot-total", async (mode) => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockImplementation(async () => { if (mode === "setup-failure") throw new Error("setup unavailable"); return async () => {}; });
+  const provider = fake({ capabilities: new Set(mode === "unsupported" ? [] : ["snapshot"]), snapshot: async () => { throw new Error("native snapshot failed"); } });
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "snapshot"]), async () => {});
+  expect(report.samples.find((s) => s.scenario === "snapshot-total")?.outcome.kind).toBe(mode === "unsupported" ? "skipped" : "failure");
+});
+
+it("excludes slow previous-handle cleanup from reconnect readiness", async () => {
+  const provider = fake({ close: async () => { await wait(150); } });
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "reconnect"]), async () => {});
+  const row = report.samples.find((s) => s.scenario === "reconnect");
+  expect(row?.outcome.kind).toBe("sample"); expect(row?.durationMs).toBeLessThan(80);
+  expect(row?.details).toMatchObject({ firstCommandOKMs: expect.any(Number) });
+  if (typeof row?.details !== "object" || row.details === null || !("firstCommandOKMs" in row.details)) throw new Error("Missing readiness phase");
+  expect(row.details.firstCommandOKMs).toBeLessThan(80);
+  expect(report.samples.find((s) => s.scenario === "reconnect-cleanup")?.durationMs).toBeGreaterThanOrEqual(140);
+});
+
+it("keeps shared provider attachment alive for scenarios following reconnect", async () => {
+  const backing = fake(); let attached = true;
+  const provider = { ...backing, connect: async (id: string) => { attached = true; return backing.connect(id); },
+    close: async () => { attached = false; },
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => { if (!attached) throw new Error("Provider cache detached"); return backing.exec(id, input); },
+  } satisfies Provider;
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "reconnect,command", "--seed", "2"]), async () => {});
+  const reconnect = report.samples.findIndex((s) => s.scenario === "reconnect");
+  const command = report.samples.findIndex((s) => s.scenario === "command");
+  expect(reconnect).toBeLessThan(command); expect(report.samples[command]?.outcome.kind).toBe("sample");
+  expect(report.samples.findIndex((s) => s.scenario === "reconnect-cleanup")).toBeGreaterThan(report.samples.findIndex((s) => s.scenario === "destroy"));
+  expect(attached).toBe(false);
+});
