@@ -41,7 +41,9 @@ const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
 const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/upstash-runs; true`;
 type Metadata = { version: 1; key?: string; labels: Labels };
 function metadata(text: string): Metadata {
-  const value: unknown = JSON.parse(text);
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch { throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" }); }
   if (
     !value ||
     typeof value !== "object" ||
@@ -53,10 +55,10 @@ function metadata(text: string): Metadata {
     Array.isArray(value.labels) ||
     ("key" in value && typeof value.key !== "string")
   )
-    throw new Error("Invalid sandbox metadata");
+    throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" });
   const labels: Labels = {};
   for (const [key, item] of Object.entries(value.labels)) {
-    if (typeof item !== "string") throw new Error("Invalid sandbox label");
+    if (typeof item !== "string") throw new SandboxError("Invalid SDK label", { code: "not_found", provider: "upstash" });
     Object.defineProperty(labels, key, {
       value: item,
       enumerable: true,

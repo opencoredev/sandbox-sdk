@@ -95,6 +95,8 @@ export async function reapSandboxes(provider: Provider, options: { olderThanMs?:
       finally { await box.close(); }
     }
     if (isActive(provider.name, info.id)) continue;
-    await provider.destroy(info.id); count++; } return count; }
+    try { await provider.destroy(info.id); }
+    catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; }
+    count++; } return count; }
   catch (error) { throw new Redactor().error(error, provider.name); }
 }

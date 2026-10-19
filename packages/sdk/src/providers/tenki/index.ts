@@ -231,7 +231,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
                 ([key, expected]) => value.metadata[key] === expected,
               ),
           )
-          .map(info),
+          .flatMap(value => {
+            try { return [info(value)]; }
+            catch (error) { if (tenkiError(error).code !== "not_found") throw error; return []; }
+          }),
       ),
     async find(key) {
       const found = (await provider.list({ [keyTag]: key }))[0];

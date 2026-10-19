@@ -108,7 +108,12 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     }),
     find: key => safe(undefined, async () => { try { const box = await attach(keyName(key)); return box.tags?.["sandbox-sdk"] === "1" && box.tags[keyTag] === key ? info(box) : undefined; } catch (error) { if (vercelError(error).code === "not_found") return undefined; throw error; } }),
     connect: id => safe(id, async () => info(await attach(id))),
-    list: labels => safe(undefined, async () => { const result: SandboxInfo[] = []; for await (const entry of await (await load()).list({ ...credentials(), tags: { "sandbox-sdk": "1" } })) { const item = info(await attach(entry.name)); if (Object.entries(labels).every(([k, v]) => item.labels[k] === v)) result.push(item); } return result; }),
+    list: labels => safe(undefined, async () => { const result: SandboxInfo[] = []; for await (const entry of await (await load()).list({ ...credentials(), tags: { "sandbox-sdk": "1" } })) {
+      try {
+        const item = info(await attach(entry.name));
+        if (item.labels["sandbox-sdk"] === "1" && Object.entries(labels).every(([k, v]) => item.labels[k] === v)) result.push(item);
+      } catch (error) { if (vercelError(error, entry.name).code !== "not_found") throw error; }
+    } return result; }),
     destroy: id => safe(id, async () => { try { await (await get(id)).delete(); } catch (error) { if (vercelError(error).code !== "not_found") throw error; } boxes.delete(id); }),
     exec: (id, input) => safe(id, async () => {
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
