@@ -181,6 +181,11 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
               provider: "upstash",
             });
           await value.files.mkdir("/workspace", { parents: true });
+          const workspace = await value.exec.command(
+            'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace',
+          );
+          if (workspace.exitCode !== 0)
+            throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use an Upstash runtime with sudo -n access.", { code: "provider", provider: "upstash", sandboxId: value.id });
           await value.files.mkdir(posix.dirname(metadataPath), { parents: true });
           const meta: Metadata = {
             version: 1,

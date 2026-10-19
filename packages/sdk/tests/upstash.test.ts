@@ -210,3 +210,20 @@ describe("Upstash Box mappings", () => {
     await expect(factory().connect("missing")).rejects.toMatchObject({ code: "not_found" });
   });
 });
+
+test("creation makes an initially unwritable workspace usable for files and git", async () => {
+  const { promises: fs } = await import("node:fs");
+  const create = MockBox.create.bind(MockBox);
+  let guest: MockBox | undefined;
+  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
+    guest = await create(params);
+    await fs.mkdir(`${guest.root}/workspace`, { mode: 0o111 });
+    return guest;
+  });
+  try {
+    const box = await createSandbox(factory());
+    await box.files.write("app/file", "writable");
+    expect(await box.files.read("app/file")).toBe("writable");
+    expect((await box.run("git init repo")).ok).toBe(true);
+  } finally { if (guest) await fs.chmod(`${guest.root}/workspace`, 0o755).catch(() => {}); }
+});

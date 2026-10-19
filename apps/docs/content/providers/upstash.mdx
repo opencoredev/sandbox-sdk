@@ -28,6 +28,8 @@ The provider reads `UPSTASH_BOX_API_KEY` and creates a small box using Upstash's
 
 ## Configuration
 
+Creation makes `/workspace` writable by the guest user. The default runtime needs passwordless `sudo -n` for this one-time directory setup. Creation fails if the workspace remains unwritable.
+
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";

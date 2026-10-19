@@ -72,6 +72,8 @@ export class MockBox {
   }
   rewrite(text: string) {
     return text
+      // Emulate the guest's passwordless install using the host-owned test root.
+      .replace(/sudo -n install/g, "install")
       .replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) => this.map(path))
       .replace(/\.listen\(3000/g, `.listen(${this.port}`);
   }
