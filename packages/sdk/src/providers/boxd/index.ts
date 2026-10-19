@@ -96,15 +96,17 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
   }
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
-    const value: unknown = JSON.parse(
-      new TextDecoder().decode(await (await api()).machines.files.download(m.id, marker)),
-    );
+    const text = new TextDecoder().decode(await (await api()).machines.files.download(m.id, marker));
+    let value: unknown;
+    try { value = JSON.parse(text); }
+    catch { throw failure("Invalid SDK metadata", "not_found", m.id); }
     if (
       !value ||
       typeof value !== "object" ||
       !("labels" in value) ||
       !value.labels ||
       typeof value.labels !== "object" ||
+      Array.isArray(value.labels) ||
       !("createdAt" in value) ||
       typeof value.createdAt !== "number" ||
       !("key" in value) ||

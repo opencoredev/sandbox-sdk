@@ -432,3 +432,67 @@ test("paging cancellation preserves split UTF-8 characters across recovery", asy
     await box.destroy();
   }
 });
+
+describe("Freestyle resilient discovery", () => {
+  test("skips legacy missing, invalid and concurrently deleted metadata without hiding healthy VMs", async () => {
+    const healthy = await createSandbox(factory(), { labels: { group: "list-regression" } });
+    const damaged = await createSandbox(factory());
+    try {
+      const damagedVm = freestyleState.boxes.get(damaged.id);
+      if (!damagedVm) throw new Error("Missing mock VM");
+      delete damagedVm.record.metadata["sandbox-sdk-info"];
+      for (const body of ["{", JSON.stringify({ key: null, labels: { bad: 2 } })]) {
+        const read = vi.spyOn(damaged.native.fs, "readTextFile").mockResolvedValue(body);
+        expect((await factory().list({})).map(v => v.id)).toContain(healthy.id);
+        expect((await factory().list({})).map(v => v.id)).not.toContain(damaged.id);
+        read.mockRestore();
+      }
+      for (const status of [404, 401, 503, 429]) {
+        const read = vi.spyOn(damaged.native.fs, "readTextFile").mockRejectedValue(Object.assign(new Error("native read"), { status }));
+        if (status === 404) expect((await factory().list({})).map(v => v.id)).toEqual([healthy.id]);
+        else await expect(factory().list({})).rejects.toMatchObject({ code: status === 401 ? "auth" : status === 503 ? "unavailable" : "quota" });
+        read.mockRestore();
+      }
+      damagedVm.record.metadata = {};
+      expect((await factory().list({})).map(v => v.id)).toEqual([healthy.id]);
+    } finally { await damaged.destroy(); await healthy.destroy(); }
+  });
+  test("surfaces native list failures even with an empty account", async () => {
+    try {
+      for (const [status, code] of [[401, "auth"], [503, "unavailable"], [429, "quota"]] as const) {
+        freestyleState.listError = status;
+        await expect(factory().list({})).rejects.toMatchObject({ code });
+      }
+    } finally { freestyleState.listError = 0; }
+  });
+  test("native create metadata makes a pre-setup orphan reapable only by its own run", async () => {
+    const run = "orphan-run-43";
+    const box = await createSandbox(factory(), { labels: { "sandbox-bench-run": run } });
+    try {
+      const params = freestyleState.creates.at(-1);
+      expect(params?.metadata?.["sandbox-sdk-info"]).toBeDefined();
+      const read = vi.spyOn(box.native.fs, "readTextFile").mockRejectedValue(Object.assign(new Error("missing marker"), { status: 404 }));
+      const { listSandboxes, reapSandboxes } = await import("../src/index.js");
+      expect((await listSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).map(v => v.id)).toEqual([box.id]);
+      await expect(connectSandbox(factory(), box.id)).rejects.toMatchObject({ code: "not_found" });
+      expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": "another-run" } })).toBe(0);
+      expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).toBe(1);
+      read.mockRestore();
+    } finally { await box.destroy(); }
+  });
+});
+
+test("Freestyle native ownership fits the documented limits and rejects overflow before allocation", async () => {
+  const provider = factory();
+  const labels = { "sandbox-sdk": "1", unicode: "雪".repeat(200), "sandbox-bench-run": "chunked-run" };
+  const box = await createSandbox(provider, { labels });
+  try {
+    const metadata = freestyleState.creates.at(-1)?.metadata ?? {};
+    expect(Object.keys(metadata).length).toBeLessThanOrEqual(64);
+    expect(Object.entries(metadata).every(([key, value]) => key.length <= 63 && value.length <= 63)).toBe(true);
+    expect((await factory().list({ unicode: labels.unicode })).find(v => v.id === box.id)?.labels).toEqual(labels);
+    const before = freestyleState.creates.length;
+    await expect(provider.create({ labels: { oversized: "x".repeat(4000) } })).rejects.toMatchObject({ code: "unsupported" });
+    expect(freestyleState.creates.length).toBe(before);
+  } finally { await box.destroy(); }
+});

@@ -85,3 +85,16 @@ describe("Vercel adapter", { timeout: 30_000 }, () => {
     expect(vercelError({ code: "ENOENT" }, "box").code).toBe("file_not_found");
   });
 });
+
+
+test("Vercel listing skips a VM deleted after the native list but preserves auth failures", async () => {
+  const { vi } = await import("vitest");
+  const box = await createSandbox(provider());
+  const get = vi.spyOn(mock.client, "get");
+  try {
+    get.mockRejectedValue(Object.assign(new Error("gone"), { response: new Response(null, { status: 404 }) }));
+    expect(await provider().list({})).toEqual([]);
+    get.mockRejectedValue(Object.assign(new Error("denied"), { response: new Response(null, { status: 401 }) }));
+    await expect(provider().list({})).rejects.toMatchObject({ code: "auth" });
+  } finally { get.mockRestore(); await box.destroy(); }
+});

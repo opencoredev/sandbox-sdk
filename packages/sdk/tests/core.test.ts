@@ -119,3 +119,12 @@ describe("core safety guarantees", () => {
   test("memory honors hard lifetime", async () => { const provider = memory(); const box = await createSandbox(provider, { timeoutMs: 20 }); await pause(40); await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" }); });
 
 });
+
+
+test("reaping tolerates deletion after listing and still surfaces auth failures", async () => {
+  const backing = memory();
+  await createSandbox(backing, { labels: { run: "race" } });
+  const provider: Provider = { ...backing, destroy: async () => { throw new SandboxError("Already gone", { code: "not_found", provider: "memory" }); } };
+  expect(await reapSandboxes(provider, { labels: { run: "race" } })).toBe(1);
+  await expect(reapSandboxes({ ...provider, destroy: async () => { throw new SandboxError("Denied", { code: "auth", provider: "memory" }); } })).rejects.toMatchObject({ code: "auth" });
+});

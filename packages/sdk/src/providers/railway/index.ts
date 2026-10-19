@@ -19,10 +19,12 @@ const marker = "/tmp/.sandbox-sdk/railway.json";
 const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
 type Metadata = { version: 1; key?: string; labels: Labels };
 function metadata(text: string): Metadata {
-  const data: unknown = JSON.parse(text);
-  if (typeof data !== "object" || data === null || !("version" in data) || data.version !== 1 || !("labels" in data) || typeof data.labels !== "object" || data.labels === null || Array.isArray(data.labels) || ("key" in data && data.key !== undefined && typeof data.key !== "string")) throw new Error("Invalid Railway SDK metadata");
+  let data: unknown;
+  try { data = JSON.parse(text); }
+  catch { throw new SandboxError("Invalid Railway SDK metadata", { code: "not_found", provider: "railway" }); }
+  if (typeof data !== "object" || data === null || !("version" in data) || data.version !== 1 || !("labels" in data) || typeof data.labels !== "object" || data.labels === null || Array.isArray(data.labels) || ("key" in data && data.key !== undefined && typeof data.key !== "string")) throw new SandboxError("Invalid Railway SDK metadata", { code: "not_found", provider: "railway" });
   const labels: Labels = {};
-  for (const [key, value] of Object.entries(data.labels)) { if (typeof value !== "string") throw new Error("Invalid Railway SDK label"); Object.defineProperty(labels, key, { value, enumerable: true }); }
+  for (const [key, value] of Object.entries(data.labels)) { if (typeof value !== "string") throw new SandboxError("Invalid Railway SDK label", { code: "not_found", provider: "railway" }); Object.defineProperty(labels, key, { value, enumerable: true }); }
   return { version: 1, key: "key" in data && typeof data.key === "string" ? data.key : undefined, labels };
 }
 function info(box: Sandbox, data: Metadata): SandboxInfo {

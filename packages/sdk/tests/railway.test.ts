@@ -122,3 +122,21 @@ test("run preserves Railway's native Bash command dialect", async () => {
     expect(await box.run('items=(one two); [[ ${items[1]} == two ]] && printf bash')).toMatchObject({ ok: true, stdout: "bash" });
   } finally { await box.destroy(); }
 });
+
+
+test("Railway listing skips malformed guest metadata and preserves auth failures", async () => {
+  const box = await createSandbox(railway(options));
+  const native = mock.state.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock sandbox");
+  const read = vi.spyOn(native.files, "read");
+  try {
+    for (const body of ["{", JSON.stringify({ version: 1, labels: { bad: 2 } })]) {
+      read.mockResolvedValue(body);
+      expect(await listSandboxes(railway(options))).toEqual([]);
+    }
+    read.mockRejectedValue(Object.assign(new Error("gone"), { status: 404 }));
+    expect(await listSandboxes(railway(options))).toEqual([]);
+    read.mockRejectedValue(Object.assign(new Error("denied"), { status: 401 }));
+    await expect(listSandboxes(railway(options))).rejects.toMatchObject({ code: "auth" });
+  } finally { read.mockRestore(); await box.destroy(); }
+});

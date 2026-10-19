@@ -19,6 +19,15 @@ export interface FreestyleOptions {
 }
 export type FreestyleProvider = Provider<Vm, "pause" | "snapshot" | "network-policy">;
 const marker = "/var/lib/sandbox-sdk.json";
+// Native metadata is committed with VM allocation, before guest setup can be
+// interrupted. Freestyle allows 64 entries with at most 63 characters each.
+const nativeInfo = "sandbox-sdk-info";
+function creationMetadata(input: CreateInput): Record<string, string> {
+  const encoded = Buffer.from(JSON.stringify({ key: input.key ?? null, labels: input.labels })).toString("base64url");
+  const chunks = encoded.match(/.{1,63}/g) ?? [];
+  if (chunks.length > 62) throw failure("Key and labels exceed Freestyle's native metadata budget", "unsupported");
+  return { "sandbox-sdk": "1", [nativeInfo]: String(chunks.length), ...Object.fromEntries(chunks.map((chunk, i) => [`${nativeInfo}-${i}`, chunk])) };
+}
 const envFile = "/var/lib/sandbox-sdk-env.json";
 function seconds(value: number | undefined, hard: boolean) {
   if (value === undefined) return undefined;
@@ -121,9 +130,23 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
     };
   }
-  async function info(data: VmData): Promise<SandboxInfo> {
+  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
     if (data.metadata["sandbox-sdk"] !== "1") throw failure("Not an SDK VM", "not_found", data.id);
-    const value: unknown = JSON.parse(await (await vm(data.id)).fs.readTextFile(marker));
+    let text: string;
+    if (nativeOwnership && data.metadata[nativeInfo] !== undefined) {
+      const count = Number(data.metadata[nativeInfo]);
+      if (!Number.isInteger(count) || count < 1 || count > 62) throw failure("Invalid SDK metadata", "not_found", data.id);
+      let encoded = "";
+      for (let i = 0; i < count; i++) {
+        const chunk = data.metadata[`${nativeInfo}-${i}`];
+        if (!chunk || !/^[A-Za-z0-9_-]{1,63}$/.test(chunk)) throw failure("Invalid SDK metadata", "not_found", data.id);
+        encoded += chunk;
+      }
+      text = Buffer.from(encoded, "base64url").toString();
+    } else text = await (await vm(data.id)).fs.readTextFile(marker);
+    let value: unknown;
+    try { value = JSON.parse(text); }
+    catch { throw failure("Invalid SDK metadata", "not_found", data.id); }
     if (
       !value ||
       typeof value !== "object" ||
@@ -131,7 +154,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
       (value.key !== null && typeof value.key !== "string") ||
       !("labels" in value) ||
       !value.labels ||
-      typeof value.labels !== "object"
+      (typeof value.labels !== "object" || Array.isArray(value.labels))
     )
       throw failure("Invalid SDK metadata", "not_found", data.id);
     const labels: Record<string, string> = {};
@@ -175,7 +198,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
             throw failure("Creation aborted", "aborted");
           const params: CreateVmOptions = {
             snapshotId: input.from ?? options.snapshotId ?? "freestyle/ubuntu",
-            metadata: { "sandbox-sdk": "1" },
+            metadata: creationMetadata(input),
             firewall: { rules: firewall },
             tls: { rules: [] },
             vpcs: [],
@@ -263,8 +286,12 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
           const page = await (await api()).vms.list({ limit: 100, offset });
           for (const data of page.vms) {
             if (data.metadata["sandbox-sdk"] !== "1") continue;
-            const v = await info(data);
-            if (Object.entries(labels).every(([k, x]) => v.labels[k] === x)) result.push(v);
+            try {
+              const v = await info(data, true);
+              if (Object.entries(labels).every(([k, x]) => v.labels[k] === x)) result.push(v);
+            } catch (error) {
+              if (freestyleError(error, data.id).code !== "not_found") throw error;
+            }
           }
           offset += page.vms.length;
           if (offset >= page.totalCount) break;
@@ -274,7 +301,9 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
       }),
     async find(key) {
       const v = (await provider.list({})).find((v) => v.key === key);
-      return v ? provider.connect(v.id) : undefined;
+      if (!v) return undefined;
+      try { return await provider.connect(v.id); }
+      catch (error) { if (freestyleError(error, v.id).code !== "not_found") throw error; return undefined; }
     },
     connect: (id) =>
       safe(id, async () => {

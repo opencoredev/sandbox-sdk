@@ -277,3 +277,17 @@ test("an upload timeout cannot delete inputs of a still-running atomic assembly"
   expect((await guest)?.exitCode).toBe(0);
   expect(Buffer.from(await box.files.read("atomic.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
 });
+
+
+test("Upstash listing skips corrupt or vanished metadata and preserves auth failures", async () => {
+  const box = await createSandbox(factory());
+  const read = vi.spyOn(box.native.files, "read");
+  for (const body of ["{", JSON.stringify({ version: 1, labels: { bad: 2 } })]) {
+    read.mockResolvedValue(body);
+    expect(await factory().list({})).toEqual([]);
+  }
+  read.mockRejectedValue(Object.assign(new Error("gone"), { statusCode: 404 }));
+  expect(await factory().list({})).toEqual([]);
+  read.mockRejectedValue(Object.assign(new Error("denied"), { statusCode: 401 }));
+  await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
+});
