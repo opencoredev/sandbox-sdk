@@ -30,6 +30,14 @@ export function boxdError(error: unknown, sandboxId?: string): SandboxError {
     RateLimitError: "quota",
     APIConnectionError: "unavailable",
   };
+  // 0.2.17's local machines.exec deadline is a plain BoxdError, without
+  // grpcCode. Match its published message narrowly; never expose that message.
+  if (
+    error instanceof Error &&
+    error.name === "BoxdError" &&
+    /^exec timed out after \d+ms$/.test(error.message)
+  )
+    return failure("boxd request timed out", "timeout", sandboxId);
   return failure(
     "boxd request failed",
     typeof status === "number"

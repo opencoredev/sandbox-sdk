@@ -58,7 +58,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   async function write(files: Record<string, string | Uint8Array>): Promise<void>;
   async function write(input: string | Record<string, string | Uint8Array>, data?: string | Uint8Array): Promise<void> {
     const entries = typeof input === "string" ? [[input, data ?? ""] satisfies [string, string | Uint8Array]] : Object.entries(input);
-    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path); await fs.mkdir(id, posix.dirname(dest)); await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
+    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path); if (!fs.writeCreatesParents) await fs.mkdir(id, posix.dirname(dest)); await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
   }
   const gitDir = "/tmp/.sandbox-sdk/changes.git";
   async function git(command: string, stdin?: string): Promise<string> {

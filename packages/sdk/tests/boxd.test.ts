@@ -61,7 +61,7 @@ describe("boxd contract", () => {
       expect(result.cause).toBeUndefined();
     }
   });
-  test("secrets use 0600 files and never command text", async () => {
+  test("secrets use native stdin and never command text", async () => {
     const box = await createSandbox(factory(), { secrets: { TOKEN: "secret-$-雪" } });
     try {
       expect((await box.run('test -n "$TOKEN" && echo ok')).stdout).toBe("ok\n");
@@ -71,11 +71,7 @@ describe("boxd contract", () => {
       const before = native?.guest.commands.length ?? 0;
       await box.run('printf %s "$TOKEN"');
       expect(native?.guest.commands.slice(before).join("\n")).not.toContain("secret-$-雪");
-      expect(
-        native?.guest.uploads
-          .filter((v) => v.path.endsWith("/spec"))
-          .every((v) => v.mode === 0o600),
-      ).toBe(true);
+      expect(native?.guest.inputs.at(-1)).toContain("secret-$-雪");
     } finally {
       await box.destroy();
     }
@@ -99,4 +95,45 @@ describe("boxd contract", () => {
       await box.destroy();
     }
   });
+});
+
+import { cloudRegressions } from "./cloud-regressions.js";
+cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest);
+
+test("plain BoxdError local exec deadline maps to timeout without native details", () => {
+  const result = boxdError(
+    Object.assign(new Error("exec timed out after 10ms"), { name: "BoxdError" }),
+  );
+  expect(result.code).toBe("timeout");
+  expect(result.cause).toBeUndefined();
+  expect(String(result)).not.toContain("10ms");
+  expect(boxdError(Object.assign(new Error("unrelated failure"), { name: "BoxdError" })).code).toBe(
+    "provider",
+  );
+});
+
+test("cancellation settles even if native connection setup never settles its stream", async () => {
+  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
+  const box = await createSandbox(factory());
+  const native = box.native.client;
+  let cancelled = false;
+  const stream = new ExecStream({
+    write() {},
+    end() {},
+    resize() {},
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const spy = vi.spyOn(native.machines, "streamExec").mockReturnValueOnce(stream);
+  try {
+    const start = Date.now();
+    expect(await box.run("true", { timeoutMs: 20 })).toMatchObject({ timedOut: true });
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(cancelled).toBe(true);
+    expect(boxdState.boxes.has(box.id)).toBe(true);
+  } finally {
+    spy.mockRestore();
+    await box.destroy();
+  }
 });

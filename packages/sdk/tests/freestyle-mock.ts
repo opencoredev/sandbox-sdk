@@ -47,13 +47,20 @@ export class MockVm {
     writeFile: async (path: string, bytes: Uint8Array, options?: { mode?: number }) => {
       await this.guest.upload(path, bytes);
       await fs.chmod(this.guest.rewrite(path), options?.mode ?? 0o600);
+      const upload = this.guest.uploads.at(-1);
+      if (upload) upload.mode = options?.mode ?? 0o600;
     },
-    readTextFile: async (path: string) => fs.readFile(this.guest.rewrite(path), "utf8"),
+    readFile: (path: string, options?: { offset?: number; length?: number }) =>
+      this.guest.read(path, options),
+    readTextFile: async (path: string) => new TextDecoder().decode(await this.guest.read(path)),
   };
   async exec(options: ExecOptions) {
-    const stdout = await this.guest.raw(options.command);
+    const result = options.stdin
+      ? await this.guest.buffered(options.command, Buffer.from(options.stdin, "base64").toString())
+      : { stdout: await this.guest.raw(options.command), stderr: "", statusCode: 0 };
+    const stdout = result.stdout;
     freestyleState.peak = Math.max(freestyleState.peak, Buffer.byteLength(stdout));
-    return { statusCode: 0, stdout, stderr: "" };
+    return result;
   }
   async delete() {
     await this.guest.destroy();

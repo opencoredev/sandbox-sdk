@@ -106,10 +106,10 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       });
       try {
         if (timedOut) controller.abort();
-        if (!timedOut) { await provider.files.mkdir(id, "/tmp/.sandbox-sdk/runs"); await provider.files.write(id, activePath, new Uint8Array([1])); }
+        if (!timedOut && !provider.inlineActivity) { await provider.files.mkdir(id, "/tmp/.sandbox-sdk/runs"); await provider.files.write(id, activePath, new Uint8Array([1])); }
         const result = timedOut ? { exitCode: null, timedOut: true } : await provider.exec(id, {
           command, cwd, env: { ...baseEnv, ...options.env, ...defaults }, stdin: options.stdin,
-          timeoutMs, signal: controller.signal, onChunk: chunk => filter.push(chunk),
+          timeoutMs, signal: controller.signal, activityPath: provider.inlineActivity ? activePath : undefined, onChunk: chunk => filter.push(chunk),
         });
         timedOut ||= result.timedOut;
         filter.flush(); interleaved.flush(); count(stdout.total + stderr.total);
@@ -119,7 +119,7 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       } catch (error) {
         filter.flush(); interleaved.flush();
         const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped;
-      } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); await provider.files.remove(id, activePath, { recursive: false }).catch(() => {}); bus.end(); }
+      } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); if (!provider.inlineActivity) await provider.files.remove(id, activePath, { recursive: false }).catch(() => {}); bus.end(); }
     }
     const handle: RunHandle = {
       // oxlint-disable-next-line unicorn/no-thenable -- RunHandle is explicitly PromiseLike in the public API.

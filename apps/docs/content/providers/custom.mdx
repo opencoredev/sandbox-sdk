@@ -61,3 +61,9 @@ runConformance(() => myProvider(), { live: false });
 Set `live: true` to run the parts that need a real machine and network. Live runs give each case 120 seconds, since real providers boot machines and cross the network. Pass `timeoutMs` to change that.
 
 The built-in adapters in [`packages/sdk/src/providers`](https://github.com/opencoredev/sandbox-sdk/tree/main/packages/sdk/src/providers) are working examples to copy from.
+
+## Avoiding extra calls
+
+If an adapter can create and remove the core run activity record inside its native exec, set `inlineActivity: true` and honor `ExecInput.activityPath` for the entire run, including failure and cancellation. Otherwise the core maintains that record through file calls. Garbage collection uses the record to avoid reaping active work.
+
+Set `files.writeCreatesParents: true` only when `write()` handles missing parent directories itself. The core then omits its unconditional mkdir. An adapter can try the native upload first, create missing parents on a confirmed not-found response, and retry the upload. Native whole-file and ranged reads should return the full requested data, up to EOF.

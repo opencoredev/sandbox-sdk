@@ -2,7 +2,8 @@
 import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { Provider, SandboxInfo } from "../../provider.js";
 import { boxdError, failure } from "./errors.js";
-import { execute, files, type Guest } from "./guest.js";
+import { files, python, type Guest } from "./guest.js";
+import { execute } from "./execute.js";
 export interface BoxdOptions {
   apiKey?: string;
   baseURL?: string;
@@ -60,7 +61,23 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         if ((await c.machines.files.upload(id, path, bytes)) !== bytes.length)
           throw failure("Incomplete file upload", "provider", id);
       },
-      destroy: () => provider.destroy(id),
+      read: async (path, range) => {
+        if (!range) return c.machines.files.download(id, path);
+        // 0.2.17 has no file range API. One byte-exact native exec reads only
+        // the requested slice; never clamp it or download an unrelated prefix.
+        const result = await c.machines.exec(id, {
+          command: python(
+            "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
+            path,
+            String(range.offset),
+            String(range.length),
+          ),
+          encoding: "buffer",
+          timeout: options.requestTimeoutMs ?? 30000,
+        });
+        if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
+        return new Uint8Array(result.stdout);
+      },
     };
   }
   async function info(m: Machine): Promise<SandboxInfo> {
@@ -101,6 +118,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
   const provider: BoxdProvider = {
     name: "boxd",
     keyMode: "best-effort",
+    inlineActivity: true,
     capabilities: new Set(["pause"]),
     create: (input) =>
       safe(undefined, async () => {
@@ -199,7 +217,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     async close(id) {
       boxes.delete(id);
     },
-    exec: (id, input) => safe(id, async () => execute(await guest(id), input)),
+    exec: (id, input) => safe(id, async () => execute(await api(), id, input)),
     files: files(guest, safe),
     previewUrl: (id, port) =>
       safe(id, async () => {

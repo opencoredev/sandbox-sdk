@@ -41,9 +41,11 @@ boxd's empty egress allowlist means unrestricted access. Its host-bound secrets 
 
 ## Commands and files
 
-Commands close stdin, use a detached Python supervisor, and kill the complete process group on timeout or abort. Environment values and stdin travel through a private `0600` specification file inside a `0700` directory, never through command text or arguments. The file is removed before user code starts. Output is spooled in the guest and read in pages of at most three 16 KiB records, keeping native buffered responses bounded.
+Commands use the native `streamExec()` bidirectional stream. The adapter sends command, environment, cwd, and stdin as JSON over stream stdin, then closes it. It never uses boxd's `env` exec option, which the native SDK prepends to command text. Stdout and stderr stream live, with incremental UTF-8 decoding. Timeout or abort cancels the native stream, whose server kills the entire remote process group. A bad cwd returns a failed command without deleting the machine.
 
-Files use native upload and bounded reads through Python. Directory listings and file metadata use Python. The adapter checks the byte count confirmed by uploads.
+A successful `box.run("true")` uses one native exec, including creation and removal of the core activity record. It uploads no supervisor or per-command files. Cancellation may need a separate call to remove its activity record.
+
+Whole-file reads use `machines.files.download()` once; writes use `machines.files.upload()` once when the parent exists. Missing parents trigger directory creation and an upload retry. boxd 0.2.17 has no ranged file-download API, so `readRange` uses one byte-exact native exec to read the complete requested slice, up to EOF. Directory listings and file metadata use Python.
 
 ## Pause and snapshots
 
@@ -70,8 +72,6 @@ Files use native upload and bounded reads through Python. Directory listings and
 
 - No explicit sizes, egress restrictions, idle deadlines, hard sandbox lifetimes, snapshot restore, or terminals.
 - Discovery reads guest metadata, which can wake machines and makes list operations more expensive.
-- Guest output spooling uses disk proportional to command output; host output is read in bounded pages.
-- A failed cancellation falls back to deleting the machine. If deletion cannot be confirmed, the adapter reports `outcome_unknown`.
 - Live cloud behavior has a separate opt-in test gated by `SANDBOX_BOXD_LIVE=1` and `BOXD_API_KEY`.
 
 ## Next steps

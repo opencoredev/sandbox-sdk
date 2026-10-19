@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { MockFreestyle, freestyleState, cleanupFreestyle } from "./freestyle-mock.js";
-vi.mock("freestyle", () => ({ Freestyle: MockFreestyle }));
+vi.mock("freestyle", async () => ({
+  ...(await vi.importActual("freestyle")),
+  Freestyle: MockFreestyle,
+}));
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
@@ -85,7 +88,7 @@ describe("Freestyle official SDK contract", () => {
       await fresh.close();
       const native = freestyleState.boxes.get(box.id);
       expect(native?.guest.commands.join("\n")).not.toContain("freestyle-private-雪");
-      const specs = native?.guest.uploads.filter((v) => v.path.endsWith("/spec"));
+      const specs = native?.guest.uploads.filter((v) => v.path.endsWith("sandbox-sdk-env.json"));
       expect(specs?.length).toBeGreaterThan(0);
       expect(specs?.every((v) => v.mode === 0o600)).toBe(true);
     } finally {
@@ -179,4 +182,69 @@ describe("Freestyle official SDK contract", () => {
       expect(String(result)).not.toContain("secret-native-error");
     }
   });
+});
+
+import { cloudRegressions } from "./cloud-regressions.js";
+cloudRegressions(factory, (id) => freestyleState.boxes.get(id)?.guest);
+
+test("unconfirmed process cancellation reports uncertainty without deleting a VM", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const exec = vi.spyOn(native, "exec");
+  exec
+    .mockRejectedValueOnce(new Error("transport lost"))
+    .mockRejectedValueOnce(new Error("kill unconfirmed"));
+  try {
+    await expect(box.run("true")).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(freestyleState.boxes.has(box.id)).toBe(true);
+  } finally {
+    exec.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("abort during native output paging stops all further reads", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const c = new AbortController();
+  const read = native.fs.readFile.bind(native.fs);
+  const spy = vi.spyOn(native.fs, "readFile").mockImplementationOnce(async (path, range) => {
+    const result = await read(path, range);
+    c.abort();
+    return result;
+  });
+  try {
+    expect(
+      await box.run("head -c 2000000 /dev/zero | tr '\\0' x", { signal: c.signal }),
+    ).toMatchObject({ timedOut: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+  } finally {
+    spy.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("cancelled commands remove large output spools after killing the child group", async () => {
+  const { promises: fs } = await import("node:fs");
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing VM");
+  try {
+    expect(await box.run("head -c 2000000 /dev/zero; sleep 5", { timeoutMs: 150 })).toMatchObject({
+      timedOut: true,
+    });
+    await expect
+      .poll(
+        async () =>
+          (await fs.readdir(native.guest.rewrite("/tmp/.sandbox-sdk"))).filter((n) =>
+            n.startsWith("run-"),
+          ).length,
+        { timeout: 500 },
+      )
+      .toBe(0);
+  } finally {
+    await box.destroy();
+  }
 });

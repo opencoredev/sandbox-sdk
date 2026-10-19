@@ -33,6 +33,8 @@ export interface ExecInput {
   stdin?: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Core-owned activity record, maintained atomically by opted-in exec transports. */
+  activityPath?: string;
   onChunk(chunk: OutputChunk): void;
 }
 export interface ExecResult { exitCode: number | null; timedOut: boolean }
@@ -40,6 +42,8 @@ export interface FileInfo { path: string; type: "file" | "directory" | "symlink"
 export interface ProviderFiles {
   /** Use primitive file transfers when guest tar is incompatible with GNU archives. */
   readonly transfer?: "files";
+  /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
+  readonly writeCreatesParents?: boolean;
   readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array): Promise<void>;
@@ -66,6 +70,8 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly keyMode: "exact" | "best-effort";
   /** Omission uses native hooks or the portable shell process-record shim. */
   readonly processMode?: "shell" | "unsupported";
+  /** Exec creates/removes input.activityPath without separate file RPCs. */
+  readonly inlineActivity?: boolean;
   /** Durable absolute directory for core-owned process records. */
   readonly processRecordRoot?: string;
   readonly capabilities: ReadonlySet<C>;

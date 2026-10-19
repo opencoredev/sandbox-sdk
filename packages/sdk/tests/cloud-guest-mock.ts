@@ -1,14 +1,18 @@
 /** Fake control plane; the guest commands, supervisor and files execute on Linux. */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Machine, MachineCreateParams, ExecParams } from "@boxd-sh/sdk";
+import type { StreamExecParams, Machine, MachineCreateParams, ExecParams } from "@boxd-sh/sdk";
+import { vi } from "vitest";
+const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
 const exec = promisify(execFile);
 export class MockGuest {
   readonly id = crypto.randomUUID();
   readonly commands: string[] = [];
+  readonly inputs: string[] = [];
+  readonly reads: { path: string; range?: { offset?: number; length?: number } }[] = [];
   readonly uploads: { path: string; bytes: Uint8Array; mode: number }[] = [];
   constructor(readonly root: string) {}
   static async create() {
@@ -16,7 +20,7 @@ export class MockGuest {
   }
   rewrite(s: string) {
     return s.replace(
-      /\/workspace|\/var\/lib\/sandbox-sdk(?:-env)?\.json|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
+      /\/workspace|\/var\/lib\/sandbox-sdk(?:-env)?\.json|\/var\/lib\/sandbox-sdk-exec-v2\.py|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
       (p) => join(this.root, p),
     );
   }
@@ -29,21 +33,99 @@ export class MockGuest {
     });
     return r.stdout.split(this.root).join("");
   }
+  stream(command: string) {
+    this.commands.push(command);
+    let input = "";
+    let child: ReturnType<typeof spawn> | undefined;
+    const stream = new ExecStream({
+      write: (bytes) => {
+        input += new TextDecoder().decode(bytes);
+      },
+      resize() {},
+      end: () => {
+        this.inputs.push(input);
+        child = spawn("sh", ["-c", this.rewrite(command)], { cwd: this.root, detached: true });
+        child.stdin?.end(this.rewrite(input));
+        child.stdout?.on("data", (bytes) =>
+          stream.stdout.push(Buffer.from(Buffer.from(bytes).toString().split(this.root).join(""))),
+        );
+        child.stderr?.on("data", (bytes) => stream.stderr.push(bytes));
+        child.on("close", (code) => {
+          stream.stdout.close();
+          stream.stderr.close();
+          stream._setExit(code ?? 137);
+        });
+      },
+      cancel: () => {
+        if (child?.pid) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch {}
+        }
+      },
+    });
+    return stream;
+  }
+  async buffered(command: string, stdin: string) {
+    const stream = this.stream(command);
+    stream.write(stdin);
+    stream.end();
+    let stdout = "",
+      stderr = "";
+    const [statusCode] = await Promise.all([
+      stream.wait(),
+      (async () => {
+        for await (const chunk of stream.stdout) stdout += new TextDecoder().decode(chunk);
+      })(),
+      (async () => {
+        for await (const chunk of stream.stderr) stderr += new TextDecoder().decode(chunk);
+      })(),
+    ]);
+    return { statusCode, stdout: stdout.split(this.root).join(""), stderr };
+  }
+  async bytes(command: string) {
+    this.commands.push(command);
+    const result = await exec("sh", ["-c", this.rewrite(command)], {
+      cwd: this.root,
+      timeout: 30000,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: "buffer",
+    });
+    return result.stdout;
+  }
+  async read(path: string, range?: { offset?: number; length?: number }) {
+    this.reads.push({ path, range });
+    try {
+      const data = await fs.readFile(this.rewrite(path));
+      return new Uint8Array(
+        range
+          ? data.subarray(
+              range.offset ?? 0,
+              range.length === undefined ? undefined : (range.offset ?? 0) + range.length,
+            )
+          : data,
+      );
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error("read failed"), {
+        grpcCode: 5,
+        status: 404,
+      });
+    }
+  }
   async upload(path: string, bytes: Uint8Array) {
     const dest = this.rewrite(path);
     await fs.mkdir(join(dest, ".."), { recursive: true });
-    const data = path.endsWith("/supervisor")
-      ? Buffer.from(
-          Buffer.from(bytes)
-            .toString()
-            .replace(
+    const data =
+      path.endsWith("/supervisor") || path.endsWith("-exec-v2.py")
+        ? Buffer.from(
+            this.rewrite(Buffer.from(bytes).toString()).replace(
               "base64.b64encode(data)",
               `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
             ),
-        )
-      : path.endsWith("/spec")
-        ? Buffer.from(this.rewrite(Buffer.from(bytes).toString()))
-        : bytes;
+          )
+        : path.endsWith("/spec")
+          ? Buffer.from(this.rewrite(Buffer.from(bytes).toString()))
+          : bytes;
     await fs.writeFile(dest, data);
     this.uploads.push({ path, bytes, mode: (await fs.stat(dest)).mode & 0o777 });
   }
@@ -105,18 +187,26 @@ export class MockBoxd {
         boxdState.boxes.delete(id);
       }
     },
+    streamExec: (id: string, params: StreamExecParams) => {
+      if (typeof params.command !== "string") throw new Error("Expected shell command");
+      return this.entry(id).guest.stream(params.command);
+    },
     exec: async (id: string, params: ExecParams) => {
       if (boxdState.error)
         throw Object.assign(new Error("secret-native-error"), { grpcCode: boxdState.error });
       if (typeof params.command !== "string") throw new Error("Expected shell command");
-      return { stdout: await this.entry(id).guest.raw(params.command), stderr: "", exitCode: 0 };
+      const stdout =
+        params.encoding === "buffer"
+          ? await this.entry(id).guest.bytes(params.command)
+          : await this.entry(id).guest.raw(params.command);
+      return { stdout, stderr: "", exitCode: 0 };
     },
     files: {
       upload: async (id: string, path: string, bytes: Uint8Array) => {
         await this.entry(id).guest.upload(path, bytes);
         return bytes.length;
       },
-      download: async (id: string, path: string) => fs.readFile(this.entry(id).guest.rewrite(path)),
+      download: async (id: string, path: string) => this.entry(id).guest.read(path),
     },
     proxies: {
       list: async () => [{ name: "sdk-3000", domain: "test.boxd.sh", port: 3000 }],

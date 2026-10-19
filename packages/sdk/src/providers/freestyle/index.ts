@@ -5,14 +5,16 @@
  */
 import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from "freestyle";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
-import { execute, files, type Guest } from "../boxd/guest.js";
+import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, freestyleError } from "./errors.js";
+import { execute, supervisor, supervisorPath } from "./execute.js";
+import { deadline, operationSignal } from "./deadline.js";
 export interface FreestyleOptions {
   apiKey?: string;
   baseUrl?: string;
   /** Base snapshot ID or slug. Defaults to freestyle/ubuntu. */
   snapshotId?: string;
-  /** Deadline for each HTTP request and native guest operation. Default 30 s. */
+  /** Overall deadline for each native operation, including background polls. Default 30 s. */
   requestTimeoutMs?: number;
 }
 export type FreestyleProvider = Provider<Vm, "pause" | "snapshot" | "network-policy">;
@@ -47,23 +49,40 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.FREESTYLE_API_KEY;
       if (!apiKey?.trim()) throw failure("Set FREESTYLE_API_KEY", "auth");
-      const { Freestyle } = await import("freestyle");
+      const { Freestyle, FreestyleApiError } = await import("freestyle");
       return new Freestyle({
         apiKey,
         baseUrl: options.baseUrl,
-        fetch: async (url, init) =>
-          fetch(url, {
-            ...init,
-            signal: init?.signal
-              ? AbortSignal.any([init.signal, AbortSignal.timeout(requestTimeoutMs)])
-              : AbortSignal.timeout(requestTimeoutMs),
-          }),
+        fetch: async (url, init) => {
+          const signal = operationSignal.getStore() ?? AbortSignal.timeout(requestTimeoutMs);
+          // The SDK retries arbitrary polling errors for five minutes. Use its
+          // terminal error type on cancellation so even that loop terminates.
+          const stopped = () =>
+            new FreestyleApiError(408, {
+              code: "SDK_DEADLINE",
+              message: "Native operation stopped",
+            });
+          if (signal.aborted) throw stopped();
+          try {
+            return await fetch(url, {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+            });
+          } catch (error) {
+            if (signal.aborted) throw stopped();
+            throw error;
+          }
+        },
       });
     })());
   }
-  async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
+  async function safe<T>(
+    id: string | undefined,
+    action: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     try {
-      return await action();
+      return await deadline(action, requestTimeoutMs, signal ?? operationSignal.getStore());
     } catch (error) {
       throw freestyleError(error, id);
     }
@@ -80,9 +99,10 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     const value = await vm(id);
     return {
       name: "freestyle",
-      baseEnvPath: envFile,
       raw: async (command) => {
-        const r = await value.exec({ command, linuxUser: "root", timeoutMs: requestTimeoutMs });
+        const r = await safe(id, () =>
+          value.exec({ command, linuxUser: "root", timeoutMs: requestTimeoutMs }),
+        );
         if (r.statusCode !== 0)
           throw failure(
             "Guest operation failed",
@@ -91,8 +111,12 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
           );
         return r.stdout ?? "";
       },
-      upload: (path, bytes) => value.fs.writeFile(path, bytes, { mode: 0o600 }),
-      destroy: () => provider.destroy(id),
+      upload: (path, bytes) =>
+        safe(id, () =>
+          value.fs.writeFile(path, bytes, { mode: 0o600, signal: operationSignal.getStore() }),
+        ),
+      read: (path, range) =>
+        safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
     };
   }
   async function info(data: VmData): Promise<SandboxInfo> {
@@ -131,85 +155,103 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   const provider: FreestyleProvider = {
     name: "freestyle",
     keyMode: "best-effort",
+    inlineActivity: true,
     capabilities: new Set(["pause", "snapshot", "network-policy"]),
     create: (input) =>
-      safe(undefined, async () => {
-        if (input.size !== undefined)
-          throw failure(
-            "Explicit sizes are not implemented; select a base snapshot instead",
-            "unsupported",
-          );
-        const firewall = rules(input);
-        const idleTimeoutSeconds = seconds(input.idleTimeoutMs, false);
-        const ttlSeconds = seconds(input.timeoutMs, true);
-        if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-        const params: CreateVmOptions = {
-          snapshotId: input.from ?? options.snapshotId ?? "freestyle/ubuntu",
-          metadata: { "sandbox-sdk": "1" },
-          firewall: { rules: firewall },
-          tls: { rules: [] },
-          vpcs: [],
-          idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
-          ttlSeconds,
-        };
-        // No retries: a transport failure may have allocated a VM. An unknown
-        // outcome must be inspected before another create is attempted.
-        let result: Awaited<ReturnType<Freestyle["vms"]["create"]>>;
-        try {
-          result = await (await api()).vms.create(params);
-        } catch (error) {
-          const mapped = freestyleError(error);
-          if (mapped.code === "unavailable" || mapped.code === "timeout")
+      safe(
+        undefined,
+        async () => {
+          if (input.size !== undefined)
             throw failure(
-              "VM creation outcome is unknown; inspect the account before retrying",
-              "outcome_unknown",
+              "Explicit sizes are not implemented; select a base snapshot instead",
+              "unsupported",
             );
-          throw error;
-        }
-        const { vm: value, vmId: id } = result;
-        boxes.set(id, value);
-        try {
-          if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          const data = await value.data();
-          if (
-            (idleTimeoutSeconds !== undefined && data.idleTimeoutSeconds !== idleTimeoutSeconds) ||
-            (ttlSeconds !== undefined && data.ttlSeconds !== ttlSeconds)
-          )
-            throw failure("Freestyle did not confirm requested limits", "unsupported", id);
-          const actual = await value.firewallRules();
-          // No VPCs or inherited network grants may widen a restricted VM.
-          if (
-            data.vpcs.length ||
-            actual.totalCount !== firewall.length ||
-            actual.rules.length !== firewall.length ||
-            actual.rules.some(
-              (r) =>
-                r.action !== "allow" ||
-                Object.keys(r.source).length !== 1 ||
-                r.source.vmId !== id ||
-                Object.keys(r.destination).length !== 1 ||
-                r.destination.public !== true,
+          const firewall = rules(input);
+          const idleTimeoutSeconds = seconds(input.idleTimeoutMs, false);
+          const ttlSeconds = seconds(input.timeoutMs, true);
+          if (input.signal?.aborted || operationSignal.getStore()?.aborted)
+            throw failure("Creation aborted", "aborted");
+          const params: CreateVmOptions = {
+            snapshotId: input.from ?? options.snapshotId ?? "freestyle/ubuntu",
+            metadata: { "sandbox-sdk": "1" },
+            firewall: { rules: firewall },
+            tls: { rules: [] },
+            vpcs: [],
+            idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
+            ttlSeconds,
+          };
+          // No retries: a transport failure may have allocated a VM. An unknown
+          // outcome must be inspected before another create is attempted.
+          let result: Awaited<ReturnType<Freestyle["vms"]["create"]>>;
+          try {
+            result = await (await api()).vms.create(params);
+          } catch (error) {
+            const mapped = freestyleError(error);
+            if (mapped.code === "unavailable" || mapped.code === "timeout")
+              throw failure(
+                "VM creation outcome is unknown; inspect the account before retrying",
+                "outcome_unknown",
+              );
+            throw error;
+          }
+          const { vm: value, vmId: id } = result;
+          boxes.set(id, value);
+          try {
+            if (input.signal?.aborted || operationSignal.getStore()?.aborted)
+              throw failure("Creation aborted", "aborted");
+            const data = await value.data();
+            if (
+              (idleTimeoutSeconds !== undefined &&
+                data.idleTimeoutSeconds !== idleTimeoutSeconds) ||
+              (ttlSeconds !== undefined && data.ttlSeconds !== ttlSeconds)
             )
-          )
-            throw failure("Freestyle did not confirm the requested firewall", "unsupported", id);
-          const tls = await (await api()).tls.rules.list({ vmId: id });
-          if (tls.rules.some((r) => r.source.vmId === id) || tls.totalCount !== tls.rules.length)
-            throw failure("Unexpected TLS egress grants", "unsupported", id);
-          const g = await guest(id);
-          await g.raw(
-            "mkdir -p /workspace /var/lib /tmp/.sandbox-sdk; command -v python3 git tar nohup >/dev/null",
+              throw failure("Freestyle did not confirm requested limits", "unsupported", id);
+            const actual = await value.firewallRules();
+            // No VPCs or inherited network grants may widen a restricted VM.
+            if (
+              data.vpcs.length ||
+              actual.totalCount !== firewall.length ||
+              actual.rules.length !== firewall.length ||
+              actual.rules.some(
+                (r) =>
+                  r.action !== "allow" ||
+                  Object.keys(r.source).length !== 1 ||
+                  r.source.vmId !== id ||
+                  Object.keys(r.destination).length !== 1 ||
+                  r.destination.public !== true,
+              )
+            )
+              throw failure("Freestyle did not confirm the requested firewall", "unsupported", id);
+            const tls = await (await api()).tls.rules.list({ vmId: id });
+            if (tls.rules.some((r) => r.source.vmId === id) || tls.totalCount !== tls.rules.length)
+              throw failure("Unexpected TLS egress grants", "unsupported", id);
+            const g = await guest(id);
+            await g.raw(
+              "mkdir -p /workspace /var/lib /tmp/.sandbox-sdk; command -v python3 git tar nohup >/dev/null",
+            );
+            await g.upload(
+              marker,
+              Buffer.from(JSON.stringify({ key: input.key ?? null, labels: input.labels })),
+            );
+            await g.upload(envFile, Buffer.from(JSON.stringify(input.env ?? {})));
+            await g.upload(supervisorPath, Buffer.from(supervisor));
+            if (input.signal?.aborted || operationSignal.getStore()?.aborted)
+              throw failure("Creation aborted", "aborted");
+            return await info(data);
+          } catch (error) {
+            await operationSignal.exit(() => provider.destroy(id));
+            throw error;
+          }
+        },
+        input.signal,
+      ).catch((error) => {
+        const mapped = freestyleError(error);
+        if (mapped.code === "timeout")
+          throw failure(
+            "VM creation outcome is unknown; inspect the account before retrying",
+            "outcome_unknown",
           );
-          await g.upload(
-            marker,
-            Buffer.from(JSON.stringify({ key: input.key ?? null, labels: input.labels })),
-          );
-          await g.upload(envFile, Buffer.from(JSON.stringify(input.env ?? {})));
-          if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          return await info(data);
-        } catch (error) {
-          await provider.destroy(id);
-          throw error;
-        }
+        throw mapped;
       }),
     list: (labels) =>
       safe(undefined, async () => {
@@ -235,6 +277,15 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     connect: (id) =>
       safe(id, async () => {
         const data = await (await api()).vms.get(id);
+        // Immutable versioned helper: install only if absent on reconnect.
+        const g = await guest(id);
+        await g.raw(
+          python(
+            "import os,sys; p=sys.argv[1]; os.path.exists(p) or open(p,'x').write(sys.argv[2])",
+            supervisorPath,
+            supervisor,
+          ),
+        );
         return info(data);
       }),
     destroy: (id) =>
@@ -250,7 +301,42 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     async close(id) {
       boxes.delete(id);
     },
-    exec: (id, input) => safe(id, async () => execute(await guest(id), input)),
+    exec: async (id, input) => {
+      try {
+        const value = await vm(id);
+        const g = await guest(id);
+        return await execute(
+          {
+            raw: g.raw,
+            read: (path, range, signal) =>
+              safe(
+                id,
+                () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() }),
+                signal,
+              ),
+            exec: (command, stdin, timeoutMs, signal) =>
+              safe(
+                id,
+                async () => {
+                  const result = await value.exec({
+                    command,
+                    stdin: Buffer.from(stdin).toString("base64"),
+                    linuxUser: "root",
+                    timeoutMs,
+                  });
+                  if (result.statusCode !== 0 || !result.stdout)
+                    throw failure("Guest execution failed", "provider", id);
+                  return result.stdout;
+                },
+                signal,
+              ),
+          },
+          input,
+        );
+      } catch (error) {
+        throw freestyleError(error, id);
+      }
+    },
     files: files(guest, safe),
     previewUrl: (id, port) =>
       safe(id, async () => {
