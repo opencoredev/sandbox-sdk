@@ -11,7 +11,8 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--v1")) {
     process.argv = process.argv.filter((v) => v !== "--v1");
-    await import("./cli-v1.js");
+    const legacy = await import("./cli-v1.js");
+    await legacy.completion;
     return;
   }
   if (args.includes("--help")) {
@@ -161,4 +162,11 @@ main().catch((error) => {
     sanitize(error instanceof Error ? error.message : "Benchmark failed") + "\n",
   );
   process.exitCode = 1;
+}).finally(async () => {
+  // Native SDK event subscriptions can keep a completed CLI alive after a failed operation.
+  await Promise.all([
+    new Promise<void>((resolve) => process.stdout.write("", () => resolve())),
+    new Promise<void>((resolve) => process.stderr.write("", () => resolve())),
+  ]);
+  process.exit(process.exitCode ?? 0);
 });

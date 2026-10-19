@@ -55,6 +55,7 @@ The pilot loaded an earlier runner revision. Final cleanup retries, restored fin
 ## Verification
 
 - PASS: 30 offline tests, bench typecheck, bench lint and SDK build.
+- PASS: legacy `--v1` CLI completed an offline memory-provider smoke run and wrote schema v1.
 - PASS: final NDJSON exactly matches all 566 JSON samples, including burst aggregates.
 - PASS: actual HTML opened and screenshotted at 1440×1000 and 390×844; page width equals viewport width, with tables scrolling within their own containers. Tested on this Linux host’s headless Chromium; no remote devices tested.
 - PASS: scoped reap of the main corrected pilot returned zero leftovers on all eight providers. The initial aborted pilot was also reaped to zero.
@@ -63,4 +64,4 @@ The pilot loaded an earlier runner revision. Final cleanup retries, restored fin
 
 PASS: focused Daytona snapshot-check cleanup completed at 2026-10-19T18:36:00Z. Native recovery waited for the source to disappear, then deleted one late snapshot. A subsequent scoped reap returned zero leftovers on all eight providers; exact-source snapshot queries returned zero for both timed-out Daytona sources. The ownership journals are empty. Final local snapshot verification in `bench/results/local-final/` passed all nine observations with distinct source/restored IDs, populated fingerprints and zero leftovers.
 
-The late Daytona snapshot is now covered by a durable `snapshot-source` marker and an offline regression: a snapshot that appears after its first deletion is removed after the source VM disappears. The final independent cleanup review found an early marker-removal case when deletion failed and listing omitted the source. Reap now retains the marker whenever deletion errors or a journaled source VM remain. Source-ownership markers contain only IDs created by this run; no account-wide snapshot cleanup is used.
+The late Daytona snapshot is now covered by a durable `snapshot-source` marker and an offline regression: a snapshot that appears after its first deletion is removed after the source VM disappears. The final independent cleanup review found an early marker-removal case when deletion failed and listing omitted the source. Reap now retains the marker whenever deletion errors or a journaled source VM remain. Completed Daytona recovery scripts retained native event-subscription timers after their work finished. The CLI now flushes output and exits after report and cleanup completion, so those timers cannot hold a finished command open. Source-ownership markers contain only IDs created by this run; no account-wide snapshot cleanup is used.

@@ -86,7 +86,7 @@ async function main() {
   )
     process.exitCode = 1;
 }
-main().catch((error) => {
+export const completion = main().catch((error) => {
   process.stderr.write(
     `Benchmark refused/failed: ${error instanceof Error ? error.message : "Unknown error"}\n`,
   );
