@@ -71,13 +71,13 @@ export async function snapshotCleaner(
   throw new Error("Snapshot cleanup not registered");
 }
 
-/** Name Daytona snapshots before creation for scoped timeout recovery; match the adapter's five-minute completion budget. */
+/** Name Daytona snapshots before creation for scoped timeout recovery; match the adapter's ten-minute completion budget. */
 export async function createNamedDaytonaSnapshot(
   provider: Provider,
   sandboxId: string,
   name: string,
 ) {
-  await call(provider.native(sandboxId), "createSnapshot", name, 300);
+  await call(provider.native(sandboxId), "createSnapshot", name, 600);
   return { id: name };
 }
 

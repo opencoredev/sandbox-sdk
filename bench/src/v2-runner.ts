@@ -138,7 +138,7 @@ export async function runV2(
     cleanup: [],
     budgets: {},
     methodology: [
-      "Daytona snapshots use its native nameable API with a 300-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
+      "Daytona snapshots use its native nameable API with a 600-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
       "Cold/reconnect/resume/restore use client monotonic clock through a successful true command. API-return and readiness phase timestamps are recorded separately. Create API phase includes provider-native readiness but excludes SDK handle initialization.",
       "All failures retained; percentiles/CI describe successful observations only. Success rate uses Wilson 95% interval (skips excluded). Nearest rank, population stddev, 2000 seeded bootstrap resamples for p50 and mean. No outlier removal.",
@@ -879,14 +879,15 @@ export async function runV2(
       // Wait only on this run's exact label, then retain unresolved ownership.
       const end = Date.now() + Math.min(config["timeout-ms"], 30_000);
       for (;;) {
-        const after = await deadline(Math.max(1, end - Date.now()), () =>
+        const budget = end - Date.now();
+        if (budget <= 0) break;
+        const after = await deadline(budget, () =>
           p.provider.list({ "sandbox-bench-run": config.run }));
-        const matching = after.filter(item => item.labels["sandbox-bench-run"] === config.run);
-        if (!matching.length || Date.now() >= end) {
-          for (const item of matching) remaining.add(item.id);
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, Math.min(1000, end - Date.now())));
+        remaining.clear();
+        for (const item of after)
+          if (item.labels["sandbox-bench-run"] === config.run) remaining.add(item.id);
+        if (!remaining.size || Date.now() >= end) break;
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(1000, end - Date.now()))));
       }
     } catch (e) { errors.push(errorNote(e)); }
     // A timed-out Daytona snapshot can appear after its initial deletion returned.

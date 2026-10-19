@@ -212,3 +212,12 @@ test("snapshot passes a sufficient bounded timeout and exposes its recovery name
     expect(String(error)).not.toContain("private-native-body");
   }
 });
+
+test("snapshot default allows native operations lasting more than five minutes", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key" }));
+  try {
+    const snapshot = vi.spyOn(box.native, "createSnapshot").mockResolvedValue();
+    const result = await box.snapshot();
+    expect(snapshot).toHaveBeenCalledWith(result.id, 600);
+  } finally { await box.destroy(); }
+});
