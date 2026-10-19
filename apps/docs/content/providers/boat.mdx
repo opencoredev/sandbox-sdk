@@ -1,6 +1,6 @@
 ---
 title: Boat
-description: Run persistent cloud VMs for long-running agents through Boat's official TypeScript SDK. Size presets, durable processes, and previews with token URLs.
+description: Run persistent cloud VMs for long-running agents through Boat's official TypeScript SDK. Size presets, durable processes, and authenticated previews.
 ---
 
 `boat()` runs each sandbox on [Boat](https://boat.dev), a persistent Ubuntu VM with Node.js, Git, and Docker installed. It suits agents that keep a workspace and run background services across requests.
@@ -83,10 +83,11 @@ import { boat } from "@opencoredev/sandbox-sdk/boat";
 await using box = await createSandbox(boat());
 await box.start("npx serve -l 3000", { name: "web", ready: { port: 3000 } });
 const preview = await box.preview(3000, { waitMs: 10_000 });
-console.log(preview.url);
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
 ```
 
-Boat returns an HTTPS URL with an access token in the query string. Use the whole URL and treat it as a secret. No extra headers or up-front port declarations are needed. Boat does not report an expiry here, so `expiresAt` is unset.
+Boat’s native URL exchanges a query token for a `_port_auth` cookie through a redirect. The adapter returns the clean HTTPS URL and that token as a `Cookie` header so ordinary server `fetch` calls work without a cookie jar. Send `preview.headers` with every request, including custom preview paths. Treat the headers as secrets. Up-front port declarations are unnecessary, and `expiresAt` is unset because Boat reports no expiry.
 
 ## Environment variables
 
@@ -112,6 +113,7 @@ Returns a provider. `box.native.sandbox` is Boat's sandbox metadata, and `box.na
 - No SDK pause, snapshots, or terminals.
 - Boat's native auto-stop still applies. Keep a VM running if you need its background processes and `/tmp` records.
 - Commands use Boat's detached API and attach stream. Timeout and abort stop the command's process tree before returning.
+- Transient `unavailable` failures are surfaced. The native SDK provides no automatic retry or idempotency guarantee for command execution, including file operations implemented as guest commands. The adapter does not replay these calls because a failed response can follow a completed operation.
 - File writes transfer contents through Boat's files API, then use Node.js to copy them to the destination. Other file primitives run Node.js through the command API, so directory-heavy workloads make more API calls than a native filesystem client.
 
 ## Next steps

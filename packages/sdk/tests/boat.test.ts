@@ -252,3 +252,14 @@ describe("Boat official SDK transport", () => {
     }
   });
 });
+
+
+test("preview includes native auth for ordinary fetch and custom paths", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const preview = await box.preview(3000, { path: "/health" });
+    expect(preview.headers).toEqual({ Cookie: "_port_auth=test-token" });
+    expect(new URL(preview.url).pathname).toBe("/health");
+    expect(new URL(preview.url).searchParams.has("_token")).toBe(false);
+  } finally { await box.destroy(); }
+});

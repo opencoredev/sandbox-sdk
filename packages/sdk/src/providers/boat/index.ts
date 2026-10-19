@@ -400,7 +400,18 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
       safe(async () => {
         const result = await (await api()).hostPort({ sandboxId: id, hostPortRequest: { port } });
         if (!result.url) throw failure("Boat returned no preview URL", "provider", id);
-        return { url: result.url };
+        const url = new URL(result.url);
+        const token = url.searchParams.get("_token");
+        // Boat exchanges this token for an identically valued _port_auth cookie
+        // through a redirect. Server fetch has no browser cookie jar.
+        if (token) {
+          if (!/^[A-Za-z0-9._~-]+$/.test(token)) throw failure("Invalid preview token", "provider", id);
+          url.searchParams.delete("_token");
+          return { url: url.toString(), headers: { Cookie: `_port_auth=${token}` } };
+        }
+        if (result.isProtected || result.access === "private")
+          throw failure("Protected preview returned no token", "provider", id);
+        return { url: url.toString() };
       }, id),
     native(id) {
       const sandbox = boxes.get(id);
