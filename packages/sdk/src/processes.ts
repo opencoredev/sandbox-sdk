@@ -45,7 +45,32 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
     if (options.waitMs !== undefined) {
       const end = Date.now() + options.waitMs;
       do {
-        try { const response = await fetch(access.url, { headers: access.headers, signal: AbortSignal.timeout(Math.max(1, Math.min(1000, end - Date.now()))) }); await response.body?.cancel(); if (response.ok) return access; } catch {}
+        try {
+          let url = access.url;
+          const origin = new URL(url).origin;
+          const headers = new Headers(access.headers);
+          const cookies = new Map<string, string>();
+          const remember = (pair: string) => {
+            const value = pair.split(";")[0]?.trim() ?? "";
+            const split = value.indexOf("=");
+            if (split > 0) cookies.set(value.slice(0, split), value);
+          };
+          for (const pair of (headers.get("cookie") ?? "").split(";")) remember(pair);
+          for (let redirect = 0; redirect < 5; redirect++) {
+            const response = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(Math.max(1, Math.min(1000, end - Date.now()))) });
+            await response.body?.cancel();
+            if (response.ok) return access;
+            const location = response.headers.get("location");
+            if (![301, 302, 303, 307, 308].includes(response.status) || !location) break;
+            const next = new URL(location, url);
+            // Provider credentials and auth cookies never follow another origin.
+            if (next.origin !== origin) break;
+            for (const cookie of response.headers.getSetCookie()) remember(cookie);
+            if (cookies.size) headers.set("cookie", [...cookies.values()].join("; "));
+            url = next.toString();
+            if (Date.now() >= end) break;
+          }
+        } catch {}
         if (Date.now() >= end) break; await delay(Math.min(50, Math.max(1, end - Date.now())));
       } while (Date.now() <= end);
       throw new SandboxError(`Preview failed. Port ${port} did not answer. Check the process and its logs.`, { code: "port_not_ready" });
@@ -218,7 +243,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           else if (port) {
             try {
               // memory previews are intentionally offline; the native hook's fake URL denotes readiness.
-              const access = await preview(port, provider.name === "memory" ? {} : { path: "http" in options.ready ? options.ready.http.path : undefined, waitMs: Math.max(1, Math.min(1000, end - Date.now())) });
+              const access = await preview(port, provider.name === "memory" ? {} : { path: "http" in options.ready ? options.ready.http.path : undefined, waitMs: Math.max(1, Math.min(5000, end - Date.now())) });
               controller?.access(access.url); controller?.ready(true); return;
             } catch (error) { if (!(error instanceof SandboxError) || error.code !== "port_not_ready") throw error; }
           }

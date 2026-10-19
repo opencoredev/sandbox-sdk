@@ -62,8 +62,9 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect(chunks.join("")).toBe("streamed\n");
     });
     test("tag escaping and chain options prevent interpolation execution", async () => {
+      // Live commands include provider environment setup and network round trips.
       const { box } = await setup(); const input = "x'; echo injected; printf '";
-      expect((await box.$`printf '%s' ${input}`.cwd(".").env({ X: "ok" }).timeout(1000)).stdout).toBe(input);
+      expect((await box.$`printf '%s' ${input}`.cwd(".").env({ X: "ok" }).timeout(options.live ? 10_000 : 1000)).stdout).toBe(input);
       expect((await box.run("printf '%s' \"$X\"")).stdout).toBe("");
     });
     test("all file primitives, exact edits, glob search, checkpoints", async () => {
