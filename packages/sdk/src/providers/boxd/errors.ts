@@ -38,8 +38,10 @@ export function boxdError(error: unknown, sandboxId?: string): SandboxError {
     /^exec timed out after \d+ms$/.test(error.message)
   )
     return failure("boxd request timed out", "timeout", sandboxId);
+  // Expose only an allowlisted category, never native text or paths.
+  const permissionDenied = error instanceof Error && /permission denied/i.test(error.message);
   return failure(
-    "boxd request failed",
+    permissionDenied ? "boxd guest filesystem permission denied" : "boxd request failed",
     typeof status === "number"
       ? (codes[status] ?? "provider")
       : error instanceof Error

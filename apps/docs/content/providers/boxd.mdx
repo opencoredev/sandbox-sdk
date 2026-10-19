@@ -25,11 +25,11 @@ console.log((await box.run("uname -a")).stdout);
 
 ## Configuration
 
-`boxd({ apiKey, baseURL, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. Creation checks these tools and creates `/workspace`.
+`boxd({ apiKey, baseURL, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. Creation checks these tools and creates `/workspace` and `/var/lib/sandbox-sdk` owned by the guest user. A non-root image must provide passwordless `sudo -n` for this one-time setup.
 
 ## Keys and labels
 
-Key mode is **best-effort**. Keys, labels, and creation time live in `/var/lib/sandbox-sdk.json`. Names beginning with `sbxsdk-` identify candidate machines; listing reads their marker files and can wake sleeping machines. A new adapter instance can find the same machine. Keep the generated name and marker file intact, and keep secrets out of labels.
+Key mode is **best-effort**. Keys, labels, and creation time live in `/var/lib/sandbox-sdk/metadata.json`. Names beginning with `sbxsdk-` identify candidate machines; listing reads their marker files and can wake sleeping machines. A new adapter instance can find the same machine. Keep the generated name and marker file intact, and keep secrets out of labels.
 
 Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create across concurrent requests.
 
@@ -41,7 +41,7 @@ boxd's empty egress allowlist means unrestricted access. Its host-bound secrets 
 
 ## Commands and files
 
-Commands use the native `streamExec()` bidirectional stream. The adapter sends command, environment, cwd, and stdin as JSON over stream stdin, then closes it. It never uses boxd's `env` exec option, which the native SDK prepends to command text. Stdout and stderr stream live, with incremental UTF-8 decoding. Timeout or abort cancels the native stream, whose server kills the entire remote process group. A bad cwd returns a failed command without deleting the machine.
+Commands use the native `streamExec()` bidirectional stream. The adapter sends command, environment, cwd, and stdin as JSON over stream stdin, then closes it. It never uses boxd's `env` exec option, which the native SDK prepends to command text. Stdout and stderr stream live, with incremental UTF-8 decoding. Timeout or abort cancels the native stream, whose server kills the entire remote process group. If the stream cannot confirm exit, a guest lock and cancellation marker prevent a late launch while a follow-up call kills and checks any recorded process group. An unconfirmed cleanup still fails with `outcome_unknown`. A bad cwd returns a failed command without deleting the machine.
 
 A successful `box.run("true")` uses one native exec, including creation and removal of the core activity record. It uploads no supervisor or per-command files. Cancellation may need a separate call to remove its activity record.
 

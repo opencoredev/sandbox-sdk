@@ -112,7 +112,7 @@ test("plain BoxdError local exec deadline maps to timeout without native details
   );
 });
 
-test("unconfirmed native cancellation is bounded and reports uncertainty", async () => {
+test("cancellation before launch is confirmed by preventing a late command", async () => {
   const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
   const native = box.native.client;
@@ -128,8 +128,8 @@ test("unconfirmed native cancellation is bounded and reports uncertainty", async
   const spy = vi.spyOn(native.machines, "streamExec").mockReturnValueOnce(stream);
   try {
     const start = Date.now();
-    await expect(box.run("true", { timeoutMs: 20 })).rejects.toMatchObject({
-      code: "outcome_unknown",
+    expect(await box.run("true", { timeoutMs: 20 })).toMatchObject({
+      timedOut: true, exitCode: null,
     });
     expect(Date.now() - start).toBeLessThan(2000);
     expect(cancelled).toBe(true);
@@ -232,4 +232,44 @@ test("cleanup failure preserves unconfirmed cancellation", async () => {
     exec.mockRestore();
     await box.destroy();
   }
+});
+
+
+test("permission failures give a fixed safe category without native details", () => {
+  const result = boxdError(Object.assign(new Error("upload failed: Permission denied private-key /secret/path"), { grpcCode: 13 }));
+  expect(result.code).toBe("provider");
+  expect(result.message).toContain("permission denied");
+  expect(result.message).not.toContain("private-key");
+  expect(result.message).not.toContain("/secret/path");
+  expect(result.cause).toBeUndefined();
+});
+
+
+test("a delayed native launch cannot run after cancellation was confirmed", async () => {
+  const box = await createSandbox(factory());
+  const native = box.native.client.machines;
+  const original = native.streamExec.bind(native);
+  const spy = vi.spyOn(native, "streamExec").mockImplementationOnce((id, params) => {
+    const stream = original(id, params);
+    const end = stream.end.bind(stream);
+    stream.end = () => { setTimeout(end, 1300); };
+    return stream;
+  });
+  try {
+    expect(await box.run("echo leaked > late-launch", { timeoutMs: 20 })).toMatchObject({ timedOut: true });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(await box.files.exists("late-launch")).toBe(false);
+  } finally { spy.mockRestore(); await box.destroy(); }
+});
+
+test("transport cancellation kills descendants after their shell has exited", async () => {
+  const box = await createSandbox(factory());
+  const entry = boxdState.boxes.get(box.id);
+  if (!entry) throw new Error("Missing mock VM");
+  entry.guest.cancelWithoutTermination = true;
+  try {
+    expect(await box.run("(sleep 2; echo leaked > orphan) &", { timeoutMs: 80 })).toMatchObject({ timedOut: true });
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(await box.files.exists("orphan")).toBe(false);
+  } finally { await box.destroy(); }
 });

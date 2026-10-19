@@ -15,7 +15,7 @@ export interface BoxdNative {
   client: Boxd;
 }
 export type BoxdProvider = Provider<BoxdNative, "pause">;
-const marker = "/var/lib/sandbox-sdk.json";
+const marker = "/var/lib/sandbox-sdk/metadata.json";
 export function boxd(options: BoxdOptions = {}): BoxdProvider {
   let client: Promise<Boxd> | undefined;
   let current: Boxd | undefined;
@@ -161,7 +161,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           const g = await guest(m.id);
           await g.raw(
-            "mkdir -p /workspace /var/lib /tmp/.sandbox-sdk; command -v python3 git tar nohup >/dev/null",
+            "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null",
           );
           await g.upload(
             marker,

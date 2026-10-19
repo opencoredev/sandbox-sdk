@@ -22,7 +22,7 @@ export class MockGuest {
   }
   rewrite(s: string) {
     return s.replace(
-      /\/workspace|\/var\/lib\/sandbox-sdk(?:-env)?\.json|\/var\/lib\/sandbox-sdk-exec-v2\.py|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
+      /\/var\/lib\/sandbox-sdk\/metadata\.json|\/var\/lib\/sandbox-sdk(?=[ ;]|$)|\/workspace|\/var\/lib\/sandbox-sdk(?:-env)?\.json|\/var\/lib\/sandbox-sdk-exec-v2\.py|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
       (p) => join(this.root, p),
     );
   }
@@ -215,6 +215,9 @@ export class MockBoxd {
     },
     files: {
       upload: async (id: string, path: string, bytes: Uint8Array) => {
+        // The real boxd guest is non-root and cannot upload directly into /var/lib.
+        if (path === "/var/lib/sandbox-sdk.json")
+          throw Object.assign(new Error("upload failed: Permission denied"), { grpcCode: 13 });
         await this.entry(id).guest.upload(path, bytes);
         return bytes.length;
       },

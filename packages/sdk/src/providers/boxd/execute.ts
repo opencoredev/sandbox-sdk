@@ -6,25 +6,47 @@ import { failure } from "./errors.js";
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
 // the native process group, so cancelling the stream kills all descendants.
-const launcher = `import sys,json,os,subprocess,tempfile
+const launcher = `import sys,json,os,subprocess,tempfile,fcntl
 v=json.load(sys.stdin)
 a=v.get('activityPath')
 m=v['pidPath']
 try:
- with open(m,'w') as f: f.write(str(os.getpgrp()))
- if a:
-  os.makedirs(os.path.dirname(a),exist_ok=True)
-  with open(a,'w') as f: f.write('1')
  with tempfile.TemporaryFile() as f:
   f.write(v.get('stdin','').encode()); f.seek(0)
-  try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f)
-  except OSError as e:
-   print(str(e),file=sys.stderr); sys.exit(127)
+  with open(m+'.lock','a') as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX)
+   if os.path.exists(m+'.cancel'): sys.exit(137)
+   with open(m,'w') as pid: pid.write(str(os.getpgrp()))
+   if a:
+    os.makedirs(os.path.dirname(a),exist_ok=True)
+    with open(a,'w') as activity: activity.write('1')
+   try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f)
+   except OSError as e:
+    print(str(e),file=sys.stderr); sys.exit(127)
   code=p.wait()
   sys.exit(code if code>=0 else 128-code)
 finally:
- try: os.unlink(m)
- except FileNotFoundError: pass
+ # The direct shell may exit while a background child still owns the pipes.
+ # Keep the group identity until no user descendants remain for cancellation.
+ ancestors=set(); parent=os.getpid()
+ while parent>1:
+  ancestors.add(parent)
+  try:
+   with open('/proc/'+str(parent)+'/stat') as f: parent=int(f.read().rsplit(')',1)[1].split()[1])
+  except (FileNotFoundError,ProcessLookupError): break
+ descendants=False
+ for name in os.listdir('/proc'):
+  if not name.isdigit() or int(name) in ancestors: continue
+  try:
+   with open('/proc/'+name+'/stat') as f: fields=f.read().rsplit(')',1)[1].split()
+   if int(fields[2])==os.getpgrp() and fields[0]!='Z': descendants=True
+  except (FileNotFoundError,ProcessLookupError): pass
+ if not descendants:
+  try: os.unlink(m)
+  except FileNotFoundError: pass
+  if not os.path.exists(m+'.cancel'):
+   try: os.unlink(m+'.lock')
+   except FileNotFoundError: pass
  if a:
   try: os.unlink(a)
   except FileNotFoundError: pass
@@ -94,11 +116,15 @@ export async function execute(client: Boxd, id: string, input: ExecInput): Promi
         // the positively identified group, never delete an unrelated VM.
         const result = await client.machines.exec(id, {
           command: python(
-            `import os,sys,signal,time
+            `import os,sys,signal,time,fcntl
 p=sys.argv[1]
-try:
- with open(p) as f: pgid=int(f.read())
-except FileNotFoundError: sys.exit(1)
+with open(p+'.lock','a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ with open(p+'.cancel','w') as f: f.write('1')
+ try:
+  with open(p) as f: pgid=int(f.read())
+ except FileNotFoundError:
+  print('confirmed'); sys.exit(0)
 try: os.killpg(pgid,signal.SIGKILL)
 except ProcessLookupError: pass
 end=time.monotonic()+2
@@ -111,7 +137,9 @@ while time.monotonic()<end:
    if int(fields[2])==pgid and fields[0]!='Z': alive=True
   except (FileNotFoundError,ProcessLookupError): pass
  if not alive:
-  os.unlink(p); print('confirmed'); sys.exit(0)
+  try: os.unlink(p)
+  except FileNotFoundError: pass
+  print('confirmed'); sys.exit(0)
  time.sleep(.01)
 sys.exit(1)`,
             pidPath,
