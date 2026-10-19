@@ -71,13 +71,13 @@ export async function snapshotCleaner(
   throw new Error("Snapshot cleanup not registered");
 }
 
-/** Daytona's SDK snapshot wrapper loses its generated name on timeout. Name it before the API call so cleanup remains scoped. */
+/** Name Daytona snapshots before creation for scoped timeout recovery; match the adapter's five-minute completion budget. */
 export async function createNamedDaytonaSnapshot(
   provider: Provider,
   sandboxId: string,
   name: string,
 ) {
-  await call(provider.native(sandboxId), "createSnapshot", name);
+  await call(provider.native(sandboxId), "createSnapshot", name, 300);
   return { id: name };
 }
 

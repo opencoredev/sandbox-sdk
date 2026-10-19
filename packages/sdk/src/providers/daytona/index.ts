@@ -15,6 +15,8 @@ export interface DaytonaOptions {
   snapshot?: string;
   /** Provider control-plane request deadline, in milliseconds. */
   requestTimeoutMs?: number;
+  /** Snapshot completion budget. Default: 300 seconds; maximum: 15 minutes. */
+  snapshotTimeoutMs?: number;
 }
 export type DaytonaCapability = "pause" | "snapshot" | "size" | "network-policy";
 export type DaytonaProvider = Provider<DaytonaSandbox, DaytonaCapability>;
@@ -54,6 +56,8 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   const monitors = new Map<string, Set<() => void>>();
   async function api() {
     return client ??= (async () => {
+      if (!Number.isSafeInteger(options.snapshotTimeoutMs ?? 300_000) || (options.snapshotTimeoutMs ?? 300_000) <= 0 || (options.snapshotTimeoutMs ?? 300_000) > 900_000)
+        throw new SandboxError("snapshotTimeoutMs must be an integer from 1 to 900000.", { code: "invalid_argument", provider: "daytona" });
       const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET, requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
       if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or apiKey.", { code: "auth", provider: "daytona" });
       const { Daytona } = await import("@daytonaio/sdk");
@@ -125,7 +129,15 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id),
     pause: id => safe(async () => { await (await box(id)).stop(); }, id),
     resume: id => safe(async () => { await (await box(id)).start(); }, id),
-    snapshot: id => safe(async () => { const name = `sdk-${crypto.randomUUID()}`; await (await box(id)).createSnapshot(name); return { id: name }; }, id),
+    snapshot: id => safe(async () => {
+      const name = `sdk-${crypto.randomUUID()}`;
+      try { await (await box(id)).createSnapshot(name, (options.snapshotTimeoutMs ?? 300_000) / 1000); }
+      catch (error) {
+        const mapped = daytonaError(error, id);
+        throw new SandboxError(`Snapshot ${name} did not complete. It may still be creating. Inspect or delete this name with the native snapshot API before retrying.`, { code: mapped.code, provider: "daytona", sandboxId: id, retryable: false, hint: `Recover snapshot ${name} from source sandbox ${id}.` });
+      }
+      return { id: name };
+    }, id),
     native(id) { const value = boxes.get(id); if (!value) throw new SandboxError("Sandbox is not connected. No local native object exists. Connect the sandbox first.", { code: "not_found", provider: "daytona", sandboxId: id }); return value; },
   };
   return provider;

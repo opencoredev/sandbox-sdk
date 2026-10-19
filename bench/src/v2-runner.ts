@@ -138,7 +138,7 @@ export async function runV2(
     cleanup: [],
     budgets: {},
     methodology: [
-      "Daytona snapshots use its native nameable API to journal a run-owned snapshot name before creation; the SDK wrapper generates a name internally and loses it on timeout. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
+      "Daytona snapshots use its native nameable API with a 300-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
       "Cold/reconnect/resume/restore use client monotonic clock through a successful true command. API-return and readiness phase timestamps are recorded separately. Create API phase includes provider-native readiness but excludes SDK handle initialization.",
       "All failures retained; percentiles/CI describe successful observations only. Success rate uses Wilson 95% interval (skips excluded). Nearest rank, population stddev, 2000 seeded bootstrap resamples for p50 and mean. No outlier removal.",

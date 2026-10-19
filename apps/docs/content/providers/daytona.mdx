@@ -96,6 +96,8 @@ Daytona counts both in whole minutes:
 
 `box.pause()` and `box.resume()` call Daytona's stop and start. The disk survives, and running processes end. `box.snapshot()` captures the file system as a new Daytona snapshot and returns its name. Pass it as `from` to start a new sandbox from it.
 
+Snapshot creation can outlast the native SDK’s 60-second default. The adapter waits up to five minutes by default. A timeout leaves the provider operation running and does not automatically retry it. The error message and hint include the generated snapshot name and source sandbox ID. Keep these identifiers, inspect the snapshot through the native client, and delete it when ready or failed. A snapshot can appear after the source is destroyed; retain the name until cleanup is confirmed. Destroying a sandbox does not delete its snapshots.
+
 ## Previews
 
 Daytona sandboxes are private, so preview URLs require a token. `box.preview(port)` returns it as the `X-Daytona-Preview-Token` header in `headers`. Send those headers with every request:
@@ -131,6 +133,7 @@ A browser can't add headers to an iframe or a link, so to show a Daytona preview
 - `image?: string`. A container image to start from.
 - `snapshot?: string`. A Daytona snapshot name to start from.
 - `requestTimeoutMs?: number`. Defaults to `30_000`.
+- `snapshotTimeoutMs?: number`. Defaults to `300_000`; accepts integers from `1` to `900_000`. Passed to the native snapshot completion wait.
 
 Returns a provider. `box.native` is the Daytona SDK's `Sandbox` object.
 

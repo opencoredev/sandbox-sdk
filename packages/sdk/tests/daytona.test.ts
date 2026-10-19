@@ -196,3 +196,19 @@ test("malformed output arriving during exit status lookup cannot report success"
   });
   await expect(box.run("sleep .2")).rejects.toMatchObject({ code: "provider" });
 });
+
+test("snapshot passes a sufficient bounded timeout and exposes its recovery name on failure", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key", snapshotTimeoutMs: 180000 }));
+  const snapshot = vi.spyOn(box.native, "createSnapshot").mockResolvedValueOnce();
+  const result = await box.snapshot();
+  expect(snapshot).toHaveBeenLastCalledWith(result.id, 180);
+  snapshot.mockRejectedValueOnce(Object.assign(new Error("private-native-body"), { name: "DaytonaTimeoutError" }));
+  try { await box.snapshot(); throw new Error("expected timeout"); }
+  catch (error) {
+    const name = snapshot.mock.calls.at(-1)?.[0] ?? "";
+    expect(name).toMatch(/^sdk-/);
+    expect(error).toMatchObject({ code: "timeout", retryable: false });
+    expect(String(error)).toContain(name);
+    expect(String(error)).not.toContain("private-native-body");
+  }
+});
