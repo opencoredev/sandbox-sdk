@@ -66,7 +66,7 @@ describe("fingerprint boundary", () => {
   const sample = {
     cpuModel: "Test CPU",
     flags: ["hypervisor"],
-    nproc: 32,
+    nproc: 64,
     cpuMax: "200000 100000",
     quotaCpus: 2,
     memoryMax: "1073741824",
