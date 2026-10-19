@@ -16,6 +16,33 @@ afterEach(async () => {
   await cleanupTenki();
 });
 describe("Tenki mappings", () => {
+  test("concurrent handles share one VM termination", async () => {
+    const provider = factory();
+    const first = await createSandbox(provider);
+    const second = await connectSandbox(provider, first.id);
+    const current = tenkiState.boxes.get(first.id);
+    if (!current) throw new Error("Missing mock session");
+    const close = current.close.bind(current);
+    let terminating = false;
+    const terminate = vi.spyOn(current, "close").mockImplementation(async () => {
+      if (terminating)
+        throw Object.assign(new Error("already terminating"), { name: "InvalidStateError" });
+      terminating = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await close();
+    });
+    await Promise.all([first.destroy(), second.destroy(), provider.destroy(first.id)]);
+    expect(terminate).toHaveBeenCalledOnce();
+    await provider.destroy(first.id);
+  });
+  test("command output preserves leading BOM, CRLF and trailing newlines", async () => {
+    const box = await createSandbox(factory());
+    const result = await box.run(
+      'python3 -c "import os; os.write(1, bytes([239,187,191,65,13,10,10])); os.write(2, bytes([239,187,191,66,13,10]))"',
+    );
+    expect(result.stdout).toBe("\uFEFFA\r\n\n");
+    expect(result.stderr).toBe("\uFEFFB\r\n");
+  });
   test("lazy optional SDK, typed native session, resources, network and timeouts", async () => {
     const provider = tenki({
       authToken: "key",
