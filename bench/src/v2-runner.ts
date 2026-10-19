@@ -875,10 +875,19 @@ export async function runV2(
     }
     const remaining = new Set<string>();
     try {
-      const after = await deadline(config["timeout-ms"], () =>
-        p.provider.list({ "sandbox-bench-run": config.run }));
-      for (const item of after)
-        if (item.labels["sandbox-bench-run"] === config.run) remaining.add(item.id);
+      // Native deletion can return while the control plane still lists the VM.
+      // Wait only on this run's exact label, then retain unresolved ownership.
+      const end = Date.now() + Math.min(config["timeout-ms"], 30_000);
+      for (;;) {
+        const after = await deadline(Math.max(1, end - Date.now()), () =>
+          p.provider.list({ "sandbox-bench-run": config.run }));
+        const matching = after.filter(item => item.labels["sandbox-bench-run"] === config.run);
+        if (!matching.length || Date.now() >= end) {
+          for (const item of matching) remaining.add(item.id);
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, Math.min(1000, end - Date.now())));
+      }
     } catch (e) { errors.push(errorNote(e)); }
     // A timed-out Daytona snapshot can appear after its initial deletion returned.
     // Retain the source marker until the VM is gone, then query only that owned source.

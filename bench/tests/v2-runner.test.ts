@@ -166,3 +166,36 @@ it("reaps snapshots that materialize after an earlier delete returns", async () 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("waits for a run-owned Daytona deletion to disappear before snapshot recovery", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const snapshots = await import("../src/snapshots.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve("results-test-"));
+  const backing = memory();
+  let stale: Awaited<ReturnType<typeof backing.list>> = [];
+  let afterDeleteLists = 0;
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
+  const query = vi.spyOn(snapshots, "snapshotsFromDaytonaSandbox").mockResolvedValue([]);
+  const provider = { ...backing,
+    capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
+    snapshot: async () => ({ id: "unused" }),
+    destroy: async (id: string) => { const live = await backing.list({}); if (live.length) stale = live; await backing.destroy(id); },
+    list: async (labels: import("@opencoredev/sandbox-sdk/provider").Labels) => {
+      const live = await backing.list(labels);
+      return stale.length && ++afterDeleteLists <= 2 ? stale : live;
+    },
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "daytona", cloud: false, region: null, provider }],
+      parseV2(["--providers", "daytona", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
+      async () => {},
+    );
+    expect(report.cleanup).toEqual([{ provider: "daytona", remaining: [], error: null }]);
+    expect(query).toHaveBeenCalled();
+  } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); }
+});
