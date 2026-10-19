@@ -314,3 +314,17 @@ test("large binary reads avoid the truncated native download stream", async () =
     expect(Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
   } finally { await box.destroy(); vi.restoreAllMocks(); }
 });
+
+ test("binary chunk reads retry one native timeout without replaying writes or auth errors", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const data = Uint8Array.from({ length: 2 * 1024 * 1024 }, (_, i) => i % 251);
+    await box.files.write("retry.bin", data);
+    const exec = vi.spyOn(box.native.client.machines, "exec").mockRejectedValueOnce(Object.assign(new Error("exec timed out after 30000ms"), { name: "BoxdError" }));
+    expect(Buffer.from(await box.files.read("retry.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(3);
+    exec.mockReset().mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 7 }));
+    await expect(box.files.read("retry.bin")).rejects.toMatchObject({ code: "auth" });
+    expect(exec).toHaveBeenCalledTimes(1);
+  } finally { vi.restoreAllMocks(); await box.destroy(); }
+});

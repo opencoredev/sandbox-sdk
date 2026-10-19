@@ -69,13 +69,19 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         let remaining = range?.length ?? Infinity;
         while (remaining > 0) {
           const length = Math.min(1024 * 1024 + 1, remaining);
-          const result = await c.machines.exec(id, {
+          const readChunk = () => c.machines.exec(id, {
             command: python(
               "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
               path, String(offset), String(length),
             ),
             encoding: "buffer",
             timeout: options.requestTimeoutMs ?? 30000,
+          });
+          // This fixed command only reads a byte range. Repeating it cannot
+          // replay a write, even if a timed-out native stream finishes late.
+          const result = await readChunk().catch((error: unknown) => {
+            if (!["timeout", "unavailable"].includes(boxdError(error, id).code)) throw error;
+            return readChunk();
           });
           if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
           const bytes = new Uint8Array(result.stdout);

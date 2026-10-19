@@ -72,7 +72,7 @@ Whole-file reads and ranges use bounded byte-exact native exec calls. Writes use
 
 Previews use the machine’s default hostname, `<machine>.boxd.sh`, covered by the provider’s `*.boxd.sh` certificate. Nested named routes can fail TLS while their individual certificates are unavailable. TLS verification stays enabled. The adapter pins the default route to the requested port and disables its browser bot challenge so server-side HTTP clients can connect. A VM has one default route: requesting a different port changes where earlier preview URLs point. Add authentication to any app you expose.
 
-The native SDK streams uploads above 3 MiB, so large writes need no adapter chunking. Native multi-MiB downloads can truncate their final block or exceed the request deadline. The adapter reads binary data through bounded native exec calls instead, with one call for files up to 1 MiB and additional calls for larger files. Files must remain unchanged during a multi-call read.
+The native SDK streams uploads above 3 MiB, so large writes need no adapter chunking. Native multi-MiB downloads can truncate their final block or exceed the request deadline. The adapter reads binary data through bounded native exec calls instead, with one call for files up to 1 MiB and additional calls for larger files. Each read chunk retries at most once on a native timeout or unavailable error; writes and arbitrary commands are not replayed. Files must remain unchanged during a multi-call read.
 
 ## Limitations
 
