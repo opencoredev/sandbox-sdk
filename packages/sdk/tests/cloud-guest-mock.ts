@@ -16,7 +16,7 @@ export class MockGuest {
   }
   rewrite(s: string) {
     return s.replace(
-      /\/workspace|\/var\/lib\/sandbox-sdk.json|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
+      /\/workspace|\/var\/lib\/sandbox-sdk(?:-env)?\.json|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
       (p) => join(this.root, p),
     );
   }

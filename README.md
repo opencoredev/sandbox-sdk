@@ -2,7 +2,7 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, Tenki, or boxd.
+Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, Tenki, boxd, or Freestyle.
 
 ## Install
 
@@ -37,6 +37,7 @@ Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript t
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
 | [Boat](https://sandbox-sdk.app/docs/providers/boat) | Persistent cloud VM | Long-running agents and protected previews |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
+| [Freestyle](https://sandbox-sdk.app/docs/providers/freestyle) | Persistent Linux VM | Default-deny firewall, memory snapshots, and public previews |
 | [boxd](https://sandbox-sdk.app/docs/providers/boxd) | Persistent Linux VM | Isolated machines, memory pause, and HTTPS proxies |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
 

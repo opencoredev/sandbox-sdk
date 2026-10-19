@@ -9,6 +9,7 @@ export const PROVIDERS = {
   upstash: { name: "Upstash Box", logo: "/integrations/upstash.svg" },
   railway: { name: "Railway", logo: "/integrations/railway.svg" },
   boat: { name: "Boat", logo: "/integrations/boat.svg" },
+  freestyle: { name: "Freestyle", logo: "/integrations/freestyle.svg" },
   boxd: { name: "boxd", logo: "/integrations/boxd.svg" },
   tenki: { name: "Tenki", logo: "/integrations/tenki.svg" },
   agentos: { name: "agentOS", logo: "/integrations/agentos.svg" },

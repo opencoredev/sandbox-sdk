@@ -2,7 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Tenki, boxd, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Tenki, boxd, Freestyle, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -25,26 +25,27 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
 | <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
 | <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd) | `boxd()` from `/boxd` | `@boxd-sh/sdk` | `BOXD_API_KEY` | Persistent isolated VMs, memory pause |
+| <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle) | `freestyle()` from `/freestyle` | `freestyle` | `FREESTYLE_API_KEY` | Persistent VMs, default-deny firewall, memory snapshots |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
 
 ## Feature matrix
 
 "Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
 
-|  | Local | Local (agentOS) | E2B | Vercel Sandbox | Daytona | Upstash Box | Railway | Boat | Tenki | boxd | Memory |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
-| Pause and resume | Yes | No | Yes | Partly, processes end | Partly, processes end | Yes, processes end | No | No | Yes | Yes | No |
-| Snapshots | Yes | No | Yes | Yes | Yes | Yes | Yes | No | Yes | No | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | Yes | No | Yes |
-| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | Yes | No | Yes |
-| Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | No | No |
-| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | Yes | No | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, in minutes | No | Yes, destroys VM | No | No | No | Yes |
-| Hard lifetime | Partly, on reconnect or reap | No | Yes | No | Yes, in minutes | No | No | No | Yes | No | Yes |
-| Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No |
-| Preview URL | `127.0.0.1` only | Unsupported | Public `https://` | Public `https://` | Needs a token header | Needs a bearer header | Public `https://` | Token in URL | Public `https://` | Public `https://` | Fake |
-| Terminal | No | No | No | No | No | No | No | No | No | No | No |
+|  | Local | Local (agentOS) | E2B | Vercel Sandbox | Daytona | Upstash Box | Railway | Boat | Tenki | boxd | Freestyle | Memory |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
+| Pause and resume | Yes | No | Yes | Partly, processes end | Partly, processes end | Yes, processes end | No | No | Yes | Yes | Yes | No |
+| Snapshots | Yes | No | Yes | Yes | Yes | Yes | Yes | No | Yes | No | Yes | No |
+| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | Yes | No | Yes | Yes |
+| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | Yes | No | Empty only | Yes |
+| Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | No | No | No |
+| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | Yes | No | No | No |
+| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, in minutes | No | Yes, destroys VM | No | No | No | Yes, whole seconds | Yes |
+| Hard lifetime | Partly, on reconnect or reap | No | Yes | No | Yes, in minutes | No | No | No | Yes | No | Yes, whole seconds | Yes |
+| Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No |
+| Preview URL | `127.0.0.1` only | Unsupported | Public `https://` | Public `https://` | Needs a token header | Needs a bearer header | Public `https://` | Token in URL | Public `https://` | Public `https://` | Public `https://` | Fake |
+| Terminal | No | No | No | No | No | No | No | No | No | No | No | No |
 
 Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
 
@@ -81,6 +82,9 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="boxd" href="/providers/boxd" icon="/integrations/boxd.svg">
     Persistent isolated Linux machines with pause and HTTPS proxies.
+  </Card>
+  <Card title="Freestyle" href="/providers/freestyle" icon="/integrations/freestyle.svg">
+    Persistent VMs with default-deny networking and memory snapshots.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

@@ -23,6 +23,7 @@ const credentials: Record<string, string[]> = {
   boat: ["BOAT_API_KEY"],
   tenki: ["TENKI_API_KEY"],
   boxd: ["BOXD_API_KEY"],
+  freestyle: ["FREESTYLE_API_KEY"],
 };
 const regionKeys: Record<string, string> = {
   e2b: "E2B_REGION",

@@ -156,8 +156,8 @@ function Hero() {
         </h1>
         <p className={styles.lede} data-reveal>
           Any provider, one line. Run commands, edit files, and serve previews on Docker, E2B,
-          Vercel, Daytona, Upstash, Railway, Boat, Tenki, or boxd. The SDK calls each provider with
-          your own keys, with no hosted service in between.
+          Vercel, Daytona, Upstash, Railway, Boat, Tenki, boxd, or Freestyle. The SDK calls each
+          provider with your own keys, with no hosted service in between.
         </p>
         <div className={styles.heroActions} data-reveal>
           <DocsButton />
@@ -204,12 +204,12 @@ function Providers() {
     <section className={styles.section} aria-labelledby="providers-title">
       <div className={styles.sectionHead}>
         <h2 id="providers-title" className={styles.title}>
-          Two local runtimes, eight clouds, and a fake for tests.
+          Two local runtimes, nine clouds, and a fake for tests.
         </h2>
         <p className={styles.sectionLede}>
           Local runs on Docker or agentOS. E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat,
-          Tenki, and boxd run in the cloud. memory() is an in-process fake for unit tests that never
-          touches the network.
+          Tenki, boxd, and Freestyle run in the cloud. memory() is an in-process fake for unit tests
+          that never touches the network.
         </p>
       </div>
       <ProvidersCarousel style={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
@@ -467,7 +467,7 @@ function Footer() {
           </Link>
           <p>
             A TypeScript SDK for sandboxes on Docker, agentOS, E2B, Vercel, Daytona, Upstash,
-            Railway, Boat, Tenki, and boxd. MIT licensed, built by OpenCore.
+            Railway, Boat, Tenki, boxd, and Freestyle. MIT licensed, built by OpenCore.
           </p>
         </div>
         <div className={styles.footerCol}>

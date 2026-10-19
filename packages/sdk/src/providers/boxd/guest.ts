@@ -3,6 +3,7 @@ import { SandboxError, type ErrorCode } from "../../errors.js";
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 export interface Guest {
   name: string;
+  baseEnvPath?: string;
   raw(command: string): Promise<string>;
   upload(path: string, bytes: Uint8Array): Promise<void>;
   destroy(): Promise<void>;
@@ -20,6 +21,8 @@ const supervisor = `import os,sys,json,base64,subprocess,signal,selectors,time,t
 root=sys.argv[1]
 with open(root+'/spec') as f: v=json.load(f)
 os.unlink(root+'/spec')
+if v.get('baseEnvPath'):
+ with open(v['baseEnvPath']) as f: v['env']={**json.load(f),**v['env']}
 with tempfile.TemporaryFile() as f, open(root+'/out','wb',buffering=0) as out:
  f.write(base64.b64decode(v['stdin'])); f.seek(0)
  p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
@@ -105,6 +108,7 @@ except ProcessLookupError: pass`,
       Buffer.from(
         JSON.stringify({
           command: input.command,
+          baseEnvPath: g.baseEnvPath,
           cwd: input.cwd,
           env: input.env,
           stdin: Buffer.from(input.stdin ?? "").toString("base64"),

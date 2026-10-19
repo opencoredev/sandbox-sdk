@@ -145,6 +145,14 @@ export const providerArt: ProviderArt[] = [
     href: "/docs/providers/boxd",
     paint: providerScenes.local,
   },
+  {
+    kind: "launch",
+    id: "freestyle",
+    name: "Freestyle",
+    line: "Persistent VMs with default-deny networking and memory snapshots.",
+    href: "/docs/providers/freestyle",
+    paint: providerScenes.daytona,
+  },
 ];
 
 /** The ember glow behind the closing call to action. */
