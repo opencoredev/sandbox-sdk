@@ -71,7 +71,7 @@ function costs(r: PublicationReport) {
     }),
   );
 }
-function hourly(r: PublicationReport, provider: string) {
+export function hourly(r: PublicationReport, provider: string) {
   const fingerprints = r.samples
     .filter((s) => s.provider === provider && s.scenario === "fingerprint")
     .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));

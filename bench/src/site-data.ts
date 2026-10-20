@@ -1,0 +1,228 @@
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { pricing } from "./pricing.js";
+import { hourly } from "./publication-report.js";
+import { reliability, type PublicationReport, type Suite } from "./merge.js";
+import type { Fingerprint } from "./fingerprint.js";
+
+// Compact, chart-ready view of a merged publication report for apps/bench-site.
+// Every number here is derived from results.json; the site never hard-codes measurements.
+
+export type Better = "lower" | "higher";
+export interface MetricDef {
+  id: string;
+  suite: Suite;
+  scenario: string;
+  label: string;
+  unit: "s" | "ops/s" | "MB/s" | "IOPS" | "ms";
+  better: Better;
+  /** Converts the stored value (ms for latency) into the display unit. */
+  scale: number;
+  comparable?: boolean;
+}
+
+const latency = (id: string, suite: Suite, scenario: string, label: string): MetricDef => ({
+  id,
+  suite,
+  scenario,
+  label,
+  unit: "s",
+  better: "lower",
+  scale: 1 / 1000,
+});
+const rate = (id: string, scenario: string, label: string, unit: MetricDef["unit"]): MetricDef => ({
+  id,
+  suite: "main",
+  scenario,
+  label,
+  unit,
+  better: "higher",
+  scale: 1,
+});
+
+export const metricDefs: MetricDef[] = [
+  latency("cold", "main", "cold", "Cold start"),
+  latency("command", "main", "command", "Run a command"),
+  latency("files-1kb", "main", "files-1kb", "Write + read 1 KB"),
+  latency("files-10mb", "main", "files-10mb", "Write + read 10 MB"),
+  latency("reconnect", "main", "reconnect", "Reconnect"),
+  latency("pause-resume", "main", "pause-resume", "Pause + resume"),
+  latency("destroy", "main", "destroy", "Destroy"),
+  latency("snapshot", "snapshot", "snapshot", "Take snapshot"),
+  latency("create-from-snapshot", "snapshot", "create-from-snapshot", "Start from snapshot"),
+  latency("git-clone", "main", "git-clone", "git clone"),
+  latency("npm-install", "main", "npm-install", "npm install"),
+  latency("pip-install", "main", "pip-install", "pip install"),
+  latency("dev-server", "main", "dev-server", "Dev server ready"),
+  latency("preview-first-byte", "main", "preview-first-byte", "Preview URL first byte"),
+  latency("edit-loop", "main", "edit-loop", "Edit, rebuild, reload"),
+  latency("tool-replay", "main", "tool-replay", "Agent tool replay"),
+  latency("burst-10", "burst", "burst-10/all-ready", "10 at once, all ready"),
+  latency("burst-25", "burst", "burst-25/all-ready", "25 at once, all ready"),
+  rate("cpu-single", "cpu-single", "CPU, one core", "ops/s"),
+  rate("cpu-all", "cpu-all", "CPU, all cores", "ops/s"),
+  rate("memory", "memory-mbps", "Memory bandwidth", "MB/s"),
+  rate("disk-write", "disk-write-mbps", "Disk write", "MB/s"),
+  rate("disk-read", "disk-read-mbps", "Disk read", "MB/s"),
+  rate("iops-write", "disk-4k-write-iops", "4K random write", "IOPS"),
+  rate("iops-read", "disk-4k-read-iops", "4K random read", "IOPS"),
+  { ...rate("network", "network-mbps", "Download speed", "MB/s"), comparable: false },
+  {
+    ...latency("tcp", "main", "tcp-ms", "TCP connect"),
+    unit: "ms",
+    scale: 1,
+  },
+];
+
+const egressText = (egress: Fingerprint["egress"], key: string) => {
+  const value = egress?.[key];
+  return typeof value === "string" && value ? value : null;
+};
+
+function cpuVendor(fp: Fingerprint) {
+  if (fp.flags.includes("asimd") || fp.flags.includes("fp") || /arm|graviton|neoverse/i.test(fp.cpuModel))
+    return { vendor: "Arm", arch: "arm64" };
+  if (/intel/i.test(fp.cpuModel) || fp.flags.includes("vmx")) return { vendor: "Intel", arch: "x86_64" };
+  if (/amd/i.test(fp.cpuModel) || fp.flags.includes("svm")) return { vendor: "AMD", arch: "x86_64" };
+  return { vendor: "Unknown", arch: "unknown" };
+}
+
+const cleanCpu = (model: string) =>
+  /^[\d/]+$|^unknown$/i.test(model.trim())
+    ? null
+    : model.replace(/\(R\)|\(TM\)/g, "").replace(/\s+/g, " ").trim();
+
+const counts = (xs: string[]) =>
+  [...xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>())]
+    .sort((a, b) => b[1] - a[1])
+    .map(([value, count]) => ({ value, count }));
+
+function hardware(r: PublicationReport, provider: string) {
+  const fps = r.samples
+    .filter((s) => s.provider === provider && s.scenario === "fingerprint")
+    .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));
+  const first = fps[0];
+  if (!first) return null;
+  const vcpu = counts(fps.map((f) => String(Math.min(f.nproc, f.quotaCpus ?? f.nproc))));
+  const vendor = cpuVendor(first);
+  return {
+    fingerprints: fps.length,
+    vcpu: Number(vcpu[0]?.value),
+    visibleCpus: counts(fps.map((f) => String(f.nproc))).map((c) => Number(c.value)),
+    cpuQuota: first.quotaCpus,
+    memoryGiB: first.memoryBytes / 1024 ** 3,
+    diskGiB: first.diskBytes / 1024 ** 3,
+    cpuModels: counts(fps.flatMap((f) => cleanCpu(f.cpuModel) ?? [])),
+    vendor: vendor.vendor,
+    arch: vendor.arch,
+    isolation: first.virtualization || (first.hypervisor ? "VM" : "unreported"),
+    hypervisor: first.hypervisor,
+    host: first.dmi || null,
+    kernel: first.kernel.replace(/^Linux \S+ /, "").split(" ")[0] ?? null,
+    location: counts(
+      fps.flatMap((f) => {
+        const city = egressText(f.egress, "city");
+        const country = egressText(f.egress, "country");
+        return city || country ? [[city, country].filter(Boolean).join(", ")] : [];
+      }),
+    ),
+    network: counts(fps.flatMap((f) => egressText(f.egress, "org") ?? [])),
+  };
+}
+
+export function siteData(r: PublicationReport) {
+  const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
+  const metrics = metricDefs.map((def) => ({
+    ...def,
+    comparable: def.comparable ?? true,
+    values: names.flatMap((provider) => {
+      const s = r.summaries.find(
+        (x) => x.suite === def.suite && x.provider === provider && x.scenario === def.scenario,
+      );
+      if (!s) return [];
+      const scaled = (v: number | null | undefined) => (v == null ? null : v * def.scale);
+      return [
+        {
+          provider,
+          n: s.stats.count,
+          p50: scaled(s.stats.p50),
+          p95: scaled(s.stats.p95),
+          min: scaled(s.stats.min),
+          ciLow: scaled(s.stats.p50CI?.low),
+          ciHigh: scaled(s.stats.p50CI?.high),
+          successes: s.reliability.successes,
+          failures: s.reliability.failures,
+          limitFailures: s.reliability.classes["provider-account-limit"],
+        },
+      ];
+    }),
+  }));
+  const providers = names.map((name) => {
+    const rel = reliability(r.samples.filter((s) => s.provider === name));
+    const price = pricing[name];
+    const hw = hardware(r, name);
+    const hour = hourly(r, name);
+    return {
+      id: name,
+      currency: price?.currency ?? null,
+      hourly: hour,
+      perVcpuHour: hour != null && hw?.vcpu ? hour / hw.vcpu : null,
+      pricingSource: price?.source ?? null,
+      pricingNotes: price?.notes ?? null,
+      reliability: {
+        successes: rel.successes,
+        failures: rel.failures,
+        raw: rel.raw?.rate ?? null,
+        adjusted: rel.excludingLimitsAndClient?.rate ?? null,
+        accountLimit: rel.classes["provider-account-limit"],
+        clientNetwork: rel.classes["client-third-party"],
+        provider: rel.classes["provider-operation"],
+      },
+      hardware: hw,
+    };
+  });
+  // Raw successful cold starts, for distribution plots.
+  const coldSamples = Object.fromEntries(
+    names.map((provider) => [
+      provider,
+      r.samples
+        .filter(
+          (s) => s.suite === "main" && s.provider === provider && s.scenario === "cold",
+        )
+        .flatMap((s) => (s.outcome.kind === "sample" ? [Math.round(s.outcome.value) / 1000] : []))
+        .sort((a, b) => a - b),
+    ]),
+  );
+  return {
+    generatedFrom: r.runId,
+    window: { start: r.timestamp, end: r.finishedAt },
+    observations: r.samples.length,
+    runs: r.sources.map((s) => ({ id: s.runId, suite: s.suite, samples: s.sampleCount })),
+    excluded: r.excludedSources,
+    providers,
+    metrics,
+    coldSamples,
+  };
+}
+export type SiteData = ReturnType<typeof siteData>;
+
+export async function siteDataCommand(args: string[]) {
+  const { values } = parseArgs({
+    args,
+    options: {
+      report: { type: "string", default: "results/publication-final" },
+      out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
+      public: { type: "string", default: "../apps/bench-site/public" },
+    },
+  });
+  // results.json is written by `bun bench merge`; its shape is PublicationReport by construction.
+  const report: PublicationReport = JSON.parse(
+    await readFile(join(values.report, "results.json"), "utf8"),
+  );
+  await writeFile(values.out, `${JSON.stringify(siteData(report), null, 1)}\n`);
+  // The site links the full tables; the 800 MB JSON and NDJSON stay out of the static export.
+  await mkdir(values.public, { recursive: true });
+  await copyFile(join(values.report, "results.md"), join(values.public, "results.md"));
+  process.stdout.write(`Wrote ${values.out} and ${join(values.public, "results.md")}\n`);
+}
