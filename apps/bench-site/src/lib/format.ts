@@ -43,7 +43,8 @@ export const formatPercent = (value: number, digits = 1) => `${(value * 100).toF
 
 export function formatMoney(value: number, currency: string | null) {
   const symbol = currency === "EUR" ? "€" : "$";
-  return `${symbol}${value < 0.1 ? value.toFixed(3) : value.toFixed(2)}`;
+  // Three decimals under a dollar: hourly prices sit close together (Upstash $0.201, boxd $0.201).
+  return `${symbol}${value < 1 ? value.toFixed(3) : value.toFixed(2)}`;
 }
 
 export const formatCount = (value: number) => value.toLocaleString("en-US");

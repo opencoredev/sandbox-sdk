@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Sandbox SDK bench: cloud sandboxes for agents, measured",
+  title: "Sandbox bench: cloud sandboxes for agents, measured",
   icons: {
     icon: [
       { url: "/favicon-light.svg", type: "image/svg+xml", media: "(prefers-color-scheme: light)" },

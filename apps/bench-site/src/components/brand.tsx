@@ -16,7 +16,7 @@ export function Lockup() {
     <span className="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight whitespace-nowrap">
       <Mark className="size-[18px] text-[var(--brand)]" />
       <span>
-        Sandbox SDK <span className="font-normal text-[var(--muted)]">bench</span>
+        Sandbox <span className="font-normal text-[var(--muted)]">bench</span>
       </span>
     </span>
   );

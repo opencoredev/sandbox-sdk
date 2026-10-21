@@ -5,8 +5,9 @@ import type { Column } from "@/components/columns";
 import { Lockup } from "@/components/brand";
 import { MachineSizes } from "@/components/machine-sizes";
 import { PauseChart, PausePart } from "@/components/pause-chart";
+import { ProviderStrip } from "@/components/provider-strip";
 import { SectionNav } from "@/components/section-nav";
-import { StatusBoard } from "@/components/status-board";
+import { Reliability } from "@/components/reliability";
 import { ChartHead, Footnotes, MetricChart, Who, metricSubtitle } from "@/components/metric-chart";
 import type { Notes } from "@/components/metric-chart";
 import { Ridgelines } from "@/components/ridgelines";
@@ -20,6 +21,8 @@ import type { Provider } from "@/lib/data";
 import { formatCount, formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
+import { conversionNote, usdPrice } from "@/lib/fx";
+import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
 
 // Reference: Artificial Analysis for structure (short header, three headline
@@ -78,42 +81,35 @@ const metricTabs = (items: readonly { id: string; what: string; tab?: string; no
     return { id, label: tab ?? m.label, content: <MetricChart metric={m} what={what} notes={notes} only={only} /> };
   });
 
-type PriceKey = "hourly" | "perVcpuHour";
+const per = (k: PriceKey) => (k === "hourly" ? "an hour" : "per vCPU-hour");
 
-/** Dollar prices as columns, cheapest first. Providers billing in another currency go in a footnote. */
-function priceColumns(key: PriceKey): { columns: Column[]; other: Provider[] } {
+/** Dollar prices as columns, cheapest first. Euro prices are converted and marked with a footnote. */
+function priceColumns(key: PriceKey) {
   const priced = providers.flatMap((p) => {
-    const value = p[key];
-    return value === null ? [] : [{ p, value }];
+    const price = usdPrice(p, key);
+    return price ? [{ p, ...price }] : [];
   });
-  const columns = priced
-    .filter(({ p }) => p.currency === "USD")
-    .sort((a, b) => a.value - b.value)
-    .map(({ p, value }) => ({
+  const columns: Column[] = priced
+    .sort((a, b) => a.usd - b.usd)
+    .map(({ p, usd, converted, original }) => ({
       provider: p.id,
-      label: formatMoney(value, p.currency),
-      segments: [{ value, color: providerColor(p.id), variant: "gradient" }] as const,
-      detail: [`${formatMoney(value, p.currency)} ${key === "hourly" ? "an hour" : "per vCPU-hour"}`, size(p)],
+      label: formatMoney(usd, "USD"),
+      mark: converted ? 1 : undefined,
+      segments: [{ value: usd, color: providerColor(p.id), variant: "gradient" }],
+      detail: [`${formatMoney(usd, "USD")} ${per(key)}${converted ? ` (${original})` : ""}`, size(p)],
     }));
-  return { columns, other: priced.filter(({ p }) => p.currency !== "USD").map(({ p }) => p) };
+  return { columns, converted: priced.filter((x) => x.converted) };
 }
 
 function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: string }) {
-  const { columns, other } = priceColumns(k);
+  const { columns, converted } = priceColumns(k);
   return (
     <>
       <ChartHead title={title} sub={`${what} · US dollars · Lower is better`} />
       <Columns columns={columns} label={title} />
       <Footnotes
         items={[
-          ...other.map((p) => ({
-            text: (
-              <>
-                <Who id={p.id} /> bills in euros, {formatMoney(p[k] ?? 0, p.currency)}
-                {k === "hourly" ? " an hour" : " per vCPU-hour"}, so it is listed here instead of converted.
-              </>
-            ),
-          })),
+          ...converted.map(({ p, original }) => ({ mark: 1, text: <><Who id={p.id} /> {conversionNote(original, per(k))}</> })),
           { text: "List-price estimates for the size each provider gave us, not invoices. Boat is a flat rate. Upstash and boxd are upper bounds: they bill for less than the full allocation." },
         ]}
       />
@@ -149,12 +145,14 @@ function Headline({ marker, title, sub, children }: { marker: string; title: str
 export default function Page() {
   const cold = metric("cold");
   const replay = metric("tool-replay");
+  const boxd = provider("boxd");
   const coldP50 = (id: ProviderId) => cold.values.find((v) => v.provider === id)?.p50 ?? null;
   const scatterPoints: ScatterPoint[] = providers.flatMap((p) => {
     const x = coldP50(p.id);
-    return x !== null && p.hourly !== null && p.currency === "USD" ? [{ provider: p.id, x, y: p.hourly, currency: p.currency }] : [];
+    const price = usdPrice(p, "hourly");
+    return x !== null && price ? [{ provider: p.id, x, y: price.usd, currency: "USD" }] : [];
   });
-  const boxd = provider("boxd");
+  const boxdHour = boxd ? usdPrice(boxd, "hourly") : null;
   const boat = provider("boat");
   const daytona = provider("daytona");
 
@@ -162,7 +160,7 @@ export default function Page() {
     <>
       <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--background)]/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1200px] items-center gap-4 px-4 py-3 sm:px-6">
-          <a href="#top" className="shrink-0" aria-label="Sandbox SDK bench, back to top">
+          <a href="#top" className="shrink-0" aria-label="Sandbox bench, back to top">
             <Lockup />
           </a>
           <SectionNav sections={sections} />
@@ -210,7 +208,12 @@ export default function Page() {
           </Headline>
           <Headline marker="var(--dither-color-green)" title="Price per hour" sub="Default sandbox, list price · US dollars · Lower is better">
             <Columns columns={priceColumns("hourly").columns} label="Price per sandbox-hour" compact />
+            {boxdHour?.converted ? <p className="mt-1 text-[11px] text-[var(--muted)]"><sup>1</sup> boxd bills in euros; converted at the ECB rate.</p> : null}
           </Headline>
+        </div>
+
+        <div className="mt-4">
+          <ProviderStrip providers={providers} />
         </div>
 
         <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns.">
@@ -234,18 +237,9 @@ export default function Page() {
                       xTitle="Median cold start, seconds (log scale)"
                       yTitle="Price per sandbox-hour (USD)"
                     />
-                    <Footnotes
-                      items={[
-                        {
-                          text: (
-                            <>
-                              <Who id="boxd" /> bills in euros, so it is left off rather than converted:{" "}
-                              {coldP50("boxd")?.toFixed(1)} s at {formatMoney(boxd?.hourly ?? 0, "EUR")} an hour.
-                            </>
-                          ),
-                        },
-                      ]}
-                    />
+                    {boxdHour?.converted ? (
+                      <Footnotes items={[{ text: <><Who id="boxd" /> {conversionNote(boxdHour.original, "an hour")}</> }]} />
+                    ) : null}
                   </>
                 ),
               },
@@ -371,10 +365,10 @@ export default function Page() {
               },
               {
                 id: "details",
-                label: "CPU and region",
+                label: "CPU",
                 content: (
                   <>
-                    <ChartHead title="What it ran on, and where" sub="Read from inside each sandbox · Region is where its traffic came from" />
+                    <ChartHead title="What it ran on" sub="Read from inside each sandbox" />
                     <SpecSheet providers={providers} />
                   </>
                 ),
@@ -395,10 +389,9 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="reliability" title="Reliability" lede="Every attempt counts. Failures were kept, never dropped as outliers, and each one is listed below with its cause.">
+        <Section id="reliability" title="Reliability" lede="Every attempt counts. Failures were kept, never dropped as outliers, and each one is listed with its cause.">
           <Card>
-            <ChartHead title="Status by provider" sub="One cell per test, coloured by how many attempts failed · Point at or tab to a cell for its counts" />
-            <StatusBoard providers={providers} />
+            <Reliability providers={providers} />
           </Card>
         </Section>
 
@@ -439,7 +432,7 @@ export default function Page() {
       </main>
 
       <footer className="mx-auto mt-24 max-w-[1200px] px-4 sm:px-6">
-        <p className="border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">Sandbox SDK bench · {day}</p>
+        <p className="border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">Sandbox bench · {day}</p>
       </footer>
     </>
   );

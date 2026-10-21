@@ -8,14 +8,14 @@ const isolationName: Record<string, string> = {
   unreported: "Not reported",
 };
 
-/** What each default sandbox ran on and where, read from inside it. Sizes are in MachineSizes. */
+/** What each default sandbox ran on, read from inside it. Sizes are in MachineSizes, regions in ProviderStrip. */
 export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
   return (
     <div role="region" aria-label="Sandbox details by provider" tabIndex={0} className="relative -mx-5 overflow-x-auto px-5 sm:mx-0 sm:px-0">
-      <table className="w-full min-w-[620px] border-collapse text-left text-[13px]">
+      <table className="w-full min-w-[520px] border-collapse text-left text-[13px]">
         <thead>
           <tr className="border-b border-[var(--line)] text-[12px] text-[var(--muted)]">
-            {["Provider", "CPU", "Runs as", "Ran in"].map((h) => (
+            {["Provider", "CPU", "Runs as"].map((h) => (
               <th key={h} scope="col" className="py-2.5 pr-5 font-normal">
                 {h}
               </th>
@@ -37,7 +37,6 @@ export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
                   {note ? <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">{note}</span> : null}
                 </td>
                 <td className="py-3 pr-5 whitespace-nowrap">{isolationName[hw.isolation] ?? hw.isolation}</td>
-                <td className="py-3 pr-5 whitespace-nowrap">{hw.location[0]?.value ?? "Not reported"}</td>
               </tr>
             );
           })}

@@ -3,6 +3,7 @@ import type { Metric } from "@/lib/data";
 import { formatGiB, formatValue, unitName } from "@/lib/format";
 import { providerName } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
+import { eurUsd, usdPrice } from "@/lib/fx";
 import { successRate } from "@/lib/status";
 
 /** The metrics agents get, in page order, grouped as on the page. */
@@ -37,7 +38,7 @@ const results = (m: Metric) =>
 export function agentData() {
   return {
     about:
-      "Sandbox SDK bench: seven cloud sandbox providers driven through one open-source SDK from one server in Florida, US. Medians and p95s per provider; every failure kept.",
+      "Sandbox bench: cloud sandbox providers driven through one open-source SDK (Sandbox SDK) from one server in Florida, US. Medians and p95s per provider; every failure kept.",
     run: { start: runWindow.start, end: runWindow.end, runs: runs.map((r) => r.id), timedOperations },
     howToRead:
       "median and p95 are in `unit`. `better` says which direction wins. Results are sorted best first. attempts counts every try, failed included; failed tries have no time. A null median means the provider does not support the test or every attempt failed. size is what the provider advertises for its default sandbox, or what we measured inside where it does not say. reliability.successRate counts every attempt on the site's tests, whatever made it fail.",
@@ -51,7 +52,14 @@ export function agentData() {
         measuredSize: p.hardware ? { vcpu: p.hardware.vcpu, memoryGiB: round(p.hardware.memoryGiB), diskGiB: round(p.hardware.diskGiB) } : null,
         ranIn: p.hardware?.location[0]?.value ?? null,
         cpu: p.hardware?.cpuModels[0]?.value ?? null,
-        price: { currency: p.currency, perHour: round(p.hourly), perVcpuHour: round(p.perVcpuHour), source: p.pricingSource },
+        price: {
+          currency: p.currency,
+          perHour: round(p.hourly),
+          perVcpuHour: round(p.perVcpuHour),
+          perHourUsd: round(usdPrice(p, "hourly")?.usd ?? null),
+          usdNote: p.currency === "EUR" ? `Converted at the ECB rate of ${eurUsd.rate} USD per EUR on ${eurUsd.date}.` : null,
+          source: p.pricingSource,
+        },
         reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: round(rel.rate) },
         failures: p.failureReasons,
         pauseSplit: p.pauseSplit,
@@ -72,7 +80,7 @@ const cell = (v: number | null, m: Metric) => (v === null ? "n/a" : formatValue(
 export function agentMarkdown() {
   const d = agentData();
   const lines = [
-    "# Sandbox SDK bench results",
+    "# Sandbox bench results",
     "",
     d.about,
     "",
@@ -86,7 +94,7 @@ export function agentMarkdown() {
     "| --- | --- | --- | --- | --- |",
     ...d.providers.map(
       (p) =>
-        `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHour === null ? "n/a" : `${p.price.currency} ${p.price.perHour}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
+        `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHourUsd === null ? "n/a" : `$${p.price.perHourUsd}${p.price.currency === "EUR" ? ` (EUR ${p.price.perHour})` : ""}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
     ),
     "",
     ...d.providers.flatMap((p) => (p.sizeNote ? [`Note on ${p.name}: ${p.sizeNote}`, ""] : [])),
@@ -119,7 +127,7 @@ export function agentMarkdown() {
 /** The llms.txt guide: what the site is and where agents find each piece. */
 export function llmsTxt() {
   const d = agentData();
-  return `# Sandbox SDK bench
+  return `# Sandbox bench
 
 > ${d.about}
 

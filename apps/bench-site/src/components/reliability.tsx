@@ -1,9 +1,10 @@
-import { StatusGrid } from "@/components/status-grid";
+import { Columns } from "@/components/columns";
+import type { Column } from "@/components/columns";
+import { ChartHead } from "@/components/metric-chart";
 import type { Provider } from "@/lib/data";
-import { formatPercent } from "@/lib/format";
+import { formatCount } from "@/lib/format";
 import { providerColor, providerName } from "@/lib/providers";
-import { boardTests, cellFor, successRate } from "@/lib/status";
-import { cellStates, stateLook } from "@/lib/status-look";
+import { successRate } from "@/lib/status";
 
 const kindName: Record<string, string> = {
   "provider-operation": "provider error",
@@ -11,34 +12,24 @@ const kindName: Record<string, string> = {
   "client-third-party": "third-party host",
 };
 
-/**
- * Reliability as a status page: one row per provider, one cell per test,
- * coloured by how many attempts failed. Underneath, every cause of failure.
- */
-export function StatusBoard({ providers }: { providers: readonly Provider[] }) {
-  const ranked = providers.map((p) => ({ p, s: successRate(p) })).sort((a, b) => (b.s.rate ?? 0) - (a.s.rate ?? 0));
-  const rows = ranked.map(({ p, s }) => ({
-    id: p.id,
-    name: providerName(p.id),
-    color: providerColor(p.id),
-    rate: s.rate === null ? "n/a" : formatPercent(s.rate, 2),
-    cells: boardTests.map((t) => cellFor(p, t)),
+/** Failed attempts per 1,000, fewest first, then every cause of failure in plain words. */
+export function Reliability({ providers }: { providers: readonly Provider[] }) {
+  const ranked = providers
+    .map((p) => {
+      const s = successRate(p);
+      return { p, s, perThousand: s.attempts ? ((s.attempts - s.succeeded) / s.attempts) * 1000 : 0 };
+    })
+    .sort((a, b) => a.perThousand - b.perThousand);
+  const columns: Column[] = ranked.map(({ p, s, perThousand }) => ({
+    provider: p.id,
+    label: perThousand.toFixed(1),
+    segments: [{ value: perThousand, color: "oklch(0.68 0.2 25)", variant: "gradient" }],
+    detail: [`${formatCount(s.attempts - s.succeeded)} of ${formatCount(s.attempts)} attempts failed`],
   }));
   return (
-    <div>
-      <div className="mb-5 flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-[var(--muted)]">
-        {cellStates.map((s) => (
-          <span key={s} className="flex items-center gap-2">
-            <span aria-hidden className={`inline-block size-3 rounded-[3px] ${stateLook[s].className}`} />
-            {stateLook[s].label}
-          </span>
-        ))}
-      </div>
-      <StatusGrid rows={rows} />
-      <p className="mt-1 text-[12px] text-[var(--muted)]">
-        Succeeded counts every attempt on these tests, including any stopped by our own plan limits.
-      </p>
-
+    <>
+      <ChartHead title="Failed attempts" sub="Per 1,000 attempts across every test on this page · Lower is better" />
+      <Columns columns={columns} label="Failed attempts per 1,000" />
       <h4 className="mt-8 mb-3 text-[14px] font-medium">What went wrong</h4>
       <div className="grid gap-x-10 gap-y-5 md:grid-cols-2">
         {ranked.map(({ p }) => (
@@ -63,6 +54,6 @@ export function StatusBoard({ providers }: { providers: readonly Provider[] }) {
           </div>
         ))}
       </div>
-    </div>
+    </>
   );
 }
