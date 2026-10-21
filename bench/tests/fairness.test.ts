@@ -261,3 +261,13 @@ it("keeps shared provider attachment alive for scenarios following reconnect", a
   expect(report.samples.findIndex((s) => s.scenario === "reconnect-cleanup")).toBeGreaterThan(report.samples.findIndex((s) => s.scenario === "destroy"));
   expect(attached).toBe(false);
 });
+
+it("stores separate pause and resume phases on successful observations", async () => {
+  const provider = fake({ capabilities: new Set(["pause"]), pause: async () => { await wait(5); }, resume: async () => { await wait(5); } });
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "pause-resume"]), async () => {});
+  const row = report.samples.find((s) => s.scenario === "pause-resume");
+  expect(row?.outcome.kind).toBe("sample");
+  expect(row?.phases.pauseMs).toBeGreaterThan(0);
+  expect(row?.phases.resumeReturnedMs).toBeGreaterThan(0);
+  expect(row?.phases.resumeReadyMs).toBeGreaterThanOrEqual(row?.phases.resumeReturnedMs ?? Infinity);
+});

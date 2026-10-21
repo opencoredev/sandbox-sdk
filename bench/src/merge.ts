@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { fingerprintSchema } from "./fingerprint.js";
 import type { HostSample, Sample } from "./v2-model.js";
+import { attemptPolicySchema, selectAttempts, type AttemptPolicy } from "./attempts.js";
 import { pricing } from "./pricing.js";
 import { distribution, wilson } from "./v2-stats.js";
 import { publicationHtml, publicationMarkdown } from "./publication-report.js";
@@ -179,7 +180,7 @@ export function summarizeMerged(samples: MergedSample[], seed: number) {
     ];
   });
 }
-export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], seed = 45) {
+export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], seed = 45, attemptPolicy?: AttemptPolicy) {
   const seen = new Set<string>();
   const sources = inputs.filter((s) => !excluded.some((e) => e.runId === s.runId));
   const samples: MergedSample[] = [];
@@ -243,7 +244,10 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
     if (failures.length && failures.every((s) => s.failureClass === "provider-account-limit"))
       sample.failureClass = "provider-account-limit";
   }
+  const selection = attemptPolicy ? selectAttempts(samples, attemptPolicy) : { samples, removed: {} };
   return {
+    attemptPolicy,
+    selectionRemoved: selection.removed,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,
@@ -271,8 +275,8 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
     sources: provenance,
     excludedSources: excluded,
     inputSampleCount: sum(sources.map((s) => s.samples.length)),
-    samples,
-    summaries: summarizeMerged(samples, seed),
+    samples: selection.samples,
+    summaries: summarizeMerged(selection.samples, seed),
   };
 }
 export type PublicationReport = ReturnType<typeof mergeSources>;
@@ -302,6 +306,7 @@ export async function mergeCommand(args: string[]) {
       out: { type: "string", default: "results/publication-final" },
       exclude: { type: "string", multiple: true },
       seed: { type: "string", default: "45" },
+      policy: { type: "string" },
     },
   });
   const output = resolve(values.out);
@@ -318,8 +323,10 @@ export async function mergeCommand(args: string[]) {
     inputs.push(await readSource(path));
   }
   if (!inputs.length) throw new Error("No included result directories");
-  const report = mergeSources(inputs, excluded, z.coerce.number().int().parse(values.seed));
-  if (report.samples.length !== report.inputSampleCount)
+  const policy = values.policy ? attemptPolicySchema.parse(JSON.parse(await readFile(values.policy, "utf8"))) : undefined;
+  const report = mergeSources(inputs, excluded, z.coerce.number().int().parse(values.seed), policy);
+  report.runId = basename(output);
+  if (!policy && report.samples.length !== report.inputSampleCount)
     throw new Error("Sample conservation failed");
   await mkdir(output, { recursive: true });
   await writeFile(

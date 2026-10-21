@@ -11,6 +11,10 @@ import { writeV2 } from "./v2-report.js";
 import { deadline } from "./timing.js";
 export async function main() {
   const args = process.argv.slice(2);
+  if (args[0] === "attempts") {
+    await (await import("./attempts.js")).attemptsCommand(args.slice(1));
+    return;
+  }
   if (args[0] === "merge") {
     const { mergeCommand } = await import("./merge.js");
     await mergeCommand(args.slice(1));
@@ -29,7 +33,7 @@ export async function main() {
   }
   if (args.includes("--help")) {
     process.stdout.write(
-      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] (offline)\nbun bench site-data [--report results/publication-final] [--out ../apps/bench-site/src/data/benchmark.json] [--public ../apps/bench-site/public] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--burst-cohorts 3 --workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
+      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] [--policy path.json] (offline)\nbun bench attempts results/publication-final-v2 (offline)\nbun bench site-data [--report results/publication-final] [--out ../apps/bench-site/src/data/benchmark.json] [--public ../apps/bench-site/public] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--omit-network-download true --burst-cohorts 3 --workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
     );
     return;
   }

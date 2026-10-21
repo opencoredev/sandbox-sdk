@@ -13,6 +13,7 @@ import { resources, parseFingerprint, type Fingerprint } from "./fingerprint.js"
 import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
+import { performanceScript } from "./perf-script.js";
 import { deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromDaytonaSandbox } from "./snapshots.js";
@@ -657,7 +658,7 @@ export async function runV2(
         if (group === "perf") {
           const probe = await measure("perf", async (signal) => {
             if (!fp) throw new Error("Fingerprint required to size all-core benchmark");
-            const script = await readFile(new URL("../probes/perf.py", import.meta.url), "utf8");
+            const script = performanceScript(await readFile(new URL("../probes/perf.py", import.meta.url), "utf8"), config["omit-network-download"]);
             const cores = Math.min(64, Math.ceil(resources(fp).cpu));
             const output = await command(active,
               `BENCH_CORES=${cores} python3 - <<'BENCH_PERF'\n${script}\nBENCH_PERF`, timeout, signal);
@@ -667,6 +668,7 @@ export async function runV2(
           // Publish exactly once, after the deadline race has settled. Persistence is not guest work.
           const source = probe.sample;
           for (const [metric, unit] of Object.entries(perfMetrics)) {
+            if (metric === "network-mbps" && config["omit-network-download"]) continue;
             const value = probe.kind === "success" ? probe.result.metrics[metric] : undefined;
             const outcome: Outcome = probe.kind !== "success" ? source.outcome : value === undefined
               ? { kind: "failure", note: probe.result.notes.join("; ") || `Probe omitted ${metric}` }
@@ -680,6 +682,7 @@ export async function runV2(
           continue;
         }
         const reconnectClock = group === "reconnect" ? new PhaseClock() : undefined;
+        const lifecyclePhases: Record<string, number> = {};
         await measure(group, async (signal) => {
           switch (group) {
             case "command":
@@ -715,11 +718,14 @@ export async function runV2(
               const start = performance.now();
               await p.provider.pause(active.id);
               const pauseMs = performance.now() - start;
+              lifecyclePhases.pauseMs = pauseMs;
               const r = performance.now();
               await p.provider.resume(active.id);
               const resumeReturnedMs = performance.now() - r;
+              lifecyclePhases.resumeReturnedMs = resumeReturnedMs;
               await command(active, "true", timeout, signal);
-              return { pauseMs, resumeReturnedMs, resumeReadyMs: performance.now() - r };
+              lifecyclePhases.resumeReadyMs = performance.now() - r;
+              return { ...lifecyclePhases };
             }
             case "git-clone":
               return command(active, cloneCommand, timeout, signal);
@@ -744,7 +750,7 @@ export async function runV2(
             default:
               throw new Skip(`Unknown scenario ${group}`);
           }
-        }, {}, reconnectClock);
+        }, lifecyclePhases, reconnectClock);
       }
     } finally {
       await barrier?.();

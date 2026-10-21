@@ -35,6 +35,14 @@ Distributions and confidence intervals are recomputed from successful samples wi
 
 Run-cost estimates sum only known `sandbox-lifetime` estimates, which already include restored lifetime. They do not add the overlapping scenario allocations. Missing lifetime costs stay unknown, and the report shows known subtotals plus unpriced counts in native currency. Boxd remains EUR.
 
+## Select equal publication attempts
+
+Pass `--policy path/to/policy.json` to `bun bench merge` to apply the publication targets: 100 main attempts, 30 workload and snapshot attempts, and three burst cohorts per size. The policy contains `replacements` (`provider`, `suite`, `scenario`, `sourceRunIds`) and `notRun` (`provider`, `suite`, `scenario`, `reason`) arrays. A scenario ending in `/*` matches its burst member and aggregate rows. Use replacement rules to select only the fresh pause/resume sources and fresh Boat bursts. Document unsupported capabilities and account limits in `notRun`; these are not provider failures.
+
+Selection drops classified account-limit and client/third-party failures, then keeps the first N attempts per provider, suite and test in `startedAt` order. Ties use source run ID and original sample index. Provider-operation failures count as attempts. Blocked and skipped rows do not. Selecting burst cohorts also selects their associated member rows. Original source files remain unchanged, and the report records selection removals and every source date/configuration.
+
+Run `bun bench attempts results/publication-final-v2` to print every required provider/test count and fail on missing or excess attempts without a documented not-run reason. It also checks the three phase fields on successful pause/resume samples. Pause/resume failures retain whichever phases completed; the total sample value remains elapsed time. Use `--omit-network-download true` for performance top-ups that must omit the optional CDN download while retaining CPU, memory, disk and TCP probes.
+
 ## Collection and budgets
 
 | Flag | Default | Meaning |
@@ -77,7 +85,7 @@ bun bench --scenarios burst --runs 1 --bursts 10,25 --burst-cohorts 3 --concurre
   --run publication-bursts-001 --out results/publication-bursts-001
 ```
 
-K=25 is skipped on accounts whose configured cap is lower. A burst above `--concurrency` is also skipped; its K is never silently reduced. Do not raise those caps merely to complete the table. Reconnect, pause/resume, snapshot and restore each have 100 observations when supported; each agent workload has 30. One sandbox serves multiple scenarios, so these are not independent fresh-machine samples per workload. To isolate a workload, collect a separate run with `--scenarios npm-install` or another scenario name.
+K=25 is skipped on accounts whose configured cap is lower. A burst above `--concurrency` is also skipped; its K is never silently reduced. Do not raise those caps merely to complete the table. Reconnect and pause/resume each target 100 attempts when supported; snapshot, restore and each agent workload target 30. One sandbox serves multiple scenarios, so these are not independent fresh-machine samples per workload. To isolate a workload, collect a separate run with `--scenarios npm-install` or another scenario name.
 
 ## Measurements
 

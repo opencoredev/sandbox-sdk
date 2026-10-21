@@ -208,3 +208,42 @@ it("reports lifetime costs without double-counting scenario allocations or inven
   expect(markdown).toContain("| daytona | USD 5.00000 | 1 | unknown | not applicable | USD |");
   expect(markdown).not.toContain("Top-ups used");
 });
+
+it("selects first attempts by timestamp, keeps operation failures and replaces pause sources", () => {
+  const old = source("old", [sample(0, "pause-resume"), ...Array.from({length: 102}, (_, i) => ({...sample(i), startedAt: `2026-10-19T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`}))]);
+  old.samples[2] = {...sample(1, "cold", {kind: "failure", note: "real provider failure"}), startedAt: "2026-10-19T00:00:01.000Z"};
+  const fresh = source("fresh", [sample(0, "pause-resume")]);
+  const policy = {replacements: [{provider: "daytona", suite: "main" as const, scenario: "pause-resume", sourceRunIds: ["fresh"]}], notRun: []};
+  const r = mergeSources([fresh, old], [], 45, policy);
+  const cold = r.samples.filter(s => s.scenario === "cold");
+  expect(cold).toHaveLength(100);
+  expect(cold[1]?.outcome.kind).toBe("failure");
+  expect(cold.at(-1)?.sourceIteration).toBe(99);
+  expect(r.samples.find(s => s.scenario === "pause-resume")?.sourceRunId).toBe("fresh");
+  expect(r.selectionRemoved).toEqual({"replaced-source": 1, "above-target": 2});
+});
+
+it("retains members only for the first three selected burst cohorts", () => {
+  const rows = Array.from({length: 4}, (_, cohort) => [
+    sample(cohort, "burst-10/all-ready"),
+    ...Array.from({length: 10}, (_, member) => sample(cohort * 10 + member, "burst-10/cold")),
+  ]).flat();
+  const input = source("burst", rows); input.config.scenarios = ["burst"];
+  const r = mergeSources([input], [], 45, {replacements: [], notRun: []});
+  expect(r.samples.filter(s => s.scenario === "burst-10/all-ready")).toHaveLength(3);
+  expect(r.samples.filter(s => s.scenario === "burst-10/cold")).toHaveLength(30);
+  expect(r.samples.some(s => s.scenario === "burst-10/cold" && s.sourceIteration >= 30)).toBe(false);
+});
+
+it("rejects both under-target and over-target counts and missing successful pause phases", async () => {
+  const {checkAttempts} = await import("../src/attempts.js");
+  const policy = {replacements: [], notRun: []};
+  for (const count of [99, 100, 101]) {
+    const r = mergeSources([source("main", Array.from({length: count}, (_, i) => sample(i)))]);
+    expect(checkAttempts(r.samples, policy).find(s => s.provider === "daytona" && s.scenario === "cold")?.pass).toBe(count === 100);
+  }
+  const r = mergeSources([source("pause", Array.from({length: 100}, (_, i) => sample(i, "pause-resume")))]);
+  expect(checkAttempts(r.samples, policy).find(s => s.provider === "daytona" && s.scenario === "pause-resume")?.pass).toBe(false);
+  for (const s of r.samples) s.phases = {pauseMs: 1, resumeReturnedMs: 2, resumeReadyMs: 3};
+  expect(checkAttempts(r.samples, policy).find(s => s.provider === "daytona" && s.scenario === "pause-resume")?.pass).toBe(true);
+});

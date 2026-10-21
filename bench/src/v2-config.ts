@@ -39,6 +39,7 @@ const schema = z.object({
     .string()
     .default("3")
     .transform((v) => (v ? v.split(",").map((n) => integer.max(50).parse(n)) : [])),
+  "omit-network-download": z.enum(["true", "false"]).default("false").transform(v => v === "true"),
   scenarios: z
     .string()
     .default("all")
