@@ -17,6 +17,28 @@ export function formatValue(value: number, unit: Unit) {
   }
 }
 
+/** The number alone, for a column label whose unit the chart subtitle already gives. */
+export function formatShort(value: number, unit: Unit) {
+  switch (unit) {
+    case "s":
+    case "ms":
+      return value < 1 ? value.toFixed(2) : value < 10 ? value.toFixed(1) : value.toFixed(0);
+    case "ops/s":
+    case "MB/s":
+    case "IOPS":
+      return compact.format(value);
+  }
+}
+
+/** How a chart subtitle names a unit. */
+export const unitName = {
+  s: "seconds",
+  ms: "milliseconds",
+  "ops/s": "operations per second",
+  "MB/s": "MB per second",
+  IOPS: "operations per second",
+} as const satisfies Record<Unit, string>;
+
 export const formatPercent = (value: number, digits = 1) => `${(value * 100).toFixed(digits)}%`;
 
 export function formatMoney(value: number, currency: string | null) {

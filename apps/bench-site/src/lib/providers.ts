@@ -1,6 +1,5 @@
-/** Display names, chart colours and what the provider's default sandbox is. */
+/** Display names and chart colours of the providers on the page. */
 export const providerInfo = {
-  local: { name: "Local Docker", color: "oklch(0.66 0 0)" },
   e2b: { name: "E2B", color: "oklch(0.79 0.15 62)" },
   daytona: { name: "Daytona", color: "oklch(0.72 0.14 250)" },
   upstash: { name: "Upstash Box", color: "oklch(0.8 0.17 152)" },
@@ -8,12 +7,11 @@ export const providerInfo = {
   boxd: { name: "boxd", color: "oklch(0.88 0.15 98)" },
   freestyle: { name: "Freestyle", color: "oklch(0.72 0.18 304)" },
   tenki: { name: "Tenki", color: "oklch(0.75 0.17 354)" },
-} as const;
+} as const satisfies Record<string, { name: string; color: string }>;
 
 export type ProviderId = keyof typeof providerInfo;
 
-export const isProviderId = (id: string): id is ProviderId => id in providerInfo;
+export const isProviderId = (id: string): id is ProviderId => Object.hasOwn(providerInfo, id);
 
-export const providerName = (id: string) => (isProviderId(id) ? providerInfo[id].name : id);
-export const providerColor = (id: string) =>
-  isProviderId(id) ? providerInfo[id].color : "oklch(0.66 0 0)";
+export const providerName = (id: ProviderId) => providerInfo[id].name;
+export const providerColor = (id: ProviderId) => providerInfo[id].color;

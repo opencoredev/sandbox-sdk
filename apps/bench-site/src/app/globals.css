@@ -8,6 +8,13 @@
   --primary: oklch(0.96 0 0);
   --muted: oklch(0.7 0 0);
   --line: oklch(0.26 0 0);
+  /* Cards sit one step above the page; the tab band and selected tab a step above that. */
+  --surface: oklch(0.16 0 0);
+  --band: oklch(0.185 0 0);
+  --chip: oklch(0.28 0 0);
+  --popover: oklch(0.21 0 0);
+  --grid: oklch(0.3 0 0);
+  --axis: oklch(0.42 0 0);
 }
 
 @theme inline {
@@ -69,14 +76,4 @@ html {
 
 body {
   font-family: var(--font-sans);
-}
-
-/* Share of the track the longest bar takes, leaving room for its label. */
-.bars {
-  --longest: 0.42;
-}
-@media (min-width: 640px) {
-  .bars {
-    --longest: 0.74;
-  }
 }

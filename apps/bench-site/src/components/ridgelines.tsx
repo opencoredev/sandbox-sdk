@@ -1,10 +1,11 @@
 import { FillPattern } from "@/lib/dither";
 import { formatValue } from "@/lib/format";
-import { providerColor, providerName } from "@/lib/providers";
+import { isProviderId, providerColor, providerName } from "@/lib/providers";
+import type { ProviderId } from "@/lib/providers";
 
-const MIN_S = 0.3;
+const MIN_S = 1;
 const MAX_S = 100;
-const TICKS = [0.5, 1, 2, 5, 10, 20, 50, 100];
+const TICKS = [1, 2, 5, 10, 20, 50, 100];
 
 interface Layout {
   W: number;
@@ -39,10 +40,13 @@ const median = (xs: readonly number[]) => xs[Math.floor((xs.length - 1) / 2)] ??
  * Every successful cold start as a ridge: one row per provider, fastest at the
  * top, on a log time axis. The tick is the median.
  */
-export function Ridgelines({ samples }: { samples: Record<string, readonly number[]> }) {
+export function Ridgelines({ samples }: { samples: Partial<Record<ProviderId, readonly number[]>> }) {
   const rows = Object.entries(samples)
-    .filter(([, values]) => values.length > 0)
-    .map(([provider, values]) => ({ provider, values, p50: median(values) }))
+    .flatMap(([provider, values]) =>
+      isProviderId(provider) && values && values.length > 0
+        ? [{ provider, values, p50: median([...values].sort((a, b) => a - b)) }]
+        : [],
+    )
     .sort((a, b) => a.p50 - b.p50);
   return (
     <>
@@ -56,7 +60,7 @@ export function Ridgelines({ samples }: { samples: Record<string, readonly numbe
   );
 }
 
-type Row = { provider: string; values: readonly number[]; p50: number };
+type Row = { provider: ProviderId; values: readonly number[]; p50: number };
 
 function Plot({ rows, layout, ticks, id }: { rows: Row[]; layout: Layout; ticks: number[]; id: string }) {
   const { W, ROW, PEAK, TOP } = layout;
@@ -119,7 +123,7 @@ function Plot({ rows, layout, ticks, id }: { rows: Row[]; layout: Layout; ticks:
             const color = providerColor(row.provider);
             return (
               <g key={row.provider}>
-                <path d={area} fill="var(--background)" />
+                <path d={area} fill="var(--surface)" />
                 <path d={area} fill={`url(#ridge-${id}-${row.provider})`} />
                 <path d={line} fill="none" stroke={color} strokeWidth={1.5} />
                 <line x1={0} x2={W} y1={base} y2={base} stroke="var(--line)" />

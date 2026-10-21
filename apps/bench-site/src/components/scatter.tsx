@@ -1,118 +1,136 @@
-import { FillPattern } from "@/lib/dither";
 import { formatMoney, formatValue } from "@/lib/format";
 import { providerColor, providerName } from "@/lib/providers";
+import type { ProviderId } from "@/lib/providers";
 
 export interface ScatterPoint {
-  provider: string;
+  provider: ProviderId;
+  /** Seconds. */
   x: number;
+  /** Price per hour. */
   y: number;
-  currency: string | null;
+  currency: string;
 }
 
-const W = 1000;
-const H = 520;
-const PAD = { left: 64, right: 24, top: 20, bottom: 52 };
-const median = (xs: number[]) => {
+// Plot insets in px: room for tick labels on the left and bottom.
+const INSET = { left: 56, right: 18, top: 14, bottom: 30 };
+const QUADRANT = "oklch(0.8 0.17 152)";
+
+const median = (xs: readonly number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? (s[m] ?? 0) : ((s[m - 1] ?? 0) + (s[m] ?? 0)) / 2;
 };
 
+/** CSS position of a 0 to 1 fraction along the plot area. */
+const along = (f: number, axis: "x" | "y") =>
+  axis === "x"
+    ? `calc(${INSET.left}px + (100% - ${INSET.left + INSET.right}px) * ${f})`
+    : `calc(${INSET.top}px + (100% - ${INSET.top + INSET.bottom}px) * ${1 - f})`;
+
 /**
- * Artificial Analysis-style scatter: log x, linear y, both lower is better, so
- * the attractive quadrant is bottom left, split at the medians.
+ * Artificial Analysis-style scatter, built in HTML so text stays crisp at
+ * any width: log seconds across, price up, both lower is better, so the
+ * attractive quadrant is the bottom left, split at the medians.
  */
 export function Scatter({
   points,
   xTicks,
   yTicks,
-  xLabel,
-  yLabel,
-  quadrantLabel,
+  xTitle,
+  yTitle,
 }: {
-  points: ScatterPoint[];
-  xTicks: number[];
-  yTicks: number[];
-  xLabel: string;
-  yLabel: string;
-  quadrantLabel: string;
+  points: readonly ScatterPoint[];
+  xTicks: readonly [number, ...number[]];
+  yTicks: readonly [number, ...number[]];
+  xTitle: string;
+  yTitle: string;
 }) {
-  const [x0, x1] = [xTicks[0] ?? 1, xTicks.at(-1) ?? 10];
-  const [y0, y1] = [yTicks[0] ?? 0, yTicks.at(-1) ?? 1];
-  const px = (x: number) =>
-    PAD.left + ((Math.log(x) - Math.log(x0)) / (Math.log(x1) - Math.log(x0))) * (W - PAD.left - PAD.right);
-  const py = (y: number) => H - PAD.bottom - ((y - y0) / (y1 - y0)) * (H - PAD.top - PAD.bottom);
-  const mx = px(median(points.map((p) => p.x)));
-  const my = py(median(points.map((p) => p.y)));
-  const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+  const x0 = xTicks[0];
+  const x1 = xTicks.at(-1) ?? x0 * 10;
+  const y0 = yTicks[0];
+  const y1 = yTicks.at(-1) ?? y0 + 1;
+  const fx = (x: number) => (Math.log(x) - Math.log(x0)) / (Math.log(x1) - Math.log(x0));
+  const fy = (y: number) => (y - y0) / (y1 - y0);
+  const mx = fx(median(points.map((p) => p.x)));
+  const my = fy(median(points.map((p) => p.y)));
+  const summary = points
+    .map((p) => `${providerName(p.provider)}: ${formatValue(p.x, "s")} cold start, ${formatMoney(p.y, p.currency)} an hour`)
+    .join("; ");
+
   return (
-    <figure
-      role="region"
-      aria-label={`${yLabel} against ${xLabel}`}
-      tabIndex={0}
-      className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-visible sm:px-0"
-    >
-      <div className="relative min-w-[620px]">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="block h-auto w-full"
-        role="img"
-        aria-label={`${yLabel} against ${xLabel}. ${points.map((p) => `${providerName(p.provider)}: ${formatValue(p.x, "s")}, ${formatMoney(p.y, p.currency)}`).join("; ")}.`}
-      >
-        <defs>
-          <FillPattern id="quadrant" fill="gradient" color="oklch(0.8 0.17 152)" level={0.16} cell={3} />
-        </defs>
-        <rect x={PAD.left} y={my} width={mx - PAD.left} height={H - PAD.bottom - my} fill="url(#quadrant)" />
-        {xTicks.map((t) => (
-          <line key={`x${t}`} x1={px(t)} x2={px(t)} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--line)" strokeDasharray="2 4" />
-        ))}
-        {yTicks.map((t) => (
-          <line key={`y${t}`} x1={PAD.left} x2={W - PAD.right} y1={py(t)} y2={py(t)} stroke="var(--line)" strokeDasharray="2 4" />
-        ))}
-        <line x1={PAD.left} x2={W - PAD.right} y1={H - PAD.bottom} y2={H - PAD.bottom} stroke="var(--muted)" />
-        <line x1={PAD.left} x2={PAD.left} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--muted)" />
-        {points.map((p) => (
-          <circle
-            key={p.provider}
-            cx={px(p.x)}
-            cy={py(p.y)}
-            r={9}
-            fill={providerColor(p.provider)}
-          />
-        ))}
-      </svg>
-      <div aria-hidden className="pointer-events-none absolute inset-0 font-mono text-[11px] text-[var(--muted)]">
-        <span
-          className="absolute bg-[var(--background)] px-1 font-sans text-[12px] text-[oklch(0.8_0.17_152)]"
-          style={{ left: `calc(${pct(PAD.left, W)} + 10px)`, bottom: `calc(${pct(PAD.bottom, H)} + 8px)` }}
-        >
-          {quadrantLabel}
+    <figure aria-label={`${yTitle} against ${xTitle}. ${summary}.`}>
+      <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-[var(--muted)]">
+        <span className="flex items-center gap-2">
+          <span aria-hidden className="size-3 rounded-[2px] border" style={{ backgroundColor: `color-mix(in oklch, ${QUADRANT} 16%, transparent)`, borderColor: `color-mix(in oklch, ${QUADRANT} 45%, transparent)` }} />
+          Faster and cheaper than the median
         </span>
-        {xTicks.map((t) => (
-          <span key={t} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: pct(px(t), W), top: `calc(${pct(H - PAD.bottom, H)} + 6px)` }}>
-            {t} s
-          </span>
-        ))}
-        {yTicks.map((t) => (
-          <span key={t} className="absolute -translate-x-full -translate-y-1/2 pr-2" style={{ left: pct(PAD.left, W), top: pct(py(t), H) }}>
-            ${t.toFixed(2)}
-          </span>
-        ))}
         {points.map((p) => (
-          <span
-            key={p.provider}
-            className="absolute -translate-y-1/2 pl-3 font-sans text-[12px] font-medium whitespace-nowrap sm:text-[13px]"
-            style={{ left: pct(px(p.x), W), top: pct(py(p.y), H), color: providerColor(p.provider) }}
-          >
+          <span key={p.provider} className="flex items-center gap-1.5">
+            <span aria-hidden className="size-2 rounded-full" style={{ backgroundColor: providerColor(p.provider) }} />
             {providerName(p.provider)}
           </span>
         ))}
       </div>
+
+      <div className="flex">
+        <div className="relative w-5 shrink-0">
+          <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 -rotate-90 text-[12px] whitespace-nowrap text-[var(--muted)]">
+            {yTitle}
+          </span>
+        </div>
+        <div className="relative h-[340px] min-w-0 flex-1 sm:h-[420px]" aria-hidden>
+          <div
+            className="absolute"
+            style={{
+              left: along(0, "x"),
+              width: `calc((100% - ${INSET.left + INSET.right}px) * ${mx})`,
+              top: along(my, "y"),
+              bottom: INSET.bottom,
+              backgroundColor: `color-mix(in oklch, ${QUADRANT} 13%, transparent)`,
+              borderTop: `1px dashed color-mix(in oklch, ${QUADRANT} 40%, transparent)`,
+              borderRight: `1px dashed color-mix(in oklch, ${QUADRANT} 40%, transparent)`,
+            }}
+          />
+          {yTicks.map((t) => (
+            <div key={`y${t}`} className="absolute right-[18px] left-[56px] border-t border-dotted border-[var(--grid)]" style={{ top: along(fy(t), "y") }}>
+              <span className="absolute -left-2 -translate-x-full -translate-y-1/2 font-mono text-[11px] text-[var(--muted)] tabular-nums">
+                ${t.toFixed(2)}
+              </span>
+            </div>
+          ))}
+          {xTicks.map((t) => (
+            <div key={`x${t}`} className="absolute top-[14px] bottom-[30px] border-l border-dotted border-[var(--grid)]" style={{ left: along(fx(t), "x") }}>
+              <span className="absolute -bottom-6 -translate-x-1/2 font-mono whitespace-nowrap text-[11px] text-[var(--muted)] tabular-nums">
+                {t} s
+              </span>
+            </div>
+          ))}
+          <div className="absolute right-[18px] bottom-[30px] left-[56px] border-t border-[var(--axis)]" />
+          <div className="absolute top-[14px] bottom-[30px] left-[56px] border-l border-[var(--axis)]" />
+          {points.map((p) => {
+            const px = fx(p.x);
+            const flip = px > 0.62;
+            return (
+              <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
+                <span
+                  className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-[3px] ring-[var(--surface)]"
+                  style={{ backgroundColor: providerColor(p.provider) }}
+                />
+                <span
+                  className={`absolute -translate-y-1/2 text-[12.5px] leading-none font-medium whitespace-nowrap ${flip ? "right-3" : "left-3"}`}
+                  style={{ color: providerColor(p.provider) }}
+                >
+                  {providerName(p.provider)}
+                  <span className="ml-1.5 hidden font-mono text-[11px] font-normal text-[var(--muted)] sm:inline">
+                    {formatValue(p.x, "s")} · {formatMoney(p.y, p.currency)}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <figcaption className="mt-10 flex min-w-[620px] sm:min-w-0 flex-col gap-1 text-[12px] text-[var(--muted)] sm:flex-row sm:justify-between">
-        <span>{xLabel}</span>
-        <span>{yLabel}</span>
-      </figcaption>
+      <p className="mt-3 pl-5 text-center text-[12px] text-[var(--muted)]">{xTitle}</p>
     </figure>
   );
 }

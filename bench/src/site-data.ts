@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pricing } from "./pricing.js";
@@ -207,6 +207,26 @@ export function siteData(r: PublicationReport) {
 }
 export type SiteData = ReturnType<typeof siteData>;
 
+/** The provider the site leaves out: the local Docker reference baseline. */
+export const BASELINE = "local";
+
+/**
+ * The full tables as the site publishes them: every table row and note about
+ * the baseline is dropped, so the linked tables match the charts. Run logs
+ * (flags, budgets, cleanup) are kept verbatim as the record of what ran.
+ */
+export function publicTables(markdown: string) {
+  const isBaselineRow = (line: string) => {
+    if (!line.startsWith("|")) return false;
+    const cells = line.split("|").slice(1, 3).map((c) => c.trim());
+    return cells.includes(BASELINE);
+  };
+  const lines = markdown
+    .split("\n")
+    .filter((line) => !isBaselineRow(line) && !line.startsWith(`${BASELINE}: `));
+  return `> These tables leave out the local Docker reference baseline, as the site does. Run logs below still list it.\n\n${lines.join("\n")}`;
+}
+
 export async function siteDataCommand(args: string[]) {
   const { values } = parseArgs({
     args,
@@ -223,6 +243,7 @@ export async function siteDataCommand(args: string[]) {
   await writeFile(values.out, `${JSON.stringify(siteData(report), null, 1)}\n`);
   // The site links the full tables; the 800 MB JSON and NDJSON stay out of the static export.
   await mkdir(values.public, { recursive: true });
-  await copyFile(join(values.report, "results.md"), join(values.public, "results.md"));
+  const tables = publicTables(await readFile(join(values.report, "results.md"), "utf8"));
+  await writeFile(join(values.public, "results.md"), tables);
   process.stdout.write(`Wrote ${values.out} and ${join(values.public, "results.md")}\n`);
 }

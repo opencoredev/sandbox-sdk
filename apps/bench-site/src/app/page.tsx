@@ -1,437 +1,463 @@
 import type { ReactNode } from "react";
 
-import { BarChart } from "@/components/bar-chart";
-import type { RowNotes } from "@/components/bar-chart";
-import { Failures } from "@/components/failures";
-import { HeroField } from "@/components/hero-field";
+import { Columns } from "@/components/columns";
+import type { Column } from "@/components/columns";
+import { AllFailures, OperationFailures } from "@/components/failures";
+import { ChartHead, Footnotes, MetricChart, Who, metricSubtitle } from "@/components/metric-chart";
+import type { Notes } from "@/components/metric-chart";
 import { Ridgelines } from "@/components/ridgelines";
 import { Scatter } from "@/components/scatter";
-import { SimpleBars } from "@/components/simple-bars";
+import type { ScatterPoint } from "@/components/scatter";
 import { SpecSheet } from "@/components/spec-sheet";
-import { Tabs } from "@/components/tabs";
-import { cloudProviders, data, metric } from "@/lib/data";
-import { formatCount, formatGiB, formatMoney, formatValue } from "@/lib/format";
-import { providerName } from "@/lib/providers";
+import { Card, TabCard } from "@/components/tabs";
+import type { Tab } from "@/components/tabs";
+import { coldSamples, metric, provider, providers, runWindow, runs, timedOperations } from "@/lib/data";
+import type { Provider } from "@/lib/data";
+import { formatCount, formatGiB, formatMoney } from "@/lib/format";
+import { providerColor } from "@/lib/providers";
+import type { ProviderId } from "@/lib/providers";
 
-// Reference: Artificial Analysis (one question per chart, plain titles, the
-// direction that wins stated up front) and scrapingbench (black page, one hue
-// per provider, dithered bars with a solid cap, value beside the bar).
-// Palette: paper oklch(0.13 0 0), ink oklch(0.96 0 0), muted oklch(0.68 0 0),
-// one fixed colour per provider, red only for failures.
-// Type: Geist Sans for reading, Geist Mono for numbers, Geist Pixel for headings.
-// Layout: a single column of questions, each answered by one chart.
-// Signature: the hero plots every cold start we measured as dithered ridges.
-// Avoiding: overall scores, winner badges, card grids, tables as the main view.
-
-const all = data.providers.map((p) => p.id);
-const cloud = cloudProviders.map((p) => p.id);
-const hw = (id: string) => data.providers.find((p) => p.id === id)?.hardware;
-const size = (id: string) => {
-  const h = hw(id);
-  return h ? `${h.vcpu} vCPU, ${formatGiB(h.memoryGiB)} RAM` : "unknown size";
-};
+// Reference: Artificial Analysis for structure (short header, three headline
+// charts, then one bordered card per topic with a tab band, every chart titled
+// with what it measures and which way is better, an attractive-quadrant
+// scatter). scrapingbench and dithercn for the look (black page, one hue per
+// provider, dithered fills with a solid cap).
+// Palette: page oklch(0.13 0 0), cards oklch(0.16 0 0), ink oklch(0.96 0 0),
+// muted oklch(0.7 0 0), one fixed colour per provider, red only for failures.
+// Type: Geist Pixel for page and section titles, Geist Sans for labels, Geist Mono for numbers.
+// Signature: vertical dithered columns, densest at the top, value printed above.
+// Avoiding: intro paragraphs, overall scores, winner badges, a heavy filled quadrant.
 
 const sections = [
   ["startup", "Start-up"],
-  ["everyday", "Everyday calls"],
   ["agent", "Agent work"],
-  ["state", "Pause and snapshots"],
-  ["scale", "Many at once"],
+  ["everyday", "Everyday calls"],
+  ["state", "Snapshots"],
+  ["scale", "Bursts"],
   ["machines", "Machines"],
   ["reliability", "Reliability"],
   ["cost", "Cost"],
-  ["method", "How we tested"],
+  ["method", "Method"],
 ] as const;
 
-function Section({
-  id,
-  title,
-  lede,
-  children,
-}: {
-  id: string;
-  title: string;
-  lede: ReactNode;
-  children: ReactNode;
-}) {
+const start = new Date(runWindow.start);
+const end = new Date(runWindow.end);
+const day = start.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+const clock = (d: Date) => d.toISOString().slice(11, 16);
+
+const size = (p: Provider | undefined) =>
+  p?.hardware ? `${p.hardware.vcpu} vCPU, ${formatGiB(p.hardware.memoryGiB)} RAM` : "size not reported";
+
+function Section({ id, title, lede, children }: { id: string; title: string; lede: ReactNode; children: ReactNode }) {
   return (
-    <section id={id} className="scroll-mt-20 border-t border-[var(--line)] py-16 sm:py-20">
-      <h2 className="font-pixel text-[26px] leading-tight tracking-tight sm:text-[32px]">{title}</h2>
-      <p className="mt-3 max-w-[64ch] text-[15px] leading-relaxed text-[var(--muted)]">{lede}</p>
-      <div className="mt-10">{children}</div>
+    <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-20 pt-16 sm:pt-24">
+      <h2 id={`${id}-title`} className="flex items-center gap-3 font-pixel text-[28px] leading-none tracking-tight sm:text-[34px]">
+        <span aria-hidden className="size-3.5 shrink-0 bg-[var(--foreground)]" />
+        {title}
+      </h2>
+      <p className="mt-3 mb-6 max-w-[72ch] text-[14px] leading-relaxed text-[var(--muted)]">{lede}</p>
+      {children}
     </section>
   );
 }
 
-function ChartTitle({ title, sub }: { title: string; sub: string }) {
+/** One tab per metric, each a column chart with its own subtitle and notes. */
+const metricTabs = (items: readonly { id: string; what: string; tab?: string; notes?: Notes; only?: readonly ProviderId[] }[]): Tab[] =>
+  items.map(({ id, what, tab, notes, only }) => {
+    const m = metric(id);
+    return { id, label: tab ?? m.label, content: <MetricChart metric={m} what={what} notes={notes} only={only} /> };
+  });
+
+type PriceKey = "hourly" | "perVcpuHour";
+
+/** Dollar prices as columns, cheapest first. Providers billing in another currency go in a footnote. */
+function priceColumns(key: PriceKey): { columns: Column[]; other: Provider[] } {
+  const priced = providers.flatMap((p) => {
+    const value = p[key];
+    return value === null ? [] : [{ p, value }];
+  });
+  const columns = priced
+    .filter(({ p }) => p.currency === "USD")
+    .sort((a, b) => a.value - b.value)
+    .map(({ p, value }) => ({
+      provider: p.id,
+      label: formatMoney(value, p.currency),
+      segments: [{ value, color: providerColor(p.id), variant: "gradient" }] as const,
+      detail: [`${formatMoney(value, p.currency)} ${key === "hourly" ? "an hour" : "per vCPU-hour"}`, size(p)],
+    }));
+  return { columns, other: priced.filter(({ p }) => p.currency !== "USD").map(({ p }) => p) };
+}
+
+function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: string }) {
+  const { columns, other } = priceColumns(k);
   return (
-    <div className="mb-5">
-      <h3 className="text-[16px] font-medium">{title}</h3>
-      <p className="mt-1 text-[13px] text-[var(--muted)]">{sub}</p>
-    </div>
+    <>
+      <ChartHead title={title} sub={`${what} · US dollars · Lower is better`} />
+      <Columns columns={columns} label={title} />
+      <Footnotes
+        items={[
+          ...other.map((p) => ({
+            text: (
+              <>
+                <Who id={p.id} /> bills in euros, {formatMoney(p[k] ?? 0, p.currency)}
+                {k === "hourly" ? " an hour" : " per vCPU-hour"}, so it is listed here instead of converted.
+              </>
+            ),
+          })),
+          { text: "List-price estimates for the size each provider gave us, not invoices. Boat is a flat rate. Upstash and boxd are upper bounds: they bill for less than the full allocation." },
+        ]}
+      />
+    </>
   );
 }
 
-const latencyTabs = (items: [id: string, sub: string, notes?: RowNotes][], providers = all) =>
-  items.map(([id, sub, notes]) => {
-    const m = metric(id);
-    return {
-      id,
-      label: m.label,
-      content: (
-        <>
-          <ChartTitle title={m.label} sub={sub} />
-          <BarChart metric={m} providers={providers} notes={notes} />
-        </>
-      ),
-    };
-  });
+/** A note for each provider whose bursts did not all finish, counted from the data. */
+function partialBursts(id: string): Notes {
+  return Object.fromEntries(
+    metric(id).values.flatMap((v) => {
+      if (v.n === 0 || v.failures === 0) return [];
+      const limits = v.limitFailures === v.failures ? "hit our plan's start limit" : `failed, ${v.limitFailures} on our plan's start limit`;
+      const these = v.n === 1 ? "This is that one burst." : `These are those ${v.n}.`;
+      return [[v.provider, `only ${v.n} of ${v.n + v.failures} bursts finished; the other ${v.failures} ${limits}. ${these}`]];
+    }),
+  );
+}
 
-const rateTabs = (items: [id: string, sub: string][]) =>
-  items.map(([id, sub]) => {
-    const m = metric(id);
-    return {
-      id,
-      label: m.label,
-      content: (
-        <>
-          <ChartTitle title={m.label} sub={sub} />
-          <BarChart metric={m} providers={all} />
-        </>
-      ),
-    };
-  });
+function Headline({ marker, title, sub, children }: { marker: string; title: string; sub: string; children: ReactNode }) {
+  return (
+    <Card className="!p-5">
+      <h2 className="flex items-center gap-2.5 font-pixel text-[21px] leading-none tracking-tight">
+        <span aria-hidden className="size-3 shrink-0" style={{ backgroundColor: marker }} />
+        {title}
+      </h2>
+      <p className="mt-2 mb-3 text-[12px] text-[var(--muted)]">{sub}</p>
+      {children}
+    </Card>
+  );
+}
 
 export default function Page() {
   const cold = metric("cold");
-  const coldP50 = (id: string) => cold.values.find((v) => v.provider === id)?.p50 ?? null;
-  const scatterPoints = cloudProviders.flatMap((p) => {
+  const replay = metric("tool-replay");
+  const coldP50 = (id: ProviderId) => cold.values.find((v) => v.provider === id)?.p50 ?? null;
+  const scatterPoints: ScatterPoint[] = providers.flatMap((p) => {
     const x = coldP50(p.id);
-    return x !== null && p.hourly !== null && p.currency === "USD"
-      ? [{ provider: p.id, x, y: p.hourly, currency: p.currency }]
-      : [];
+    return x !== null && p.hourly !== null && p.currency === "USD" ? [{ provider: p.id, x, y: p.hourly, currency: p.currency }] : [];
   });
-  const start = data.window.start ? new Date(data.window.start) : null;
-  const day = start?.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const boxd = provider("boxd");
+  const boat = provider("boat");
+  const daytona = provider("daytona");
 
   return (
-    <main>
-      <header className="relative isolate overflow-hidden">
-        <HeroField className="absolute top-0 right-0 -z-10 h-[420px] w-full [mask-image:linear-gradient(to_bottom,black_30%,transparent)] sm:w-[70%]" />
-        <div className="mx-auto max-w-[1080px] px-5 pt-8 sm:px-8">
-          <nav className="flex items-center justify-between text-[13px] text-[var(--muted)]">
-            <span className="font-medium text-[var(--foreground)]">Sandbox SDK bench</span>
-            <a className="hover:text-[var(--foreground)]" href="#method">
-              Method
-            </a>
+    <>
+      <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--background)]/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1200px] items-center gap-4 px-4 py-3 sm:px-6">
+          <a href="#top" className="shrink-0 rounded-full bg-[var(--foreground)] px-3.5 py-1.5 text-[13px] font-semibold text-[var(--background)]">
+            Sandbox bench
+          </a>
+          <nav aria-label="Sections" className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none]">
+            <div className="mx-auto flex w-max gap-0.5 rounded-full border border-[var(--line)] bg-[var(--band)] p-1">
+              {sections.map(([id, label]) => (
+                <a
+                  key={id}
+                  href={`#${id}`}
+                  className="rounded-full px-3 py-1 text-[13px] whitespace-nowrap text-[var(--muted)] transition-colors duration-150 hover:bg-[var(--chip)] hover:text-[var(--foreground)] motion-reduce:transition-none"
+                >
+                  {label}
+                </a>
+              ))}
+            </div>
           </nav>
-          <h1 className="mt-24 max-w-[18ch] font-pixel text-[40px] leading-[1.05] tracking-tight sm:mt-32 sm:text-[60px]">
-            How fast are cloud sandboxes for agents?
-          </h1>
-          <p className="mt-5 max-w-[60ch] text-[16px] leading-relaxed text-[var(--muted)]">
-            We drove 7 sandbox providers and a local Docker baseline through the same open-source SDK, from the same
-            server, on {day}. {formatCount(data.observations)} measurements: start-up, commands, files, real agent
-            workloads, bursts, hardware and price. Every failure is counted.
-          </p>
-        </div>
-        <div className="mx-auto max-w-[1080px] px-5 pt-14 pb-16 sm:px-8">
-          <ChartTitle
-            title="Cold start: from create() to the first command"
-            sub="Every successful cold start, one ridge per provider. Further left is faster. The white tick is the median."
-          />
-          <Ridgelines samples={data.coldSamples} />
+          <a
+            href="results.md"
+            className="hidden shrink-0 rounded-full border border-[var(--line)] px-3.5 py-1.5 text-[13px] text-[var(--muted)] transition-colors duration-150 hover:text-[var(--foreground)] motion-reduce:transition-none md:block"
+          >
+            Full tables ↗
+          </a>
         </div>
       </header>
 
-      <div className="sticky top-0 z-20 border-y border-[var(--line)] bg-[var(--background)]/90 backdrop-blur">
-        <nav
-          aria-label="Sections"
-          className="mx-auto flex max-w-[1080px] gap-5 overflow-x-auto px-5 py-3 text-[13px] whitespace-nowrap text-[var(--muted)] sm:px-8"
-        >
-          {sections.map(([id, label]) => (
-            <a key={id} href={`#${id}`} className="hover:text-[var(--foreground)]">
-              {label}
-            </a>
-          ))}
-        </nav>
-      </div>
-
-      <div className="mx-auto max-w-[1080px] px-5 sm:px-8">
-        <section className="py-16 sm:py-20">
-          <h2 className="font-pixel text-[26px] tracking-tight sm:text-[32px]">How to read the charts</h2>
-          <dl className="mt-8 grid gap-x-12 gap-y-6 text-[14px] leading-relaxed sm:grid-cols-2">
+      <main id="top" className="mx-auto max-w-[1200px] px-4 sm:px-6">
+        <div className="grid gap-10 pt-14 pb-12 sm:pt-20 lg:grid-cols-[1fr_360px] lg:items-end">
+          <div>
+            <h1 className="font-pixel text-[44px] leading-[0.95] tracking-tight sm:text-[72px]">
+              Cloud sandboxes,
+              <br />
+              measured
+            </h1>
+            <p className="mt-5 max-w-[46ch] text-[16px] leading-snug">
+              {providers.length} sandbox providers through one open-source SDK, under the same conditions.
+            </p>
+          </div>
+          <dl className="divide-y divide-[var(--line)] border-y border-[var(--line)] text-[14px]">
             {[
-              ["The bar is the median (p50)", "Half of the runs were faster than this, half slower. It is the typical case."],
-              ["The small number is p95", "95 runs out of 100 finished by then. When p95 is far above the median, the provider is sometimes much slower than usual."],
-              ["Sorted best first", "Time charts put the shortest bar on top. Throughput and CPU charts put the longest on top. Each chart says which."],
-              ["Each provider ran its default size", "We did not ask for bigger machines, so the hardware differs. Daytona gave us 1 vCPU, Boat and Freestyle gave us 4. See Machines."],
-            ].map(([term, def]) => (
-              <div key={term}>
-                <dt className="font-medium">{term}</dt>
-                <dd className="mt-1 text-[var(--muted)]">{def}</dd>
+              ["Run", `${day}, ${clock(start)}–${clock(end)} UTC`],
+              ["From", "One server in Florida, US. Providers took turns."],
+              ["Data", `${formatCount(timedOperations)} timed operations. Every failure kept.`],
+            ].map(([term, value]) => (
+              <div key={term} className="grid grid-cols-[4rem_1fr] gap-3 py-3">
+                <dt className="text-[12px] text-[var(--muted)]">{term}</dt>
+                <dd className="leading-snug">{value}</dd>
               </div>
             ))}
           </dl>
-        </section>
+        </div>
 
-        <Section
-          id="startup"
-          title="Start-up"
-          lede="Cold start is the wait before an agent can do anything. Lower is better. Price is what one hour of the default sandbox costs at the provider's published rates."
-        >
-          <ChartTitle
-            title="Cold start against price"
-            sub="Median cold start (log scale) against estimated price per sandbox-hour. The shaded corner is faster and cheaper than the middle of the field."
-          />
-          <Scatter
-            points={scatterPoints}
-            xTicks={[2, 3, 5, 10, 20]}
-            yTicks={[0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]}
-            xLabel="Median cold start, seconds, log scale. Further left is faster."
-            yLabel="Estimated price per sandbox-hour at default size. Lower is cheaper."
-            quadrantLabel="Faster and cheaper"
-          />
-          <p className="mt-4 max-w-prose text-[12px] text-[var(--muted)]">
-            boxd bills in euros, so it is left off this chart rather than converted: {formatValue(coldP50("boxd") ?? 0, "s")}{" "}
-            median cold start at {formatMoney(data.providers.find((p) => p.id === "boxd")?.hourly ?? 0, "EUR")} an hour.
-            Prices are list-price estimates for the size each provider gave us, not invoices.
-          </p>
-        </Section>
+        <div className="grid gap-4 md:grid-cols-3">
+          <Headline marker="var(--dither-color-blue)" title="Cold start" sub={metricSubtitle(cold, "create() to first command")}>
+            <MetricChart metric={cold} what="" compact />
+          </Headline>
+          <Headline marker="var(--dither-color-orange)" title="Agent work" sub={metricSubtitle(replay, "100 agent tool calls")}>
+            <MetricChart metric={replay} what="" compact />
+          </Headline>
+          <Headline marker="var(--dither-color-green)" title="Price per hour" sub="Default sandbox, list price · US dollars · Lower is better">
+            <Columns columns={priceColumns("hourly").columns} label="Price per sandbox-hour" compact />
+          </Headline>
+        </div>
 
-        <Section
-          id="everyday"
-          title="Everyday calls"
-          lede="What an agent does hundreds of times per task: run a command, read and write files, reconnect to a sandbox it made earlier. Lower is better."
-        >
-          <Tabs
-            label="Everyday calls"
-            tabs={latencyTabs([
-              ["command", "Run a no-op command (`true`) and wait for it to finish. Mostly network round trip and API overhead."],
-              ["files-1kb", "Write a 1 KB file, then read it back."],
-              [
-                "files-10mb",
-                "Write a 10 MB file, then read it back.",
-                {
-                  boxd: "boxd's native download cut large files short, so the SDK reads in chunks. This number measures that workaround.",
-                  boat: "Uses Boat's signed download URL for the read.",
-                },
-              ],
-              ["reconnect", "Attach to an existing sandbox by ID and run a command."],
-              ["destroy", "Delete the sandbox and wait for the provider to confirm."],
-            ])}
+        <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns.">
+          <TabCard
+            label="Start-up"
+            tabs={[
+              ...metricTabs([{ id: "cold", what: "create() to first command", tab: "Cold start" }]),
+              {
+                id: "cold-vs-price",
+                label: "Cold start vs price",
+                content: (
+                  <>
+                    <ChartHead
+                      title="Cold start vs price"
+                      sub="Median cold start against list price per sandbox-hour · Both lower is better"
+                    />
+                    <Scatter
+                      points={scatterPoints}
+                      xTicks={[2, 3, 5, 10, 20]}
+                      yTicks={[0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]}
+                      xTitle="Median cold start, seconds (log scale)"
+                      yTitle="Price per sandbox-hour (USD)"
+                    />
+                    <Footnotes
+                      items={[
+                        {
+                          text: (
+                            <>
+                              <Who id="boxd" /> bills in euros, so it is left off rather than converted:{" "}
+                              {coldP50("boxd")?.toFixed(1)} s at {formatMoney(boxd?.hourly ?? 0, "EUR")} an hour.
+                            </>
+                          ),
+                        },
+                      ]}
+                    />
+                  </>
+                ),
+              },
+              {
+                id: "cold-all",
+                label: "Every cold start",
+                content: (
+                  <>
+                    <ChartHead title="Every cold start" sub="Each successful cold start, one ridge per provider · Log scale · Further left is faster" />
+                    <Ridgelines samples={coldSamples} />
+                  </>
+                ),
+              },
+            ]}
           />
         </Section>
 
         <Section
           id="agent"
           title="Agent work"
-          lede="Real tasks coding agents run. These depend on the sandbox's CPU, disk and network as much as on the provider's API. Lower is better."
+          lede={
+            <>
+              Real coding-agent tasks. They depend on the sandbox&apos;s CPU, disk and network as much as on the API. Every call starts in Florida, so{" "}
+              <Who id="boat" /> (France) and <Who id="boxd" /> (Germany) pay an ocean crossing on each one.
+            </>
+          }
         >
-          <Tabs
+          <TabCard
             label="Agent work"
-            tabs={latencyTabs([
-              ["tool-replay", "100 tool calls in a row, like a coding agent makes: write, read, edit, list, grep and run a test, over and over."],
-              ["npm-install", "npm ci for a small Vite and React app, from the public registry."],
-              ["pip-install", "Install requests and numpy (six pinned wheels) from PyPI."],
-              ["git-clone", "Shallow clone of a small public GitHub repository, pinned to one commit."],
-              ["dev-server", "Start the Vite dev server and wait until it reports ready."],
-              ["preview-first-byte", "Fetch the dev server through the provider's public preview URL, from outside."],
-              ["edit-loop", "Edit a file, let the dev server rebuild, fetch the page again."],
+            tabs={metricTabs([
+              { id: "tool-replay", tab: "Tool replay", what: "100 tool calls in a row: write, read, edit, list, grep, run a test" },
+              { id: "npm-install", what: "npm ci for a small Vite and React app" },
+              { id: "pip-install", what: "requests and numpy from PyPI" },
+              { id: "git-clone", what: "Shallow clone of a small pinned repo" },
+              { id: "dev-server", what: "Start Vite and wait until it is ready" },
+              { id: "preview-first-byte", tab: "Preview URL", what: "Fetch the dev server through the public preview URL" },
+              { id: "edit-loop", tab: "Edit loop", what: "Edit a file, rebuild, fetch the page again" },
             ])}
           />
         </Section>
 
-        <Section
-          id="state"
-          title="Pause and snapshots"
-          lede="Agents that wait for a human want to pause instead of paying for idle time. Snapshots let you start many sandboxes from one prepared state. Lower is better."
-        >
-          <Tabs
+        <Section id="everyday" title="Everyday calls" lede="What an agent does hundreds of times per task: run a command, move files, reattach to a sandbox.">
+          <TabCard
+            label="Everyday calls"
+            tabs={metricTabs([
+              { id: "command", what: "A no-op command, mostly network and API overhead" },
+              { id: "files-1kb", tab: "1 KB file", what: "Write a 1 KB file and read it back" },
+              {
+                id: "files-10mb",
+                tab: "10 MB file",
+                what: "Write a 10 MB file and read it back",
+                notes: {
+                  boxd: "its download cut large files short, so the SDK reads in chunks. This measures that workaround.",
+                  boat: "the read uses Boat's signed download URL.",
+                },
+              },
+              { id: "reconnect", what: "Attach to an existing sandbox by ID and run a command" },
+              { id: "destroy", what: "Delete the sandbox and wait for confirmation" },
+            ])}
+          />
+        </Section>
+
+        <Section id="state" title="Pause and snapshots" lede="Pausing stops paying for idle time while an agent waits on a human. Snapshots start many sandboxes from one prepared state.">
+          <TabCard
             label="Pause and snapshots"
-            tabs={latencyTabs([
-              [
-                "pause-resume",
-                "Pause a running sandbox, resume it, and run a command.",
-                { tenki: "Almost all of this is the pause. Resuming takes a couple of seconds." },
-              ],
-              ["snapshot", "Save a prepared sandbox as a snapshot."],
-              ["create-from-snapshot", "Start a new sandbox from that snapshot and run a command."],
+            tabs={metricTabs([
+              {
+                id: "pause-resume",
+                what: "Pause, resume, then run a command",
+                notes: { tenki: "almost all of this is the pause. Resuming takes a couple of seconds." },
+              },
+              { id: "snapshot", what: "Save a prepared sandbox as a snapshot" },
+              { id: "create-from-snapshot", tab: "Start from snapshot", what: "New sandbox from that snapshot, then a command" },
             ])}
           />
         </Section>
 
-        <Section
-          id="scale"
-          title="Many at once"
-          lede="A burst is K sandboxes created at the same moment, as an agent fanning out sub-tasks would. We time until the last one is ready. Lower is better."
-        >
-          <Tabs
+        <Section id="scale" title="Bursts" lede="K sandboxes created at the same moment, as an agent fanning out sub-tasks would. Timed until the last one is ready.">
+          <TabCard
             label="Bursts"
-            tabs={latencyTabs(
-              [
-                ["burst-10", "10 sandboxes created at once. Time until all 10 run a command. Three or four bursts per provider."],
-                [
-                  "burst-25",
-                  "25 sandboxes created at once. Time until all 25 run a command. Three bursts per provider.",
-                  {
-                    daytona: "15 of the 25 creates failed with invalid_argument, which looks like a concurrency limit. A rerun could not start because other sandboxes on the account still held capacity.",
-                    boat: "Boat's plan allows 12 starts a minute, so 25 at once cannot succeed.",
-                  },
-                ],
-              ],
-              cloud,
-            )}
+            tabs={metricTabs([
+              {
+                id: "burst-10",
+                tab: "10 at once",
+                what: "10 creates at once, until all 10 run a command",
+                notes: partialBursts("burst-10"),
+              },
+              {
+                id: "burst-25",
+                tab: "25 at once",
+                what: "25 creates at once, until all 25 run a command",
+                notes: {
+                  daytona: "15 of 25 creates failed with invalid_argument, likely a concurrency limit; a rerun could not get enough free slots.",
+                  boat: "the plan allows 12 starts a minute, so 25 at once cannot succeed.",
+                },
+              },
+            ])}
           />
-          <p className="mt-6 max-w-prose text-[12px] text-[var(--muted)]">
-            Boat's plan also allows 200 starts a day. We hit that during the run, so Boat has fewer samples everywhere
-            ({formatCount(data.coldSamples.boat?.length ?? 0)} cold starts against about 100 for the others).
-          </p>
         </Section>
 
         <Section
           id="machines"
           title="Machines"
-          lede="What each default sandbox actually was, read from inside it with nproc, /proc and the cgroup limits. Providers chose these sizes, so the speed tests below are not like for like."
+          lede="Each provider's default sandbox, read from inside it. Providers chose these sizes, so the speed tests are not like for like."
         >
-          <SpecSheet providers={cloudProviders} />
-          <p className="mt-4 max-w-prose text-[12px] text-[var(--muted)]">
-            vCPU is what the sandbox may use: the cgroup quota when set, otherwise the cores it can see. Location is where
-            its outbound traffic appeared to come from, not a guaranteed region.
-          </p>
-          <div className="mt-16">
-            <Tabs
-              label="Machine speed"
-              tabs={rateTabs([
-                ["cpu-single", "One core running a fixed Python loop. Higher is better."],
-                ["cpu-all", `Every core the sandbox has. Higher is better. More vCPUs win: ${providerName("boat")} has ${size("boat")}, ${providerName("daytona")} ${size("daytona")}.`],
-                ["memory", "Copying 16 MB in memory. Higher is better."],
-                ["disk-write", "Writing a 64 MB file in order. Higher is better."],
-                ["disk-read", "Reading that file back. It may come from cache. Higher is better."],
-                ["iops-write", "Random 4 KB writes per second, each synced to disk. Higher is better."],
-                ["iops-read", "Random 4 KB reads per second. Higher is better."],
-              ])}
-            />
-          </div>
-        </Section>
-
-        <Section
-          id="reliability"
-          title="Reliability"
-          lede="Every operation that failed, per 1,000 attempts. Fewer is better. We split failures into three kinds: operations that failed, limits on our own accounts, and the outside host we used for the download speed test blocking us."
-        >
-          <Failures providers={cloudProviders} />
-          <p className="mt-6 max-w-prose text-[12px] text-[var(--muted)]">
-            Operation failures include ones whose cause we could not pin down, so not every one is the provider's fault.
-            The first success rate leaves out our account limits and the blocked test host; the second counts everything.
-            Rates count observations, and some observations come from the same sandbox.
-          </p>
-        </Section>
-
-        <Section
-          id="cost"
-          title="Cost"
-          lede="Estimated from each provider's published prices and the size it gave us. Disk is included where the provider charges for it. Subscriptions, free credits, snapshot storage and data transfer are left out. Lower is better."
-        >
-          <Tabs
-            label="Cost"
+          <TabCard
+            label="Machines"
             tabs={[
               {
-                id: "hour",
-                label: "Per sandbox-hour",
+                id: "hardware",
+                label: "Hardware",
                 content: (
                   <>
-                    <ChartTitle title="Price per sandbox-hour" sub="One default sandbox running for an hour." />
-                    <SimpleBars
-                      label="Price per sandbox-hour"
-                      bars={cloudProviders.flatMap((p) =>
-                        p.hourly === null
-                          ? []
-                          : [
-                              {
-                                provider: p.id,
-                                value: p.hourly,
-                                label: formatMoney(p.hourly, p.currency),
-                                note: p.currency === "USD" ? size(p.id) : `${size(p.id)}. Billed in euros, so not ranked with the dollar prices.`,
-                                unranked: p.currency !== "USD",
-                              },
-                            ],
-                      )}
-                    />
+                    <ChartHead title="What each sandbox was" sub="From nproc, /proc and cgroup limits · Location is where outbound traffic appeared to come from" />
+                    <SpecSheet providers={providers} />
+                  </>
+                ),
+              },
+              ...metricTabs([
+                { id: "cpu-single", what: "One core running a fixed Python loop" },
+                {
+                  id: "cpu-all",
+                  what: `Every core the sandbox has, so more vCPUs win: Boat has ${size(boat)}, Daytona ${size(daytona)}`,
+                },
+                { id: "memory", tab: "Memory", what: "Copying 16 MB in memory" },
+                { id: "disk-write", what: "Writing a 64 MB file in order" },
+                { id: "disk-read", what: "Reading that file back, possibly from cache" },
+                { id: "iops-write", tab: "Random write", what: "4 KB writes, each synced to disk" },
+                { id: "iops-read", tab: "Random read", what: "4 KB random reads" },
+              ]),
+            ]}
+          />
+        </Section>
+
+        <Section id="reliability" title="Reliability" lede="Failures per 1,000 attempts. Nothing was dropped as an outlier.">
+          <TabCard
+            label="Reliability"
+            tabs={[
+              {
+                id: "operation",
+                label: "Operation failures",
+                content: (
+                  <>
+                    <ChartHead title="Operation failures" sub="Calls that failed, per 1,000 attempts · Lower is better" />
+                    <OperationFailures providers={providers} />
+                    <Footnotes items={[{ text: "Includes failures whose cause we could not pin down, so not every one is the provider's fault." }]} />
                   </>
                 ),
               },
               {
-                id: "vcpu",
-                label: "Per vCPU-hour",
+                id: "all",
+                label: "Every failure, by cause",
                 content: (
                   <>
-                    <ChartTitle title="Price per vCPU-hour" sub="The hourly price divided by the vCPUs the sandbox had. Fairer across sizes." />
-                    <SimpleBars
-                      label="Price per vCPU-hour"
-                      bars={cloudProviders.flatMap((p) =>
-                        p.perVcpuHour === null
-                          ? []
-                          : [
-                              {
-                                provider: p.id,
-                                value: p.perVcpuHour,
-                                label: formatMoney(p.perVcpuHour, p.currency),
-                                note: p.currency === "USD" ? undefined : "Billed in euros, so not ranked with the dollar prices.",
-                                unranked: p.currency !== "USD",
-                              },
-                            ],
-                      )}
+                    <ChartHead title="Every failure, by cause" sub="Including our own plan limits and a speed-test host that blocked us · Per 1,000 attempts" />
+                    <AllFailures providers={providers} />
+                    <Footnotes
+                      items={[
+                        {
+                          text: (
+                            <>
+                              <Who id="boat" /> hit its plan&apos;s limit of 200 sandbox starts a day during the run, so it has fewer samples everywhere ({formatCount(coldSamples.boat?.length ?? 0)} cold starts against about 100 for the others).
+                            </>
+                          ),
+                        },
+                      ]}
                     />
                   </>
                 ),
               },
             ]}
           />
-          <p className="mt-6 max-w-prose text-[12px] text-[var(--muted)]">
-            boxd is in euros and Boat is a flat $0.036 an hour. Upstash and boxd estimates are upper bounds because they
-            bill for less than the full allocation.
-          </p>
         </Section>
 
-        <Section
-          id="method"
-          title="How we tested"
-          lede="Everything ran through Sandbox SDK's single interface, so each provider got the same calls in the same order."
-        >
-          <div className="grid gap-x-12 gap-y-6 text-[14px] leading-relaxed text-[var(--muted)] sm:grid-cols-2">
-            <p>
-              One server in Florida drove every run, from {start?.toUTCString().slice(17, 22)} UTC on {day}. Providers took
-              turns in round-robin order, so a slow minute on the network hit everyone.
-            </p>
-            <p>
-              The SDK adds no extra calls: run() is one exec on the provider. Each timer starts right before the call and
-              stops when the result is back.
-            </p>
-            <p>
-              No outliers were removed. Failures are kept and classified rather than dropped. Bootstrap confidence intervals
-              for every median are in the full tables.
-            </p>
-            <p>
-              The download speed test is left out of the charts: the public test host rate-limited several providers, so
-              those numbers say more about it than about them.
-            </p>
-            <p>
-              {formatCount(data.observations)} observations from {data.runs.length} runs. One earlier run was discarded in
-              full after snapshot timeouts blocked one provider.
-            </p>
-            <p>
-              Every number on this page, with confidence intervals and the failure list, is in the{" "}
-              <a className="underline decoration-dotted underline-offset-4 hover:text-[var(--foreground)]" href="results.md">
-                full tables
-              </a>
-              . The raw samples are about 800 MB of JSON, produced by bun bench merge.
-            </p>
-          </div>
+        <Section id="cost" title="Cost" lede="From each provider's published prices and the size it gave us. Subscriptions, free credits, snapshot storage and transfer are left out.">
+          <TabCard
+            label="Cost"
+            tabs={[
+              { id: "hour", label: "Per sandbox-hour", content: <PriceChart k="hourly" title="Price per sandbox-hour" what="One default sandbox for an hour" /> },
+              { id: "vcpu", label: "Per vCPU-hour", content: <PriceChart k="perVcpuHour" title="Price per vCPU-hour" what="Hourly price divided by vCPUs, fairer across sizes" /> },
+            ]}
+          />
         </Section>
-      </div>
-      <footer className="border-t border-[var(--line)] py-10 text-center text-[12px] text-[var(--muted)]">
-        Sandbox SDK bench, {day}.
+
+        <Section id="method" title="Method" lede="Everything ran through Sandbox SDK's single interface, so each provider got the same calls in the same order.">
+          <Card>
+            <div className="grid gap-x-12 gap-y-5 text-[14px] leading-relaxed text-[var(--muted)] md:grid-cols-2">
+              <p>
+                One server in Florida drove every run on {day}. Providers took turns in round-robin order, so a slow minute on the network hit everyone.
+              </p>
+              <p>The SDK adds no extra calls: run() is one exec on the provider. Each timer starts right before the call and stops when the result is back.</p>
+              <p>
+                No outliers were removed. Failures are kept and classified. Bootstrap confidence intervals for every median are in the{" "}
+                <a className="text-[var(--foreground)] underline decoration-dotted underline-offset-4" href="results.md">
+                  full tables
+                </a>
+                .
+              </p>
+              <p>
+                Download speed is left out: the public test host rate-limited several providers. {formatCount(timedOperations)} operations from {runs.length} runs; one earlier run was
+                discarded in full after snapshot timeouts blocked a provider.
+              </p>
+            </div>
+          </Card>
+        </Section>
+      </main>
+
+      <footer className="mx-auto mt-24 max-w-[1200px] px-4 sm:px-6">
+        <p className="border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">Sandbox SDK bench · {day}</p>
       </footer>
-    </main>
+    </>
   );
 }
