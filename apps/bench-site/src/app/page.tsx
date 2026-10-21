@@ -180,7 +180,7 @@ const execNotes: Notes = {
 const methodRows = [
   ["One SDK", "Every provider ran through Sandbox SDK, our own TypeScript SDK, which we will publish soon. Each adapter uses the provider's official SDK or API, and times include the adapter's own work (noted where it adds calls)."],
   ["Independent", "No provider paid for these results or had any say in them. Some may have seen an early copy to check for errors. We may work with some of these companies; that did not change how tests ran or how results are reported."],
-  ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call, and the provider strip shows where each sandbox ran."],
+  ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call; the Hardware tab under Machines shows where each sandbox ran."],
   ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
   ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
   ["Failures", "Every failure counts against the provider unless our own code caused it. Our machine probe could not run on Superserve (it needs /dev/shm), so those runs are left out rather than counted. Failures we can't pin on either side count and are marked unclear. Attempts blocked by our own plan limits were rerun."],
@@ -227,15 +227,15 @@ export default function Page() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--background)]/85 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[color-mix(in_oklch,var(--background)_88%,transparent)] backdrop-blur-md">
         <div className="mx-auto flex max-w-[1200px] items-center gap-4 px-4 py-3 sm:px-6">
-          <a href="#top" className="shrink-0" aria-label="Sandbox bench, back to top">
+          <a href="#top" className="-my-2 shrink-0 py-2.5" aria-label="Sandbox bench, back to top">
             <Lockup />
           </a>
-          <SectionNav sections={sections} />
+          <SectionNav sections={sections} extra={{ href: "llms.txt", label: "For agents ↗" }} />
           <a
             href="llms.txt"
-            className="hidden shrink-0 rounded-full border border-[var(--line)] px-3.5 py-1.5 text-[13px] text-[var(--muted)] transition-colors duration-150 hover:text-[var(--foreground)] motion-reduce:transition-none md:block"
+            className="hidden shrink-0 rounded-full border border-[var(--line)] px-3.5 py-1.5 text-[13px] text-[var(--muted)] transition-colors duration-150 hover:text-[var(--foreground)] motion-reduce:transition-none lg:block"
           >
             For agents ↗
           </a>
@@ -483,7 +483,7 @@ export default function Page() {
             {["llms.txt", "results.json", "results.md"].map((f, i) => (
               <span key={f}>
                 {i > 0 ? " · " : ""}
-                <a className="underline decoration-dotted underline-offset-4 hover:text-[var(--foreground)]" href={f}>
+                <a className="-my-2 inline-block py-2 underline decoration-dotted underline-offset-4 hover:text-[var(--foreground)]" href={f}>
                   {f}
                 </a>
               </span>

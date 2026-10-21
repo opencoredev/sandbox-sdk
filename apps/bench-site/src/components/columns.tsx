@@ -94,7 +94,7 @@ const Card = ({ column, className, style }: { column: Column; className: string;
   <div
     role="presentation"
     style={style}
-    className={`pointer-events-none absolute z-10 w-max max-w-[220px] rounded-md border border-[var(--line)] bg-[var(--popover)] px-2.5 py-2 text-left text-[12px] leading-snug opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none ${className}`}
+    className={`pointer-events-none absolute z-10 w-max max-w-[220px] rounded-md border border-[var(--line)] bg-[var(--popover)] px-2.5 py-2 text-left text-[12px] leading-snug opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none ${className}`}
   >
     <span className="block font-medium" style={{ color: providerColor(column.provider) }}>
       {providerName(column.provider)}
@@ -193,20 +193,24 @@ function Horizontal({ columns, max }: { columns: readonly Column[]; max: number 
             key={column.provider}
             tabIndex={0}
             aria-label={describe(column, bar)}
-            className="group relative grid h-[22px] grid-cols-[4.75rem_1fr_auto] items-center gap-x-2.5 rounded-[3px] outline-none focus-visible:bg-[var(--band)]"
+            className="group relative grid h-8 grid-cols-[5.25rem_1fr_auto] items-center gap-x-2.5 rounded-[3px] outline-none focus:bg-[var(--band)] sm:h-[22px] sm:grid-cols-[4.75rem_1fr_auto]"
           >
-            <span aria-hidden className="truncate text-[12px] leading-none font-medium" style={{ color }}>
+            <span aria-hidden className="truncate text-[13px] leading-none font-medium sm:text-[12px]" style={{ color }}>
               {providerName(column.provider)}
               <Mark column={column} />
             </span>
-            <div aria-hidden className="relative flex h-3 items-stretch border-l border-[var(--axis)]">
+            <div aria-hidden className="relative flex h-3.5 items-stretch border-l border-[var(--axis)] sm:h-3">
               <div className="relative flex" style={{ width: `${bar.length * 100}%`, minWidth: 2 }}>
                 {column.segments.map((s, i) => (
-                  <div
-                    key={i}
-                    className="relative h-full"
-                    style={{ width: `${((bar.shares[i] ?? 0) / bar.length) * 100}%`, ...segmentStyle(s, "right", 20) }}
-                  >
+                  <div key={i} className="relative h-full" style={{ width: `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}>
+                    {/* Phones get a solid bar: at this size the dither fade reads as a dotted line. */}
+                    <div
+                      className={`absolute inset-0 ${s.variant === "gradient" ? "hidden sm:block" : ""}`}
+                      style={segmentStyle(s, "right", 20)}
+                    />
+                    {s.variant === "gradient" ? (
+                      <div className="absolute inset-0 rounded-r-[2px] sm:hidden" style={{ backgroundColor: s.color }} />
+                    ) : null}
                     {bar.broken === i ? <Break color={s.color} along="x" /> : null}
                   </div>
                 ))}
@@ -217,7 +221,7 @@ function Horizontal({ columns, max }: { columns: readonly Column[]; max: number 
             </div>
             <span
               aria-hidden
-              className="text-right font-mono text-[11px] text-[var(--foreground)] tabular-nums"
+              className="text-right font-mono text-[12px] text-[var(--foreground)] tabular-nums sm:text-[11px]"
               style={{ width: valueWidth }}
             >
               {column.label}

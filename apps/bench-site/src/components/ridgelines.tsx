@@ -83,7 +83,7 @@ function Plot({ rows, layout, ticks, id }: { rows: Row[]; layout: Layout; ticks:
             <span className="text-[12px] font-medium sm:text-[14px]" style={{ color: providerColor(row.provider) }}>
               {providerName(row.provider)}
             </span>
-            <span className="font-mono text-[10px] whitespace-nowrap text-[var(--muted)] tabular-nums sm:text-[12px]">
+            <span className="font-mono text-[11px] whitespace-nowrap text-[var(--muted)] tabular-nums sm:text-[12px]">
               {formatValue(row.p50, "s")}
               {` · n = ${row.values.length}`}
             </span>
@@ -153,7 +153,7 @@ function Plot({ rows, layout, ticks, id }: { rows: Row[]; layout: Layout; ticks:
           over(row) > 0 ? (
             <span
               key={row.provider}
-              className="absolute right-0 -translate-y-[calc(100%+3px)] rounded-[3px] bg-[var(--surface)] px-1 font-mono text-[10px] whitespace-nowrap text-[var(--muted)] tabular-nums sm:text-[11px]"
+              className="absolute right-0 -translate-y-[calc(100%+3px)] rounded-[3px] bg-[var(--surface)] px-1 font-mono text-[11px] whitespace-nowrap text-[var(--muted)] tabular-nums"
               // The tick row below the plot is 1.25rem tall.
               style={{ top: `calc((100% - 1.25rem) * ${(TOP + i * ROW) / height})` }}
             >

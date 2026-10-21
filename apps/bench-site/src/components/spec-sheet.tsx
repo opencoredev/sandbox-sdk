@@ -8,11 +8,45 @@ const isolationName: Record<string, string> = {
   unreported: "Not reported",
 };
 
-/** What each default sandbox ran on, read from inside it. Sizes are in MachineSizes. */
+const rowsOf = (providers: readonly Provider[]) =>
+  providers.flatMap((p) =>
+    p.hardware
+      ? [
+          {
+            p,
+            cpu: p.hardware.cpuModels[0]?.value ?? `${p.hardware.vendor}, model hidden`,
+            runsAs: isolationName[p.hardware.isolation] ?? p.hardware.isolation,
+            ranIn: p.hardware.location[0]?.value ?? "Not reported",
+            note: advertised[p.id].note,
+          },
+        ]
+      : [],
+  );
+
+/**
+ * What each default sandbox ran on, read from inside it. A table on wide
+ * screens; one stacked card per provider on phones so no column hides off
+ * the edge. Sizes are in MachineSizes.
+ */
 export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
+  const rows = rowsOf(providers);
   return (
-    <div role="region" aria-label="Sandbox details by provider" tabIndex={0} className="relative -mx-5 overflow-x-auto px-5 sm:mx-0 sm:px-0">
-      <table className="w-full min-w-[620px] border-collapse text-left text-[13px]">
+    <>
+      <ul className="flex flex-col divide-y divide-[var(--line)] border-y border-[var(--line)] sm:hidden">
+        {rows.map(({ p, cpu, runsAs, ranIn, note }) => (
+          <li key={p.id} className="py-3 text-[13.5px] leading-snug">
+            <p className="font-medium" style={{ color: providerColor(p.id) }}>
+              {providerName(p.id)}
+            </p>
+            <p className="mt-1">{cpu}</p>
+            <p className="mt-0.5 text-[var(--muted)]">
+              {runsAs} · {ranIn}
+            </p>
+            {note ? <p className="mt-1.5 text-[12.5px] text-[var(--muted)]">{note}</p> : null}
+          </li>
+        ))}
+      </ul>
+      <table className="hidden w-full border-collapse text-left text-[13px] sm:table">
         <thead>
           <tr className="border-b border-[var(--line)] text-[12px] text-[var(--muted)]">
             {["Provider", "CPU", "Runs as", "Ran in"].map((h) => (
@@ -23,26 +57,21 @@ export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
           </tr>
         </thead>
         <tbody>
-          {providers.map((p) => {
-            const hw = p.hardware;
-            if (!hw) return null;
-            const note = advertised[p.id].note;
-            return (
-              <tr key={p.id} className="border-b border-[var(--line)] align-top">
-                <th scope="row" className="py-3 pr-5 font-medium" style={{ color: providerColor(p.id) }}>
-                  {providerName(p.id)}
-                </th>
-                <td className="py-3 pr-5">
-                  {hw.cpuModels[0]?.value ?? `${hw.vendor}, model hidden`}
-                  {note ? <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">{note}</span> : null}
-                </td>
-                <td className="py-3 pr-5 whitespace-nowrap">{isolationName[hw.isolation] ?? hw.isolation}</td>
-                <td className="py-3 pr-5 whitespace-nowrap">{hw.location[0]?.value ?? "Not reported"}</td>
-              </tr>
-            );
-          })}
+          {rows.map(({ p, cpu, runsAs, ranIn, note }) => (
+            <tr key={p.id} className="border-b border-[var(--line)] align-top">
+              <th scope="row" className="py-3 pr-5 font-medium" style={{ color: providerColor(p.id) }}>
+                {providerName(p.id)}
+              </th>
+              <td className="py-3 pr-5">
+                {cpu}
+                {note ? <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">{note}</span> : null}
+              </td>
+              <td className="py-3 pr-5 whitespace-nowrap">{runsAs}</td>
+              <td className="py-3 pr-5 whitespace-nowrap">{ranIn}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
-    </div>
+    </>
   );
 }

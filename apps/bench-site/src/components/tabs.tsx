@@ -64,7 +64,8 @@ export function TabCard({ tabs, label }: { tabs: readonly Tab[]; label: string }
           ref={scroller}
           role="tablist"
           aria-label={label}
-          className="scroll-fade flex gap-1 overflow-x-auto p-2 [scrollbar-width:none]"
+          // Phones wrap the tabs onto more lines so every one is visible; wider screens scroll with a fade.
+          className="scroll-fade flex flex-wrap gap-1 p-2 sm:flex-nowrap sm:overflow-x-auto sm:[scrollbar-width:none]"
         >
           {tabs.map((tab, index) => {
             const selected = tab.id === active;
@@ -82,7 +83,7 @@ export function TabCard({ tabs, label }: { tabs: readonly Tab[]; label: string }
                 aria-controls={`${base}-${tab.id}`}
                 onClick={() => setActive(tab.id)}
                 onKeyDown={(event) => onKeyDown(event, index)}
-                className={`shrink-0 rounded-md px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-[var(--foreground)]/60 motion-reduce:transition-none ${
+                className={`shrink-0 rounded-md px-3 py-2 text-[13.5px] whitespace-nowrap sm:py-1.5 sm:text-[13px] transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-[var(--foreground)]/60 motion-reduce:transition-none ${
                   selected
                     ? "bg-[var(--chip)] font-medium text-[var(--foreground)]"
                     : "text-[var(--muted)] hover:text-[var(--foreground)]"

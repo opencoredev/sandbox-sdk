@@ -88,6 +88,14 @@ body {
 @utility scroll-fade {
   --fade-start: 0px;
   --fade-end: 0px;
+  /* Safari still needs the prefixed property. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-start),
+    #000 calc(100% - var(--fade-end)),
+    transparent
+  );
   mask-image: linear-gradient(
     to right,
     transparent,
