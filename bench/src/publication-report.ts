@@ -51,26 +51,9 @@ function mdTable(headers: string[], rows: string[][]) {
   ].join("\n");
 }
 function costs(r: PublicationReport) {
-  return r.sources.flatMap((source) =>
-    source.providers.map((p) => {
-      const lifetimes = r.samples.filter(
-        (s) =>
-          s.sourceRunId === source.runId &&
-          s.provider === p.name &&
-          /(^|\/)sandbox-lifetime$/.test(s.scenario),
-      );
-      const known = lifetimes.flatMap((s) => (s.estimatedCost === null ? [] : [s.estimatedCost]));
-      return {
-        provider: p.name,
-        sourceRunId: source.runId,
-        currency: source.pricing[p.name]?.currency ?? "unknown",
-        known: sum(known),
-        missing: lifetimes.length - known.length,
-        lifetimes: lifetimes.length,
-      };
-    }),
-  );
+  return r.sources.flatMap(source => source.lifetimeCosts);
 }
+
 export function hourly(r: PublicationReport, provider: string) {
   const fingerprints = r.samples
     .filter((s) => s.provider === provider && s.scenario === "fingerprint")
@@ -357,7 +340,7 @@ export function disclosures(r: PublicationReport) {
       "Attempt selection: exclude provider-account-limit and client-third-party failures, retain provider-operation failures. Keep the first N attempted rows per (provider, suite, test) in startedAt order, with sourceRunId and sourceSampleIndex as stable tie-breakers. N=100 main, 30 workloads/snapshots, 3 burst cohorts. Skipped/blocked rows are not attempts. Local Docker is unchanged.",
       "Pause/resume rows use only the explicitly selected fresh sources; phases record pauseMs, resumeReturnedMs and resumeReadyMs, while the value remains total elapsed time. Failed transitions can retain only phases reached before failure.",
       ...r.attemptPolicy.notRun.map(n => `${n.provider} ${n.suite}/${n.scenario}: not run: ${n.reason}`),
-      `Selection audit: ${JSON.stringify(r.selectionRemoved)}. All original source files remain intact.`,
+      `Selection audit: ${JSON.stringify(r.selectionRemoved)}. All original source files remain intact. Collection cost totals use every original source lifetime, including excluded or trimmed attempts.`,
     ] : []),
     "Local is a Docker reference baseline. Host hardware, electricity, networking and administration are excluded from its cost. Default provider images and sizes differ; this is not a resource-matched comparison. No combined overall ranking is calculated.",
     "Main lifecycle runs target 100 iterations per provider and workloads on the first 30. Snapshot scenarios were excluded from publication-002 and collected separately for 30 iterations with a 600-second timeout. Main and snapshot cold creates stay in separate summaries.",

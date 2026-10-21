@@ -227,7 +227,12 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
       });
     });
     const { samples: _samples, summaries: _summaries, ...originalMetadata } = source;
-    return { ...originalMetadata, sampleCount: source.samples.length, suite, iterationMappings };
+    const lifetimeCosts = source.providers.map(p => {
+      const lifetimes = source.samples.filter(s => s.provider === p.name && /(^|\/)sandbox-lifetime$/.test(s.scenario));
+      const known = lifetimes.flatMap(s => s.estimatedCost === null ? [] : [s.estimatedCost]);
+      return { provider: p.name, sourceRunId: source.runId, currency: source.pricing[p.name]?.currency ?? "unknown", known: sum(known), missing: lifetimes.length - known.length, lifetimes: lifetimes.length };
+    });
+    return { ...originalMetadata, sampleCount: source.samples.length, suite, iterationMappings, lifetimeCosts };
   });
   // Cohort aggregates inherit classification from their failed creates, without changing outcomes.
   for (const sample of samples) {
@@ -270,7 +275,7 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
       failureClass:
         "Only failure rows classified: provider-account-limit (Boat quota; Daytona burst invalid_argument, likely concurrency; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
       costs:
-        "Use sandbox-lifetime estimatedCost only, including restored lifetime already charged there; do not sum scenario allocations. Unknown lifetime costs stay unknown. Native currency, no FX conversion. Recorded pricing per source retained; reportPricing captures the existing pricing code used for sandbox-hour and command-efficiency estimates; budgets.estimatedUSD is a harness guard, not spend.",
+        "Use original-source sandbox-lifetime estimatedCost only, before attempt selection, including restored lifetime already charged there; do not sum scenario allocations. Unknown lifetime costs stay unknown. Native currency, no FX conversion. Recorded pricing per source retained; reportPricing captures the existing pricing code used for sandbox-hour and command-efficiency estimates; budgets.estimatedUSD is a harness guard, not spend.",
     },
     sources: provenance,
     excludedSources: excluded,
@@ -326,7 +331,7 @@ export async function mergeCommand(args: string[]) {
   const policy = values.policy ? attemptPolicySchema.parse(JSON.parse(await readFile(values.policy, "utf8"))) : undefined;
   const report = mergeSources(inputs, excluded, z.coerce.number().int().parse(values.seed), policy);
   report.runId = basename(output);
-  if (!policy && report.samples.length !== report.inputSampleCount)
+  if (report.samples.length + sum(Object.values(report.selectionRemoved)) !== report.inputSampleCount)
     throw new Error("Sample conservation failed");
   await mkdir(output, { recursive: true });
   await writeFile(

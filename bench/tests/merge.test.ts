@@ -247,3 +247,15 @@ it("rejects both under-target and over-target counts and missing successful paus
   for (const s of r.samples) s.phases = {pauseMs: 1, resumeReturnedMs: 2, resumeReadyMs: 3};
   expect(checkAttempts(r.samples, policy).find(s => s.provider === "daytona" && s.scenario === "pause-resume")?.pass).toBe(true);
 });
+
+it("keeps collection costs for an excluded account-limited burst", () => {
+  const input = source("burst", [
+    sample(0, "burst-25/cold", {kind: "failure", note: "invalid_argument"}),
+    sample(0, "burst-25/all-ready", {kind: "failure", note: "account limit"}),
+    {...sample(0, "burst-25/sandbox-lifetime"), estimatedCost: 0.12},
+  ]);
+  input.config.scenarios = ["burst"];
+  const report = mergeSources([input], [], 45, {replacements: [], notRun: [{provider: "daytona", suite: "burst", scenario: "burst-25/*", reason: "Account concurrency limit"}]});
+  expect(report.samples).toHaveLength(0);
+  expect(report.sources[0]?.lifetimeCosts).toEqual([{provider: "daytona", sourceRunId: "burst", currency: "USD", known: 0.12, missing: 0, lifetimes: 1}]);
+});
