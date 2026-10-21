@@ -73,8 +73,8 @@ export function Columns({
   const width = compact ? "w-[min(38px,68%)]" : "w-[min(60px,66%)]";
   return (
     <figure aria-label={label} className="relative">
-      <div className={`relative ${plot} pt-6`}>
-        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-6 bottom-0 flex flex-col justify-between">
+      <div className={`relative ${plot} pt-6 max-[440px]:pt-9`}>
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-6 bottom-0 flex flex-col justify-between max-[440px]:top-9">
           {[0, 1, 2, 3].map((i) => (
             <div key={i} className="border-t border-dotted border-[var(--grid)]" />
           ))}
@@ -92,7 +92,14 @@ export function Columns({
                 aria-label={`${providerName(column.provider)}: ${column.detail.join(", ")}`}
                 className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none"
               >
-                <span className={`mb-1.5 shrink-0 font-mono whitespace-nowrap text-[var(--foreground)] tabular-nums ${compact ? "text-[10px] min-[400px]:text-[11px]" : "text-[10px] min-[400px]:text-[11px] sm:text-[12px]"}`}>
+                <span
+                  className={`mb-1.5 shrink-0 font-mono whitespace-nowrap text-[var(--foreground)] tabular-nums ${
+                    compact ? "text-[10px] min-[400px]:text-[11px]" : "text-[10px] min-[400px]:text-[11px] sm:text-[12px]"
+                  } ${
+                    // Eight slots are too narrow for side-by-side prices on a phone, so every other label sits higher.
+                    index % 2 === 1 ? (compact ? "max-[440px]:-translate-y-3.5" : "max-[440px]:-translate-y-3.5 sm:translate-y-0") : ""
+                  }`}
+                >
                   {column.label}
                 </span>
                 <div

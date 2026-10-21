@@ -110,9 +110,9 @@ export function Scatter({
           {points.map((p) => {
             const px = fx(p.x);
             const flip = px > 0.62;
-            // Two points at nearly the same price would print their labels on one line:
-            // the further-right one moves its label below, the other above.
-            const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05 && Math.abs(fx(q.x) - px) < 0.4);
+            // Two points at nearly the same price print their labels on one line, and on a
+            // narrow plot they collide whatever the gap: the further-right label moves below, the other above.
+            const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05);
             const nudge = twin ? (fx(twin.x) < px ? 11 : -11) : 0;
             return (
               <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
