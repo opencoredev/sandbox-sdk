@@ -43,7 +43,7 @@ export const formatPercent = (value: number, digits = 1) => `${(value * 100).toF
 
 export function formatMoney(value: number, currency: string | null) {
   const symbol = currency === "EUR" ? "€" : "$";
-  // Three decimals under a dollar: hourly prices sit close together (Upstash $0.201, boxd $0.201).
+  // Three decimals under a dollar: several hourly prices sit within a few cents of each other.
   return `${symbol}${value < 1 ? value.toFixed(3) : value.toFixed(2)}`;
 }
 

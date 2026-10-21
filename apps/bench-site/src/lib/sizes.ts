@@ -27,6 +27,13 @@ export const advertised = {
     source: "https://tenki.cloud/docs/sandbox/cli.md",
     note: "Tenki documents a 5 GiB default disk but not a default vCPU or RAM, so those are what we measured.",
   },
+  superserve: {
+    vcpu: 1,
+    memoryGiB: 1,
+    diskGiB: 4,
+    source: "https://docs.superserve.ai",
+    note: "The SDK starts Superserve's node-22 template, because its base template has no Node or Python. Both are 1 vCPU, 1 GiB RAM, 4 GiB disk.",
+  },
 } as const satisfies Record<
   ProviderId,
   { vcpu: number | null; memoryGiB: number | null; diskGiB: number | null; source: string; note: string | null }
