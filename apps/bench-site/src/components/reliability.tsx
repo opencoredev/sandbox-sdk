@@ -10,6 +10,7 @@ const kindName: Record<string, string> = {
   "provider-operation": "provider error",
   "provider-account-limit": "our plan's limit",
   "client-third-party": "third-party host",
+  unclear: "cause unclear: our timeout or the provider",
 };
 
 /** Failed attempts per 1,000, fewest first, then every cause of failure in plain words. */

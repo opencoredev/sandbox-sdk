@@ -27,8 +27,17 @@ export const notRun: Partial<Record<string, Partial<Record<ProviderId, string>>>
   },
 };
 
+// Results we measured but leave out of rankings, with the reason; the page uses the same map.
+export const excluded: Partial<Record<string, Partial<Record<ProviderId, string>>>> = {
+  "files-10mb": {
+    boxd: "boxd's download cut large files short, so our SDK reads them in 1 MB pieces and the time measures that workaround",
+  },
+};
+
 /** Why a result is blank, so an agent never has to guess. */
 function statusOf(id: string, provider: ProviderId, v: Metric["values"][number] | undefined) {
+  const left = excluded[id]?.[provider];
+  if (left) return `excluded: ${left}`;
   const skipped = notRun[id]?.[provider];
   if (skipped && (!v || v.n === 0)) return skipped;
   if (!v) return "unsupported";
@@ -53,15 +62,25 @@ const results = (m: Metric) =>
         status: statusOf(m.id, p.id, v),
       };
     })
-    .sort((a, b) =>
-      a.median === null ? 1 : b.median === null ? -1 : (m.better === "lower" ? 1 : -1) * (a.median - b.median),
-    );
+    .sort((a, b) => {
+      // Ranked results first, best first; anything unranked (blank or excluded) after.
+      const ra = a.status === "measured" && a.median !== null;
+      const rb = b.status === "measured" && b.median !== null;
+      if (ra !== rb) return ra ? -1 : 1;
+      return a.median === null || b.median === null ? 0 : (m.better === "lower" ? 1 : -1) * (a.median - b.median);
+    });
 
 /** Who wins each common question, straight from the data. */
 export function quickPicks() {
+  // Format from the raw medians, not the rounded export, so picks match the page exactly.
   const best = (id: string) => {
     const m = metric(id);
-    return results(m).filter((r) => r.median !== null).slice(0, 2);
+    const ranked = new Set(results(m).filter((r) => r.status === "measured" && r.median !== null).map((r) => r.provider));
+    return m.values
+      .filter((v) => ranked.has(v.provider) && v.p50 !== null)
+      .sort((a, b) => (m.better === "lower" ? 1 : -1) * ((a.p50 ?? 0) - (b.p50 ?? 0)))
+      .slice(0, 2)
+      .map((v) => ({ provider: v.provider, median: v.p50 }));
   };
   const name = (id: ProviderId) => providerName(id);
   const timed = (id: string, label: string) => {
@@ -125,7 +144,7 @@ export function agentData() {
           usdNote: p.currency === "EUR" ? `Converted at the ECB rate of ${eurUsd.rate} USD per EUR on ${eurUsd.date}.` : null,
           source: p.pricingSource,
         },
-        reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: round(rel.rate) },
+        reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: rel.rate === null ? null : Math.round(rel.rate * 1e5) / 1e5 },
         failures: p.failureReasons,
         setAsideAsOurs: p.ourFailures,
         pauseSplit: p.pauseSplit,
@@ -184,7 +203,7 @@ export function agentMarkdown() {
         "| Rank | Provider | Median | p95 | Attempts | Failed | Status |",
         "| --- | --- | --- | --- | --- | --- | --- |",
         ...results(m).map(
-          (r, i) => `| ${r.median === null ? "-" : i + 1} | ${providerName(r.provider)} | ${cell(r.median, m)} | ${cell(r.p95, m)} | ${r.attempts} | ${r.failed} | ${r.status} |`,
+          (r, i) => `| ${r.status === "measured" && r.median !== null ? i + 1 : "-"} | ${providerName(r.provider)} | ${cell(r.median, m)} | ${cell(r.p95, m)} | ${r.attempts} | ${r.failed} | ${r.status} |`,
         ),
         "",
       );
@@ -192,7 +211,9 @@ export function agentMarkdown() {
   }
   lines.push("## What failed", "");
   for (const p of d.providers) {
-    lines.push(`- ${p.name}: ${p.failures.length === 0 ? "nothing failed." : p.failures.map((f) => `${f.reason}: ${f.runs} runs, ${f.count} failed tests (${f.kind}; ${f.tests.join(", ")})`).join("; ")}`);
+    const counted = p.failures.length === 0 ? "no failures counted against the provider." : p.failures.map((f) => `${f.reason}: ${f.runs} runs, ${f.count} failed tests (${f.kind}; ${f.tests.join(", ")})`).join("; ");
+    const aside = p.setAsideAsOurs.map((f) => ` Set aside as ours: ${f.reason} (${f.runs} runs, ${f.count} failed tests).`).join("");
+    lines.push(`- ${p.name}: ${counted}${aside}`);
   }
   return `${lines.join("\n")}\n`;
 }

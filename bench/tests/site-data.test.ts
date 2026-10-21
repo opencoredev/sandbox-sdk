@@ -62,22 +62,28 @@ describe("failureReasons runs", () => {
 describe("ourFailure", () => {
   const fail = (provider: string, scenario: string, note: string) =>
     sample({ provider, scenario, outcome: { kind: "failure", note }, failureClass: "provider-operation" });
-  it("marks our harness and SDK failures as ours", () => {
+  it("sets aside only failures our harness provably caused", () => {
     expect(ourFailure(fail("superserve", "cpu-single", "Traceback ...\n_multiprocessing.SemLock(\nFileNotFoundError"))).toMatch(/dev\/shm/);
-    expect(ourFailure(fail("boxd", "files-10mb", "boxd request timed out. Check boxd configuration and retry."))).toMatch(/10 MB/);
-    expect(ourFailure(fail("tenki", "files-10mb", "Request deadline exceeded. Tenki could not honor the request."))).toMatch(/10 MB/);
-    expect(ourFailure(fail("tenki", "cold", "Process cancellation could not be confirmed; VM termination was requested."))).toMatch(/cancelled/);
+  });
+  it("keeps timeouts and wrapped errors counted, labelled unclear", () => {
+    const rows = [
+      fail("boxd", "files-10mb", "boxd request timed out. Check boxd configuration and retry."),
+      fail("freestyle", "files-10mb", "Freestyle request failed. Check Freestyle configuration and retry."),
+      fail("tenki", "cold", "Process cancellation could not be confirmed; VM termination was requested."),
+    ];
+    for (const row of rows) expect(ourFailure(row)).toBeNull();
+    expect(failureReasons(rows, "boxd")[0]?.kind).toBe("unclear");
+    expect(failureReasons(rows, "freestyle")[0]?.kind).toBe("unclear");
+    expect(failureReasons(rows, "tenki")[0]?.kind).toBe("unclear");
   });
   it("leaves errors the provider returned as the provider's", () => {
     expect(ourFailure(fail("e2b", "command", "E2B request failed. The provider reported unavailable."))).toBeNull();
-    expect(ourFailure(fail("daytona", "snapshot", "<html><title>502 Bad Gateway</title></html>"))).toBeNull();
-    expect(ourFailure(fail("boat", "preview-first-byte", "getaddrinfo ETIMEOUT box-node-1-3000.on.boat.dev"))).toBeNull();
-    expect(ourFailure(fail("freestyle", "preview-first-byte", "Preview HTTP 502, no first byte"))).toBeNull();
+    expect(failureReasons([fail("daytona", "snapshot", "<html><title>502 Bad Gateway</title></html>")], "daytona")[0]?.kind).toBe("provider-operation");
   });
-  it("keeps our failures out of the provider's list and counts them apart", () => {
-    const rows = [fail("tenki", "files-10mb", "Request deadline exceeded."), fail("tenki", "cold", "Tenki request failed (provider). x")];
-    expect(failureReasons(rows, "tenki").map((r) => r.reason)).toEqual(["Tenki request failed (provider)."]);
-    expect(ourFailures(rows, "tenki")).toEqual([{ reason: "A timeout or error inside our 10 MB file-transfer code", count: 1, runs: 1 }]);
+  it("lists our failures apart from the provider's", () => {
+    const rows = [fail("superserve", "cpu-single", "x SemLock y"), fail("superserve", "cold", "Superserve request failed. x")];
+    expect(failureReasons(rows, "superserve").map((r) => r.reason)).toEqual(["Superserve request failed."]);
+    expect(ourFailures(rows, "superserve")).toEqual([{ reason: "Our machine probe needs /dev/shm, which Superserve's VMs don't have", count: 1, runs: 1 }]);
   });
 });
 

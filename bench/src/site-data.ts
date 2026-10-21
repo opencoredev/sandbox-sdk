@@ -154,28 +154,31 @@ type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outc
   Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration">>;
 
 /**
- * Failures caused by our own harness or SDK rather than the provider. The site
- * leaves them out of attempts and the failure list and discloses how many; the
- * raw report keeps them. Each rule says why it is ours.
+ * Failures our own harness provably caused, not the provider. The site leaves
+ * them out of attempts and the failure list and discloses how many; the raw
+ * report keeps them. Each rule says why it is ours. Anything less certain
+ * stays counted (see unclearRules).
  */
 const ourFailureRules: readonly { test: (s: FailureInput) => boolean; reason: string }[] = [
   {
-    // The machine probe uses Python multiprocessing, which needs /dev/shm.
+    // The machine probe uses Python multiprocessing, which needs /dev/shm. Every traceback shows the SemLock failing.
     test: (s) => s.provider === "superserve" && s.outcome.kind === "failure" && /SemLock|\/dev\/shm/.test(s.outcome.note),
     reason: "Our machine probe needs /dev/shm, which Superserve's VMs don't have",
   },
-  {
-    // boxd and Tenki large files go through SDK workarounds with their own timeouts; Freestyle's message is the SDK's generic wrapper.
-    test: (s) =>
-      s.scenario === "files-10mb" &&
-      s.outcome.kind === "failure" &&
-      /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
-    reason: "A timeout or error inside our 10 MB file-transfer code",
-  },
-  {
-    test: (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
-    reason: "Our SDK could not confirm a cancelled process",
-  },
+];
+
+/**
+ * Failures whose cause we can't pin on either side: a timeout in our SDK
+ * while waiting on the provider, or the SDK's generic error wrapper, which
+ * also covers provider 5xx responses. They count against the provider but
+ * are labelled as unclear.
+ */
+const unclearRules: readonly ((s: FailureInput) => boolean)[] = [
+  (s) =>
+    s.scenario === "files-10mb" &&
+    s.outcome.kind === "failure" &&
+    /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
+  (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
 ];
 
 /** Why a failure is ours, or null when the provider returned the error. */
@@ -194,7 +197,7 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
     if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
     const reason = shortReason(s.outcome.note);
-    const kind = s.failureClass ?? "provider-operation";
+    const kind = unclearRules.some((rule) => rule(s)) ? "unclear" : (s.failureClass ?? "provider-operation");
     const key = `${kind}|${reason}`;
     const group = groups.get(key) ?? { kind, reason, count: 0, runs: new Set<string>(), tests: new Set<string>() };
     group.count += 1;

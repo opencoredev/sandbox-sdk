@@ -582,14 +582,18 @@
      }
     ]
    },
-   "failureReasons": [],
-   "ourFailures": [
+   "failureReasons": [
     {
-     "reason": "A timeout or error inside our 10 MB file-transfer code",
+     "kind": "unclear",
+     "reason": "boxd request timed out.",
      "count": 2,
-     "runs": 2
+     "runs": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 0.1328427049999591,
     "resume": 0.4245274060000083,
@@ -643,6 +647,15 @@
    },
    "failureReasons": [
     {
+     "kind": "unclear",
+     "reason": "Freestyle request failed.",
+     "count": 2,
+     "runs": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
+    },
+    {
      "kind": "provider-operation",
      "reason": "Preview HTTP 502, no first byte",
      "count": 1,
@@ -652,13 +665,7 @@
      ]
     }
    ],
-   "ourFailures": [
-    {
-     "reason": "A timeout or error inside our 10 MB file-transfer code",
-     "count": 2,
-     "runs": 2
-    }
-   ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 0.22339402699999936,
     "resume": 0.35969062599999596,
@@ -715,19 +722,27 @@
      }
     ]
    },
-   "failureReasons": [],
-   "ourFailures": [
+   "failureReasons": [
     {
-     "reason": "A timeout or error inside our 10 MB file-transfer code",
+     "kind": "unclear",
+     "reason": "Request deadline exceeded.",
      "count": 2,
-     "runs": 2
+     "runs": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
     },
     {
-     "reason": "Our SDK could not confirm a cancelled process",
+     "kind": "unclear",
+     "reason": "Process cancellation could not be confirmed; VM termination was requested.",
      "count": 1,
-     "runs": 1
+     "runs": 1,
+     "tests": [
+      "Cold start"
+     ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 58.07593770499993,
     "resume": 2.908024297000025,
@@ -910,8 +925,8 @@
      "ciLow": 4.110588220000005,
      "ciHigh": 4.345525498999981,
      "successes": 99,
-     "failures": 0,
-     "ourFailures": 1,
+     "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1271,8 +1286,8 @@
      "ciLow": 59.90981015899964,
      "ciHigh": 65.55323472100031,
      "successes": 98,
-     "failures": 0,
-     "ourFailures": 2,
+     "failures": 2,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1284,8 +1299,8 @@
      "ciLow": 2.1459584129999856,
      "ciHigh": 2.4534478840001395,
      "successes": 98,
-     "failures": 0,
-     "ourFailures": 2,
+     "failures": 2,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1297,8 +1312,8 @@
      "ciLow": 6.439671156999888,
      "ciHigh": 6.695689859000034,
      "successes": 98,
-     "failures": 0,
-     "ourFailures": 2,
+     "failures": 2,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {

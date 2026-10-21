@@ -21,7 +21,7 @@ import type { Provider } from "@/lib/data";
 import { formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
-import { notRun } from "@/lib/agent-data";
+import { excluded, notRun } from "@/lib/agent-data";
 import { conversionNote, usdPrice } from "@/lib/fx";
 import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
@@ -133,7 +133,7 @@ const coldNotes: Notes = {
 // Adapters that need more than one provider call per command.
 const execNotes: Notes = {
   daytona: "our adapter opens a session, runs the command through a small Python helper and cleans up, so each command is several Daytona calls.",
-  tenki: "our adapter launches the command, reads its exit code and removes its marker files: three Tenki calls per command.",
+  tenki: "our adapter launches the command, polls for its output, reads its exit code and removes its marker files, so each command is several Tenki calls.",
 };
 
 const methodRows = [
@@ -142,7 +142,7 @@ const methodRows = [
   ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call, and the provider strip shows where each sandbox ran."],
   ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
   ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
-  ["Failures", "Every failure the provider returned counts. Attempts blocked by our own plan limits were rerun. Failures caused by our own code are set aside and listed under Reliability."],
+  ["Failures", "Every failure counts against the provider unless our own code provably caused it; only Superserve's machine probe is set aside. Failures we can't pin on either side count and are marked unclear. Attempts blocked by our own plan limits were rerun."],
   ["Ties", "Medians within each other's 95% confidence intervals are effectively tied. Focus or hover a bar for its interval and attempt count."],
   ["Left out", "Download speed, because the public test host rate-limited several providers. One early run was discarded in full after snapshot timeouts blocked a provider."],
 ] as const;
@@ -321,9 +321,9 @@ export default function Page() {
                 id: "files-10mb",
                 tab: "10 MB file",
                 what: "Write a 10 MB file and read it back",
-                only: providers.flatMap((p) => (p.id === "boxd" ? [] : [p.id])),
+                only: providers.flatMap((p) => (excluded["files-10mb"]?.[p.id] ? [] : [p.id])),
                 notes: {
-                  boxd: "left out: boxd's download cut large files short, so our SDK reads them in 1 MB pieces and the time would measure that workaround",
+                  boxd: `left out: ${excluded["files-10mb"]?.boxd ?? ""}`,
                   boat: "the read takes several calls: a size check, a copy, a signed URL, then the download.",
                 },
               },
@@ -418,7 +418,7 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="reliability" title="Reliability" lede="Every failure the provider returned, kept and listed with its cause. Failures caused by our own code are set aside and listed separately.">
+        <Section id="reliability" title="Reliability" lede="Every failure, listed with its cause. Only failures our own code provably caused are set aside, and they are listed too.">
           <Card>
             <Reliability providers={providers} />
           </Card>
