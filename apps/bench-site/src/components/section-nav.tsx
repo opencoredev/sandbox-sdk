@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useScrollFade } from "@/components/tabs";
+
 /**
  * The section pills in the header. The section under the header is marked
  * current and its pill scrolled into view on narrow screens.
@@ -9,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 export function SectionNav({ sections }: { sections: readonly (readonly [id: string, label: string])[] }) {
   const [current, setCurrent] = useState<string | null>(null);
   const links = useRef(new Map<string, HTMLAnchorElement>());
+  const scroller = useScrollFade<HTMLElement>();
 
   useEffect(() => {
     const update = () => {
@@ -37,7 +40,7 @@ export function SectionNav({ sections }: { sections: readonly (readonly [id: str
   }, [current]);
 
   return (
-    <nav aria-label="Sections" className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none]">
+    <nav ref={scroller} aria-label="Sections" className="scroll-fade min-w-0 flex-1 overflow-x-auto [scrollbar-width:none]">
       <div className="mx-auto flex w-max gap-0.5 rounded-full border border-[var(--line)] bg-[var(--band)] p-1">
         {sections.map(([id, label]) => {
           const active = id === current;

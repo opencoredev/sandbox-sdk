@@ -83,3 +83,22 @@ html {
 body {
   font-family: var(--font-sans);
 }
+
+/* A horizontal scroller that fades out at an edge with more content past it. useScrollFade sets the attributes. */
+@utility scroll-fade {
+  --fade-start: 0px;
+  --fade-end: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-start),
+    #000 calc(100% - var(--fade-end)),
+    transparent
+  );
+  &[data-fade-start] {
+    --fade-start: 28px;
+  }
+  &[data-fade-end] {
+    --fade-end: 36px;
+  }
+}
