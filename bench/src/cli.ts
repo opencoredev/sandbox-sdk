@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { snapshotCleaner, snapshotsFromDaytonaSandbox } from "./snapshots.js";
+import { snapshotCleaner, snapshotsFromSource } from "./snapshots.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseV2 } from "./v2-config.js";
@@ -135,11 +135,11 @@ export async function main() {
           if (errors.length || journal?.resources.some((v) =>
             v.provider === p.name && v.kind === "sandbox" && v.id === resource.id)) continue;
           await attempt(async () => {
-            for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(resource.id))) {
+            for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, resource.id))) {
               const clean = await snapshotCleaner(p.name, p.provider, resource.id);
               await deadline(config["timeout-ms"], () => clean(snapshot.id));
             }
-            if ((await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(resource.id))).length) throw new Error("Source snapshots are still deleting; retry reap");
+            if ((await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, resource.id))).length) throw new Error("Source snapshots are still deleting; retry reap");
             if (journal) journal.resources = journal.resources.filter((v) => v !== resource);
           });
         }

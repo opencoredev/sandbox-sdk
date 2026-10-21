@@ -81,6 +81,10 @@
     "./freestyle": {
       "types": "./dist/providers/freestyle/index.d.ts",
       "import": "./dist/providers/freestyle/index.js"
+    },
+    "./superserve": {
+      "types": "./dist/providers/superserve/index.d.ts",
+      "import": "./dist/providers/superserve/index.js"
     }
   },
   "scripts": {
@@ -105,7 +109,8 @@
     "freestyle": "0.2.20",
     "railway": "3.16.0",
     "vitest": "^3.2.4",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@superserve/sdk": "0.11.4"
   },
   "peerDependencies": {
     "@daytonaio/sdk": "^0.225.0",
@@ -122,7 +127,8 @@
     "@tenkicloud/sandbox": "^1.4.1",
     "@rivet-dev/agentos-core": "0.4.1",
     "@boxd-sh/sdk": "^0.2.17",
-    "freestyle": "^0.2.20"
+    "freestyle": "^0.2.20",
+    "@superserve/sdk": "^0.11.4"
   },
   "peerDependenciesMeta": {
     "vitest": {
@@ -168,6 +174,9 @@
       "optional": true
     },
     "freestyle": {
+      "optional": true
+    },
+    "@superserve/sdk": {
       "optional": true
     }
   },

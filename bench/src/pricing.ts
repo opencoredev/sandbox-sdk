@@ -27,6 +27,16 @@ const base = {
   fixed: null,
 } satisfies Partial<Price>;
 export const pricing: Record<string, Price> = {
+  superserve: {
+    ...base,
+    cpuSecond: 0.0504 / 3600,
+    memoryGiBSecond: 0.0162 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-10-21",
+    source: "https://www.superserve.ai/pricing",
+    notes:
+      "Published vCPU and GiB-hour rates converted to seconds. Credits excluded. One-second rounding assumed; snapshot storage, disk, transfer and any minimum charge excluded. Adapter default superserve/node-22 is 1 vCPU, 1 GiB RAM, 4 GiB disk; resources are template-owned. SDK runtime preparation is included in cold timing.",
+  },
   e2b: {
     ...base,
     cpuSecond: 0.000014,

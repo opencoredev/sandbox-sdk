@@ -16,7 +16,7 @@ import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
 import { deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
-import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromDaytonaSandbox } from "./snapshots.js";
+import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
 export const scenarioNames = [
   "command",
   "files-1kb",
@@ -544,10 +544,11 @@ export async function runV2(
             if (!p.provider.capabilities.has("snapshot") || !p.provider.snapshot)
               throw new Skip("Provider has no snapshot");
             clean = await snapshotCleaner(p.name, p.provider, active.id);
-            if (p.name === "daytona") {
+            if (["daytona","superserve"].includes(p.name)) {
               owned.set(`${p.name}/snapshot-source/${active.id}`, {
                 provider: p.name, id: active.id, kind: "snapshot-source", parent: null,
               });
+              if (p.name === "daytona") {
               snapshotId = `bench-${config.run.slice(0, 25)}-${crypto.randomUUID().slice(0, 8)}`;
               owned.set(`${p.name}/snapshot/${snapshotId}`, {
                 provider: p.name,
@@ -555,6 +556,7 @@ export async function runV2(
                 kind: "snapshot",
                 parent: active.id,
               });
+              }
               await persist();
             }
             return true;
@@ -934,7 +936,7 @@ export async function runV2(
     for (const item of [...owned.values()].filter((v) => v.provider === p.name && v.kind === "snapshot-source")) {
       if (remaining.has(item.id) || errors.length) continue;
       try {
-        for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromDaytonaSandbox(item.id))) {
+        for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, item.id))) {
           const clean = await snapshotCleaner(p.name, p.provider, item.id);
           await deadline(config["timeout-ms"], () => clean(snapshot.id));
         }
@@ -942,7 +944,7 @@ export async function runV2(
         for (;;) {
           const budget = end - Date.now();
           if (budget <= 0) throw new Error("Source snapshots are still deleting");
-          if (!(await deadline(budget, () => snapshotsFromDaytonaSandbox(item.id))).length) break;
+          if (!(await deadline(budget, () => snapshotsFromSource(p.name, item.id))).length) break;
           await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(1000, end - Date.now()))));
         }
         owned.delete(`${p.name}/snapshot-source/${item.id}`);

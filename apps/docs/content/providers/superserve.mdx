@@ -1,0 +1,28 @@
+---
+title: Superserve
+description: Firecracker microVMs with pause, snapshots, and authenticated HTTPS previews.
+---
+
+Install `@opencoredev/sandbox-sdk` and `@superserve/sdk`, then set `SUPERSERVE_API_KEY` on your server.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve());
+console.log((await box.run("node --version")).stdout);
+```
+
+The adapter uses `@superserve/sdk` 0.11.4 or later. Options are `apiKey`, `baseUrl`, `template`, and `requestTimeoutMs` (90,000 by default). The default template is `superserve/node-22`: 1 vCPU, 1 GiB RAM, and 4 GiB disk when checked on October 21, 2026. It includes Node 22; creation installs Python 3, pip, and venv if Python is absent. This setup needs root and package-repository access, and counts toward creation time. Custom templates must provide Python 3, Git, GNU tar, and `nohup`, or permit that setup.
+
+Resources come from the template. Explicit `size`, restricted `network`, `idleTimeoutMs`, and hard sandbox `timeoutMs` requests fail with `unsupported` before allocation. The adapter disables native auto-pause because it is a per-session active-time window, not the SDK's hard lifetime limit. Terminal support is unavailable.
+
+Pause and resume preserve the VM state. Snapshots can be restored with `createSandbox(superserve(), { from: snapshot.id })`. Snapshots persist after sandbox destruction; delete them with native `Snapshot.deleteById(id)`. A snapshot failure reports an `outcome_unknown` recovery name. List snapshots of the reported source sandbox before retrying.
+
+Commands use a guest supervisor and process groups. Output stays on guest disk and is read in bounded pages after completion; it is not streamed live. Timeout, abort, and transport errors trigger a separate cancellation check. A failure to confirm termination returns `outcome_unknown`. Process records use the shared SDK shell shim.
+
+Previews publish individual ports as private and return the required authentication header. Forward the returned headers when fetching a preview. Native preview ports must be between 1024 and 65535, excluding 49983.
+
+Keys are best-effort metadata lookups. Listing uses native metadata without waking VMs; connecting to a paused VM resumes it, following the native SDK. Use a locator for exact get-or-create across clients.
+
+Sources: [sandbox creation](https://docs.superserve.ai/sandbox/create), [SDK reference](https://docs.superserve.ai/sdk-reference/sandbox), [snapshots](https://docs.superserve.ai/sandbox/snapshots), and [pricing](https://www.superserve.ai/pricing).

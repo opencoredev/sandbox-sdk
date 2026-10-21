@@ -131,7 +131,7 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
 });
 
 
-it("reaps late snapshots and waits for asynchronous deletion to disappear", async () => {
+it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out creation", async (name) => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
   const { runV2 } = await import("../src/v2-runner.js");
   const snapshots = await import("../src/snapshots.js");
@@ -143,23 +143,23 @@ it("reaps late snapshots and waits for asynchronous deletion to disappear", asyn
   let queries = 0;
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async (id) => { deleted.push(id); });
   vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
-  vi.spyOn(snapshots, "snapshotsFromDaytonaSandbox").mockImplementation(async () => {
+  vi.spyOn(snapshots, "snapshotsFromSource").mockImplementation(async () => {
     expect(await backing.list({})).toHaveLength(0);
     return ++queries <= 2 ? [{ id: "late-snapshot", name: "late-snapshot" }] : [];
   });
   const provider = { ...backing,
     capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
-    snapshot: async () => ({ id: "unused" }),
+    snapshot: async () => {throw new Error("native timeout");},
   } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "daytona", cloud: false, region: null, provider }],
-      parseV2(["--providers", "daytona", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
+      [{ kind: "ready", name, cloud: false, region: null, provider }],
+      parseV2(["--providers", name, "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
       async () => {},
     );
     expect(deleted).toContain("late-snapshot");
     expect(queries).toBe(3);
-    expect(report.cleanup).toEqual([{ provider: "daytona", remaining: [], error: null }]);
+    expect(report.cleanup).toEqual([{ provider: name, remaining: [], error: null }]);
     expect(JSON.parse(await readFile(resolve(directory, "ownership.json"), "utf8")).resources).toEqual([]);
   } finally {
     vi.restoreAllMocks();
@@ -179,7 +179,7 @@ it("waits for a run-owned Daytona deletion to disappear before snapshot recovery
   let afterDeleteLists = 0;
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
   vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
-  const query = vi.spyOn(snapshots, "snapshotsFromDaytonaSandbox").mockResolvedValue([]);
+  const query = vi.spyOn(snapshots, "snapshotsFromSource").mockResolvedValue([]);
   const provider = { ...backing,
     capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
     snapshot: async () => ({ id: "unused" }),

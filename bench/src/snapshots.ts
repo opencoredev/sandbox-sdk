@@ -22,6 +22,13 @@ export async function snapshotCleaner(
   provider: Provider,
   sandboxId: string,
 ): Promise<(id: string) => Promise<void>> {
+  if (name === "superserve") {
+    const mod: unknown = await import(resolveNative("@superserve/sdk"));
+    const c = member(mod, "Snapshot");
+    return async (id) => {
+      await call(c, "deleteById", id);
+    };
+  }
   if (name === "local") {
     const c = member(provider.native(sandboxId), "client");
     return async (id) => {
@@ -95,4 +102,13 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
     if (page >= data.totalPages) return items;
   }
   throw new Error("Snapshot recovery exceeded pagination bound");
+}
+
+/** Query only a source sandbox already recorded in the run ownership journal. */
+export async function snapshotsFromSource(provider: string, sourceSandboxId: string) {
+  if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
+  const mod: unknown = await import(resolveNative("@superserve/sdk"));
+  return z
+    .array(z.object({ id: z.string(), name: z.string().optional() }))
+    .parse(await call(member(mod, "Snapshot"), "list", sourceSandboxId));
 }

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { MergedSample, Suite } from "./merge.js";
 
-export const cloudProviders = ["e2b", "daytona", "upstash", "boat", "boxd", "freestyle", "tenki"];
+export const cloudProviders = ["e2b", "daytona", "upstash", "boat", "boxd", "freestyle", "tenki", "superserve"];
 export const mainTests = ["cold", "command", "files-1kb", "files-10mb", "reconnect", "pause-resume", "destroy", "cpu-single", "cpu-all", "memory-mbps", "disk-write-mbps", "disk-read-mbps", "disk-4k-write-iops", "disk-4k-read-iops", "tcp-ms"];
 export const workloads = ["git-clone", "npm-install", "pip-install", "dev-server", "preview-first-byte", "edit-loop", "tool-replay"];
 const identity = z.object({ provider: z.enum(cloudProviders), suite: z.enum(["main", "snapshot", "burst"]), scenario: z.string() });
