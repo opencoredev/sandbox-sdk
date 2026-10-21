@@ -138,7 +138,7 @@ const execNotes: Notes = {
 
 const methodRows = [
   ["One SDK", "Every provider ran through Sandbox SDK, our own TypeScript SDK, which we will publish soon. Each adapter uses the provider's official SDK or API, and times include the adapter's own work (noted where it adds calls)."],
-  ["Independent", "No provider paid for, reviewed or saw these results before publishing. We may work with some of these companies; that did not change how tests ran or how results are reported."],
+  ["Independent", "No provider paid for these results or had any say in them. Some may have seen an early copy to check for errors. We may work with some of these companies; that did not change how tests ran or how results are reported."],
   ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call, and the provider strip shows where each sandbox ran."],
   ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
   ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
