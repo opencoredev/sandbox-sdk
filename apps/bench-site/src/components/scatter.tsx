@@ -110,6 +110,10 @@ export function Scatter({
           {points.map((p) => {
             const px = fx(p.x);
             const flip = px > 0.62;
+            // Two points at nearly the same price would print their labels on one line:
+            // the further-right one moves its label below, the other above.
+            const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05 && Math.abs(fx(q.x) - px) < 0.4);
+            const nudge = twin ? (fx(twin.x) < px ? 11 : -11) : 0;
             return (
               <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
                 <span
@@ -118,7 +122,7 @@ export function Scatter({
                 />
                 <span
                   className={`absolute -translate-y-1/2 text-[12.5px] leading-none font-medium whitespace-nowrap ${flip ? "right-3" : "left-3"}`}
-                  style={{ color: providerColor(p.provider) }}
+                  style={{ color: providerColor(p.provider), top: nudge }}
                 >
                   {providerName(p.provider)}
                   <span className="ml-1.5 hidden font-mono text-[11px] font-normal text-[var(--muted)] sm:inline">

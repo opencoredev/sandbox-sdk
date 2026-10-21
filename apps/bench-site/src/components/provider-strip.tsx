@@ -11,7 +11,7 @@ import { sizeOf } from "@/lib/sizes";
  */
 export function ProviderStrip({ providers }: { providers: readonly Provider[] }) {
   return (
-    <ul className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4 lg:grid-cols-7">
+    <ul className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4 lg:grid-cols-8">
       {providers.map((p) => {
         const size = sizeOf(p);
         const price = usdPrice(p, "hourly");

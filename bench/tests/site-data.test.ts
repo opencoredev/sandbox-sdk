@@ -19,6 +19,10 @@ describe("shortReason", () => {
       shortReason("Daytona request failed (invalid_argument). The provider could not complete the operation. Check the sandbox."),
     ).toBe("Daytona request failed (invalid_argument).");
   });
+  it("reads a Python traceback as its final exception", () => {
+    const note = "Guest exit 1: Traceback (most recent call last):\n  File \"<stdin>\", line 42, in <module>\n    q = mp.Queue()\nFileNotFoundError: [Errno 2] No such file or directory\n";
+    expect(shortReason(note)).toBe("FileNotFoundError: [Errno 2] No such file or directory");
+  });
   it("reads an HTML error page as its title", () => {
     expect(shortReason("<html> <head><title>502 Bad Gateway</title></head> <body></body></html>")).toBe("502 Bad Gateway");
   });
@@ -33,8 +37,25 @@ describe("failureReasons", () => {
       "daytona",
     );
     expect(reasons).toEqual([
-      { kind: "provider-operation", reason: "Daytona request failed (invalid_argument).", count: 2, tests: ["CPU, one core", "git clone"] },
+      { kind: "provider-operation", reason: "Daytona request failed (invalid_argument).", count: 2, runs: 1, tests: ["CPU, one core", "git clone"] },
     ]);
+  });
+});
+
+describe("failureReasons runs", () => {
+  it("counts each failing run once, however many derived tests it failed", () => {
+    const fail = (scenario: string, sourceIteration: number) =>
+      sample({
+        scenario,
+        sourceRunId: "r1",
+        iterationNamespace: "iteration",
+        sourceIteration,
+        outcome: { kind: "failure", note: "FileNotFoundError: no /dev/shm" },
+        failureClass: "provider-operation",
+      });
+    const [reason] = failureReasons([fail("cpu-single", 0), fail("cpu-all", 0), fail("cpu-single", 1), fail("cpu-all", 1)], "daytona");
+    expect(reason?.count).toBe(4);
+    expect(reason?.runs).toBe(2);
   });
 });
 

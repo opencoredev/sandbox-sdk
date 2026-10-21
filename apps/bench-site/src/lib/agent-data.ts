@@ -119,7 +119,7 @@ export function agentMarkdown() {
   }
   lines.push("## What failed", "");
   for (const p of d.providers) {
-    lines.push(`- ${p.name}: ${p.failures.length === 0 ? "nothing failed." : p.failures.map((f) => `${f.count}x ${f.reason} (${f.kind}; ${f.tests.join(", ")})`).join("; ")}`);
+    lines.push(`- ${p.name}: ${p.failures.length === 0 ? "nothing failed." : p.failures.map((f) => `${f.reason}: ${f.runs} runs, ${f.count} failed tests (${f.kind}; ${f.tests.join(", ")})`).join("; ")}`);
   }
   return `${lines.join("\n")}\n`;
 }

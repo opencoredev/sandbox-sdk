@@ -117,6 +117,11 @@ function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: stri
   );
 }
 
+// The machine probe runs under Python multiprocessing; Superserve's VMs have no /dev/shm for its locks.
+const machineNotes: Notes = {
+  superserve: "every attempt failed: the VM has no /dev/shm, so Python's multiprocessing could not create a lock",
+};
+
 /** A note for each provider whose bursts did not all finish, counted from the data. */
 function partialBursts(id: string): Notes {
   return Object.fromEntries(
@@ -131,7 +136,7 @@ function partialBursts(id: string): Notes {
 
 function Headline({ marker, title, sub, children }: { marker: string; title: string; sub: string; children: ReactNode }) {
   return (
-    <Card className="!p-5">
+    <Card className="min-w-0 !p-5">
       <h2 className="flex items-center gap-2.5 font-pixel text-[21px] leading-none tracking-tight">
         <span aria-hidden className="size-3 shrink-0" style={{ backgroundColor: marker }} />
         {title}
@@ -374,16 +379,17 @@ export default function Page() {
                 ),
               },
               ...metricTabs([
-                { id: "cpu-single", what: "One core running a fixed Python loop" },
+                { id: "cpu-single", what: "One core running a fixed Python loop", notes: machineNotes },
                 {
                   id: "cpu-all",
                   what: `Every core the sandbox has, so more vCPUs win: Boat has ${size(boat)}, Daytona ${size(daytona)}`,
+                  notes: machineNotes,
                 },
-                { id: "memory", tab: "Memory", what: "Copying 16 MB in memory" },
-                { id: "disk-write", what: "Writing a 64 MB file in order" },
-                { id: "disk-read", what: "Reading that file back, possibly from cache" },
-                { id: "iops-write", tab: "Random write", what: "4 KB writes, each synced to disk" },
-                { id: "iops-read", tab: "Random read", what: "4 KB random reads" },
+                { id: "memory", tab: "Memory", what: "Copying 16 MB in memory", notes: machineNotes },
+                { id: "disk-write", what: "Writing a 64 MB file in order", notes: machineNotes },
+                { id: "disk-read", what: "Reading that file back, possibly from cache", notes: machineNotes },
+                { id: "iops-write", tab: "Random write", what: "4 KB writes, each synced to disk", notes: machineNotes },
+                { id: "iops-read", tab: "Random read", what: "4 KB random reads", notes: machineNotes },
               ]),
             ]}
           />

@@ -1,10 +1,10 @@
 {
- "generatedFrom": "publication-final-v2",
+ "generatedFrom": "publication-final-v3",
  "window": {
   "start": "2026-10-19T20:33:59.760Z",
-  "end": "2026-10-21T17:22:08.656Z"
+  "end": "2026-10-21T19:24:13.765Z"
  },
- "observations": 23544,
+ "observations": 26440,
  "runs": [
   {
    "id": "publication-002",
@@ -130,6 +130,21 @@
    "id": "sbx49-20261021-snapshot-topup-daytona",
    "suite": "snapshot",
    "samples": 11
+  },
+  {
+   "id": "sbx51-20261021-burst",
+   "suite": "burst",
+   "samples": 426
+  },
+  {
+   "id": "sbx51-20261021-main",
+   "suite": "main",
+   "samples": 2140
+  },
+  {
+   "id": "sbx51-20261021-snapshot",
+   "suite": "snapshot",
+   "samples": 330
   }
  ],
  "excluded": [
@@ -247,6 +262,7 @@
      "kind": "provider-operation",
      "reason": "E2B request failed.",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Run a command"
      ]
@@ -315,8 +331,20 @@
    "failureReasons": [
     {
      "kind": "provider-operation",
+     "reason": "Daytona request failed (provider).",
+     "count": 4,
+     "runs": 4,
+     "tests": [
+      "Agent tool replay",
+      "destroy",
+      "Reconnect"
+     ]
+    },
+    {
+     "kind": "provider-operation",
      "reason": "Daytona request failed (invalid_argument).",
      "count": 15,
+     "runs": 1,
      "tests": [
       "Agent tool replay",
       "perf",
@@ -337,18 +365,9 @@
     },
     {
      "kind": "provider-operation",
-     "reason": "Daytona request failed (provider).",
-     "count": 4,
-     "tests": [
-      "Agent tool replay",
-      "destroy",
-      "Reconnect"
-     ]
-    },
-    {
-     "kind": "provider-operation",
      "reason": "Daytona request failed (timeout).",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Cold start"
      ]
@@ -357,6 +376,7 @@
      "kind": "provider-operation",
      "reason": "502 Bad Gateway",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Take snapshot"
      ]
@@ -365,6 +385,7 @@
      "kind": "provider-operation",
      "reason": "Scenario timed out after 600000ms",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Reconnect"
      ]
@@ -426,6 +447,7 @@
      "kind": "provider-operation",
      "reason": "Upstash Box request failed (provider).",
      "count": 4,
+     "runs": 4,
      "tests": [
       "Agent tool replay",
       "Cold start"
@@ -497,6 +519,7 @@
      "kind": "provider-operation",
      "reason": "getaddrinfo ETIMEOUT box-node-4d6db9473f178d1f-3000.on.boat.dev",
      "count": 3,
+     "runs": 1,
      "tests": [
       "Preview URL first byte"
      ]
@@ -559,6 +582,7 @@
      "kind": "provider-operation",
      "reason": "boxd request timed out.",
      "count": 2,
+     "runs": 2,
      "tests": [
       "Write + read 10 MB"
      ]
@@ -620,6 +644,7 @@
      "kind": "provider-operation",
      "reason": "Freestyle request failed.",
      "count": 2,
+     "runs": 2,
      "tests": [
       "Write + read 10 MB"
      ]
@@ -628,6 +653,7 @@
      "kind": "provider-operation",
      "reason": "Preview HTTP 502, no first byte",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Preview URL first byte"
      ]
@@ -694,6 +720,7 @@
      "kind": "provider-operation",
      "reason": "Request deadline exceeded.",
      "count": 2,
+     "runs": 2,
      "tests": [
       "Write + read 10 MB"
      ]
@@ -702,6 +729,7 @@
      "kind": "provider-operation",
      "reason": "Process cancellation could not be confirmed; VM termination was requested.",
      "count": 1,
+     "runs": 1,
      "tests": [
       "Cold start"
      ]
@@ -710,6 +738,81 @@
    "pauseSplit": {
     "pause": 58.07593770499993,
     "resume": 2.908024297000025,
+    "n": 100
+   }
+  },
+  {
+   "id": "superserve",
+   "currency": "USD",
+   "hourly": 0.06612792434692383,
+   "perVcpuHour": 0.06612792434692383,
+   "pricingSource": "https://www.superserve.ai/pricing",
+   "pricingNotes": "Published vCPU and GiB-hour rates converted to seconds. Credits excluded. One-second rounding assumed; snapshot storage, disk, transfer and any minimum charge excluded. Adapter default superserve/node-22 is 1 vCPU, 1 GiB RAM, 4 GiB disk; resources are template-owned. SDK runtime preparation is included in cold timing.",
+   "reliability": {
+    "successes": 1996,
+    "failures": 900,
+    "raw": 0.6892265193370166,
+    "adjusted": 0.6892265193370166,
+    "accountLimit": 0,
+    "clientNetwork": 0,
+    "provider": 900
+   },
+   "hardware": {
+    "fingerprints": 130,
+    "vcpu": 1,
+    "visibleCpus": [
+     1
+    ],
+    "cpuQuota": null,
+    "memoryGiB": 0.9708595275878906,
+    "diskGiB": 3.859100341796875,
+    "cpuModels": [
+     {
+      "value": "Intel Xeon Processor",
+      "count": 130
+     }
+    ],
+    "vendor": "Intel",
+    "arch": "x86_64",
+    "isolation": "VM",
+    "hypervisor": true,
+    "host": null,
+    "kernel": "4.14.336",
+    "location": [
+     {
+      "value": "Washington, US",
+      "count": 130
+     }
+    ],
+    "network": [
+     {
+      "value": "AS396982 Google LLC",
+      "count": 130
+     }
+    ]
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "FileNotFoundError: [Errno 2] No such file or directory",
+     "count": 900,
+     "runs": 100,
+     "tests": [
+      "perf",
+      "CPU, one core",
+      "CPU, all cores",
+      "Memory bandwidth",
+      "Disk write",
+      "Disk read",
+      "4K random write",
+      "4K random read",
+      "TCP connect"
+     ]
+    }
+   ],
+   "pauseSplit": {
+    "pause": 0.6990596169999335,
+    "resume": 0.5370132860001177,
     "n": 100
    }
   }
@@ -820,6 +923,18 @@
      "successes": 99,
      "failures": 1,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 16.657151669999994,
+     "p95": 16.97615436499985,
+     "min": 16.306989960000152,
+     "ciLow": 16.61998105000006,
+     "ciHigh": 16.67893409799994,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -925,6 +1040,18 @@
      "min": 0.45765439300006255,
      "ciLow": 0.648884,
      "ciHigh": 0.6733767260001041,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 0.15272852199990303,
+     "p95": 0.19657187199988402,
+     "min": 0.14154891399999905,
+     "ciLow": 0.15097289600013755,
+     "ciHigh": 0.15397159299999474,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -1036,6 +1163,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 0.07773383700003615,
+     "p95": 0.08608978800009937,
+     "min": 0.068892700000084,
+     "ciLow": 0.07672124399989844,
+     "ciHigh": 0.0782789159999229,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -1143,6 +1282,18 @@
      "ciHigh": 6.695689859000034,
      "successes": 98,
      "failures": 2,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 0.5604478740000631,
+     "p95": 0.7457716309999814,
+     "min": 0.4480350500000641,
+     "ciLow": 0.5327011720000301,
+     "ciHigh": 0.5680109810000286,
+     "successes": 100,
+     "failures": 0,
      "limitFailures": 0
     }
    ]
@@ -1252,6 +1403,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 0.3258641030001454,
+     "p95": 0.39159417300019417,
+     "min": 0.2969357590000145,
+     "ciLow": 0.32286861100001263,
+     "ciHigh": 0.33378249800018966,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -1345,6 +1508,18 @@
      "min": 43.946077384000176,
      "ciLow": 58.068394200000014,
      "ciHigh": 63.297516482000006,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 1.2369178369999863,
+     "p95": 1.567294385000132,
+     "min": 1.1022817309999373,
+     "ciLow": 1.2173163890000434,
+     "ciHigh": 1.315271388000343,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -1456,6 +1631,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 100,
+     "p50": 0.22335989700001666,
+     "p95": 0.36427275799959896,
+     "min": 0.1611707879998721,
+     "ciLow": 0.21804440200002864,
+     "ciHigh": 0.22778457999997773,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -1540,6 +1727,18 @@
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 0.8116077799999621,
+     "p95": 1.036999957,
+     "min": 0.6245202500000014,
+     "ciLow": 0.7445272489999989,
+     "ciHigh": 0.8658373770000181,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -1621,6 +1820,18 @@
      "min": 3.9045566880000115,
      "ciLow": 4.628653296999983,
      "ciHigh": 5.729785526000022,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 1.3108221539999358,
+     "p95": 1.4918926149999971,
+     "min": 1.243151398999995,
+     "ciLow": 1.2841686829999672,
+     "ciHigh": 1.3261849179999845,
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
@@ -1732,6 +1943,18 @@
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 0.7313226550000036,
+     "p95": 1.8098567840000614,
+     "min": 0.5958367119999893,
+     "ciLow": 0.6723607990000164,
+     "ciHigh": 0.8160904790000059,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -1837,6 +2060,18 @@
      "min": 2.9845520850000904,
      "ciLow": 3.9479856230001897,
      "ciHigh": 6.379213342999981,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 1.5596692399999592,
+     "p95": 2.2382520929999883,
+     "min": 1.352187229999996,
+     "ciLow": 1.4510594970000092,
+     "ciHigh": 1.629808788000024,
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
@@ -1948,6 +2183,18 @@
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 4.760295306000044,
+     "p95": 5.071271531999985,
+     "min": 3.606228350999998,
+     "ciLow": 4.374572323000001,
+     "ciHigh": 4.8964594660000875,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -2053,6 +2300,18 @@
      "min": 4.207679287000001,
      "ciLow": 4.909022888000123,
      "ciHigh": 7.339465780999977,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 1.5883706320000348,
+     "p95": 1.6853430020001252,
+     "min": 1.5213145769999974,
+     "ciLow": 1.554097882000031,
+     "ciHigh": 1.6266237119999714,
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
@@ -2164,6 +2423,18 @@
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 0.13854742900002748,
+     "p95": 0.1861207370000193,
+     "min": 0.13165932000000613,
+     "ciLow": 0.13676283999998123,
+     "ciHigh": 0.14246723900000507,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -2269,6 +2540,18 @@
      "min": 0.5580735069999937,
      "ciLow": 0.6184546240000054,
      "ciHigh": 0.6759999579999131,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 0.46268417599995154,
+     "p95": 0.6029865460000001,
+     "min": 0.370065820000018,
+     "ciLow": 0.43460749099997337,
+     "ciHigh": 0.4768944500000216,
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
@@ -2380,6 +2663,18 @@
      "successes": 30,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 30,
+     "p50": 11.246675474999938,
+     "p95": 11.48081096199993,
+     "min": 10.850549100000062,
+     "ciLow": 11.175947868000003,
+     "ciHigh": 11.362065742000006,
+     "successes": 30,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -2476,6 +2771,18 @@
      "successes": 3,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 3,
+     "p50": 19.782,
+     "p95": 29.387,
+     "min": 18.559,
+     "ciLow": 18.559,
+     "ciHigh": 29.387,
+     "successes": 3,
+     "failures": 0,
+     "limitFailures": 0
     }
    ]
   },
@@ -2545,6 +2852,18 @@
      "min": 4.406,
      "ciLow": 4.406,
      "ciHigh": 4.447,
+     "successes": 3,
+     "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 3,
+     "p50": 26.427,
+     "p95": 26.473,
+     "min": 23.933,
+     "ciLow": 23.933,
+     "ciHigh": 26.473,
      "successes": 3,
      "failures": 0,
      "limitFailures": 0
@@ -2656,6 +2975,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
+     "limitFailures": 0
     }
    ]
   },
@@ -2763,6 +3094,18 @@
      "ciHigh": 16512226.027804075,
      "successes": 100,
      "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
      "limitFailures": 0
     }
    ]
@@ -2872,6 +3215,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
+     "limitFailures": 0
     }
    ]
   },
@@ -2979,6 +3334,18 @@
      "ciHigh": 277.47913820624194,
      "successes": 100,
      "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
      "limitFailures": 0
     }
    ]
@@ -3088,6 +3455,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
+     "limitFailures": 0
     }
    ]
   },
@@ -3196,6 +3575,18 @@
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
+     "limitFailures": 0
     }
    ]
   },
@@ -3303,6 +3694,18 @@
      "ciHigh": 320850.2531707575,
      "successes": 100,
      "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
      "limitFailures": 0
     }
    ]
@@ -3519,6 +3922,18 @@
      "ciHigh": 1.308725799999877,
      "successes": 100,
      "failures": 0,
+     "limitFailures": 0
+    },
+    {
+     "provider": "superserve",
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "min": null,
+     "ciLow": null,
+     "ciHigh": null,
+     "successes": 0,
+     "failures": 100,
      "limitFailures": 0
     }
    ]
@@ -4335,6 +4750,108 @@
    10.206,
    11.872,
    12.631
+  ],
+  "superserve": [
+   16.307,
+   16.318,
+   16.331,
+   16.383,
+   16.401,
+   16.412,
+   16.423,
+   16.43,
+   16.436,
+   16.437,
+   16.453,
+   16.457,
+   16.461,
+   16.471,
+   16.475,
+   16.479,
+   16.488,
+   16.502,
+   16.505,
+   16.507,
+   16.509,
+   16.516,
+   16.53,
+   16.53,
+   16.556,
+   16.565,
+   16.567,
+   16.568,
+   16.57,
+   16.574,
+   16.577,
+   16.578,
+   16.581,
+   16.588,
+   16.599,
+   16.607,
+   16.608,
+   16.608,
+   16.615,
+   16.619,
+   16.62,
+   16.622,
+   16.629,
+   16.634,
+   16.635,
+   16.648,
+   16.65,
+   16.651,
+   16.651,
+   16.657,
+   16.659,
+   16.659,
+   16.661,
+   16.662,
+   16.664,
+   16.664,
+   16.667,
+   16.671,
+   16.675,
+   16.679,
+   16.681,
+   16.684,
+   16.685,
+   16.695,
+   16.696,
+   16.698,
+   16.7,
+   16.703,
+   16.708,
+   16.71,
+   16.712,
+   16.716,
+   16.721,
+   16.77,
+   16.775,
+   16.781,
+   16.782,
+   16.789,
+   16.79,
+   16.79,
+   16.791,
+   16.799,
+   16.802,
+   16.804,
+   16.81,
+   16.811,
+   16.824,
+   16.833,
+   16.845,
+   16.857,
+   16.875,
+   16.901,
+   16.913,
+   16.947,
+   16.976,
+   17.02,
+   17.032,
+   17.062,
+   17.171,
+   17.433
   ]
  }
 }

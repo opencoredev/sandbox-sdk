@@ -90,9 +90,9 @@ export function Columns({
                 key={column.provider}
                 tabIndex={0}
                 aria-label={`${providerName(column.provider)}: ${column.detail.join(", ")}`}
-                className="group relative flex h-full flex-1 flex-col items-center justify-end outline-none"
+                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none"
               >
-                <span className="mb-1.5 shrink-0 font-mono text-[11px] whitespace-nowrap text-[var(--foreground)] tabular-nums sm:text-[12px]">
+                <span className={`mb-1.5 shrink-0 font-mono whitespace-nowrap text-[var(--foreground)] tabular-nums ${compact ? "text-[10px] min-[400px]:text-[11px]" : "text-[10px] min-[400px]:text-[11px] sm:text-[12px]"}`}>
                   {column.label}
                 </span>
                 <div
@@ -141,7 +141,7 @@ export function Columns({
       </div>
       <div aria-hidden className={`flex ${compact ? "h-16" : "h-16 sm:h-auto sm:pt-2.5"}`}>
         {columns.map((column) => (
-          <div key={column.provider} className="relative flex-1 px-0.5">
+          <div key={column.provider} className="relative min-w-0 flex-1 px-0.5">
             {compact ? (
               <Name column={column} rotated />
             ) : (

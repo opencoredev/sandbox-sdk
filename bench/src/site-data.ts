@@ -132,10 +132,15 @@ function hardware(r: PublicationReport, provider: string) {
   };
 }
 
-/** The first sentence of a failure note, without HTML or the generic advice that follows it. */
+/** The first sentence of a failure note, without HTML or the generic advice that follows it. For a traceback, its final exception line. */
 export function shortReason(note: string) {
   const title = /<title>([^<]+)<\/title>/i.exec(note)?.[1];
   if (title) return title.trim();
+  // A Python traceback: the last line is the exception that ended it.
+  if (/Traceback \(most recent call last\)/.test(note)) {
+    const last = note.trim().split("\n").filter((l) => l.trim()).at(-1)?.trim();
+    if (last) return last.length > 140 ? `${last.slice(0, 137)}...` : last;
+  }
   const text = note.replace(/\s+/g, " ").trim();
   const first = text.split(/(?<=[.!?])\s/)[0] ?? text;
   return first.length > 140 ? `${first.slice(0, 137)}...` : first;
@@ -146,28 +151,31 @@ const label = (sample: Pick<MergedSample, "suite" | "scenario">) =>
   sample.scenario.replace(/^burst-(\d+)\/.*$/, "$1 at once");
 
 const skipped = new Set(["network-mbps", "snapshot-total"]);
-type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass">;
+type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass"> &
+  Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration">>;
 
 /**
- * Every failure for one provider, grouped by cause: what went wrong, how
- * often, and which tests it hit.
+ * Every failure for one provider, grouped by cause: what went wrong, on how
+ * many runs, and which tests it hit. One run can fail several derived tests
+ * (one machine probe feeds eight metrics), so runs count each sandbox once.
  */
 export function failureReasons(samples: readonly FailureInput[], provider: string) {
-  const groups = new Map<string, { kind: string; reason: string; count: number; tests: Set<string> }>();
+  const groups = new Map<string, { kind: string; reason: string; count: number; runs: Set<string>; tests: Set<string> }>();
   for (const s of samples) {
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
     if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario)) continue;
     const reason = shortReason(s.outcome.note);
     const kind = s.failureClass ?? "provider-operation";
     const key = `${kind}|${reason}`;
-    const group = groups.get(key) ?? { kind, reason, count: 0, tests: new Set<string>() };
+    const group = groups.get(key) ?? { kind, reason, count: 0, runs: new Set<string>(), tests: new Set<string>() };
     group.count += 1;
+    group.runs.add(`${s.sourceRunId}:${s.iterationNamespace}:${s.sourceIteration}`);
     group.tests.add(label(s));
     groups.set(key, group);
   }
   return [...groups.values()]
-    .sort((a, b) => b.count - a.count)
-    .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, tests: [...g.tests] }));
+    .sort((a, b) => b.runs.size - a.runs.size || b.count - a.count)
+    .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, runs: g.runs.size, tests: [...g.tests] }));
 }
 
 /** Median pause and median resume, in seconds, when the samples record them separately. */

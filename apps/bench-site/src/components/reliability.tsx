@@ -30,7 +30,8 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
     <>
       <ChartHead title="Failed attempts" sub="Per 1,000 attempts across every test on this page · Lower is better" />
       <Columns columns={columns} label="Failed attempts per 1,000" />
-      <h4 className="mt-8 mb-3 text-[14px] font-medium">What went wrong</h4>
+      <h4 className="mt-8 text-[14px] font-medium">What went wrong</h4>
+      <p className="mt-1 mb-3 text-[12px] text-[var(--muted)]">Each cause with the number of runs it hit. One run can fail several tests at once.</p>
       <div className="grid gap-x-10 gap-y-5 md:grid-cols-2">
         {ranked.map(({ p }) => (
           <div key={p.id} className="text-[12.5px] leading-snug">
@@ -43,7 +44,7 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
               <ul className="mt-1 flex flex-col gap-1 text-[var(--muted)]">
                 {p.failureReasons.map((f) => (
                   <li key={`${f.kind}${f.reason}`}>
-                    <span className="font-mono text-[var(--foreground)] tabular-nums">{f.count}×</span> {f.reason}{" "}
+                    <span className="font-mono text-[var(--foreground)] tabular-nums">{f.runs}×</span> {f.reason}{" "}
                     <span className="text-[11.5px]">
                       ({kindName[f.kind] ?? f.kind}; {f.tests.length > 3 ? `${f.tests.length} tests` : f.tests.join(", ")})
                     </span>
