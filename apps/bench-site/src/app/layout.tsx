@@ -8,6 +8,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Sandbox SDK bench: cloud sandboxes for agents, measured",
+  icons: {
+    icon: [
+      { url: "/favicon-light.svg", type: "image/svg+xml", media: "(prefers-color-scheme: light)" },
+      { url: "/favicon-dark.svg", type: "image/svg+xml", media: "(prefers-color-scheme: dark)" },
+    ],
+  },
   description:
     "Cold start, commands, files, agent workloads, bursts, hardware, reliability and price for 7 sandbox providers, measured through Sandbox SDK.",
 };

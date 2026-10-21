@@ -13,7 +13,11 @@ type RawProvider = (typeof raw.providers)[number];
 type RawMetric = (typeof raw.metrics)[number];
 type RawValue = RawMetric["values"][number];
 
-export type Provider = Omit<RawProvider, "id"> & { id: ProviderId };
+export type Provider = Omit<RawProvider, "id" | "pauseSplit"> & {
+  id: ProviderId;
+  // Null in data generated before pause and resume were recorded apart (bench/src/site-data.ts pauseSplit).
+  pauseSplit: { pause: number; resume: number; n: number } | null;
+};
 export type MetricValue = Omit<RawValue, "provider"> & { provider: ProviderId };
 export type Metric = Omit<RawMetric, "values" | "unit" | "better"> & {
   // The generator only writes these unit and direction strings (bench/src/site-data.ts).

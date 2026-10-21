@@ -2,7 +2,11 @@ import type { ReactNode } from "react";
 
 import { Columns } from "@/components/columns";
 import type { Column } from "@/components/columns";
-import { AllFailures, OperationFailures } from "@/components/failures";
+import { Lockup } from "@/components/brand";
+import { MachineSizes } from "@/components/machine-sizes";
+import { PauseChart } from "@/components/pause-chart";
+import { SectionNav } from "@/components/section-nav";
+import { StatusBoard } from "@/components/status-board";
 import { ChartHead, Footnotes, MetricChart, Who, metricSubtitle } from "@/components/metric-chart";
 import type { Notes } from "@/components/metric-chart";
 import { Ridgelines } from "@/components/ridgelines";
@@ -15,6 +19,7 @@ import { coldSamples, metric, provider, providers, runWindow, runs, timedOperati
 import type { Provider } from "@/lib/data";
 import { formatCount, formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
+import { advertised } from "@/lib/sizes";
 import type { ProviderId } from "@/lib/providers";
 
 // Reference: Artificial Analysis for structure (short header, three headline
@@ -45,8 +50,9 @@ const end = new Date(runWindow.end);
 const day = start.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 const clock = (d: Date) => d.toISOString().slice(11, 16);
 
+/** The advertised default size, as people know it: "4 vCPU, 8 GB RAM". */
 const size = (p: Provider | undefined) =>
-  p?.hardware ? `${p.hardware.vcpu} vCPU, ${formatGiB(p.hardware.memoryGiB)} RAM` : "size not reported";
+  p ? `${advertised[p.id].vcpu} vCPU, ${formatGiB(advertised[p.id].memoryGiB)} RAM` : "size not reported";
 
 function Section({ id, title, lede, children }: { id: string; title: string; lede: ReactNode; children: ReactNode }) {
   return (
@@ -152,27 +158,15 @@ export default function Page() {
     <>
       <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--background)]/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1200px] items-center gap-4 px-4 py-3 sm:px-6">
-          <a href="#top" className="shrink-0 rounded-full bg-[var(--foreground)] px-3.5 py-1.5 text-[13px] font-semibold text-[var(--background)]">
-            Sandbox bench
+          <a href="#top" className="shrink-0" aria-label="Sandbox SDK bench, back to top">
+            <Lockup />
           </a>
-          <nav aria-label="Sections" className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none]">
-            <div className="mx-auto flex w-max gap-0.5 rounded-full border border-[var(--line)] bg-[var(--band)] p-1">
-              {sections.map(([id, label]) => (
-                <a
-                  key={id}
-                  href={`#${id}`}
-                  className="rounded-full px-3 py-1 text-[13px] whitespace-nowrap text-[var(--muted)] transition-colors duration-150 hover:bg-[var(--chip)] hover:text-[var(--foreground)] motion-reduce:transition-none"
-                >
-                  {label}
-                </a>
-              ))}
-            </div>
-          </nav>
+          <SectionNav sections={sections} />
           <a
-            href="results.md"
+            href="llms.txt"
             className="hidden shrink-0 rounded-full border border-[var(--line)] px-3.5 py-1.5 text-[13px] text-[var(--muted)] transition-colors duration-150 hover:text-[var(--foreground)] motion-reduce:transition-none md:block"
           >
-            Full tables ↗
+            For agents ↗
           </a>
         </div>
       </header>
@@ -313,15 +307,13 @@ export default function Page() {
         <Section id="state" title="Pause and snapshots" lede="Pausing stops paying for idle time while an agent waits on a human. Snapshots start many sandboxes from one prepared state.">
           <TabCard
             label="Pause and snapshots"
-            tabs={metricTabs([
-              {
-                id: "pause-resume",
-                what: "Pause, resume, then run a command",
-                notes: { tenki: "almost all of this is the pause. Resuming takes a couple of seconds." },
-              },
+            tabs={[
+              { id: "pause-resume", label: "Pause + resume", content: <PauseChart /> },
+              ...metricTabs([
               { id: "snapshot", what: "Save a prepared sandbox as a snapshot" },
               { id: "create-from-snapshot", tab: "Start from snapshot", what: "New sandbox from that snapshot, then a command" },
-            ])}
+              ]),
+            ]}
           />
         </Section>
 
@@ -351,17 +343,28 @@ export default function Page() {
         <Section
           id="machines"
           title="Machines"
-          lede="Each provider's default sandbox, read from inside it. Providers chose these sizes, so the speed tests are not like for like."
+          lede="Each provider's default sandbox. Sizes differ a lot, so the speed tests are not like for like."
         >
           <TabCard
             label="Machines"
             tabs={[
               {
-                id: "hardware",
-                label: "Hardware",
+                id: "size",
+                label: "Size",
                 content: (
                   <>
-                    <ChartHead title="What each sandbox was" sub="From nproc, /proc and cgroup limits · Location is where outbound traffic appeared to come from" />
+                    <ChartHead title="Who gives you the biggest machine" sub="Advertised size of each provider's default sandbox · Hover for what we measured inside" />
+                    <MachineSizes providers={providers} />
+                    <Footnotes items={[{ text: <><Who id="e2b" />: {advertised.e2b.note}</> }]} />
+                  </>
+                ),
+              },
+              {
+                id: "details",
+                label: "CPU and region",
+                content: (
+                  <>
+                    <ChartHead title="What it ran on, and where" sub="Read from inside each sandbox · Region is where its traffic came from" />
                     <SpecSheet providers={providers} />
                   </>
                 ),
@@ -382,44 +385,11 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="reliability" title="Reliability" lede="Failures per 1,000 attempts. Nothing was dropped as an outlier.">
-          <TabCard
-            label="Reliability"
-            tabs={[
-              {
-                id: "operation",
-                label: "Operation failures",
-                content: (
-                  <>
-                    <ChartHead title="Operation failures" sub="Calls that failed, per 1,000 attempts · Lower is better" />
-                    <OperationFailures providers={providers} />
-                    <Footnotes items={[{ text: "Includes failures whose cause we could not pin down, so not every one is the provider's fault." }]} />
-                  </>
-                ),
-              },
-              {
-                id: "all",
-                label: "Every failure, by cause",
-                content: (
-                  <>
-                    <ChartHead title="Every failure, by cause" sub="Including our own plan limits and a speed-test host that blocked us · Per 1,000 attempts" />
-                    <AllFailures providers={providers} />
-                    <Footnotes
-                      items={[
-                        {
-                          text: (
-                            <>
-                              <Who id="boat" /> hit its plan&apos;s limit of 200 sandbox starts a day during the run, so it has fewer samples everywhere ({formatCount(coldSamples.boat?.length ?? 0)} cold starts against about 100 for the others).
-                            </>
-                          ),
-                        },
-                      ]}
-                    />
-                  </>
-                ),
-              },
-            ]}
-          />
+        <Section id="reliability" title="Reliability" lede="Every attempt counts. Failures were kept, never dropped as outliers, and each one is listed below with its cause.">
+          <Card>
+            <ChartHead title="Status by provider" sub="One cell per test, coloured by how many attempts failed · Hover a cell for its counts" />
+            <StatusBoard providers={providers} />
+          </Card>
         </Section>
 
         <Section id="cost" title="Cost" lede="From each provider's published prices and the size it gave us. Subscriptions, free credits, snapshot storage and transfer are left out.">
@@ -440,9 +410,9 @@ export default function Page() {
               </p>
               <p>The SDK adds no extra calls: run() is one exec on the provider. Each timer starts right before the call and stops when the result is back.</p>
               <p>
-                No outliers were removed. Failures are kept and classified. Bootstrap confidence intervals for every median are in the{" "}
+                No outliers were removed. Failures are kept and classified. Every number on this page is in the{" "}
                 <a className="text-[var(--foreground)] underline decoration-dotted underline-offset-4" href="results.md">
-                  full tables
+                  results tables
                 </a>
                 .
               </p>

@@ -98,7 +98,9 @@
       "count": 129
      }
     ]
-   }
+   },
+   "failureReasons": [],
+   "pauseSplit": null
   },
   {
    "id": "e2b",
@@ -149,7 +151,18 @@
       "count": 129
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "E2B request failed.",
+     "count": 1,
+     "tests": [
+      "Run a command"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "daytona",
@@ -204,7 +217,82 @@
     "kernel": "6.8.0-85-generic",
     "location": [],
     "network": []
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "Daytona request failed (invalid_argument).",
+     "count": 15,
+     "tests": [
+      "Agent tool replay",
+      "perf",
+      "CPU, one core",
+      "CPU, all cores",
+      "Memory bandwidth",
+      "Disk write",
+      "Disk read",
+      "4K random write",
+      "4K random read",
+      "TCP connect",
+      "git clone",
+      "pip install",
+      "Write + read 1 KB",
+      "npm install",
+      "Write + read 10 MB"
+     ]
+    },
+    {
+     "kind": "provider-account-limit",
+     "reason": "Daytona request failed (invalid_argument).",
+     "count": 15,
+     "tests": [
+      "25 at once"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Daytona request failed (provider).",
+     "count": 4,
+     "tests": [
+      "Agent tool replay",
+      "Reconnect",
+      "destroy"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Daytona request failed (timeout).",
+     "count": 1,
+     "tests": [
+      "Cold start"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Scenario timed out after 600000ms",
+     "count": 1,
+     "tests": [
+      "Reconnect"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "502 Bad Gateway",
+     "count": 1,
+     "tests": [
+      "Take snapshot"
+     ]
+    },
+    {
+     "kind": "provider-account-limit",
+     "reason": "10/25 ready; 25 attempted (budgets may prevent admission)",
+     "count": 1,
+     "tests": [
+      "25 at once, all ready"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "upstash",
@@ -250,7 +338,19 @@
       "count": 127
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "Upstash Box request failed (provider).",
+     "count": 4,
+     "tests": [
+      "Agent tool replay",
+      "Cold start"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "boat",
@@ -305,7 +405,53 @@
       "count": 60
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-account-limit",
+     "reason": "Boat request failed.",
+     "count": 154,
+     "tests": [
+      "Cold start",
+      "cold",
+      "25 at once",
+      "10 at once"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "getaddrinfo ETIMEOUT box-node-4d6db9473f178d1f-3000.on.boat.dev",
+     "count": 3,
+     "tests": [
+      "Preview URL first byte"
+     ]
+    },
+    {
+     "kind": "provider-account-limit",
+     "reason": "0/10 ready; 10 attempted (budgets may prevent admission)",
+     "count": 2,
+     "tests": [
+      "10 at once, all ready"
+     ]
+    },
+    {
+     "kind": "provider-account-limit",
+     "reason": "0/25 ready; 25 attempted (budgets may prevent admission)",
+     "count": 2,
+     "tests": [
+      "25 at once, all ready"
+     ]
+    },
+    {
+     "kind": "provider-account-limit",
+     "reason": "11/25 ready; 25 attempted (budgets may prevent admission)",
+     "count": 1,
+     "tests": [
+      "25 at once, all ready"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "boxd",
@@ -356,7 +502,18 @@
       "count": 101
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "boxd request timed out.",
+     "count": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "freestyle",
@@ -402,7 +559,26 @@
       "count": 130
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "Freestyle request failed.",
+     "count": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Preview HTTP 502, no first byte",
+     "count": 1,
+     "tests": [
+      "Preview URL first byte"
+     ]
+    }
+   ],
+   "pauseSplit": null
   },
   {
    "id": "tenki",
@@ -453,7 +629,34 @@
       "count": 129
      }
     ]
-   }
+   },
+   "failureReasons": [
+    {
+     "kind": "provider-operation",
+     "reason": "Tenki request failed (provider).",
+     "count": 4,
+     "tests": [
+      "Pause + resume"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Request deadline exceeded.",
+     "count": 2,
+     "tests": [
+      "Write + read 10 MB"
+     ]
+    },
+    {
+     "kind": "provider-operation",
+     "reason": "Process cancellation could not be confirmed; VM termination was requested.",
+     "count": 1,
+     "tests": [
+      "Cold start"
+     ]
+    }
+   ],
+   "pauseSplit": null
   }
  ],
  "metrics": [

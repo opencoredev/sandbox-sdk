@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pricing } from "./pricing.js";
 import { hourly } from "./publication-report.js";
-import { reliability, type PublicationReport, type Suite } from "./merge.js";
+import { reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
+import { statistics } from "./stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
@@ -131,6 +132,58 @@ function hardware(r: PublicationReport, provider: string) {
   };
 }
 
+/** The first sentence of a failure note, without HTML or the generic advice that follows it. */
+export function shortReason(note: string) {
+  const title = /<title>([^<]+)<\/title>/i.exec(note)?.[1];
+  if (title) return title.trim();
+  const text = note.replace(/\s+/g, " ").trim();
+  const first = text.split(/(?<=[.!?])\s/)[0] ?? text;
+  return first.length > 140 ? `${first.slice(0, 137)}...` : first;
+}
+
+const label = (sample: Pick<MergedSample, "suite" | "scenario">) =>
+  metricDefs.find((d) => d.suite === sample.suite && d.scenario === sample.scenario)?.label ??
+  sample.scenario.replace(/^burst-(\d+)\/.*$/, "$1 at once");
+
+const skipped = new Set(["network-mbps", "snapshot-total"]);
+type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass">;
+
+/**
+ * Every failure for one provider, grouped by cause: what went wrong, how
+ * often, and which tests it hit.
+ */
+export function failureReasons(samples: readonly FailureInput[], provider: string) {
+  const groups = new Map<string, { kind: string; reason: string; count: number; tests: Set<string> }>();
+  for (const s of samples) {
+    // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
+    if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario)) continue;
+    const reason = shortReason(s.outcome.note);
+    const kind = s.failureClass ?? "provider-operation";
+    const key = `${kind}|${reason}`;
+    const group = groups.get(key) ?? { kind, reason, count: 0, tests: new Set<string>() };
+    group.count += 1;
+    group.tests.add(label(s));
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.count - a.count)
+    .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, tests: [...g.tests] }));
+}
+
+/** Median pause and median resume, in seconds, when the samples record them separately. */
+type PauseInput = Pick<MergedSample, "provider" | "scenario" | "outcome" | "phases">;
+
+export function pauseSplit(samples: readonly PauseInput[], provider: string) {
+  const phase = (key: string) =>
+    samples.flatMap((s) => {
+      const v = s.provider === provider && s.scenario === "pause-resume" && s.outcome.kind === "sample" ? s.phases?.[key] : undefined;
+      return typeof v === "number" ? [v / 1000] : [];
+    });
+  const pause = statistics(phase("pauseMs"));
+  const resume = statistics(phase("resumeReadyMs"));
+  return pause.p50 === null || resume.p50 === null ? null : { pause: pause.p50, resume: resume.p50, n: pause.count };
+}
+
 export function siteData(r: PublicationReport) {
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
   const metrics = metricDefs.map((def) => ({
@@ -180,6 +233,8 @@ export function siteData(r: PublicationReport) {
         provider: rel.classes["provider-operation"],
       },
       hardware: hw,
+      failureReasons: failureReasons(r.samples, name),
+      pauseSplit: pauseSplit(r.samples, name),
     };
   });
   // Raw successful cold starts, for distribution plots.
@@ -207,33 +262,12 @@ export function siteData(r: PublicationReport) {
 }
 export type SiteData = ReturnType<typeof siteData>;
 
-/** The provider the site leaves out: the local Docker reference baseline. */
-export const BASELINE = "local";
-
-/**
- * The full tables as the site publishes them: every table row and note about
- * the baseline is dropped, so the linked tables match the charts. Run logs
- * (flags, budgets, cleanup) are kept verbatim as the record of what ran.
- */
-export function publicTables(markdown: string) {
-  const isBaselineRow = (line: string) => {
-    if (!line.startsWith("|")) return false;
-    const cells = line.split("|").slice(1, 3).map((c) => c.trim());
-    return cells.includes(BASELINE);
-  };
-  const lines = markdown
-    .split("\n")
-    .filter((line) => !isBaselineRow(line) && !line.startsWith(`${BASELINE}: `));
-  return `> These tables leave out the local Docker reference baseline, as the site does. Run logs below still list it.\n\n${lines.join("\n")}`;
-}
-
 export async function siteDataCommand(args: string[]) {
   const { values } = parseArgs({
     args,
     options: {
       report: { type: "string", default: "results/publication-final" },
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
-      public: { type: "string", default: "../apps/bench-site/public" },
     },
   });
   // results.json is written by `bun bench merge`; its shape is PublicationReport by construction.
@@ -241,9 +275,6 @@ export async function siteDataCommand(args: string[]) {
     await readFile(join(values.report, "results.json"), "utf8"),
   );
   await writeFile(values.out, `${JSON.stringify(siteData(report), null, 1)}\n`);
-  // The site links the full tables; the 800 MB JSON and NDJSON stay out of the static export.
-  await mkdir(values.public, { recursive: true });
-  const tables = publicTables(await readFile(join(values.report, "results.md"), "utf8"));
-  await writeFile(join(values.public, "results.md"), tables);
-  process.stdout.write(`Wrote ${values.out} and ${join(values.public, "results.md")}\n`);
+
+  process.stdout.write(`Wrote ${values.out}\n`);
 }

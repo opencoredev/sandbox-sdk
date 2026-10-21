@@ -40,6 +40,12 @@ const isMeasured = (v: MetricValue): v is Measured => v.p50 !== null;
 const missingReason = (v: MetricValue | undefined) =>
   !v ? "not supported" : v.limitFailures > 0 ? "stopped by our plan's limit" : v.failures > 0 ? "failed every attempt" : "not supported";
 
+/** "100 attempts" or "30 attempts, 1 failed": every attempt counts, failed ones included. */
+export const attemptsLine = (v: Pick<MetricValue, "n" | "failures">) => {
+  const attempts = v.n + v.failures;
+  return `${formatCount(attempts)} ${attempts === 1 ? "attempt" : "attempts"}${v.failures ? `, ${formatCount(v.failures)} failed` : ""}`;
+};
+
 const better = (m: Metric) => (m.better === "lower" ? "Lower is better" : "Higher is better");
 
 export const metricSubtitle = (m: Metric, what: string) => `${what} · Median ${unitName[m.unit]} · ${better(m)}`;
@@ -85,7 +91,7 @@ export function MetricChart({
     detail: [
       `median ${formatValue(v.p50, metric.unit)}`,
       ...(v.p95 === null ? [] : [`p95 ${formatValue(v.p95, metric.unit)}`]),
-      `${formatCount(v.n)} ${v.n === 1 ? "run" : "runs"}`,
+      attemptsLine(v),
     ],
   }));
 

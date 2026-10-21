@@ -15,6 +15,12 @@
   --popover: oklch(0.21 0 0);
   --grid: oklch(0.3 0 0);
   --axis: oklch(0.42 0 0);
+  /* Sandbox SDK amber, from apps/web. */
+  --brand: #e8a33c;
+  /* Status board. */
+  --ok: oklch(0.72 0.15 152);
+  --warn: oklch(0.8 0.15 80);
+  --bad: oklch(0.65 0.2 25);
 }
 
 @theme inline {
