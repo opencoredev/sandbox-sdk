@@ -15,6 +15,9 @@ export interface ScatterPoint {
 const INSET = { left: 56, right: 18, top: 14, bottom: 30 };
 const QUADRANT = "oklch(0.8 0.17 152)";
 
+/** The x axis starts here instead of at the first tick when no point sits below it. */
+const X_FLOOR = 2.5;
+
 const median = (xs: readonly number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
@@ -45,7 +48,11 @@ export function Scatter({
   xTitle: string;
   yTitle: string;
 }) {
-  const x0 = xTicks[0];
+  // Empty room left of the fastest point only squeezes the rest together.
+  const trim = xTicks[0] < X_FLOOR && points.every((p) => p.x >= X_FLOOR);
+  // No tick at the floor itself: on a phone it would collide with the next one.
+  const xs = trim ? xTicks.filter((t) => t > X_FLOOR) : xTicks;
+  const x0 = trim ? X_FLOOR : xTicks[0];
   const x1 = xTicks.at(-1) ?? x0 * 10;
   const y0 = yTicks[0];
   const y1 = yTicks.at(-1) ?? y0 + 1;
@@ -98,7 +105,7 @@ export function Scatter({
               </span>
             </div>
           ))}
-          {xTicks.map((t) => (
+          {xs.map((t) => (
             <div key={`x${t}`} className="absolute top-[14px] bottom-[30px] border-l border-dotted border-[var(--grid)]" style={{ left: along(fx(t), "x") }}>
               <span className="absolute -bottom-6 -translate-x-1/2 font-mono whitespace-nowrap text-[11px] text-[var(--muted)] tabular-nums">
                 {t} s
@@ -109,11 +116,14 @@ export function Scatter({
           <div className="absolute top-[14px] bottom-[30px] left-[56px] border-l border-[var(--axis)]" />
           {points.map((p) => {
             const px = fx(p.x);
-            const flip = px > 0.62;
+            // Labels point away from the right edge, and inside the quadrant toward the side
+            // with more room, so they never run over its dashed edge.
+            const inside = px < mx && fy(p.y) < my;
+            const flip = px > 0.62 || (inside && mx - px < px);
             // Two points at nearly the same price print their labels on one line, and on a
             // narrow plot they collide whatever the gap: the further-right label moves below, the other above.
             const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05);
-            const nudge = twin ? (fx(twin.x) < px ? 11 : -11) : 0;
+            const nudge = twin ? (fx(twin.x) < px ? 15 : -15) : 0;
             return (
               <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
                 <span
