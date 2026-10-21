@@ -2,7 +2,8 @@ import { metric, providers, runWindow, runs, timedOperations } from "@/lib/data"
 import type { Metric } from "@/lib/data";
 import { formatGiB, formatValue, unitName } from "@/lib/format";
 import { providerName } from "@/lib/providers";
-import { advertised } from "@/lib/sizes";
+import { advertised, sizeOf } from "@/lib/sizes";
+import { successRate } from "@/lib/status";
 
 /** The metrics agents get, in page order, grouped as on the page. */
 export const groups = [
@@ -39,20 +40,23 @@ export function agentData() {
       "Sandbox SDK bench: seven cloud sandbox providers driven through one open-source SDK from one server in Florida, US. Medians and p95s per provider; every failure kept.",
     run: { start: runWindow.start, end: runWindow.end, runs: runs.map((r) => r.id), timedOperations },
     howToRead:
-      "median and p95 are in `unit`. `better` says which direction wins. Results are sorted best first. attempts counts every try, failed included; failed tries have no time. A null median means the provider does not support the test or every attempt failed.",
-    providers: providers.map((p) => ({
-      id: p.id,
-      name: providerName(p.id),
-      advertisedSize: { vcpu: advertised[p.id].vcpu, memoryGiB: advertised[p.id].memoryGiB, diskGiB: advertised[p.id].diskGiB, source: advertised[p.id].source },
-      sizeNote: advertised[p.id].note,
-      measuredSize: p.hardware ? { vcpu: p.hardware.vcpu, memoryGiB: round(p.hardware.memoryGiB), diskGiB: round(p.hardware.diskGiB) } : null,
-      ranIn: p.hardware?.location[0]?.value ?? null,
-      cpu: p.hardware?.cpuModels[0]?.value ?? null,
-      price: { currency: p.currency, perHour: round(p.hourly), perVcpuHour: round(p.perVcpuHour), source: p.pricingSource },
-      reliability: { attempts: p.reliability.successes + p.reliability.failures, failed: p.reliability.failures, successRateExcludingOurLimits: p.reliability.adjusted },
-      failures: p.failureReasons,
-      pauseSplit: p.pauseSplit,
-    })),
+      "median and p95 are in `unit`. `better` says which direction wins. Results are sorted best first. attempts counts every try, failed included; failed tries have no time. A null median means the provider does not support the test or every attempt failed. size is what the provider advertises for its default sandbox, or what we measured inside where it does not say. reliability.successRate counts every attempt on the site's tests, whatever made it fail.",
+    providers: providers.map((p) => {
+      const rel = successRate(p);
+      return {
+        id: p.id,
+        name: providerName(p.id),
+        size: { ...sizeOf(p), advertisedSource: advertised[p.id].source },
+        sizeNote: advertised[p.id].note,
+        measuredSize: p.hardware ? { vcpu: p.hardware.vcpu, memoryGiB: round(p.hardware.memoryGiB), diskGiB: round(p.hardware.diskGiB) } : null,
+        ranIn: p.hardware?.location[0]?.value ?? null,
+        cpu: p.hardware?.cpuModels[0]?.value ?? null,
+        price: { currency: p.currency, perHour: round(p.hourly), perVcpuHour: round(p.perVcpuHour), source: p.pricingSource },
+        reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: round(rel.rate) },
+        failures: p.failureReasons,
+        pauseSplit: p.pauseSplit,
+      };
+    }),
     metrics: groups.flatMap((g) =>
       g.ids.map((id) => {
         const m = metric(id);
@@ -78,11 +82,11 @@ export function agentMarkdown() {
     "",
     "## Providers",
     "",
-    "| Provider | Advertised size | Ran in | Price per hour | Success rate |",
+    "| Provider | Default size | Ran in | Price per hour | Success rate |",
     "| --- | --- | --- | --- | --- |",
     ...d.providers.map(
       (p) =>
-        `| ${p.name} | ${p.advertisedSize.vcpu} vCPU, ${formatGiB(p.advertisedSize.memoryGiB)} RAM, ${p.advertisedSize.diskGiB === null ? "disk not stated" : `${formatGiB(p.advertisedSize.diskGiB)} disk`} | ${p.ranIn ?? "not reported"} | ${p.price.perHour === null ? "n/a" : `${p.price.currency} ${p.price.perHour}`} | ${p.reliability.successRateExcludingOurLimits === null ? "n/a" : `${(p.reliability.successRateExcludingOurLimits * 100).toFixed(2)}%`} |`,
+        `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHour === null ? "n/a" : `${p.price.currency} ${p.price.perHour}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
     ),
     "",
     ...d.providers.flatMap((p) => (p.sizeNote ? [`Note on ${p.name}: ${p.sizeNote}`, ""] : [])),

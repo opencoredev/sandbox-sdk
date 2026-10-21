@@ -19,7 +19,9 @@ export function SectionNav({ sections }: { sections: readonly (readonly [id: str
         const el = document.getElementById(id);
         if (el && el.getBoundingClientRect().top <= line) found = id;
       }
-      setCurrent(found);
+      // At the bottom the last section may never reach the line; it is the one in view.
+      const bottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      setCurrent(bottom ? (sections.at(-1)?.[0] ?? found) : found);
     };
     update();
     window.addEventListener("scroll", update, { passive: true });

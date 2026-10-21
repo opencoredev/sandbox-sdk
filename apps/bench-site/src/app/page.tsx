@@ -19,7 +19,7 @@ import { coldSamples, metric, provider, providers, runWindow, runs, timedOperati
 import type { Provider } from "@/lib/data";
 import { formatCount, formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
-import { advertised } from "@/lib/sizes";
+import { advertised, sizeOf } from "@/lib/sizes";
 import type { ProviderId } from "@/lib/providers";
 
 // Reference: Artificial Analysis for structure (short header, three headline
@@ -52,7 +52,7 @@ const clock = (d: Date) => d.toISOString().slice(11, 16);
 
 /** The advertised default size, as people know it: "4 vCPU, 8 GB RAM". */
 const size = (p: Provider | undefined) =>
-  p ? `${advertised[p.id].vcpu} vCPU, ${formatGiB(advertised[p.id].memoryGiB)} RAM` : "size not reported";
+  p ? `${sizeOf(p).vcpu ?? "?"} vCPU, ${formatGiB(sizeOf(p).memoryGiB ?? 0)} RAM` : "size not reported";
 
 function Section({ id, title, lede, children }: { id: string; title: string; lede: ReactNode; children: ReactNode }) {
   return (
@@ -387,7 +387,7 @@ export default function Page() {
 
         <Section id="reliability" title="Reliability" lede="Every attempt counts. Failures were kept, never dropped as outliers, and each one is listed below with its cause.">
           <Card>
-            <ChartHead title="Status by provider" sub="One cell per test, coloured by how many attempts failed · Hover a cell for its counts" />
+            <ChartHead title="Status by provider" sub="One cell per test, coloured by how many attempts failed · Point at or tab to a cell for its counts" />
             <StatusBoard providers={providers} />
           </Card>
         </Section>

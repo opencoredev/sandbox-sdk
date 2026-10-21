@@ -3,10 +3,20 @@ import type { Column } from "@/components/columns";
 import { ChartHead, Footnotes, MetricChart, Who } from "@/components/metric-chart";
 import { fillStyle } from "@/lib/dither";
 import { metric, providers } from "@/lib/data";
+import type { Provider } from "@/lib/data";
 import { formatShort, formatValue } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
+import type { ProviderId } from "@/lib/providers";
 
 const what = "Pause, resume, then run a command";
+
+const list = (ps: readonly { id: ProviderId }[]) =>
+  ps.map((p, i) => (
+    <span key={p.id}>
+      {i > 0 ? ", " : ""}
+      <Who id={p.id} />
+    </span>
+  ));
 
 /**
  * Pause and resume as two parts of one column: hatched resume at the
@@ -15,21 +25,31 @@ const what = "Pause, resume, then run a command";
  */
 export function PauseChart() {
   const m = metric("pause-resume");
-  const split = providers.flatMap((p) => (p.pauseSplit ? [{ p, ...p.pauseSplit }] : []));
-  if (split.length === 0) return <MetricChart metric={m} what={what} />;
+  if (!providers.some((p) => p.pauseSplit)) return <MetricChart metric={m} what={what} />;
 
-  const columns: Column[] = split
-    .sort((a, b) => a.pause + a.resume - (b.pause + b.resume))
-    .map(({ p, pause, resume, n }) => ({
+  // Providers with the split get two parts; any with only a total keep one column.
+  const columns: Column[] = providers
+    .flatMap((p): { p: Provider; sum: number; split: Provider["pauseSplit"] }[] => {
+      const total = m.values.find((v) => v.provider === p.id)?.p50 ?? null;
+      if (p.pauseSplit) return [{ p, sum: p.pauseSplit.pause + p.pauseSplit.resume, split: p.pauseSplit }];
+      return total === null ? [] : [{ p, sum: total, split: null }];
+    })
+    .sort((a, b) => a.sum - b.sum)
+    .map(({ p, sum, split: parts }) => ({
       provider: p.id,
-      label: formatShort(pause + resume, "s"),
-      segments: [
-        { value: resume, color: providerColor(p.id), variant: "hatched" },
-        { value: pause, color: providerColor(p.id), variant: "gradient" },
-      ],
-      detail: [`pause ${formatValue(pause, "s")}`, `resume ${formatValue(resume, "s")}`, `${n} attempts`],
+      label: formatShort(sum, "s"),
+      segments: parts
+        ? [
+            { value: parts.resume, color: providerColor(p.id), variant: "hatched" },
+            { value: parts.pause, color: providerColor(p.id), variant: "gradient" },
+          ]
+        : [{ value: sum, color: providerColor(p.id), variant: "gradient" }],
+      detail: parts
+        ? [`pause ${formatValue(parts.pause, "s")}`, `resume ${formatValue(parts.resume, "s")}`, `${parts.n} attempts`]
+        : [`median ${formatValue(sum, "s")}`, "pause and resume not recorded apart"],
     }));
-  const missing = providers.filter((p) => !p.pauseSplit);
+  const unsupported = providers.filter((p) => !p.pauseSplit && !m.values.some((v) => v.provider === p.id && v.p50 !== null));
+  const whole = providers.filter((p) => !p.pauseSplit && !unsupported.includes(p));
 
   return (
     <>
@@ -46,26 +66,12 @@ export function PauseChart() {
       </div>
       <Columns columns={columns} label="Pause and resume by provider" />
       <Footnotes
-        items={
-          missing.length > 0
-            ? [
-                {
-                  text: (
-                    <>
-                      No result for{" "}
-                      {missing.map((p, i) => (
-                        <span key={p.id}>
-                          {i > 0 ? ", " : ""}
-                          <Who id={p.id} />
-                        </span>
-                      ))}{" "}
-                      (no pause support).
-                    </>
-                  ),
-                },
-              ]
-            : []
-        }
+        items={[
+          ...(whole.length > 0
+            ? [{ text: <>{list(whole)}: pause and resume were not recorded apart, so the column is the total.</> }]
+            : []),
+          ...(unsupported.length > 0 ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }] : []),
+        ]}
       />
     </>
   );
