@@ -76,3 +76,36 @@ export function PauseChart() {
     </>
   );
 }
+
+const partText = {
+  pause: { title: "Pause", what: "Pause a running sandbox until the provider confirms" },
+  resume: { title: "Resume", what: "Resume a paused sandbox until a command runs" },
+} as const;
+
+/** One part on its own scale, so fast providers are not flattened by a slow one. */
+export function PausePart({ part }: { part: keyof typeof partText }) {
+  const columns: Column[] = providers
+    .flatMap((p) => (p.pauseSplit ? [{ p, value: p.pauseSplit[part], n: p.pauseSplit.n }] : []))
+    .sort((a, b) => a.value - b.value)
+    .map(({ p, value, n }) => ({
+      provider: p.id,
+      label: formatShort(value, "s"),
+      segments: [{ value, color: providerColor(p.id), variant: "gradient" }],
+      detail: [`median ${formatValue(value, "s")}`, `${n} attempts`],
+    }));
+  const hasTotal = (p: Provider) => metric("pause-resume").values.some((v) => v.provider === p.id && v.p50 !== null);
+  const unsupported = providers.filter((p) => !p.pauseSplit && !hasTotal(p));
+  const unsplit = providers.filter((p) => !p.pauseSplit && hasTotal(p));
+  return (
+    <>
+      <ChartHead title={partText[part].title} sub={`${partText[part].what} · Median seconds · Lower is better`} />
+      <Columns columns={columns} label={`${partText[part].title} by provider`} />
+      <Footnotes
+        items={[
+          ...(unsplit.length > 0 ? [{ text: <>No result for {list(unsplit)}: pause and resume were not recorded apart.</> }] : []),
+          ...(unsupported.length > 0 ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }] : []),
+        ]}
+      />
+    </>
+  );
+}

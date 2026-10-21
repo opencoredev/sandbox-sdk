@@ -1,10 +1,10 @@
 {
- "generatedFrom": "publication-final",
+ "generatedFrom": "publication-final-v2",
  "window": {
   "start": "2026-10-19T20:33:59.760Z",
-  "end": "2026-10-19T23:23:50.920Z"
+  "end": "2026-10-21T17:22:08.656Z"
  },
- "observations": 22016,
+ "observations": 23544,
  "runs": [
   {
    "id": "publication-002",
@@ -40,6 +40,96 @@
    "id": "publication-bursts-002-daytona",
    "suite": "burst",
    "samples": 123
+  },
+  {
+   "id": "sbx49-20261021-burst-1-boat",
+   "suite": "burst",
+   "samples": 41
+  },
+  {
+   "id": "sbx49-20261021-burst-2-boat",
+   "suite": "burst",
+   "samples": 41
+  },
+  {
+   "id": "sbx49-20261021-burst-3-boat",
+   "suite": "burst",
+   "samples": 41
+  },
+  {
+   "id": "sbx49-20261021-burst-daytona",
+   "suite": "burst",
+   "samples": 71
+  },
+  {
+   "id": "sbx49-20261021-edit-topup-boat",
+   "suite": "main",
+   "samples": 8
+  },
+  {
+   "id": "sbx49-20261021-main-topup-boat",
+   "suite": "main",
+   "samples": 720
+  },
+  {
+   "id": "sbx49-20261021-main-topup-daytona",
+   "suite": "main",
+   "samples": 72
+  },
+  {
+   "id": "sbx49-20261021-main-topup-tenki",
+   "suite": "main",
+   "samples": 90
+  },
+  {
+   "id": "sbx49-20261021-main-topup-upstash",
+   "suite": "main",
+   "samples": 54
+  },
+  {
+   "id": "sbx49-20261021-pause-boxd",
+   "suite": "main",
+   "samples": 500
+  },
+  {
+   "id": "sbx49-20261021-pause-daytona",
+   "suite": "main",
+   "samples": 494
+  },
+  {
+   "id": "sbx49-20261021-pause-e2b",
+   "suite": "main",
+   "samples": 5
+  },
+  {
+   "id": "sbx49-20261021-pause-e2b-b",
+   "suite": "main",
+   "samples": 495
+  },
+  {
+   "id": "sbx49-20261021-pause-freestyle",
+   "suite": "main",
+   "samples": 500
+  },
+  {
+   "id": "sbx49-20261021-pause-tenki",
+   "suite": "main",
+   "samples": 500
+  },
+  {
+   "id": "sbx49-20261021-pause-topup-1-daytona",
+   "suite": "main",
+   "samples": 10
+  },
+  {
+   "id": "sbx49-20261021-pause-upstash",
+   "suite": "main",
+   "samples": 500
+  },
+  {
+   "id": "sbx49-20261021-snapshot-topup-daytona",
+   "suite": "snapshot",
+   "samples": 11
   }
  ],
  "excluded": [
@@ -110,16 +200,16 @@
    "pricingSource": "https://e2b.dev/pricing",
    "pricingNotes": "10 GiB Hobby / 20 GiB Pro included disk. Subscription excluded. Per-second billing; no separate creation fee listed.",
    "reliability": {
-    "successes": 2995,
+    "successes": 3195,
     "failures": 1,
-    "raw": 0.9996662216288384,
-    "adjusted": 0.9996662216288384,
+    "raw": 0.9996871088861077,
+    "adjusted": 0.9996871088861077,
     "accountLimit": 0,
     "clientNetwork": 0,
     "provider": 1
    },
    "hardware": {
-    "fingerprints": 130,
+    "fingerprints": 230,
     "vcpu": 2,
     "visibleCpus": [
      2
@@ -130,7 +220,7 @@
     "cpuModels": [
      {
       "value": "Intel Xeon Processor @ 2.60GHz",
-      "count": 130
+      "count": 230
      }
     ],
     "vendor": "Intel",
@@ -142,13 +232,13 @@
     "location": [
      {
       "value": "The Dalles, US",
-      "count": 129
+      "count": 229
      }
     ],
     "network": [
      {
       "value": "AS396982 Google LLC",
-      "count": 129
+      "count": 229
      }
     ]
    },
@@ -162,7 +252,11 @@
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 0.19663980699999956,
+    "resume": 0.6079934479999938,
+    "n": 100
+   }
   },
   {
    "id": "daytona",
@@ -172,16 +266,16 @@
    "pricingSource": "https://www.daytona.io/pricing",
    "pricingNotes": "Hourly published rates converted to seconds. Assumed one-second increment; minimum and creation fee not stated. Snapshot storage excluded.",
    "reliability": {
-    "successes": 2604,
-    "failures": 136,
-    "raw": 0.9503649635036496,
-    "adjusted": 0.9908675799086758,
-    "accountLimit": 16,
-    "clientNetwork": 96,
+    "successes": 2784,
+    "failures": 24,
+    "raw": 0.9914529914529915,
+    "adjusted": 0.9914529914529915,
+    "accountLimit": 0,
+    "clientNetwork": 0,
     "provider": 24
    },
    "hardware": {
-    "fingerprints": 129,
+    "fingerprints": 234,
     "vcpu": 1,
     "visibleCpus": [
      64,
@@ -194,19 +288,19 @@
     "cpuModels": [
      {
       "value": "AMD EPYC 9354P 32-Core Processor",
-      "count": 70
+      "count": 99
      },
      {
       "value": "AMD EPYC 9254 24-Core Processor",
-      "count": 39
+      "count": 90
      },
      {
       "value": "AMD EPYC 9354 32-Core Processor",
-      "count": 17
+      "count": 41
      },
      {
       "value": "AMD EPYC 9275F 24-Core Processor",
-      "count": 3
+      "count": 4
      }
     ],
     "vendor": "AMD",
@@ -242,21 +336,13 @@
      ]
     },
     {
-     "kind": "provider-account-limit",
-     "reason": "Daytona request failed (invalid_argument).",
-     "count": 15,
-     "tests": [
-      "25 at once"
-     ]
-    },
-    {
      "kind": "provider-operation",
      "reason": "Daytona request failed (provider).",
      "count": 4,
      "tests": [
       "Agent tool replay",
-      "Reconnect",
-      "destroy"
+      "destroy",
+      "Reconnect"
      ]
     },
     {
@@ -269,14 +355,6 @@
     },
     {
      "kind": "provider-operation",
-     "reason": "Scenario timed out after 600000ms",
-     "count": 1,
-     "tests": [
-      "Reconnect"
-     ]
-    },
-    {
-     "kind": "provider-operation",
      "reason": "502 Bad Gateway",
      "count": 1,
      "tests": [
@@ -284,15 +362,19 @@
      ]
     },
     {
-     "kind": "provider-account-limit",
-     "reason": "10/25 ready; 25 attempted (budgets may prevent admission)",
+     "kind": "provider-operation",
+     "reason": "Scenario timed out after 600000ms",
      "count": 1,
      "tests": [
-      "25 at once, all ready"
+      "Reconnect"
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 1.021146260999958,
+    "resume": 2.4095534190000034,
+    "n": 100
+   }
   },
   {
    "id": "upstash",
@@ -302,16 +384,16 @@
    "pricingSource": "https://upstash.com/pricing/box",
    "pricingNotes": "PAYG ACTIVE CPU billing: allocated CPU × wall time is an upper-bound estimate, not metered usage. Disk allocated capacity is an upper bound for written data. 30-day month. No RAM fee listed. Increment/minimum unspecified.",
    "reliability": {
-    "successes": 2937,
+    "successes": 3190,
     "failures": 4,
-    "raw": 0.9986399183951037,
-    "adjusted": 0.9986399183951037,
+    "raw": 0.9987476518472135,
+    "adjusted": 0.9987476518472135,
     "accountLimit": 0,
     "clientNetwork": 0,
     "provider": 4
    },
    "hardware": {
-    "fingerprints": 127,
+    "fingerprints": 230,
     "vcpu": 2,
     "visibleCpus": [
      64
@@ -329,13 +411,13 @@
     "location": [
      {
       "value": "Ashburn, US",
-      "count": 127
+      "count": 230
      }
     ],
     "network": [
      {
       "value": "AS14618 Amazon.com, Inc.",
-      "count": 127
+      "count": 230
      }
     ]
    },
@@ -350,7 +432,11 @@
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 0.49929289500007873,
+    "resume": 0.5310447849999181,
+    "n": 100
+   }
   },
   {
    "id": "boat",
@@ -360,16 +446,16 @@
    "pricingSource": "https://docs.boat.dev/machines",
    "pricingNotes": "Default VM $0.036/hour (4 vCPU, 8 GB, 50 GB). Fixed VM rate, resources cannot change the price. $20 monthly minimum/packs excluded; billed per second.",
    "reliability": {
-    "successes": 1463,
-    "failures": 162,
-    "raw": 0.9003076923076923,
-    "adjusted": 0.9979536152796725,
-    "accountLimit": 159,
+    "successes": 2223,
+    "failures": 3,
+    "raw": 0.9986522911051213,
+    "adjusted": 0.9986522911051213,
+    "accountLimit": 0,
     "clientNetwork": 0,
     "provider": 3
    },
    "hardware": {
-    "fingerprints": 60,
+    "fingerprints": 101,
     "vcpu": 4,
     "visibleCpus": [
      4
@@ -380,7 +466,7 @@
     "cpuModels": [
      {
       "value": "AMD Ryzen 9 9950X 16-Core Processor",
-      "count": 60
+      "count": 101
      }
     ],
     "vendor": "AMD",
@@ -392,62 +478,27 @@
     "location": [
      {
       "value": "Lille, FR",
-      "count": 35
+      "count": 65
      },
      {
       "value": "Gravelines, FR",
-      "count": 25
+      "count": 36
      }
     ],
     "network": [
      {
       "value": "AS16276 OVH SAS",
-      "count": 60
+      "count": 101
      }
     ]
    },
    "failureReasons": [
-    {
-     "kind": "provider-account-limit",
-     "reason": "Boat request failed.",
-     "count": 154,
-     "tests": [
-      "Cold start",
-      "cold",
-      "25 at once",
-      "10 at once"
-     ]
-    },
     {
      "kind": "provider-operation",
      "reason": "getaddrinfo ETIMEOUT box-node-4d6db9473f178d1f-3000.on.boat.dev",
      "count": 3,
      "tests": [
       "Preview URL first byte"
-     ]
-    },
-    {
-     "kind": "provider-account-limit",
-     "reason": "0/10 ready; 10 attempted (budgets may prevent admission)",
-     "count": 2,
-     "tests": [
-      "10 at once, all ready"
-     ]
-    },
-    {
-     "kind": "provider-account-limit",
-     "reason": "0/25 ready; 25 attempted (budgets may prevent admission)",
-     "count": 2,
-     "tests": [
-      "25 at once, all ready"
-     ]
-    },
-    {
-     "kind": "provider-account-limit",
-     "reason": "11/25 ready; 25 attempted (budgets may prevent admission)",
-     "count": 1,
-     "tests": [
-      "25 at once, all ready"
      ]
     }
    ],
@@ -461,16 +512,16 @@
    "pricingSource": "https://boxd.sh/pricing",
    "pricingNotes": "EUR; RAM in use and written disk billed, so allocated resources are an upper bound. Metered per second, settled every 15 minutes (not a rounding increment). FX budget uses conservative 2 USD/EUR, not a market quote.",
    "reliability": {
-    "successes": 2775,
-    "failures": 11,
-    "raw": 0.9960516870064609,
-    "adjusted": 0.9992797983435362,
+    "successes": 2975,
+    "failures": 2,
+    "raw": 0.9993281827342962,
+    "adjusted": 0.9993281827342962,
     "accountLimit": 0,
-    "clientNetwork": 9,
+    "clientNetwork": 0,
     "provider": 2
    },
    "hardware": {
-    "fingerprints": 130,
+    "fingerprints": 230,
     "vcpu": 2,
     "visibleCpus": [
      2
@@ -481,7 +532,7 @@
     "cpuModels": [
      {
       "value": "AMD EPYC",
-      "count": 130
+      "count": 230
      }
     ],
     "vendor": "AMD",
@@ -493,13 +544,13 @@
     "location": [
      {
       "value": "Frankfurt am Main, DE",
-      "count": 101
+      "count": 156
      }
     ],
     "network": [
      {
       "value": "AS396356 Latitude.sh",
-      "count": 101
+      "count": 156
      }
     ]
    },
@@ -513,7 +564,11 @@
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 0.1328427049999591,
+    "resume": 0.4245274060000083,
+    "n": 100
+   }
   },
   {
    "id": "freestyle",
@@ -523,16 +578,16 @@
    "pricingSource": "https://www.freestyle.sh/pricing",
    "pricingNotes": "Published overage rates, allowances/subscriptions excluded. $0.02/GB transfer excluded. Billing increment/minimum and creation fees unspecified; one-second estimate.",
    "reliability": {
-    "successes": 2994,
+    "successes": 3193,
     "failures": 3,
-    "raw": 0.998998998998999,
-    "adjusted": 0.998998998998999,
+    "raw": 0.9990613266583229,
+    "adjusted": 0.9990613266583229,
     "accountLimit": 0,
     "clientNetwork": 0,
     "provider": 3
    },
    "hardware": {
-    "fingerprints": 130,
+    "fingerprints": 230,
     "vcpu": 4,
     "visibleCpus": [
      4
@@ -550,13 +605,13 @@
     "location": [
      {
       "value": "San Francisco, US",
-      "count": 130
+      "count": 230
      }
     ],
     "network": [
      {
       "value": "AS36320 Freestyle Cloud, Inc.",
-      "count": 130
+      "count": 230
      }
     ]
    },
@@ -578,7 +633,11 @@
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 0.22339402699999936,
+    "resume": 0.35969062599999596,
+    "n": 100
+   }
   },
   {
    "id": "tenki",
@@ -588,16 +647,16 @@
    "pricingSource": "https://tenki.cloud/pricing",
    "pricingNotes": "Per-second, no minimum. Separate persistent storage $0.000000076/GiB-second excluded. Credits excluded.",
    "reliability": {
-    "successes": 2896,
-    "failures": 55,
-    "raw": 0.981362250084717,
-    "adjusted": 0.9975887013434378,
+    "successes": 3156,
+    "failures": 3,
+    "raw": 0.9990503323836657,
+    "adjusted": 0.9990503323836657,
     "accountLimit": 0,
-    "clientNetwork": 48,
-    "provider": 7
+    "clientNetwork": 0,
+    "provider": 3
    },
    "hardware": {
-    "fingerprints": 129,
+    "fingerprints": 234,
     "vcpu": 2,
     "visibleCpus": [
      2
@@ -608,7 +667,7 @@
     "cpuModels": [
      {
       "value": "AMD EPYC 7B13 64-Core Processor",
-      "count": 129
+      "count": 234
      }
     ],
     "vendor": "AMD",
@@ -620,25 +679,17 @@
     "location": [
      {
       "value": "Seattle, US",
-      "count": 129
+      "count": 234
      }
     ],
     "network": [
      {
       "value": "AS19538 Luxor",
-      "count": 129
+      "count": 234
      }
     ]
    },
    "failureReasons": [
-    {
-     "kind": "provider-operation",
-     "reason": "Tenki request failed (provider).",
-     "count": 4,
-     "tests": [
-      "Pause + resume"
-     ]
-    },
     {
      "kind": "provider-operation",
      "reason": "Request deadline exceeded.",
@@ -656,7 +707,11 @@
      ]
     }
    ],
-   "pauseSplit": null
+   "pauseSplit": {
+    "pause": 58.07593770499993,
+    "resume": 2.908024297000025,
+    "n": 100
+   }
   }
  ],
  "metrics": [
@@ -701,7 +756,7 @@
      "p95": 27.12756140000001,
      "min": 7.301775653999997,
      "ciLow": 8.8650497819999,
-     "ciHigh": 13.360119295000098,
+     "ciHigh": 13.724029589000159,
      "successes": 99,
      "failures": 1,
      "limitFailures": 0
@@ -720,15 +775,15 @@
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 9.808618520000019,
-     "p95": 17.120816091999878,
+     "n": 100,
+     "p50": 7.832764922000003,
+     "p95": 16.83516568399989,
      "min": 5.471624224999919,
-     "ciLow": 9.530041925000027,
-     "ciHigh": 10.511328292000108,
-     "successes": 60,
-     "failures": 40,
-     "limitFailures": 40
+     "ciLow": 6.985145004000049,
+     "ciHigh": 9.520989525000099,
+     "successes": 100,
+     "failures": 0,
+     "limitFailures": 0
     },
     {
      "provider": "boxd",
@@ -804,37 +859,37 @@
     },
     {
      "provider": "daytona",
-     "n": 97,
-     "p50": 1.6153534099999962,
-     "p95": 6.059445617000107,
+     "n": 100,
+     "p50": 1.6062082670000382,
+     "p95": 5.969802019000054,
      "min": 1.382574253999992,
-     "ciLow": 1.563498243000009,
-     "ciHigh": 1.9246420899997465,
-     "successes": 97,
+     "ciLow": 1.559959536999988,
+     "ciHigh": 1.7809945030000527,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 0.2350760190000292,
-     "p95": 2.3129053830001505,
+     "n": 100,
+     "p50": 0.22949010100006126,
+     "p95": 1.5430791650000029,
      "min": 0.2067455899999477,
-     "ciLow": 0.22595176400011405,
-     "ciHigh": 0.30119298100000014,
-     "successes": 97,
+     "ciLow": 0.22574837099993603,
+     "ciHigh": 0.2995032999999821,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 0.345565476000309,
-     "p95": 4.304054829999805,
+     "n": 100,
+     "p50": 0.34601658400002633,
+     "p95": 4.168706593999639,
      "min": 0.3095469440002926,
-     "ciLow": 0.3383641380001791,
-     "ciHigh": 0.359455359000247,
-     "successes": 60,
+     "ciLow": 0.34169848899997307,
+     "ciHigh": 0.35277250700024887,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -864,13 +919,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 0.6650512129999697,
-     "p95": 2.787674705000012,
+     "n": 100,
+     "p50": 0.6626422629998997,
+     "p95": 0.7820667930000927,
      "min": 0.45765439300006255,
-     "ciLow": 0.6472263370000292,
-     "ciHigh": 0.673562542000087,
-     "successes": 97,
+     "ciLow": 0.648884,
+     "ciHigh": 0.6733767260001041,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -912,37 +967,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 0.280295019000303,
+     "n": 99,
+     "p50": 0.2792812979998998,
      "p95": 4.052731704000151,
      "min": 0.15918743699998594,
-     "ciLow": 0.26242171799996866,
-     "ciHigh": 0.31286461800010873,
-     "successes": 96,
+     "ciLow": 0.2599950730004348,
+     "ciHigh": 0.3035908370000543,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 0.3429235059999628,
-     "p95": 1.881000812000013,
+     "n": 100,
+     "p50": 0.33859424700005913,
+     "p95": 1.5256518639998977,
      "min": 0.25880068699992265,
-     "ciLow": 0.3311145300000208,
-     "ciHigh": 0.3679485219998751,
-     "successes": 97,
+     "ciLow": 0.32914418599987405,
+     "ciHigh": 0.36617265800002496,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 1.5688192050000653,
-     "p95": 5.54733290599985,
+     "n": 100,
+     "p50": 1.5646155670000008,
+     "p95": 5.472221608000342,
      "min": 1.3577516439999453,
-     "ciLow": 1.5465326820001937,
-     "ciHigh": 1.693274418000001,
-     "successes": 60,
+     "ciLow": 1.536918677999638,
+     "ciHigh": 1.5875542109999805,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -972,13 +1027,13 @@
     },
     {
      "provider": "tenki",
-     "n": 96,
-     "p50": 0.4259322440000251,
-     "p95": 0.5053411280000583,
+     "n": 100,
+     "p50": 0.42582046799967066,
+     "p95": 0.5033036879999563,
      "min": 0.3391499429999385,
      "ciLow": 0.4188099350002594,
-     "ciHigh": 0.43702874799992425,
-     "successes": 96,
+     "ciHigh": 0.4366461060000584,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -1020,37 +1075,37 @@
     },
     {
      "provider": "daytona",
-     "n": 95,
-     "p50": 1.1069490290000104,
+     "n": 99,
+     "p50": 1.0970418549999594,
      "p95": 6.180167422000319,
      "min": 0.5320124369999976,
      "ciLow": 0.9908215020000934,
-     "ciHigh": 1.3891451269998216,
-     "successes": 95,
+     "ciHigh": 1.2944529769998043,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 3.147525137999997,
-     "p95": 8.488363957999972,
+     "n": 100,
+     "p50": 3.1118921649996194,
+     "p95": 8.442243878999959,
      "min": 2.1551283850001637,
-     "ciLow": 2.901897302999976,
-     "ciHigh": 3.7868153869999808,
-     "successes": 97,
+     "ciLow": 2.9014534100000167,
+     "ciHigh": 3.5164108479999996,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 12.797221947000013,
+     "n": 100,
+     "p50": 11.231036580000072,
      "p95": 32.38683079099981,
      "min": 6.26192510699993,
-     "ciLow": 12.03604013800004,
-     "ciHigh": 15.494958446000238,
-     "successes": 60,
+     "ciLow": 9.931319878000009,
+     "ciHigh": 12.797221947000013,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -1080,13 +1135,13 @@
     },
     {
      "provider": "tenki",
-     "n": 93,
-     "p50": 6.5775370189999816,
+     "n": 98,
+     "p50": 6.510651119000046,
      "p95": 21.241826654999983,
      "min": 5.758362450000131,
-     "ciLow": 6.4674809090000345,
-     "ciHigh": 7.199776167000004,
-     "successes": 93,
+     "ciLow": 6.439671156999888,
+     "ciHigh": 6.695689859000034,
+     "successes": 98,
      "failures": 2,
      "limitFailures": 0
     }
@@ -1128,37 +1183,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
+     "n": 97,
      "p50": 1.8512698670000536,
      "p95": 8.522418276000069,
      "min": 1.5576821499999933,
-     "ciLow": 1.8017868629996665,
+     "ciLow": 1.8052020789999805,
      "ciHigh": 1.9872458740000147,
-     "successes": 96,
+     "successes": 97,
      "failures": 3,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 0.5602719669998624,
-     "p95": 2.7379290409998505,
+     "n": 100,
+     "p50": 0.554766054000007,
+     "p95": 2.5441908990000375,
      "min": 0.4584986350000836,
      "ciLow": 0.5303920010000002,
-     "ciHigh": 0.5755880370000377,
-     "successes": 97,
+     "ciHigh": 0.5749519489999803,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 1.2360009419997222,
-     "p95": 5.602056442999746,
+     "n": 100,
+     "p50": 1.2240313360000727,
+     "p95": 5.426865853999741,
      "min": 1.0759113270002418,
-     "ciLow": 1.1772572789997795,
-     "ciHigh": 1.3778104960001074,
-     "successes": 60,
+     "ciLow": 1.1991203849999001,
+     "ciHigh": 1.2473724269999658,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -1188,13 +1243,13 @@
     },
     {
      "provider": "tenki",
-     "n": 98,
+     "n": 100,
      "p50": 1.2679107920000023,
-     "p95": 5.139802849999862,
+     "p95": 4.881282713000197,
      "min": 1.0739521109999624,
-     "ciLow": 1.2523091539996676,
+     "ciLow": 1.2544078229999869,
      "ciHigh": 1.2911995659999957,
-     "successes": 98,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -1225,59 +1280,47 @@
     {
      "provider": "e2b",
      "n": 100,
-     "p50": 0.961524693000014,
-     "p95": 3.7668757460000926,
-     "min": 0.7638687459999929,
-     "ciLow": 0.92140434499993,
-     "ciHigh": 1.0757749939999777,
+     "p50": 0.8086555069999886,
+     "p95": 1.0551767609999516,
+     "min": 0.768283058000001,
+     "ciLow": 0.805269484000004,
+     "ciHigh": 0.8174055599999847,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "daytona",
-     "n": 97,
-     "p50": 5.039462263999972,
-     "p95": 13.68691806200007,
-     "min": 2.957363446000032,
-     "ciLow": 4.489540627999988,
-     "ciHigh": 6.208574268999997,
-     "successes": 97,
+     "n": 100,
+     "p50": 3.6418218409999974,
+     "p95": 6.2333338249999795,
+     "min": 2.7975616170000284,
+     "ciLow": 3.3949385379999986,
+     "ciHigh": 4.055022139999999,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 1.7773727559999097,
-     "p95": 11.797419778000098,
-     "min": 0.791511060000048,
-     "ciLow": 1.4314198999998626,
-     "ciHigh": 2.469018486000132,
-     "successes": 97,
-     "failures": 0,
-     "limitFailures": 0
-    },
-    {
-     "provider": "boat",
-     "n": 0,
-     "p50": null,
-     "p95": null,
-     "min": null,
-     "ciLow": null,
-     "ciHigh": null,
-     "successes": 0,
+     "n": 100,
+     "p50": 1.0745954259999853,
+     "p95": 4.397493107000017,
+     "min": 0.7147508679999992,
+     "ciLow": 0.9847680459999829,
+     "ciHigh": 1.292721419999958,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boxd",
      "n": 100,
-     "p50": 0.540912427000003,
-     "p95": 3.851048183000181,
-     "min": 0.4748828329993412,
-     "ciLow": 0.5374578050002455,
-     "ciHigh": 0.6551694789999966,
+     "p50": 0.5578916840000311,
+     "p95": 0.5688063069999917,
+     "min": 0.49916705300001196,
+     "ciLow": 0.5558540290000092,
+     "ciHigh": 0.5596455549999956,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -1285,25 +1328,25 @@
     {
      "provider": "freestyle",
      "n": 100,
-     "p50": 0.6451666149999946,
-     "p95": 3.5765132349999624,
-     "min": 0.4786910259999568,
-     "ciLow": 0.5893806170000462,
-     "ciHigh": 0.7211305230000289,
+     "p50": 0.639697616999998,
+     "p95": 2.045074299,
+     "min": 0.48062763900001304,
+     "ciLow": 0.6014132570000001,
+     "ciHigh": 0.7733650450000132,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "tenki",
-     "n": 95,
-     "p50": 64.2108465760001,
-     "p95": 92.82431284599996,
-     "min": 44.21546311899999,
-     "ciLow": 60.65490343800001,
-     "ciHigh": 67.15798587099975,
-     "successes": 95,
-     "failures": 4,
+     "n": 100,
+     "p50": 61.01945982599957,
+     "p95": 87.52560549699982,
+     "min": 43.946077384000176,
+     "ciLow": 58.068394200000014,
+     "ciHigh": 63.297516482000006,
+     "successes": 100,
+     "failures": 0,
      "limitFailures": 0
     }
    ]
@@ -1344,37 +1387,37 @@
     },
     {
      "provider": "daytona",
-     "n": 99,
-     "p50": 1.0727792649999028,
-     "p95": 4.837868256999995,
+     "n": 100,
+     "p50": 1.0674725719999987,
+     "p95": 4.529152753000147,
      "min": 0.4217992989998311,
-     "ciLow": 0.9741184060000815,
-     "ciHigh": 1.3138514190000714,
-     "successes": 99,
+     "ciLow": 0.9727990649999702,
+     "ciHigh": 1.311822386999993,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 98,
-     "p50": 0.7832001670000609,
-     "p95": 7.119467372000101,
+     "n": 100,
+     "p50": 0.7639451639999989,
+     "p95": 6.7576911580001475,
      "min": 0.29410737299988976,
-     "ciLow": 0.6102958289999515,
-     "ciHigh": 1.1906410439999309,
-     "successes": 98,
+     "ciLow": 0.605568313000258,
+     "ciHigh": 1.0947465039999225,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 0.18425222699996086,
-     "p95": 1.471264259000076,
+     "n": 100,
+     "p50": 0.19110286099999213,
+     "p95": 0.7630430439999327,
      "min": 0.16661627899995074,
-     "ciLow": 0.17740596499992534,
-     "ciHigh": 0.189420361999888,
-     "successes": 60,
+     "ciLow": 0.1858334360001609,
+     "ciHigh": 0.19222986100008713,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -1404,13 +1447,13 @@
     },
     {
      "provider": "tenki",
-     "n": 99,
+     "n": 100,
      "p50": 0.12624279599986038,
-     "p95": 0.2087829690000508,
+     "p95": 0.1796321720001288,
      "min": 0.11301954199996544,
      "ciLow": 0.12487027900014074,
      "ciHigh": 0.1288848809999181,
-     "successes": 99,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -1471,18 +1514,6 @@
      "ciLow": 2.091392611999996,
      "ciHigh": 3.1860892860000023,
      "successes": 30,
-     "failures": 0,
-     "limitFailures": 0
-    },
-    {
-     "provider": "boxd",
-     "n": 0,
-     "p50": null,
-     "p95": null,
-     "min": null,
-     "ciLow": null,
-     "ciHigh": null,
-     "successes": 0,
      "failures": 0,
      "limitFailures": 0
     },
@@ -1548,13 +1579,13 @@
     },
     {
      "provider": "daytona",
-     "n": 29,
-     "p50": 8.849719486999994,
+     "n": 30,
+     "p50": 8.651776064000092,
      "p95": 14.379270431000005,
      "min": 6.934889842000092,
-     "ciLow": 7.831753940999974,
-     "ciHigh": 10.433397769999981,
-     "successes": 29,
+     "ciLow": 7.8246880750000125,
+     "ciHigh": 10.320892481999996,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     },
@@ -1632,13 +1663,13 @@
     },
     {
      "provider": "daytona",
-     "n": 30,
-     "p50": 2.1608457500000076,
+     "n": 29,
+     "p50": 2.263173216999974,
      "p95": 5.410628031000029,
      "min": 1.6226908820000245,
-     "ciLow": 1.777861140999943,
-     "ciHigh": 2.970129281000234,
-     "successes": 30,
+     "ciLow": 1.7842230280004443,
+     "ciHigh": 3.108762743999949,
+     "successes": 29,
      "failures": 1,
      "limitFailures": 0
     },
@@ -1740,13 +1771,13 @@
     },
     {
      "provider": "daytona",
-     "n": 30,
-     "p50": 4.629261604,
+     "n": 29,
+     "p50": 4.985691295000026,
      "p95": 14.273185830000322,
      "min": 3.1832085430000006,
-     "ciLow": 3.615430947999936,
-     "ciHigh": 6.235350647000014,
-     "successes": 30,
+     "ciLow": 3.6922734810000404,
+     "ciHigh": 6.237414228999987,
+     "successes": 29,
      "failures": 1,
      "limitFailures": 0
     },
@@ -1800,13 +1831,13 @@
     },
     {
      "provider": "tenki",
-     "n": 31,
+     "n": 30,
      "p50": 4.947189476999978,
      "p95": 11.454347725,
      "min": 2.9845520850000904,
      "ciLow": 3.9479856230001897,
-     "ciHigh": 6.391290054999757,
-     "successes": 31,
+     "ciHigh": 6.379213342999981,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     }
@@ -1848,13 +1879,13 @@
     },
     {
      "provider": "daytona",
-     "n": 30,
-     "p50": 6.284562223999994,
+     "n": 29,
+     "p50": 6.332608696000185,
      "p95": 9.815697190999986,
      "min": 4.9756666160000025,
-     "ciLow": 5.61060749200001,
-     "ciHigh": 6.678272874000017,
-     "successes": 30,
+     "ciLow": 5.763264356999993,
+     "ciHigh": 6.809442900000009,
+     "successes": 29,
      "failures": 1,
      "limitFailures": 0
     },
@@ -2016,13 +2047,13 @@
     },
     {
      "provider": "tenki",
-     "n": 31,
+     "n": 30,
      "p50": 6.229433217999991,
      "p95": 15.83437830099999,
      "min": 4.207679287000001,
      "ciLow": 4.909022888000123,
      "ciHigh": 7.339465780999977,
-     "successes": 31,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2088,13 +2119,13 @@
     },
     {
      "provider": "boat",
-     "n": 29,
+     "n": 27,
      "p50": 1.0045108489999548,
-     "p95": 3.5012979660001586,
+     "p95": 3.4724384749999735,
      "min": 0.8293423889999977,
      "ciLow": 0.9312510480000638,
      "ciHigh": 1.2792939670000014,
-     "successes": 29,
+     "successes": 27,
      "failures": 3,
      "limitFailures": 0
     },
@@ -2112,25 +2143,25 @@
     },
     {
      "provider": "freestyle",
-     "n": 30,
-     "p50": 0.36133261300000596,
+     "n": 29,
+     "p50": 0.3634806619999581,
      "p95": 0.6042517280000029,
      "min": 0.10272193400000106,
      "ciLow": 0.35213225800002695,
-     "ciHigh": 0.3778222010000609,
-     "successes": 30,
+     "ciHigh": 0.38027871800004504,
+     "successes": 29,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "tenki",
-     "n": 31,
+     "n": 30,
      "p50": 0.3542297549999785,
      "p95": 0.5358959379997105,
      "min": 0.30631889500003306,
      "ciLow": 0.3475118710000534,
      "ciHigh": 0.3652304520000471,
-     "successes": 31,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2196,13 +2227,13 @@
     },
     {
      "provider": "boat",
-     "n": 29,
+     "n": 30,
      "p50": 2.161249038000009,
      "p95": 8.783319382000016,
      "min": 1.64835310699977,
      "ciLow": 1.9651523299999536,
-     "ciHigh": 4.235769778999965,
-     "successes": 29,
+     "ciHigh": 4.067641454999917,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2232,13 +2263,13 @@
     },
     {
      "provider": "tenki",
-     "n": 31,
+     "n": 30,
      "p50": 0.64309876600001,
      "p95": 3.238663650000002,
      "min": 0.5580735069999937,
-     "ciLow": 0.6224241209999891,
+     "ciLow": 0.6184546240000054,
      "ciHigh": 0.6759999579999131,
-     "successes": 31,
+     "successes": 30,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2280,13 +2311,13 @@
     },
     {
      "provider": "daytona",
-     "n": 29,
+     "n": 28,
      "p50": 90.77810562500008,
      "p95": 207.98307376999992,
      "min": 54.911563586999996,
      "ciLow": 78.08082561099995,
      "ciHigh": 114.45653145300015,
-     "successes": 29,
+     "successes": 28,
      "failures": 2,
      "limitFailures": 0
     },
@@ -2376,13 +2407,13 @@
     },
     {
      "provider": "daytona",
-     "n": 4,
-     "p50": 13.327,
+     "n": 3,
+     "p50": 13.67,
      "p95": 25.211000000000002,
-     "min": 9.635,
-     "ciLow": 9.635,
+     "min": 13.327,
+     "ciLow": 13.327,
      "ciHigh": 25.211000000000002,
-     "successes": 4,
+     "successes": 3,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2400,15 +2431,15 @@
     },
     {
      "provider": "boat",
-     "n": 1,
-     "p50": 96.471,
-     "p95": 96.471,
-     "min": 96.471,
-     "ciLow": 96.471,
-     "ciHigh": 96.471,
-     "successes": 1,
-     "failures": 2,
-     "limitFailures": 2
+     "n": 3,
+     "p50": 8.242,
+     "p95": 10.322000000000001,
+     "min": 7.36,
+     "ciLow": 7.36,
+     "ciHigh": 10.322000000000001,
+     "successes": 3,
+     "failures": 0,
+     "limitFailures": 0
     },
     {
      "provider": "boxd",
@@ -2471,18 +2502,6 @@
      "limitFailures": 0
     },
     {
-     "provider": "daytona",
-     "n": 0,
-     "p50": null,
-     "p95": null,
-     "min": null,
-     "ciLow": null,
-     "ciHigh": null,
-     "successes": 0,
-     "failures": 1,
-     "limitFailures": 1
-    },
-    {
      "provider": "upstash",
      "n": 3,
      "p50": 13.535,
@@ -2493,18 +2512,6 @@
      "successes": 3,
      "failures": 0,
      "limitFailures": 0
-    },
-    {
-     "provider": "boat",
-     "n": 0,
-     "p50": null,
-     "p95": null,
-     "min": null,
-     "ciLow": null,
-     "ciHigh": null,
-     "successes": 0,
-     "failures": 3,
-     "limitFailures": 3
     },
     {
      "provider": "boxd",
@@ -2561,7 +2568,7 @@
      "p95": 26998173.928929027,
      "min": 22780366.528757855,
      "ciLow": 25873389.858676843,
-     "ciHigh": 26218026.421598915,
+     "ciHigh": 26226039.40569669,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -2580,37 +2587,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 8591417.814371472,
+     "n": 99,
+     "p50": 8593362.587456487,
      "p95": 9629015.263802547,
      "min": 5955949.875320427,
-     "ciLow": 8475346.818173897,
-     "ciHigh": 8766122.79008852,
-     "successes": 96,
+     "ciLow": 8502176.890588142,
+     "ciHigh": 8802017.874786258,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 14032453.695768377,
-     "p95": 14090694.251594028,
+     "n": 100,
+     "p50": 14025909.026248995,
+     "p95": 14088519.930503542,
      "min": 9232682.401982969,
-     "ciLow": 14021516.711731523,
-     "ciHigh": 14049224.697363002,
-     "successes": 97,
+     "ciLow": 14019069.082072414,
+     "ciHigh": 14046213.91967833,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 18299915.187215872,
-     "p95": 21312976.542159922,
+     "n": 100,
+     "p50": 18039553.99510595,
+     "p95": 21461175.553055085,
      "min": 7595712.029150003,
      "ciLow": 17664156.584117945,
-     "ciHigh": 18906613.166503176,
-     "successes": 60,
+     "ciHigh": 19018916.06176393,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2621,7 +2628,7 @@
      "p95": 12938668.414618265,
      "min": 8187880.6154622035,
      "ciLow": 12151381.716586722,
-     "ciHigh": 12543820.10949051,
+     "ciHigh": 12511064.62730527,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -2640,13 +2647,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 11111454.94891143,
-     "p95": 20706286.461699825,
+     "n": 100,
+     "p50": 11106649.323264409,
+     "p95": 20696207.16340469,
      "min": 7517143.107957657,
-     "ciLow": 10973628.012555717,
-     "ciHigh": 11257068.383594718,
-     "successes": 97,
+     "ciLow": 10939971.784062224,
+     "ciHigh": 11256266.419797035,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2668,7 +2675,7 @@
      "p50": 44811992.6026992,
      "p95": 47831968.03486069,
      "min": 31230010.38523911,
-     "ciLow": 44346345.59323808,
+     "ciLow": 44375942.8319438,
      "ciHigh": 45432226.0902495,
      "successes": 100,
      "failures": 0,
@@ -2688,37 +2695,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 6667354.4096401585,
+     "n": 99,
+     "p50": 6693174.920525306,
      "p95": 7627706.441850487,
      "min": 4141347.5534965512,
-     "ciLow": 6475874.99905528,
-     "ciHigh": 6791475.383977999,
-     "successes": 96,
+     "ciLow": 6517161.572709189,
+     "ciHigh": 6824502.205578325,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
+     "n": 100,
      "p50": 24836550.808180578,
      "p95": 25666778.81451172,
      "min": 14439296.098218998,
      "ciLow": 24341891.38786393,
-     "ciHigh": 25025971.830854606,
-     "successes": 97,
+     "ciHigh": 25040659.72956791,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
+     "n": 100,
      "p50": 47297194.15425598,
-     "p95": 66052299.913856596,
-     "min": 25375201.053261593,
-     "ciLow": 43994638.373419516,
-     "ciHigh": 50053115.74076155,
-     "successes": 60,
+     "p95": 67097658.4108042,
+     "min": 24303465.710632913,
+     "ciLow": 45058937.71009761,
+     "ciHigh": 50769713.92118075,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2748,13 +2755,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 15711701.217993682,
-     "p95": 30149339.022472907,
+     "n": 100,
+     "p50": 15559735.177041668,
+     "p95": 28271230.51025552,
      "min": 8042883.496628842,
-     "ciLow": 14595793.47334643,
-     "ciHigh": 16562363.388968682,
-     "successes": 97,
+     "ciLow": 14487829.650823928,
+     "ciHigh": 16512226.027804075,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2776,7 +2783,7 @@
      "p50": 35734.1488611451,
      "p95": 41032.78853728657,
      "min": 11965.198895245812,
-     "ciLow": 35162.505513023534,
+     "ciLow": 35261.76816184898,
      "ciHigh": 37212.48608150509,
      "successes": 100,
      "failures": 0,
@@ -2796,37 +2803,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 29882.463584892736,
+     "n": 99,
+     "p50": 29861.16985180722,
      "p95": 34615.107379796245,
      "min": 13125.263941719393,
-     "ciLow": 28781.04427276195,
-     "ciHigh": 30537.9965320154,
-     "successes": 96,
+     "ciLow": 28735.662522920855,
+     "ciHigh": 30528.458832690907,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 31939.615904176153,
+     "n": 100,
+     "p50": 31983.65655943937,
      "p95": 39092.53718623402,
      "min": 19249.24799449162,
      "ciLow": 31021.531205058858,
-     "ciHigh": 32650.180797657926,
-     "successes": 97,
+     "ciHigh": 32845.367543657245,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 32278.360479476338,
-     "p95": 46978.22691902611,
+     "n": 100,
+     "p50": 32908.88917317326,
+     "p95": 47049.65931622486,
      "min": 4692.282876258601,
-     "ciLow": 27859.86584453256,
+     "ciLow": 29196.140690818014,
      "ciHigh": 35339.304303268094,
-     "successes": 60,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2856,13 +2863,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 23478.251145925136,
-     "p95": 51156.8430487054,
+     "n": 100,
+     "p50": 23470.86041255184,
+     "p95": 51130.75052703392,
      "min": 15805.532371478019,
      "ciLow": 23001.729464739616,
      "ciHigh": 24394.90294753404,
-     "successes": 97,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -2904,37 +2911,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 1251.450766392919,
+     "n": 99,
+     "p50": 1289.6537756032014,
      "p95": 2881.308442328799,
      "min": 173.16205635036198,
-     "ciLow": 1030.8832967370602,
-     "ciHigh": 1388.0092270046027,
-     "successes": 96,
+     "ciLow": 1048.0900305059936,
+     "ciHigh": 1397.0414969481096,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 1339.009230495501,
-     "p95": 2164.9539055506552,
+     "n": 100,
+     "p50": 1343.8945543919094,
+     "p95": 2160.4567164287273,
      "min": 168.7699847084462,
-     "ciLow": 1188.3490807695518,
-     "ciHigh": 1442.8490174868875,
-     "successes": 97,
+     "ciLow": 1192.1724570597676,
+     "ciHigh": 1445.2099435674997,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 515.3416409307255,
-     "p95": 752.1888185278549,
-     "min": 104.8509473712184,
-     "ciLow": 469.0258827971917,
-     "ciHigh": 548.4865719411692,
-     "successes": 60,
+     "n": 100,
+     "p50": 498.7809612225603,
+     "p95": 879.0985585723095,
+     "min": 98.20644498790178,
+     "ciLow": 461.0109545777702,
+     "ciHigh": 525.9811744930038,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -2964,13 +2971,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 262.28215405102696,
-     "p95": 567.9206947567379,
+     "n": 100,
+     "p50": 261.0160690178463,
+     "p95": 546.272546588508,
      "min": 127.1944669853121,
-     "ciLow": 246.7242336633411,
-     "ciHigh": 283.57857936144603,
-     "successes": 97,
+     "ciLow": 245.2919594661311,
+     "ciHigh": 277.47913820624194,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -3012,37 +3019,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 16525.914668726804,
+     "n": 99,
+     "p50": 16508.826546128184,
      "p95": 18135.425270021475,
      "min": 6255.57290997577,
-     "ciLow": 16179.64315531268,
-     "ciHigh": 16721.368524239584,
-     "successes": 96,
+     "ciLow": 16217.090773262813,
+     "ciHigh": 16631.328883837607,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 19875.708964759277,
+     "n": 100,
+     "p50": 19910.60487539511,
      "p95": 22163.390809952863,
      "min": 10562.985780234761,
-     "ciLow": 19749.42499406016,
-     "ciHigh": 20143.900923678157,
-     "successes": 97,
+     "ciLow": 19751.70949761879,
+     "ciHigh": 20156.951425867424,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 11380.251309246125,
-     "p95": 17956.19267689501,
+     "n": 100,
+     "p50": 13035.59081500152,
+     "p95": 25120.35928938576,
      "min": 3734.8202670156725,
-     "ciLow": 10152.777454176736,
-     "ciHigh": 12461.997136194781,
-     "successes": 60,
+     "ciLow": 11575.34346281069,
+     "ciHigh": 14304.168336338615,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -3053,7 +3060,7 @@
      "p95": 13146.616748466467,
      "min": 5837.731620653679,
      "ciLow": 7828.10675854783,
-     "ciHigh": 11187.868696976246,
+     "ciHigh": 11188.523389990907,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -3072,13 +3079,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 9967.57386838376,
+     "n": 100,
+     "p50": 9894.428742247912,
      "p95": 17973.158985470505,
      "min": 4250.913144665227,
-     "ciLow": 8940.840106801625,
-     "ciHigh": 10865.316048273597,
-     "successes": 97,
+     "ciLow": 8605.00450196484,
+     "ciHigh": 10556.656193726754,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -3101,7 +3108,7 @@
      "p95": 4037.5206285965733,
      "min": 170.04620016481417,
      "ciLow": 3502.333513012769,
-     "ciHigh": 3664.925806239985,
+     "ciHigh": 3656.680027512044,
      "successes": 100,
      "failures": 0,
      "limitFailures": 0
@@ -3120,37 +3127,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 19029.87251272937,
+     "n": 99,
+     "p50": 19147.971938199393,
      "p95": 28465.15900803633,
      "min": 1587.2669532407506,
-     "ciLow": 17165.70318744456,
-     "ciHigh": 19739.04996582012,
-     "successes": 96,
+     "ciLow": 17487.203506781017,
+     "ciHigh": 20010.231367441254,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 177.89882054840595,
-     "p95": 532.8257271775001,
+     "n": 100,
+     "p50": 178.30718307290246,
+     "p95": 540.9939451987855,
      "min": 25.736385465117195,
-     "ciLow": 152.88999266178624,
-     "ciHigh": 266.9400018022472,
-     "successes": 97,
+     "ciLow": 155.27661861777727,
+     "ciHigh": 282.6293157995055,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
+     "n": 100,
      "p50": 6308.152510920482,
      "p95": 9876.672383941595,
      "min": 244.60380150673268,
-     "ciLow": 5377.4302781507595,
-     "ciHigh": 7382.472976765591,
-     "successes": 60,
+     "ciLow": 5365.154062077774,
+     "ciHigh": 7045.207694233529,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -3180,13 +3187,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
+     "n": 100,
      "p50": 323.1579793518792,
      "p95": 418.4487865164155,
      "min": 131.86563556832894,
      "ciLow": 313.001872444448,
-     "ciHigh": 342.68879132791903,
-     "successes": 97,
+     "ciHigh": 342.1193520885976,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -3228,37 +3235,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 341403.86385473335,
+     "n": 99,
+     "p50": 344785.168585778,
      "p95": 404135.4910188775,
      "min": 218552.8925752832,
-     "ciLow": 322828.2295329948,
-     "ciHigh": 357803.059655992,
-     "successes": 96,
+     "ciLow": 324342.9662055608,
+     "ciHigh": 357900.892863281,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 490675.5353755692,
+     "n": 100,
+     "p50": 490688.6740594229,
      "p95": 514904.9848906605,
      "min": 310266.4306209834,
-     "ciLow": 487265.9099948061,
-     "ciHigh": 494511.9103366513,
-     "successes": 97,
+     "ciLow": 487916.3232470255,
+     "ciHigh": 495403.1524230568,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 646409.1466814694,
-     "p95": 940813.2890104692,
-     "min": 275407.11302448093,
-     "ciLow": 570791.5273075207,
+     "n": 100,
+     "p50": 664828.001688567,
+     "p95": 1005218.4975051814,
+     "min": 199147.70999951923,
+     "ciLow": 616135.5305331997,
      "ciHigh": 735644.8674210771,
-     "successes": 60,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -3288,13 +3295,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 245834.73375918154,
-     "p95": 617984.3089942175,
+     "n": 100,
+     "p50": 236424.08570396248,
+     "p95": 614350.8519492893,
      "min": 126140.06474533214,
-     "ciLow": 222382.44568569772,
-     "ciHigh": 323191.9242418422,
-     "successes": 97,
+     "ciLow": 222291.6883748804,
+     "ciHigh": 320850.2531707575,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -3343,7 +3350,7 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 97,
+     "failures": 1,
      "limitFailures": 0
     },
     {
@@ -3379,7 +3386,7 @@
      "ciLow": 151.56065734405013,
      "ciHigh": 176.8950072085594,
      "successes": 91,
-     "failures": 9,
+     "failures": 0,
      "limitFailures": 0
     },
     {
@@ -3403,7 +3410,7 @@
      "ciLow": 122.91144811288183,
      "ciHigh": 143.47413904469113,
      "successes": 49,
-     "failures": 48,
+     "failures": 0,
      "limitFailures": 0
     }
    ]
@@ -3424,7 +3431,7 @@
      "p50": 5.071626510471106,
      "p95": 6.810776516795158,
      "min": 3.846944682300091,
-     "ciLow": 4.93194367736578,
+     "ciLow": 4.880537558346987,
      "ciHigh": 5.237480625510216,
      "successes": 100,
      "failures": 0,
@@ -3444,37 +3451,37 @@
     },
     {
      "provider": "daytona",
-     "n": 96,
-     "p50": 0.10984241962432861,
-     "p95": 0.23630894720554352,
+     "n": 99,
+     "p50": 0.11034468188881874,
+     "p95": 0.29684267938137054,
      "min": 0.0361420214176178,
-     "ciLow": 0.10497048497200012,
-     "ciHigh": 0.12463182210922241,
-     "successes": 96,
+     "ciLow": 0.10632127523422241,
+     "ciHigh": 0.12517031282186508,
+     "successes": 99,
      "failures": 1,
      "limitFailures": 0
     },
     {
      "provider": "upstash",
-     "n": 97,
-     "p50": 0.07766131311655045,
-     "p95": 0.08733570575714111,
+     "n": 100,
+     "p50": 0.07767677307128906,
+     "p95": 0.09247958660125732,
      "min": 0.06722202524542809,
      "ciLow": 0.07638810202479362,
-     "ciHigh": 0.07911603897809982,
-     "successes": 97,
+     "ciHigh": 0.07937178015708923,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
     {
      "provider": "boat",
-     "n": 60,
-     "p50": 5.683817600004204,
-     "p95": 9.814430399990215,
+     "n": 100,
+     "p50": 5.799532200001067,
+     "p95": 11.418506600000455,
      "min": 4.912663200008183,
-     "ciLow": 5.517886400002681,
-     "ciHigh": 5.889109599991116,
-     "successes": 60,
+     "ciLow": 5.7033889999956955,
+     "ciHigh": 5.998660200020822,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     },
@@ -3504,13 +3511,13 @@
     },
     {
      "provider": "tenki",
-     "n": 97,
-     "p50": 1.2708680000002914,
-     "p95": 1.611221599999979,
+     "n": 100,
+     "p50": 1.2747814000000801,
+     "p95": 1.6245679999997265,
      "min": 0.9768595999993579,
-     "ciLow": 1.2393739999993159,
-     "ciHigh": 1.307434000003127,
-     "successes": 97,
+     "ciLow": 1.2474780000005126,
+     "ciHigh": 1.308725799999877,
+     "successes": 100,
      "failures": 0,
      "limitFailures": 0
     }
@@ -3925,22 +3932,59 @@
   "boat": [
    5.472,
    5.568,
+   5.725,
+   5.743,
    5.81,
+   5.813,
+   5.906,
+   5.924,
+   5.932,
    5.971,
+   5.99,
+   6.008,
+   6.01,
+   6.011,
+   6.018,
    6.027,
+   6.074,
+   6.109,
+   6.117,
    6.122,
+   6.144,
+   6.155,
    6.165,
+   6.177,
+   6.179,
    6.215,
+   6.222,
+   6.225,
+   6.396,
+   6.474,
+   6.525,
+   6.587,
+   6.623,
+   6.651,
    6.672,
+   6.771,
+   6.866,
+   6.88,
+   6.883,
+   6.985,
+   7.042,
    7.046,
    7.143,
    7.165,
+   7.17,
+   7.332,
    7.464,
    7.557,
+   7.655,
    7.833,
    7.885,
    8.116,
    8.145,
+   8.435,
+   8.708,
    8.749,
    9.285,
    9.382,
@@ -3952,6 +3996,7 @@
    9.682,
    9.684,
    9.696,
+   9.781,
    9.809,
    9.827,
    9.894,
@@ -3959,6 +4004,7 @@
    9.951,
    10.086,
    10.292,
+   10.477,
    10.511,
    10.552,
    10.67,
@@ -3980,6 +4026,7 @@
    15.674,
    16.835,
    17.121,
+   17.416,
    17.572,
    18.601,
    19.239

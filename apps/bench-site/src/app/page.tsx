@@ -4,7 +4,7 @@ import { Columns } from "@/components/columns";
 import type { Column } from "@/components/columns";
 import { Lockup } from "@/components/brand";
 import { MachineSizes } from "@/components/machine-sizes";
-import { PauseChart } from "@/components/pause-chart";
+import { PauseChart, PausePart } from "@/components/pause-chart";
 import { SectionNav } from "@/components/section-nav";
 import { StatusBoard } from "@/components/status-board";
 import { ChartHead, Footnotes, MetricChart, Who, metricSubtitle } from "@/components/metric-chart";
@@ -47,8 +47,12 @@ const sections = [
 
 const start = new Date(runWindow.start);
 const end = new Date(runWindow.end);
-const day = start.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
-const clock = (d: Date) => d.toISOString().slice(11, 16);
+const longDate = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+const sameDay = start.toISOString().slice(0, 10) === end.toISOString().slice(0, 10);
+/** "October 19, 2026", or "October 19, 2026, completed October 21" when top-up runs finished later. */
+const day = sameDay
+  ? longDate(start)
+  : `${longDate(start)}, completed ${end.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}`;
 
 /** The advertised default size, as people know it: "4 vCPU, 8 GB RAM". */
 const size = (p: Provider | undefined) =>
@@ -185,7 +189,7 @@ export default function Page() {
           </div>
           <dl className="divide-y divide-[var(--line)] border-y border-[var(--line)] text-[14px]">
             {[
-              ["Run", `${day}, ${clock(start)}–${clock(end)} UTC`],
+              ["Run", day],
               ["From", "One server in Florida, US. Providers took turns."],
               ["Data", `${formatCount(timedOperations)} timed operations. Every failure kept.`],
             ].map(([term, value]) => (
@@ -309,6 +313,12 @@ export default function Page() {
             label="Pause and snapshots"
             tabs={[
               { id: "pause-resume", label: "Pause + resume", content: <PauseChart /> },
+              ...(providers.some((p) => p.pauseSplit)
+                ? [
+                    { id: "resume", label: "Resume", content: <PausePart part="resume" /> },
+                    { id: "pause", label: "Pause", content: <PausePart part="pause" /> },
+                  ]
+                : []),
               ...metricTabs([
               { id: "snapshot", what: "Save a prepared sandbox as a snapshot" },
               { id: "create-from-snapshot", tab: "Start from snapshot", what: "New sandbox from that snapshot, then a command" },
@@ -332,8 +342,8 @@ export default function Page() {
                 tab: "25 at once",
                 what: "25 creates at once, until all 25 run a command",
                 notes: {
-                  daytona: "15 of 25 creates failed with invalid_argument, likely a concurrency limit; a rerun could not get enough free slots.",
-                  boat: "the plan allows 12 starts a minute, so 25 at once cannot succeed.",
+                  daytona: "not run: our Daytona account's concurrency limit refused the creates, on both attempts",
+                  boat: "not run: our Boat plan allows 12 starts a minute",
                 },
               },
             ])}
@@ -406,7 +416,7 @@ export default function Page() {
           <Card>
             <div className="grid gap-x-12 gap-y-5 text-[14px] leading-relaxed text-[var(--muted)] md:grid-cols-2">
               <p>
-                One server in Florida drove every run on {day}. Providers took turns in round-robin order, so a slow minute on the network hit everyone.
+                One server in Florida drove every run, from {day}. Providers took turns in round-robin order, so a slow minute on the network hit everyone.
               </p>
               <p>The SDK adds no extra calls: run() is one exec on the provider. Each timer starts right before the call and stops when the result is back.</p>
               <p>
@@ -417,7 +427,10 @@ export default function Page() {
                 .
               </p>
               <p>
-                Download speed is left out: the public test host rate-limited several providers. {formatCount(timedOperations)} operations from {runs.length} runs; one earlier run was
+                Every provider got 100 attempts per quick test, 30 per agent workload and snapshot test, and 3 bursts per size. Missing attempts were rerun; extra ones were cut to the first ones in time order. Attempts our own plan limits blocked were rerun; provider failures count.
+              </p>
+              <p>
+                Download speed is left out: the public test host rate-limited several providers. {formatCount(timedOperations)} timed operations from {runs.length} runs. One early run was
                 discarded in full after snapshot timeouts blocked a provider.
               </p>
             </div>
