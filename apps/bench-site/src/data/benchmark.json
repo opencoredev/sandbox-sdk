@@ -159,6 +159,12 @@
    "currency": "USD",
    "hourly": 0,
    "perVcpuHour": 0,
+   "rates": {
+    "vcpuHour": 0,
+    "memoryGiBHour": 0,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://www.docker.com/products/docker-engine/",
    "pricingNotes": "Reference baseline only: host hardware, power, network and administration cost excluded; zero marginal provider charge.",
    "reliability": {
@@ -213,6 +219,12 @@
    "currency": "USD",
    "hourly": 0.10828405838012695,
    "perVcpuHour": 0.05414202919006347,
+   "rates": {
+    "vcpuHour": 0.0504,
+    "memoryGiBHour": 0.0162,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://e2b.dev/pricing",
    "pricingNotes": "10 GiB Hobby / 20 GiB Pro included disk. Subscription excluded. Per-second billing; no separate creation fee listed.",
    "reliability": {
@@ -281,6 +293,12 @@
    "currency": "USD",
    "hourly": 0.06659999999999999,
    "perVcpuHour": 0.06659999999999999,
+   "rates": {
+    "vcpuHour": 0.0504,
+    "memoryGiBHour": 0.0162,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://www.daytona.io/pricing",
    "pricingNotes": "Hourly published rates converted to seconds. Assumed one-second increment; minimum and creation fee not stated. Snapshot storage excluded.",
    "reliability": {
@@ -405,6 +423,12 @@
    "currency": "USD",
    "hourly": 0.20069444444444445,
    "perVcpuHour": 0.10034722222222223,
+   "rates": {
+    "vcpuHour": 0.1,
+    "memoryGiBHour": 0,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://upstash.com/pricing/box",
    "pricingNotes": "PAYG ACTIVE CPU billing: allocated CPU × wall time is an upper-bound estimate, not metered usage. Disk allocated capacity is an upper bound for written data. 30-day month. No RAM fee listed. Increment/minimum unspecified.",
    "reliability": {
@@ -469,6 +493,16 @@
    "currency": "USD",
    "hourly": 0.036,
    "perVcpuHour": 0.009,
+   "rates": {
+    "vcpuHour": 0,
+    "memoryGiBHour": 0,
+    "fixed": {
+     "cpu": 4,
+     "memoryGiB": 8,
+     "diskGiB": 50
+    },
+    "fixedHour": 0.036
+   },
    "pricingSource": "https://docs.boat.dev/machines",
    "pricingNotes": "Default VM $0.036/hour (4 vCPU, 8 GB, 50 GB). Fixed VM rate, resources cannot change the price. $20 monthly minimum/packs excluded; billed per second.",
    "reliability": {
@@ -537,6 +571,12 @@
    "currency": "EUR",
    "hourly": 0.17915916687011718,
    "perVcpuHour": 0.08957958343505859,
+   "rates": {
+    "vcpuHour": 0.039,
+    "memoryGiBHour": 0.012,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://boxd.sh/pricing",
    "pricingNotes": "EUR; RAM in use and written disk billed, so allocated resources are an upper bound. Metered per second, settled every 15 minutes (not a rounding increment). FX budget uses conservative 2 USD/EUR, not a market quote.",
    "reliability": {
@@ -605,6 +645,12 @@
    "currency": "USD",
    "hourly": 0.2640054521942139,
    "perVcpuHour": 0.06600136304855347,
+   "rates": {
+    "vcpuHour": 0.04032,
+    "memoryGiBHour": 0.0129,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://www.freestyle.sh/pricing",
    "pricingNotes": "Published overage rates, allowances/subscriptions excluded. $0.02/GB transfer excluded. Billing increment/minimum and creation fees unspecified; one-second estimate.",
    "reliability": {
@@ -677,6 +723,12 @@
    "currency": "USD",
    "hourly": 0.16230820083618164,
    "perVcpuHour": 0.08115410041809082,
+   "rates": {
+    "vcpuHour": 0.0504,
+    "memoryGiBHour": 0.0162,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://tenki.cloud/pricing",
    "pricingNotes": "Per-second, no minimum. Separate persistent storage $0.000000076/GiB-second excluded. Credits excluded.",
    "reliability": {
@@ -754,6 +806,12 @@
    "currency": "USD",
    "hourly": 0.06612792434692383,
    "perVcpuHour": 0.06612792434692383,
+   "rates": {
+    "vcpuHour": 0.0504,
+    "memoryGiBHour": 0.0162,
+    "fixed": null,
+    "fixedHour": null
+   },
    "pricingSource": "https://www.superserve.ai/pricing",
    "pricingNotes": "Published vCPU and GiB-hour rates converted to seconds. Credits excluded. One-second rounding assumed; snapshot storage, disk, transfer and any minimum charge excluded. Adapter default superserve/node-22 is 1 vCPU, 1 GiB RAM, 4 GiB disk; resources are template-owned. SDK runtime preparation is included in cold timing.",
    "reliability": {

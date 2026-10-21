@@ -4,7 +4,7 @@ import { formatGiB, formatMoney, formatPercent, formatValue } from "@/lib/format
 import { providerName } from "@/lib/providers";
 import type { ProviderId } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
-import { eurUsd, usdPrice } from "@/lib/fx";
+import { commonPrice, commonSize, eurUsd, usdPrice } from "@/lib/fx";
 import { successRate } from "@/lib/status";
 
 /** The metrics agents get, in page order, grouped as on the page. */
@@ -89,7 +89,7 @@ export function quickPicks() {
   };
   const cheapest = providers
     .flatMap((p) => {
-      const price = usdPrice(p, "hourly");
+      const price = commonPrice(p);
       return price ? [{ p, usd: price.usd }] : [];
     })
     .sort((a, b) => a.usd - b.usd);
@@ -103,7 +103,7 @@ export function quickPicks() {
     timed("tool-replay", "Fastest agent work (tool replay)"),
     timed("burst-25", "Fastest 25-sandbox fan-out"),
     timed("reconnect", "Fastest reconnect"),
-    { need: "Cheapest hour", ...pair(cheapest, (x) => `${name(x.p.id)} ${formatMoney(x.usd, "USD")}`) },
+    { need: `Cheapest hour (${commonSize.label})`, ...pair(cheapest, (x) => `${name(x.p.id)} ${formatMoney(x.usd, "USD")}${commonPrice(x.p)?.fixed ? ` (only sold as ${commonPrice(x.p)?.fixed})` : ""}`) },
     (() => {
       // Several providers can share the top rate; name every one of them.
       const top = reliable.filter((x) => x.rate === reliable[0]?.rate);
@@ -141,6 +141,14 @@ export function agentData() {
           perHour: round(p.hourly),
           perVcpuHour: round(p.perVcpuHour),
           perHourUsd: round(usdPrice(p, "hourly")?.usd ?? null),
+          commonSizeUsd: round(commonPrice(p)?.usd ?? null),
+          // What 1,000 tool replays cost on the machine that ran them: hourly price times median time.
+          toolReplayPer1000Usd: (() => {
+            const t = metric("tool-replay").values.find((v) => v.provider === p.id)?.p50 ?? null;
+            const hour = usdPrice(p, "hourly")?.usd ?? null;
+            return t === null || hour === null ? null : round((hour * t * 1000) / 3600);
+          })(),
+          commonSizeNote: commonPrice(p)?.fixed ? `only sold as ${commonPrice(p)?.fixed}` : `${commonSize.label} at published rates`,
           usdNote: p.currency === "EUR" ? `Converted at the ECB rate of ${eurUsd.rate} USD per EUR on ${eurUsd.date}.` : null,
           source: p.pricingSource,
         },
@@ -182,11 +190,11 @@ export function agentMarkdown() {
     "",
     "## Providers",
     "",
-    "| Provider | Default size | Ran in | Price per hour | Success rate |",
-    "| --- | --- | --- | --- | --- |",
+    "| Provider | Default size | Ran in | Price per hour, default | Price per hour, 2 vCPU 4 GB | Success rate |",
+    "| --- | --- | --- | --- | --- | --- |",
     ...d.providers.map(
       (p) =>
-        `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHourUsd === null ? "n/a" : `$${p.price.perHourUsd}${p.price.currency === "EUR" ? ` (EUR ${p.price.perHour})` : ""}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
+        `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHourUsd === null ? "n/a" : `$${p.price.perHourUsd}${p.price.currency === "EUR" ? ` (EUR ${p.price.perHour})` : ""}`} | ${p.price.commonSizeUsd === null ? "n/a" : `$${p.price.commonSizeUsd}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
     ),
     "",
     ...d.providers.flatMap((p) => (p.sizeNote ? [`Note on ${p.name}: ${p.sizeNote}`, ""] : [])),

@@ -5,7 +5,6 @@ import type { Column } from "@/components/columns";
 import { Lockup } from "@/components/brand";
 import { MachineSizes } from "@/components/machine-sizes";
 import { PauseChart, PausePart } from "@/components/pause-chart";
-import { ProviderStrip } from "@/components/provider-strip";
 import { SectionNav } from "@/components/section-nav";
 import { Reliability } from "@/components/reliability";
 import { ChartHead, Footnotes, MetricChart, Who, metricSubtitle } from "@/components/metric-chart";
@@ -22,7 +21,7 @@ import { formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
 import { excluded, notRun } from "@/lib/agent-data";
-import { conversionNote, usdPrice } from "@/lib/fx";
+import { commonPrice, commonSize, conversionNote, eurUsd, usdPrice } from "@/lib/fx";
 import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
 
@@ -104,6 +103,42 @@ function priceColumns(key: PriceKey) {
   return { columns, converted: priced.filter((x) => x.converted) };
 }
 
+/** Price of the same machine everywhere, cheapest first. */
+function commonColumns() {
+  const priced = providers.flatMap((p) => {
+    const price = commonPrice(p);
+    return price ? [{ p, ...price }] : [];
+  });
+  const columns: Column[] = priced
+    .sort((a, b) => a.usd - b.usd)
+    .map(({ p, usd, fixed }) => ({
+      provider: p.id,
+      label: formatMoney(usd, "USD"),
+      segments: [{ value: usd, color: providerColor(p.id), variant: "gradient" }],
+      detail: [`${formatMoney(usd, "USD")} an hour`, fixed ? `only sold as ${fixed}` : commonSize.label],
+    }));
+  return { columns, fixed: priced.filter((x) => x.fixed) };
+}
+
+function CommonPriceChart() {
+  const { columns, fixed } = commonColumns();
+  const boxd = provider("boxd");
+  const boxdPrice = boxd ? usdPrice(boxd, "hourly") : null;
+  return (
+    <>
+      <ChartHead title={`Price of a ${commonSize.label} sandbox`} sub="Per hour at each provider's published rates · US dollars · Lower is better" />
+      <Columns columns={columns} label={`Price of a ${commonSize.label} sandbox`} />
+      <Footnotes
+        items={[
+          ...fixed.map(({ p, fixed: size }) => ({ text: <><Who id={p.id} /> sells one machine, {size}, at a flat rate, so that is the price shown.</> })),
+          ...(boxdPrice?.converted ? [{ text: <><Who id="boxd" /> bills in euros, converted at the ECB rate of {eurUsd.rate} dollars per euro on {eurUsd.date}.</> }] : []),
+          { text: "Compute only: vCPU and memory at list price. Disk, transfer, subscriptions and free credits are left out. Upstash bills only CPU, and only while it is busy, so its figure is an upper bound." },
+        ]}
+      />
+    </>
+  );
+}
+
 function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: string }) {
   const { columns, converted } = priceColumns(k);
   return (
@@ -181,14 +216,14 @@ function Headline({ marker, title, sub, children }: { marker: string; title: str
 export default function Page() {
   const cold = metric("cold");
   const replay = metric("tool-replay");
-  const boxd = provider("boxd");
-  const coldP50 = (id: ProviderId) => cold.values.find((v) => v.provider === id)?.p50 ?? null;
-  const scatterPoints: ScatterPoint[] = providers.flatMap((p) => {
-    const x = coldP50(p.id);
+  // Cost per task, as Artificial Analysis does it: the hourly price of the machine each provider ran on times its median time.
+  const replayPoints: ScatterPoint[] = providers.flatMap((p) => {
+    const t = replay.values.find((v) => v.provider === p.id)?.p50 ?? null;
     const price = usdPrice(p, "hourly");
-    return x !== null && price ? [{ provider: p.id, x, y: price.usd, currency: "USD" }] : [];
+    return t !== null && price
+      ? [{ provider: p.id, x: t, y: (price.usd * t * 1000) / 3600, currency: "USD", tag: `${sizeOf(p).vcpu ?? "?"} vCPU` }]
+      : [];
   });
-  const boxdHour = boxd ? usdPrice(boxd, "hourly") : null;
 
   return (
     <>
@@ -235,43 +270,36 @@ export default function Page() {
           <Headline marker="var(--dither-color-orange)" title="Agent work" sub={metricSubtitle(replay, "Tool replay, 100 calls")}>
             <MetricChart metric={replay} what="" compact />
           </Headline>
-          <Headline marker="var(--dither-color-green)" title="Price per hour" sub="Default sandbox, list price · US dollars · Lower is better">
-            {/* No footnote marks in the headline cards; the Cost section explains the euro conversion. */}
-            <Columns columns={priceColumns("hourly").columns.map(({ mark: _mark, ...c }) => c)} label="Price per sandbox-hour" compact />
+          <Headline marker="var(--dither-color-green)" title="Price per hour" sub={`Same machine everywhere: ${commonSize.label} · US dollars · Lower is better`}>
+            <Columns columns={commonColumns().columns} label={`Price of a ${commonSize.label} sandbox`} compact />
           </Headline>
         </div>
 
-        <div className="mt-4">
-          <ProviderStrip providers={providers} />
-        </div>
+        <Card className="mt-4">
+          <ChartHead
+            title="Agent work vs cost per task"
+            sub="Median tool replay time against what 1,000 tool replays cost on the machine that ran them · Both lower is better"
+          />
+          <Scatter
+            points={replayPoints}
+            xTicks={[10, 20, 50, 100]}
+            yTicks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
+            xTitle="Median tool replay, seconds (log scale)"
+            yTitle="Cost of 1,000 tool replays (USD)"
+          />
+          <Footnotes
+            items={[
+              { text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on." },
+              { text: <><Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU, so its cost is an upper bound.</> },
+            ]}
+          />
+        </Card>
 
         <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns.">
           <TabCard
             label="Start-up"
             tabs={[
               ...metricTabs([{ id: "cold", what: "create() to first command", tab: "Cold start", notes: coldNotes }]),
-              {
-                id: "cold-vs-price",
-                label: "Cold start vs price",
-                content: (
-                  <>
-                    <ChartHead
-                      title="Cold start vs price"
-                      sub="Median cold start against list price per sandbox-hour · Both lower is better"
-                    />
-                    <Scatter
-                      points={scatterPoints}
-                      xTicks={[2, 3, 5, 10, 20]}
-                      yTicks={[0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]}
-                      xTitle="Median cold start, seconds (log scale)"
-                      yTitle="Price per sandbox-hour (USD)"
-                    />
-                    {boxdHour?.converted ? (
-                      <Footnotes items={[{ text: <><Who id="boxd" /> {conversionNote(boxdHour.original, "an hour")}</> }]} />
-                    ) : null}
-                  </>
-                ),
-              },
               {
                 id: "cold-all",
                 label: "Every cold start",
@@ -422,12 +450,12 @@ export default function Page() {
           </Card>
         </Section>
 
-        <Section id="cost" title="Cost" lede="From each provider's published prices and the size it gave us. Subscriptions, free credits, snapshot storage and transfer are left out.">
+        <Section id="cost" title="Cost" lede="Published prices, compared on the same machine, and for the default machine each provider gives you.">
           <TabCard
             label="Cost"
             tabs={[
-              { id: "hour", label: "Price per hour", content: <PriceChart k="hourly" title="Price per hour" what="One default sandbox for an hour" /> },
-              { id: "vcpu", label: "Per vCPU-hour", content: <PriceChart k="perVcpuHour" title="Price per vCPU-hour" what="Hourly price divided by vCPUs, fairer across sizes" /> },
+              { id: "common", label: commonSize.label, content: <CommonPriceChart /> },
+              { id: "hour", label: "Default sandbox", content: <PriceChart k="hourly" title="Price of each default sandbox" what="The machine each provider gives you by default, so sizes differ" /> },
             ]}
           />
         </Section>

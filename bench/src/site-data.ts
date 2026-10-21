@@ -281,6 +281,15 @@ export function siteData(r: PublicationReport) {
       currency: price?.currency ?? null,
       hourly: hour,
       perVcpuHour: hour != null && hw?.vcpu ? hour / hw.vcpu : null,
+      // Published per-resource rates, so the site can price any size the same way.
+      rates: price
+        ? {
+            vcpuHour: price.cpuSecond * 3600,
+            memoryGiBHour: price.memoryGiBSecond * 3600,
+            fixed: price.fixed,
+            fixedHour: price.fixed ? hour : null,
+          }
+        : null,
       pricingSource: price?.source ?? null,
       pricingNotes: price?.notes ?? null,
       reliability: {

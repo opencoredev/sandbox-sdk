@@ -9,6 +9,8 @@ export interface ScatterPoint {
   /** Price per hour. */
   y: number;
   currency: string;
+  /** Extra context after the name, such as the machine the time was measured on. */
+  tag?: string;
 }
 
 // Plot insets in px: room for tick labels on the left and bottom.
@@ -61,7 +63,7 @@ export function Scatter({
   const mx = fx(median(points.map((p) => p.x)));
   const my = fy(median(points.map((p) => p.y)));
   const summary = points
-    .map((p) => `${providerName(p.provider)}: ${formatValue(p.x, "s")} cold start, ${formatMoney(p.y, p.currency)} an hour`)
+    .map((p) => `${providerName(p.provider)}${p.tag ? ` (${p.tag})` : ""}: ${formatValue(p.x, "s")}, ${formatMoney(p.y, p.currency)} an hour`)
     .join("; ");
 
   return (
@@ -136,6 +138,7 @@ export function Scatter({
                 >
                   {providerName(p.provider)}
                   <span className="ml-1.5 hidden font-mono text-[11px] font-normal text-[var(--muted)] sm:inline">
+                    {p.tag ? `${p.tag} · ` : ""}
                     {formatValue(p.x, "s")} · {formatMoney(p.y, p.currency)}
                   </span>
                 </span>
