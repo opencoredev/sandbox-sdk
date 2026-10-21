@@ -130,6 +130,12 @@ const coldNotes: Notes = {
   e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB.",
 };
 
+// Providers hosted in Europe: every call from Florida crosses the Atlantic.
+const farNotes: Notes = {
+  boat: "runs in France, so every call from our Florida server crosses the Atlantic.",
+  boxd: "runs in Germany, so every call from our Florida server crosses the Atlantic.",
+};
+
 // Adapters that need more than one provider call per command.
 const execNotes: Notes = {
   daytona: "our adapter opens a session, runs the command through a small Python helper and cleans up, so each command is several Daytona calls.",
@@ -142,7 +148,7 @@ const methodRows = [
   ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call, and the provider strip shows where each sandbox ran."],
   ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
   ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
-  ["Failures", "Every failure counts against the provider unless our own code provably caused it; only Superserve's machine probe is set aside. Failures we can't pin on either side count and are marked unclear. Attempts blocked by our own plan limits were rerun."],
+  ["Failures", "Every failure counts against the provider unless our own code caused it. Our machine probe could not run on Superserve (it needs /dev/shm), so those runs are left out rather than counted. Failures we can't pin on either side count and are marked unclear. Attempts blocked by our own plan limits were rerun."],
   ["Ties", "Medians within each other's 95% confidence intervals are effectively tied. Focus or hover a bar for its interval and attempt count."],
   ["Left out", "Download speed, because the public test host rate-limited several providers. One early run was discarded in full after snapshot timeouts blocked a provider."],
 ] as const;
@@ -202,43 +208,36 @@ export default function Page() {
       </header>
 
       <main id="top" className="mx-auto max-w-[1200px] px-4 sm:px-6">
-        <div className="grid gap-10 pt-14 pb-12 sm:pt-20 lg:grid-cols-[1fr_360px] lg:items-end">
-          <div>
-            <h1 className="font-pixel text-[44px] leading-[0.95] tracking-tight sm:text-[72px]">
-              Cloud sandboxes,
-              <br />
-              measured
-            </h1>
-            <p className="mt-5 max-w-[46ch] text-[16px] leading-snug">
-              {providers.length} cloud sandbox providers for AI agents, timed through one SDK from one server.
-            </p>
-          </div>
-          <dl className="divide-y divide-[var(--line)] border-y border-[var(--line)] text-[14px]">
-            {[
-              ["Run", day],
-              ["From", "One server in Florida, US."],
-              ["Data", "100 attempts per quick test, 30 per agent task, 3 bursts per size."],
-            ].map(([term, value]) => (
-              <div key={term} className="grid grid-cols-[4rem_1fr] gap-3 py-3">
-                <dt className="text-[12px] text-[var(--muted)]">{term}</dt>
-                <dd className="leading-snug">{value}</dd>
-              </div>
+        <div className="pt-14 pb-10 sm:pt-20">
+          <h1 className="font-pixel text-[44px] leading-[0.95] tracking-tight sm:text-[72px]">
+            Cloud sandboxes,
+            <br />
+            measured
+          </h1>
+          <p className="mt-5 max-w-[52ch] text-[16px] leading-snug">
+            {providers.length} cloud sandbox providers for AI agents, timed on the same tests from one server.
+          </p>
+          <p className="mt-4 flex flex-wrap gap-x-2 gap-y-1 font-mono text-[12px] text-[var(--muted)]">
+            {[day, "Florida, US", `${providers.length} providers`, "100 runs per test"].map((fact, i, all) => (
+              // The separator rides at the end of each fact, so a wrapped line never starts with one.
+              <span key={fact} className="whitespace-nowrap">
+                {fact}
+                {i < all.length - 1 ? <span aria-hidden className="ml-2">·</span> : null}
+              </span>
             ))}
-          </dl>
+          </p>
         </div>
 
         <div className="grid gap-4 md:grid-cols-3">
           <Headline marker="var(--dither-color-blue)" title="Cold start" sub={metricSubtitle(cold, "create() to first command")}>
             <MetricChart metric={cold} what="" compact />
-            <p className="mt-1 text-[11px] text-[var(--muted)]">Superserve&apos;s time includes setup our SDK runs after its create returns.</p>
           </Headline>
           <Headline marker="var(--dither-color-orange)" title="Agent work" sub={metricSubtitle(replay, "Tool replay, 100 calls")}>
             <MetricChart metric={replay} what="" compact />
-            <p className="mt-1 text-[11px] text-[var(--muted)]">Boat (France) and boxd (Germany) cross the Atlantic on every call.</p>
           </Headline>
           <Headline marker="var(--dither-color-green)" title="Price per hour" sub="Default sandbox, list price · US dollars · Lower is better">
-            <Columns columns={priceColumns("hourly").columns} label="Price per sandbox-hour" compact />
-            {boxdHour?.converted ? <p className="mt-1 text-[11px] text-[var(--muted)]"><sup>1</sup> boxd bills in euros; converted at the ECB rate.</p> : null}
+            {/* No footnote marks in the headline cards; the Cost section explains the euro conversion. */}
+            <Columns columns={priceColumns("hourly").columns.map(({ mark: _mark, ...c }) => c)} label="Price per sandbox-hour" compact />
           </Headline>
         </div>
 
@@ -292,21 +291,20 @@ export default function Page() {
           title="Agent work"
           lede={
             <>
-              Real coding-agent tasks, so CPU, disk and network count as much as the API. Every call starts in Florida, so <Who id="boat" /> (France)
-              and <Who id="boxd" /> (Germany) cross the Atlantic on each one.
+              Real coding-agent tasks, so CPU, disk and network count as much as the API.
             </>
           }
         >
           <TabCard
             label="Agent work"
             tabs={metricTabs([
-              { id: "tool-replay", tab: "Tool replay", what: "100 tool calls in a row: write, read, edit, list, grep, run a test", notes: execNotes },
-              { id: "npm-install", what: "npm ci for a small Vite and React app", notes: { e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB." } },
-              { id: "pip-install", what: "requests and numpy from PyPI" },
-              { id: "git-clone", what: "Shallow clone of a small pinned repo" },
-              { id: "dev-server", what: "Start Vite and wait until it is ready" },
-              { id: "preview-first-byte", tab: "Preview URL", what: "Fetch the dev server through the public preview URL" },
-              { id: "edit-loop", tab: "Edit loop", what: "Edit a file, rebuild, fetch the page again" },
+              { id: "tool-replay", tab: "Tool replay", what: "100 tool calls in a row: write, read, edit, list, grep, run a test", notes: { ...farNotes, ...execNotes } },
+              { id: "npm-install", what: "npm ci for a small Vite and React app", notes: { ...farNotes, e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB." } },
+              { id: "pip-install", what: "requests and numpy from PyPI", notes: farNotes },
+              { id: "git-clone", what: "Shallow clone of a small pinned repo", notes: farNotes },
+              { id: "dev-server", what: "Start Vite and wait until it is ready", notes: farNotes },
+              { id: "preview-first-byte", tab: "Preview URL", what: "Fetch the dev server through the public preview URL", notes: farNotes },
+              { id: "edit-loop", tab: "Edit loop", what: "Edit a file, rebuild, fetch the page again", notes: farNotes },
             ])}
           />
         </Section>
@@ -418,7 +416,7 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="reliability" title="Reliability" lede="Every failure, listed with its cause. Only failures our own code provably caused are set aside, and they are listed too.">
+        <Section id="reliability" title="Reliability" lede="How often each provider failed, and why.">
           <Card>
             <Reliability providers={providers} />
           </Card>
