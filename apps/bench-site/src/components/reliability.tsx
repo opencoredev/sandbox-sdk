@@ -20,6 +20,7 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
       return { p, s, perThousand: s.attempts ? ((s.attempts - s.succeeded) / s.attempts) * 1000 : 0 };
     })
     .sort((a, b) => a.perThousand - b.perThousand);
+  const setAside = providers.flatMap((p) => p.ourFailures.map((f) => ({ p, f })));
   const columns: Column[] = ranked.map(({ p, s, perThousand }) => ({
     provider: p.id,
     label: perThousand.toFixed(1),
@@ -28,7 +29,7 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
   }));
   return (
     <>
-      <ChartHead title="Failed attempts" sub="Per 1,000 attempts across every test on this page · Lower is better" />
+      <ChartHead title="Failed attempts" sub="Failures the provider returned, per 1,000 attempts across the tests on this page · Lower is better" />
       <Columns columns={columns} label="Failed attempts per 1,000" />
       <h4 className="mt-8 text-[14px] font-medium">What went wrong</h4>
       <p className="mt-1 mb-3 text-[12px] text-[var(--muted)]">Each cause with the number of runs it hit. One run can fail several tests at once.</p>
@@ -55,6 +56,22 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
           </div>
         ))}
       </div>
+      {setAside.length > 0 ? (
+        <div className="mt-8 border-t border-[var(--line)] pt-5 text-[12.5px] leading-snug text-[var(--muted)]">
+          <h4 className="text-[14px] font-medium text-[var(--foreground)]">Set aside as ours</h4>
+          <p className="mt-1 mb-3 text-[12px]">These failed because of our own code, not the provider, so they are not counted against anyone.</p>
+          <ul className="flex flex-col gap-1">
+            {setAside.map(({ p, f }) => (
+              <li key={`${p.id}${f.reason}`}>
+                <span className="font-medium" style={{ color: providerColor(p.id) }}>
+                  {providerName(p.id)}
+                </span>
+                : {f.reason} <span className="font-mono text-[var(--foreground)] tabular-nums">({f.runs} {f.runs === 1 ? "run" : "runs"})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </>
   );
 }

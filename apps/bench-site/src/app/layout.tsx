@@ -6,16 +6,24 @@ import type { ReactNode } from "react";
 
 import "./globals.css";
 
+const title = "Sandbox bench: cloud sandboxes for agents, measured";
+const description =
+  "8 cloud sandboxes for AI agents (E2B, Daytona, Upstash Box, Boat, boxd, Freestyle, Tenki, Superserve) timed on cold start, real agent tasks, bursts, reliability and price.";
+
 export const metadata: Metadata = {
-  title: "Sandbox bench: cloud sandboxes for agents, measured",
+  title,
   icons: {
     icon: [
       { url: "/favicon-light.svg", type: "image/svg+xml", media: "(prefers-color-scheme: light)" },
       { url: "/favicon-dark.svg", type: "image/svg+xml", media: "(prefers-color-scheme: dark)" },
     ],
   },
-  description:
-    "Cold start, commands, files, agent workloads, bursts, hardware, reliability and price for 7 sandbox providers, measured through Sandbox SDK.",
+  description,
+  openGraph: { title, description, type: "website", siteName: "Sandbox bench" },
+  twitter: { card: "summary", title, description },
+  alternates: { types: { "text/markdown": "/results.md", "application/json": "/results.json" } },
+  // Private until launch: flip to index on publish.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

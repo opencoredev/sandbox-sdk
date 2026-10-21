@@ -205,6 +205,7 @@
     ]
    },
    "failureReasons": [],
+   "ourFailures": [],
    "pauseSplit": null
   },
   {
@@ -268,6 +269,7 @@
      ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 0.19663980699999956,
     "resume": 0.6079934479999938,
@@ -391,6 +393,7 @@
      ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 1.021146260999958,
     "resume": 2.4095534190000034,
@@ -454,6 +457,7 @@
      ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": {
     "pause": 0.49929289500007873,
     "resume": 0.5310447849999181,
@@ -525,6 +529,7 @@
      ]
     }
    ],
+   "ourFailures": [],
    "pauseSplit": null
   },
   {
@@ -577,15 +582,12 @@
      }
     ]
    },
-   "failureReasons": [
+   "failureReasons": [],
+   "ourFailures": [
     {
-     "kind": "provider-operation",
-     "reason": "boxd request timed out.",
+     "reason": "A timeout or error inside our 10 MB file-transfer code",
      "count": 2,
-     "runs": 2,
-     "tests": [
-      "Write + read 10 MB"
-     ]
+     "runs": 2
     }
    ],
    "pauseSplit": {
@@ -642,21 +644,19 @@
    "failureReasons": [
     {
      "kind": "provider-operation",
-     "reason": "Freestyle request failed.",
-     "count": 2,
-     "runs": 2,
-     "tests": [
-      "Write + read 10 MB"
-     ]
-    },
-    {
-     "kind": "provider-operation",
      "reason": "Preview HTTP 502, no first byte",
      "count": 1,
      "runs": 1,
      "tests": [
       "Preview URL first byte"
      ]
+    }
+   ],
+   "ourFailures": [
+    {
+     "reason": "A timeout or error inside our 10 MB file-transfer code",
+     "count": 2,
+     "runs": 2
     }
    ],
    "pauseSplit": {
@@ -715,24 +715,17 @@
      }
     ]
    },
-   "failureReasons": [
+   "failureReasons": [],
+   "ourFailures": [
     {
-     "kind": "provider-operation",
-     "reason": "Request deadline exceeded.",
+     "reason": "A timeout or error inside our 10 MB file-transfer code",
      "count": 2,
-     "runs": 2,
-     "tests": [
-      "Write + read 10 MB"
-     ]
+     "runs": 2
     },
     {
-     "kind": "provider-operation",
-     "reason": "Process cancellation could not be confirmed; VM termination was requested.",
+     "reason": "Our SDK could not confirm a cancelled process",
      "count": 1,
-     "runs": 1,
-     "tests": [
-      "Cold start"
-     ]
+     "runs": 1
     }
    ],
    "pauseSplit": {
@@ -791,23 +784,12 @@
      }
     ]
    },
-   "failureReasons": [
+   "failureReasons": [],
+   "ourFailures": [
     {
-     "kind": "provider-operation",
-     "reason": "FileNotFoundError: [Errno 2] No such file or directory",
+     "reason": "Our machine probe needs /dev/shm, which Superserve's VMs don't have",
      "count": 900,
-     "runs": 100,
-     "tests": [
-      "perf",
-      "CPU, one core",
-      "CPU, all cores",
-      "Memory bandwidth",
-      "Disk write",
-      "Disk read",
-      "4K random write",
-      "4K random read",
-      "TCP connect"
-     ]
+     "runs": 100
     }
    ],
    "pauseSplit": {
@@ -838,6 +820,7 @@
      "ciHigh": 0.8535293119999696,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -850,6 +833,7 @@
      "ciHigh": 5.318663453999907,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -862,6 +846,7 @@
      "ciHigh": 13.724029589000159,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -874,6 +859,7 @@
      "ciHigh": 15.108037105000113,
      "successes": 97,
      "failures": 3,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -886,6 +872,7 @@
      "ciHigh": 9.520989525000099,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -898,6 +885,7 @@
      "ciHigh": 7.350698445999995,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -910,6 +898,7 @@
      "ciHigh": 3.8420006980000765,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -921,7 +910,8 @@
      "ciLow": 4.110588220000005,
      "ciHigh": 4.345525498999981,
      "successes": 99,
-     "failures": 1,
+     "failures": 0,
+     "ourFailures": 1,
      "limitFailures": 0
     },
     {
@@ -934,6 +924,7 @@
      "ciHigh": 16.67893409799994,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -958,6 +949,7 @@
      "ciHigh": 0.04376355799997691,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -970,6 +962,7 @@
      "ciHigh": 0.29879486999986693,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -982,6 +975,7 @@
      "ciHigh": 1.7809945030000527,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -994,6 +988,7 @@
      "ciHigh": 0.2995032999999821,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1006,6 +1001,7 @@
      "ciHigh": 0.35277250700024887,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1018,6 +1014,7 @@
      "ciHigh": 0.2869585020001978,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1030,6 +1027,7 @@
      "ciHigh": 0.15780988099999377,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1042,6 +1040,7 @@
      "ciHigh": 0.6733767260001041,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1054,6 +1053,7 @@
      "ciHigh": 0.15397159299999474,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1078,6 +1078,7 @@
      "ciHigh": 0.09428149200003827,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1090,6 +1091,7 @@
      "ciHigh": 0.397867363999947,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1102,6 +1104,7 @@
      "ciHigh": 0.3035908370000543,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1114,6 +1117,7 @@
      "ciHigh": 0.36617265800002496,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1126,6 +1130,7 @@
      "ciHigh": 1.5875542109999805,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1138,6 +1143,7 @@
      "ciHigh": 0.47256134000001476,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1150,6 +1156,7 @@
      "ciHigh": 0.18534299200004897,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1162,6 +1169,7 @@
      "ciHigh": 0.4366461060000584,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1174,6 +1182,7 @@
      "ciHigh": 0.0782789159999229,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1198,6 +1207,7 @@
      "ciHigh": 0.16228807799995412,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1210,6 +1220,7 @@
      "ciHigh": 1.622946551000001,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1222,6 +1233,7 @@
      "ciHigh": 1.2944529769998043,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1234,6 +1246,7 @@
      "ciHigh": 3.5164108479999996,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1246,6 +1259,7 @@
      "ciHigh": 12.797221947000013,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1257,7 +1271,8 @@
      "ciLow": 59.90981015899964,
      "ciHigh": 65.55323472100031,
      "successes": 98,
-     "failures": 2,
+     "failures": 0,
+     "ourFailures": 2,
      "limitFailures": 0
     },
     {
@@ -1269,7 +1284,8 @@
      "ciLow": 2.1459584129999856,
      "ciHigh": 2.4534478840001395,
      "successes": 98,
-     "failures": 2,
+     "failures": 0,
+     "ourFailures": 2,
      "limitFailures": 0
     },
     {
@@ -1281,7 +1297,8 @@
      "ciLow": 6.439671156999888,
      "ciHigh": 6.695689859000034,
      "successes": 98,
-     "failures": 2,
+     "failures": 0,
+     "ourFailures": 2,
      "limitFailures": 0
     },
     {
@@ -1294,6 +1311,7 @@
      "ciHigh": 0.5680109810000286,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1318,6 +1336,7 @@
      "ciHigh": 0.1087173190000467,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1330,6 +1349,7 @@
      "ciHigh": 0.6915258570001461,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1342,6 +1362,7 @@
      "ciHigh": 1.9872458740000147,
      "successes": 97,
      "failures": 3,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1354,6 +1375,7 @@
      "ciHigh": 0.5749519489999803,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1366,6 +1388,7 @@
      "ciHigh": 1.2473724269999658,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1378,6 +1401,7 @@
      "ciHigh": 1.3449553940007464,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1390,6 +1414,7 @@
      "ciHigh": 0.7635588569999673,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1402,6 +1427,7 @@
      "ciHigh": 1.2911995659999957,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1414,6 +1440,7 @@
      "ciHigh": 0.33378249800018966,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1438,6 +1465,7 @@
      "ciHigh": 0.05515896600001725,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1450,6 +1478,7 @@
      "ciHigh": 0.8174055599999847,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1462,6 +1491,7 @@
      "ciHigh": 4.055022139999999,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1474,6 +1504,7 @@
      "ciHigh": 1.292721419999958,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1486,6 +1517,7 @@
      "ciHigh": 0.5596455549999956,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1498,6 +1530,7 @@
      "ciHigh": 0.7733650450000132,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1510,6 +1543,7 @@
      "ciHigh": 63.297516482000006,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1522,6 +1556,7 @@
      "ciHigh": 1.315271388000343,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1546,6 +1581,7 @@
      "ciHigh": 0.34423377099999924,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1558,6 +1594,7 @@
      "ciHigh": 0.11453913900000043,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1570,6 +1607,7 @@
      "ciHigh": 1.311822386999993,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1582,6 +1620,7 @@
      "ciHigh": 1.0947465039999225,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1594,6 +1633,7 @@
      "ciHigh": 0.19222986100008713,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1606,6 +1646,7 @@
      "ciHigh": 0.1435437819994986,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1618,6 +1659,7 @@
      "ciHigh": 0.1435481480001472,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1630,6 +1672,7 @@
      "ciHigh": 0.1288848809999181,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1642,6 +1685,7 @@
      "ciHigh": 0.22778457999997773,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1666,6 +1710,7 @@
      "ciHigh": 0.9594700070000035,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1678,6 +1723,7 @@
      "ciHigh": 0.39317218999998294,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1690,6 +1736,7 @@
      "ciHigh": 15.970420353000053,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1702,6 +1749,7 @@
      "ciHigh": 3.1860892860000023,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1714,6 +1762,7 @@
      "ciHigh": 0.35752390300000114,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1726,6 +1775,7 @@
      "ciHigh": 7.014362494000001,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1738,6 +1788,7 @@
      "ciHigh": 0.8658373770000181,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1762,6 +1813,7 @@
      "ciHigh": 0.6218225290000046,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1774,6 +1826,7 @@
      "ciHigh": 2.9409293960000067,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1786,6 +1839,7 @@
      "ciHigh": 10.320892481999996,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1798,6 +1852,7 @@
      "ciHigh": 14.438715320000004,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1810,6 +1865,7 @@
      "ciHigh": 3.109835236999992,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1822,6 +1878,7 @@
      "ciHigh": 5.729785526000022,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1834,6 +1891,7 @@
      "ciHigh": 1.3261849179999845,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1858,6 +1916,7 @@
      "ciHigh": 0.7750377739999967,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1870,6 +1929,7 @@
      "ciHigh": 2.027056024000005,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1882,6 +1942,7 @@
      "ciHigh": 3.108762743999949,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1894,6 +1955,7 @@
      "ciHigh": 0.648277092999997,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1906,6 +1968,7 @@
      "ciHigh": 2.6697528119999916,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1918,6 +1981,7 @@
      "ciHigh": 1.5135336929999759,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1930,6 +1994,7 @@
      "ciHigh": 1.312770170999982,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1942,6 +2007,7 @@
      "ciHigh": 2.9519854020000205,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1954,6 +2020,7 @@
      "ciHigh": 0.8160904790000059,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -1978,6 +2045,7 @@
      "ciHigh": 0.8275627820000082,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -1990,6 +2058,7 @@
      "ciHigh": 5.420293570000038,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2002,6 +2071,7 @@
      "ciHigh": 6.237414228999987,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2014,6 +2084,7 @@
      "ciHigh": 4.195610968000023,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2026,6 +2097,7 @@
      "ciHigh": 12.042485434999923,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2038,6 +2110,7 @@
      "ciHigh": 3.870619052000009,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2050,6 +2123,7 @@
      "ciHigh": 2.854181228000001,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2062,6 +2136,7 @@
      "ciHigh": 6.379213342999981,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2074,6 +2149,7 @@
      "ciHigh": 1.629808788000024,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2098,6 +2174,7 @@
      "ciHigh": 2.6422374459999993,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2110,6 +2187,7 @@
      "ciHigh": 5.204042417999939,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2122,6 +2200,7 @@
      "ciHigh": 6.809442900000009,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2134,6 +2213,7 @@
      "ciHigh": 4.920191439999966,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2146,6 +2226,7 @@
      "ciHigh": 4.868903279999969,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2158,6 +2239,7 @@
      "ciHigh": 4.730774929999839,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2170,6 +2252,7 @@
      "ciHigh": 8.323686512999993,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2182,6 +2265,7 @@
      "ciHigh": 5.867594384000171,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2194,6 +2278,7 @@
      "ciHigh": 4.8964594660000875,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2218,6 +2303,7 @@
      "ciHigh": 0.8399235049999989,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2230,6 +2316,7 @@
      "ciHigh": 5.38801413200004,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2242,6 +2329,7 @@
      "ciHigh": 13.81495533300005,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2254,6 +2342,7 @@
      "ciHigh": 5.701406627999968,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2266,6 +2355,7 @@
      "ciHigh": 12.752622003000056,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2278,6 +2368,7 @@
      "ciHigh": 6.651363499000203,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2290,6 +2381,7 @@
      "ciHigh": 2.421095499000003,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2302,6 +2394,7 @@
      "ciHigh": 7.339465780999977,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2314,6 +2407,7 @@
      "ciHigh": 1.6266237119999714,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2338,6 +2432,7 @@
      "ciHigh": 0.012697276999999304,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2350,6 +2445,7 @@
      "ciHigh": 0.23087294699999622,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2362,6 +2458,7 @@
      "ciHigh": 0.21302578000002542,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2374,6 +2471,7 @@
      "ciHigh": 0.2014520920000505,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2386,6 +2484,7 @@
      "ciHigh": 1.2792939670000014,
      "successes": 27,
      "failures": 3,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2398,6 +2497,7 @@
      "ciHigh": 0.8487302289998625,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2410,6 +2510,7 @@
      "ciHigh": 0.38027871800004504,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2422,6 +2523,7 @@
      "ciHigh": 0.3652304520000471,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2434,6 +2536,7 @@
      "ciHigh": 0.14246723900000507,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2458,6 +2561,7 @@
      "ciHigh": 0.0987340110000223,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2470,6 +2574,7 @@
      "ciHigh": 0.5279209460000275,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2482,6 +2587,7 @@
      "ciHigh": 1.0021671459999926,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2494,6 +2600,7 @@
      "ciHigh": 0.463287757000071,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2506,6 +2613,7 @@
      "ciHigh": 4.067641454999917,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2518,6 +2626,7 @@
      "ciHigh": 0.9657360390000976,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2530,6 +2639,7 @@
      "ciHigh": 0.274476324999996,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2542,6 +2652,7 @@
      "ciHigh": 0.6759999579999131,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2554,6 +2665,7 @@
      "ciHigh": 0.4768944500000216,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2578,6 +2690,7 @@
      "ciHigh": 6.1949508500000015,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2590,6 +2703,7 @@
      "ciHigh": 34.87856184300001,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2602,6 +2716,7 @@
      "ciHigh": 114.45653145300015,
      "successes": 28,
      "failures": 2,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2614,6 +2729,7 @@
      "ciHigh": 45.08437409200001,
      "successes": 29,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2626,6 +2742,7 @@
      "ciHigh": 118.006164827,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2638,6 +2755,7 @@
      "ciHigh": 48.354800963000045,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2650,6 +2768,7 @@
      "ciHigh": 23.941967929000036,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2662,6 +2781,7 @@
      "ciHigh": 60.18295000199997,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2674,6 +2794,7 @@
      "ciHigh": 11.362065742000006,
      "successes": 30,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2698,6 +2819,7 @@
      "ciHigh": 3.198,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2710,6 +2832,7 @@
      "ciHigh": 25.211000000000002,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2722,6 +2845,7 @@
      "ciHigh": 17.361,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2734,6 +2858,7 @@
      "ciHigh": 10.322000000000001,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2746,6 +2871,7 @@
      "ciHigh": 5.079,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2758,6 +2884,7 @@
      "ciHigh": 3.447,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2770,6 +2897,7 @@
      "ciHigh": 6.002,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2782,6 +2910,7 @@
      "ciHigh": 29.387,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2806,6 +2935,7 @@
      "ciHigh": 3.383,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2818,6 +2948,7 @@
      "ciHigh": 16.598,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2830,6 +2961,7 @@
      "ciHigh": 8.46,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2842,6 +2974,7 @@
      "ciHigh": 3.124,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2854,6 +2987,7 @@
      "ciHigh": 4.447,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2866,6 +3000,7 @@
      "ciHigh": 26.473,
      "successes": 3,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -2890,6 +3025,7 @@
      "ciHigh": 26226039.40569669,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2902,6 +3038,7 @@
      "ciHigh": 12180922.11553713,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2914,6 +3051,7 @@
      "ciHigh": 8802017.874786258,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2926,6 +3064,7 @@
      "ciHigh": 14046213.91967833,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2938,6 +3077,7 @@
      "ciHigh": 19018916.06176393,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2950,6 +3090,7 @@
      "ciHigh": 12511064.62730527,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2962,6 +3103,7 @@
      "ciHigh": 10032070.22029399,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2974,6 +3116,7 @@
      "ciHigh": 11256266.419797035,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -2985,7 +3128,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3010,6 +3154,7 @@
      "ciHigh": 45432226.0902495,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3022,6 +3167,7 @@
      "ciHigh": 15665762.068123542,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3034,6 +3180,7 @@
      "ciHigh": 6824502.205578325,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3046,6 +3193,7 @@
      "ciHigh": 25040659.72956791,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3058,6 +3206,7 @@
      "ciHigh": 50769713.92118075,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3070,6 +3219,7 @@
      "ciHigh": 15941572.226789301,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3082,6 +3232,7 @@
      "ciHigh": 28309236.11282325,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3094,6 +3245,7 @@
      "ciHigh": 16512226.027804075,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3105,7 +3257,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3130,6 +3283,7 @@
      "ciHigh": 37212.48608150509,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3142,6 +3296,7 @@
      "ciHigh": 12694.243490626233,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3154,6 +3309,7 @@
      "ciHigh": 30528.458832690907,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3166,6 +3322,7 @@
      "ciHigh": 32845.367543657245,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3178,6 +3335,7 @@
      "ciHigh": 35339.304303268094,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3190,6 +3348,7 @@
      "ciHigh": 22205.655693344826,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3202,6 +3361,7 @@
      "ciHigh": 18091.726648082706,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3214,6 +3374,7 @@
      "ciHigh": 24394.90294753404,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3225,7 +3386,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3250,6 +3412,7 @@
      "ciHigh": 2335.1209802355006,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3262,6 +3425,7 @@
      "ciHigh": 907.9560634910066,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3274,6 +3438,7 @@
      "ciHigh": 1397.0414969481096,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3286,6 +3451,7 @@
      "ciHigh": 1445.2099435674997,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3298,6 +3464,7 @@
      "ciHigh": 525.9811744930038,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3310,6 +3477,7 @@
      "ciHigh": 758.0510342187492,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3322,6 +3490,7 @@
      "ciHigh": 241.17012911533277,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3334,6 +3503,7 @@
      "ciHigh": 277.47913820624194,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3345,7 +3515,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3370,6 +3541,7 @@
      "ciHigh": 24242.365145382657,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3382,6 +3554,7 @@
      "ciHigh": 6157.094536167853,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3394,6 +3567,7 @@
      "ciHigh": 16631.328883837607,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3406,6 +3580,7 @@
      "ciHigh": 20156.951425867424,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3418,6 +3593,7 @@
      "ciHigh": 14304.168336338615,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3430,6 +3606,7 @@
      "ciHigh": 11188.523389990907,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3442,6 +3619,7 @@
      "ciHigh": 7624.755264863241,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3454,6 +3632,7 @@
      "ciHigh": 10556.656193726754,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3465,7 +3644,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3490,6 +3670,7 @@
      "ciHigh": 3656.680027512044,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3502,6 +3683,7 @@
      "ciHigh": 7176.587303422815,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3514,6 +3696,7 @@
      "ciHigh": 20010.231367441254,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3526,6 +3709,7 @@
      "ciHigh": 282.6293157995055,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3538,6 +3722,7 @@
      "ciHigh": 7045.207694233529,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3550,6 +3735,7 @@
      "ciHigh": 9086.132756147847,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3562,6 +3748,7 @@
      "ciHigh": 7176.561151241256,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3574,6 +3761,7 @@
      "ciHigh": 342.1193520885976,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3585,7 +3773,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3610,6 +3799,7 @@
      "ciHigh": 940824.6206587328,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3622,6 +3812,7 @@
      "ciHigh": 473617.997484352,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3634,6 +3825,7 @@
      "ciHigh": 357900.892863281,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3646,6 +3838,7 @@
      "ciHigh": 495403.1524230568,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3658,6 +3851,7 @@
      "ciHigh": 735644.8674210771,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3670,6 +3864,7 @@
      "ciHigh": 426843.09112110734,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3682,6 +3877,7 @@
      "ciHigh": 306419.48377460503,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3694,6 +3890,7 @@
      "ciHigh": 320850.2531707575,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3705,7 +3902,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]
@@ -3730,6 +3928,7 @@
      "ciHigh": null,
      "successes": 0,
      "failures": 100,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3742,6 +3941,7 @@
      "ciHigh": 87.06895183240414,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3754,6 +3954,7 @@
      "ciHigh": null,
      "successes": 0,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3766,6 +3967,7 @@
      "ciHigh": 139.59259064058062,
      "successes": 97,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3778,6 +3980,7 @@
      "ciHigh": 75.43259021490144,
      "successes": 60,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3790,6 +3993,7 @@
      "ciHigh": 176.8950072085594,
      "successes": 91,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3802,6 +4006,7 @@
      "ciHigh": 74.31906229366729,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3814,6 +4019,7 @@
      "ciHigh": 143.47413904469113,
      "successes": 49,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     }
    ]
@@ -3838,6 +4044,7 @@
      "ciHigh": 5.237480625510216,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3850,6 +4057,7 @@
      "ciHigh": 0.28423740000036446,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3862,6 +4070,7 @@
      "ciHigh": 0.12517031282186508,
      "successes": 99,
      "failures": 1,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3874,6 +4083,7 @@
      "ciHigh": 0.07937178015708923,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3886,6 +4096,7 @@
      "ciHigh": 5.998660200020822,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3898,6 +4109,7 @@
      "ciHigh": 1.3554260018281639,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3910,6 +4122,7 @@
      "ciHigh": 3.5148783994372934,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3922,6 +4135,7 @@
      "ciHigh": 1.308725799999877,
      "successes": 100,
      "failures": 0,
+     "ourFailures": 0,
      "limitFailures": 0
     },
     {
@@ -3933,7 +4147,8 @@
      "ciLow": null,
      "ciHigh": null,
      "successes": 0,
-     "failures": 100,
+     "failures": 0,
+     "ourFailures": 100,
      "limitFailures": 0
     }
    ]

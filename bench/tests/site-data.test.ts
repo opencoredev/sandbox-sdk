@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failureReasons, pauseSplit, shortReason } from "../src/site-data.js";
+import { failureReasons, ourFailure, ourFailures, pauseSplit, shortReason } from "../src/site-data.js";
 
 type Row = Parameters<typeof failureReasons>[0][number] & Parameters<typeof pauseSplit>[0][number];
 
@@ -56,6 +56,28 @@ describe("failureReasons runs", () => {
     const [reason] = failureReasons([fail("cpu-single", 0), fail("cpu-all", 0), fail("cpu-single", 1), fail("cpu-all", 1)], "daytona");
     expect(reason?.count).toBe(4);
     expect(reason?.runs).toBe(2);
+  });
+});
+
+describe("ourFailure", () => {
+  const fail = (provider: string, scenario: string, note: string) =>
+    sample({ provider, scenario, outcome: { kind: "failure", note }, failureClass: "provider-operation" });
+  it("marks our harness and SDK failures as ours", () => {
+    expect(ourFailure(fail("superserve", "cpu-single", "Traceback ...\n_multiprocessing.SemLock(\nFileNotFoundError"))).toMatch(/dev\/shm/);
+    expect(ourFailure(fail("boxd", "files-10mb", "boxd request timed out. Check boxd configuration and retry."))).toMatch(/10 MB/);
+    expect(ourFailure(fail("tenki", "files-10mb", "Request deadline exceeded. Tenki could not honor the request."))).toMatch(/10 MB/);
+    expect(ourFailure(fail("tenki", "cold", "Process cancellation could not be confirmed; VM termination was requested."))).toMatch(/cancelled/);
+  });
+  it("leaves errors the provider returned as the provider's", () => {
+    expect(ourFailure(fail("e2b", "command", "E2B request failed. The provider reported unavailable."))).toBeNull();
+    expect(ourFailure(fail("daytona", "snapshot", "<html><title>502 Bad Gateway</title></html>"))).toBeNull();
+    expect(ourFailure(fail("boat", "preview-first-byte", "getaddrinfo ETIMEOUT box-node-1-3000.on.boat.dev"))).toBeNull();
+    expect(ourFailure(fail("freestyle", "preview-first-byte", "Preview HTTP 502, no first byte"))).toBeNull();
+  });
+  it("keeps our failures out of the provider's list and counts them apart", () => {
+    const rows = [fail("tenki", "files-10mb", "Request deadline exceeded."), fail("tenki", "cold", "Tenki request failed (provider). x")];
+    expect(failureReasons(rows, "tenki").map((r) => r.reason)).toEqual(["Tenki request failed (provider)."]);
+    expect(ourFailures(rows, "tenki")).toEqual([{ reason: "A timeout or error inside our 10 MB file-transfer code", count: 1, runs: 1 }]);
   });
 });
 

@@ -78,6 +78,8 @@ export function MetricChart({
     .flatMap(({ value }) => (value && isMeasured(value) ? [value] : []))
     .sort((a, b) => sign * (a.p50 - b.p50));
   const missing = values.filter(({ value }) => !value || !isMeasured(value));
+  // Providers left out of this chart on purpose still get their note.
+  const leftOut = only ? providers.flatMap((p) => (only.includes(p.id) || !notes[p.id] ? [] : [p.id])) : [];
 
   let next = 0;
   const marks = new Map<ProviderId, number>();
@@ -91,6 +93,7 @@ export function MetricChart({
     detail: [
       `median ${formatValue(v.p50, metric.unit)}`,
       ...(v.p95 === null ? [] : [`p95 ${formatValue(v.p95, metric.unit)}`]),
+      ...(v.ciLow === null || v.ciHigh === null ? [] : [`95% CI ${formatValue(v.ciLow, metric.unit)}–${formatValue(v.ciHigh, metric.unit)}`]),
       attemptsLine(v),
     ],
   }));
@@ -106,6 +109,7 @@ export function MetricChart({
               const note = notes[v.provider];
               return note ? [{ mark: marks.get(v.provider), text: <><Who id={v.provider} />: {note}</> }] : [];
             }),
+            ...leftOut.map((id) => ({ text: <><Who id={id} />: {notes[id]}.</> })),
             ...(missing.length > 0
               ? [
                   {

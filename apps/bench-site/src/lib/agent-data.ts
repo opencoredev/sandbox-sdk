@@ -1,7 +1,8 @@
 import { metric, providers, runWindow, runs, timedOperations } from "@/lib/data";
 import type { Metric } from "@/lib/data";
-import { formatGiB, formatValue, unitName } from "@/lib/format";
+import { formatGiB, formatMoney, formatPercent, formatValue } from "@/lib/format";
 import { providerName } from "@/lib/providers";
+import type { ProviderId } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
 import { eurUsd, usdPrice } from "@/lib/fx";
 import { successRate } from "@/lib/status";
@@ -18,6 +19,26 @@ export const groups = [
 
 const round = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 1000);
 
+// Tests we chose not to run, with the reason; the same reasons appear on the page's footnotes.
+export const notRun: Partial<Record<string, Partial<Record<ProviderId, string>>>> = {
+  "burst-25": {
+    daytona: "not-run: our Daytona account's concurrency limit refused the creates, on both attempts",
+    boat: "not-run: our Boat plan allows 12 starts a minute",
+  },
+};
+
+/** Why a result is blank, so an agent never has to guess. */
+function statusOf(id: string, provider: ProviderId, v: Metric["values"][number] | undefined) {
+  const skipped = notRun[id]?.[provider];
+  if (skipped && (!v || v.n === 0)) return skipped;
+  if (!v) return "unsupported";
+  if (v.n > 0) return "measured";
+  if (v.ourFailures > 0 && v.failures === 0) return "not-measured: our harness could not run this test on this provider";
+  if (v.failures > 0 && v.limitFailures === v.failures) return "not-run: our account or plan limit";
+  if (v.failures > 0) return "all-failed";
+  return "unsupported";
+}
+
 const results = (m: Metric) =>
   providers
     .map((p) => {
@@ -26,20 +47,64 @@ const results = (m: Metric) =>
         provider: p.id,
         median: round(v?.p50 ?? null),
         p95: round(v?.p95 ?? null),
+        ci95: v && v.ciLow !== null && v.ciHigh !== null ? [round(v.ciLow), round(v.ciHigh)] : null,
         attempts: v ? v.n + v.failures : 0,
         failed: v?.failures ?? 0,
+        status: statusOf(m.id, p.id, v),
       };
     })
     .sort((a, b) =>
       a.median === null ? 1 : b.median === null ? -1 : (m.better === "lower" ? 1 : -1) * (a.median - b.median),
     );
 
+/** Who wins each common question, straight from the data. */
+export function quickPicks() {
+  const best = (id: string) => {
+    const m = metric(id);
+    return results(m).filter((r) => r.median !== null).slice(0, 2);
+  };
+  const name = (id: ProviderId) => providerName(id);
+  const timed = (id: string, label: string) => {
+    const [a, b] = best(id);
+    return { need: label, pick: a ? `${name(a.provider)} ${formatValue(a.median ?? 0, metric(id).unit)}` : "n/a", runnerUp: b ? `${name(b.provider)} ${formatValue(b.median ?? 0, metric(id).unit)}` : "n/a" };
+  };
+  const cheapest = providers
+    .flatMap((p) => {
+      const price = usdPrice(p, "hourly");
+      return price ? [{ p, usd: price.usd }] : [];
+    })
+    .sort((a, b) => a.usd - b.usd);
+  const reliable = providers.map((p) => ({ p, rate: successRate(p).rate ?? 0 })).sort((a, b) => b.rate - a.rate);
+  const biggest = providers
+    .map((p) => ({ p, s: sizeOf(p) }))
+    .sort((a, b) => (b.s.vcpu ?? 0) - (a.s.vcpu ?? 0) || (b.s.memoryGiB ?? 0) - (a.s.memoryGiB ?? 0));
+  const pair = <T,>(xs: T[], f: (x: T) => string) => ({ pick: xs[0] ? f(xs[0]) : "n/a", runnerUp: xs[1] ? f(xs[1]) : "n/a" });
+  return [
+    timed("cold", "Fastest cold start"),
+    timed("tool-replay", "Fastest agent work (tool replay)"),
+    timed("burst-25", "Fastest 25-sandbox fan-out"),
+    timed("reconnect", "Fastest reconnect"),
+    { need: "Cheapest hour", ...pair(cheapest, (x) => `${name(x.p.id)} ${formatMoney(x.usd, "USD")}`) },
+    (() => {
+      // Several providers can share the top rate; name every one of them.
+      const top = reliable.filter((x) => x.rate === reliable[0]?.rate);
+      const rest = reliable.slice(top.length);
+      return {
+        need: "Most reliable",
+        pick: `${top.map((x) => name(x.p.id)).join(", ")} ${formatPercent(top[0]?.rate ?? 0, 2)}${top.length > 1 ? " (tied)" : ""}`,
+        runnerUp: rest[0] ? `${name(rest[0].p.id)} ${formatPercent(rest[0].rate, 2)}` : "n/a",
+      };
+    })(),
+    { need: "Biggest default machine", ...pair(biggest, (x) => `${name(x.p.id)} ${x.s.vcpu ?? "?"} vCPU / ${formatGiB(x.s.memoryGiB ?? 0)}`) },
+  ];
+}
+
 /** Everything on the page as one JSON document, for agents and scripts. */
 export function agentData() {
   return {
     about:
-      "Sandbox bench: cloud sandbox providers driven through one open-source SDK (Sandbox SDK) from one server in Florida, US. Medians and p95s per provider; every failure kept.",
-    run: { start: runWindow.start, end: runWindow.end, runs: runs.map((r) => r.id), timedOperations },
+      "Sandbox bench: cloud sandbox providers for AI agents, timed through one SDK (Sandbox SDK, built by us, to be published soon) from one server in Florida, US. Medians, p95s and 95% confidence intervals per provider; every provider-side failure kept, failures caused by our own code set aside.",
+    run: { start: runWindow.start, end: runWindow.end, runs: runs.map((r) => r.id), observations: timedOperations },
     howToRead:
       "median and p95 are in `unit`. `better` says which direction wins. Results are sorted best first. attempts counts every try, failed included; failed tries have no time. A null median means the provider does not support the test or every attempt failed. size is what the provider advertises for its default sandbox, or what we measured inside where it does not say. reliability.successRate counts every attempt on the site's tests, whatever made it fail.",
     providers: providers.map((p) => {
@@ -62,9 +127,11 @@ export function agentData() {
         },
         reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: round(rel.rate) },
         failures: p.failureReasons,
+        setAsideAsOurs: p.ourFailures,
         pauseSplit: p.pauseSplit,
       };
     }),
+    quickPicks: quickPicks(),
     metrics: groups.flatMap((g) =>
       g.ids.map((id) => {
         const m = metric(id);
@@ -84,9 +151,15 @@ export function agentMarkdown() {
     "",
     d.about,
     "",
-    `Run: ${d.run.start} to ${d.run.end}, ${d.run.timedOperations} timed operations. JSON: /results.json. Guide: /llms.txt.`,
+    `Run: ${d.run.start.slice(0, 10)} to ${d.run.end.slice(0, 10)}, from one server in Florida, US. JSON: /results.json. Guide: /llms.txt.`,
     "",
     d.howToRead,
+    "",
+    "## Quick picks",
+    "",
+    "| Need | Pick | Runner-up |",
+    "| --- | --- | --- |",
+    ...d.quickPicks.map((q) => `| ${q.need} | ${q.pick} | ${q.runnerUp} |`),
     "",
     "## Providers",
     "",
@@ -106,12 +179,12 @@ export function agentMarkdown() {
       lines.push(
         `### ${m.label}`,
         "",
-        `Median ${unitName[m.unit]}, ${m.better} is better.`,
+        `Median and p95, ${m.better} is better. Each cell carries its unit.`,
         "",
-        "| Rank | Provider | Median | p95 | Attempts | Failed |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Rank | Provider | Median | p95 | Attempts | Failed | Status |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
         ...results(m).map(
-          (r, i) => `| ${r.median === null ? "-" : i + 1} | ${providerName(r.provider)} | ${cell(r.median, m)} | ${cell(r.p95, m)} | ${r.attempts} | ${r.failed} |`,
+          (r, i) => `| ${r.median === null ? "-" : i + 1} | ${providerName(r.provider)} | ${cell(r.median, m)} | ${cell(r.p95, m)} | ${r.attempts} | ${r.failed} | ${r.status} |`,
         ),
         "",
       );
@@ -131,7 +204,11 @@ export function llmsTxt() {
 
 > ${d.about}
 
-Measured ${d.run.start.slice(0, 10)}. Providers: ${d.providers.map((p) => p.name).join(", ")}.
+Measured ${d.run.start.slice(0, 10)} to ${d.run.end.slice(0, 10)}. Providers (id → name): ${d.providers.map((p) => `${p.id} → ${p.name}`).join(", ")}.
+
+## Quick picks
+
+${d.quickPicks.map((q) => `- ${q.need}: ${q.pick} (runner-up ${q.runnerUp})`).join("\n")}
 
 ## Data
 
@@ -142,7 +219,7 @@ Measured ${d.run.start.slice(0, 10)}. Providers: ${d.providers.map((p) => p.name
 
 ${d.howToRead}
 
-Each provider ran its default sandbox size, so machine speed is not like for like. Every call starts in Florida, so providers hosted in Europe (Boat in France, boxd in Germany) pay a transatlantic round trip per call.
+Each provider ran its default sandbox size, so machine speed is not like for like. Prices are USD list prices for that size; boxd is converted from EUR at the ECB rate. Every call starts in Florida, so providers hosted in Europe (Boat in France, boxd in Germany) pay a transatlantic round trip per call.
 
 ## Metrics
 

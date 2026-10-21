@@ -16,11 +16,12 @@ import type { ScatterPoint } from "@/components/scatter";
 import { SpecSheet } from "@/components/spec-sheet";
 import { Card, TabCard } from "@/components/tabs";
 import type { Tab } from "@/components/tabs";
-import { coldSamples, metric, provider, providers, runWindow, runs, timedOperations } from "@/lib/data";
+import { coldSamples, metric, provider, providers, runWindow } from "@/lib/data";
 import type { Provider } from "@/lib/data";
-import { formatCount, formatGiB, formatMoney } from "@/lib/format";
+import { formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
+import { notRun } from "@/lib/agent-data";
 import { conversionNote, usdPrice } from "@/lib/fx";
 import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
@@ -40,7 +41,7 @@ const sections = [
   ["startup", "Start-up"],
   ["agent", "Agent work"],
   ["everyday", "Everyday calls"],
-  ["state", "Snapshots"],
+  ["state", "Pause & snapshots"],
   ["scale", "Bursts"],
   ["machines", "Machines"],
   ["reliability", "Reliability"],
@@ -50,12 +51,14 @@ const sections = [
 
 const start = new Date(runWindow.start);
 const end = new Date(runWindow.end);
-const longDate = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
-const sameDay = start.toISOString().slice(0, 10) === end.toISOString().slice(0, 10);
-/** "October 19, 2026", or "October 19, 2026, completed October 21" when top-up runs finished later. */
-const day = sameDay
-  ? longDate(start)
-  : `${longDate(start)}, completed ${end.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}`;
+const short = (d: Date, opts: Intl.DateTimeFormatOptions) => d.toLocaleDateString("en-US", { ...opts, timeZone: "UTC" });
+/** "Oct 19, 2026", or "Oct 19–21, 2026" when runs span several days in one month. */
+const day =
+  start.toISOString().slice(0, 10) === end.toISOString().slice(0, 10)
+    ? short(start, { month: "short", day: "numeric", year: "numeric" })
+    : start.getUTCMonth() === end.getUTCMonth()
+      ? `${short(start, { month: "short", day: "numeric" })}–${short(end, { day: "numeric" })}, ${start.getUTCFullYear()}`
+      : `${short(start, { month: "short", day: "numeric" })} – ${short(end, { month: "short", day: "numeric", year: "numeric" })}`;
 
 /** The advertised default size, as people know it: "4 vCPU, 8 GB RAM". */
 const size = (p: Provider | undefined) =>
@@ -119,8 +122,30 @@ function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: stri
 
 // The machine probe runs under Python multiprocessing; Superserve's VMs have no /dev/shm for its locks.
 const machineNotes: Notes = {
-  superserve: "every attempt failed: the VM has no /dev/shm, so Python's multiprocessing could not create a lock",
+  superserve: "not measured: our machine probe needs /dev/shm, which Superserve's VMs don't have",
 };
+
+const coldNotes: Notes = {
+  superserve: "includes setup our SDK runs after Superserve's create returns (settings, a check for Python, two small uploads), so it overstates Superserve's own start.",
+  e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB.",
+};
+
+// Adapters that need more than one provider call per command.
+const execNotes: Notes = {
+  daytona: "our adapter opens a session, runs the command through a small Python helper and cleans up, so each command is several Daytona calls.",
+  tenki: "our adapter launches the command, reads its exit code and removes its marker files: three Tenki calls per command.",
+};
+
+const methodRows = [
+  ["One SDK", "Every provider ran through Sandbox SDK, our own TypeScript SDK, which we will publish soon. Each adapter uses the provider's official SDK or API, and times include the adapter's own work (noted where it adds calls)."],
+  ["Independent", "No provider paid for, reviewed or saw these results before publishing. We may work with some of these companies; that did not change how tests ran or how results are reported."],
+  ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call, and the provider strip shows where each sandbox ran."],
+  ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
+  ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
+  ["Failures", "Every failure the provider returned counts. Attempts blocked by our own plan limits were rerun. Failures caused by our own code are set aside and listed under Reliability."],
+  ["Ties", "Medians within each other's 95% confidence intervals are effectively tied. Focus or hover a bar for its interval and attempt count."],
+  ["Left out", "Download speed, because the public test host rate-limited several providers. One early run was discarded in full after snapshot timeouts blocked a provider."],
+] as const;
 
 /** A note for each provider whose bursts did not all finish, counted from the data. */
 function partialBursts(id: string): Notes {
@@ -158,8 +183,6 @@ export default function Page() {
     return x !== null && price ? [{ provider: p.id, x, y: price.usd, currency: "USD" }] : [];
   });
   const boxdHour = boxd ? usdPrice(boxd, "hourly") : null;
-  const boat = provider("boat");
-  const daytona = provider("daytona");
 
   return (
     <>
@@ -187,14 +210,14 @@ export default function Page() {
               measured
             </h1>
             <p className="mt-5 max-w-[46ch] text-[16px] leading-snug">
-              {providers.length} sandbox providers through one open-source SDK, under the same conditions.
+              {providers.length} cloud sandbox providers for AI agents, timed through one SDK from one server.
             </p>
           </div>
           <dl className="divide-y divide-[var(--line)] border-y border-[var(--line)] text-[14px]">
             {[
               ["Run", day],
-              ["From", "One server in Florida, US. Providers took turns."],
-              ["Data", `${formatCount(timedOperations)} timed operations. Every failure kept.`],
+              ["From", "One server in Florida, US."],
+              ["Data", "100 attempts per quick test, 30 per agent task, 3 bursts per size."],
             ].map(([term, value]) => (
               <div key={term} className="grid grid-cols-[4rem_1fr] gap-3 py-3">
                 <dt className="text-[12px] text-[var(--muted)]">{term}</dt>
@@ -207,9 +230,11 @@ export default function Page() {
         <div className="grid gap-4 md:grid-cols-3">
           <Headline marker="var(--dither-color-blue)" title="Cold start" sub={metricSubtitle(cold, "create() to first command")}>
             <MetricChart metric={cold} what="" compact />
+            <p className="mt-1 text-[11px] text-[var(--muted)]">Superserve&apos;s time includes setup our SDK runs after its create returns.</p>
           </Headline>
-          <Headline marker="var(--dither-color-orange)" title="Agent work" sub={metricSubtitle(replay, "100 agent tool calls")}>
+          <Headline marker="var(--dither-color-orange)" title="Agent work" sub={metricSubtitle(replay, "Tool replay, 100 calls")}>
             <MetricChart metric={replay} what="" compact />
+            <p className="mt-1 text-[11px] text-[var(--muted)]">Boat (France) and boxd (Germany) cross the Atlantic on every call.</p>
           </Headline>
           <Headline marker="var(--dither-color-green)" title="Price per hour" sub="Default sandbox, list price · US dollars · Lower is better">
             <Columns columns={priceColumns("hourly").columns} label="Price per sandbox-hour" compact />
@@ -225,7 +250,7 @@ export default function Page() {
           <TabCard
             label="Start-up"
             tabs={[
-              ...metricTabs([{ id: "cold", what: "create() to first command", tab: "Cold start" }]),
+              ...metricTabs([{ id: "cold", what: "create() to first command", tab: "Cold start", notes: coldNotes }]),
               {
                 id: "cold-vs-price",
                 label: "Cold start vs price",
@@ -267,16 +292,16 @@ export default function Page() {
           title="Agent work"
           lede={
             <>
-              Real coding-agent tasks. They depend on the sandbox&apos;s CPU, disk and network as much as on the API. Every call starts in Florida, so{" "}
-              <Who id="boat" /> (France) and <Who id="boxd" /> (Germany) pay an ocean crossing on each one.
+              Real coding-agent tasks, so CPU, disk and network count as much as the API. Every call starts in Florida, so <Who id="boat" /> (France)
+              and <Who id="boxd" /> (Germany) cross the Atlantic on each one.
             </>
           }
         >
           <TabCard
             label="Agent work"
             tabs={metricTabs([
-              { id: "tool-replay", tab: "Tool replay", what: "100 tool calls in a row: write, read, edit, list, grep, run a test" },
-              { id: "npm-install", what: "npm ci for a small Vite and React app" },
+              { id: "tool-replay", tab: "Tool replay", what: "100 tool calls in a row: write, read, edit, list, grep, run a test", notes: execNotes },
+              { id: "npm-install", what: "npm ci for a small Vite and React app", notes: { e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB." } },
               { id: "pip-install", what: "requests and numpy from PyPI" },
               { id: "git-clone", what: "Shallow clone of a small pinned repo" },
               { id: "dev-server", what: "Start Vite and wait until it is ready" },
@@ -290,15 +315,16 @@ export default function Page() {
           <TabCard
             label="Everyday calls"
             tabs={metricTabs([
-              { id: "command", what: "A no-op command, mostly network and API overhead" },
+              { id: "command", what: "A no-op command, mostly network and API overhead", notes: execNotes },
               { id: "files-1kb", tab: "1 KB file", what: "Write a 1 KB file and read it back" },
               {
                 id: "files-10mb",
                 tab: "10 MB file",
                 what: "Write a 10 MB file and read it back",
+                only: providers.flatMap((p) => (p.id === "boxd" ? [] : [p.id])),
                 notes: {
-                  boxd: "its download cut large files short, so the SDK reads in chunks. This measures that workaround.",
-                  boat: "the read uses Boat's signed download URL.",
+                  boxd: "left out: boxd's download cut large files short, so our SDK reads them in 1 MB pieces and the time would measure that workaround",
+                  boat: "the read takes several calls: a size check, a copy, a signed URL, then the download.",
                 },
               },
               { id: "reconnect", what: "Attach to an existing sandbox by ID and run a command" },
@@ -307,17 +333,17 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="state" title="Pause and snapshots" lede="Pausing stops paying for idle time while an agent waits on a human. Snapshots start many sandboxes from one prepared state.">
+        <Section id="state" title="Pause & snapshots" lede="Pausing stops paying for idle time while an agent waits on a human. Snapshots start many sandboxes from one prepared state.">
           <TabCard
-            label="Pause and snapshots"
+            label="Pause & snapshots"
             tabs={[
-              { id: "pause-resume", label: "Pause + resume", content: <PauseChart /> },
               ...(providers.some((p) => p.pauseSplit)
                 ? [
                     { id: "resume", label: "Resume", content: <PausePart part="resume" /> },
                     { id: "pause", label: "Pause", content: <PausePart part="pause" /> },
                   ]
                 : []),
+              { id: "pause-resume", label: "Pause + resume", content: <PauseChart /> },
               ...metricTabs([
               { id: "snapshot", what: "Save a prepared sandbox as a snapshot" },
               { id: "create-from-snapshot", tab: "Start from snapshot", what: "New sandbox from that snapshot, then a command" },
@@ -326,7 +352,7 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="scale" title="Bursts" lede="K sandboxes created at the same moment, as an agent fanning out sub-tasks would. Timed until the last one is ready.">
+        <Section id="scale" title="Bursts" lede="10 or 25 sandboxes started at once, as an agent fanning out would, timed until the last one runs a command. Three bursts per size, so treat these as indicative.">
           <TabCard
             label="Bursts"
             tabs={metricTabs([
@@ -340,10 +366,7 @@ export default function Page() {
                 id: "burst-25",
                 tab: "25 at once",
                 what: "25 creates at once, until all 25 run a command",
-                notes: {
-                  daytona: "not run: our Daytona account's concurrency limit refused the creates, on both attempts",
-                  boat: "not run: our Boat plan allows 12 starts a minute",
-                },
+                notes: Object.fromEntries(Object.entries(notRun["burst-25"] ?? {}).map(([id, why]) => [id, why.replace(/^not-run: /, "not run: ")])),
               },
             ])}
           />
@@ -362,7 +385,7 @@ export default function Page() {
                 label: "Size",
                 content: (
                   <>
-                    <ChartHead title="Who gives you the biggest machine" sub="Advertised size of each provider's default sandbox · Hover for what we measured inside" />
+                    <ChartHead title="Default machine size" sub="Advertised size of each provider's default sandbox · Tap or focus a bar for what we measured inside" />
                     <MachineSizes providers={providers} />
                     <Footnotes items={[{ text: <><Who id="e2b" />: {advertised.e2b.note}</> }]} />
                   </>
@@ -370,10 +393,10 @@ export default function Page() {
               },
               {
                 id: "details",
-                label: "CPU",
+                label: "Hardware",
                 content: (
                   <>
-                    <ChartHead title="What it ran on" sub="Read from inside each sandbox" />
+                    <ChartHead title="Hardware inside each sandbox" sub="Read from inside each sandbox" />
                     <SpecSheet providers={providers} />
                   </>
                 ),
@@ -382,7 +405,7 @@ export default function Page() {
                 { id: "cpu-single", what: "One core running a fixed Python loop", notes: machineNotes },
                 {
                   id: "cpu-all",
-                  what: `Every core the sandbox has, so more vCPUs win: Boat has ${size(boat)}, Daytona ${size(daytona)}`,
+                  what: "Every core at once, so bigger machines win",
                   notes: machineNotes,
                 },
                 { id: "memory", tab: "Memory", what: "Copying 16 MB in memory", notes: machineNotes },
@@ -395,7 +418,7 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="reliability" title="Reliability" lede="Every attempt counts. Failures were kept, never dropped as outliers, and each one is listed with its cause.">
+        <Section id="reliability" title="Reliability" lede="Every failure the provider returned, kept and listed with its cause. Failures caused by our own code are set aside and listed separately.">
           <Card>
             <Reliability providers={providers} />
           </Card>
@@ -405,40 +428,42 @@ export default function Page() {
           <TabCard
             label="Cost"
             tabs={[
-              { id: "hour", label: "Per sandbox-hour", content: <PriceChart k="hourly" title="Price per sandbox-hour" what="One default sandbox for an hour" /> },
+              { id: "hour", label: "Price per hour", content: <PriceChart k="hourly" title="Price per hour" what="One default sandbox for an hour" /> },
               { id: "vcpu", label: "Per vCPU-hour", content: <PriceChart k="perVcpuHour" title="Price per vCPU-hour" what="Hourly price divided by vCPUs, fairer across sizes" /> },
             ]}
           />
         </Section>
 
-        <Section id="method" title="Method" lede="Everything ran through Sandbox SDK's single interface, so each provider got the same calls in the same order.">
+        <Section id="method" title="Method" lede="How the numbers were made, and what could bias them.">
           <Card>
-            <div className="grid gap-x-12 gap-y-5 text-[14px] leading-relaxed text-[var(--muted)] md:grid-cols-2">
-              <p>
-                One server in Florida drove every run, from {day}. Providers took turns in round-robin order, so a slow minute on the network hit everyone.
-              </p>
-              <p>The SDK adds no extra calls: run() is one exec on the provider. Each timer starts right before the call and stops when the result is back.</p>
-              <p>
-                No outliers were removed. Failures are kept and classified. Every number on this page is in the{" "}
-                <a className="text-[var(--foreground)] underline decoration-dotted underline-offset-4" href="results.md">
-                  results tables
-                </a>
-                .
-              </p>
-              <p>
-                Every provider got 100 attempts per quick test, 30 per agent workload and snapshot test, and 3 bursts per size. Missing attempts were rerun; extra ones were cut to the first ones in time order. Attempts our own plan limits blocked were rerun; provider failures count.
-              </p>
-              <p>
-                Download speed is left out: the public test host rate-limited several providers. {formatCount(timedOperations)} timed operations from {runs.length} runs. One early run was
-                discarded in full after snapshot timeouts blocked a provider.
-              </p>
-            </div>
+            <dl className="grid gap-x-12 gap-y-5 text-[14px] leading-relaxed md:grid-cols-2">
+              {methodRows.map(([term, text]) => (
+                <div key={term}>
+                  <dt className="font-medium">{term}</dt>
+                  <dd className="mt-1 text-[var(--muted)]">{text}</dd>
+                </div>
+              ))}
+            </dl>
           </Card>
         </Section>
       </main>
 
       <footer className="mx-auto mt-24 max-w-[1200px] px-4 sm:px-6">
-        <p className="border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">Sandbox bench · {day}</p>
+        <p className="flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">
+          <span>Sandbox bench · {day}</span>
+          <span aria-hidden>·</span>
+          <span>
+            Data:{" "}
+            {["llms.txt", "results.json", "results.md"].map((f, i) => (
+              <span key={f}>
+                {i > 0 ? " · " : ""}
+                <a className="underline decoration-dotted underline-offset-4 hover:text-[var(--foreground)]" href={f}>
+                  {f}
+                </a>
+              </span>
+            ))}
+          </span>
+        </p>
       </footer>
     </>
   );

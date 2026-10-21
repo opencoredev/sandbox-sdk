@@ -150,9 +150,38 @@ const label = (sample: Pick<MergedSample, "suite" | "scenario">) =>
   metricDefs.find((d) => d.suite === sample.suite && d.scenario === sample.scenario)?.label ??
   sample.scenario.replace(/^burst-(\d+)\/.*$/, "$1 at once");
 
-const skipped = new Set(["network-mbps", "snapshot-total"]);
 type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass"> &
   Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration">>;
+
+/**
+ * Failures caused by our own harness or SDK rather than the provider. The site
+ * leaves them out of attempts and the failure list and discloses how many; the
+ * raw report keeps them. Each rule says why it is ours.
+ */
+const ourFailureRules: readonly { test: (s: FailureInput) => boolean; reason: string }[] = [
+  {
+    // The machine probe uses Python multiprocessing, which needs /dev/shm.
+    test: (s) => s.provider === "superserve" && s.outcome.kind === "failure" && /SemLock|\/dev\/shm/.test(s.outcome.note),
+    reason: "Our machine probe needs /dev/shm, which Superserve's VMs don't have",
+  },
+  {
+    // boxd and Tenki large files go through SDK workarounds with their own timeouts; Freestyle's message is the SDK's generic wrapper.
+    test: (s) =>
+      s.scenario === "files-10mb" &&
+      s.outcome.kind === "failure" &&
+      /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
+    reason: "A timeout or error inside our 10 MB file-transfer code",
+  },
+  {
+    test: (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
+    reason: "Our SDK could not confirm a cancelled process",
+  },
+];
+
+/** Why a failure is ours, or null when the provider returned the error. */
+export const ourFailure = (s: FailureInput) => ourFailureRules.find((r) => r.test(s))?.reason ?? null;
+
+const skipped = new Set(["network-mbps", "snapshot-total"]);
 
 /**
  * Every failure for one provider, grouped by cause: what went wrong, on how
@@ -163,7 +192,7 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
   const groups = new Map<string, { kind: string; reason: string; count: number; runs: Set<string>; tests: Set<string> }>();
   for (const s of samples) {
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
-    if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario)) continue;
+    if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
     const reason = shortReason(s.outcome.note);
     const kind = s.failureClass ?? "provider-operation";
     const key = `${kind}|${reason}`;
@@ -176,6 +205,21 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
   return [...groups.values()]
     .sort((a, b) => b.runs.size - a.runs.size || b.count - a.count)
     .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, runs: g.runs.size, tests: [...g.tests] }));
+}
+
+/** Failures we left out because they are ours, grouped by reason, with the runs they hit. */
+export function ourFailures(samples: readonly FailureInput[], provider: string) {
+  const groups = new Map<string, { reason: string; count: number; runs: Set<string> }>();
+  for (const s of samples) {
+    if (s.provider !== provider || skipped.has(s.scenario)) continue;
+    const reason = ourFailure(s);
+    if (!reason) continue;
+    const group = groups.get(reason) ?? { reason, count: 0, runs: new Set<string>() };
+    group.count += 1;
+    group.runs.add(`${s.sourceRunId}:${s.iterationNamespace}:${s.sourceIteration}`);
+    groups.set(reason, group);
+  }
+  return [...groups.values()].map((g) => ({ reason: g.reason, count: g.count, runs: g.runs.size }));
 }
 
 /** Median pause and median resume, in seconds, when the samples record them separately. */
@@ -203,6 +247,10 @@ export function siteData(r: PublicationReport) {
       );
       if (!s) return [];
       const scaled = (v: number | null | undefined) => (v == null ? null : v * def.scale);
+      // Our own failures are not attempts against the provider.
+      const ours = r.samples.filter(
+        (x) => x.suite === def.suite && x.provider === provider && x.scenario === def.scenario && ourFailure(x),
+      ).length;
       return [
         {
           provider,
@@ -213,7 +261,8 @@ export function siteData(r: PublicationReport) {
           ciLow: scaled(s.stats.p50CI?.low),
           ciHigh: scaled(s.stats.p50CI?.high),
           successes: s.reliability.successes,
-          failures: s.reliability.failures,
+          failures: s.reliability.failures - ours,
+          ourFailures: ours,
           limitFailures: s.reliability.classes["provider-account-limit"],
         },
       ];
@@ -242,6 +291,7 @@ export function siteData(r: PublicationReport) {
       },
       hardware: hw,
       failureReasons: failureReasons(r.samples, name),
+      ourFailures: ourFailures(r.samples, name),
       pauseSplit: pauseSplit(r.samples, name),
     };
   });
