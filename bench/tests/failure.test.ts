@@ -27,3 +27,13 @@ it.each([
 it("does not mine metadata from JSON bodies or serialize unknown native cause fields", () => {
   expect(failureOutcome(new Error("safe", {cause: JSON.stringify({body: {status: 502, code: "private-body"}, headers: {requestId: "private-header"}})}), text => text).cause).toBeUndefined();
 });
+
+it.each(["code", "providerCode", "provider_code"])("normalizes numeric gRPC %s without losing the rest of native evidence", key => {
+  const outcome = failureOutcome(new Error("native failed", {cause: {[key]: 14, operation: "create", stage: "waitReady", requestId: "req-14"}}), text => text);
+  expect(outcome.cause).toEqual({providerCode: "14", operation: "create", stage: "waitReady", requestId: "req-14"});
+});
+it("omits only malformed allowlisted fields, retaining valid siblings and aliases", () => {
+  const outcome = failureOutcome(new Error("failed", {cause: {providerCode: {}, code: 0, httpStatus: 999, status: 503, requestId: ["secret"], operation: "create", stage: "waitReady", elapsedMs: -2, body: "secret-body"}}), text => text);
+  expect(outcome.cause).toEqual({providerCode: "0", httpStatus: 503, operation: "create", stage: "waitReady"});
+  expect(JSON.stringify(outcome)).not.toContain("secret");
+});

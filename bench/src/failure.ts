@@ -32,13 +32,14 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
     ? sanitize(error.code).slice(0, 100) : undefined;
   const raw = error instanceof Error ? error.cause : undefined;
   const cause: z.infer<typeof causeSchema> = {};
+  const nativeCode = z.union([z.string(), z.number().finite()]).transform(String);
   const metadataSchema = z.object({
-    httpStatus: z.coerce.number().int().min(100).max(599).optional(),
-    status: z.coerce.number().int().min(100).max(599).optional(),
-    statusCode: z.coerce.number().int().min(100).max(599).optional(),
-    providerCode: z.string().optional(), provider_code: z.string().optional(), code: z.string().optional(),
-    requestId: z.string().optional(), request_id: z.string().optional(), operation: z.string().optional(),
-    stage: z.string().optional(), elapsedMs: z.coerce.number().finite().nonnegative().optional(),
+    httpStatus: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
+    status: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
+    statusCode: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
+    providerCode: nativeCode.optional().catch(undefined), provider_code: nativeCode.optional().catch(undefined), code: nativeCode.optional().catch(undefined),
+    requestId: z.string().optional().catch(undefined), request_id: z.string().optional().catch(undefined), operation: z.string().optional().catch(undefined),
+    stage: z.string().optional().catch(undefined), elapsedMs: z.coerce.number().finite().nonnegative().optional().catch(undefined),
   });
   let metadata: unknown = raw;
   if (typeof raw === "string" || raw instanceof Error) {
