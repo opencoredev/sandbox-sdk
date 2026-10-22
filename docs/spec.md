@@ -133,12 +133,12 @@ await box.files.upload("./starter", "app", { ignore: [".git", "node_modules"] })
 await box.files.download("app/dist", "./out");
 await box.files.search("TODO", { path: "app", glob: "*.ts", maxMatches: 200 }); // [{ path, line, text }]
 const stop = box.files.watch("app", (e) => {}, { recursive: true }); // { type, path } events
-const diff = await box.files.changes({ since: "start" });      // { added, modified, removed, patch }
+const diff = await box.files.changes({ since: "start" });      // { added, modified, removed, patch }; needs createSandbox(p, { trackChanges: true })
 ```
 
 - Relative paths resolve against `/workspace`.
 - `edit` fails with `edit_not_found` or `edit_not_unique`, including the line numbers of the matches.
-- `changes` compares against a snapshot taken at create time, or against `box.files.mark()` for a named checkpoint. It works on any provider by using git internally on a hidden index.
+- `changes` compares against `box.files.mark()` for a named checkpoint, or against a snapshot taken at create time when the sandbox was created with `trackChanges: true` (off by default, so creating a sandbox costs no extra round trips). It works on any provider by using git internally on a hidden index.
 
 ## 5. Git
 
