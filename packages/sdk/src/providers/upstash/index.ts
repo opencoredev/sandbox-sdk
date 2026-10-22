@@ -10,6 +10,7 @@
  */
 import { posix } from "node:path";
 import type { Box, BoxConfig, BoxData, BoxSize, FileStat, NetworkPolicy } from "@upstash/box";
+type BoxStatus = BoxData["status"];
 import type {
   Provider,
   SandboxInfo,
@@ -22,7 +23,7 @@ import { Redactor, SandboxError } from "../../errors.js";
 import { quote } from "../../run.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
-import { readFile, writeFile } from "./files.js";
+import { listDirectory, readFile, writeFile } from "./files.js";
 
 export type UpstashOptions = Pick<
   BoxConfig,
@@ -40,6 +41,8 @@ const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
 // Upstash reruns initCommand on automatic as well as explicit resume. Disk
 // snapshots retain process records, but cannot restore those OS processes.
 const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/upstash-runs; true`;
+const boxStatuses = ["creating", "idle", "running", "paused", "error", "deleted"] as const satisfies readonly BoxStatus[];
+const isBoxStatus = (value: unknown): value is BoxStatus => boxStatuses.some((status) => status === value);
 type Metadata = { version: 1; key?: string; labels: Labels };
 function metadata(text: string): Metadata {
   let value: unknown;
@@ -73,7 +76,7 @@ function metadata(text: string): Metadata {
     ...("key" in value && typeof value.key === "string" ? { key: value.key } : {}),
   };
 }
-function info(data: BoxData, meta: Metadata): SandboxInfo {
+function info(data: Pick<BoxData, "id" | "status" | "created_at">, meta: Metadata): SandboxInfo {
   return {
     id: data.id,
     key: meta.key,
@@ -180,6 +183,29 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
     }
     throw new SandboxError("Snapshot was not found. It may have been deleted. Check the snapshot ID and account.", { code: "not_found", provider: "upstash" });
   }
+  /** One box record; Box.list returns every box on the account. */
+  async function boxData(config: ReturnType<typeof connection>, id: string): Promise<Pick<BoxData, "id" | "status" | "created_at">> {
+    const baseUrl = (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
+    const response = await fetch(`${baseUrl}/v2/box/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? 30_000),
+    });
+    if (!response.ok)
+      throw Object.assign(new Error("Box metadata lookup failed"), { statusCode: response.status });
+    const data: unknown = await response.json();
+    const status = data && typeof data === "object" && "status" in data ? data.status : undefined;
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !("id" in data) ||
+      data.id !== id ||
+      !isBoxStatus(status) ||
+      !("created_at" in data) ||
+      typeof data.created_at !== "number"
+    )
+      throw new SandboxError("Invalid box metadata response. Upstash did not return the created box. Retry when the service is available.", { code: "provider", provider: "upstash", sandboxId: id });
+    return { id, status, created_at: data.created_at };
+  }
   const provider: UpstashProvider = {
     name: "upstash",
     keyMode: "best-effort",
@@ -202,7 +228,10 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           runtime: options.runtime,
           size: input.size ?? (input.from === undefined ? undefined : await snapshotSize(input.from)),
           env: input.env,
-          labels: [],
+          // A fresh box has no metadata until setup writes it, and discovery skips
+          // boxes without metadata, so labelling at create saves a request.
+          // Snapshot clones inherit the source metadata and are labelled after setup.
+          labels: input.from === undefined ? [marker] : [],
           initCommand,
           networkPolicy: policy,
           timeout: options.requestTimeoutMs,
@@ -226,19 +255,19 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           // One guest round trip prepares both directories and persists metadata.
           // Keep this after native create: initCommand also runs on resume and
           // must not overwrite metadata or publish an incomplete snapshot clone.
-          const setup = await value.exec.command(
+          const setup = value.exec.command(
             `mkdir -p /workspace ${quote(posix.dirname(metadataPath))} && ` +
             `if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && ` +
             `test -w /workspace && (umask 077; printf %s ${quote(JSON.stringify(meta))} > ${quote(metadataPath)})`,
           );
-          if (setup.exitCode !== 0)
+          const record = boxData(config, value.id);
+          void record.catch(() => {});
+          if ((await setup).exitCode !== 0)
             throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: value.id });
           // Publish discovery only after metadata and the workspace are ready. Native
           // labels allow five short strings; durable metadata preserves arbitrary labels.
-          await value.labels.add(marker);
-          const data = (await Box.list(config)).find((data) => data.id === value.id);
-          if (!data) throw new Error("Created box missing from provider listing");
-          return info(data, meta);
+          if (input.from !== undefined) await value.labels.add(marker);
+          return info(await record, meta);
         } catch (error) {
           await value.delete();
           boxes.delete(value.id);
@@ -314,14 +343,20 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
       readRange: (id, path, range) => onFile(id, "readRange", value => readFile(value, path, range)),
       write: (id, path, data) => onFile(id, "write", value => writeFile(value, path, data)),
       list: (id, path) =>
-        onFile(id, "list", async (value) =>
-          Promise.all(
+        onFile(id, "list", async (value) => {
+          const entries = await listDirectory(value, path);
+          if (entries)
+            return entries.map((entry) => {
+              if (entry.type === "other") unsupported("Special filesystem entries are not supported");
+              return { path: posix.join(path, entry.name), type: entry.type, size: entry.size, modifiedAt: entry.modifiedAt };
+            });
+          return Promise.all(
             (await value.files.list(path)).map(async (entry) => {
               const full = posix.join(path, entry.name);
               return fileInfo(full, await value.files.stat(full));
             }),
-          ),
-        ),
+          );
+        }),
       stat: (id, path) => onFile(id, "stat", async (value) => fileInfo(path, await value.files.stat(path))),
       remove: (id, path, settings) => onFile(id, "remove", (value) => value.files.remove(path, settings)),
       mkdir: (id, path) => onFile(id, "mkdir", (value) => value.files.mkdir(path, { parents: true })),
