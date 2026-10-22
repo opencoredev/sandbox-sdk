@@ -339,6 +339,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
     },
     files: {
       writeCreatesParents: true,
+      // Upstash's own step history, written into the workspace by the platform.
+      internal: [".step-git"],
       read: (id, path) => onFile(id, "read", value => readFile(value, path)),
       readRange: (id, path, range) => onFile(id, "readRange", value => readFile(value, path, range)),
       write: (id, path, data) => onFile(id, "write", value => writeFile(value, path, data)),

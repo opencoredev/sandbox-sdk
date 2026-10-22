@@ -72,17 +72,21 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   // One exec: init the hidden repo if needed, stage /workspace, write the tree and
   // optionally its mark file. Exit 78 means the guest lacks find; use the RPC path.
   async function tree(mark?: string): Promise<string> {
+    // Provider internals under /workspace (e.g. Upstash's .step-git) are pruned like .git.
+    const prune = ["-name .git", ...(fs.internal ?? []).map(name => `-path ${quote(`./${posix.relative("/workspace", pathOf(name))}`)}`)].join(" -o ");
     const script = `command -v git >/dev/null 2>&1 || exit 69
 command -v find >/dev/null 2>&1 || exit 78
 g=${quote(gitDir)}
+# A fresh index per call: a killed attempt leaves no index.lock to block later checkpoints.
+export GIT_INDEX_FILE="$g/tree.$$.index"; paths="$g/tree.$$.paths"; trap 'rm -f "$GIT_INDEX_FILE" "$GIT_INDEX_FILE.lock" "$paths"' EXIT
 [ -d "$g" ] || git init -q --bare "$g" >/dev/null || exit 69
-cd /workspace && find . -name .git -prune -o ! -type d -print0 > "$g/sdk.paths" || exit 1
+cd /workspace && find . \\( ${prune} \\) -prune -o ! -type d -print0 > "$paths" || exit 1
 git --git-dir="$g" --work-tree=/workspace read-tree --empty || exit 1
-git --git-dir="$g" --work-tree=/workspace update-index --add --remove -z --stdin < "$g/sdk.paths" || exit 1
+git --git-dir="$g" --work-tree=/workspace update-index --add --remove -z --stdin < "$paths" || exit 1
 tree=$(git --git-dir="$g" --work-tree=/workspace write-tree) || exit 1
 ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quote(mark)} || exit 1\n` : ""}printf '%s\\n' "$tree"`;
     let output = "";
-    const result = await provider.exec(id, { command: script, cwd: "/workspace", env: { ...defaults, GIT_INDEX_FILE: `${gitDir}/sdk.index` }, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") output += chunk.text; } });
+    const result = await provider.exec(id, { command: script, cwd: "/workspace", env: defaults, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") output += chunk.text; } });
     if (result.exitCode === 78) { const legacy = await legacyTree(); if (mark) await write(mark, legacy); return legacy; }
     if (result.exitCode === 69) throw new SandboxError("File checkpoint failed. Git is unavailable. Install git in the sandbox image.", { code: "unsupported" });
     if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git could not update the hidden index. Ensure git is installed and /workspace is readable.", { code: "provider" });
@@ -96,7 +100,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     // Feed individual files: git add would collapse nested repositories into gitlinks.
     // The one-exec script above does the same with find, pruning every .git entry.
     const paths: string[] = [];
-    async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git") continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
+    const internal = new Set((fs.internal ?? []).map(name => pathOf(name)));
+    async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git" || internal.has(entry.path)) continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
     await collect("/workspace"); await git("read-tree --empty");
     if (paths.length) await git("update-index --add --remove -z --stdin", paths.join("\0") + "\0");
     return (await git("write-tree")).trim();
