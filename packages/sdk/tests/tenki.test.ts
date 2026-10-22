@@ -16,6 +16,49 @@ afterEach(async () => {
   await cleanupTenki();
 });
 describe("Tenki mappings", () => {
+  test("native stat and list match the guest transport, falling back on other errors", async () => {
+    const box = await createSandbox(factory());
+    await box.files.write("/home/tenki/meta/real.txt", "abc");
+    const session = tenkiState.boxes.get(box.id);
+    if (!session) throw new Error("Missing mock session");
+    const entry = { size: 3n, mode: 134218239, isDir: false, modifiedUnixNs: 1792686899634601692n };
+    const stat = vi.fn(async (path: string) => {
+      if (path.endsWith("/missing"))
+        throw Object.assign(new Error("gone"), { name: "FileNotFoundError" });
+      if (path.endsWith("/real.txt"))
+        throw Object.assign(new Error("path_escape"), { name: "PermissionDeniedError" });
+      return { ...entry, path, isSymlink: true };
+    });
+    const list = vi.fn(async (_path: string, _options: { includeHidden?: boolean }) => [
+      { ...entry, path: "link" },
+      { ...entry, path: ".hidden", mode: 420 },
+      { ...entry, path: "dir", mode: 2147484141, isDir: true },
+    ]);
+    Object.defineProperty(session, "fs", { value: { stat, list }, configurable: true });
+    expect(await box.files.stat("/home/tenki/meta/link")).toEqual({
+      path: "/home/tenki/meta/link",
+      type: "symlink",
+      size: 3,
+      modifiedAt: 1792686899634.6016,
+    });
+    expect((await box.files.list("/home/tenki/meta")).map(({ path, type }) => [path, type])).toEqual([
+      ["/home/tenki/meta/link", "symlink"],
+      ["/home/tenki/meta/.hidden", "file"],
+      ["/home/tenki/meta/dir", "directory"],
+    ]);
+    expect(list).toHaveBeenCalledWith("/home/tenki/meta", { includeHidden: true });
+    const run = vi.spyOn(session, "run");
+    await expect(box.files.stat("/home/tenki/meta/missing")).rejects.toMatchObject({
+      code: "file_not_found",
+    });
+    expect(run).not.toHaveBeenCalled();
+    // Errors the guest reports differently are answered by the guest itself.
+    expect(await box.files.stat("/home/tenki/meta/real.txt")).toMatchObject({
+      type: "file",
+      size: 3,
+    });
+    expect(run).toHaveBeenCalledOnce();
+  });
   test("concurrent handles share one VM termination", async () => {
     const provider = factory();
     const first = await createSandbox(provider);
