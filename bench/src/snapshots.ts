@@ -35,6 +35,13 @@ export async function snapshotCleaner(
       await call(c, "call", "DELETE", `/images/${encodeURIComponent(id)}`);
     };
   }
+  if (name === "boxd") {
+    // A fresh client: cleanup can run after the source machine is gone, when the adapter's native handle is not.
+    const c = member(await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY }), "snapshots");
+    return async (id) => {
+      await call(c, "delete", id);
+    };
+  }
   if (name === "upstash") {
     const mod: unknown = await import(resolveNative("@upstash/box"));
     const c = member(mod, "Box");
