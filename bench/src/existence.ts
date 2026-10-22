@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { createRequire } from "node:module";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
   status: z.number().int().min(100).max(599).optional().catch(undefined),
   statusCode: z.number().int().min(100).max(599).optional().catch(undefined),
+  grpcCode: z.number().int().optional().catch(undefined),
   code: z.union([z.number(), z.string().regex(/^[\w-]{1,64}$/)]).optional().catch(undefined),
   response: z.object({status: z.number().optional()}).optional().catch(undefined),
 });
@@ -27,8 +29,13 @@ export function lookupError(error: unknown, name: string, method: string): Looku
   const inner = statusFields.safeParse(error instanceof Error ? error.cause : undefined);
   const fields = [outer, inner].flatMap(v => v.success ? [v.data] : []);
   const statuses = fields.flatMap(v => [v.status, v.statusCode, v.response?.status].filter(v => v !== undefined));
-  const codes = fields.flatMap(v => v.code === undefined ? [] : [String(v.code)]);
-  const absent = statuses.length ? statuses.every(v => v === 404) : name === "tenki" && codes.length > 0 && codes.every(v => v === "5");
+  const codes = fields.flatMap(v => [v.code, ...(name === "boxd" ? [v.grpcCode] : [])]
+    .flatMap(code => code === undefined ? [] : [String(code)]));
+  const boxdMissing = name === "boxd" && typeof boxdNotFound === "function" && error instanceof boxdNotFound
+    && outer.success && outer.data.grpcCode === 5 && codes.every(code => code === "5");
+  const consistentGrpc = name !== "boxd" || !fields.some(v => v.grpcCode !== undefined) || boxdMissing;
+  const absent = consistentGrpc && (statuses.length ? statuses.every(v => v === 404)
+    : boxdMissing || name === "tenki" && codes.length > 0 && codes.every(v => v === "5"));
   return {result: absent ? "not-found" : "unavailable", method, checkedAt: new Date().toISOString(),
     ...(statuses[0] === undefined ? {} : {httpStatus: statuses[0]}), ...(codes[0] === undefined ? {} : {nativeCode: redact(codes[0])})};
 }
@@ -42,6 +49,8 @@ async function call(value: unknown, key: string, ...args: unknown[]) {return fn.
 async function sdk(name: string): Promise<unknown> {
   return import(import.meta.resolve(name, new URL("../../packages/sdk/package.json", import.meta.url).href));
 }
+// Match the installed native class, never an error name/message or an arbitrary gRPC-shaped object.
+const boxdNotFound = member(await import(createRequire(new URL("../../packages/sdk/package.json", import.meta.url)).resolve("@boxd-sh/sdk")), "NotFoundError");
 export const nativeModules = {load: sdk};
 async function client(pkg: string, key: string, options?: unknown) {return new (ctor.parse(member(await nativeModules.load(pkg), key)))(options);}
 

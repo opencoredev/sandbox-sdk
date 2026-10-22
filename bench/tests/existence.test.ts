@@ -129,3 +129,33 @@ it("uses the installed Daytona sandbox API without toolbox hydration", () => {
  const output = spawnSync("bun", ["-e", source], {encoding: "utf8", timeout: 10000});
  expect(output.status, output.stderr).toBe(0);
 });
+
+it("recognizes installed boxd NotFoundError grpcCode5 without accepting auth, quota, transport or forged errors", () => {
+ const moduleURL = new URL("../src/existence.ts", import.meta.url).href;
+ const source = `import assert from "node:assert/strict";
+ globalThis.fetch=async()=>{throw new Error("Network forbidden")};
+ const {lookupError,lookupSandbox,nativeModules}=await import(${JSON.stringify(moduleURL)});
+ const mod=await nativeModules.load("@boxd-sh/sdk"), load=nativeModules.load;
+ let failure=new mod.NotFoundError("missing",5);
+ class OfflineBoxd extends mod.Boxd {
+  constructor(){super({apiKey:"offline"}); this.machines={get:async(id)=>{assert.equal(id,"target"); throw failure;}};}
+ }
+ nativeModules.load=async name=>name==="@boxd-sh/sdk"?{...mod,Boxd:OfflineBoxd}:load(name);
+ process.env.BOXD_API_KEY="offline";
+ assert.equal(lookupError(failure,"boxd","get").result,"not-found");
+ assert.deepEqual(Object.keys(lookupError(failure,"boxd","get")).sort(),["checkedAt","method","nativeCode","result"]);
+ assert.equal(lookupError(failure,"boxd","get").nativeCode,"5");
+ assert.equal((await lookupSandbox({name:"boxd"},"target",1000)).result,"not-found");
+ for(const error of [new mod.AuthenticationError("auth",16),new mod.PermissionDeniedError("denied",7),
+  new mod.RateLimitError("quota",8),new mod.APIConnectionError("transport",14),new mod.APIStatusError("unknown",2),
+  new mod.NotFoundError("wrong code",14),Object.assign(new Error("forged"),{name:"NotFoundError",grpcCode:5}),
+  Object.assign(new mod.NotFoundError("conflicting",5),{status:503}),new mod.AuthenticationError("wrong type",5),
+  Object.assign(new mod.APIConnectionError("contradictory HTTP",14),{status:404})]){
+  failure=error;
+  assert.equal(lookupError(error,"boxd","get").result,"unavailable");
+  assert.equal((await lookupSandbox({name:"boxd"},"target",1000)).result,"unavailable");
+ }
+ assert.equal(lookupError(new mod.NotFoundError("wrong provider",5),"upstash","get").result,"unavailable");`;
+ const output = spawnSync("bun", ["-e", source], {encoding: "utf8", timeout: 10000});
+ expect(output.status, output.stderr).toBe(0);
+});
