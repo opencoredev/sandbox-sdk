@@ -384,3 +384,14 @@ it("uses documented default allocations and leaves unknown templates unverified"
   for (const row of report.samples) row.template = "unknown-template";
   expect(allocationEvidence(report.samples, "e2b").requestedCompute).toBeNull();
 });
+
+
+it("rejects restored memory and disk mismatches even without a known provisioned request", async () => {
+  const {allocationEvidence} = await import("../src/allocation.js");
+  for (const fingerprint of [allocationFingerprint(4, 4), {...allocationFingerprint(4, 8), diskBytes: 10 * 1024 ** 3}]) {
+    const report = allocationReport("unknown-provider", 4, 8, null);
+    const first = report.samples[0]; if (!first) throw new Error("fixture required");
+    report.samples.push({...first, scenario: "restore-fingerprint", fingerprint});
+    expect(allocationEvidence(report.samples, "unknown-provider")).toMatchObject({verified: false, equalSpec: false, pricingAllocation: null});
+  }
+});

@@ -1,5 +1,5 @@
 import type { Sample } from "./v2-model.js";
-import { resources } from "./fingerprint.js";
+import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
 import { distribution } from "./v2-stats.js";
 
@@ -24,6 +24,9 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const observed = rows.filter(s => ["fingerprint", "restore-fingerprint"].includes(s.scenario)).flatMap(s => s.fingerprint ? [resources(s.fingerprint)] : []);
   const measured = [...new Map(observed.map(r => [JSON.stringify(r), r])).values()];
   const mismatches: string[] = [];
+  const source = rows.find(s => s.scenario === "fingerprint" && s.fingerprint)?.fingerprint ?? null;
+  const restoredMismatch = rows.some(s => s.scenario === "restore-fingerprint" && s.fingerprint && verifyRestoredResources(source, s.fingerprint).matches === false);
+  if (restoredMismatch) mismatches.push("Restored allocation differs from source");
   if (new Set(rows.map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1)
     mismatches.push("Multiple requested allocations");
   if (requestedCompute && observed.some(r => r.cpu !== requestedCompute.cpu)) mismatches.push("Measured vCPU differs from requested allocation");
@@ -38,6 +41,6 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
     requested, requestedCompute, provisioned, measured,
     verified: mismatches.length ? false : observed.length && requestedCompute ? true : null,
     mismatches, pricingAllocation,
-    equalSpec: observed.length > 0 && observed.every(r => r.cpu === 4 && r.memoryGiB >= 8 * 0.95 && r.memoryGiB <= 8 * 1.05),
+    equalSpec: !restoredMismatch && observed.length > 0 && observed.every(r => r.cpu === 4 && r.memoryGiB >= 8 * 0.95 && r.memoryGiB <= 8 * 1.05),
   };
 }
