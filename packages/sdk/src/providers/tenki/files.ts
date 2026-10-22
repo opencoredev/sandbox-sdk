@@ -75,13 +75,27 @@ export function files(
     }
     return path.startsWith("/home/tenki/") ? path : undefined;
   }
-  async function transfer<T>(action: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
+  async function transfer<T>(
+    operation: "read" | "write",
+    action: () => Promise<T>,
+    fallback: () => Promise<T>,
+  ): Promise<T> {
+    const pending = Promise.resolve().then(action);
     try {
-      return await deadline(action, 30_000);
+      return await deadline(() => pending, 30_000);
     } catch (error) {
       // Native APIs reject symlinks escaping /home/tenki. Preserve arbitrary
       // guest paths with the privileged transport in that case.
       const code = tenkiError(error).code;
+      if (operation === "write" && code === "timeout") {
+        // Session.writeFile has no AbortSignal. Keep this mutation attached to
+        // the caller's promise until it settles, so drains cannot miss a late write.
+        await pending.catch(() => {});
+        throw failure(
+          "File write exceeded its deadline; the native write was drained and may have completed",
+          "outcome_unknown",
+        );
+      }
       if (code === "auth" || code === "invalid_argument" || code === "unsupported")
         return fallback();
       throw error;
@@ -95,7 +109,7 @@ export function files(
         const fallback = async () =>
           new Uint8Array(Buffer.from(await call(id, "read", path), "base64"));
         return resolved
-          ? transfer(async () => (await get(id)).readFile(resolved), fallback)
+          ? transfer("read", async () => (await get(id)).readFile(resolved), fallback)
           : fallback();
       }),
     write: (id, path, data) =>
@@ -105,7 +119,7 @@ export function files(
           await call(id, "write", path, data);
         };
         if (resolved)
-          await transfer(async () => (await get(id)).writeFile(resolved, data), fallback);
+          await transfer("write", async () => (await get(id)).writeFile(resolved, data), fallback);
         else await fallback();
       }),
     mkdir: async (id, path) => {

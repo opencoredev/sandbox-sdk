@@ -452,3 +452,48 @@ test("stalled native transfers retain the thirty-second deadline", async () => {
     vi.useRealTimers();
   }
 });
+
+test.each(["complete", "reject"])(
+  "expired native writes drain late %s before reporting their outcome",
+  async (outcome) => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    const events: string[] = [];
+    let settle = () => {};
+    vi.spyOn(box.native, "writeFile").mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          settle = () => {
+            events.push("native settled");
+            if (outcome === "reject")
+              reject(
+                Object.assign(new Error("late authorization failure"), {
+                  name: "UnauthorizedError",
+                }),
+              );
+            else resolve();
+          };
+        }),
+    );
+    const fallback = vi.spyOn(MockSession.prototype, "run");
+    vi.useFakeTimers();
+    const pending = provider.files.write(box.id, "/home/tenki/late-write", new Uint8Array([1]));
+    const checked = expect(pending).rejects.toMatchObject({ code: "outcome_unknown" });
+    void pending.then(
+      () => events.push("caller succeeded"),
+      () => events.push("caller failed"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(events).toEqual([]);
+      settle();
+      await checked;
+      expect(events).toEqual(["native settled", "caller failed"]);
+      expect(fallback).not.toHaveBeenCalled();
+    } finally {
+      settle();
+      await pending.catch(() => {});
+      vi.useRealTimers();
+    }
+  },
+);
