@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider } from "./providers.js";
-import { hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
+import { recordVerifiedRelease, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview, type CleanupRelease } from "./ownership.js";
 import { deadline } from "./timing.js";
 import { snapshotCleaner, snapshotsFromSource } from "./snapshots.js";
 const resource = z.object({provider: z.string(), id: z.string(), kind: z.enum(["sandbox", "snapshot", "snapshot-source"]), parent: z.string().nullable()});
@@ -25,6 +25,7 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
   try { results = z.record(z.string(), z.unknown()).parse(JSON.parse(await readFile(join(config.out, "results.json"), "utf8"))); }
   catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error; }
   const reviews: CleanupReview[] = z.array(reviewSchema).parse(results?.cleanupReview ?? []);
+  const releases: CleanupRelease[] = z.array(reviewSchema.extend({releasedAt: z.string(), proof: z.literal("live-run-sdk-labels")})).parse(results?.cleanupReleased ?? []);
   const review = (provider: string, id: string, kind: CleanupReview["kind"], reason: string) => {
     if (!reviews.some(r => r.provider === provider && r.id === id && r.kind === kind)) reviews.push({provider, id: sanitize(id), kind, reason});
   };
@@ -54,15 +55,24 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
         await forget(entry);
       } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"));}
     }
-    const candidates = new Set((journal?.resources ?? []).filter(r => r.provider === p.name && r.kind === "sandbox").map(r => r.id));
+    const candidates = new Set([
+      ...(journal?.resources ?? []).filter(r => r.provider === p.name && r.kind === "sandbox").map(r => r.id),
+      ...reviews.filter(r => r.provider === p.name && r.kind === "sandbox").map(r => r.id),
+    ]);
     try {
       for (const info of await deadline(config["timeout-ms"], () => p.provider.list({"sandbox-bench-run": config.run, "sandbox-sdk": "1"})))
         if (hasRunOwnership(info, config.run)) candidates.add(info.id);
     } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "List failed"));}
     for (const id of candidates) {
-      if (reviews.some(r => r.provider === p.name && r.id === id)) continue;
       if (!(await owned(id))) {review(p.name, id, "sandbox", "Live run label and SDK ownership marker unverified; no deletion attempted"); continue;}
       try {
+        if (reviews.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
+          journal ??= {runId: config.run, resources: []};
+          if (!journal.resources.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox"))
+            journal.resources.push({provider: p.name, id, kind: "sandbox", parent: null});
+          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          recordVerifiedRelease(reviews, releases, p.name, id);
+        }
         await deadline(config["timeout-ms"], () => p.provider.destroy(id));
         for (const entry of journal?.resources ?? []) if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id) await forget(entry);
       } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "Reap failed"));}
@@ -84,14 +94,16 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
     for (const error of errors) process.stderr.write(`${p.name}: ${error}\n`);
   }
   for (const entry of reviews) process.stderr.write(`cleanupReview: ${JSON.stringify(entry)}\n`);
-  if (results || reviews.length) {
+  for (const entry of releases) process.stdout.write(`cleanupReleased: ${JSON.stringify(entry)}\n`);
+  if (results || reviews.length || releases.length) {
     const record = results ?? {runId: config.run};
     record.cleanupReview = reviews;
+    record.cleanupReleased = releases;
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
-  if (reviews.length) {
+  if (reviews.length || releases.length) {
     const md = await readFile(join(config.out, "results.md"), "utf8").catch(() => "");
-    await writeFile(join(config.out, "results.md"), md.replace(/^cleanupReview:.*\n/gm, "") + `\ncleanupReview: ${JSON.stringify(reviews)}\n`);
+    await writeFile(join(config.out, "results.md"), md.replace(/^cleanup(?:Review|Released):.*\n/gm, "") + `\ncleanupReview: ${JSON.stringify(reviews)}\ncleanupReleased: ${JSON.stringify(releases)}\n`);
   }
   return failed || reviews.length > 0;
 }

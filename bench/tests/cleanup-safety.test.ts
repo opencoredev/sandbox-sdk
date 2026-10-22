@@ -10,7 +10,7 @@ import {writeV2} from "../src/v2-report.js";
 import {reapRun} from "../src/recovery.js";
 import type {Provider} from "@opencoredev/sandbox-sdk/provider";
 
-it.each(["generic-cause", "sdk-unmarked", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", "sdk-notfound"])("quarantines %s IDs and never destroys or journals them as owned", async mode => {
+it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", "sdk-notfound"])("quarantines %s IDs and never destroys or journals them as owned", async mode => {
  const out = await mkdtemp(join(tmpdir(), "bench-safety-"));
  const backing = memory();
  const run = "safety-run";
@@ -43,6 +43,89 @@ it.each(["generic-cause", "sdk-unmarked", "sdk-foreign", "sdk-no-sdk-marker", "s
    expect(destroy).not.toHaveBeenCalled();
   } finally {stderr.mockRestore();}
  } finally {await backing.destroy(candidate.id); await rm(out, {recursive: true, force: true});}
+});
+
+it.each(["sdk-unmarked", "generic", "wrong-provider"])("releases %s create-error quarantine only after live label proof", async mode => {
+ const out = await mkdtemp(join(tmpdir(), "bench-release-"));
+ const backing = memory();
+ const run = "release-run";
+ const candidate = await createSandbox(backing, {labels: {"sandbox-bench-run": run}});
+ const destroy = vi.fn(async (id: string) => {
+  const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+  expect(journal.resources).toContainEqual(expect.objectContaining({id, kind: "sandbox"}));
+  await backing.destroy(id);
+ });
+ const provider: Provider = {...backing, destroy, create: async () => {
+  const cause = {sandboxId: candidate.id, operation: "create"};
+  if (mode === "generic") throw new Error("Create failed", {cause});
+  throw new SandboxError("Create failed", {provider: mode === "wrong-provider" ? "tenki" : "memory", code: "provider", sandboxId: candidate.id, cause});
+ }};
+ try {
+  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
+  expect(destroy.mock.calls).toEqual([[candidate.id]]);
+  expect(await backing.list({})).toEqual([]);
+  expect(report.cleanupReview).toEqual([]);
+  expect(report.cleanupReleased).toContainEqual(expect.objectContaining({id: candidate.id, proof: "live-run-sdk-labels", releasedAt: expect.any(String)}));
+  expect(report.samples.find(s => s.scenario === "cold")).toMatchObject({sandboxId: candidate.id, outcome: {kind: "failure", ownershipReleased: true}});
+  expect(JSON.parse(await readFile(join(out, "results.json"), "utf8")).cleanupReleased).toEqual(report.cleanupReleased);
+  expect(await readFile(join(out, "results.md"), "utf8")).toContain("cleanupReleased: ");
+  expect(JSON.parse(await readFile(join(out, "ownership.json"), "utf8")).resources).toEqual([]);
+ } finally {await backing.destroy(candidate.id); await rm(out, {recursive: true, force: true});}
+});
+
+it("reap releases a quarantined sandbox only when labels become readable", async () => {
+ const out = await mkdtemp(join(tmpdir(), "bench-reap-release-"));
+ const backing = memory();
+ const run = "reap-release";
+ const own = await createSandbox(backing, {labels: {"sandbox-bench-run": run}});
+ let readable = false;
+ const destroy = vi.fn(backing.destroy);
+ const provider: Provider = {...backing, destroy, list: async labels => readable ? backing.list(labels) : [], create: async () => {
+  throw new SandboxError("Create failed", {provider: "memory", code: "provider", sandboxId: own.id});
+ }};
+ const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+ const loaded = [{kind: "ready", name: "memory", cloud: false, region: null, provider}] satisfies Parameters<typeof reapRun>[0];
+ const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+ const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+ try {
+  const report = await runV2(loaded, config, r => writeV2(r, out));
+  expect(report.cleanupReview).toHaveLength(1);
+  expect(await reapRun(loaded, config, s => s)).toBe(true);
+  expect(destroy).not.toHaveBeenCalled();
+  readable = true;
+  expect(await reapRun(loaded, config, s => s)).toBe(false);
+  expect(destroy.mock.calls).toEqual([[own.id]]);
+  expect(stdout).toHaveBeenCalledWith(expect.stringContaining("cleanupReleased:"));
+  const recovered = JSON.parse(await readFile(join(out, "results.json"), "utf8"));
+  expect(recovered.cleanupReview).toEqual([]);
+  expect(recovered.cleanupReleased).toHaveLength(1);
+  expect(await readFile(join(out, "results.md"), "utf8")).toContain("cleanupReview: []");
+  expect(await backing.list({})).toEqual([]);
+ } finally {stderr.mockRestore(); stdout.mockRestore(); await backing.destroy(own.id); await rm(out, {recursive: true, force: true});}
+});
+
+it("quarantines a released ID again if live ownership proof disappears before a retry", async () => {
+ const out = await mkdtemp(join(tmpdir(), "bench-release-retry-"));
+ const backing = memory();
+ const run = "release-retry";
+ const own = await createSandbox(backing, {labels: {"sandbox-bench-run": run}});
+ let readable = true;
+ const destroy = vi.fn(async () => {readable = false; throw new Error("Delete failed");});
+ const provider: Provider = {...backing, destroy, list: async labels => readable ? backing.list(labels) : [], create: async () => {
+  throw new SandboxError("Create failed", {provider: "memory", code: "provider", sandboxId: own.id});
+ }};
+ try {
+  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
+  expect(destroy).toHaveBeenCalledTimes(1);
+  expect(report.cleanupReleased).toHaveLength(1);
+  expect(report.cleanupReview).toContainEqual(expect.objectContaining({id: own.id}));
+  const cold = report.samples.find(s => s.scenario === "cold");
+  expect(cold?.outcome).toMatchObject({kind: "failure", unverifiedSandboxId: own.id});
+  expect(cold?.outcome).not.toHaveProperty("ownershipReleased");
+  expect(await backing.list({})).toHaveLength(1);
+ } finally {await backing.destroy(own.id); await rm(out, {recursive: true, force: true});}
 });
 
 it("does not trust an admission marker on an exec error", async () => {

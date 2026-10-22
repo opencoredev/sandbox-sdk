@@ -21,6 +21,7 @@ export const failureOutcomeSchema = z.object({
   kind: z.literal("failure"),
   note: z.string(),
   unverifiedSandboxId: sandboxIdSchema.optional(),
+  ownershipReleased: z.boolean().optional(),
   sandboxId: sandboxIdSchema.optional(),
   code: z.string().optional(),
   cause: causeSchema.optional(),

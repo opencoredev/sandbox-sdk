@@ -32,6 +32,7 @@ export function markdownV2(r: ReportV2) {
     ...r.providers.map((p) => `Configured region ${p.name}: ${p.configuredRegion ?? "unspecified"}`),
     "",
     `cleanupReview: ${JSON.stringify(r.cleanupReview ?? [])}`,
+    `cleanupReleased: ${JSON.stringify(r.cleanupReleased ?? [])}`,
     "",
     `admissionStopped: ${JSON.stringify(r.admissionStopped ?? [])}`,
     "",

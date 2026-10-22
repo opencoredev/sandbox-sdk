@@ -92,7 +92,7 @@ it("does not delete returned IDs when live ownership cannot be verified", async 
     expect(attempts).toBe(0);
     expect(await backing.list({})).toHaveLength(1);
     expect(report.cleanupReview).toHaveLength(1);
-    expect(report.cleanup).toEqual([{ provider: "memory", remaining: [], error: null }]);
+    expect(report.cleanup).toEqual([{ provider: "memory", remaining: [], error: expect.stringContaining("ownership unverified") }]);
   } finally { for (const info of await backing.list({})) await backing.destroy(info.id); await rm(directory, { recursive: true, force: true }); }
 });
 

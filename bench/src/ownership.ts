@@ -29,6 +29,17 @@ export interface CleanupReview {
   kind: "sandbox" | "snapshot" | "snapshot-source";
   reason: string;
 }
+export interface CleanupRelease extends CleanupReview {
+  releasedAt: string;
+  proof: "live-run-sdk-labels";
+}
+/** Call only after fresh live ownership verification for this exact sandbox. */
+export function recordVerifiedRelease(reviews: CleanupReview[], releases: CleanupRelease[], provider: string, id: string) {
+  for (const entry of reviews.filter(r => r.provider === provider && r.id === id && r.kind === "sandbox")) {
+    releases.push({...entry, releasedAt: new Date().toISOString(), proof: "live-run-sdk-labels"});
+    reviews.splice(reviews.indexOf(entry), 1);
+  }
+}
 export function hasRunOwnership(info: Pick<SandboxInfo, "labels">, run: string) {
   return info.labels["sandbox-bench-run"] === run && info.labels["sandbox-sdk"] === "1";
 }

@@ -16,7 +16,7 @@ import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
 import { DeadlineError, deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
-import { UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
+import { recordVerifiedRelease, UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { failureOutcome } from "./failure.js";
@@ -155,6 +155,7 @@ export async function runV2(
     })),
     cleanup: [],
     cleanupReview: [],
+    cleanupReleased: [],
     budgets: {},
     admissionStopped: [],
     methodology: [
@@ -227,12 +228,17 @@ export async function runV2(
     for (let attempt = 0; attempt < 3; attempt++) {
       const verifyStart = performance.now();
       let verified: boolean;
-      try { verified = !report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id) &&
-        await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]); }
+      try { verified = await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]); }
       finally { if (measurement) measurement.phases.ownershipVerifyMs = (measurement.phases.ownershipVerifyMs ?? 0) + performance.now() - verifyStart; }
       if (!verified) {
         review(loaded.name, id, "Live run label and SDK ownership marker could not be verified; no deletion attempted");
         throw new UnverifiedOwnershipError(id);
+      }
+      const quarantined = report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id && v.kind === "sandbox");
+      if (quarantined) {
+        recordVerifiedRelease(report.cleanupReview ?? [], report.cleanupReleased ?? [], loaded.name, id);
+        owned.set(`${loaded.name}/${id}`, {provider: loaded.name, id, kind: "sandbox", parent: null});
+        await persist();
       }
       try {
         if (measurement) {
@@ -1141,8 +1147,10 @@ export async function runV2(
         await persist();
       } catch (e) { errors.push(errorNote(e)); }
     }
-    const ids = new Set([...owned.values()]
-      .filter((v) => v.provider === p.name && v.kind === "sandbox").map((v) => v.id));
+    const ids = new Set([
+      ...[...owned.values()].filter(v => v.provider === p.name && v.kind === "sandbox").map(v => v.id),
+      ...(report.cleanupReview ?? []).filter(v => v.provider === p.name && v.kind === "sandbox").map(v => v.id),
+    ]);
     try {
       const listed = await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run }));
@@ -1207,6 +1215,21 @@ export async function runV2(
     } else sample.sandboxId ??= late.sandboxId ?? null;
     if (late.sandboxId && !owned.has(`${sample.provider}/${late.sandboxId}`)) late.cleanupOutcome = "succeeded";
     sample.outcome.cause ??= late.cause;
+  }
+  for (const sample of report.samples) {
+    if (sample.outcome.kind !== "failure") continue;
+    const outcome = sample.outcome;
+    const id = outcome.unverifiedSandboxId ?? outcome.lateSettlement?.unverifiedSandboxId;
+    if (!id || report.cleanupReview?.some(r => r.provider === sample.provider && r.id === id && r.kind === "sandbox") ||
+        !report.cleanupReleased?.some(r => r.provider === sample.provider && r.id === id)) continue;
+    outcome.ownershipReleased = true;
+    outcome.sandboxId = sample.sandboxId = id;
+    delete outcome.unverifiedSandboxId;
+    if (outcome.lateSettlement) {
+      delete outcome.lateSettlement.unverifiedSandboxId;
+      outcome.lateSettlement.sandboxId = id;
+      outcome.lateSettlement.cleanupOutcome = owned.has(`${sample.provider}/${id}`) ? "failed" : "succeeded";
+    }
   }
   report.finishedAt = new Date().toISOString();
   report.summaries = summarize(report.samples, config.seed);
