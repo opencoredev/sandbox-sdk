@@ -10,7 +10,7 @@ export interface DaytonaOptions {
   apiUrl?: string;
   target?: string;
   /** An image allows resources to be allocated at creation. Otherwise the
-   * default/named snapshot is stopped, resized, and restarted when size is set. */
+   * default/named snapshot is resized only when its resources differ. */
   image?: string;
   snapshot?: string;
   /** Provider control-plane request deadline, in milliseconds. */
@@ -18,15 +18,16 @@ export interface DaytonaOptions {
   /** Snapshot completion budget. Default: 600 seconds; maximum: 15 minutes. */
   snapshotTimeoutMs?: number;
 }
-export type DaytonaCapability = "pause" | "snapshot" | "size" | "network-policy";
+export type DaytonaCapability = "snapshot" | "size" | "network-policy";
 export type DaytonaProvider = Provider<DaytonaSandbox, DaytonaCapability>;
 const sdkLabel = { "sandbox-sdk": "1" };
 const keyLabel = "sandbox-sdk-key";
-const presets = { small: { cpu: 1, memoryMb: 1024, diskGb: 10 }, medium: { cpu: 2, memoryMb: 4096, diskGb: 20 }, large: { cpu: 4, memoryMb: 8192, diskGb: 40 } };
+const presets = { small: { cpu: 1, memoryMb: 1024, diskGb: 10 }, medium: { cpu: 2, memoryMb: 4096, diskGb: 10 }, large: { cpu: 4, memoryMb: 8192, diskGb: 10 } };
 function resources(size: NonNullable<CreateInput["size"]>) {
   const value = typeof size === "string" ? presets[size] : size;
-  if (!value || !Number.isInteger(value.cpu) || value.cpu <= 0 || !Number.isInteger(value.memoryMb) || value.memoryMb <= 0 || value.memoryMb % 1024 || !Number.isInteger(value.diskGb) || value.diskGb <= 0) unsupported("Size requires positive integer CPUs, whole GiB memory (memoryMb divisible by 1024), and integer diskGb");
-  return { cpu: value.cpu, memory: value.memoryMb / 1024, disk: value.diskGb };
+  const diskGb = value?.diskGb ?? 10;
+  if (!value || !Number.isInteger(value.cpu) || value.cpu <= 0 || !Number.isInteger(value.memoryMb) || value.memoryMb <= 0 || value.memoryMb % 1024 || !Number.isInteger(diskGb) || diskGb <= 0) unsupported("Size requires positive integer CPUs, whole GiB memory (memoryMb divisible by 1024), and integer diskGb");
+  return { cpu: value.cpu, memory: value.memoryMb / 1024, disk: diskGb };
 }
 function minutes(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) throw new SandboxError("Timeout must be positive. Invalid milliseconds supplied. Use a positive finite duration.", { code: "invalid_argument", provider: "daytona" });
@@ -52,13 +53,14 @@ function fileInfo(path: string, file: NativeFile): FileInfo {
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   let client: Promise<Daytona> | undefined;
   const boxes = new Map<string, DaytonaSandbox>();
+  const recentCreates = new Map<string, number>();
   const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
   async function api() {
     return client ??= (async () => {
       if (!Number.isSafeInteger(options.snapshotTimeoutMs ?? 600_000) || (options.snapshotTimeoutMs ?? 600_000) <= 0 || (options.snapshotTimeoutMs ?? 600_000) > 900_000)
         throw new SandboxError("snapshotTimeoutMs must be an integer from 1 to 900000.", { code: "invalid_argument", provider: "daytona" });
-      const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET, requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
+      const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
       if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or apiKey.", { code: "auth", provider: "daytona" });
       const { Daytona } = await import("@daytonaio/sdk");
       return new Daytona(config);
@@ -68,7 +70,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
   const provider: DaytonaProvider = {
-    name: "daytona", keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["pause", "snapshot", "size", "network-policy"]),
+    name: "daytona", keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["snapshot", "size", "network-policy"]),
     async create(input) { return safe(async () => {
       if (options.image && options.snapshot) unsupported("Choose either image or snapshot");
       const image = input.from === undefined ? options.image : undefined;
@@ -83,12 +85,12 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         autoStopInterval: input.idleTimeoutMs === undefined ? undefined : minutes(input.idleTimeoutMs), autoPauseInterval: 0,
         ttlMinutes: input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
       };
-      const params: CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams = image ? { ...base, image, resources: allocation } : { ...base, snapshot: input.from ?? options.snapshot };
+      const params: CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams = image ? { ...base, image, resources: allocation } : { ...base, snapshot: input.from ?? options.snapshot ?? (allocation?.cpu === 4 && allocation.memory === 8 && allocation.disk === 10 ? "daytona-large" : undefined) };
       const value = await (await api()).create(params, { timeout: 60 });
       boxes.set(value.id, value);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", { code: "aborted", provider: "daytona" });
-        if (allocation && !image) {
+        if (allocation && !image && (allocation.cpu !== value.cpu || allocation.memory !== value.memory || allocation.disk !== value.disk)) {
           if (allocation.disk < value.disk) unsupported("Snapshot disk cannot shrink; choose diskGb at least as large as the snapshot");
           await value.stop(); await value.resize(allocation); await value.start();
         }
@@ -97,15 +99,37 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           "/", undefined, 10,
         );
         if (workspace.exitCode !== 0) throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use a Daytona runtime with sudo -n access.", { code: "provider", provider: "daytona", sandboxId: value.id });
+        recentCreates.set(value.id, Date.now() + 30_000);
         return info(value);
-      } catch (error) { await value.delete(60, true); boxes.delete(value.id); throw error; }
+      } catch (error) { await value.delete(60, true); boxes.delete(value.id); recentCreates.delete(value.id); throw error; }
     }); },
-    async list(labels: Labels) { return safe(async () => { const values: SandboxInfo[] = []; for await (const value of (await api()).list({ labels: { ...labels, ...sdkLabel } })) { if (Object.entries({ ...labels, ...sdkLabel }).every(([key, expected]) => value.labels[key] === expected)) { boxes.set(value.id, value); values.push(info(value)); } } return values; }); },
+    async list(labels: Labels) { return safe(async () => {
+      const requested = { ...labels, ...sdkLabel };
+      const matches = (value: DaytonaSandbox) => Object.entries(requested).every(([key, expected]) => value.labels[key] === expected);
+      const values = new Map<string, SandboxInfo>();
+      for await (const value of (await api()).list({ labels: requested })) {
+        if (matches(value)) { boxes.set(value.id, value); values.set(value.id, info(value)); recentCreates.delete(value.id); }
+      }
+      // Native list can lag behind create/get. Verify only recent local creates
+      // omitted by the index; never resurrect a sandbox from stale cached data.
+      for (const [id, expiresAt] of recentCreates) {
+        if (Date.now() >= expiresAt) { recentCreates.delete(id); continue; }
+        const cached = boxes.get(id); if (!cached || !matches(cached)) continue;
+        try {
+          const value = await (await api()).get(id);
+          if (matches(value)) { boxes.set(id, value); values.set(id, info(value)); }
+        } catch (error) {
+          if (daytonaError(error).code !== "not_found") throw error;
+          recentCreates.delete(id); boxes.delete(id);
+        }
+      }
+      return [...values.values()];
+    }); },
     async find(key) { return (await provider.list({ [keyLabel]: key }))[0]; },
     async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id); },
     async destroy(id) {
       const existing = deletions.get(id); if (existing) return existing;
-      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); } }, id);
+      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); } }, id);
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },
@@ -119,16 +143,15 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     }, id),
     async close(id) { for (const detach of monitors.get(id) ?? []) detach(); monitors.delete(id); },
     files: {
+      writeCreatesParents: true,
       read: (id, path) => onFile(id, async value => new Uint8Array(await value.fs.downloadFile(path))),
-      write: (id, path, data) => onFile(id, async value => { await value.fs.createFolder(posix.dirname(path), "755"); await value.fs.uploadFile(Buffer.from(data), path); }),
+      write: (id, path, data) => onFile(id, value => value.fs.uploadFile(Buffer.from(data), path)),
       list: (id, path) => onFile(id, async value => (await value.fs.listFiles(path)).map(file => fileInfo(posix.join(path, file.name), file))),
       stat: (id, path) => onFile(id, async value => fileInfo(path, await value.fs.getFileDetails(path))),
       remove: (id, path, settings) => onFile(id, value => value.fs.deleteFile(path, settings.recursive)),
       mkdir: (id, path) => onFile(id, value => value.fs.createFolder(path, "755")),
     },
     previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id),
-    pause: id => safe(async () => { await (await box(id)).stop(); }, id),
-    resume: id => safe(async () => { await (await box(id)).start(); }, id),
     snapshot: id => safe(async () => {
       const name = `sdk-${crypto.randomUUID()}`;
       try { await (await box(id)).createSnapshot(name, (options.snapshotTimeoutMs ?? 600_000) / 1000); }
