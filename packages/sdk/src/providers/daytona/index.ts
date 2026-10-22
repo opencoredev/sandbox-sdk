@@ -66,7 +66,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       return new Daytona(config);
     })();
   }
-  async function safe<T>(action: () => Promise<T>, id?: string, file = false): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file); } }
+  async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = file ? "files" : "request"): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file, operation, options.apiKey ?? process.env.DAYTONA_API_KEY); } }
   async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
   const provider: DaytonaProvider = {
@@ -102,7 +102,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         recentCreates.set(value.id, { expiresAt: Date.now() + 30_000 });
         return info(value);
       } catch (error) { await value.delete(60, true); boxes.delete(value.id); recentCreates.delete(value.id); throw error; }
-    }); },
+    }, undefined, false, input.from ? "restore" : "create"); },
     async list(labels: Labels) { return safe(async () => {
       const requested = { ...labels, ...sdkLabel };
       const matches = (value: DaytonaSandbox) => Object.entries(requested).every(([key, expected]) => value.labels[key] === expected);
@@ -127,23 +127,23 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         }
       }
       return [...values.values()];
-    }); },
+    }, undefined, false, "list"); },
     async find(key) { return (await provider.list({ [keyLabel]: key }))[0]; },
-    async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id); },
+    async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id, false, "connect"); },
     async destroy(id) {
       const existing = deletions.get(id); if (existing) return existing;
-      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); } }, id);
+      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); } }, id, false, "destroy");
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },
-    exec: (id, input) => safe(async () => execute(await box(id), input), id),
+    exec: (id, input) => safe(async () => execute(await box(id), input), id, false, "exec"),
     startProcess: (id, input) => safe(async () => {
       const hook = await sessionProcess(await box(id), input);
       let active = monitors.get(id); if (!active) { active = new Set(); monitors.set(id, active); }
       active.add(hook.detach);
       void hook.wait().finally(() => active.delete(hook.detach)).catch(() => {});
-      return { pid: hook.pid, wait: () => safe(hook.wait, id), stop: settings => safe(() => hook.stop(settings), id) };
-    }, id),
+      return { pid: hook.pid, wait: () => safe(hook.wait, id, false, "process"), stop: settings => safe(() => hook.stop(settings), id, false, "process") };
+    }, id, false, "process"),
     async close(id) { for (const detach of monitors.get(id) ?? []) detach(); monitors.delete(id); },
     files: {
       writeCreatesParents: true,
@@ -154,16 +154,16 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       remove: (id, path, settings) => onFile(id, value => value.fs.deleteFile(path, settings.recursive)),
       mkdir: (id, path) => onFile(id, value => value.fs.createFolder(path, "755")),
     },
-    previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id),
+    previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id, false, "preview"),
     snapshot: id => safe(async () => {
       const name = `sdk-${crypto.randomUUID()}`;
       try { await (await box(id)).createSnapshot(name, (options.snapshotTimeoutMs ?? 600_000) / 1000); }
       catch (error) {
-        const mapped = daytonaError(error, id);
-        throw new SandboxError(`Snapshot ${name} did not complete. It may still be creating. Inspect or delete this name with the native snapshot API before retrying.`, { code: mapped.code, provider: "daytona", sandboxId: id, retryable: false, hint: `Recover snapshot ${name} from source sandbox ${id}.` });
+        const mapped = daytonaError(error, id, false, "snapshot", options.apiKey ?? process.env.DAYTONA_API_KEY);
+        throw new SandboxError(`Snapshot ${name} did not complete. It may still be creating. Inspect or delete this name with the native snapshot API before retrying.`, { code: mapped.code, cause: mapped.cause, provider: "daytona", sandboxId: id, retryable: false, hint: `Recover snapshot ${name} from source sandbox ${id}.` });
       }
       return { id: name };
-    }, id),
+    }, id, false, "snapshot"),
     native(id) { const value = boxes.get(id); if (!value) throw new SandboxError("Sandbox is not connected. No local native object exists. Connect the sandbox first.", { code: "not_found", provider: "daytona", sandboxId: id }); return value; },
   };
   return provider;
