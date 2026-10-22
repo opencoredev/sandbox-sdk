@@ -83,6 +83,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
         const decoded = decoders[stream].decode(Buffer.from(frame[2] ?? "", "base64"), { stream: true });
         if (!finished && decoded) input.onChunk({ stream, text: decoded });
       }
+      if (bridgeFinished && pending.length) throw new SandboxError("Session output continued after completion. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
       if (pending.length > 5466) throw new SandboxError("Session output frame is too large. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
     };
     const acceptFrames = (text: string) => { try { if (logsError === undefined) readFrames(text); } catch (error) { logsError = error; } };
