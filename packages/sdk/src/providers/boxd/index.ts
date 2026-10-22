@@ -22,7 +22,7 @@ function vcpuFor(size: CreateInput["size"]): number | undefined {
   if (typeof size === "string") return { small: 1, medium: 2, large: 4 }[size];
   if (![1, 2, 4, 8].includes(size.cpu))
     throw failure("boxd sizes are 1 vCPU / 4 GiB, 2 / 8, 4 / 16, or 8 / 32, each with 100 GB disk", "unsupported");
-  if (size.memoryMb !== size.cpu * 4096 || size.diskGb !== 100)
+  if (size.memoryMb !== size.cpu * 4096 || (size.diskGb ?? 100) !== 100)
     throw failure(`boxd gives ${size.cpu} vCPU / ${size.cpu * 4} GiB memory / 100 GB disk; CPU and memory cannot be selected independently`, "unsupported");
   return size.cpu;
 }

@@ -280,7 +280,7 @@ it("ends cold and restore at bare true before SDK setup", async () => {
       order.push(`sdk:${id}`); await wait(30); return backing.files.write(id, path, data);
     }},
     create: async (input: Parameters<Provider["create"]>[0]) => {
-      expect(input.size).toEqual({cpu: 4, memoryMb: 8192, diskGb: 5});
+      expect(input.size).toEqual({cpu: 4, memoryMb: 8192});
       return backing.create({...input, size: undefined});
     },
     exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {

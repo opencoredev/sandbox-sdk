@@ -289,11 +289,7 @@ export async function runV2(
     }
     state.created++;
     state.reserved += reserve;
-    // Until adapters accept omitted disk, preserve their existing CreateInput contract.
-    const requestedSize = allocation.requestedSize;
-    const createSize = requestedSize && typeof requestedSize === "object"
-      ? { ...requestedSize, diskGb: requestedSize.diskGb ?? (p.name === "daytona" ? 10 : 5) }
-      : requestedSize;
+    const createSize = allocation.requestedSize;
     const tracked = new Proxy(p.provider, {
       get(target, key) {
         if (key === "create")

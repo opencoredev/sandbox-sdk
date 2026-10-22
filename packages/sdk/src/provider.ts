@@ -15,7 +15,7 @@ export interface SandboxInfo {
 }
 export interface CreateInput {
   key?: string;
-  size?: "small" | "medium" | "large" | { cpu: number; memoryMb: number; diskGb: number };
+  size?: "small" | "medium" | "large" | { cpu: number; memoryMb: number; diskGb?: number };
   env?: Record<string, string>;
   network?: "all" | "none" | { allow: string[] };
   ports?: number[];
