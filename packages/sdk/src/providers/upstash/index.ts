@@ -18,7 +18,8 @@ import type {
   CreateInput,
   Preview,
 } from "../../provider.js";
-import { SandboxError } from "../../errors.js";
+import { Redactor, SandboxError } from "../../errors.js";
+import { quote } from "../../run.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { readFile, writeFile } from "./files.js";
@@ -107,6 +108,7 @@ function network(input: CreateInput["network"]): NetworkPolicy {
 }
 
 export function upstash(options: UpstashOptions = {}): UpstashProvider {
+  const redactor = new Redactor();
   const boxes = new Map<string, Box>();
   const monitors = new Map<string, Set<() => void>>();
   const previews = new Map<string, Map<number, Promise<Preview>>>();
@@ -121,6 +123,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
         "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or apiKey.",
         { code: "auth", provider: "upstash" },
       );
+    redactor.add([apiKey]);
     return { apiKey, baseUrl: options.baseUrl, enableTelemetry: options.enableTelemetry };
   };
   const sdk = async () => {
@@ -128,11 +131,11 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
     const { Box } = await import("@upstash/box");
     return { Box, config };
   };
-  async function safe<T>(action: () => Promise<T>, id?: string, file = false): Promise<T> {
+  async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = "request"): Promise<T> {
     try {
       return await action();
     } catch (error) {
-      throw upstashError(error, id, file);
+      throw upstashError(error, id, file, operation, value => redactor.text(value));
     }
   }
   async function box(id: string) {
@@ -143,8 +146,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
     boxes.set(id, value);
     return value;
   }
-  const onFile = <T>(id: string, action: (value: Box) => Promise<T>) =>
-    safe(async () => action(await box(id)), id, true);
+  const onFile = <T>(id: string, operation: string, action: (value: Box) => Promise<T>) =>
+    safe(async () => action(await box(id)), id, true, `files.${operation}`);
   const readMetadata = async (value: Box) => metadata(await value.files.read(metadataPath));
   const provider: UpstashProvider = {
     name: "upstash",
@@ -160,6 +163,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           unsupported(
             "Use small, medium, or large; exact CPU, memory, and disk sizes are unavailable",
           );
+        redactor.add(Object.values(input.env ?? {}));
         const policy = network(input.network);
         const { Box, config } = await sdk();
         const params: BoxConfig = {
@@ -183,19 +187,21 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
               code: "aborted",
               provider: "upstash",
             });
-          await value.files.mkdir("/workspace", { parents: true });
-          const workspace = await value.exec.command(
-            'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace',
-          );
-          if (workspace.exitCode !== 0)
-            throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use an Upstash runtime with sudo -n access.", { code: "provider", provider: "upstash", sandboxId: value.id });
-          await value.files.mkdir(posix.dirname(metadataPath), { parents: true });
           const meta: Metadata = {
             version: 1,
             key: input.key,
             labels: { ...input.labels, "sandbox-sdk": "1" },
           };
-          await value.files.write({ path: metadataPath, content: JSON.stringify(meta) });
+          // One guest round trip prepares both directories and persists metadata.
+          // Keep this after native create: initCommand also runs on resume and
+          // must not overwrite metadata or publish an incomplete snapshot clone.
+          const setup = await value.exec.command(
+            `mkdir -p /workspace ${quote(posix.dirname(metadataPath))} && ` +
+            `if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && ` +
+            `test -w /workspace && (umask 077; printf %s ${quote(JSON.stringify(meta))} > ${quote(metadataPath)})`,
+          );
+          if (setup.exitCode !== 0)
+            throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: value.id });
           // Publish discovery only after metadata and the workspace are ready. Native
           // labels allow five short strings; durable metadata preserves arbitrary labels.
           await value.labels.add(marker);
@@ -207,7 +213,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           boxes.delete(value.id);
           throw error;
         }
-      }),
+      }, undefined, false, "create"),
     list: (labels) =>
       safe(async () => {
         const { Box, config } = await sdk();
@@ -223,7 +229,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           }
         }
         return result;
-      }),
+      }, undefined, false, "list"),
     async find(key) {
       return (await provider.list({})).find((value) => value.key === key);
     },
@@ -234,7 +240,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
         if (!data) throw Object.assign(new Error("Missing box"), { statusCode: 404 });
         const value = await box(id);
         return info(data, await readMetadata(value));
-      }, id),
+      }, id, false, "connect"),
     destroy: (id) =>
       safe(async () => {
         try {
@@ -246,8 +252,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           previews.delete(id);
           boxes.delete(id);
         }
-      }, id),
-    exec: (id, input) => safe(async () => execute(await box(id), input), id),
+      }, id, false, "destroy"),
+    exec: (id, input) => safe(async () => execute(await box(id), input), id, false, "exec"),
     startProcess: (id, input) =>
       safe(async () => {
         const hook = await startProcess(await box(id), input);
@@ -263,21 +269,21 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           .catch(() => {});
         return {
           pid: hook.pid,
-          wait: () => safe(hook.wait, id),
-          stop: (settings) => safe(() => hook.stop(settings), id),
+          wait: () => safe(hook.wait, id, false, "process.wait"),
+          stop: (settings) => safe(() => hook.stop(settings), id, false, "process.stop"),
         };
-      }, id),
+      }, id, false, "process.start"),
     async close(id) {
       detach(id);
       boxes.delete(id);
     },
     files: {
       writeCreatesParents: true,
-      read: (id, path) => onFile(id, value => readFile(value, path)),
-      readRange: (id, path, range) => onFile(id, value => readFile(value, path, range)),
-      write: (id, path, data) => onFile(id, value => writeFile(value, path, data)),
+      read: (id, path) => onFile(id, "read", value => readFile(value, path)),
+      readRange: (id, path, range) => onFile(id, "readRange", value => readFile(value, path, range)),
+      write: (id, path, data) => onFile(id, "write", value => writeFile(value, path, data)),
       list: (id, path) =>
-        onFile(id, async (value) =>
+        onFile(id, "list", async (value) =>
           Promise.all(
             (await value.files.list(path)).map(async (entry) => {
               const full = posix.join(path, entry.name);
@@ -285,9 +291,9 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
             }),
           ),
         ),
-      stat: (id, path) => onFile(id, async (value) => fileInfo(path, await value.files.stat(path))),
-      remove: (id, path, settings) => onFile(id, (value) => value.files.remove(path, settings)),
-      mkdir: (id, path) => onFile(id, (value) => value.files.mkdir(path, { parents: true })),
+      stat: (id, path) => onFile(id, "stat", async (value) => fileInfo(path, await value.files.stat(path))),
+      remove: (id, path, settings) => onFile(id, "remove", (value) => value.files.remove(path, settings)),
+      mkdir: (id, path) => onFile(id, "mkdir", (value) => value.files.mkdir(path, { parents: true })),
     },
     previewUrl: (id, port) => {
       let ports = previews.get(id);
@@ -309,7 +315,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           url: link.url,
           ...(link.token ? { headers: { Authorization: `Bearer ${link.token}` } } : {}),
         };
-      }, id);
+      }, id, false, "preview");
       ports.set(port, pending);
       void pending.catch(() => ports.delete(port));
       return pending;
@@ -318,18 +324,20 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
       safe(async () => {
         detach(id);
         await (await box(id)).pause();
-      }, id),
+      }, id, false, "pause"),
     resume: (id) =>
       safe(async () => {
         const value = await box(id);
         await value.resume();
-      }, id),
+      }, id, false, "resume"),
     snapshot: (id) =>
       safe(
         async () => ({
           id: (await (await box(id)).snapshot({ name: `sdk-${crypto.randomUUID()}` })).id,
         }),
         id,
+        false,
+        "snapshot",
       ),
     native(id) {
       const value = boxes.get(id);
