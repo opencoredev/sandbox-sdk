@@ -287,7 +287,7 @@ const allocationFingerprint = (cpu: number, memoryGiB: number) => ({
   memoryMax: "", memTotalBytes: memoryGiB * 1024 ** 3, memoryBytes: memoryGiB * 1024 ** 3, diskBytes: 100 * 1024 ** 3,
   df: "", lsblk: "", virtualization: "", hypervisor: false, dmi: "", kernel: "test", distro: "test", user: "test", uid: 1000, sudo: false, stealPercent: 0, egress: null, tools: {}, runtime: "test",
 });
-function allocationReport(provider: string, cpu: number, memory: number, size: Sample["requestedSize"] = null) {
+function allocationReport(provider: string, cpu: number, memory: number, size: Sample["requestedSize"] = {cpu, memoryMb: Math.round(memory * 1024)}) {
   const input = source(`${provider}-allocation`, [{...sample(0, "fingerprint"), provider, track: "same-spec", requestedSize: size, fingerprint: allocationFingerprint(cpu, memory)}]);
   input.config.track = "same-spec";
   input.providers = [{name: provider, configuredRegion: null, note: "test"}];
@@ -351,4 +351,36 @@ it("includes restored fingerprints in allocation safeguards and excludes failed 
   const exported = siteData(report, "same-spec");
   expect(exported.providers[0]).toMatchObject({equalSpec: false, allocationVerification: {verified: false}});
   expect(exported.metrics.find(m => m.id === "create-from-snapshot")?.values ?? []).toEqual([]);
+});
+
+
+it.each([
+  ["e2b", "sandbox-bench-same-spec", 4, 7.75, 8],
+  ["e2b", "r1h7gud12rf1f6iu29r0", 4, 7.75, 8],
+  ["e2b", "sandbox-bench-advertised-default", 2, 3.9, 4],
+  ["e2b", "base", 2, 0.49, 0.5],
+  ["daytona", "daytona-large", 4, 7.9, 8],
+  ["superserve", "sandbox-bench-node22-py311-1x1", 1, 0.98, 1],
+])("prices provisioned template resources for %s/%s", async (provider, template, cpu, usable, provisioned) => {
+  const {allocationEvidence} = await import("../src/allocation.js");
+  const {siteData} = await import("../src/site-data.js");
+  const {hourly} = await import("../src/publication-report.js");
+  const report = allocationReport(provider, cpu, usable, null);
+  for (const row of report.samples) row.template = template;
+  expect(allocationEvidence(report.samples, provider)).toMatchObject({requestedCompute: {cpu, memoryGiB: provisioned}, verified: true, pricingAllocation: {cpu, memoryGiB: provisioned}});
+  expect(siteData(report, "same-spec").providers[0]?.requestedAllocation.compute).toEqual({cpu, memoryGiB: provisioned});
+  if (provider === "e2b" && cpu === 4) expect(hourly(report, provider)).toBeCloseTo(0.3312);
+  const first = report.samples[0]; if (!first) throw new Error("fixture required");
+  first.fingerprint = allocationFingerprint(cpu + 1, usable);
+  expect(allocationEvidence(report.samples, provider)).toMatchObject({verified: false, pricingAllocation: null});
+});
+
+it("uses documented default allocations and leaves unknown templates unverified", async () => {
+  const {allocationEvidence} = await import("../src/allocation.js");
+  for (const [provider, cpu, memory] of [["upstash", 2, 4], ["boat", 4, 8], ["boxd", 2, 8], ["freestyle", 4, 8]] as const) {
+    expect(allocationEvidence(allocationReport(provider, cpu, memory * 0.98, null).samples, provider)).toMatchObject({verified: true, pricingAllocation: {cpu, memoryGiB: memory}});
+  }
+  const report = allocationReport("e2b", 4, 8, null);
+  for (const row of report.samples) row.template = "unknown-template";
+  expect(allocationEvidence(report.samples, "e2b").requestedCompute).toBeNull();
 });

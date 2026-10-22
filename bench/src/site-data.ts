@@ -284,7 +284,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     return {
       id: name,
       track,
-      requestedAllocation: {...allocation.requested, compute: allocation.requestedCompute},
+      requestedAllocation: {...allocation.requested, compute: allocation.requestedCompute, provisioned: allocation.provisioned},
       measuredAllocations: allocation.measured,
       equalSpec: allocation.equalSpec,
       currency: price?.currency ?? null,

@@ -1,5 +1,6 @@
 import type { Sample } from "./v2-model.js";
 import { resources } from "./fingerprint.js";
+import { provisionedAllocation } from "./provisioned-allocations.js";
 import { distribution } from "./v2-stats.js";
 
 const presets: Record<string, Record<"small" | "medium" | "large", {cpu: number; memoryGiB: number}>> = {
@@ -16,7 +17,8 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const first = rows[0];
   const size = first?.requestedSize ?? null;
   const requested = {size, template: first?.template ?? null};
-  const requestedCompute = size === null ? null : typeof size === "string"
+  const provisioned = size === null ? provisionedAllocation(provider, requested.template) : null;
+  const requestedCompute = size === null ? provisioned && {cpu: provisioned.cpu, memoryGiB: provisioned.memoryGiB} : typeof size === "string"
     ? (presets[provider] ?? standardPresets)[size]
     : {cpu: size.cpu, memoryGiB: size.memoryMb / 1024};
   const observed = rows.filter(s => ["fingerprint", "restore-fingerprint"].includes(s.scenario)).flatMap(s => s.fingerprint ? [resources(s.fingerprint)] : []);
@@ -31,9 +33,9 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const cpu = observed[0]?.cpu;
   const memoryGiB = distribution(observed.map(r => r.memoryGiB)).p50;
   const measuredCompute = cpu === undefined || memoryGiB === null ? null : {cpu, memoryGiB};
-  const pricingAllocation = mismatches.length ? null : requestedCompute && observed.length ? requestedCompute : measuredCompute;
+  const pricingAllocation = mismatches.length || requested.template && !requestedCompute ? null : requestedCompute && observed.length ? requestedCompute : measuredCompute;
   return {
-    requested, requestedCompute, measured,
+    requested, requestedCompute, provisioned, measured,
     verified: mismatches.length ? false : observed.length && requestedCompute ? true : null,
     mismatches, pricingAllocation,
     equalSpec: observed.length > 0 && observed.every(r => r.cpu === 4 && r.memoryGiB >= 8 * 0.95 && r.memoryGiB <= 8 * 1.05),
