@@ -7,7 +7,10 @@ import { execute, supervisor, supervisorPath } from "./execute.js";
 export interface SuperserveOptions {
   apiKey?: string;
   baseUrl?: string;
-  /** Template-owned resources cannot be overridden by the SDK size option. */
+  /** Native template name or UUID. Defaults to superserve/node-22.
+   * Preinstall Python 3, git, tar, and nohup to avoid runtime package installation.
+   * Template-owned resources cannot be overridden by the SDK size option.
+   */
   template?: string;
   requestTimeoutMs?: number;
 }

@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
     { guest: MockGuest; metadata: Record<string, string>; createdAt: Date; status: string }
   >(),
   creates: 0,
+  createOptions: undefined as unknown,
   transportFailure: false,
   stdinFailure: false,
   closes: 0,
@@ -19,6 +20,7 @@ vi.mock("@superserve/sdk", () => ({
     static async create(options: { metadata: Record<string, string> }) {
       const guest = await MockGuest.create();
       state.creates++;
+      state.createOptions = options;
       state.boxes.set(guest.id, {
         guest,
         metadata: options.metadata,
@@ -264,5 +266,31 @@ test("a range read does not download the full native file", async () => {
     expect(guest.reads.length).toBe(before);
   } finally {
     await box.destroy();
+  }
+});
+
+test.each([
+  [undefined, "superserve/node-22"],
+  ["sandbox-bench-node22-py311-1x1", "sandbox-bench-node22-py311-1x1"],
+  ["93d75667-9e61-4d93-b8f8-2b5beac98fca", "93d75667-9e61-4d93-b8f8-2b5beac98fca"],
+])("selects template %s without changing the provider default", async (template, expected) => {
+  const provider = superserve({ apiKey: "mock", template });
+  const box = await provider.create({ labels: {} });
+  try {
+    expect(state.createOptions).toMatchObject({ fromTemplate: expected });
+    expect(state.createOptions).not.toHaveProperty("fromSnapshot");
+  } finally {
+    await provider.destroy(box.id);
+  }
+});
+
+test("snapshot restore takes precedence over a custom template", async () => {
+  const provider = superserve({ apiKey: "mock", template: "sandbox-bench-node22-py311-1x1" });
+  const box = await provider.create({ labels: {}, from: "snapshot-custom" });
+  try {
+    expect(state.createOptions).toMatchObject({ fromSnapshot: "snapshot-custom" });
+    expect(state.createOptions).not.toHaveProperty("fromTemplate");
+  } finally {
+    await provider.destroy(box.id);
   }
 });

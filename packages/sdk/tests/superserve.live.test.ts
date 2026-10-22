@@ -4,6 +4,8 @@ import { runConformance } from "../src/testing.js";
 describe.skipIf(process.env.SANDBOX_SUPERSERVE_LIVE !== "1" || !process.env.SUPERSERVE_API_KEY)(
   "superserve live",
   () => {
-    runConformance(() => superserve(), { live: true });
+    runConformance(() => superserve({ template: process.env.SANDBOX_SUPERSERVE_TEMPLATE }), {
+      live: true,
+    });
   },
 );
