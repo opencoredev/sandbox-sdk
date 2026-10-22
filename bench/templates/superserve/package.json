@@ -1,0 +1,11 @@
+{
+  "name": "sandbox-bench-superserve-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "@superserve/sdk": "0.11.4"
+  }
+}
