@@ -64,3 +64,23 @@ it("rejects shared cost suites and oversized Boat quota windows", async () => {
   expect(() => parseV2(["--providers", "boat", "--scenarios", "cost", "--cost-runs", "11"])).toThrow("quota window");
   expect(parseV2(["--providers", "boat", "--scenarios", "cost"])["cost-runs"]).toBe(10);
 });
+
+it("keeps completed perf metrics when the real TCP probe catches a timeout", async () => {
+  const raw = await readFile(new URL("../probes/perf.py", import.meta.url), "utf8");
+  // Run the probe's real exception/output blocks, with no kernels or external connections.
+  const harness = `import ast,sys,json,time,socket
+source=ast.parse(sys.stdin.read())
+main=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+results={'cpu-single':7,'cpu-all':8,'memory-mbps':9,'disk-write-mbps':10,'disk-read-mbps':11,'disk-4k-write-iops':12,'disk-4k-read-iops':13};notes=[];n=2
+def connect(*args,**kwargs):raise TimeoutError('timed out')
+socket.create_connection=connect
+blocks=[node for node in main.body if isinstance(node,ast.Try) or isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) and node.value.func.id=='print']
+exec(compile(ast.Module(body=blocks,type_ignores=[]),'probe','exec'))`;
+  const result = spawnSync("python3", ["-c", harness], {input: performanceScript(raw, true), encoding: "utf8", timeout: 5000});
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    metrics: {"cpu-single": 7, "cpu-all": 8, "memory-mbps": 9, "disk-write-mbps": 10, "disk-read-mbps": 11, "disk-4k-write-iops": 12, "disk-4k-read-iops": 13},
+    notes: ["tcp-ms: timed out"],
+  });
+  expect(JSON.parse(result.stdout).metrics).not.toHaveProperty("tcp-ms");
+});

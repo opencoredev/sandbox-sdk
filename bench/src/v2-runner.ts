@@ -857,7 +857,7 @@ export async function runV2(
                   if (sample.provider === p.name && sample.iteration === index &&
                     ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
                     if (sample.scenario === "create-from-snapshot" && restoreDetails.verification?.matches === false) {
-                      sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`, stage: "restore-fingerprint", elapsedMs: performance.now() - restoreStart};
+                      sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`, stage: "restore-fingerprint", elapsedMs: sample.durationMs};
                     } else if (sample.scenario === "create-from-snapshot" && sample.outcome.kind === "sample" && restoreDetails.verification?.matches !== true) {
                       // Only a restore proven to match its source ranks. An unverifiable one is kept, unranked, and not
                       // charged to the provider: a failed restore-fingerprint row already records any provider fault.
@@ -1128,6 +1128,7 @@ export async function runV2(
       const readyMs = success === k
         ? Math.max(...cohort.map(s => Date.parse(s.finishedAt) - Date.parse(at) - (s.phases.ownershipPersistMs ?? 0) - (s.phases.ownershipVerifyMs ?? 0)))
         : readyAt - Date.parse(at);
+      const durationMs = success === k ? readyMs : performance.now() - start;
       report.samples.push({
         track: config.track,
         requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
@@ -1138,7 +1139,7 @@ export async function runV2(
         unit: "ms",
         startedAt: at,
         finishedAt: new Date(readyAt).toISOString(),
-        durationMs: success === k ? readyMs : performance.now() - start,
+        durationMs,
         sandboxId: null,
         outcome:
           success === k
@@ -1149,7 +1150,7 @@ export async function runV2(
             : {
                 kind: cohort.length < k ? "skipped" : "failure",
                 note: `${success}/${k} ready; ${cohort.length} attempted (budgets may prevent admission)`,
-                ...(cohort.length === k ? {stage: `burst-${k}/all-ready`, elapsedMs: performance.now() - start} : {}),
+                ...(cohort.length === k ? {stage: `burst-${k}/all-ready`, elapsedMs: durationMs} : {}),
               },
         phases: {},
         hostBefore: before,

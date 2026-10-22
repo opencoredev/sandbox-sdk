@@ -529,3 +529,87 @@ it.each(["default", "same-spec"])("bounds derived perf failure elapsed time and 
   }
   expect(exported.metrics.find(m => m.scenario === "tcp-ms")?.values[0]).toMatchObject({n: 0, p50: null, failures: 1});
 });
+
+it.each(["default", "same-spec"])("keeps every offline failure clock within its sample and run (%s)", async track => {
+  const checked = new Set<string>();
+  const check = (report: Awaited<ReturnType<typeof runV2>>) => {
+    for (const row of report.samples) {
+      if (row.outcome.kind !== "failure") continue;
+      checked.add(row.scenario);
+      const elapsed = row.outcome.elapsedMs;
+      expect(elapsed, row.scenario).toEqual(expect.any(Number));
+      if (elapsed === undefined) throw new Error("Missing failure elapsedMs");
+      expect(Number.isFinite(elapsed), row.scenario).toBe(true);
+      expect(elapsed, row.scenario).toBeGreaterThanOrEqual(0);
+      expect(elapsed, row.scenario).toBeLessThanOrEqual(Date.parse(row.finishedAt) - Date.parse(report.timestamp));
+      expect(elapsed, row.scenario).toBeLessThanOrEqual(row.durationMs + 2);
+      expect(Date.parse(row.startedAt), row.scenario).toBeGreaterThanOrEqual(Date.parse(report.timestamp));
+      expect(Date.parse(row.finishedAt), row.scenario).toBeGreaterThanOrEqual(Date.parse(row.startedAt));
+      expect(Date.parse(row.finishedAt), row.scenario).toBeLessThanOrEqual(Date.parse(report.finishedAt));
+    }
+  };
+  const run = async (provider: Provider, args: string[]) => {
+    const report = await runV2([ready("boat", provider)], await config(["--track", track, "--timeout-ms", "1000", ...args]), async () => {});
+    check(report);
+    return report;
+  };
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake(); const restoredIds = new Set<string>();
+  const mixed = {...backing, capabilities: new Set(["snapshot"]), snapshot: async () => ({id: "offline-snapshot"}),
+    create: async (input: Parameters<Provider["create"]>[0]) => {
+      const info = await backing.create(input);
+      if (input.from) restoredIds.add(info.id);
+      return info;
+    },
+    files: {...backing.files, write: async (id: string, path: string, bytes: Uint8Array) => {
+      if (path.includes("bench-app/") || path.endsWith("bench-1024.bin")) throw new Error("offline preparation/workload fault");
+      return backing.files.write(id, path, bytes);
+    }},
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+      if (input.command.includes("BENCH_FINGERPRINT") && restoredIds.has(id)) {
+        input.onChunk({stream: "stdout", text: JSON.stringify({...fingerprint, quotaCpus: 1})});
+        return {exitCode: 0, timedOut: false};
+      }
+      if (input.command.includes("BENCH_PERF")) {
+        input.onChunk({stream: "stdout", text: JSON.stringify({metrics: {}, notes: ["tcp-ms: timed out"], workers: 2, method: "offline"})});
+        return {exitCode: 0, timedOut: false};
+      }
+      return backing.exec(id, input);
+    },
+  } satisfies Provider;
+  await run(mixed, ["--scenarios", "snapshot,perf,files-1kb,tool-replay,npm-install"]);
+  expect(await backing.list({})).toEqual([]);
+  await run(fake({create: async () => {throw new Error("offline create fault");}}), ["--scenarios", "command,burst", "--bursts", "2", "--concurrency", "2", "--burst-cohorts", "1"]);
+  for (const phase of ["cold", "create-from-snapshot", "first-command"]) {
+    const lateBacking = fake();
+    const afterAbort = (signal?: AbortSignal) => new Promise<void>(resolve => {
+      if (signal?.aborted) resolve();
+      else signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true});
+    });
+    const late = {...lateBacking, capabilities: new Set(["snapshot"]), snapshot: async () => ({id: "late-snapshot"}),
+      create: async (input: Parameters<Provider["create"]>[0]) => {
+        if (phase === "cold" || phase === "create-from-snapshot" && input.from) {
+          await afterAbort(input.signal);
+          throw new Error("offline late native create fault", {cause: {stage: "readiness", elapsedMs: 1000}});
+        }
+        return lateBacking.create(input);
+      },
+      exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+        if (phase === "first-command" && input.command === "true") {
+          await afterAbort(input.signal);
+          throw new Error("offline late bare command fault");
+        }
+        return lateBacking.exec(id, input);
+      },
+    } satisfies Provider;
+    const report = await run(late, ["--scenarios", phase === "create-from-snapshot" ? "snapshot" : "command"]);
+    const failure = report.samples.find(s => s.scenario === (phase === "first-command" ? "cold" : phase));
+    expect(failure?.outcome).toMatchObject({kind: "failure", clockPhase: phase === "first-command" ? "first-command" : "adapter-create", lateSettlement: {settled: true}});
+    expect(await lateBacking.list({})).toEqual([]);
+  }
+  const admitted = await run(fake(), ["--scenarios", "command", "--runs", "2", "--max-sandboxes", "1"]);
+  expect(admitted.admissionStopped?.length).toBeGreaterThan(0);
+  // Admission stops carry policy/iteration evidence, not fabricated failure clocks.
+  expect(admitted.samples.some(s => s.iteration === 1)).toBe(false);
+  for (const scenario of ["cold", "create-from-snapshot", "restore-fingerprint", "burst-2/cold", "burst-2/all-ready", "tool-replay-prepare", "npm-install-prepare", "files-1kb", "tcp-ms"]) expect(checked.has(scenario), scenario).toBe(true);
+}, 15000);
