@@ -31,6 +31,8 @@ export function markdownV2(r: ReportV2) {
     `Metadata: ${JSON.stringify(r.metadata)}`,
     ...r.providers.map((p) => `Configured region ${p.name}: ${p.configuredRegion ?? "unspecified"}`),
     "",
+    `admissionStopped: ${JSON.stringify(r.admissionStopped ?? [])}`,
+    "",
     "Estimates exclude credits, subscriptions and some storage/transfer charges. Local is a reference baseline.",
     "",
     "| Provider | Scenario | Unit | n | Fail | Blocked | Skip | p50 [95% CI] | p95 | p99 | Mean [95% CI] | Min | Max | SD | Success [Wilson CI] | Est. cost |",

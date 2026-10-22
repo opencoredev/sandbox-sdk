@@ -61,6 +61,7 @@ export interface ReportV2 {
   summaries: Summary[];
   providers: (AllocationMetadata & { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null })[];
   cleanup: { provider: string; remaining: string[]; error: string | null }[];
+  admissionStopped?: { provider: string; scenario: string; iteration: number; track: ConfigV2["track"]; reason: string }[];
   budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;
   methodology: string[];
 }

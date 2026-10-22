@@ -154,6 +154,7 @@ export async function runV2(
     })),
     cleanup: [],
     budgets: {},
+    admissionStopped: [],
     methodology: [
       "Daytona snapshots use its native nameable API with a 600-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
@@ -286,6 +287,8 @@ export async function runV2(
           : null);
     if (stop) {
       state.stop = stop;
+      const skipped = burst ? [`burst-${burst}/cold`] : ["cold", ...(config.scenarios.includes("all") ? scenarioNames : config.scenarios), "destroy"];
+      for (const scenario of skipped) report.admissionStopped?.push({provider: p.name, scenario, iteration: index, track: config.track, reason: stop});
       report.budgets[p.name] = { created: state.created, estimatedUSD: state.estimatedUSD, stop };
       await barrier?.();
       return;
@@ -300,7 +303,10 @@ export async function runV2(
             pending.track(
               (async () => {
                 if (input.from) {
-                  if (state.created >= budgetMax) throw new Skip("Sandbox budget prevents restore");
+                  if (state.created >= budgetMax) {
+                    report.admissionStopped?.push({provider: p.name, scenario: "create-from-snapshot", iteration: index, track: config.track, reason: "Sandbox budget prevents restore"});
+                    throw new Skip("Sandbox budget prevents restore");
+                  }
                   state.created++;
                 }
                 createEvidence = { settled: false, stage: "adapter-create" };

@@ -178,6 +178,7 @@ export async function main() {
   if (
     !providers.some((p) => p.kind === "ready") ||
     report.samples.some((s) => s.outcome.kind === "failure") ||
+    (report.admissionStopped?.length ?? 0) > 0 ||
     report.cleanup.some((c) => c.error || c.remaining.length)
   )
     process.exitCode = 1;
