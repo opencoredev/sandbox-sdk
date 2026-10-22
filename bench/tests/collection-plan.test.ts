@@ -78,25 +78,20 @@ it("omits the public CDN download in every collection invocation", () => {
 });
 
 
-it("does not launch Daytona cohorts or restores above the verified account quota", () => {
+it("runs Daytona in every suite and burst size now that its account quota is raised", () => {
   const commands = (track: string) => plan(`${track}-nonboat`).split("\n").filter(line => line.startsWith("bun bench --"));
   const hasDaytona = (line: string) => /--providers [^ ]*\bdaytona\b/.test(line);
-  const defaults = commands("default");
-  const spec = commands("same-spec");
-  expect(defaults.filter(line => hasDaytona(line) && line.includes("--scenarios burst"))).toHaveLength(1);
-  expect(defaults.find(line => hasDaytona(line) && line.includes("--scenarios burst"))).toContain("--bursts 10 --burst-cohorts 3");
-  expect(hasDaytona(defaults.find(line => line.includes("--scenarios snapshot")) ?? "")).toBe(true);
-  expect(spec.filter(hasDaytona)).toHaveLength(2);
-  expect(spec.find(hasDaytona)).toContain("--scenarios command,");
-  const policy = collectionPolicy();
-  const restrictions = policy.notRun.filter(r => r.provider === "daytona");
-  expect(restrictions).toHaveLength(5);
-  for (const rule of restrictions) expect(rule.reason).toContain("CPU 10 vCPU / memory 10 GiB / disk 30 GiB");
-  expect(restrictions).toContainEqual(expect.objectContaining({track: "same-spec", suite: "snapshot", scenario: "snapshot", reason: expect.stringContaining("16 GiB")}));
-  expect(restrictions).toContainEqual(expect.objectContaining({track: "same-spec", suite: "snapshot", scenario: "create-from-snapshot"}));
-  for (const k of [10, 25]) expect(restrictions).toContainEqual(expect.objectContaining({track: "same-spec", suite: "burst", scenario: `burst-${k}/*`}));
-  expect(restrictions).toContainEqual(expect.objectContaining({track: "default", suite: "burst", scenario: "burst-25/*"}));
-  expect(restrictions.some(r => r.track === "default" && r.scenario === "burst-10/*")).toBe(false);
+  for (const track of ["default", "same-spec"]) {
+    const lines = commands(track);
+    for (const scenario of ["command,", "snapshot", "cost", "burst"])
+      expect(lines.filter(line => line.includes(`--scenarios ${scenario}`)).every(hasDaytona)).toBe(true);
+    const bursts = lines.filter(line => line.includes("--scenarios burst"));
+    expect(bursts).toHaveLength(1);
+    expect(bursts[0]).toContain("--bursts 10,25");
+    expect(bursts[0]).toContain("daytona=25");
+  }
+  expect(collectionPolicy().notRun.filter(r => r.provider === "daytona")).toEqual([]);
+  expect(JSON.stringify(collectionPolicy())).not.toMatch(/10 vCPU/);
 });
 
 it("plans isolated sequential cost tasks and recollectable billing for both tracks", () => {
