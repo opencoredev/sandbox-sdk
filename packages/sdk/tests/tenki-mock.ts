@@ -305,6 +305,7 @@ export class MockSession {
     if (tenkiState.delayMs) await new Promise((resolve) => setTimeout(resolve, tenkiState.delayMs));
     if (tenkiState.failReady || signal?.aborted) throw new Error("readiness failed");
   }
+  async refresh() {}
   async pause() {
     this.state = "PAUSED";
     await fs.rm(join(this.root, "tmp/.sandbox-sdk"), { force: true });

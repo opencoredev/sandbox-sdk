@@ -8,9 +8,16 @@
 import type { Session, CreateOptions } from "@tenkicloud/sandbox";
 import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
+import { waitReady } from "./ready.js";
 import { execute, raw } from "./exec.js";
 import { files } from "./files.js";
-import { tenkiError, failure, type TenkiOperation } from "./errors.js";
+import {
+  tenkiError,
+  failure,
+  createError,
+  type CreateStage,
+  type TenkiOperation,
+} from "./errors.js";
 
 export interface TenkiOptions {
   /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY. */
@@ -239,9 +246,11 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           throw error;
         }
         boxes.set(value.id, value);
+        let stage: CreateStage = "waitReady";
         try {
           const timeoutMs = options.waitTimeoutMs ?? 180_000;
-          await wait((signal) => value.waitReady(timeoutMs, signal), timeoutMs, input.signal);
+          await waitReady(value, timeoutMs, input.signal);
+          stage = "validate";
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           if (
             allocation.cpuCores !== undefined &&
@@ -258,12 +267,23 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
                 value.egress.allowCidrs.length))
           )
             throw failure("Tenki did not confirm the requested network policy", "unsupported");
+          stage = "prepare";
           await prepareBox(value);
           return info(value);
         } catch (error) {
-          await provider.destroy(value.id);
-          if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          throw error;
+          const context = { id: value.id, state: value.state, stage };
+          let cleanupError: unknown;
+          try {
+            await provider.destroy(value.id);
+          } catch (error) {
+            cleanupError = error;
+          }
+          throw createError(
+            input.signal?.aborted ? failure("Creation aborted", "aborted") : error,
+            context,
+            [options.authToken ?? ""],
+            cleanupError,
+          );
         }
       }),
     list: (labels) =>
