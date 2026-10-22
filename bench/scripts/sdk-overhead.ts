@@ -23,7 +23,8 @@ import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
 
 type Sdk = typeof Core;
 type Sandbox = Awaited<ReturnType<Sdk["createSandbox"]>>;
-interface Floor { exec(): Promise<void>; write(path: string, data: Uint8Array): Promise<void> }
+// write is absent when the native SDK cannot reach /workspace (Tenki confines writeFile to its workdir).
+interface Floor { exec(): Promise<void>; write?(path: string, data: Uint8Array): Promise<void> }
 interface Loaded { provider: Provider; floor(id: string): Floor }
 
 const { values } = parseArgs({
@@ -33,6 +34,8 @@ const { values } = parseArgs({
     sandboxes: { type: "string", default: "2" },
     out: { type: "string" },
     sdk: { type: "string", default: fileURLToPath(new URL("../../packages/sdk", import.meta.url)) },
+    // Same factory templates as bench/src/collection-plan.sh's default track.
+    template: { type: "string", multiple: true, default: ["e2b=base", "superserve=sandbox-bench-node22-py311-1x1-pinned"] },
   },
 });
 const n = Number(values.n);
@@ -45,12 +48,18 @@ const label = { "sdk-overhead-run": runId };
 const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)).href;
 const sdk: Sdk = await import(moduleUrl("index.js"));
 const timeoutMs = 60_000;
+const templates = new Map(values.template.map((pair) => {
+  const at = pair.indexOf("=");
+  if (at < 1) throw new Error(`--template expects provider=name, got ${pair}`);
+  return [pair.slice(0, at), pair.slice(at + 1)];
+}));
 
 // Each entry types native() through the adapter module's own Provider<Native>.
 const providers: Record<string, () => Promise<Loaded>> = {
   async e2b() {
     const m: typeof import("@opencoredev/sandbox-sdk/e2b") = await import(moduleUrl("providers/e2b/index.js"));
-    const provider = m.e2b();
+    const template = templates.get("e2b");
+    const provider = m.e2b(template === undefined ? {} : { template });
     return { provider, floor: (id) => { const box = provider.native(id); return {
       exec: async () => { await box.commands.run("true", { user: "root" }); },
       write: async (path, data) => { await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); },
@@ -93,12 +102,12 @@ const providers: Record<string, () => Promise<Loaded>> = {
     const provider = m.tenki();
     return { provider, floor: (id) => { const session = provider.native(id); return {
       exec: async () => { const r = await session.run(["true"], { privileged: true, timeoutMs }); if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`); },
-      write: (path, data) => session.writeFile(path, data),
     }; } };
   },
   async superserve() {
     const m: typeof import("@opencoredev/sandbox-sdk/superserve") = await import(moduleUrl("providers/superserve/index.js"));
-    const provider = m.superserve();
+    const template = templates.get("superserve");
+    const provider = m.superserve(template === undefined ? {} : { template });
     return { provider, floor: (id) => { const box = provider.native(id); return {
       exec: async () => { await box.commands.run("true", { timeoutMs }); },
       write: async (path, data) => { await box.files.write(path, data, { timeoutMs }); },
@@ -171,9 +180,10 @@ async function adapterOps(box: Sandbox, provider: Provider) {
 }
 
 async function floorOps(box: Sandbox, floor: Floor) {
+  const write = floor.write;
   return {
     run: await measurePair({ sdk: () => checked(box.run("true")), baseline: floor.exec }),
-    write: await measurePair({ sdk: () => box.files.write(path, text), baseline: () => floor.write(path, bytes) }),
+    ...(write ? { write: await measurePair({ sdk: () => box.files.write(path, text), baseline: () => write(path, bytes) }) } : {}),
   };
 }
 
@@ -249,7 +259,12 @@ async function measureProvider(name: string): Promise<ProviderReport> {
 async function sweep(provider: Provider): Promise<number | null> {
   try {
     for (const info of await sdk.listSandboxes(provider, { labels: label })) await provider.destroy(info.id).catch(() => {});
-    return (await sdk.listSandboxes(provider, { labels: label })).filter((info) => info.state !== "stopped").length;
+    // Deletion is asynchronous on some providers, so give the list up to 60 s to drain.
+    for (let attempt = 0; ; attempt++) {
+      const left = (await sdk.listSandboxes(provider, { labels: label })).filter((info) => info.state !== "stopped").length;
+      if (left === 0 || attempt === 12) return left;
+      await new Promise((done) => setTimeout(done, 5000));
+    }
   } catch { return null; }
 }
 const live = new Map<string, Provider>();
@@ -293,6 +308,6 @@ for (const name of values.providers.split(",").map((x) => x.trim()).filter(Boole
   const last = reports.at(-1);
   console.error(`[${name}] done${last?.error ? ` with error: ${last.error}` : ""}; leftover ${last?.leftover ?? "unknown"}`);
 }
-const output = { runId, sdkRoot, sdkCommit: sdkCommit(), startedAt, finishedAt: new Date().toISOString(), n, sandboxesPerProvider: sandboxCount, providers: reports };
+const output = { runId, sdkRoot, sdkCommit: sdkCommit(), startedAt, finishedAt: new Date().toISOString(), n, sandboxesPerProvider: sandboxCount, templates: Object.fromEntries(templates), providers: reports };
 if (values.out) await writeFile(values.out, `${JSON.stringify(output, null, 2)}\n`);
 console.log(markdown(reports));
