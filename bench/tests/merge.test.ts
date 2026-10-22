@@ -415,3 +415,21 @@ it("exports snapshot metrics collected in all runs once alongside dedicated suit
   expect(exported.metrics.find(m => m.id === "cold")?.values[0]?.n).toBe(1);
   expect(siteData(mergeSources([all], [])).metrics.find(m => m.id === "snapshot")?.values[0]?.n).toBe(1);
 });
+
+
+it.each([
+  [0.5, 0.462, true], [0.5, 0.40625, true], [0.5, 0.4, false], [0.5, 0.501, false],
+  [1, 0.92, true], [1, 0.90625, true], [1, 0.9, false], [1, 1.001, false],
+  [8, 7.6, true], [8, 7.59, false], [8, 8.001, false],
+])("verifies %s GiB provisioned vs %s usable with fixed kernel overhead (valid=%s)", async (provisioned, usable, valid) => {
+  const {allocationEvidence} = await import("../src/allocation.js");
+  const report = allocationReport("e2b", 2, usable, {cpu: 2, memoryMb: provisioned * 1024});
+  expect(allocationEvidence(report.samples, "e2b").verified).toBe(valid);
+});
+
+it("prices the E2B base template from its full 512 MiB despite kernel overhead", async () => {
+  const {siteData} = await import("../src/site-data.js");
+  const report = allocationReport("e2b", 2, 0.462, null);
+  for (const row of report.samples) row.template = "base";
+  expect(siteData(report, "same-spec").providers[0]).toMatchObject({hourly: 0.1089, allocationVerification: {verified: true}, pricingAllocation: {cpu: 2, memoryGiB: 0.5}});
+});

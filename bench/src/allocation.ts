@@ -30,8 +30,8 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   if (new Set(rows.map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1)
     mismatches.push("Multiple requested allocations");
   if (requestedCompute && observed.some(r => r.cpu !== requestedCompute.cpu)) mismatches.push("Measured vCPU differs from requested allocation");
-  if (requestedCompute && observed.some(r => Math.abs(r.memoryGiB - requestedCompute.memoryGiB) > requestedCompute.memoryGiB * 0.05))
-    mismatches.push("Measured memory differs from requested allocation by more than 5%");
+  if (requestedCompute && observed.some(r => r.memoryGiB > requestedCompute.memoryGiB || r.memoryGiB < requestedCompute.memoryGiB - Math.max(requestedCompute.memoryGiB * 0.05, 96 / 1024)))
+    mismatches.push("Measured memory exceeds provisioned RAM or falls below it by more than max(5%, 96 MiB)");
   if (new Set(observed.map(r => r.cpu)).size > 1) mismatches.push("Measured vCPU varies across fingerprints");
   const cpu = observed[0]?.cpu;
   const memoryGiB = distribution(observed.map(r => r.memoryGiB)).p50;
