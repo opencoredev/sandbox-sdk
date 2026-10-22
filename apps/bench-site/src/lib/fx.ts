@@ -23,25 +23,13 @@ export function usdPrice(p: Provider, key: PriceKey) {
 export const conversionNote = (original: string, per: string) =>
   `bills in euros, ${original} ${per}, converted at the ECB rate of ${eurUsd.rate} dollars per euro on ${eurUsd.date}.`;
 
-/**
- * The size every price comparison uses, so providers are priced on the same
- * machine. It is Boat's only machine, the one size every provider can be
- * priced at without guessing.
- */
+/** The common allocation; providers without this exact size have no price. */
 export const commonSize = { vcpu: 4, memoryGiB: 8, label: "4 vCPU, 8 GB" } as const;
 
-/**
- * What a 4 vCPU, 8 GB sandbox costs per hour at each provider's published
- * rates, in dollars. A provider that sells one fixed machine is priced at
- * that machine, and `fixed` names it when it differs from the common size.
- */
+/** Compute-only price from the harness's audited size model, converted to USD. */
 export function commonPrice(p: Provider) {
-  const r = p.rates;
-  if (!r) return null;
-  const toUsd = (v: number) => (p.currency === "EUR" ? v * eurUsd.rate : v);
-  if (r.fixed && r.fixedHour !== null) {
-    const same = r.fixed.cpu === commonSize.vcpu && r.fixed.memoryGiB === commonSize.memoryGiB;
-    return { usd: toUsd(r.fixedHour), fixed: same ? null : `${r.fixed.cpu} vCPU, ${r.fixed.memoryGiB} GB` };
-  }
-  return { usd: toUsd(commonSize.vcpu * r.vcpuHour + commonSize.memoryGiB * r.memoryGiBHour), fixed: null };
+  if (p.commonHourly === null) return null;
+  return {
+    usd: p.currency === "EUR" ? p.commonHourly * eurUsd.rate : p.commonHourly,
+  };
 }

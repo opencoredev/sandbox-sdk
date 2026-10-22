@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { roundRobin, schedule } from "../src/scheduler.js";
 import { distribution, wilson, shuffle } from "../src/v2-stats.js";
-import { estimateCost, settledBudgetUSD } from "../src/pricing.js";
+import { estimateCost, priceAtSize, settledBudgetUSD } from "../src/pricing.js";
 import { parseFingerprint, resources } from "../src/fingerprint.js";
 import { parseV2 } from "../src/v2-config.js";
 describe("v2 scheduling", () => {
@@ -103,5 +103,36 @@ describe("fingerprint boundary", () => {
     });
     expect(() => parseFingerprint(JSON.stringify({ ...sample, quotaCpus: "unlimited" }))).toThrow();
     expect(() => parseFingerprint("{}")).toThrow();
+  });
+});
+
+describe("Upstash Box PAYG size pricing", () => {
+  it.each([
+    [2, 4, 0.10], [4, 8, 0.20], [8, 16, 0.40],
+  ])("prices %i vCPU / %i GiB as one box, not per vCPU", (cpu, memoryGiB, hourly) => {
+    expect(estimateCost("upstash", 3600000, { cpu, memoryGiB, diskGiB: 0 })).toBeCloseTo(hourly);
+  });
+  it("accepts kernel-visible memory below the tier allocation", () => {
+    expect(estimateCost("upstash", 3600000, { cpu: 2, memoryGiB: 3.8, diskGiB: 0 })).toBeCloseTo(0.10);
+  });
+  it("does not invent a price for an unknown size", () => {
+    expect(estimateCost("upstash", 3600000, { cpu: 3, memoryGiB: 6, diskGiB: 0 })).toBeNull();
+  });
+});
+
+describe("published compute-only size comparisons", () => {
+  it.each([
+    ["e2b", 0.3312], ["daytona", 0.3312], ["upstash", 0.20],
+    ["boat", 0.036], ["freestyle", 0.26448], ["tenki", 0.3312], ["superserve", 0.3312],
+  ])("prices an offered 4 vCPU / 8 GiB %s machine without storage", (provider, hourly) => {
+    expect(priceAtSize(provider, { cpu: 4, memoryGiB: 8 })).toBeCloseTo(hourly);
+  });
+  it("leaves boxd's unlisted 4 vCPU / 8 GiB shape unpriced", () => {
+    expect(priceAtSize("boxd", { cpu: 4, memoryGiB: 8 })).toBeNull();
+    expect(priceAtSize("boxd", { cpu: 4, memoryGiB: 16 })).toBeCloseTo(0.348);
+  });
+  it("does not interpolate between Upstash tiers or Boat sizes", () => {
+    expect(priceAtSize("upstash", { cpu: 4, memoryGiB: 4 })).toBeNull();
+    expect(priceAtSize("boat", { cpu: 3, memoryGiB: 6 })).toBeNull();
   });
 });

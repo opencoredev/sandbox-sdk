@@ -103,7 +103,7 @@ export function quickPicks() {
     timed("tool-replay", "Fastest agent work (tool replay)"),
     timed("burst-25", "Fastest 25-sandbox fan-out"),
     timed("reconnect", "Fastest reconnect"),
-    { need: `Cheapest hour (${commonSize.label})`, ...pair(cheapest, (x) => `${name(x.p.id)} ${formatMoney(x.usd, "USD")}${commonPrice(x.p)?.fixed ? ` (only sold as ${commonPrice(x.p)?.fixed})` : ""}`) },
+    { need: `Cheapest hour (${commonSize.label})`, ...pair(cheapest, (x) => `${name(x.p.id)} ${formatMoney(x.usd, "USD")}`) },
     (() => {
       // Several providers can share the top rate; name every one of them.
       const top = reliable.filter((x) => x.rate === reliable[0]?.rate);
@@ -148,7 +148,8 @@ export function agentData() {
             const hour = usdPrice(p, "hourly")?.usd ?? null;
             return t === null || hour === null ? null : round((hour * t * 1000) / 3600);
           })(),
-          commonSizeNote: commonPrice(p)?.fixed ? `only sold as ${commonPrice(p)?.fixed}` : `${commonSize.label} at published rates`,
+          commonSizeNote: commonPrice(p) === null ? `${commonSize.label} is not a listed machine size` : `${commonSize.label} at published rates`,
+          note: p.pricingNotes,
           usdNote: p.currency === "EUR" ? `Converted at the ECB rate of ${eurUsd.rate} USD per EUR on ${eurUsd.date}.` : null,
           source: p.pricingSource,
         },
@@ -197,6 +198,9 @@ export function agentMarkdown() {
         `| ${p.name} | ${p.size.vcpu ?? "?"} vCPU, ${p.size.memoryGiB === null ? "?" : formatGiB(p.size.memoryGiB)} RAM, ${p.size.diskGiB === null ? "?" : formatGiB(p.size.diskGiB)} disk | ${p.ranIn ?? "not reported"} | ${p.price.perHourUsd === null ? "n/a" : `$${p.price.perHourUsd}${p.price.currency === "EUR" ? ` (EUR ${p.price.perHour})` : ""}`} | ${p.price.commonSizeUsd === null ? "n/a" : `$${p.price.commonSizeUsd}`} | ${p.reliability.successRate === null ? "n/a" : `${(p.reliability.successRate * 100).toFixed(2)}%`} |`,
     ),
     "",
+    "Prices cover compute only; disk, transfer, subscriptions and credits are excluded. Upstash uses per-box size tiers and bills only active CPU, so its price is an upper bound. boxd full-memory prices are also upper bounds. Boat charges a flat rate per size. Tenki uses measured CPU and usable RAM because its default allocation is undocumented.",
+    "",
+    ...d.providers.flatMap((p) => (p.price.commonSizeUsd === null ? [`Price note on ${p.name}: ${p.price.commonSizeNote}.`, ""] : [])),
     ...d.providers.flatMap((p) => (p.sizeNote ? [`Note on ${p.name}: ${p.sizeNote}`, ""] : [])),
   ];
   for (const g of groups) {
@@ -248,7 +252,7 @@ ${d.quickPicks.map((q) => `- ${q.need}: ${q.pick} (runner-up ${q.runnerUp})`).jo
 
 ${d.howToRead}
 
-Each provider ran its default sandbox size, so machine speed is not like for like. Prices are USD list prices for that size; boxd is converted from EUR at the ECB rate. Every call starts in Florida, so providers hosted in Europe (Boat in France, boxd in Germany) pay a transatlantic round trip per call.
+Each provider ran its default sandbox size, so machine speed is not like for like. Prices cover compute only at list rates; disk, transfer, subscriptions and credits are excluded. The common-size comparison omits unlisted sizes (boxd has no 4 vCPU / 8 GB shape). Upstash uses per-box size tiers and bills only active CPU; Upstash and boxd are upper bounds. Boat charges a flat rate per size. Tenki uses measured CPU and usable RAM because its default allocation is undocumented. boxd is converted from EUR at the ECB rate. Every call starts in Florida, so providers hosted in Europe (Boat in France, boxd in Germany) pay a transatlantic round trip per call.
 
 ## Metrics
 

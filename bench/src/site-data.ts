@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { pricing } from "./pricing.js";
+import { defaultCompute, priceAtSize, pricing } from "./pricing.js";
 import { hourly } from "./publication-report.js";
 import { reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
 import { statistics } from "./stats.js";
@@ -278,14 +278,17 @@ export function siteData(r: PublicationReport) {
       id: name,
       currency: price?.currency ?? null,
       hourly: hour,
-      perVcpuHour: hour != null && hw?.vcpu ? hour / hw.vcpu : null,
-      // Published per-resource rates, so the site can price any size the same way.
+      commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
+      perVcpuHour: hour != null && hw?.vcpu ? hour / (defaultCompute[name]?.cpu ?? hw.vcpu) : null,
+      // Audited resource rates, size tiers and availability; tiered CPU has no per-vCPU rate.
       rates: price
         ? {
-            vcpuHour: price.cpuSecond * 3600,
+            vcpuHour: price.tiers ? null : price.cpuSecond * 3600,
             memoryGiBHour: price.memoryGiBSecond * 3600,
             fixed: price.fixed,
-            fixedHour: price.fixed ? hour : null,
+            fixedHour: price.fixedHour,
+            tiers: price.tiers,
+            offeredSizes: price.offeredSizes,
           }
         : null,
       pricingSource: price?.source ?? null,

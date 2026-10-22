@@ -15,13 +15,13 @@ import type { ScatterPoint } from "@/components/scatter";
 import { SpecSheet } from "@/components/spec-sheet";
 import { Card, TabCard } from "@/components/tabs";
 import type { Tab } from "@/components/tabs";
-import { coldSamples, metric, provider, providers, runWindow } from "@/lib/data";
+import { coldSamples, metric, providers, runWindow } from "@/lib/data";
 import type { Provider } from "@/lib/data";
 import { formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
 import { excluded, notRun } from "@/lib/agent-data";
-import { commonPrice, commonSize, conversionNote, eurUsd, usdPrice } from "@/lib/fx";
+import { commonPrice, commonSize, conversionNote, usdPrice } from "@/lib/fx";
 import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
 
@@ -111,28 +111,25 @@ function commonColumns() {
   });
   const columns: Column[] = priced
     .sort((a, b) => a.usd - b.usd)
-    .map(({ p, usd, fixed }) => ({
+    .map(({ p, usd }) => ({
       provider: p.id,
       label: formatMoney(usd, "USD"),
       segments: [{ value: usd, color: providerColor(p.id), variant: "gradient" }],
-      detail: [`${formatMoney(usd, "USD")} an hour`, fixed ? `only sold as ${fixed}` : commonSize.label],
+      detail: [`${formatMoney(usd, "USD")} an hour`, commonSize.label],
     }));
-  return { columns, fixed: priced.filter((x) => x.fixed) };
+  return { columns };
 }
 
 function CommonPriceChart() {
-  const { columns, fixed } = commonColumns();
-  const boxd = provider("boxd");
-  const boxdPrice = boxd ? usdPrice(boxd, "hourly") : null;
+  const { columns } = commonColumns();
   return (
     <>
       <ChartHead title={`Price of a ${commonSize.label} sandbox`} sub="Per hour at each provider's published rates · US dollars · Lower is better" />
       <Columns columns={columns} label={`Price of a ${commonSize.label} sandbox`} />
       <Footnotes
         items={[
-          ...fixed.map(({ p, fixed: size }) => ({ text: <><Who id={p.id} /> sells one machine, {size}, at a flat rate, so that is the price shown.</> })),
-          ...(boxdPrice?.converted ? [{ text: <><Who id="boxd" /> bills in euros, converted at the ECB rate of {eurUsd.rate} dollars per euro on {eurUsd.date}.</> }] : []),
-          { text: "Compute only: vCPU and memory at list price. Disk, transfer, subscriptions and free credits are left out. Upstash bills only CPU, and only while it is busy, so its figure is an upper bound." },
+          ...providers.filter((p) => commonPrice(p) === null).map((p) => ({ text: <><Who id={p.id} /> does not list a {commonSize.label} machine, so no price is shown.</> })),
+          { text: "Compute only at list price; disk, transfer, subscriptions and free credits excluded. Upstash bills active CPU time at its box-size rate; Upstash and boxd allocation prices are upper bounds. Boat charges a flat rate per size." },
         ]}
       />
     </>
@@ -148,7 +145,7 @@ function PriceChart({ k, title, what }: { k: PriceKey; title: string; what: stri
       <Footnotes
         items={[
           ...converted.map(({ p, original }) => ({ mark: 1, text: <><Who id={p.id} /> {conversionNote(original, per(k))}</> })),
-          { text: "List-price estimates for the size each provider gave us, not invoices. Boat is a flat rate. Upstash and boxd are upper bounds: they bill for less than the full allocation." },
+          { text: "Compute-only list-price estimates for the size each provider gave us, not invoices. Boat is a flat rate per size. Upstash and boxd are upper bounds: they bill for less than the full allocation. Tenki uses measured usable RAM because its default allocation is undocumented." },
         ]}
       />
     </>
@@ -453,7 +450,7 @@ export default function Page() {
             <Footnotes
               items={[
                 { text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on." },
-                { text: <><Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU, so its cost is an upper bound.</> },
+                { text: <><Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU; its cost and boxd's full-memory estimate are upper bounds.</> },
               ]}
             />
           </Card>

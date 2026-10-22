@@ -3,6 +3,11 @@ export interface Resources {
   memoryGiB: number;
   diskGiB: number;
 }
+export interface MachineTier {
+  cpu: number;
+  memoryGiB: number;
+  hourly: number;
+}
 export interface Price {
   currency: "USD" | "EUR";
   cpuSecond: number;
@@ -16,6 +21,9 @@ export interface Price {
   retrieved: string;
   notes: string;
   fixed: Resources | null;
+  fixedHour: number | null;
+  tiers: MachineTier[] | null;
+  offeredSizes: Pick<Resources, "cpu" | "memoryGiB">[] | null;
 }
 const base = {
   currency: "USD",
@@ -23,8 +31,11 @@ const base = {
   incrementSeconds: 1,
   perSandbox: 0,
   freeDiskGiB: 0,
-  retrieved: "2026-10-19",
+  retrieved: "2026-10-21",
   fixed: null,
+  fixedHour: null,
+  tiers: null,
+  offeredSizes: null,
 } satisfies Partial<Price>;
 export const pricing: Record<string, Price> = {
   superserve: {
@@ -58,12 +69,19 @@ export const pricing: Record<string, Price> = {
   },
   upstash: {
     ...base,
-    cpuSecond: 0.1 / 3600,
+    cpuSecond: 0,
+    // https://upstash.com/pricing/box: size table + engineer confirmation take
+    // precedence over the contradictory FAQ example. These are per-box rates.
+    tiers: [
+      { cpu: 2, memoryGiB: 4, hourly: 0.10 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.20 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.40 },
+    ],
     memoryGiBSecond: 0,
     diskGiBSecond: 0.1 / (30 * 86400),
     source: "https://upstash.com/pricing/box",
     notes:
-      "PAYG ACTIVE CPU billing: allocated CPU × wall time is an upper-bound estimate, not metered usage. Disk allocated capacity is an upper bound for written data. 30-day month. No RAM fee listed. Increment/minimum unspecified.",
+      "PAYG ACTIVE CPU billing: Small $0.10, Medium $0.20, Large $0.40 per active box-hour; tier price × wall time is an upper-bound estimate, not metered usage. Disk allocated capacity is an upper bound for written data. 30-day month. No RAM fee listed. Increment/minimum unspecified.",
   },
   boat: {
     ...base,
@@ -73,12 +91,24 @@ export const pricing: Record<string, Price> = {
     perSandbox: 0,
     source: "https://docs.boat.dev/machines",
     fixed: { cpu: 4, memoryGiB: 8, diskGiB: 50 },
+    fixedHour: 0.036,
+    tiers: [
+      { cpu: 2, memoryGiB: 4, hourly: 0.018 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.036 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.072 },
+      { cpu: 16, memoryGiB: 32, hourly: 0.200 },
+    ],
     notes:
-      "Default VM $0.036/hour (4 vCPU, 8 GB, 50 GB). Fixed VM rate, resources cannot change the price. $20 monthly minimum/packs excluded; billed per second.",
+      "Default VM $0.036/hour (4 vCPU, 8 GB, 50 GB). Flat rate for each size; Small, Large and Xlarge are also offered. $20 monthly minimum/packs excluded; billed per second.",
   },
   boxd: {
     ...base,
     currency: "EUR",
+    // https://docs.boxd.sh/guides/resources: naming either dimension picks a shape.
+    offeredSizes: [
+      { cpu: 1, memoryGiB: 4 }, { cpu: 2, memoryGiB: 8 },
+      { cpu: 4, memoryGiB: 16 }, { cpu: 8, memoryGiB: 32 },
+    ],
     cpuSecond: 0.039 / 3600,
     memoryGiBSecond: 0.012 / 3600,
     diskGiBSecond: 0.00008 / 3600,
@@ -115,6 +145,34 @@ export const pricing: Record<string, Price> = {
       "Reference baseline only: host hardware, power, network and administration cost excluded; zero marginal provider charge.",
   },
 };
+/** Compute only; measured RAM can be lower than a tier's provisioned RAM. */
+export function computeHourly(p: Price, r: Pick<Resources, "cpu" | "memoryGiB">): number | null {
+  if (p.tiers) return p.tiers.find((t) => t.cpu === r.cpu && r.memoryGiB <= t.memoryGiB)?.hourly ?? null;
+  if (p.fixed) return p.fixedHour;
+  return (r.cpu * p.cpuSecond + r.memoryGiB * p.memoryGiBSecond) * 3600;
+}
+
+/** Exact offered allocation for a like-for-like comparison, without disk. */
+export function priceAtSize(provider: string, r: Pick<Resources, "cpu" | "memoryGiB">): number | null {
+  const p = pricing[provider];
+  if (!p) return null;
+  const offered = p.tiers ?? p.offeredSizes ?? (p.fixed ? [p.fixed] : null);
+  if (offered && !offered.some((t) => t.cpu === r.cpu && t.memoryGiB === r.memoryGiB)) return null;
+  return computeHourly(p, r);
+}
+
+// Provisioned sizes of the templates actually benchmarked, not kernel-usable
+// RAM. Tenki does not document its default, so it stays measured.
+export const defaultCompute: Record<string, Pick<Resources, "cpu" | "memoryGiB">> = {
+  e2b: { cpu: 2, memoryGiB: 0.5 },
+  daytona: { cpu: 1, memoryGiB: 1 },
+  upstash: { cpu: 2, memoryGiB: 4 },
+  boat: { cpu: 4, memoryGiB: 8 },
+  boxd: { cpu: 2, memoryGiB: 8 },
+  freestyle: { cpu: 4, memoryGiB: 8 },
+  superserve: { cpu: 1, memoryGiB: 1 },
+};
+
 export function estimateCost(
   provider: string,
   durationMs: number,
@@ -129,15 +187,9 @@ export function estimateCost(
     p.minimumSeconds,
     Math.ceil(durationMs / 1000 / p.incrementSeconds) * p.incrementSeconds,
   );
-  return (
-    seconds *
-      (provider === "boat"
-        ? 0.036 / 3600
-        : r.cpu * p.cpuSecond +
-          r.memoryGiB * p.memoryGiBSecond +
-          Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) +
-    p.perSandbox
-  );
+  const compute = computeHourly(p, r);
+  if (compute === null) return null;
+  return seconds * (compute / 3600 + Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) + p.perSandbox;
 }
 // Conservative allocation for iterations without a fingerprint (e.g. a failed create).
 export const fallbackResources: Resources = { cpu: 8, memoryGiB: 16, diskGiB: 100 };

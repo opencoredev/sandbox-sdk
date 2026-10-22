@@ -1,5 +1,5 @@
 import { resources } from "./fingerprint.js";
-import { estimateCost, pricing } from "./pricing.js";
+import { computeHourly, defaultCompute, pricing } from "./pricing.js";
 import { distribution } from "./v2-stats.js";
 import {
   discardedRun,
@@ -55,11 +55,16 @@ function costs(r: PublicationReport) {
 }
 
 export function hourly(r: PublicationReport, provider: string) {
+  const price = pricing[provider];
+  if (!price) return null;
   const fingerprints = r.samples
     .filter((s) => s.provider === provider && s.scenario === "fingerprint")
     .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));
+  if (fingerprints.length === 0) return null;
+  const allocation = defaultCompute[provider];
+  if (allocation) return computeHourly(price, allocation);
   const values = fingerprints.flatMap((fp) => {
-    const value = estimateCost(provider, 3600000, resources(fp));
+    const value = computeHourly(price, resources(fp));
     return value === null ? [] : [value];
   });
   return distribution(values).p50;
@@ -356,8 +361,8 @@ export function disclosures(r: PublicationReport) {
     "Guest CPU is CPython fixed LCG iterations/s, single and all-core; all-core workers use ceil(min(nproc, quota)), capped at 64. Memory copy is 16 MiB. Disk is buffered 64 MiB sequential I/O plus 256 random 4 KiB queue-depth-1 operations; writes fsync, reads may be cached, no O_DIRECT. Runtime versions, shared CPU and cache state are confounders. MB/s is decimal; file payload is 10 MiB.",
     "Hardware tables show observed fingerprint ranges and CPU variants, including burst allocations. nproc can expose host CPUs; cgroup quota is shown separately. RAM and disk can describe a shared host filesystem or ceiling rather than dedicated allocation. Egress city/region/ASN is not a placement guarantee. All configured regions here are unspecified/provider default, unless a source table says otherwise.",
     "Host-load observations are retained per sample. High load means load1/logical CPUs >=1 or sampled host CPU busy >=90%. Overlapping samples share counters; traffic and CPU must not be summed as provider-attributable use. Collection is from the recorded client host and network only, with uncontrolled CDN and provider caches.",
-    "Costs use existing published pricing and measured sandbox-lifetime estimates, which already include restored sandbox lifetime. Scenario allocations are not added again. Unknown billed lifetimes remain unknown; displayed subtotals cover known estimates only. Allocated CPU/RAM/disk estimates for Upstash and boxd are upper bounds. Subscription minimums, credits, transfer, snapshot retention and some storage are excluded. Boat is USD 0.036/hour; boxd stays EUR, with no FX conversion or cross-currency ranking. These are estimates, not invoices.",
-    "Command operations per native currency = (3,600,000 / successful command p50 in ms) / median estimated sandbox-hour price. It describes hypothetical continuous commands at that median latency, excludes setup/idle time and is not an overall score. Local's zero marginal provider charge makes this ratio undefined.",
+    "Sandbox-hour prices use published compute rates and provisioned template sizes, excluding disk. Tenki uses median measured CPU and usable RAM because its default allocation is undocumented. Upstash uses per-box size tiers, not a per-vCPU rate. Collection totals retain original source pricing and measured sandbox-lifetime estimates, which already include restored sandbox lifetime. Scenario allocations are not added again. Unknown billed lifetimes remain unknown; displayed subtotals cover known estimates only. Allocated CPU/RAM/disk estimates for Upstash and boxd are upper bounds. Subscription minimums, credits, transfer, snapshot retention and some storage are excluded. Boat is USD 0.036/hour; boxd stays EUR, with no FX conversion or cross-currency ranking. These are estimates, not invoices.",
+    "Command operations per native currency = (3,600,000 / successful command p50 in ms) / estimated compute-only sandbox-hour price. It describes hypothetical continuous commands at that median latency, excludes setup/idle time and is not an overall score. Local's zero marginal provider charge makes this ratio undefined.",
     `${discardedRun.runId}: ${discardedRun.reason}`,
     `Sample conservation: ${r.samples.length} merged observations = ${r.inputSampleCount} included input observations across ${r.sources.length} runs. Every source results.json was compared with its samples.ndjson before merging. No cloud calls were made by the merge.`,
   ];
@@ -452,7 +457,7 @@ export function publicationMarkdown(r: PublicationReport) {
     "",
     mdTable(head.headers, head.rows),
     "",
-    "All latency cells are seconds and p50 unless stated. Raw/adjusted success counts all observations; see reliability denominators below. Cost is the median estimated observed allocation per sandbox-hour. — means no successful measurement.",
+    "All latency cells are seconds and p50 unless stated. Raw/adjusted success counts all observations; see reliability denominators below. Sandbox-hour prices cover compute only at the provisioned size of the template we ran; Tenki uses median measured CPU and usable RAM because its default allocation is undocumented. Disk is excluded from sandbox-hour prices. — means no successful measurement.",
     "",
     "## Reliability",
     "",
@@ -548,7 +553,7 @@ export function publicationHtml(r: PublicationReport) {
 <section id="scenarios"><h2>Scenario distributions</h2><p>Expand each scenario for every successful observation, the p50 and its 95% bootstrap interval. Shared axes within each chart; logarithmic scales are labelled. The network throughput metric is <strong>not comparable</strong> because of Cloudflare HTTP 429 responses and Daytona connection resets. It remains in raw data and the statistics appendix, without a chart or rank.</p><div class="columns">${charts(false)}</div></section>
 <section id="hardware"><h2>Observed hardware</h2><p>Ranges include source and burst fingerprints. Visible CPUs can exceed the cgroup quota. Disk may describe a shared filesystem. Egress location and ASN do not establish physical placement. Full kernels, runtime versions, tools and CPU flags are preserved in raw fingerprints.</p><div class="table-wrap">${table(hardwareHeaders, hardwareRows(r), "Guest fingerprints · observed variants and ranges")}</div></section>
 <section id="guest"><h2>Guest performance</h2><p>CPU iterations/s, memory copy and buffered disk throughput describe the supplied guest environment. Python versions and caches differ. All-core worker counts follow the harness quota policy; these results are not normalized per vCPU.</p><div class="columns">${charts(true)}</div></section>
-<section id="cost"><h2>Cost estimates and command efficiency</h2><p>These are marginal usage estimates, not invoices. Subtotals include known sandbox lifetimes only; unpriced lifetimes make the actual run total unknown. Restored lifetimes are already included. Estimates exclude subscription minimums, credits, transfer and retained snapshot storage. Upstash and boxd allocated-resource costs are upper bounds.</p><div class="table-wrap">${table(costHeaders, cost.totals, "Per-provider estimated totals · no currency conversion")}</div><p>Command operations per native currency assumes continuous commands at the successful median latency: (3,600,000 / command p50 ms) / estimated sandbox-hour price. It excludes setup and idle time. Local has no defined ratio because its marginal provider price is zero.</p><details><summary>Estimated cost by source run</summary><div class="table-wrap">${table(perRunCostHeaders, cost.perRun, "Known lifetime subtotals and unpriced counts")}</div></details>${providers(
+<section id="cost"><h2>Cost estimates and command efficiency</h2><p>These are marginal usage estimates, not invoices. Subtotals include known sandbox lifetimes only; unpriced lifetimes make the actual run total unknown. Restored lifetimes are already included. Estimates exclude subscription minimums, credits, transfer and retained snapshot storage. Upstash and boxd allocated-resource costs are upper bounds.</p><div class="table-wrap">${table(costHeaders, cost.totals, "Per-provider estimated totals · no currency conversion")}</div><p>Command operations per native currency assumes continuous commands at the successful median latency: (3,600,000 / command p50 ms) / estimated compute-only sandbox-hour price. It excludes setup and idle time. Local has no defined ratio because its marginal provider price is zero.</p><details><summary>Estimated cost by source run</summary><div class="table-wrap">${table(perRunCostHeaders, cost.perRun, "Known lifetime subtotals and unpriced counts")}</div></details>${providers(
     r,
   )
     .map(
