@@ -1,11 +1,18 @@
 import { afterAll, expect, test, vi } from "vitest";
+import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockGuest } from "./cloud-guest-mock.js";
+import { quote } from "../src/providers/boxd/guest.js";
 const state = vi.hoisted(() => ({
   boxes: new Map<
     string,
     { guest: MockGuest; metadata: Record<string, string>; createdAt: Date; status: string }
   >(),
   creates: 0,
+  nativeTimeoutSeconds: 0,
+  bootstrapPath: "",
+  updates: new Array<unknown>(),
   createOptions: undefined as unknown,
   transportFailure: false,
   stdinFailure: false,
@@ -46,9 +53,15 @@ vi.mock("@superserve/sdk", () => ({
       return v;
     }
     async getInfo() {
-      return { ...this.value, id: this.id };
+      return {
+        ...this.value,
+        id: this.id,
+        ...(state.nativeTimeoutSeconds > 0 ? { timeoutSeconds: state.nativeTimeoutSeconds } : {}),
+      };
     }
-    async update() {}
+    async update(options: unknown) {
+      state.updates.push(options);
+    }
     async snapshot(options: unknown) {
       state.snapshotOptions = options;
       if (state.snapshotFailure) throw new Error("private-native-token");
@@ -63,9 +76,40 @@ vi.mock("@superserve/sdk", () => ({
     get commands() {
       const g = this.value.guest;
       return {
-        run: async (command: string) => {
-          if (command.startsWith("mkdir -p /workspace")) await state.bootstrap?.();
-          return { stdout: await g.raw(command), stderr: "", exitCode: 0 };
+        run: async (command: string, options: { env?: Record<string, string> } = {}) => {
+          if (command.includes("SANDBOX_SDK_BOOTSTRAP")) await state.bootstrap?.();
+          const env = { ...options.env };
+          if (command.includes("SANDBOX_SDK_BOOTSTRAP") && state.bootstrapPath)
+            env.PATH = state.bootstrapPath;
+          const prefix = Object.entries(env)
+            .map(([key, value]) => {
+              // Match MockGuest.upload's host-path normalization for encoded output.
+              const payload =
+                key === "SANDBOX_SDK_BOOTSTRAP"
+                  ? value.replace(
+                      "base64.b64encode(data)",
+                      `base64.b64encode(data.replace(b'${g.root}',b''))`,
+                    )
+                  : value;
+              return `export ${key}=${quote(payload)};`;
+            })
+            .join(" ");
+          try {
+            return { stdout: await g.raw(`${prefix} ${command}`), stderr: "", exitCode: 0 };
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              typeof error.code === "number"
+            )
+              return {
+                stdout: "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
+                stderr: "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+                exitCode: error.code,
+              };
+            throw error;
+          }
         },
         spawn: async (
           command: string,
@@ -292,5 +336,93 @@ test("snapshot restore takes precedence over a custom template", async () => {
     expect(state.createOptions).not.toHaveProperty("fromTemplate");
   } finally {
     await provider.destroy(box.id);
+  }
+});
+
+test("creation prepares the environment and supervisor in one guest call without patching an unset timeout", async () => {
+  const provider = factory();
+  const before = state.updates.length;
+  const value = "literal'$(echo injected)";
+  const box = await provider.create({ labels: {}, env: { LITERAL: value } });
+  try {
+    const guest = state.boxes.get(box.id)?.guest;
+    if (!guest) throw new Error("missing guest");
+    expect(guest.commands).toHaveLength(1);
+    expect(guest.uploads).toHaveLength(0);
+    expect(state.updates).toHaveLength(before);
+    const chunks: string[] = [];
+    expect(
+      await provider.exec(box.id, {
+        command: `printf '%s' "$LITERAL"`,
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 10000,
+        onChunk: (chunk) => chunks.push(chunk.text),
+      }),
+    ).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(chunks.join("")).toBe(value);
+  } finally {
+    await provider.destroy(box.id);
+  }
+});
+
+test("restores clear an inherited auto-pause timeout", async () => {
+  const provider = factory();
+  const before = state.updates.length;
+  state.nativeTimeoutSeconds = 60;
+  try {
+    const box = await provider.create({ labels: {}, from: "external-snapshot" });
+    try {
+      expect(state.updates.slice(before)).toEqual([{ timeoutSeconds: null }]);
+    } finally {
+      await provider.destroy(box.id);
+    }
+  } finally {
+    state.nativeTimeoutSeconds = 0;
+  }
+});
+
+test("missing Python fails clearly and destroys the sandbox without running apt", async () => {
+  const path = await mkdtemp(join(tmpdir(), "superserve-no-python-"));
+  const before = state.boxes.size;
+  state.bootstrapPath = path;
+  try {
+    await expect(factory().create({ labels: {} })).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("explicitly set installPython: true"),
+    });
+    expect(state.boxes.size).toBe(before);
+  } finally {
+    state.bootstrapPath = "";
+    await rm(path, { recursive: true, force: true });
+  }
+});
+
+test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
+  const path = await mkdtemp(join(tmpdir(), "superserve-opt-in-"));
+  const log = join(path, "apt.log");
+  for (const tool of ["git", "tar", "nohup"]) await symlink(`/usr/bin/${tool}`, join(path, tool));
+  await writeFile(
+    join(path, "apt-get"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> ${quote(log)}
+if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "python3"))}; fi
+`,
+    { mode: 0o700 },
+  );
+  state.bootstrapPath = path;
+  const provider = superserve({ apiKey: "mock", installPython: true });
+  try {
+    const box = await provider.create({ labels: {} });
+    try {
+      expect(await readFile(log, "utf8")).toBe(
+        "update -qq\ninstall -y -qq python3 python3-venv python3-pip\n",
+      );
+    } finally {
+      await provider.destroy(box.id);
+    }
+  } finally {
+    state.bootstrapPath = "";
+    await rm(path, { recursive: true, force: true });
   }
 });
