@@ -35,6 +35,7 @@ const presets = {
 function size(input: CreateInput["size"]) {
   if (input === undefined) return {};
   const value = typeof input === "string" ? presets[input] : input;
+  const diskGb = value?.diskGb ?? 5;
   if (
     !value ||
     !Number.isInteger(value.cpu) ||
@@ -44,15 +45,15 @@ function size(input: CreateInput["size"]) {
     value.memoryMb < 128 ||
     value.memoryMb > 524288 ||
     value.memoryMb % 2 ||
-    !Number.isInteger(value.diskGb) ||
-    value.diskGb < 5 ||
-    value.diskGb > 100
+    !Number.isInteger(diskGb) ||
+    diskGb < 5 ||
+    diskGb > 100
   )
     throw failure(
       "Size requires 1–128 CPUs, even memoryMb from 128–524288, and 5–100 diskGb",
       "unsupported",
     );
-  return { cpuCores: value.cpu, memoryMb: value.memoryMb, diskSizeGb: value.diskGb };
+  return { cpuCores: value.cpu, memoryMb: value.memoryMb, diskSizeGb: diskGb };
 }
 function info(value: Session): SandboxInfo {
   const createdAt = Number(value.metadata[createdTag]);
@@ -76,7 +77,7 @@ function info(value: Session): SandboxInfo {
 const prepare = [
   "sh",
   "-c",
-  "mkdir -p /workspace /home/tenki/.sandbox-sdk /tmp; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null",
+  "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null",
 ];
 export function tenki(options: TenkiOptions = {}): TenkiProvider {
   let client:
@@ -97,9 +98,18 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     return (client ??= (async () => {
       if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-      if (!Number.isSafeInteger(resumeTimeoutMs) || resumeTimeoutMs <= 0 || resumeTimeoutMs > 900_000)
+      if (
+        !Number.isSafeInteger(resumeTimeoutMs) ||
+        resumeTimeoutMs <= 0 ||
+        resumeTimeoutMs > 900_000
+      )
         throw failure("resumeTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
-      if (options.waitTimeoutMs !== undefined && (!Number.isSafeInteger(options.waitTimeoutMs) || options.waitTimeoutMs <= 0 || options.waitTimeoutMs > 900_000))
+      if (
+        options.waitTimeoutMs !== undefined &&
+        (!Number.isSafeInteger(options.waitTimeoutMs) ||
+          options.waitTimeoutMs <= 0 ||
+          options.waitTimeoutMs > 900_000)
+      )
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
       const authToken =
         options.authToken ??
@@ -231,9 +241,13 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
                 ([key, expected]) => value.metadata[key] === expected,
               ),
           )
-          .flatMap(value => {
-            try { return [info(value)]; }
-            catch (error) { if (tenkiError(error).code !== "not_found") throw error; return []; }
+          .flatMap((value) => {
+            try {
+              return [info(value)];
+            } catch (error) {
+              if (tenkiError(error).code !== "not_found") throw error;
+              return [];
+            }
           }),
       ),
     async find(key) {

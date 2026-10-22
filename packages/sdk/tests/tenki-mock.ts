@@ -24,6 +24,7 @@ export const tenkiState = {
   failReady: false,
   delayMs: 0,
   retainedPeakBytes: 0,
+  streaming: true,
 };
 export class MockSession {
   readonly id = crypto.randomUUID();
@@ -69,8 +70,9 @@ export class MockSession {
   }
   private rewrite = (text: string) =>
     text
-      .replace(/\/workspace|\/home\/tenki|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) =>
-        join(this.root, path),
+      .replace(
+        /(?<![\w./-])\/workspace|\/home\/tenki|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g,
+        (path) => join(this.root, path),
       )
       .replace(/\.listen\(3000/g, `.listen(${this.port}`);
   run(argv: string[], options: ProcessRunOptions = {}) {
@@ -170,6 +172,76 @@ export class MockSession {
       },
     });
   }
+  async readFile(path: string) {
+    try {
+      return new Uint8Array(await fs.readFile(this.rewrite(path)));
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+        throw Object.assign(new Error("missing"), { name: "FileNotFoundError" });
+      throw error;
+    }
+  }
+  async writeFile(path: string, data: Uint8Array) {
+    const mapped = this.rewrite(path);
+    await fs.mkdir(join(mapped, ".."), { recursive: true });
+    await fs.writeFile(mapped, data);
+  }
+  get requireDataPlane() {
+    if (!tenkiState.streaming) return undefined;
+    type Requests = Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0];
+    return async () => ({ run: (requests: Requests) => this.frames(requests) });
+  }
+  private async *frames(
+    requests: Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0],
+  ) {
+    const iterator = requests[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done) throw new Error("Missing start");
+    const start = first.value.frame?.payload;
+    if (start?.case !== "start" || !start.value.cmd?.[0]) throw new Error("Missing command");
+    const args = start.value.cmd
+      .slice(1)
+      .map((arg) =>
+        arg.replace(
+          "base64.b64encode(data)",
+          `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
+        ),
+      );
+    const child = spawn(start.value.cmd[0], args, { stdio: ["pipe", "pipe", "pipe"] });
+    const completion = new Promise<number>((resolve) =>
+      child.on("close", (code) => resolve(code ?? 137)),
+    );
+    child.stdin.on("error", () => {});
+    child.stderr.resume();
+    const next = await iterator.next();
+    if (next.done) throw new Error("Missing input");
+    const input = next.value.frame?.payload;
+    if (input?.case !== "stdin" || !input.value) throw new Error("Missing input");
+    const data: unknown = JSON.parse(Buffer.from(input.value).toString());
+    if (!data || typeof data !== "object") throw new Error("Invalid spec");
+    const mapped = Object.fromEntries(
+      Object.entries(data).map(([key, value]) => [
+        key,
+        typeof value === "string" && key !== "stdin"
+          ? this.rewrite(value)
+          : key === "env" && value && typeof value === "object"
+            ? Object.fromEntries(
+                Object.entries(value).map(([k, v]) => [
+                  k,
+                  typeof v === "string" ? this.rewrite(v) : v,
+                ]),
+              )
+            : value,
+      ]),
+    );
+    child.stdin.end(JSON.stringify(mapped));
+    await iterator.next();
+    for await (const chunk of child.stdout) {
+      const bytes = Buffer.from(chunk);
+      yield { frame: { payload: { case: "stdout", value: bytes } } };
+    }
+    yield { frame: { payload: { case: "exit", value: { exitCode: await completion } } } };
+  }
   async waitReady(_timeout?: number, signal?: AbortSignal) {
     if (tenkiState.delayMs) await new Promise((resolve) => setTimeout(resolve, tenkiState.delayMs));
     if (tenkiState.failReady || signal?.aborted) throw new Error("readiness failed");
@@ -234,4 +306,5 @@ export async function cleanupTenki() {
   tenkiState.failReady = false;
   tenkiState.delayMs = 0;
   tenkiState.retainedPeakBytes = 0;
+  tenkiState.streaming = true;
 }

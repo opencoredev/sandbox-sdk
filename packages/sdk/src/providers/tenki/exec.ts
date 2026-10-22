@@ -2,6 +2,7 @@ import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
+import { executeStream } from "./stream.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
@@ -9,11 +10,15 @@ import { failure } from "./errors.js";
  */
 // Never send user output through native run(): Tenki 1.4.1 retains every chunk.
 // One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
-const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time
+const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time,pwd
 v=json.load(sys.stdin)
+env={**os.environ,**v['env'],'PWD':v['cwd']}
+if os.geteuid()==0 and 'SUDO_UID' not in env:
+ try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
+ except KeyError: pass
 with tempfile.TemporaryFile() as f, open(v['marker']+'.out','wb',buffering=0) as out:
  f.write(base64.b64decode(v['stdin'])); f.seek(0)
- p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
  with open(v['marker'],'w') as m: m.write(str(p.pid))
  sel=selectors.DefaultSelector()
  sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
@@ -66,6 +71,7 @@ export async function raw(
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(result.stdout);
 }
 export async function execute(box: Session, input: ExecInput) {
+  if (typeof box.requireDataPlane === "function") return executeStream(box, input);
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
   const spec = Buffer.from(
