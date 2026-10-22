@@ -14,6 +14,8 @@ export interface CreateOptions extends Omit<CreateInput, "labels"> {
   secrets?: Record<string, string>;
   locator?: Locator;
   keyMode?: "exact" | "best-effort";
+  /** Record a "start" checkpoint at create so files.changes() works without since. Costs one exec. */
+  trackChanges?: boolean;
 }
 export interface RunOptions {
   cwd?: string; env?: Record<string, string>; timeoutMs?: number; maxOutputBytes?: number;

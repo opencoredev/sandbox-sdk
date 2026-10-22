@@ -58,7 +58,9 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   async function write(files: Record<string, string | Uint8Array>): Promise<void>;
   async function write(input: string | Record<string, string | Uint8Array>, data?: string | Uint8Array): Promise<void> {
     const entries = typeof input === "string" ? [[input, data ?? ""] satisfies [string, string | Uint8Array]] : Object.entries(input);
-    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path); if (!fs.writeCreatesParents) await fs.mkdir(id, posix.dirname(dest)); await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
+    // One mkdir per distinct parent within a call; later calls re-check, since commands may remove directories.
+    const made = new Set<string>();
+    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
   }
   const gitDir = "/tmp/.sandbox-sdk/changes.git";
   async function git(command: string, stdin?: string): Promise<string> {
@@ -67,12 +69,32 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git could not update the hidden index. Ensure git is installed and /workspace is readable.", { code: "provider" });
     return output;
   }
-  async function tree(): Promise<string> {
+  // One exec: init the hidden repo if needed, stage /workspace, write the tree and
+  // optionally its mark file. Exit 78 means the guest lacks find; use the RPC path.
+  async function tree(mark?: string): Promise<string> {
+    const script = `command -v git >/dev/null 2>&1 || exit 69
+command -v find >/dev/null 2>&1 || exit 78
+g=${quote(gitDir)}
+[ -d "$g" ] || git init -q --bare "$g" >/dev/null || exit 69
+cd /workspace && find . -name .git -prune -o ! -type d -print0 > "$g/sdk.paths" || exit 1
+git --git-dir="$g" --work-tree=/workspace read-tree --empty || exit 1
+git --git-dir="$g" --work-tree=/workspace update-index --add --remove -z --stdin < "$g/sdk.paths" || exit 1
+tree=$(git --git-dir="$g" --work-tree=/workspace write-tree) || exit 1
+${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quote(mark)} || exit 1\n` : ""}printf '%s\\n' "$tree"`;
+    let output = "";
+    const result = await provider.exec(id, { command: script, cwd: "/workspace", env: { ...defaults, GIT_INDEX_FILE: `${gitDir}/sdk.index` }, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") output += chunk.text; } });
+    if (result.exitCode === 78) { const legacy = await legacyTree(); if (mark) await write(mark, legacy); return legacy; }
+    if (result.exitCode === 69) throw new SandboxError("File checkpoint failed. Git is unavailable. Install git in the sandbox image.", { code: "unsupported" });
+    if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git could not update the hidden index. Ensure git is installed and /workspace is readable.", { code: "provider" });
+    return output.trim();
+  }
+  async function legacyTree(): Promise<string> {
     if (!(await filesExist(gitDir))) {
       const result = await provider.exec(id, { command: `git init --bare ${quote(gitDir)}`, cwd: "/workspace", env: defaults, timeoutMs: 10_000, onChunk() {} });
       if (result.exitCode !== 0) throw new SandboxError("File checkpoint failed. Git is unavailable. Install git in the sandbox image.", { code: "unsupported" });
     }
     // Feed individual files: git add would collapse nested repositories into gitlinks.
+    // The one-exec script above does the same with find, pruning every .git entry.
     const paths: string[] = [];
     async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git") continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
     await collect("/workspace"); await git("read-tree --empty");
@@ -93,6 +115,15 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     for (const [path, content] of Object.entries(raw)) { if (typeof content !== "string") invalid("Invalid file checkpoint content"); parsed[path] = content; }
     return parsed;
   }
+  // createSandbox only records "start" with trackChanges, so explain the opt-in.
+  async function missingStart<T>(since: string | undefined, action: () => Promise<T>): Promise<T> {
+    try { return await action(); } catch (error) {
+      // Confirm absence only on failure, so the success path stays one read.
+      if ((since ?? "start") === "start" && !(await filesExist(checkpoint("start")).catch(() => true))) throw new SandboxError("No start checkpoint. createSandbox records one only with trackChanges: true. Pass trackChanges: true or call files.mark() and changes({ since }).", { code: "invalid_argument" });
+      throw error;
+    }
+  }
+  const baseline = (since?: string) => missingStart(since, () => read(checkpoint(since ?? "start")));
   return {
     [Symbol.dispose]() { for (const stop of watchers) stop(); },
     read, write,
@@ -176,17 +207,17 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
       const stop = () => { stopped = true; clearTimeout(timer); watchers.delete(stop); };
       watchers.add(stop); void poll(); return stop;
     },
-    mark: (name = `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`) => safe(async () => { await write(checkpoint(name), provider.name === "memory" ? JSON.stringify(await snapshot()) : await tree()); return name; }),
+    mark: (name = `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`) => safe(async () => { if (provider.name === "memory") await write(checkpoint(name), JSON.stringify(await snapshot())); else await tree(checkpoint(name)); return name; }),
     changes: (options = {}) => safe(async () => {
       if (provider.name !== "memory") {
-        const before = (await read(checkpoint(options.since ?? "start"))).trim(), after = await tree();
+        const before = (await baseline(options.since)).trim(), after = await tree();
         if (!/^[0-9a-f]{40,64}$/.test(before)) invalid("Invalid git checkpoint");
         const names = (await git(`diff --no-renames --name-status -z ${before} ${after}`)).split("\0");
         const diff: FileDiff = { added: [], modified: [], removed: [], patch: redactor.text(await git(`diff --no-ext-diff --binary ${before} ${after}`)) };
         for (let index = 0; index + 1 < names.length; index += 2) { const status = names[index], path = names[index + 1]; if (path) (status === "A" ? diff.added : status === "D" ? diff.removed : diff.modified).push(pathOf(path)); }
         return diff;
       }
-      const before = await load(options.since ?? "start"), after = await snapshot();
+      const before = await missingStart(options.since, () => load(options.since ?? "start")), after = await snapshot();
       const added = Object.keys(after).filter(path => !(path in before));
       const removed = Object.keys(before).filter(path => !(path in after));
       const modified = Object.keys(after).filter(path => path in before && before[path] !== after[path]);

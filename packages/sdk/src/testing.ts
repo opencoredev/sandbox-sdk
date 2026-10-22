@@ -16,10 +16,10 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
   describe("Sandbox SDK conformance", { timeout }, () => {
     const cleanup: SandboxBase<unknown>[] = [];
     const temp: string[] = [];
-    async function setup() {
+    async function setup(extra: { trackChanges?: boolean } = {}) {
       const provider = await factory();
       if (!options.live && !["memory", "local"].includes(provider.name)) throw new SandboxError("Live provider refused. live is false. Enable live explicitly with provider credentials.", { code: "invalid_argument" });
-      const box = await createSandbox(provider, { ports: options.ports }); cleanup.push(box); return { provider, box };
+      const box = await createSandbox(provider, { ports: options.ports, ...extra }); cleanup.push(box); return { provider, box };
     }
     afterEach(async () => { await Promise.all(cleanup.splice(0).map(box => box.destroy())); await Promise.all(temp.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
     test("create, key lookup, connect and labels", async () => {
@@ -68,7 +68,7 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect((await box.run("printf '%s' \"$X\"")).stdout).toBe("");
     });
     test("all file primitives, exact edits, glob search, checkpoints", async () => {
-      const { box } = await setup(); await box.files.write({ "app/a.ts": "TODO one\nsecond", "app/b.ts": "two two", "app/raw": new Uint8Array([0, 255]) });
+      const { box } = await setup({ trackChanges: true }); await box.files.write({ "app/a.ts": "TODO one\nsecond", "app/b.ts": "two two", "app/raw": new Uint8Array([0, 255]) });
       expect(await box.files.read("app/raw", { as: "bytes" })).toEqual(new Uint8Array([0, 255]));
       expect((await box.files.stat("app/a.ts")).type).toBe("file");
       expect((await box.files.list("app", { recursive: true, glob: "**/*.ts" })).length).toBe(2);
@@ -79,6 +79,12 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect(await box.files.changes({ since: mark })).toMatchObject({ added: ["/workspace/app/new"], modified: ["/workspace/app/a.ts"], removed: ["/workspace/app/b.ts"] });
       expect((await box.files.changes()).added).toContain("/workspace/app/a.ts");
       await box.files.remove("app", { recursive: true }); expect(await box.files.exists("app")).toBe(false);
+    });
+    test("changes without since needs trackChanges or an explicit mark", async () => {
+      const { box } = await setup();
+      await expect(box.files.changes()).rejects.toMatchObject({ code: "invalid_argument", message: expect.stringContaining("trackChanges: true") });
+      await box.files.write("late", "x"); const mark = await box.files.mark("start"); await box.files.write("late", "y");
+      expect((await box.files.changes()).modified).toEqual(["/workspace/late"]); expect((await box.files.changes({ since: mark })).modified).toEqual(["/workspace/late"]);
     });
     test("upload/download round trip with ignores", async () => {
       const { box } = await setup(); const path = await mkdtemp(join(tmpdir(), "sdk-conformance-")); temp.push(path);

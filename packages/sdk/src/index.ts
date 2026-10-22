@@ -39,7 +39,7 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
       }
       let created = !info;
       if (!info) {
-        const { secrets, locator: _locator, keyMode: _keyMode, ...input } = options;
+        const { secrets, locator: _locator, keyMode: _keyMode, trackChanges: _trackChanges, ...input } = options;
         const pending = provider.create({ ...input, env: { ...options.env, ...secrets }, labels: { ...options.labels, ...sdkLabel } }).catch(async error => {
           // A native unique-name conflict can race the initial lookup on another client.
           if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) { const existing = await provider.find(options.key); if (existing) { created = false; return existing; } }

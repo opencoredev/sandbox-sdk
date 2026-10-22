@@ -1,7 +1,7 @@
 import type { Provider, SandboxInfo, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
-import { makeRun, quote, chunkRedactor } from "./run.js";
+import { makeRun, quote, chunkRedactor, defaults } from "./run.js";
 import { makeFiles } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
@@ -13,8 +13,19 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
   const recovered: Record<string, string> = {};
   const namesPath = "/tmp/.sandbox-sdk/secret-names.json";
   if (created) {
-    await files.mark("start");
-    await files.write(namesPath, JSON.stringify(Object.keys(options.secrets ?? {})));
+    if (options.trackChanges) await files.mark("start");
+    // A restored snapshot may carry the source's records. Overwrite or drop them.
+    else if (options.from !== undefined) await files.remove("/tmp/.sandbox-sdk/marks/start.json").catch(() => {});
+    const names = Object.keys(options.secrets ?? {});
+    if (names.length || options.from !== undefined) {
+      const record = JSON.stringify(names);
+      if (provider.files.writeCreatesParents || provider.name === "memory") await files.write(namesPath, record);
+      else {
+        // Names are validated identifiers, so mkdir and write fit in one quoted exec.
+        const result = await provider.exec(info.id, { command: `mkdir -p /tmp/.sandbox-sdk && printf '%s' ${quote(record)} > ${quote(namesPath)}`, cwd: "/workspace", env: defaults, timeoutMs: 10_000, onChunk() {} });
+        if (result.exitCode !== 0) throw new SandboxError("Secret setup failed. Could not record secret names in /tmp/.sandbox-sdk. Ensure /tmp is writable.", { code: "provider", provider: provider.name, sandboxId: info.id });
+      }
+    }
   } else if (await files.exists(namesPath)) {
     const names: unknown = JSON.parse(await files.read(namesPath));
     if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) invalid("Invalid secret names record");
