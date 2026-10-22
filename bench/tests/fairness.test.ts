@@ -609,7 +609,15 @@ it.each(["default", "same-spec"])("keeps offline sample values and failure clock
     const report = await run(late, ["--scenarios", phase === "create-from-snapshot" ? "snapshot" : "command"]);
     const failure = report.samples.find(s => s.scenario === (phase === "first-command" ? "cold" : phase));
     expect(failure?.outcome).toMatchObject({kind: "failure", clockPhase: phase === "first-command" ? "first-command" : "adapter-create", lateSettlement: {settled: true}});
-    expect(await lateBacking.list({})).toEqual([]);
+    if (phase === "create-from-snapshot") {
+      // A rejected native create without an ID cannot prove that no restore was admitted.
+      // Keep its snapshot and source for review; this fixture created no actual restore.
+      const retained = await lateBacking.list({});
+      expect(retained).toHaveLength(1);
+      expect(report.cleanupReview).toContainEqual(expect.objectContaining({id: "late-snapshot", kind: "snapshot", reason: expect.stringContaining("Restore cleanup unresolved")}));
+      expect(report.cleanup[0]?.remaining).toEqual(expect.arrayContaining([retained[0]?.id, "late-snapshot"]));
+      for (const info of retained) await lateBacking.destroy(info.id);
+    } else expect(await lateBacking.list({})).toEqual([]);
   }
   const admitted = await run(fake(), ["--scenarios", "command", "--runs", "2", "--max-sandboxes", "1"]);
   expect(admitted.admissionStopped?.length).toBeGreaterThan(0);

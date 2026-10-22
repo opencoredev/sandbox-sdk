@@ -1,3 +1,4 @@
+import { RestoreCleanup, type RestoreAttempt } from "./restore-state.js";
 import { SandboxError, createSandbox, connectSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
 import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { cpus, loadavg } from "node:os";
@@ -213,6 +214,7 @@ export async function runV2(
   // The durable journal records cleanup candidates; live labels authorize deletion.
   const unsafeProviders = new Set<string>();
   const deletions = new DeletionWork();
+  const restores = new RestoreCleanup();
   const owned = new Map<
     string,
     { provider: string; id: string; kind: "sandbox" | "snapshot" | "snapshot-source"; parent: string | null; snapshotProof?: SnapshotProvenance }
@@ -235,6 +237,7 @@ export async function runV2(
       return false;
     }
     recordAbsentResolution(report.cleanupReview ?? [], report.cleanupResolved ?? [], p.name, id, evidence);
+    restores.mark(p.name, id, "destroyed");
     owned.delete(`${p.name}/${id}`);
     await persist();
     return true;
@@ -245,6 +248,7 @@ export async function runV2(
       if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
   async function remove(loaded: ReadyProvider, id: string, measurement?: {clock: PhaseClock; phases: Record<string, number>}) {
+    if (restores.blocksSource(loaded.name, id)) throw new Error("Restore cleanup unresolved; source retained");
     for (let attempt = 0; attempt < 3; attempt++) {
       const verifyStart = performance.now();
       let verified: boolean;
@@ -252,10 +256,12 @@ export async function runV2(
       finally { if (measurement) measurement.phases.ownershipVerifyMs = (measurement.phases.ownershipVerifyMs ?? 0) + performance.now() - verifyStart; }
       if (!verified) {
         if (await resolveAbsent(loaded, id)) return;
+        restores.mark(loaded.name, id, "quarantined");
         review(loaded.name, id, "Live run label and SDK ownership marker could not be verified; no deletion attempted");
         for (const item of report.cleanupReview ?? []) if (item.provider === loaded.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
         throw new UnverifiedOwnershipError(id);
       }
+      restores.mark(loaded.name, id, "alive");
       const quarantined = report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id && v.kind === "sandbox");
       if (quarantined) {
         recordVerifiedRelease(report.cleanupReview ?? [], report.cleanupReleased ?? [], loaded.name, id);
@@ -270,6 +276,7 @@ export async function runV2(
         }
         try { await deadline(config["timeout-ms"], () => deletions.start(loaded.name, id, () => loaded.provider.destroy(id))); }
         finally { measurement?.clock.finish(); }
+        restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
         const persistStart = performance.now();
         try { await persist(); }
@@ -358,8 +365,9 @@ export async function runV2(
     const tracked = new Proxy(p.provider, {
       get(target, key) {
         if (key === "create")
-          return (input: CreateInput) =>
-            pending.track(
+          return (input: CreateInput) => {
+            let restore: RestoreAttempt | undefined;
+            return pending.track(
               (async () => {
                 if (input.from) {
                   if (state.created >= budgetMax) {
@@ -367,6 +375,9 @@ export async function runV2(
                     throw new Skip("Sandbox budget prevents restore");
                   }
                   state.created++;
+                  const sourceId = owned.get(`${p.name}/snapshot/${input.from}`)?.parent ?? box?.id;
+                  if (!sourceId) throw new Error("Restore source unavailable");
+                  restore = restores.begin(p.name, input.from, sourceId);
                 }
                 createEvidence = { settled: false, stage: "adapter-create" };
                 clockPhase = "adapter-create";
@@ -376,6 +387,7 @@ export async function runV2(
                 try { info = await target.create(input); }
                 catch (error) { adapterCreateRejected = true; throw error; }
                 const returned = performance.now();
+                if (restore) restores.identify(restore, info.id, "quarantined");
                 const ownershipCheckStart = performance.now();
                 let verified: boolean;
                 try { verified = await verifyRunOwnership(target, info.id, config.run, timeout, 30_000); }
@@ -389,6 +401,7 @@ export async function runV2(
                   review(p.name, info.id, "Returned create ID lacks live run/SDK ownership proof");
                   throw new UnverifiedOwnershipError(info.id);
                 }
+                if (restore) restores.identify(restore, info.id, "alive");
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
                 ids.add(info.id);
@@ -437,6 +450,7 @@ export async function runV2(
                 createEvidence.cause = failure.cause;
                 createEvidence.stage = failure.cause?.stage ?? createEvidence.stage;
                 const nativeId = failure.sandboxId;
+                if (restore && nativeId && restore.state.id === null) restores.identify(restore, nativeId, "quarantined");
                 if (nativeId && !createEvidence.unverifiedSandboxId) {
                   const admitted = adapterCreateRejected && error instanceof SandboxError && error.provider === p.name &&
                     failure.cause?.operation === "create" && failure.cause.admittedByThisCall === true;
@@ -446,6 +460,7 @@ export async function runV2(
                     review(p.name, nativeId, admitted ? "Admitted error ID lacks live run/SDK ownership proof" : "Create error has no trusted explicit admission marker");
                     throw error;
                   }
+                  if (restore) restores.identify(restore, nativeId, "alive");
                   createEvidence.sandboxId = nativeId;
                   ids.add(nativeId);
                   if (input.from) restoredId = nativeId;
@@ -464,6 +479,7 @@ export async function runV2(
                 throw error;
               }).finally(() => { createEvidence.settled = true; }),
             );
+          };
         if (key === "destroy")
           return (id: string) =>
             pending.track(
@@ -747,7 +763,10 @@ export async function runV2(
               throw new Skip("Provider has no snapshot");
             snapshotProof = await proveSnapshotSource(p.provider, active.id, config.run, timeout);
             const nativeCleaner = await snapshotCleaner(p.name, p.provider, active.id);
-            clean = id => deleteProvenSnapshot(p.name, p.provider, id, active.id, snapshotProof, config.run, timeout, nativeCleaner);
+            clean = id => {
+              if (restores.blocksSnapshot(p.name, id)) throw new Error("Restore cleanup unresolved; snapshot and source retained");
+              return deleteProvenSnapshot(p.name, p.provider, id, active.id, snapshotProof, config.run, timeout, nativeCleaner);
+            };
             if (["daytona","superserve"].includes(p.name)) {
               owned.set(`${p.name}/snapshot-source/${active.id}`, {
                 provider: p.name, id: active.id, kind: "snapshot-source", parent: null, snapshotProof,
@@ -1008,7 +1027,7 @@ export async function runV2(
         if (!isSource) await measureDestroy("destroy", id);
       }
       for (const source of [...owned.values()].filter(v => v.provider === p.name && v.kind === "snapshot-source" && ids.has(v.id))) {
-        const restoreUnresolved = createEvidence.unverifiedSandboxId && report.cleanupReview?.some(r => r.provider === p.name && r.id === createEvidence.unverifiedSandboxId && r.kind === "sandbox");
+        const restoreUnresolved = restores.blocksSource(p.name, source.id);
         if (restoreUnresolved) review(p.name, source.id, "Restore cleanup unresolved; snapshot and source retained", "snapshot-source");
         else try {
           const proof = snapshotProvenanceSchema.refine(value => value.sourceId === source.id && value.runLabel === config.run, "Snapshot-source provenance mismatch").parse(source.snapshotProof);
@@ -1037,7 +1056,7 @@ export async function runV2(
         }
       }
       for (const id of ids) {
-        if (!owned.has(`${p.name}/${id}`) || [...owned.values()].some(v => v.provider === p.name &&
+        if (!owned.has(`${p.name}/${id}`) || restores.blocksSource(p.name, id) || [...owned.values()].some(v => v.provider === p.name &&
           (v.kind === "snapshot" && v.parent === id || v.kind === "snapshot-source" && v.id === id))) continue;
         await measureDestroy("destroy", id);
       }
@@ -1215,7 +1234,7 @@ export async function runV2(
       (owned.has(`${p.name}/${id}`) || report.cleanupReview?.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox")));
     for (const item of [...owned.values()].filter(v => v.provider === p.name && v.kind === "snapshot")) {
       try {
-        if (restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
+        if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
         await deleteProvenSnapshot(p.name, p.provider, item.id, item.parent, item.snapshotProof, config.run, config["timeout-ms"], await snapshotCleaner(p.name, p.provider, item.parent ?? ""));
         owned.delete(`${p.name}/snapshot/${item.id}`);
         report.cleanupReview = report.cleanupReview?.filter(r => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"));
@@ -1224,7 +1243,7 @@ export async function runV2(
     }
     for (const item of [...owned.values()].filter(v => v.provider === p.name && v.kind === "snapshot-source")) {
       try {
-        if (restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
+        if (restores.blocksSource(p.name, item.id) || restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
         const proof = snapshotProvenanceSchema.parse(item.snapshotProof);
         if (proof.sourceId !== item.id || proof.runLabel !== config.run) throw new Error("Snapshot-source provenance mismatch");
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
@@ -1243,7 +1262,7 @@ export async function runV2(
       } catch (e) {review(p.name, item.id, errorNote(e), "snapshot-source"); errors.push(errorNote(e));}
     }
     for (const id of ids) if (sourceIds.has(id)) {
-      if ([...owned.values()].some(v => v.provider === p.name && (v.kind === "snapshot" && v.parent === id || v.kind === "snapshot-source" && v.id === id))) continue;
+      if (restores.blocksSource(p.name, id) || [...owned.values()].some(v => v.provider === p.name && (v.kind === "snapshot" && v.parent === id || v.kind === "snapshot-source" && v.id === id))) continue;
       try { await remove(p, id); } catch (e) { deletionErrors.set(id, errorNote(e)); }
     }
     const remaining = new Set<string>();
