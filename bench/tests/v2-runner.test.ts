@@ -66,7 +66,7 @@ it("runs the actual v2 memory consumer, stops at its creation budget, and preser
 });
 
 
-it("retries journal-owned VMs even when listings omit them", async () => {
+it("does not delete returned IDs when live ownership cannot be verified", async () => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
   const { runV2 } = await import("../src/v2-runner.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
@@ -89,10 +89,11 @@ it("retries journal-owned VMs even when listings omit them", async () => {
       parseV2(["--providers", "memory", "--runs", "1", "--bursts", "", "--scenarios", "command", "--out", directory]),
       async () => {},
     );
-    expect(attempts).toBe(4);
-    expect(await backing.list({})).toHaveLength(0);
+    expect(attempts).toBe(0);
+    expect(await backing.list({})).toHaveLength(1);
+    expect(report.cleanupReview).toHaveLength(1);
     expect(report.cleanup).toEqual([{ provider: "memory", remaining: [], error: null }]);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { for (const info of await backing.list({})) await backing.destroy(info.id); await rm(directory, { recursive: true, force: true }); }
 });
 
 it("continues VM deletion when snapshot cleanup fails", async () => {
@@ -149,7 +150,7 @@ it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out cr
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async (id) => { deleted.push(id); });
   vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
   vi.spyOn(snapshots, "snapshotsFromSource").mockImplementation(async () => {
-    expect(await backing.list({})).toHaveLength(0);
+    expect(await backing.list({})).toHaveLength(1);
     return ++queries <= 2 ? [{ id: "late-snapshot", name: "late-snapshot" }] : [];
   });
   const provider = { ...backing,
@@ -172,7 +173,7 @@ it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out cr
   }
 });
 
-it("waits for a run-owned Daytona deletion to disappear before snapshot recovery", async () => {
+it("recovers snapshots only while the live source ownership can be verified", async () => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
   const { runV2 } = await import("../src/v2-runner.js");
   const snapshots = await import("../src/snapshots.js");
@@ -277,7 +278,7 @@ it.each(["default", "same-spec"])("runs ten isolated sequential cost tasks on %s
   } finally {await rm(directory, {recursive: true, force: true});}
 });
 
-it.each([false, true])("journals and cleans a late rejected admitted ID even when listings omit it (cleanup retry=%s)", async retry => {
+it.each([false, true])("journals and cleans a late rejected admitted ID after live ownership verification (cleanup retry=%s)", async retry => {
  const {memory} = await import("@opencoredev/sandbox-sdk/memory");
  const {SandboxError} = await import("@opencoredev/sandbox-sdk");
  const {runV2} = await import("../src/v2-runner.js");
@@ -287,11 +288,11 @@ it.each([false, true])("journals and cleans a late rejected admitted ID even whe
  const backing = memory();
  let nativeId = "", destroyCalls = 0;
  const provider = {...backing,
-  list: async () => [],
+  list: backing.list,
   create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {
    const info = await backing.create({...input, signal: undefined}); nativeId = info.id;
    await new Promise<void>(resolve => input.signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true}));
-   throw new SandboxError("safe late rejection", {provider: "tenki", code: "provider", sandboxId: info.id, cause: new Error(JSON.stringify({sandboxId: info.id, state: "CREATING", stage: "waitReady", operation: "create", requestId: "native-request", providerCode: 14, cleanupCode: "unavailable", body: "SECRET"}))});
+   throw new SandboxError("safe late rejection", {provider: "tenki", code: "provider", sandboxId: info.id, cause: new Error(JSON.stringify({sandboxId: info.id, admittedByThisCall: true, state: "CREATING", stage: "waitReady", operation: "create", requestId: "native-request", providerCode: 14, cleanupCode: "unavailable", body: "SECRET"}))});
   },
   destroy: async (id: string) => {
    destroyCalls++;

@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { UnverifiedOwnershipError } from "./ownership.js";
 
 const sandboxIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/);
 const stateSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/);
 const cleanupSchema = z.enum(["succeeded", "failed", "already-absent", "unknown"]);
 const causeSchema = z.object({
+  admittedByThisCall: z.boolean().optional(),
   sandboxId: sandboxIdSchema.optional(),
   nativeState: stateSchema.optional(),
   cleanupCode: stateSchema.optional(),
@@ -18,6 +20,7 @@ const causeSchema = z.object({
 export const failureOutcomeSchema = z.object({
   kind: z.literal("failure"),
   note: z.string(),
+  unverifiedSandboxId: sandboxIdSchema.optional(),
   sandboxId: sandboxIdSchema.optional(),
   code: z.string().optional(),
   cause: causeSchema.optional(),
@@ -26,6 +29,7 @@ export const failureOutcomeSchema = z.object({
   clockPhase: z.enum(["adapter-create", "first-command", "sdk-init"]).optional(),
   lateSettlement: z.object({
     settled: z.boolean(),
+    unverifiedSandboxId: sandboxIdSchema.optional(),
     sandboxId: z.string().optional(),
     stage: z.string(),
     cleanupOutcome: cleanupSchema.optional(),
@@ -43,6 +47,7 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
   const cause: z.infer<typeof causeSchema> = {};
   const nativeCode = z.union([z.string(), z.number().finite()]).transform(String);
   const metadataSchema = z.object({
+    admittedByThisCall: z.boolean().optional().catch(undefined),
     sandboxId: sandboxIdSchema.optional().catch(undefined),
     nativeState: stateSchema.optional().catch(undefined), state: stateSchema.optional().catch(undefined),
     cleanupCode: stateSchema.optional().catch(undefined), cleanupOutcome: cleanupSchema.optional().catch(undefined),
@@ -82,6 +87,7 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
   const parsed = metadataSchema.safeParse(metadata);
   if (parsed.success) {
     const v = parsed.data;
+    if (v.admittedByThisCall !== undefined) cause.admittedByThisCall = v.admittedByThisCall;
     const native = {sandboxId: v.sandboxId, nativeState: v.nativeState ?? v.state, cleanupCode: v.cleanupCode, cleanupOutcome: v.cleanupOutcome};
     for (const key of ["sandboxId", "nativeState", "cleanupCode", "cleanupOutcome"] as const) {
       const value = native[key];
@@ -102,6 +108,8 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
   const nativeId = error && typeof error === "object" && "sandboxId" in error && typeof error.sandboxId === "string"
     ? sandboxIdSchema.safeParse(sanitize(error.sandboxId)) : null;
   const sandboxId = nativeId?.success ? nativeId.data : cause.sandboxId;
-  return {kind: "failure", ...(sandboxId ? {sandboxId} : {}), note: sanitize(error instanceof Error ? error.message : "Unknown failure"), code,
+  const unverified = error instanceof UnverifiedOwnershipError
+    ? sandboxIdSchema.safeParse(sanitize(error.unverifiedSandboxId)) : null;
+  return {kind: "failure", ...(sandboxId ? {sandboxId} : {}), ...(unverified?.success ? {unverifiedSandboxId: unverified.data} : {}), note: sanitize(error instanceof Error ? error.message : "Unknown failure"), code,
     ...(Object.keys(cause).length ? {cause} : {})};
 }

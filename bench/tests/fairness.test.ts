@@ -53,7 +53,7 @@ it("keeps lifetime corrections on their own sample during concurrent appends (fi
   const backing = memory();
   const failed = fake({ create: async () => { throw new Error("create rejected"); } });
   const healthy = fake({ create: async (input) => { await healthyGate; return backing.create(input); },
-    exec: backing.exec, destroy: backing.destroy, files: backing.files });
+    exec: backing.exec, destroy: backing.destroy, files: backing.files, list: backing.list });
   const report = await runV2([ready("boat", failed), ready("healthy", healthy)], await config(["--concurrency", "2"]), async () => {});
   expect(report.samples.find((s) => s.provider === "boat" && s.scenario === "sandbox-lifetime")?.outcome.kind).toBe("skipped");
   expect(report.samples.find((s) => s.provider === "healthy" && s.scenario === "sandbox-lifetime")?.outcome.kind).toBe("sample");
@@ -352,7 +352,7 @@ it("reports burst all-ready from bare readiness endpoints", async () => {
   if (!cohort) throw new Error("Missing cohort");
   const members = report.samples.filter(s => s.scenario === "burst-2/cold");
   expect(members).toHaveLength(2);
-  expect(cohort.outcome).toEqual({kind: "sample", value: Math.max(...members.map(s => Date.parse(s.finishedAt) - Date.parse(cohort.startedAt) - (s.phases.ownershipPersistMs ?? 0)))});
+  expect(cohort.outcome).toEqual({kind: "sample", value: Math.max(...members.map(s => Date.parse(s.finishedAt) - Date.parse(cohort.startedAt) - (s.phases.ownershipPersistMs ?? 0) - (s.phases.ownershipVerifyMs ?? 0)))});
   expect(members.every(s => (s.phases.sdkReadyMs ?? 0) > (s.phases.coldMs ?? 0) + 15)).toBe(true);
 });
 

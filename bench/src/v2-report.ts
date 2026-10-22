@@ -31,6 +31,8 @@ export function markdownV2(r: ReportV2) {
     `Metadata: ${JSON.stringify(r.metadata)}`,
     ...r.providers.map((p) => `Configured region ${p.name}: ${p.configuredRegion ?? "unspecified"}`),
     "",
+    `cleanupReview: ${JSON.stringify(r.cleanupReview ?? [])}`,
+    "",
     `admissionStopped: ${JSON.stringify(r.admissionStopped ?? [])}`,
     "",
     "Estimates exclude credits, subscriptions and some storage/transfer charges. Local is a reference baseline.",

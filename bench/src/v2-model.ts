@@ -60,6 +60,7 @@ export interface ReportV2 {
   samples: Sample[];
   summaries: Summary[];
   providers: (AllocationMetadata & { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null })[];
+  cleanupReview?: import("./ownership.js").CleanupReview[];
   cleanup: { provider: string; remaining: string[]; error: string | null }[];
   admissionStopped?: { provider: string; scenario: string; iteration: number; track: ConfigV2["track"]; reason: string }[];
   budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;

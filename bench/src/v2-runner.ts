@@ -1,5 +1,5 @@
-import { createSandbox, connectSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
-import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
+import { SandboxError, createSandbox, connectSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
+import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { cpus, loadavg } from "node:os";
 import { readFile, mkdir, writeFile, appendFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
@@ -16,7 +16,7 @@ import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
 import { DeadlineError, deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
-import { writeOwnership } from "./ownership.js";
+import { UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { failureOutcome } from "./failure.js";
@@ -154,12 +154,13 @@ export async function runV2(
               : "Provider default image and allocation",
     })),
     cleanup: [],
+    cleanupReview: [],
     budgets: {},
     admissionStopped: [],
     methodology: [
       "Daytona snapshots use its native nameable API with a 600-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
-      "Cold and restore time adapter.create through a bare adapter true command before SDK handle initialization; burst all-ready ends at the slowest bare command. adapterCreateMs, firstCommandMs, coldMs and sdkReadyMs expose phases; sdkReadyMs includes SDK initialization and is excluded from the headline. firstCommandOKMs starts at iteration admission before host sampling and budget work. Reconnect/resume still use SDK command readiness.",
+      "Cold and restore time adapter.create through a bare adapter true command before SDK handle initialization; burst all-ready ends at the slowest bare command. adapterCreateMs, firstCommandMs, coldMs and sdkReadyMs expose phases; sdkReadyMs includes SDK initialization and is excluded from the headline. firstCommandOKMs starts at iteration admission before host sampling and budget work. Live ownership verification and durable journal writes are excluded from cold/burst readiness and recorded as ownershipVerifyMs/ownershipPersistMs. Reconnect/resume still use SDK command readiness.",
       "Tracks remain separate: default uses provider defaults (local medium); same-spec records explicitly requested allocation and factory template per provider. Fingerprints establish actual resources; a track label does not prove resource equality. Fixture uploads run in separate preparation scenarios before npm-install/tool-replay. Image, package, CDN and filesystem caches are uncontrolled.",
       "Dependent scenarios share a sandbox. A failed cold/reconnect/resume/snapshot blocks subsequent work; blocked_by rows are reported separately and excluded from independent failure denominators. App install/provision/start/preview prerequisites also propagate blocking. Cleanup still runs.",
       "Preview provisioning and dev-server start are separate scenarios. Each HTTP attempt is timed through its first chunk only; cancellation and inter-attempt sleeps are outside that measurement. Failed attempts remain failure rows. Snapshot values time native API only; snapshot-setup and snapshot-total expose client setup/journal overhead.",
@@ -206,7 +207,7 @@ export async function runV2(
   );
   const runDir = resolve(config.out);
   await mkdir(runDir, { recursive: true });
-  // Serialized durable ownership journal permits cleanup even if list metadata is unavailable.
+  // The durable journal records cleanup candidates; live labels authorize deletion.
   const unsafeProviders = new Set<string>();
   const owned = new Map<
     string,
@@ -218,8 +219,17 @@ export async function runV2(
     journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
     return journal;
   }
+  function review(provider: string, id: string, reason: string, kind: CleanupReview["kind"] = "sandbox") {
+    if (!report.cleanupReview?.some(v => v.provider === provider && v.id === id && v.kind === kind))
+      report.cleanupReview?.push({provider, id: sanitize(id), kind, reason});
+  }
   async function remove(loaded: ReadyProvider, id: string) {
-    for (let attempt = 0; attempt < 3; attempt++)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id) ||
+          !(await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]))) {
+        review(loaded.name, id, "Live run label and SDK ownership marker could not be verified; no deletion attempted");
+        throw new UnverifiedOwnershipError(id);
+      }
       try {
         await deadline(config["timeout-ms"], () => loaded.provider.destroy(id));
         owned.delete(`${loaded.name}/${id}`);
@@ -228,6 +238,7 @@ export async function runV2(
       } catch (e) {
         if (attempt === 2) throw e;
       }
+    }
   }
   const costSuite = config.scenarios.length === 1 && config.scenarios[0] === "cost";
   function selected(scenario: string) {
@@ -262,7 +273,8 @@ export async function runV2(
     let createClock = coldClock;
     let createPhases = phases;
     let restoredId: string | undefined;
-    let createEvidence: { cleanupOutcome?: "succeeded" | "failed" | "already-absent" | "unknown"; settled: boolean; sandboxId?: string; stage: string; code?: string; cause?: import("./failure.js").FailureOutcome["cause"] } = { settled: false, stage: "adapter-create" };
+    let createEvidence: { unverifiedSandboxId?: string; cleanupOutcome?: "succeeded" | "failed" | "already-absent" | "unknown"; settled: boolean; sandboxId?: string; stage: string; code?: string; cause?: import("./failure.js").FailureOutcome["cause"] } = { settled: false, stage: "adapter-create" };
+    let adapterCreateRejected = false;
     let clockPhase: "adapter-create" | "first-command" | "sdk-init" = "adapter-create";
     const allocation = {
       track: config.track,
@@ -314,10 +326,26 @@ export async function runV2(
                 createEvidence = { settled: false, stage: "adapter-create" };
                 clockPhase = "adapter-create";
                 createClock.begin();
-                const info = await target.create(input);
+                adapterCreateRejected = false;
+                let info: SandboxInfo;
+                try { info = await target.create(input); }
+                catch (error) { adapterCreateRejected = true; throw error; }
+                const returned = performance.now();
+                const ownershipCheckStart = performance.now();
+                let verified: boolean;
+                try { verified = await verifyRunOwnership(target, info.id, config.run, timeout); }
+                finally {
+                  const ownershipVerifyMs = performance.now() - ownershipCheckStart;
+                  createPhases.ownershipVerifyMs = ownershipVerifyMs;
+                  createClock.excludedMs += ownershipVerifyMs;
+                }
+                if (!verified) {
+                  createEvidence.unverifiedSandboxId = info.id;
+                  review(p.name, info.id, "Returned create ID lacks live run/SDK ownership proof");
+                  throw new UnverifiedOwnershipError(info.id);
+                }
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
-                const returned = performance.now();
                 ids.add(info.id);
                 if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
@@ -364,7 +392,15 @@ export async function runV2(
                 createEvidence.cause = failure.cause;
                 createEvidence.stage = failure.cause?.stage ?? createEvidence.stage;
                 const nativeId = failure.sandboxId;
-                if (nativeId) {
+                if (nativeId && !createEvidence.unverifiedSandboxId) {
+                  const admitted = adapterCreateRejected && error instanceof SandboxError && error.provider === p.name &&
+                    failure.cause?.operation === "create" && failure.cause.admittedByThisCall === true;
+                  const verified = admitted && await verifyRunOwnership(target, nativeId, config.run, timeout);
+                  if (!verified) {
+                    createEvidence.unverifiedSandboxId = nativeId;
+                    review(p.name, nativeId, admitted ? "Admitted error ID lacks live run/SDK ownership proof" : "Create error has no trusted explicit admission marker");
+                    throw error;
+                  }
                   createEvidence.sandboxId = nativeId;
                   ids.add(nativeId);
                   if (input.from) restoredId = nativeId;
@@ -508,6 +544,11 @@ export async function runV2(
           sample.sandboxId ??= createEvidence.sandboxId ?? null;
           sample.phases = { ...phaseValues };
         }
+        if (["cold", "create-from-snapshot"].includes(scenario) && createEvidence.unverifiedSandboxId && sample.outcome.kind === "failure") {
+          sample.outcome.unverifiedSandboxId = createEvidence.unverifiedSandboxId;
+          delete sample.outcome.sandboxId;
+          sample.sandboxId = null;
+        }
         return { kind: "unsuccessful" as const, sample };
       }
     }
@@ -646,7 +687,15 @@ export async function runV2(
           const setup = await measure("snapshot-setup", async () => {
             if (!p.provider.capabilities.has("snapshot") || !p.provider.snapshot)
               throw new Skip("Provider has no snapshot");
-            clean = await snapshotCleaner(p.name, p.provider, active.id);
+            if (!(await verifyRunOwnership(p.provider, active.id, config.run, timeout))) throw new Error("Snapshot source ownership unverified");
+            const nativeCleaner = await snapshotCleaner(p.name, p.provider, active.id);
+            clean = async id => {
+              if (!(await verifyRunOwnership(p.provider, active.id, config.run, timeout))) {
+                review(p.name, id, "Snapshot parent ownership unverified; no deletion attempted", "snapshot");
+                throw new UnverifiedOwnershipError(id);
+              }
+              await nativeCleaner(id);
+            };
             if (["daytona","superserve"].includes(p.name)) {
               owned.set(`${p.name}/snapshot-source/${active.id}`, {
                 provider: p.name, id: active.id, kind: "snapshot-source", parent: null,
@@ -881,6 +930,30 @@ export async function runV2(
         unsafeProviders.add(p.name);
         state.stop = "Pending work could not drain; no further sandboxes scheduled";
       }
+      // Discover source-linked snapshots while live labels can still prove ownership.
+      for (const source of [...owned.values()].filter(v => v.provider === p.name && v.kind === "snapshot-source" && ids.has(v.id))) {
+        try {
+          const clean = await snapshotCleaner(p.name, p.provider, source.id);
+          await deadline(timeout, async signal => {
+            for (;;) {
+              if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
+              if (!(await verifyRunOwnership(p.provider, source.id, config.run, timeout))) throw new Error("Snapshot source ownership unverified");
+              const snapshots = await snapshotsFromSource(p.name, source.id);
+              if (!snapshots.length) break;
+              for (const snapshot of snapshots) {
+                if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
+                if (!(await verifyRunOwnership(p.provider, source.id, config.run, timeout))) throw new Error("Snapshot source ownership unverified");
+                await clean(snapshot.id);
+              }
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+          });
+          owned.delete(`${p.name}/snapshot-source/${source.id}`);
+          await persist();
+        } catch {
+          review(p.name, source.id, "Source snapshot recovery could not be verified/completed while source is live", "snapshot-source");
+        }
+      }
       for (const id of ids)
         await measure("destroy", () =>
           remove(p, id).then(() => {
@@ -1002,7 +1075,7 @@ export async function runV2(
       const cohortHostAfter = await host();
       const readyAt = success === k ? Math.max(...cohort.map(s => Date.parse(s.finishedAt))) : Date.now();
       const readyMs = success === k
-        ? Math.max(...cohort.map(s => Date.parse(s.finishedAt) - Date.parse(at) - (s.phases.ownershipPersistMs ?? 0)))
+        ? Math.max(...cohort.map(s => Date.parse(s.finishedAt) - Date.parse(at) - (s.phases.ownershipPersistMs ?? 0) - (s.phases.ownershipVerifyMs ?? 0)))
         : readyAt - Date.parse(at);
       report.samples.push({
         track: config.track,
@@ -1042,6 +1115,11 @@ export async function runV2(
       (v) => v.provider === p.name && v.kind === "snapshot",
     )) {
       try {
+        if (report.cleanupReview?.some(v => v.provider === p.name && v.id === item.id)) throw new Error("Snapshot quarantined; see cleanupReview");
+        if (!item.parent || !(await verifyRunOwnership(p.provider, item.parent, config.run, config["timeout-ms"]))) {
+          review(p.name, item.id, "Snapshot parent ownership unverified; no deletion attempted", "snapshot");
+          throw new UnverifiedOwnershipError(item.id);
+        }
         const clean = await snapshotCleaner(p.name, p.provider, item.parent ?? "");
         await deadline(config["timeout-ms"], () => clean(item.id));
         owned.delete(`${p.name}/snapshot/${item.id}`);
@@ -1054,7 +1132,7 @@ export async function runV2(
       const listed = await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run }));
       for (const item of listed)
-        if (item.labels["sandbox-bench-run"] === config.run) ids.add(item.id);
+        if (hasRunOwnership(item, config.run)) ids.add(item.id);
     } catch (e) { errors.push(errorNote(e)); }
     for (const id of ids) {
       try { await remove(p, id); } catch (e) { errors.push(errorNote(e)); }
@@ -1071,15 +1149,18 @@ export async function runV2(
           p.provider.list({ "sandbox-bench-run": config.run }));
         remaining.clear();
         for (const item of after)
-          if (item.labels["sandbox-bench-run"] === config.run) remaining.add(item.id);
-        if (!remaining.size || Date.now() >= end) break;
+          if (hasRunOwnership(item, config.run)) remaining.add(item.id);
+        if (!remaining.size || [...remaining].every(id => report.cleanupReview?.some(v => v.provider === p.name && v.id === id)) || Date.now() >= end) break;
         await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(1000, end - Date.now()))));
       }
     } catch (e) { errors.push(errorNote(e)); }
-    // A timed-out Daytona snapshot can appear after its initial deletion returned.
-    // Retain the source marker until the VM is gone, then query only that owned source.
+    // Unresolved snapshot sources remain quarantined unless live ownership can still be proven.
     for (const item of [...owned.values()].filter((v) => v.provider === p.name && v.kind === "snapshot-source")) {
-      if (remaining.has(item.id) || errors.length) continue;
+      if (remaining.has(item.id) || errors.length || report.cleanupReview?.some(v => v.provider === p.name && v.id === item.id)) continue;
+      if (!(await verifyRunOwnership(p.provider, item.id, config.run, config["timeout-ms"]))) {
+        review(p.name, item.id, "Snapshot source ownership unverified; no recovery deletion attempted", "snapshot-source");
+        continue;
+      }
       try {
         for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, item.id))) {
           const clean = await snapshotCleaner(p.name, p.provider, item.id);
@@ -1104,7 +1185,11 @@ export async function runV2(
   for (const sample of report.samples) {
     if (sample.outcome.kind !== "failure" || !sample.outcome.lateSettlement) continue;
     const late = sample.outcome.lateSettlement;
-    sample.sandboxId ??= late.sandboxId ?? null;
+    if (late.unverifiedSandboxId) {
+      sample.outcome.unverifiedSandboxId = late.unverifiedSandboxId;
+      delete sample.outcome.sandboxId;
+      sample.sandboxId = null;
+    } else sample.sandboxId ??= late.sandboxId ?? null;
     if (late.sandboxId && !owned.has(`${sample.provider}/${late.sandboxId}`)) late.cleanupOutcome = "succeeded";
     sample.outcome.cause ??= late.cause;
   }
