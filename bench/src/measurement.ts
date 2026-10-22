@@ -1,11 +1,12 @@
 export class PhaseClock {
+  excludedMs = 0;
   start: number | null = null;
   end: number | null = null;
   startedAt: string | null = null;
   finishedAt: string | null = null;
   begin() { this.start = performance.now(); this.startedAt = new Date().toISOString(); }
   finish() { this.end = performance.now(); this.finishedAt = new Date().toISOString(); }
-  elapsed() { return this.start === null ? null : (this.end ?? performance.now()) - this.start; }
+  elapsed() { return this.start === null ? null : (this.end ?? performance.now()) - this.start - this.excludedMs; }
 }
 export const perfMetrics: Record<string, string> = {
   "cpu-single": "iterations/s", "cpu-all": "iterations/s", "memory-mbps": "MB/s",

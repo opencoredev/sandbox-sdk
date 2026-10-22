@@ -16,6 +16,7 @@ import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
 import { deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
+import { writeOwnership } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
 export const scenarioNames = [
   "command",
@@ -211,7 +212,7 @@ export async function runV2(
   let journal = Promise.resolve();
   function persist() {
     const data = JSON.stringify({ runId: config.run, resources: [...owned.values()] }, null, 2);
-    journal = journal.then(() => writeFile(join(runDir, "ownership.json"), data));
+    journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
     return journal;
   }
   async function remove(loaded: ReadyProvider, id: string) {
@@ -316,11 +317,14 @@ export async function runV2(
                 });
                 createPhases.adapterCreateMs = returned - (createClock.start ?? returned);
                 createPhases.apiReturnedMs = createPhases.adapterCreateMs;
-                // Start journaling immediately; await its flush after readiness so host I/O is not timed.
-                const registered = persist();
-                void registered.catch(() => {});
+                const journalStart = performance.now();
+                try { await persist(); }
+                finally {
+                  const ownershipPersistMs = performance.now() - journalStart;
+                  createPhases.ownershipPersistMs = ownershipPersistMs;
+                  createClock.excludedMs += ownershipPersistMs;
+                }
                 if (input.signal?.aborted) {
-                  await registered;
                   await remove(p, info.id);
                   ids.delete(info.id);
                   throw new Error("Late create cleaned up");
@@ -337,7 +341,6 @@ export async function runV2(
                   createPhases.firstCommandOKMs = performance.now() - lifeStart;
                 } finally {
                   createPhases.firstCommandMs = performance.now() - firstStart;
-                  await registered;
                 }
                 return info;
               })(),
@@ -919,7 +922,9 @@ export async function runV2(
       const success = cohort.filter((s) => s.outcome.kind === "sample").length;
       const cohortHostAfter = await host();
       const readyAt = success === k ? Math.max(...cohort.map(s => Date.parse(s.finishedAt))) : Date.now();
-      const readyMs = readyAt - Date.parse(at);
+      const readyMs = success === k
+        ? Math.max(...cohort.map(s => Date.parse(s.finishedAt) - Date.parse(at) - (s.phases.ownershipPersistMs ?? 0)))
+        : readyAt - Date.parse(at);
       report.samples.push({
         track: config.track,
         requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),

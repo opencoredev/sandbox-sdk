@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseV2 } from "./v2-config.js";
 import { loadProvider } from "./providers.js";
 import { runV2, sanitize } from "./v2-runner.js";
+import { writeOwnership } from "./ownership.js";
 import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
 import { deadline } from "./timing.js";
@@ -70,6 +71,10 @@ export async function main() {
       .then((v) => journalSchema.parse(JSON.parse(v)))
       .catch((e) => {
         if (e && typeof e === "object" && "code" in e && e.code === "ENOENT") return null;
+        if (e instanceof SyntaxError || e instanceof z.ZodError) {
+          process.stderr.write("Ownership journal is corrupt; recovering only resources with this run's exact label. Snapshot IDs may require manual recovery.\n");
+          return null;
+        }
         throw e;
       });
     if (journal && journal.runId !== config.run)
@@ -105,7 +110,7 @@ export async function main() {
             }
             if (journal) {
               journal.resources = journal.resources.filter((v) => v !== resource);
-              await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+              await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
             }
           });
         const ids = new Set((journal?.resources ?? []).filter((v) => v.provider === p.name && v.kind === "sandbox").map((v) => v.id));
@@ -118,7 +123,7 @@ export async function main() {
           await deadline(config["timeout-ms"], () => p.provider.destroy(id));
           if (journal) {
             journal.resources = journal.resources.filter((v) => !(v.provider === p.name && v.kind === "sandbox" && v.id === id));
-            await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+            await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
           }
         });
         const left = await deadline(config["timeout-ms"], async () => {
@@ -144,7 +149,7 @@ export async function main() {
           });
         }
         if (journal) {
-          await writeFile(path, JSON.stringify(journal, null, 2) + "\n");
+          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
         }
         const count = left.filter((s) => s.labels["sandbox-bench-run"] === config.run).length;
         process.stdout.write(`${p.name}: ${count} leftovers for ${config.run}\n`);

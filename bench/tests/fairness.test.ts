@@ -350,7 +350,7 @@ it("reports burst all-ready from bare readiness endpoints", async () => {
   if (!cohort) throw new Error("Missing cohort");
   const members = report.samples.filter(s => s.scenario === "burst-2/cold");
   expect(members).toHaveLength(2);
-  expect(cohort.outcome).toEqual({kind: "sample", value: Math.max(...members.map(s => Date.parse(s.finishedAt) - Date.parse(cohort.startedAt)))});
+  expect(cohort.outcome).toEqual({kind: "sample", value: Math.max(...members.map(s => Date.parse(s.finishedAt) - Date.parse(cohort.startedAt) - (s.phases.ownershipPersistMs ?? 0)))});
   expect(members.every(s => (s.phases.sdkReadyMs ?? 0) > (s.phases.coldMs ?? 0) + 15)).toBe(true);
 });
 
@@ -367,4 +367,20 @@ it("marks awaited execution buffered and iteration streaming", async () => {
     for await (const _chunk of box.run("echo streamed")) { /* consume chunks */ }
     expect(markers).toEqual([false, true]);
   } finally { await box.destroy(); }
+});
+
+it("flushes complete ownership before bare execution and excludes that flush from cold", async () => {
+  const backing = fake(); const cfg = await config();
+  const provider = { ...backing, exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+    if (input.command === "true") {
+      const journal = JSON.parse(await fs.readFile(resolve(cfg.out, "ownership.json"), "utf8"));
+      expect(journal.resources).toContainEqual({provider: "memory", id, kind: "sandbox", parent: null});
+    }
+    return backing.exec(id, input);
+  } } satisfies Provider;
+  const report = await runV2([ready("memory", provider)], cfg, async () => {});
+  const cold = report.samples.find(s => s.scenario === "cold");
+  expect(cold?.outcome.kind).toBe("sample");
+  expect(cold?.phases.ownershipPersistMs).toBeGreaterThan(0);
+  expect((cold?.phases.sdkReadyMs ?? 0) - (cold?.phases.coldMs ?? 0)).toBeGreaterThanOrEqual(cold?.phases.ownershipPersistMs ?? 0);
 });

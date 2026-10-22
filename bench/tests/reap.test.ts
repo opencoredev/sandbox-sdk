@@ -59,3 +59,22 @@ test("bench reap fails on native listing auth errors", async () => {
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Freestyle request failed"));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("reap recovers exactly labelled resources even when the journal is truncated", async () => {
+  const directory = await mkdtemp(resolve("reap-test-"));
+  const provider = freestyle({ apiKey: "offline" });
+  const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
+  const other = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
+  vi.mocked(loadProvider).mockResolvedValue({ kind: "ready", name: "freestyle", cloud: true, region: null, provider });
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  try {
+    await writeFile(resolve(directory, "ownership.json"), '{"resources":[');
+    process.argv = ["bun", "bench", "reap", "--providers", "freestyle", "--run", "corrupt-run", "--out", directory];
+    process.exitCode = 0;
+    await main();
+    expect(process.exitCode).toBe(0);
+    expect(freestyleState.boxes.has(own.id)).toBe(false);
+    expect(freestyleState.boxes.has(other.id)).toBe(true);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("journal is corrupt"));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
