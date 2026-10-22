@@ -95,12 +95,12 @@ export const sources: Record<
     ],
   },
   superserve: {
-    source: "https://api.superserve.ai/billing/{pricing,summary,usage-series}",
-    granularity: "account hourly buckets",
-    delay: "hourly aggregation; invoice settlement separate",
+    source: "https://api.superserve.ai/billing/usage-series (millisecond range) + /activity",
+    granularity: "account charge over any [start,end) range; buckets are clipped at range edges",
+    delay: "live; final once the sandbox is deleted",
     key: "SUPERSERVE_API_KEY",
     notes: [
-      "Account charges cannot identify a sandbox or scenario. Requires a proven isolated window; no proportional allocation. Credits and expected invoice are separate.",
+      "billed_total_usd is gross CPU + memory charge before credits/tax; storage is tracked, not billed. The account charge is per team, so a sandbox's charge is the charge over its own create-to-delete range, used only when the audit log shows no other sandbox in the run and the per-sandbox ranges add up exactly to the whole run range with a 60 s margin.",
     ],
   },
   daytona: {
@@ -275,24 +275,23 @@ type BoxdQuery = (
   method: "usage" | "billingActivityPage",
   params: { org?: string; since: Date; until: Date; pageSize?: number; pageToken?: string },
 ) => Promise<unknown>;
+async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
+  const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
+  const module: unknown = await import(pathToFileURL(require.resolve("@boxd-sh/sdk")).href);
+  const exports = z.record(z.string(), z.unknown()).parse(module);
+  if (typeof exports.Boxd !== "function") throw new Error("Missing Boxd SDK");
+  const client: unknown = Reflect.construct(exports.Boxd, [
+    { apiKey: env.BOXD_API_KEY, timeout: 15_000, maxRetries: 0 },
+  ]);
+  const api = z.object({ orgs: z.unknown() }).parse(client);
+  return (method, params) => invoke(api.orgs, method, params);
+}
 export async function readBoxdAccount(
   rows: OwnedSandbox[],
   env: NodeJS.ProcessEnv,
   query?: BoxdQuery,
 ) {
-  if (!query) {
-    const require = createRequire(
-      resolve(import.meta.dirname, "../../../packages/sdk/package.json"),
-    );
-    const module: unknown = await import(pathToFileURL(require.resolve("@boxd-sh/sdk")).href);
-    const exports = z.record(z.string(), z.unknown()).parse(module);
-    if (typeof exports.Boxd !== "function") throw new Error("Missing Boxd SDK");
-    const client: unknown = Reflect.construct(exports.Boxd, [
-      { apiKey: env.BOXD_API_KEY, timeout: 15_000, maxRetries: 0 },
-    ]);
-    const api = z.object({ orgs: z.unknown() }).parse(client);
-    query = (method, params) => invoke(api.orgs, method, params);
-  }
+  query ??= await boxdClient(env);
   const window = windowFor(rows);
   if (!window) throw new Error("No time window for org reconciliation");
   const params = { org: env.BOXD_ORG, since: new Date(window.start), until: new Date(window.end) };
@@ -328,6 +327,205 @@ export async function readBoxdAccount(
       note: "Org-wide reconciliation only; posting timestamps differ from usage buckets. No per-task billed allocation.",
     },
   };
+}
+const superserveSeriesSchema = z.object({
+  buckets: z.array(z.object({ start: z.string(), end: z.string(), billed_total_usd: money })),
+});
+const superserveActivitySchema = z.array(
+  z.object({ sandbox_id: z.string().nullable(), action: z.string(), created_at: z.string() }),
+);
+const SUPERSERVE_MARGIN_MS = 60_000;
+/** Float noise only: 1e-12 USD is a hundred-millionth of a cent. */
+const SUPERSERVE_TOLERANCE_USD = 1e-12;
+type SuperserveAccount = {
+  window: { start: string; end: string };
+  totalUSD: number;
+  sumOfSandboxRangesUSD: number;
+  foreignSandboxIds: string[];
+};
+type SuperserveCharges =
+  | { isolated: true; byId: Map<string, number>; settled: boolean; account: SuperserveAccount }
+  | { isolated: false; reason: string; account: SuperserveAccount | null };
+
+/**
+ * Superserve charges per team, but usage-series accepts any millisecond range and clips buckets
+ * to it. A sandbox's charge is the team charge over its own range, valid only when nothing else
+ * ran: the audit log names only our sandboxes and the ranges sum to the padded run range.
+ */
+export async function readSuperserveCharges(
+  rows: OwnedSandbox[],
+  get: (url: string) => Promise<unknown>,
+  now = Date.now(),
+): Promise<SuperserveCharges> {
+  const charge = async (start: number, end: number) => {
+    const query = new URLSearchParams({
+      start: new Date(start).toISOString(),
+      end: new Date(end).toISOString(),
+      timezone: "UTC",
+      granularity: "hour",
+    });
+    const series = superserveSeriesSchema.parse(
+      await get(`https://api.superserve.ai/billing/usage-series?${query}`),
+    );
+    return series.buckets.reduce((sum, b) => sum + b.billed_total_usd, 0);
+  };
+  const ranges = rows.flatMap((r) =>
+    r.startedAt && r.finishedAt
+      ? [{ id: r.id, start: Date.parse(r.startedAt), end: Date.parse(r.finishedAt) }]
+      : [],
+  );
+  if (!ranges.length || ranges.length !== rows.length)
+    return { isolated: false, reason: "a sandbox has no recorded time range", account: null };
+  const start = Math.min(...ranges.map((r) => r.start)) - SUPERSERVE_MARGIN_MS;
+  const end = Math.max(...ranges.map((r) => r.end)) + SUPERSERVE_MARGIN_MS;
+  const window = { start: new Date(start).toISOString(), end: new Date(end).toISOString() };
+  const activity: z.infer<typeof superserveActivitySchema> = [];
+  for (let offset = 0; ; offset += 200) {
+    if (offset >= 10_000) throw new Error("Superserve activity pagination limit");
+    const query = new URLSearchParams({
+      category: "sandbox",
+      start: window.start,
+      end: window.end,
+      limit: "200",
+      offset: String(offset),
+    });
+    const page = superserveActivitySchema.parse(
+      await get(`https://api.superserve.ai/activity?${query}`),
+    );
+    activity.push(...page);
+    if (page.length < 200) break;
+  }
+  const ours = new Set(rows.map((r) => r.id));
+  const foreign = [
+    ...new Set(
+      activity.flatMap((a) => (a.sandbox_id && !ours.has(a.sandbox_id) ? [a.sandbox_id] : [])),
+    ),
+  ];
+  const byId = new Map<string, number>();
+  for (const range of ranges) byId.set(range.id, await charge(range.start, range.end));
+  const total = await charge(start, end);
+  const sum = [...byId.values()].reduce((s, v) => s + v, 0);
+  const account: SuperserveAccount = {
+    window,
+    totalUSD: total,
+    sumOfSandboxRangesUSD: sum,
+    foreignSandboxIds: foreign,
+  };
+  if (foreign.length)
+    return {
+      isolated: false,
+      reason: `${foreign.length} other sandboxes in the run window`,
+      account,
+    };
+  if (Math.abs(total - sum) > SUPERSERVE_TOLERANCE_USD)
+    return { isolated: false, reason: "charges outside the sandbox ranges", account };
+  const deleted = new Set(
+    activity.flatMap((a) => (a.action === "deleted" && a.sandbox_id ? [a.sandbox_id] : [])),
+  );
+  // Usage is live; a deleted sandbox's range is closed. Wait a little for the delete to land.
+  const settled = rows.every((r) => deleted.has(r.id)) && now - end >= 60_000;
+  return { isolated: true, byId, settled, account };
+}
+const BOXD_BUCKET_MS = 15 * 60_000;
+/**
+ * Metering lags up to ~25 minutes but the charge posts ~10 minutes after a bucket closes, so a
+ * late reading can move a micro-unit between buckets. 2 micro-USD per bucket allows that and
+ * rejects costMicro's round-up (about 1.5 micro-USD per machine).
+ */
+const BOXD_TOLERANCE_MICRO = 2;
+const boxdBucketSchema = z.object({
+  currency: z.string(),
+  complete: z.boolean(),
+  rates: z.object({
+    vcpuHourMicro: money,
+    ramGibHourMicro: money,
+    diskGibHourMicro: money,
+  }),
+  machines: z.array(
+    z.object({ machineId: z.string(), vcpuHours: money, ramGibHours: money, diskGibHours: money }),
+  ),
+});
+export type BoxdCharges =
+  | { kind: "charged"; microById: Map<string, number>; buckets: unknown[] }
+  | { kind: "unreconciled"; reason: string; buckets: unknown[] };
+
+/**
+ * boxd charges the whole org once per 15-minute usage bucket, about 10 minutes after the
+ * bucket closes. That charge equals each machine's vCPU, RAM and disk micro-amounts rounded to
+ * the micro-unit and summed over every machine in the bucket (machine costMicro rounds each part
+ * up instead). When each bucket the run touched has exactly one posted charge equal to that sum,
+ * within BOXD_TOLERANCE_MICRO,
+ * the charge splits exactly into per-machine amounts, so other machines in the org do not matter.
+ */
+export async function readBoxdCharges(
+  rows: OwnedSandbox[],
+  env: NodeJS.ProcessEnv,
+  query?: BoxdQuery,
+): Promise<BoxdCharges> {
+  query ??= await boxdClient(env);
+  const starts = rows.flatMap((r) => (r.startedAt ? [Date.parse(r.startedAt)] : []));
+  const ends = rows.flatMap((r) => (r.finishedAt ? [Date.parse(r.finishedAt)] : []));
+  if (!rows.length || starts.length !== rows.length || ends.length !== rows.length)
+    return { kind: "unreconciled", reason: "a machine has no recorded time range", buckets: [] };
+  const first = Math.floor(Math.min(...starts) / BOXD_BUCKET_MS) * BOXD_BUCKET_MS;
+  // Machines are metered until deletion lands; include the bucket after the last delete.
+  const last = Math.floor((Math.max(...ends) + 60_000) / BOXD_BUCKET_MS) * BOXD_BUCKET_MS;
+  if ((last - first) / BOXD_BUCKET_MS > 16)
+    return { kind: "unreconciled", reason: "run spans more than 4 hours", buckets: [] };
+  const ours = new Set(rows.map((r) => r.id));
+  const microById = new Map<string, number>();
+  const buckets: unknown[] = [];
+  const charges = activitySchema.parse(
+    await query("billingActivityPage", {
+      org: env.BOXD_ORG,
+      since: new Date(first),
+      until: new Date(last + 3 * BOXD_BUCKET_MS),
+      pageSize: 1000,
+    }),
+  );
+  if (charges.nextPageToken)
+    return { kind: "unreconciled", reason: "billing activity spans pages", buckets };
+  for (let start = first; start <= last; start += BOXD_BUCKET_MS) {
+    const end = start + BOXD_BUCKET_MS;
+    const usage = boxdBucketSchema.parse(
+      await query("usage", { org: env.BOXD_ORG, since: new Date(start), until: new Date(end) }),
+    );
+    const { rates } = usage;
+    const parts = usage.machines.map((m) => ({
+      id: m.machineId,
+      micro:
+        Math.round(m.vcpuHours * rates.vcpuHourMicro) +
+        Math.round(m.ramGibHours * rates.ramGibHourMicro) +
+        Math.round(m.diskGibHours * rates.diskGibHourMicro),
+    }));
+    const posted = charges.entries.filter(
+      (e) =>
+        e.kind === "usage_charge" &&
+        e.createdAt.getTime() >= end + 5 * 60_000 &&
+        e.createdAt.getTime() < end + 20 * 60_000,
+    );
+    const expected = parts.reduce((sum, p) => sum + p.micro, 0);
+    const charged = posted.length === 1 ? -(posted[0]?.amountMicro ?? 0) : null;
+    const foreign = parts.filter((p) => !ours.has(p.id) && p.micro > 0).length;
+    buckets.push({
+      start: new Date(start).toISOString(),
+      expectedMicro: expected,
+      chargedMicro: charged,
+      otherMachines: foreign,
+      complete: usage.complete,
+    });
+    if (usage.currency.toLowerCase() !== "usd" || charges.currency.toLowerCase() !== "usd")
+      return { kind: "unreconciled", reason: "non-USD account", buckets };
+    if (!usage.complete) return { kind: "unreconciled", reason: "bucket still metering", buckets };
+    // A bucket with no usage gets no charge entry.
+    if (expected === 0 && posted.length === 0) continue;
+    if (charged === null || Math.abs(charged - expected) > BOXD_TOLERANCE_MICRO)
+      return { kind: "unreconciled", reason: "posted charge differs from usage", buckets };
+    for (const p of parts) microById.set(p.id, (microById.get(p.id) ?? 0) + p.micro);
+  }
+  if (rows.some((r) => !microById.has(r.id)))
+    return { kind: "unreconciled", reason: "a machine is absent from usage", buckets };
+  return { kind: "charged", microById, buckets };
 }
 export async function collectProvider(
   provider: string,
@@ -427,7 +625,30 @@ export async function collectProvider(
         snapshot = await readBoxdAccount(rows, env);
       }
       const { usage, account } = snapshot;
-      result.account = account;
+      const reconciled = await readBoxdCharges(rows, env);
+      result.account = {
+        ...account,
+        reconciliation:
+          reconciled.kind === "charged"
+            ? { kind: "charged", buckets: reconciled.buckets }
+            : reconciled,
+      };
+      if (reconciled.kind === "charged") {
+        for (const row of rows)
+          result.sandboxes.push({
+            id: row.id,
+            source: "boxd orgs.billingActivityPage usage_charge, reconciled per 15-minute bucket",
+            cost: {
+              kind: "billed",
+              usd: (reconciled.microById.get(row.id) ?? Number.NaN) / 1e6,
+              scope: "sandbox-lifetime",
+              complete: true,
+              confidence: "high",
+              note: "Machine's share of boxd's posted 15-minute org charges: its rounded vCPU, RAM and disk parts, which with the other machines' parts sum exactly to each charge",
+            },
+          });
+        return result;
+      }
       for (const row of rows) {
         const machine = usage.machines.find((m) => m.machineId === row.id);
         result.sandboxes.push({
@@ -449,8 +670,8 @@ export async function collectProvider(
       const summary = z
         .object({
           current_charges_usd: money,
-          credits_applied_usd: money,
-          expected_invoice_amount_usd: money,
+          credits_applied_usd: money.nullable(),
+          expected_invoice_amount_usd: money.nullable(),
           billing_period: z.object({
             start: z.coerce.date().transform((d) => d.toISOString()),
             end: z.coerce.date().transform((d) => d.toISOString()),
@@ -465,29 +686,30 @@ export async function collectProvider(
           ),
         })
         .parse(await transport("https://api.superserve.ai/billing/pricing", headers));
-      const window = windowFor(rows);
-      if (!window) throw new Error("Missing time window");
-      const query = new URLSearchParams({
-        start: window.start,
-        end: window.end,
-        timezone: "UTC",
-        granularity: "hour",
-      });
-      const series = z
-        .object({
-          buckets: z.array(
-            z.object({ start: z.string(), end: z.string(), billed_total_usd: money }),
-          ),
-        })
-        .parse(await transport(`https://api.superserve.ai/billing/usage-series?${query}`, headers));
-      result.account = {
-        window,
-        summary,
-        pricing,
-        buckets: series.buckets,
-        note: "Account-wide, unverified isolation. Billed bucket totals are not assigned to benchmark sandboxes or scenarios.",
-      };
-      blocked = "Only account hourly charges available; isolated window not proven";
+      const charges = await readSuperserveCharges(rows, (url) => transport(url, headers));
+      result.account = { ...charges.account, summary, pricing };
+      if (charges.isolated) {
+        for (const row of rows) {
+          const usd = charges.byId.get(row.id);
+          result.sandboxes.push({
+            id: row.id,
+            source: spec.source,
+            cost:
+              usd === undefined
+                ? unavailable("Sandbox has no recorded time range")
+                : {
+                    kind: "billed",
+                    usd,
+                    scope: "sandbox-lifetime",
+                    complete: charges.settled,
+                    confidence: charges.settled ? "high" : "low",
+                    note: "Provider's account charge over this sandbox's own create-to-delete range, in a run proven isolated; before credits/tax",
+                  },
+          });
+        }
+        return result;
+      }
+      blocked = `Account charge not attributable: ${charges.reason}`;
     } catch (error) {
       blocked = errorNote(error);
     }

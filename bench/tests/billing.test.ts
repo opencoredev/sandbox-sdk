@@ -12,6 +12,7 @@ import {
   decodeEvents,
   decodeUpstash,
   readBoxdAccount,
+  readBoxdCharges,
   http,
   type Transport,
 } from "../src/billing/providers.js";
@@ -320,22 +321,104 @@ describe("billing collector", () => {
     expect(transport).toHaveBeenCalledTimes(2);
     expect(result.sandboxes[0]?.cost.kind).toBe("metered");
   });
-  it("keeps Superserve's account buckets and credit-adjusted invoice separate from task costs", async () => {
+  /** Fake Superserve team: the charge over [start,end) is its overlap with each running interval. */
+  function superserve(intervals: { id: string; start: string; end: string }[]): Transport {
+    return async (url) => {
+      if (url.includes("/summary")) return recorded.superserve.summary;
+      if (url.includes("/pricing")) return recorded.superserve.pricing;
+      if (url.includes("/activity"))
+        return intervals.flatMap((i) => [
+          { sandbox_id: i.id, action: "started", created_at: i.start },
+          { sandbox_id: i.id, action: "deleted", created_at: i.end },
+        ]);
+      const query = new URL(url).searchParams;
+      const from = Date.parse(query.get("start") ?? ""),
+        to = Date.parse(query.get("end") ?? "");
+      const ms = intervals.reduce(
+        (sum, i) =>
+          sum + Math.max(0, Math.min(to, Date.parse(i.end)) - Math.max(from, Date.parse(i.start))),
+        0,
+      );
+      return { buckets: [{ start: "s", end: "e", billed_total_usd: (ms / 1000) * 0.0000185 }] };
+    };
+  }
+  const superserveRows = [
+    { ...row, provider: "superserve", id: "ss-a", finishedAt: "2026-10-19T20:34:20.000Z" },
+    { ...row, provider: "superserve", id: "ss-b", startedAt: "2026-10-19T20:34:20.000Z" },
+  ];
+  const ssA = { id: "ss-a", start: "2026-10-19T20:34:01.000Z", end: "2026-10-19T20:34:19.000Z" };
+  it("bills each Superserve sandbox the charge over its own range in a proven isolated run", async () => {
     const result = await collectProvider(
       "superserve",
-      [{ ...row, provider: "superserve" }],
+      superserveRows,
       { SUPERSERVE_API_KEY: "test-only" },
-      async (url) =>
-        url.includes("/summary")
-          ? recorded.superserve.summary
-          : url.includes("/pricing")
-            ? recorded.superserve.pricing
-            : recorded.superserve.series,
+      superserve([
+        ssA,
+        { id: "ss-b", start: "2026-10-19T20:34:21.000Z", end: "2026-10-19T20:34:31.000Z" },
+      ]),
     );
-    expect(result.sandboxes[0]?.cost.kind).toBe("unavailable");
-    expect(result.account).toMatchObject({
-      summary: { expected_invoice_amount_usd: 0, current_charges_usd: 0.1213959469865 },
-    });
+    expect(result.sandboxes.map((s) => s.cost)).toMatchObject([
+      { kind: "billed", scope: "sandbox-lifetime", complete: true, confidence: "high" },
+      { kind: "billed", scope: "sandbox-lifetime", complete: true, confidence: "high" },
+    ]);
+    const [a, b] = result.sandboxes.map((s) => (s.cost.kind === "billed" ? s.cost.usd : NaN));
+    expect(a).toBeCloseTo(18 * 0.0000185, 15);
+    expect(b).toBeCloseTo(10 * 0.0000185, 15);
+    expect(result.account).toMatchObject({ summary: { current_charges_usd: 0.1213959469865 } });
+  });
+  it("refuses Superserve charges when anything else used the account in the run window", async () => {
+    const env = { SUPERSERVE_API_KEY: "test-only" };
+    const other = {
+      id: "other",
+      start: "2026-10-19T20:34:05.000Z",
+      end: "2026-10-19T20:34:10.000Z",
+    };
+    const shared = await collectProvider(
+      "superserve",
+      superserveRows,
+      env,
+      superserve([ssA, other]),
+    );
+    expect(shared.sandboxes.every((s) => s.cost.kind === "unavailable")).toBe(true);
+    // Usage in the margin with no audit entry (e.g. a sandbox started earlier) also blocks it.
+    const margin = { ...other, start: "2026-10-19T20:33:30.000Z", end: "2026-10-19T20:33:40.000Z" };
+    const unseen = superserve([ssA, margin]);
+    const leaked = await collectProvider("superserve", superserveRows, env, async (url, headers) =>
+      url.includes("/activity") ? superserve([ssA])(url, headers) : unseen(url, headers),
+    );
+    expect(leaked.sandboxes.every((s) => s.cost.kind === "unavailable")).toBe(true);
+  });
+  it("bills boxd machines only when their rounded parts sum to the posted 15-minute charge", async () => {
+    const rows = [{ ...row, provider: "boxd", id: "m-1" }];
+    const machines = [
+      { machineId: "m-1", vcpuHours: 0.0416666, ramGibHours: 0.0106583, diskGibHours: 0.1499275 },
+      { machineId: "other", vcpuHours: 0.01, ramGibHours: 0, diskGibHours: 0 },
+    ];
+    // m-1 rounds to 1958 + 149 + 14 = 2121 micro-USD (costMicro rounds each part up: 2124); other is 470.
+    const query = (charged: number) => async (method: string, params: { since: Date }) =>
+      method === "billingActivityPage"
+        ? {
+            currency: "usd",
+            nextPageToken: null,
+            entries: [
+              {
+                id: "c",
+                kind: "usage_charge",
+                amountMicro: -charged,
+                createdAt: new Date("2026-10-19T20:55:39Z"),
+              },
+            ],
+          }
+        : {
+            currency: "usd",
+            complete: true,
+            rates: { vcpuHourMicro: 47000, ramGibHourMicro: 14000, diskGibHourMicro: 96 },
+            machines: params.since.getTime() === Date.parse("2026-10-19T20:30:00Z") ? machines : [],
+          };
+    const exact = await readBoxdCharges(rows, {}, query(2591));
+    expect(exact.kind).toBe("charged");
+    if (exact.kind === "charged") expect(exact.microById.get("m-1")).toBe(2121);
+    expect((await readBoxdCharges(rows, {}, query(2594 + 3))).kind).toBe("unreconciled");
   });
   it("uses Daytona's API-key org without persisting its secret value and marks delayed charges pending", async () => {
     const transport = vi.fn<Transport>(async (url) =>
