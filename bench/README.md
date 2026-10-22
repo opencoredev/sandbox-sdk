@@ -252,3 +252,6 @@ Boat's [machine documentation](https://docs.boat.dev/machines) lists 50 GB for t
 
 
 Every collection-plan command passes `--omit-network-download true`, matching the original publication. The public CDN download is not collected because the host rate-limits; guest `urllib` connection resets there do not measure provider performance. CPU, memory, disk and TCP probes remain enabled.
+
+
+Daytona's verified `us` container account quota is 10 vCPU, 10 GiB RAM and 30 GiB disk. Same-spec main runs one `daytona-large` at a time (4/8/10). Same-spec snapshot/restore would require source plus restore at 8/16/20, so the plan excludes that suite and K=10/K=25 bursts until the quota increases. Default K=25 is also excluded; default K=10 stays enabled as a separate command using exactly 10 vCPU, 10 GiB RAM and 30 GiB disk on an otherwise idle account. The generated policy records all five exclusions with the quota numbers as documented account limits, not provider failures.
