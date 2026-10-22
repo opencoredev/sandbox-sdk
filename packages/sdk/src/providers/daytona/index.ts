@@ -52,6 +52,13 @@ function fileInfo(path: string, file: NativeFile): FileInfo {
 /** Direct Daytona adapter. The optional SDK is loaded only on first operation. */
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   let client: Promise<Daytona> | undefined;
+  // Keep values across operations and concurrent creates, including env overrides.
+  // Connect-time core secrets are not exposed at this boundary; only values the
+  // adapter sees can be denied here. Strict evidence shapes also apply below.
+  const knownSecrets = new Set<string>();
+  const rememberEnv = (env: Record<string, string> = {}) => {
+    for (const value of Object.values(env)) if (value) knownSecrets.add(value);
+  };
   const boxes = new Map<string, DaytonaSandbox>();
   const recentCreates = new Map<string, { expiresAt: number }>();
   const deletions = new Map<string, Promise<void>>();
@@ -66,12 +73,12 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       return new Daytona(config);
     })();
   }
-  async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = file ? "files" : "request"): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file, operation, options.apiKey ?? process.env.DAYTONA_API_KEY); } }
+  async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = file ? "files" : "request"): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file, operation, options.apiKey ?? process.env.DAYTONA_API_KEY, knownSecrets); } }
   async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
   const provider: DaytonaProvider = {
     name: "daytona", keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["snapshot", "size", "network-policy"]),
-    async create(input) { return safe(async () => {
+    async create(input) { rememberEnv(input.env); return safe(async () => {
       if (options.image && options.snapshot) unsupported("Choose either image or snapshot");
       const image = input.from === undefined ? options.image : undefined;
       const allocation = input.size === undefined ? undefined : resources(input.size);
@@ -136,14 +143,14 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },
-    exec: (id, input) => safe(async () => execute(await box(id), input), id, false, "exec"),
-    startProcess: (id, input) => safe(async () => {
+    exec: (id, input) => { rememberEnv(input.env); return safe(async () => execute(await box(id), input), id, false, "exec"); },
+    startProcess: (id, input) => { rememberEnv(input.env); return safe(async () => {
       const hook = await sessionProcess(await box(id), input);
       let active = monitors.get(id); if (!active) { active = new Set(); monitors.set(id, active); }
       active.add(hook.detach);
       void hook.wait().finally(() => active.delete(hook.detach)).catch(() => {});
       return { pid: hook.pid, wait: () => safe(hook.wait, id, false, "process"), stop: settings => safe(() => hook.stop(settings), id, false, "process") };
-    }, id, false, "process"),
+    }, id, false, "process"); },
     async close(id) { for (const detach of monitors.get(id) ?? []) detach(); monitors.delete(id); },
     files: {
       writeCreatesParents: true,
@@ -159,7 +166,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       const name = `sdk-${crypto.randomUUID()}`;
       try { await (await box(id)).createSnapshot(name, (options.snapshotTimeoutMs ?? 600_000) / 1000); }
       catch (error) {
-        const mapped = daytonaError(error, id, false, "snapshot", options.apiKey ?? process.env.DAYTONA_API_KEY);
+        const mapped = daytonaError(error, id, false, "snapshot", options.apiKey ?? process.env.DAYTONA_API_KEY, knownSecrets);
         throw new SandboxError(`Snapshot ${name} did not complete. It may still be creating. Inspect or delete this name with the native snapshot API before retrying.`, { code: mapped.code, cause: mapped.cause, provider: "daytona", sandboxId: id, retryable: false, hint: `Recover snapshot ${name} from source sandbox ${id}.` });
       }
       return { id: name };
