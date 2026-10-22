@@ -11,6 +11,9 @@ const sdkLabel = { "sandbox-sdk": "1" };
 // Serializes same-key callers in this JS realm, including locator read/create/write.
 // Cross-host exactness requires the provider's unique native key (see provider keyMode).
 const queues = new WeakMap<Provider, Map<string, Promise<unknown>>>();
+// Keys this realm created or found. Provider list indexes can lag a fresh create, and setup
+// no longer spends enough time to hide that lag from an immediate same-key lookup.
+const knownKeys = new WeakMap<Provider, Map<string, string>>();
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets })) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
   for (const cap of provider.capabilities) {
@@ -33,8 +36,8 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
       if (options.signal?.aborted) throw new SandboxError("Creation aborted. Signal was already aborted. Retry with a fresh signal.", { code: "aborted" });
       let info: SandboxInfo | undefined;
       if (options.key) {
-        const stored = await options.locator?.get(options.key);
-        if (stored) { try { info = await provider.connect(stored); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; } }
+        const stored = await options.locator?.get(options.key) ?? knownKeys.get(provider)?.get(options.key);
+        if (stored) { try { info = await provider.connect(stored); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; knownKeys.get(provider)?.delete(options.key); } }
         info ??= await provider.find(options.key);
       }
       let created = !info;
@@ -58,7 +61,10 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
         if (created) owned = info;
       }
       if (options.signal?.aborted) { if (owned) await provider.destroy(owned.id); owned = undefined; throw new SandboxError("Creation aborted. Sandbox arrived after cancellation and was destroyed. Retry with a fresh signal.", { code: "aborted" }); }
-      if (options.key) await options.locator?.set(options.key, info.id);
+      if (options.key) {
+        await options.locator?.set(options.key, info.id);
+        let keys = knownKeys.get(provider); if (!keys) { keys = new Map(); knownKeys.set(provider, keys); } keys.set(options.key, info.id);
+      }
       const { makeHandle } = await import("./handle.js");
       return await makeHandle(provider, info, created, options, redactor);
     } catch (error) {

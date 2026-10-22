@@ -30,7 +30,8 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       const second = await createSandbox(provider, { key }); cleanup.push(second);
       expect(first.created).toBe(true); expect(second.created).toBe(false); expect(second.id).toBe(first.id);
       const reattached = await connectSandbox(provider, first.id); cleanup.push(reattached);
-      expect(reattached.native).toBeDefined(); expect((await listSandboxes(provider, { labels: { suite: key } })).map(box => box.id)).toEqual([first.id]);
+      expect(reattached.native).toBeDefined(); // Provider list indexes can lag a fresh create; keyed lookup above must not.
+      await expect.poll(async () => (await listSandboxes(provider, { labels: { suite: key } })).map(box => box.id), { timeout: 15_000, interval: 500 }).toEqual([first.id]);
     });
     test("exit results, stdin, resolved cwd and default environment", async () => {
       const { box } = await setup();
