@@ -875,3 +875,98 @@ test("a failed destroy preserves cache disablement across reconnect", async () =
   expect(write).not.toHaveBeenCalled();
   expect((await box.run("cat value")).stdout).toBe("survived");
 });
+
+test("native failures retain safe evidence through public redaction", async () => {
+  const provider = tenki({ authToken: "secret-key" });
+  const box = await createSandbox(provider);
+  const native = box.native;
+  const transport = Object.assign(new Error("Bearer secret-key response body private-command"), {
+    code: 14,
+    metadata: new Headers({ "x-request-id": "req-123", authorization: "Bearer secret-key" }),
+  });
+  vi.spyOn(native, "resume").mockRejectedValueOnce(
+    Object.assign(new Error("private-body"), {
+      name: "ResumeFailedError",
+      status: 503,
+      cause: transport,
+    }),
+  );
+  const error = await box.resume().catch((error) => error);
+  expect(error).toMatchObject({ code: "provider", provider: "tenki" });
+  expect(JSON.parse(String(error.cause))).toEqual({
+    operation: "resume",
+    nativeName: "ResumeFailedError",
+    status: 503,
+    providerCode: 14,
+    requestId: "req-123",
+  });
+  expect(String(error.cause)).not.toMatch(/secret-key|private|Bearer|authorization/);
+});
+
+test("native evidence rejects secret scalars and arbitrary native properties", async () => {
+  const provider = tenki({ authToken: "SECRET" });
+  vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(
+    Object.assign(new Error("private"), {
+      status: "503",
+      code: "SECRET_CODE",
+      requestId: "req-SECRET",
+      operation: "private/path",
+      body: "private",
+      cause: Object.assign(new Error("private"), {
+        statusCode: 504,
+        code: "UNAVAILABLE",
+        requestId: "https://secret",
+      }),
+    }),
+  );
+  const error = await provider.connect("missing").catch((error) => error);
+  expect(error.cause).toMatchObject({
+    operation: "connect",
+    status: 504,
+    providerCode: "UNAVAILABLE",
+  });
+  expect(error.cause.message).toBe(
+    '{"operation":"connect","status":504,"providerCode":"UNAVAILABLE"}',
+  );
+});
+
+test("repeated resumes refresh workspace roots and recover expired first-command credentials once", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const current = tenkiState.boxes.get(box.id);
+  if (!current) throw new Error("Missing mock session");
+  const resume = current.resume.bind(current);
+  const renew = vi.spyOn(current, "reauthOnUnauthenticated").mockResolvedValue(true);
+  const close = vi.spyOn(current, "close");
+  const write = vi.spyOn(current, "writeFile");
+  const read = vi.spyOn(current, "readFile");
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    const root = `/home/tenki/resumed-${cycle}`;
+    vi.spyOn(current, "resume").mockImplementationOnce(async () => {
+      await resume();
+      // Simulate a restored guest with a different workspace alias. This does
+      // not pass through adapter exec invalidation, just like native restore.
+      const result = await current.run([
+        "sh",
+        "-c",
+        `mkdir -p ${root}; rm /workspace; ln -s ${root} /workspace`,
+      ]);
+      expect(result.exitCode).toBe(0);
+    });
+    await provider.pause?.(box.id);
+    await provider.resume?.(box.id);
+    await provider.files.write(box.id, "/workspace/value", new Uint8Array([cycle]));
+    expect(write).toHaveBeenLastCalledWith(`${root}/value`, new Uint8Array([cycle]));
+    expect(await provider.files.read(box.id, "/workspace/value")).toEqual(new Uint8Array([cycle]));
+    expect(read).toHaveBeenLastCalledWith(`${root}/value`);
+    tenkiState.streamFailures.push({
+      phase: "before-start",
+      error: Object.assign(new Error("expired resumed credential"), { code: 16 }),
+    });
+    const result = await box.run("printf once >> /home/tenki/resume-count; printf resumed");
+    expect(result).toMatchObject({ stdout: "resumed", exitCode: 0 });
+    expect(renew).toHaveBeenCalledTimes(cycle);
+  }
+  expect((await box.run("cat /home/tenki/resume-count")).stdout).toBe("onceonceonce");
+  expect(close).not.toHaveBeenCalled();
+});
