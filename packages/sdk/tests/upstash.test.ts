@@ -14,6 +14,11 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     if (String(input) === "https://us-east-1.box.upstash.com/v2/box/snapshots")
       return Promise.resolve(new Response(JSON.stringify({ snapshots: [...state.snapshotMetadata.values()] })));
+    const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(String(input))?.[1];
+    if (id !== undefined) {
+      const box = state.boxes.get(decodeURIComponent(id));
+      return Promise.resolve(box ? new Response(JSON.stringify(box.data)) : new Response("{}", { status: 404 }));
+    }
     return fetch(input, init);
   });
 });
@@ -243,9 +248,13 @@ test("binary files cross the native request limit without enlarging small transf
   const nativeRead = box.native.files.read;
   const nativeWrite = box.native.files.write;
   const reads = vi.spyOn(box.native.files, "read").mockImplementation(async (path, options) => {
-    if (options?.length === undefined || options.length > 8 * 1024 * 1024)
+    if (options?.length !== undefined && options.length > 8 * 1024 * 1024)
       throw Object.assign(new Error("read limit"), { statusCode: 400 });
-    return nativeRead(path, options);
+    const content = await nativeRead(path, options);
+    // Model a response cap on unbounded reads so the chunked fallback runs.
+    if (options?.length === undefined && Buffer.from(content, "base64").length > 8 * 1024 * 1024)
+      throw Object.assign(new Error("read limit"), { statusCode: 400 });
+    return content;
   });
   const writes = vi.spyOn(box.native.files, "write").mockImplementation(async (options) => {
     if (options.content.length > 8 * 1024 * 1024)
