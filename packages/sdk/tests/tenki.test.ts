@@ -974,6 +974,27 @@ test("repeated resumes refresh workspace roots and recover expired first-command
   expect(close).not.toHaveBeenCalled();
 });
 
+test.each(["create", "connect"])(
+  "%s does not claim admission for an id from a rejected native call",
+  async (operation) => {
+    const id = "12345678-1234-1234-1234-123456789abc";
+    const nativeError = Object.assign(new Error("private native response"), {
+      name: "UnauthorizedError",
+      sandboxId: id,
+      cause: { operation: "create", admittedByThisCall: true, sandboxId: id, code: 16 },
+    });
+    const provider = factory();
+    vi.spyOn(MockTenki.prototype, "create").mockRejectedValueOnce(nativeError);
+    vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(nativeError);
+    const pending = operation === "create" ? provider.create({ labels: {} }) : provider.connect(id);
+    const error = await pending.catch((error) => error);
+    expect(error).toMatchObject({ code: "auth" });
+    expect(error.cause).not.toHaveProperty("admittedByThisCall");
+    expect(JSON.parse(error.cause.message)).not.toHaveProperty("admittedByThisCall");
+    expect(error.cause.message).not.toMatch(/private|sandboxId/);
+  },
+);
+
 test("create timeout retains the admitted id, readiness state and native polling evidence publicly", async () => {
   vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(function (this: MockSession) {
     this.state = "CREATING";
@@ -991,6 +1012,7 @@ test("create timeout retains the admitted id, readiness state and native polling
   expect(error).toMatchObject({ code: "timeout" });
   expect(JSON.parse(error.cause)).toMatchObject({
     operation: "create",
+    admittedByThisCall: true,
     stage: "waitReady",
     state: "CREATING",
     providerCode: 14,
@@ -1017,6 +1039,7 @@ test("create cleanup failure preserves the primary native error and admitted id"
   expect(error).toMatchObject({ code: "auth", sandboxId: expect.any(String) });
   expect(JSON.parse(error.cause.message)).toMatchObject({
     operation: "create",
+    admittedByThisCall: true,
     stage: "waitReady",
     nativeName: "UnauthorizedError",
     providerCode: 16,
