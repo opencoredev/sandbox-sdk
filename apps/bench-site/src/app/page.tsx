@@ -129,7 +129,7 @@ function CommonPriceChart() {
       <Footnotes
         items={[
           ...providers.filter((p) => commonPrice(p) === null).map((p) => ({ text: <><Who id={p.id} /> does not list a {commonSize.label} machine, so no price is shown.</> })),
-          { text: "Compute only at list price; disk, transfer, subscriptions and free credits excluded. Upstash bills active CPU time at its box-size rate; Upstash and boxd allocation prices are upper bounds. Boat charges a flat rate per size." },
+          { text: "Compute only, at list price. Disk, transfer, subscriptions and free credits are left out. Upstash charges a rate per box size but only while the CPU is busy, so its figure is an upper bound. Boat charges a flat rate per size." },
         ]}
       />
     </>
