@@ -28,6 +28,7 @@ export const sampleSchema = z
     track: trackSchema.optional(),
     requestedSize: sizeSchema.nullable().optional(),
     template: z.string().nullable().optional(),
+    product: z.string().nullable().optional(),
     provider: z.string(),
     iteration: z.number().int().nonnegative(),
     scenario: z.string(),
@@ -71,7 +72,7 @@ const sourceSchema = z
     timestamp: z.iso.datetime(),
     finishedAt: z.iso.datetime(),
     config: z
-      .object({ seed: z.number().int(), scenarios: z.array(z.string()), bursts: z.array(finite), track: trackSchema.optional(), size: z.record(z.string(), sizeSchema).optional(), template: z.record(z.string(), z.string()).optional() })
+      .object({ seed: z.number().int(), scenarios: z.array(z.string()), bursts: z.array(finite), track: trackSchema.optional(), size: z.record(z.string(), sizeSchema).optional(), template: z.record(z.string(), z.string()).optional(), product: z.record(z.string(), z.string()).optional() })
       .passthrough(),
     metadata: z.object({ harnessCommit: z.string(), sdkCommit: z.string() }).passthrough(),
     host: z.object({ cpu: z.string(), os: z.string(), runtime: z.string() }).passthrough(),

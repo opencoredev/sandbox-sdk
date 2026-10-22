@@ -36,10 +36,21 @@ const sizes = z.array(z.string()).default([]).transform(value => Object.fromEntr
       : null)];
   }),
 ));
+/** Native products a provider can run on, chosen with --product provider=name. */
+export const products: Record<string, readonly [string, ...string[]]> = { upstash: ["box", "ephemeral"] };
+const productAssignments = z.array(z.string()).default([]).transform(value => Object.fromEntries(
+  Object.entries(assignments(value)).map(([name, product]) => {
+    const allowed = products[name];
+    if (!allowed?.includes(product))
+      throw new Error(`${name} has no ${product} product${allowed ? `; choose ${allowed.join(" or ")}` : ""}`);
+    return [name, product];
+  }),
+));
 const schema = z.object({
   track: trackSchema.default("default"),
   size: sizes,
   template: z.array(z.string()).default([]).transform(assignments),
+  product: productAssignments,
   providers: z
     .string()
     .default("local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,superserve,railway,vercel")
@@ -81,7 +92,7 @@ const schema = z.object({
 export type ConfigV2 = z.infer<typeof schema>;
 export function parseV2(args: string[]) {
   const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
-    Object.keys(schema.shape).map((key) => [key, { type: "string", ...(["size", "template"].includes(key) ? { multiple: true } : {}) }]),
+    Object.keys(schema.shape).map((key) => [key, { type: "string", ...(["size", "template", "product"].includes(key) ? { multiple: true } : {}) }]),
   );
   const config = schema.parse(parseArgs({ args, options, strict: true }).values);
   if (config.scenarios.includes("cost") && config.scenarios.length !== 1) throw new Error("The cost suite must run alone (--scenarios cost)");

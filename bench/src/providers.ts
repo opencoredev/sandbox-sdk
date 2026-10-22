@@ -13,6 +13,13 @@ export function templateOptions(name: string, template: string | undefined) {
   return { [key]: template };
 }
 
+/** Factory options selecting a native product; validated by parseV2. */
+export function productOptions(name: string, product: string | undefined) {
+  if (product === undefined || product === "box") return {};
+  if (name === "upstash" && product === "ephemeral") return { ephemeral: true };
+  throw new Error(`${name} has no ${product} product`);
+}
+
 export interface ReadyProvider {
   kind: "ready";
   name: string;
@@ -82,7 +89,7 @@ export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
-  config?: Pick<ConfigV2, "template">,
+  config?: Pick<ConfigV2, "template" | "product">,
 ): Promise<LoadedProvider> {
   if (!(name in credentials) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
@@ -108,7 +115,10 @@ export async function loadProvider(
   if (typeof factory !== "function")
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
   // Factory failures are real configuration errors, not missing-provider skips.
-  const value: unknown = await factory(templateOptions(name, config?.template[name]));
+  const value: unknown = await factory({
+    ...templateOptions(name, config?.template[name]),
+    ...productOptions(name, config?.product[name]),
+  });
   return {
     kind: "ready",
     name,

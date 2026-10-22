@@ -154,7 +154,21 @@ it("maps template flags to native factory options", async () => {
     if (!name || !key) throw new Error("Missing test mapping");
     const seen: unknown[] = [];
     const env = {E2B_API_KEY: "fixture", DAYTONA_API_KEY: "fixture", FREESTYLE_API_KEY: "fixture", TENKI_API_KEY: "fixture", SUPERSERVE_API_KEY: "fixture"};
-    await loadProvider(name, env, async () => ({[name]: (options: unknown) => {seen.push(options); return memory();}}), {template: {[name]: "requested"}});
+    await loadProvider(name, env, async () => ({[name]: (options: unknown) => {seen.push(options); return memory();}}), {template: {[name]: "requested"}, product: {}});
     expect(seen).toEqual([{[key]: "requested"}]);
+  }
+});
+it("maps --product to native factory options and rejects unknown products", async () => {
+  const { loadProvider } = await import("../src/providers.js");
+  const { parseV2 } = await import("../src/v2-config.js");
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  expect(parseV2(["--product", "upstash=ephemeral"]).product).toEqual({upstash: "ephemeral"});
+  expect(parseV2([]).product).toEqual({});
+  expect(() => parseV2(["--product", "upstash=lambda"])).toThrow(/upstash has no lambda product/);
+  expect(() => parseV2(["--product", "e2b=ephemeral"])).toThrow(/e2b has no ephemeral product/);
+  for (const [product, expected] of [["ephemeral", {ephemeral: true}], ["box", {}]] as const) {
+    const seen: unknown[] = [];
+    await loadProvider("upstash", {UPSTASH_BOX_API_KEY: "fixture"}, async () => ({upstash: (options: unknown) => {seen.push(options); return memory();}}), {template: {}, product: {upstash: product}});
+    expect(seen).toEqual([expected]);
   }
 });

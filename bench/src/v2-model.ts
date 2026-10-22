@@ -17,6 +17,8 @@ export interface AllocationMetadata {
   track?: ConfigV2["track"];
   requestedSize?: ConfigV2["size"][string] | null;
   template?: string | null;
+  /** Native product, such as Upstash "ephemeral"; null is the provider default. */
+  product?: string | null;
 }
 export interface Sample extends AllocationMetadata {
   provider: string;

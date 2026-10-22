@@ -144,16 +144,18 @@ export async function runV2(
       track: config.track,
       requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
       template: config.template[p.name] ?? null,
+      product: config.product[p.name] ?? null,
       kind: p.kind,
       configuredRegion: p.kind === "ready" ? p.region : null,
       note:
         p.kind === "skipped"
           ? p.note
-          : config.size[p.name] || config.template[p.name]
-            ? "Requested allocation/template overrides; verify actual resources in fingerprints"
-            : p.name === "local"
-              ? "Docker reference baseline; host costs excluded"
-              : "Provider default image and allocation",
+          : (config.product[p.name] ? `Native product: ${config.product[p.name]}. ` : "") +
+            (config.size[p.name] || config.template[p.name]
+              ? "Requested allocation/template overrides; verify actual resources in fingerprints"
+              : p.name === "local"
+                ? "Docker reference baseline; host costs excluded"
+                : "Provider default image and allocation"),
     })),
     cleanup: [],
     cleanupReview: [],
@@ -332,6 +334,7 @@ export async function runV2(
       track: config.track,
       requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
       template: config.template[p.name] ?? null,
+      product: config.product[p.name] ?? null,
     };
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
@@ -1191,6 +1194,7 @@ export async function runV2(
         track: config.track,
         requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
         template: config.template[p.name] ?? null,
+        product: config.product[p.name] ?? null,
         provider: p.name,
         iteration: cohortIndex,
         scenario: `burst-${k}/all-ready`,
