@@ -16,10 +16,19 @@ with open('${supervisorPath}','w') as f: f.write(v['supervisor'])`);
 
 export async function bootstrap(
   box: Sandbox,
-  options: { env: Record<string, string>; timeoutMs: number; signal?: AbortSignal },
+  options: {
+    env: Record<string, string>;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    installPython?: boolean;
+  },
 ) {
+  const missingPython =
+    options.installPython === true
+      ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
+      : "exit 78";
   const result = await box.commands.run(
-    `(command -v python3 >/dev/null || (export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null)) && ${initialize}`,
+    `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
     {
       // Keep caller environment values out of the shell command and its argv.
       env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env, supervisor }) },
@@ -27,6 +36,12 @@ export async function bootstrap(
       signal: options.signal,
     },
   );
+  if (result.exitCode === 78)
+    throw failure(
+      "Template lacks python3; use a template with Python 3 or explicitly set installPython: true to allow apt installation",
+      "unsupported",
+      box.id,
+    );
   if (result.exitCode === 79)
     throw failure("Template must include git, tar and nohup", "unsupported", box.id);
   if (result.exitCode !== 0) throw failure("Guest initialization failed", "provider", box.id);

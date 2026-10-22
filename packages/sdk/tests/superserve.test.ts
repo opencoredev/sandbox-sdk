@@ -1,4 +1,7 @@
 import { afterAll, expect, test, vi } from "vitest";
+import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockGuest } from "./cloud-guest-mock.js";
 import { quote } from "../src/providers/boxd/guest.js";
 const state = vi.hoisted(() => ({
@@ -8,6 +11,7 @@ const state = vi.hoisted(() => ({
   >(),
   creates: 0,
   nativeTimeoutSeconds: 0,
+  bootstrapPath: "",
   updates: new Array<unknown>(),
   createOptions: undefined as unknown,
   transportFailure: false,
@@ -74,7 +78,10 @@ vi.mock("@superserve/sdk", () => ({
       return {
         run: async (command: string, options: { env?: Record<string, string> } = {}) => {
           if (command.includes("SANDBOX_SDK_BOOTSTRAP")) await state.bootstrap?.();
-          const prefix = Object.entries(options.env ?? {})
+          const env = { ...options.env };
+          if (command.includes("SANDBOX_SDK_BOOTSTRAP") && state.bootstrapPath)
+            env.PATH = state.bootstrapPath;
+          const prefix = Object.entries(env)
             .map(([key, value]) => {
               // Match MockGuest.upload's host-path normalization for encoded output.
               const payload =
@@ -87,7 +94,22 @@ vi.mock("@superserve/sdk", () => ({
               return `export ${key}=${quote(payload)};`;
             })
             .join(" ");
-          return { stdout: await g.raw(`${prefix} ${command}`), stderr: "", exitCode: 0 };
+          try {
+            return { stdout: await g.raw(`${prefix} ${command}`), stderr: "", exitCode: 0 };
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              typeof error.code === "number"
+            )
+              return {
+                stdout: "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
+                stderr: "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+                exitCode: error.code,
+              };
+            throw error;
+          }
         },
         spawn: async (
           command: string,
@@ -357,5 +379,50 @@ test("restores clear an inherited auto-pause timeout", async () => {
     }
   } finally {
     state.nativeTimeoutSeconds = 0;
+  }
+});
+
+test("missing Python fails clearly and destroys the sandbox without running apt", async () => {
+  const path = await mkdtemp(join(tmpdir(), "superserve-no-python-"));
+  const before = state.boxes.size;
+  state.bootstrapPath = path;
+  try {
+    await expect(factory().create({ labels: {} })).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("explicitly set installPython: true"),
+    });
+    expect(state.boxes.size).toBe(before);
+  } finally {
+    state.bootstrapPath = "";
+    await rm(path, { recursive: true, force: true });
+  }
+});
+
+test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
+  const path = await mkdtemp(join(tmpdir(), "superserve-opt-in-"));
+  const log = join(path, "apt.log");
+  for (const tool of ["git", "tar", "nohup"]) await symlink(`/usr/bin/${tool}`, join(path, tool));
+  await writeFile(
+    join(path, "apt-get"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> ${quote(log)}
+if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "python3"))}; fi
+`,
+    { mode: 0o700 },
+  );
+  state.bootstrapPath = path;
+  const provider = superserve({ apiKey: "mock", installPython: true });
+  try {
+    const box = await provider.create({ labels: {} });
+    try {
+      expect(await readFile(log, "utf8")).toBe(
+        "update -qq\ninstall -y -qq python3 python3-venv python3-pip\n",
+      );
+    } finally {
+      await provider.destroy(box.id);
+    }
+  } finally {
+    state.bootstrapPath = "";
+    await rm(path, { recursive: true, force: true });
   }
 });

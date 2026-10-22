@@ -2,9 +2,9 @@
 
 SBX-51 adds Superserve to the same harness used for the other seven cloud providers. The SDK entry point is `@opencoredev/sandbox-sdk/superserve`; install optional peer `@superserve/sdk` 0.11.4 or later and set `SUPERSERVE_API_KEY` in the child process environment.
 
-The public adapter default remains `superserve/node-22`: 1 vCPU, 1024 MiB RAM, and 4096 MiB disk, checked October 21, 2026. That template lacks Python, so adapter creation installs Python, pip, and venv. This preparation inflated the original cold and burst measurements. Use the retained custom template below for benchmark reruns; keep the public SDK default unchanged because the custom template belongs to this account.
+The public adapter default remains `superserve/node-22`: 1 vCPU, 1024 MiB RAM, and 4096 MiB disk, checked October 21, 2026. That template lacks Python. Creation now fails with `unsupported` unless you choose a Python-equipped template or explicitly set `installPython: true`. The opt-in restores the earlier apt installation of Python, pip, and venv during creation. That preparation inflated the original cold and burst measurements. Use the retained custom template below for benchmark reruns; keep the public SDK default unchanged because the custom template belongs to this account.
 
-Custom templates own their resources; the adapter rejects explicit `size` requests. Pass their name or UUID through `superserve({ template })`. Python already present in a template skips apt during creation. The account uses region token `use`, which the native SDK maps to `https://api.superserve.ai`.
+Custom templates own their resources; the adapter rejects explicit `size` requests. Pass their name or UUID through `superserve({ template })`. Runtime installation defaults to off. If Python is already present, creation does not run apt, including when installation is explicitly enabled. The account uses region token `use`, which the native SDK maps to `https://api.superserve.ai`.
 
 Sources: [creation API](https://docs.superserve.ai/api-reference/sandboxes/create-a-new-sandbox), [template resources](https://docs.superserve.ai/sandbox/create), [SDK region routing](https://github.com/superserve-ai/superserve/blob/main/packages/sdk/src/config.ts), and [pricing](https://www.superserve.ai/pricing). All were retrieved October 21, 2026. Published pricing is $0.0504/vCPU-hour and $0.0162/GiB-hour. Harness estimates exclude credits, transfer, snapshot retention, and unspecified disk/minimum charges.
 
@@ -66,6 +66,12 @@ Creation combines tool checks, directory creation, environment JSON, and supervi
 The adapter no longer PATCHes an unset auto-pause timeout. Superserve's creation API documents that an omitted timeout leaves a fresh sandbox active until explicitly paused. A snapshot can inherit a configured timeout, so creation still clears one when the metadata read finds it. This preserves lifecycle behavior while removing an unnecessary request from normal fresh creates.
 
 Five serial samples against the pinned 1x1 template measured adapter `create()` → bare adapter `exec("true")`, matching the harness readiness path and excluding core SDK handle initialization. Before: 0.889, 0.711, 0.666, 0.621, 0.614 seconds (median **0.666 seconds**). After combining setup: 0.707, 0.484, 0.455, 0.472, 0.461 seconds (median **0.472 seconds**). Unlike the earlier native-`true` checks, this path includes the adapter command supervisor. These are small smoke series, not published distributions. Live conformance passed 15/15 after the setup reduction.
+
+## Python installation is explicit
+
+The public template default remains `superserve/node-22`; it currently lacks Python. `superserve()` therefore fails fast with `unsupported` and a message explaining the choices. The failed allocation is destroyed. Use a template containing Python, git, tar, and nohup for benchmarks and normal creation. For legacy convenience, `superserve({ installPython: true })` explicitly permits apt to install Python, pip, and venv when absent. That time remains part of adapter creation; benchmark reruns must leave this option off and select the pinned template.
+
+The final implementation measured adapter create → bare adapter `true` at 0.610, 0.473, 0.460, 0.468, 0.444 seconds across five fresh serial samples (median **0.468 seconds**, versus the unchanged before median **0.666 seconds**). The Python opt-in does not change the measured boundary. These checks exclude core SDK handle initialization and use the pinned template with installation disabled. Live default-template creation failed clearly in 0.596 seconds and left no allocation; a separate explicit opt-in installed Python 3.11.2 in 15.616 seconds. Final live conformance passed 15/15, and the final native sandbox listing was empty.
 
 ## Collection
 

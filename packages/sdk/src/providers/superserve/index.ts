@@ -9,10 +9,15 @@ export interface SuperserveOptions {
   apiKey?: string;
   baseUrl?: string;
   /** Native template name or UUID. Defaults to superserve/node-22.
-   * Preinstall Python 3, git, tar, and nohup to avoid runtime package installation.
+   * Must include git, tar, and nohup. Python 3 is required unless installPython is enabled.
    * Template-owned resources cannot be overridden by the SDK size option.
    */
   template?: string;
+  /** Allow apt to install missing Python 3, pip and venv during creation.
+   * Defaults to false: a template without Python fails with unsupported.
+   * The public default superserve/node-22 currently requires this opt-in.
+   */
+  installPython?: boolean;
   requestTimeoutMs?: number;
 }
 export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot">;
@@ -153,7 +158,12 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           // SDK 0.11.4 does not retain createdAt on Sandbox.create's result.
           // Read authoritative metadata alongside the single guest setup call.
           const [setup, details] = await Promise.allSettled([
-            bootstrap(box, { env: input.env ?? {}, timeoutMs: timeout, signal: input.signal }),
+            bootstrap(box, {
+              env: input.env ?? {},
+              timeoutMs: timeout,
+              signal: input.signal,
+              installPython: options.installPython,
+            }),
             box.getInfo(),
           ]);
           if (setup.status === "rejected") throw setup.reason;
