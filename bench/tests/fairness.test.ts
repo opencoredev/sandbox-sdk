@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { it, expect, vi, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import { resolve } from "node:path";
@@ -19,7 +20,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const dirs: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true }))); });
 async function config(args: string[] = []) {
-  const dir = await fs.mkdtemp(resolve("results-test-")); dirs.push(dir);
+  const dir = await fs.mkdtemp(resolve(tmpdir(), "sandbox-bench-test-")); dirs.push(dir);
+  expect(dir.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   return parseV2(["--runs", "1", "--bursts", "", "--scenarios", "command", "--out", dir, ...args]);
 }
 function fake(overrides: Partial<Provider> = {}): Provider {

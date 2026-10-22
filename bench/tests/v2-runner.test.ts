@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { it, expect, vi } from "vitest";
 import { parseV2 } from "../src/v2-config.js";
 
@@ -6,7 +7,8 @@ it("runs the actual v2 memory consumer, stops at its creation budget, and preser
   const { runV2, summarize } = await import("../src/v2-runner.js");
   const { mkdtemp, rm, readFile } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
-  const directory = await mkdtemp(resolve("results-test-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const provider = memory();
   const { createSandbox } = await import("@opencoredev/sandbox-sdk");
   const unrelated = await createSandbox(provider, {
@@ -69,7 +71,8 @@ it("retries journal-owned VMs even when listings omit them", async () => {
   const { runV2 } = await import("../src/v2-runner.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
-  const directory = await mkdtemp(resolve("results-test-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
   let attempts = 0;
   const provider = {
@@ -97,7 +100,8 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
   const { runV2 } = await import("../src/v2-runner.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
-  const directory = await mkdtemp(resolve("results-test-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
   const failures = new Map<string, number>();
   const provider = {
@@ -137,7 +141,8 @@ it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out cr
   const snapshots = await import("../src/snapshots.js");
   const { mkdtemp, rm, readFile } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
-  const directory = await mkdtemp(resolve("results-test-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
   const deleted: string[] = [];
   let queries = 0;
@@ -173,7 +178,8 @@ it("waits for a run-owned Daytona deletion to disappear before snapshot recovery
   const snapshots = await import("../src/snapshots.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
-  const directory = await mkdtemp(resolve("results-test-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
   let stale: Awaited<ReturnType<typeof backing.list>> = [];
   let afterDeleteLists = 0;
