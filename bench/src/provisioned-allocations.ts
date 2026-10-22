@@ -4,7 +4,7 @@
  * documented in apps/bench-site/src/lib/sizes.ts. Unknown templates fail closed.
  * Tenki does not document default CPU/RAM, so it intentionally has no entry.
  */
-interface ProvisionedAllocation { cpu: number; memoryGiB: number; diskGiB?: number }
+interface ProvisionedAllocation { cpu: number; memoryGiB: number; diskGiB?: number; documentedDisk?: {value: number; unit: "GB"; scope: string; source: string} }
 const templates: Record<string, Record<string, ProvisionedAllocation>> = {
   e2b: {
     "sandbox-bench-same-spec": {cpu: 4, memoryGiB: 8},
@@ -23,7 +23,7 @@ const defaults: Record<string, ProvisionedAllocation> = {
   e2b: {cpu: 2, memoryGiB: 0.5},
   daytona: {cpu: 1, memoryGiB: 1, diskGiB: 3},
   upstash: {cpu: 2, memoryGiB: 4, diskGiB: 5},
-  boat: {cpu: 4, memoryGiB: 8, diskGiB: 50},
+  boat: {cpu: 4, memoryGiB: 8, documentedDisk: {value: 50, unit: "GB", scope: "User files; excludes operating system and pre-installed tools", source: "https://docs.boat.dev/machines"}},
   boxd: {cpu: 2, memoryGiB: 8, diskGiB: 100},
   freestyle: {cpu: 4, memoryGiB: 8, diskGiB: 32},
   superserve: {cpu: 1, memoryGiB: 1, diskGiB: 4},

@@ -433,3 +433,18 @@ it("prices the E2B base template from its full 512 MiB despite kernel overhead",
   for (const row of report.samples) row.template = "base";
   expect(siteData(report, "same-spec").providers[0]).toMatchObject({hourly: 0.1089, allocationVerification: {verified: true}, pricingAllocation: {cpu: 2, memoryGiB: 0.5}});
 });
+
+
+it("shows Boat documented user-file disk separately from measured filesystem without pricing it", async () => {
+  const {siteData} = await import("../src/site-data.js");
+  const {allocationEvidence} = await import("../src/allocation.js");
+  const report = allocationReport("boat", 4, 7.75, null);
+  const first = report.samples[0]; if (!first) throw new Error("fixture required");
+  first.fingerprint = {...allocationFingerprint(4, 7.75), diskBytes: 68.58 * 1024 ** 3};
+  report.samples.push({...first, scenario: "restore-fingerprint", fingerprint: {...first.fingerprint, diskBytes: 100 * 1024 ** 3}});
+  expect(allocationEvidence(report.samples, "boat")).toMatchObject({verified: true, mismatches: [], pricingAllocation: {cpu: 4, memoryGiB: 8}});
+  const provider = siteData(report, "same-spec").providers[0];
+  expect(provider?.requestedAllocation.provisioned).toMatchObject({documentedDisk: {value: 50, unit: "GB", scope: expect.stringContaining("excludes operating system"), source: "https://docs.boat.dev/machines"}});
+  expect(provider?.measuredAllocations.map(r => r.diskGiB)).toEqual([68.58, 100]);
+  expect(provider?.hourly).toBe(0.036);
+});

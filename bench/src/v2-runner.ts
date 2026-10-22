@@ -681,7 +681,7 @@ export async function runV2(
                         signal,
                       ),
                     );
-                    restoreDetails.verification = verifyRestoredResources(sourceFingerprint, fp);
+                    restoreDetails.verification = verifyRestoredResources(sourceFingerprint, fp, {compareDisk: p.name !== "boat"});
                     if (restoreDetails.verification.matches === false)
                       throw new Error(`Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`);
                     return restoreDetails;

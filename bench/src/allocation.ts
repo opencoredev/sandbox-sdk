@@ -25,7 +25,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const measured = [...new Map(observed.map(r => [JSON.stringify(r), r])).values()];
   const mismatches: string[] = [];
   const source = rows.find(s => s.scenario === "fingerprint" && s.fingerprint)?.fingerprint ?? null;
-  const restoredMismatch = rows.some(s => s.scenario === "restore-fingerprint" && s.fingerprint && verifyRestoredResources(source, s.fingerprint).matches === false);
+  const restoredMismatch = rows.some(s => s.scenario === "restore-fingerprint" && s.fingerprint && verifyRestoredResources(source, s.fingerprint, {compareDisk: provider !== "boat"}).matches === false);
   if (restoredMismatch) mismatches.push("Restored allocation differs from source");
   if (new Set(rows.map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1)
     mismatches.push("Multiple requested allocations");

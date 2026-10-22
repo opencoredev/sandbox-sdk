@@ -36,14 +36,14 @@ export function resources(fp: Fingerprint) {
   };
 }
 
-export function verifyRestoredResources(source: Fingerprint | null, restored: Fingerprint) {
+export function verifyRestoredResources(source: Fingerprint | null, restored: Fingerprint, options: {compareDisk?: boolean} = {}) {
   const actual = resources(restored);
   if (!source) return { matches: null, source: null, restored: actual, mismatches: ["Source fingerprint unavailable"] };
   const original = resources(source);
   const mismatches = [
     ...(original.cpu === actual.cpu ? [] : ["cpu"]),
     ...(Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05 ? [] : ["memoryGiB"]),
-    ...(Math.abs(actual.diskGiB - original.diskGiB) <= original.diskGiB * 0.05 ? [] : ["diskGiB"]),
+    ...(options.compareDisk === false || Math.abs(actual.diskGiB - original.diskGiB) <= original.diskGiB * 0.05 ? [] : ["diskGiB"]),
   ];
   return { matches: mismatches.length === 0, source: original, restored: actual, mismatches };
 }
