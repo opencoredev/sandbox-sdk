@@ -19,7 +19,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const requestedCompute = size === null ? null : typeof size === "string"
     ? (presets[provider] ?? standardPresets)[size]
     : {cpu: size.cpu, memoryGiB: size.memoryMb / 1024};
-  const observed = rows.filter(s => s.scenario === "fingerprint").flatMap(s => s.fingerprint ? [resources(s.fingerprint)] : []);
+  const observed = rows.filter(s => ["fingerprint", "restore-fingerprint"].includes(s.scenario)).flatMap(s => s.fingerprint ? [resources(s.fingerprint)] : []);
   const measured = [...new Map(observed.map(r => [JSON.stringify(r), r])).values()];
   const mismatches: string[] = [];
   if (new Set(rows.map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1)
@@ -34,7 +34,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const pricingAllocation = mismatches.length ? null : requestedCompute && observed.length ? requestedCompute : measuredCompute;
   return {
     requested, requestedCompute, measured,
-    verified: observed.length && requestedCompute ? mismatches.length === 0 : null,
+    verified: mismatches.length ? false : observed.length && requestedCompute ? true : null,
     mismatches, pricingAllocation,
     equalSpec: observed.length > 0 && observed.every(r => r.cpu === 4 && r.memoryGiB >= 8 * 0.95 && r.memoryGiB <= 8 * 1.05),
   };

@@ -696,6 +696,9 @@ export async function runV2(
                 for (const sample of report.samples) {
                   if (sample.provider === p.name && sample.iteration === index &&
                     ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
+                    if (sample.scenario === "create-from-snapshot" && restoreDetails.verification?.matches === false) {
+                      sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`};
+                    }
                     sample.sandboxId = restoreId;
                     sample.fingerprint = restoredFingerprint;
                     sample.estimatedCost = estimateCost(p.name, sample.durationMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));

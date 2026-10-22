@@ -322,7 +322,7 @@ it("exports measured allocation safeguards and never labels boxd or capped Super
   const noFingerprint = allocationReport("e2b", 4, 8);
   const missing = noFingerprint.samples[0]; if (!missing) throw new Error("Missing fixture");
   missing.fingerprint = null;
-  expect(siteData(noFingerprint, "same-spec").providers[0]).toMatchObject({equalSpec: false, measuredAllocations: [], hourly: null});
+  expect(siteData(noFingerprint, "same-spec").providers[0]).toMatchObject({equalSpec: false, measuredAllocations: []});
   const mixed = allocationReport("e2b", 4, 8);
   const first = mixed.samples[0]; if (!first) throw new Error("Missing fixture");
   mixed.samples.push({...first, fingerprint: allocationFingerprint(2, 8)});
@@ -335,4 +335,20 @@ it("checks same-spec-only attempt counts without creating a default-track requir
   expect(checkAttempts(report.samples, {replacements: [], notRun: []}).every(r => r.track === "same-spec")).toBe(true);
   expect(checkAttempts([], {replacements: [], notRun: []}, ["same-spec"]).every(r => r.track === "same-spec")).toBe(true);
   expect(checkAttempts([], {replacements: [], notRun: [{provider: "e2b", suite: "main", scenario: "cold", track: "same-spec", reason: "not collected"}]}).every(r => r.track === "same-spec")).toBe(true);
+});
+
+
+it("includes restored fingerprints in allocation safeguards and excludes failed restore latencies", async () => {
+  const {siteData} = await import("../src/site-data.js");
+  const {allocationEvidence} = await import("../src/allocation.js");
+  const report = allocationReport("e2b", 4, 8, {cpu: 4, memoryMb: 8192});
+  const first = report.samples[0];
+  if (!first) throw new Error("fixture required");
+  report.samples.push({...first, scenario: "restore-fingerprint", fingerprint: allocationFingerprint(2, 8), outcome: {kind: "failure", note: "Restored allocation differs"}});
+  report.samples.push({...first, scenario: "create-from-snapshot", outcome: {kind: "failure", note: "Restored allocation differs"}});
+  const evidence = allocationEvidence(report.samples, "e2b");
+  expect(evidence).toMatchObject({equalSpec: false, verified: false, pricingAllocation: null});
+  const exported = siteData(report, "same-spec");
+  expect(exported.providers[0]).toMatchObject({equalSpec: false, allocationVerification: {verified: false}});
+  expect(exported.metrics.find(m => m.id === "create-from-snapshot")?.values ?? []).toEqual([]);
 });

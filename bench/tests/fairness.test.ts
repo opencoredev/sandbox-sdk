@@ -404,7 +404,8 @@ it.each([false, true])("restores inherit allocation without a size override and 
     },
   } satisfies Provider;
   const report = await runV2([ready("boat", provider)], await config(["--track", "same-spec", "--size", "boat=4:8192", "--scenarios", "snapshot"]), async () => {});
-  expect(report.samples.find(s => s.scenario === "create-from-snapshot")?.outcome.kind).toBe("sample");
+  expect(report.samples.find(s => s.scenario === "create-from-snapshot")?.outcome.kind).toBe(mismatch ? "failure" : "sample");
+  expect(report.summaries.find(s => s.scenario === "create-from-snapshot")?.stats.p50).toEqual(mismatch ? null : expect.any(Number));
   const row = report.samples.find(s => s.scenario === "restore-fingerprint");
   expect(row?.outcome.kind).toBe(mismatch ? "failure" : "sample");
   expect(row?.details).toMatchObject({verification: {matches: !mismatch, source: {cpu: 2}, restored: {cpu: mismatch ? 1 : 2}}});
