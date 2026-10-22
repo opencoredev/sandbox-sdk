@@ -71,7 +71,11 @@ export async function lookupSandbox(provider: Provider, id: string, timeoutMs: n
             throw error;
           }
         }
-        case "daytona": return call(await client("@daytonaio/sdk", "Daytona"), "get", id);
+        case "daytona": {
+          // Daytona.get also hydrates the toolbox URL. A missing toolbox is not a missing sandbox.
+          const daytona = await client("@daytonaio/sdk", "Daytona");
+          return member(await call(member(daytona, "sandboxApi"), "getSandbox", id), "data");
+        }
         case "boxd": return call(member(await client("@boxd-sh/sdk", "Boxd", {apiKey: process.env.BOXD_API_KEY}), "machines"), "get", id);
         case "freestyle": return call(member(await client("freestyle", "Freestyle", {apiKey: process.env.FREESTYLE_API_KEY}), "vms"), "get", id);
         case "boat": {

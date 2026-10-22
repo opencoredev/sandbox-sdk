@@ -73,10 +73,10 @@ it("an empty metadata listing cannot establish absence of a live memory sandbox"
 });
 it.each(["e2b", "daytona", "boxd", "freestyle", "boat"])("uses only %s's read-only native exact get", async name => {
  vi.stubEnv(`${name.toUpperCase()}_API_KEY`, "offline");
- native.get.mockResolvedValue(name === "boat" ? {sandbox: {id: "target", state: "deleted"}} : {id: "target", state: "deleted"});
+ native.get.mockResolvedValue(name === "boat" ? {sandbox: {id: "target", state: "deleted"}} : name === "daytona" ? {data: {id: "target", state: "deleted"}} : {id: "target", state: "deleted"});
  vi.mocked(nativeModules.load).mockResolvedValue({
   Sandbox: {getInfo: native.get},
-  Daytona: class {get = native.get;},
+  Daytona: class {sandboxApi = {getSandbox: native.get};},
   Boxd: class {machines = {get: native.get};},
   Freestyle: class {vms = {get: native.get};},
   Configuration: class {}, BoatApi: class {get = native.get;},
@@ -101,4 +101,31 @@ it("loads all eight installed native SDKs with Bun's import conditions and no ne
  const output = spawnSync("bun", ["-e", source], {encoding: "utf8", timeout: 10000});
  expect(output.status, output.stderr).toBe(0);
  expect(output.stdout.trim().split("\n")).toHaveLength(8);
+});
+
+it("uses the installed Daytona sandbox API without toolbox hydration", () => {
+ const moduleURL = new URL("../src/existence.ts", import.meta.url).href;
+ const source = `import assert from "node:assert/strict";
+ globalThis.fetch=async()=>{throw new Error("Network forbidden")};
+ const {lookupSandbox,nativeModules}=await import(${JSON.stringify(moduleURL)});
+ const mod=await nativeModules.load("@daytonaio/sdk"), load=nativeModules.load;
+ let calls=[], status=200, returnedId="target";
+ class OfflineDaytona extends mod.Daytona {
+  constructor(){super({apiKey:"offline",otelEnabled:false}); this.sandboxApi={
+   getSandbox:async(id)=>{calls.push(id); if(status!==200) throw Object.assign(new Error("sandbox response"),{response:{status}}); return {data:{id:returnedId,state:"started"}};},
+   getToolboxProxyUrl:async()=>{throw Object.assign(new Error("toolbox missing"),{response:{status:404}});}
+  };}
+ }
+ nativeModules.load=async name=>name==="@daytonaio/sdk"?{...mod,Daytona:OfflineDaytona}:load(name);
+ process.env.DAYTONA_API_KEY="offline";
+ const provider={name:"daytona"};
+ assert.equal((await lookupSandbox(provider,"target",1000)).result,"present");
+ assert.deepEqual(calls,["target"]);
+ for(const [http,result] of [[404,"not-found"],[401,"unavailable"],[403,"unavailable"],[500,"unavailable"]]){
+  status=http; assert.equal((await lookupSandbox(provider,"target",1000)).result,result);
+ }
+ status=200; returnedId="foreign";
+ assert.equal((await lookupSandbox(provider,"target",1000)).result,"unavailable");`;
+ const output = spawnSync("bun", ["-e", source], {encoding: "utf8", timeout: 10000});
+ expect(output.status, output.stderr).toBe(0);
 });
