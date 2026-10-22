@@ -1,6 +1,7 @@
 import type { Provider, SandboxInfo, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
+import { forgetSandbox } from "./keys.js";
 import { makeRun, quote, chunkRedactor, defaults } from "./run.js";
 import { makeFiles } from "./files.js";
 import { makeGit } from "./git.js";
@@ -52,7 +53,7 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
     preview: (port, options) => safe(() => processes.preview(port, options)),
     usage: () => safe(async () => ({ ...await provider.usage?.(info.id), createdAt: info.createdAt, runningMs: Date.now() - info.createdAt, commands, bytesOut })),
     async close() { if (closed || destroyed) return; try { await provider.close?.(info.id); files[Symbol.dispose](); closed = true; } catch (error) { throw redactor.error(error, provider.name, info.id); } },
-    async destroy() { if (destroyed) return; try { await provider.destroy(info.id); files[Symbol.dispose](); destroyed = true; if (options.key) await options.locator?.delete?.(options.key); } catch (error) { throw redactor.error(error, provider.name, info.id); } },
+    async destroy() { if (destroyed) return; try { forgetSandbox(provider, info.id); await provider.destroy(info.id); files[Symbol.dispose](); destroyed = true; if (options.key) await options.locator?.delete?.(options.key); } catch (error) { throw redactor.error(error, provider.name, info.id); } },
     async [Symbol.asyncDispose]() { if (options.key) await box.close(); else await box.destroy(); },
   };
   const { pause, resume, snapshot, terminal } = provider;
