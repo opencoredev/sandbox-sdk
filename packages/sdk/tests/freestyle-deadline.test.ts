@@ -107,7 +107,7 @@ test("an already-aborted operation makes no native request", async () => {
   expect(fetch).not.toHaveBeenCalled();
 });
 
-test("cold create validates allocation response and initializes with one private stdin exec", async () => {
+test.each(["running", "starting"])("cold create returns running after successful setup from a %s allocation without extra requests", async state => {
   const requests: { method?: string; path: string; body: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = new URL(url instanceof Request ? url.url : url).pathname;
@@ -116,7 +116,7 @@ test("cold create validates allocation response and initializes with one private
     if (path === "/v5/vms" && init?.method === "POST") {
       if (!body || typeof body !== "object" || !("metadata" in body)) throw new Error("Missing metadata");
       return Response.json({
-        id: "offline", state: "running", metadata: body.metadata,
+        id: "offline", state, metadata: body.metadata,
         resources: { cpu: 4, memory: 8192, storage: 32768 }, vpcs: [], networks: [],
         createdAt: "2026-10-21T00:00:00Z", updatedAt: "2026-10-21T00:00:00Z",
         idleTimeoutSeconds: -1, firewallRules: [], tlsRules: [],

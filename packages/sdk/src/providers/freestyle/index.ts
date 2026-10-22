@@ -283,7 +283,8 @@ for path,content in json.load(sys.stdin):
               throw failure("Guest setup failed", setup.statusCode === null ? "timeout" : "provider", id);
             if (input.signal?.aborted || operationSignal.getStore()?.aborted)
               throw failure("Creation aborted", "aborted");
-            return await info(data, true);
+            // Successful guest execution supersedes the allocation-time state.
+            return await info({ ...data, state: "running" }, true);
           } catch (error) {
             await operationSignal.exit(() => provider.destroy(id));
             throw error;
