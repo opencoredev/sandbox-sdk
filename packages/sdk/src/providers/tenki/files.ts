@@ -45,6 +45,25 @@ function file(value: unknown): FileInfo {
     throw failure("Invalid file type");
   return { path: value.path, type, size: value.size, modifiedAt: value.modifiedAt };
 }
+type NativeFile = Awaited<ReturnType<Session["fs"]["stat"]>>;
+// Go's os.ModeSymlink. Native list entries carry the mode but omit isSymlink.
+const symlinkMode = 1 << 27;
+function nativeInfo(path: string, value: NativeFile): FileInfo {
+  const seconds = value.modifiedUnixNs / 1_000_000_000n;
+  const nanos = value.modifiedUnixNs - seconds * 1_000_000_000n;
+  return {
+    path,
+    type:
+      value.isSymlink || value.mode & symlinkMode
+        ? "symlink"
+        : value.isDir
+          ? "directory"
+          : "file",
+    size: Number(value.size),
+    // Python's st_mtime is seconds + nanoseconds * 1e-9; match it exactly.
+    modifiedAt: (Number(seconds) + Number(nanos) * 1e-9) * 1000,
+  };
+}
 export function files(
   get: (id: string) => Promise<Session>,
   safe: <T>(id: string, action: () => Promise<T>) => Promise<T>,
@@ -104,6 +123,27 @@ export function files(
       throw error;
     }
   }
+  // Native metadata skips the guest Python start. It reports a missing path the
+  // same way the guest does; any other native error (path escapes, non-directories,
+  // timeouts) differs, so the guest transport answers instead.
+  const inspect = <T>(
+    id: string,
+    path: string,
+    action: (box: Session, resolved: string) => Promise<T>,
+    fallback: () => Promise<T>,
+  ) =>
+    safe(id, async () => {
+      const box = await get(id);
+      const resolved = nativePath(box, path);
+      if (!resolved) return fallback();
+      try {
+        return await deadline(() => action(box, resolved), 30_000);
+      } catch (error) {
+        if (tenkiError(error).code === "file_not_found")
+          throw failure("File does not exist", "file_not_found");
+        return fallback();
+      }
+    });
   return {
     writeCreatesParents: true,
     read: (id, path) =>
@@ -142,11 +182,26 @@ export function files(
         invalidateWorkspace(await get(id));
       }
     },
-    stat: async (id, path) => file(JSON.parse(await call(id, "stat", path))),
-    list: async (id, path) => {
-      const value: unknown = JSON.parse(await call(id, "list", path));
-      if (!Array.isArray(value)) throw failure("Invalid file listing");
-      return value.map(file);
-    },
+    stat: (id, path) =>
+      inspect(
+        id,
+        path,
+        async (box, resolved) => nativeInfo(path, await box.fs.stat(resolved)),
+        async () => file(JSON.parse(await call(id, "stat", path))),
+      ),
+    list: (id, path) =>
+      inspect(
+        id,
+        path,
+        async (box, resolved) =>
+          (await box.fs.list(resolved, { includeHidden: true })).map((entry) =>
+            nativeInfo(posix.join(path, posix.basename(entry.path)), entry),
+          ),
+        async () => {
+          const value: unknown = JSON.parse(await call(id, "list", path));
+          if (!Array.isArray(value)) throw failure("Invalid file listing");
+          return value.map(file);
+        },
+      ),
   };
 }

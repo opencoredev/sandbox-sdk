@@ -18,7 +18,11 @@ test("commands without stdin need no directory or empty-file upload", async () =
   expect(await box.run("true")).toMatchObject({ ok: true, exitCode: 0 });
   expect(mkdir).not.toHaveBeenCalled();
   expect(upload).not.toHaveBeenCalled();
+  // Small stdin rides inside the single buffered request.
   expect((await box.run("cat", { stdin: "exact input" })).stdout).toBe("exact input");
+  expect(upload).not.toHaveBeenCalled();
+  const large = "x".repeat(64 * 1024);
+  expect((await box.run("cat", { stdin: large })).stdout).toBe(large);
   expect(upload).toHaveBeenCalledTimes(1);
 });
 describe("Daytona mappings", () => {
@@ -276,9 +280,12 @@ describe("Daytona buffered native commands", () => {
     await new Promise(resolve => setTimeout(resolve, 350));
     expect(await box.files.exists("buffered-leak")).toBe(false); expect(await box.files.exists("buffered-abort")).toBe(false);
   });
-  test("stdin retains the session transport", async () => {
+  test("small stdin stays buffered; large stdin retains the session transport", async () => {
     const box = await createSandbox(bufferedFactory()); const session = vi.spyOn(box.native.process, "createSession");
-    expect((await box.run("cat", { stdin: "exact" })).stdout).toBe("exact"); expect(session).toHaveBeenCalledTimes(1);
+    expect((await box.run("cat", { stdin: "exact\u0000\n\uFEFF" })).stdout).toBe("exact\u0000\n\uFEFF"); expect(session).not.toHaveBeenCalled();
+    expect((await box.run("cat", { stdin: "" })).stdout).toBe(""); expect(session).not.toHaveBeenCalled();
+    const large = "y".repeat(64 * 1024);
+    expect((await box.run("cat", { stdin: large })).stdout).toBe(large); expect(session).toHaveBeenCalledTimes(1);
   });
   test("streaming requests keep sessions and cancellation before native launch prevents side effects", async () => {
     const box = await createSandbox(bufferedFactory());
