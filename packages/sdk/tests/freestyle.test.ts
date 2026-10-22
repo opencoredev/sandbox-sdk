@@ -94,9 +94,10 @@ describe("Freestyle official SDK contract", () => {
       await fresh.close();
       const native = freestyleState.boxes.get(box.id);
       expect(native?.guest.commands.join("\n")).not.toContain("freestyle-private-雪");
-      const specs = native?.guest.uploads.filter((v) => v.path.endsWith("sandbox-sdk-env.json"));
-      expect(specs?.length).toBeGreaterThan(0);
-      expect(specs?.every((v) => v.mode === 0o600)).toBe(true);
+      const { promises: fs } = await import("node:fs");
+      if (!native) throw new Error("Missing mock VM");
+      for (const path of ["/var/lib/sandbox-sdk.json", "/var/lib/sandbox-sdk-env.json", "/var/lib/sandbox-sdk-exec-v2.py"])
+        expect((await fs.stat(native.guest.rewrite(path))).mode & 0o777).toBe(0o600);
     } finally {
       await box.destroy();
     }
@@ -184,7 +185,7 @@ describe("Freestyle official SDK contract", () => {
     ] as const) {
       const result = freestyleError(Object.assign(new Error("secret-native-error"), { status }));
       expect(result.code).toBe(code);
-      expect(result.cause).toBeUndefined();
+      expect(result.cause).toMatchObject({ status });
       expect(String(result)).not.toContain("secret-native-error");
     }
   });
