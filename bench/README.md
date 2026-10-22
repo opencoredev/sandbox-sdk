@@ -216,7 +216,7 @@ Restores omit size overrides and inherit their snapshot's allocation. `restore-f
 
 ### SBX-53 collection windows
 
-The executable recommendations are in `src/collection-plan.sh` (also copied to `/tmp/swarm/core-commands.sh` for orchestration). Run from the repository root. After all adapter merges, build and verify the SDK, then export `BENCH_COLLECTION_COMMIT` as that complete immutable commit. Every invocation refuses a different checkout or uncommitted collection code. Both tracks and all windows must use the same pinned commit.
+The executable recommendations are in `src/collection-plan.sh` (also copied to `/tmp/swarm/core-commands.sh` for orchestration). Invoke the script by path from any working directory; it resolves the checkout root and writes absolute output paths under `bench/results`. Each run’s journal is `bench/results/RUN_ID/ownership.json`, including when invoked from the repository root. After all adapter merges, build and verify the SDK, then export `BENCH_COLLECTION_COMMIT` as that complete immutable commit. Every invocation refuses a different checkout or uncommitted collection code. Both tracks and all windows must use the same pinned commit.
 
 ```sh
 # Preview exact commands without credentials, provider calls or waits:

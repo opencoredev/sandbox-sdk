@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Run from the repository root. Recommendations only; no collection runs without an explicit mode.
+# Run this script by path from any working directory. Recommendations only; no collection runs without an explicit mode.
 # Pin BENCH_COLLECTION_COMMIT after ALL adapter merges and checks, then use that same SDK/harness
 # commit for every suite, window and track. Load credentials privately before invoking this script.
 set -euo pipefail
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# The fallback also supports the orchestration copy in /tmp/swarm when called from this repo.
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel)
+cd -- "$repo_root"
+results_root="$repo_root/bench/results"
 export DAYTONA_TARGET=us
 mode=${1:-help}
 dry=${BENCH_PLAN_DRY_RUN:-0}
@@ -36,10 +41,10 @@ non_boat() {
     flags=("${spec_flags[@]}")
   fi
   run_prefix=sbx53-${track}
-  run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 100 --workload-runs 30 --scenarios "$main" --bursts '' --timeout-ms 180000 --max-sandboxes 110 --run "${run_prefix}-main" --out "results/${run_prefix}-main"
-  run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 30 --scenarios snapshot --bursts '' --timeout-ms 600000 --max-sandboxes 70 --run "${run_prefix}-snapshot" --out "results/${run_prefix}-snapshot"
+  run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 100 --workload-runs 30 --scenarios "$main" --bursts '' --timeout-ms 180000 --max-sandboxes 110 --run "${run_prefix}-main" --out "$results_root/${run_prefix}-main"
+  run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 30 --scenarios snapshot --bursts '' --timeout-ms 600000 --max-sandboxes 70 --run "${run_prefix}-snapshot" --out "$results_root/${run_prefix}-snapshot"
   # Do not raise account caps simply to fill a table. Inspect skip notes and document actual limits.
-  run bun bench --providers "$providers" "${flags[@]}" --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "results/${run_prefix}-burst"
+  run bun bench --providers "$providers" "${flags[@]}" --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
 }
 boat_batch() {
   local track=$1 suite=$2 batch=$3 scenarios=$main run_id=sbx53-${1}-boat-${2}-${3}
@@ -47,7 +52,7 @@ boat_batch() {
   if [[ $suite == main && $batch -gt 3 ]]; then scenarios=$lifecycle; fi
   if [[ $suite == snapshot ]]; then scenarios=snapshot; args+=(--timeout-ms 600000); fi
   if [[ $suite == burst ]]; then scenarios=burst; args+=(--runs 1 --bursts 10 --burst-cohorts 1 --concurrency 10); fi
-  run bun bench "${args[@]}" --scenarios "$scenarios" --run "$run_id" --out "results/$run_id"
+  run bun bench "${args[@]}" --scenarios "$scenarios" --run "$run_id" --out "$results_root/$run_id"
   wait_batch
 }
 boat_window() {
@@ -71,6 +76,7 @@ case $mode in
   boat-same-spec-2) boat_window same-spec 2 ;;
   policy) run bun -e 'import {collectionPolicy} from "./bench/src/collection-policy.ts"; console.log(JSON.stringify(collectionPolicy(), null, 2))' ;;
   help) cat <<'HELP'
+Results and ownership.json journals are under REPOSITORY/bench/results/RUN_ID.
 Non-Boat: run default-nonboat and same-spec-nonboat after pinning the final commit.
 Boat requires an otherwise idle account (12 starts/minute, 60/hour, 200/day):
  Day 1: boat-default-0 (60 starts), then boat-default-1 (60), then boat-default-2 (40).

@@ -1,11 +1,15 @@
 import {expect, it} from "vitest";
 import {readFileSync} from "node:fs";
+import {fileURLToPath} from "node:url";
+import {tmpdir} from "node:os";
+import {resolve} from "node:path";
 import {spawnSync} from "node:child_process";
 import {metricDefs} from "../src/site-data.js";
 import {collectionPolicy} from "../src/collection-policy.js";
 const script = readFileSync(new URL("../src/collection-plan.sh", import.meta.url), "utf8");
-function plan(mode: string) {
-  const result = spawnSync("bash", ["-c", script, "plan", mode], {encoding: "utf8", env: {...process.env, BENCH_PLAN_DRY_RUN: "1"}, timeout: 5000});
+const scriptPath = fileURLToPath(new URL("../src/collection-plan.sh", import.meta.url));
+function plan(mode: string, cwd?: string) {
+  const result = spawnSync("bash", [scriptPath, mode], {cwd, encoding: "utf8", env: {...process.env, BENCH_PLAN_DRY_RUN: "1"}, timeout: 5000});
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.replaceAll("\\,", ",");
 }
@@ -46,4 +50,18 @@ it("keeps Boat windows below verified quotas and documents impossible K25", () =
   const help = plan("help"); expect(help).toContain("26 hours"); expect(help).toContain("65 minutes");
   expect(collectionPolicy().notRun).toContainEqual(expect.objectContaining({provider: "boat", track: "default", scenario: "burst-25/*"}));
   expect(collectionPolicy().notRun).toContainEqual(expect.objectContaining({provider: "superserve", track: "same-spec", scenario: "cold"}));
+});
+
+
+it("keeps collection outputs and policy imports stable from root, bench and outside the repository", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
+  const expected = plan("default-nonboat", root);
+  for (const cwd of [resolve(root, "bench"), tmpdir()]) {
+    expect(plan("default-nonboat", cwd)).toBe(expected);
+    expect(plan("same-spec-nonboat", cwd)).toBe(plan("same-spec-nonboat", root));
+    expect(plan("boat-default-0", cwd)).toBe(plan("boat-default-0", root));
+    expect(plan("policy", cwd)).toBe(plan("policy", root));
+  }
+  expect(expected).toContain(`--out ${root}/bench/results/sbx53-default-main`);
+  expect(plan("help", tmpdir())).toContain("ownership.json");
 });
