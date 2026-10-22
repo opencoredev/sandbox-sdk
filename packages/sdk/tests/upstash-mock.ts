@@ -8,6 +8,7 @@ import type {
   Box,
   BoxConfig,
   BoxData,
+  BoxSize,
   ExecSessionHandle,
   ExecSessionOptions,
   FileStat,
@@ -17,18 +18,21 @@ export const state = {
   boxes: new Map<string, MockBox>(),
   creates: [] as BoxConfig[],
   snapshots: new Map<string, string>(),
+  snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
   envWrites: [] as { path: string; mode: number; directoryMode: number }[],
 };
 export class MockBox {
   readonly id = crypto.randomUUID();
   readonly data: BoxData;
+  readonly size: BoxSize;
   readonly children = new Set<number>();
   private constructor(
     readonly root: string,
     readonly params: BoxConfig,
     readonly port: number,
   ) {
+    this.size = params.size ?? "small";
     this.data = {
       id: this.id,
       status: "running",
@@ -254,7 +258,7 @@ export class MockBox {
     this.data.status = "running";
     if (paused && this.params.initCommand) await this.exec.command(this.params.initCommand);
   }
-  async snapshot() {
+  async snapshot(options?: { name: string }) {
     const id = crypto.randomUUID();
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-upstash-snapshot-"));
     await fs.cp(this.root, root, {
@@ -262,7 +266,9 @@ export class MockBox {
       filter: async (path) => !(await fs.lstat(path)).isFIFO(),
     });
     state.snapshots.set(id, root);
-    return { id };
+    const snapshot = { id, name: options?.name ?? "native-snapshot", box_id: this.id };
+    state.snapshotMetadata.set(id, snapshot);
+    return snapshot;
   }
   async terminate() {
     const path = this.map("/tmp/.sandbox-sdk/procs");
@@ -287,6 +293,7 @@ export async function cleanup() {
   for (const box of state.boxes.values()) await box.delete();
   for (const root of state.snapshots.values()) await fs.rm(root, { recursive: true, force: true });
   state.snapshots.clear();
+  state.snapshotMetadata.clear();
   state.creates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
