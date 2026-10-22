@@ -16,6 +16,7 @@ import type {
 const missing = () => Object.assign(new Error("missing"), { name: "SessionNotFoundError" });
 const configs: ClientOptions[] = [];
 const creates: CreateOptions[] = [];
+const streamFailures: { phase: "before-start" | "after-input"; error: Error }[] = [];
 export const tenkiState = {
   configs,
   creates,
@@ -25,6 +26,8 @@ export const tenkiState = {
   delayMs: 0,
   retainedPeakBytes: 0,
   streaming: true,
+  streamAttempts: 0,
+  streamFailures,
 };
 export class MockSession {
   readonly id = crypto.randomUUID();
@@ -191,9 +194,22 @@ export class MockSession {
     type Requests = Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0];
     return async () => ({ run: (requests: Requests) => this.frames(requests) });
   }
+  async reauthOnUnauthenticated(_error: unknown) {
+    return false;
+  }
+  dataPlaneProvisioningPending(_plane: unknown) {
+    return true;
+  }
+  async refreshHintedDataPlane(_plane: unknown) {
+    return true;
+  }
+  markDataPlaneServing(_plane: unknown) {}
   private async *frames(
     requests: Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0],
   ) {
+    tenkiState.streamAttempts++;
+    const failure = tenkiState.streamFailures.shift();
+    if (failure?.phase === "before-start") throw failure.error;
     const iterator = requests[Symbol.asyncIterator]();
     const first = await iterator.next();
     if (first.done) throw new Error("Missing start");
@@ -213,6 +229,7 @@ export class MockSession {
     );
     child.stdin.on("error", () => {});
     child.stderr.resume();
+    yield { frame: { payload: { case: "started", value: { pid: BigInt(child.pid ?? 0) } } } };
     const next = await iterator.next();
     if (next.done) throw new Error("Missing input");
     const input = next.value.frame?.payload;
@@ -236,6 +253,10 @@ export class MockSession {
     );
     child.stdin.end(JSON.stringify(mapped));
     await iterator.next();
+    if (failure?.phase === "after-input") {
+      child.stdout.resume();
+      throw failure.error;
+    }
     for await (const chunk of child.stdout) {
       const bytes = Buffer.from(chunk);
       yield { frame: { payload: { case: "stdout", value: bytes } } };
@@ -307,4 +328,6 @@ export async function cleanupTenki() {
   tenkiState.delayMs = 0;
   tenkiState.retainedPeakBytes = 0;
   tenkiState.streaming = true;
+  tenkiState.streamAttempts = 0;
+  tenkiState.streamFailures.length = 0;
 }

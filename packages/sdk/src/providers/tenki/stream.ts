@@ -58,6 +58,7 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
   const transport = new AbortController();
   let result: ExecResult | undefined;
   let exited = false;
+  let mayHaveLaunched = false;
   const decoders = {
     stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
     stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
@@ -89,61 +90,116 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
     } else throw failure("Invalid command output record");
   }
   const completion = (async () => {
-    const plane = await box.requireDataPlane(false);
-    type Request = Parameters<typeof plane.run>[0] extends AsyncIterable<infer T> ? T : never;
-    async function* requests() {
-      yield {
-        frame: {
-          payload: {
-            case: "start",
-            value: {
-              sessionId: box.id,
-              cmd: ["python3", "-c", supervisor],
-              privileged: true,
-              streamStdin: true,
+    type Plane = Awaited<ReturnType<Session["requireDataPlane"]>>;
+    type Request = Parameters<Plane["run"]>[0] extends AsyncIterable<infer T> ? T : never;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const attemptTransport = new AbortController();
+      const signal = AbortSignal.any([transport.signal, attemptTransport.signal]);
+      let plane: Plane | undefined;
+      let started = () => {};
+      const ready = new Promise<void>((resolve) => {
+        started = resolve;
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      async function* requests() {
+        signal.throwIfAborted();
+        yield {
+          frame: {
+            payload: {
+              case: "start",
+              value: {
+                sessionId: box.id,
+                cmd: ["python3", "-c", supervisor],
+                privileged: true,
+                streamStdin: true,
+              },
             },
           },
-        },
-      } satisfies Request;
-      yield { frame: { payload: { case: "stdin", value: spec } } } satisfies Request;
-      yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies Request;
-      // Keep the request side open until the guest exits, as Session.run does.
-      await new Promise<void>((resolve) => {
-        if (transport.signal.aborted) resolve();
-        else transport.signal.addEventListener("abort", () => resolve(), { once: true });
-      });
-    }
-    for await (const response of plane.run(requests(), { signal: transport.signal })) {
-      const frame = response.frame?.payload;
-      if (!frame) continue;
-      if (frame.case === "stdout") {
-        // Process each frame immediately; only a single partial JSON record survives.
-        pending += decoder.decode(frame.value, { stream: true });
-        let end: number;
-        while ((end = pending.indexOf("\n")) !== -1) {
-          record(pending.slice(0, end));
-          pending = pending.slice(end + 1);
+        } satisfies Request;
+        // The supervisor cannot launch user code without this JSON input.
+        // Withhold it until started, making establishment failures safe to retry.
+        await ready;
+        signal.throwIfAborted();
+        mayHaveLaunched = true;
+        yield { frame: { payload: { case: "stdin", value: spec } } } satisfies Request;
+        yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies Request;
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+      try {
+        signal.throwIfAborted();
+        plane = await box.requireDataPlane(false);
+        signal.throwIfAborted();
+        for await (const response of plane.run(requests(), { signal })) {
+          const frame = response.frame?.payload;
+          if (!frame) continue;
+          if (frame.case === "started") {
+            box.markDataPlaneServing(plane);
+            started();
+          } else if (frame.case === "stdout") {
+            pending += decoder.decode(frame.value, { stream: true });
+            let end: number;
+            while ((end = pending.indexOf("\n")) !== -1) {
+              record(pending.slice(0, end));
+              pending = pending.slice(end + 1);
+            }
+            if (pending.length > 24000) throw failure("Oversized command output record");
+          } else if (frame.case === "exit") {
+            if (frame.value.exitCode !== 0 || !result || pending)
+              throw failure("Command supervisor failed");
+            exited = true;
+            for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
+              const text = decoders[stream].decode();
+              if (text) input.onChunk({ stream, text });
+            }
+            return result;
+          }
         }
-        if (pending.length > 24000) throw failure("Oversized command output record");
-      } else if (frame.case === "exit") {
-        if (frame.value.exitCode !== 0 || !result || pending)
-          throw failure("Command supervisor failed");
-        exited = true;
-        for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
-          const text = decoders[stream].decode();
-          if (text) input.onChunk({ stream, text });
+        throw failure("Command stream closed before exit");
+      } catch (error) {
+        attemptTransport.abort();
+        if (mayHaveLaunched || transport.signal.aborted) throw error;
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        const message = error instanceof Error ? error.message : "";
+        const auth = code === 16 || tenkiError(error).code === "auth";
+        if (auth) {
+          if (attempt === 0 && (await box.reauthOnUnauthenticated(error))) continue;
+          throw failure("Command authorization rejected before launch", "auth");
         }
-        return result;
+        const provisioning =
+          code === 5 &&
+          /\bsession not found\b/i.test(message) &&
+          plane !== undefined &&
+          box.dataPlaneProvisioningPending(plane);
+        const transient =
+          code === 14 ||
+          (code === 12 && /\b404\b/.test(message)) ||
+          ((code === 10 || code === 13) &&
+            /REFUSED_STREAM|GOAWAY|ECONNRESET|connection reset|socket hang up|unexpected EOF|stream closed before headers/i.test(
+              message,
+            ));
+        if (provisioning || transient) {
+          if (attempt === 0) {
+            if (provisioning && plane) await box.refreshHintedDataPlane(plane);
+            continue;
+          }
+          throw failure("Command transport rejected before launch", "unavailable");
+        }
+        throw error;
+      } finally {
+        attemptTransport.abort();
       }
     }
-    throw failure("Command stream closed before exit");
+    throw failure("Command recovery exhausted", "unavailable");
   })();
   void completion.catch(() => {});
   try {
     // Give the guest its full command budget; the outer deadline also bounds transport setup.
     return await deadline(() => completion, input.timeoutMs + 1000, input.signal);
   } catch (error) {
-    if (!exited) {
+    if (mayHaveLaunched && !exited) {
       try {
         await raw(
           box,
