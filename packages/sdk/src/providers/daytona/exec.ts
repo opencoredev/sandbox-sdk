@@ -1,6 +1,7 @@
 import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
 import { daytonaError } from "./errors.js";
+import { bufferedExecute } from "./buffered.js";
 import { SandboxError } from "../../errors.js";
 
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
@@ -153,7 +154,8 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
 }
 
-export async function execute(box: Sandbox, input: ExecInput): Promise<ExecResult> {
+export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }): Promise<ExecResult> {
+  if (input.streaming === false && input.stdin === undefined) return bufferedExecute(box, input);
   const process = await sessionProcess(box, input, input.timeoutMs);
   const result = await process.wait();
   return { exitCode: result.exitCode, timedOut: result.signal === "SIGKILL" };

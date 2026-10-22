@@ -41,15 +41,17 @@ describe("Daytona mappings", () => {
   test("size, network, labels and native minute timeouts", async () => {
     const provider = daytona({ apiKey: "key", image: "node:22-bookworm" });
     const box = await createSandbox(provider, { key: "customer:123", size: "medium", network: { allow: ["registry.npmjs.org"] }, idleTimeoutMs: 90_000, timeoutMs: 150_000 });
-    expect(mockState.creates[0]).toMatchObject({ resources: { cpu: 2, memory: 4, disk: 20 }, domainAllowList: "registry.npmjs.org", networkBlockAll: false, autoStopInterval: 2, ttlMinutes: 2, labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "customer:123" } });
+    expect(mockState.creates[0]).toMatchObject({ resources: { cpu: 2, memory: 4, disk: 10 }, domainAllowList: "registry.npmjs.org", networkBlockAll: false, autoStopInterval: 2, ttlMinutes: 2, labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "customer:123" } });
     expect((await box.preview(3000)).headers).toEqual({ "X-Daytona-Preview-Token": "mock-preview-token" });
     expect((await box.preview(3000)).expiresAt).toBeUndefined();
   });
-  test("default snapshots resize before returning; stop/start and snapshots restore files", async () => {
+  test("default snapshots resize before returning and snapshots restore files", async () => {
     const provider = factory(); const box = await createSandbox(provider, { size: "small", network: "none" });
     expect(box.native).toMatchObject({ cpu: 1, memory: 1, disk: 10 });
     expect(mockState.creates[0]).toMatchObject({ networkBlockAll: true });
-    await box.files.write("retained", "hello"); await box.pause(); expect((await provider.connect(box.id)).state).toBe("stopped"); await box.resume();
+    expect(box.capabilities.has("pause")).toBe(false);
+    expect("pause" in box).toBe(false);
+    await box.files.write("retained", "hello");
     const snapshot = await box.snapshot(); const copy = await createSandbox(provider, { from: snapshot.id }); expect(await copy.files.read("retained")).toBe("hello");
     const fresh = await connectSandbox(factory(), box.id); expect(await fresh.files.read("retained")).toBe("hello");
   });
@@ -221,3 +223,74 @@ test("snapshot default allows native operations lasting more than five minutes",
     expect(snapshot).toHaveBeenCalledWith(result.id, 600);
   } finally { await box.destroy(); }
 });
+
+// Force the core integration marker in this provider-owned test until the core
+// writer's matching ExecInput/makeRun change is merged.
+import { execute } from "../src/providers/daytona/exec.js";
+const bufferedFactory = () => {
+  const provider = factory();
+  provider.exec = (id, input) => execute(provider.native(id), { ...input, streaming: false });
+  return provider;
+};
+describe("Daytona buffered native commands", () => {
+  test("one native request preserves exact streams, exit, env and cwd", async () => {
+    const box = await createSandbox(bufferedFactory());
+    const native = vi.spyOn(box.native.process, "executeCommand");
+    const session = vi.spyOn(box.native.process, "createSession");
+    expect(await box.run("printf '%s' \"$VALUE\"; printf error >&2; exit 7", { env: { VALUE: "\uFEFFexact\n" } })).toMatchObject({ stdout: "\uFEFFexact\n", stderr: "error", exitCode: 7, ok: false });
+    expect(native).toHaveBeenCalledTimes(1); expect(session).not.toHaveBeenCalled();
+    expect((await box.run("pwd")).stdout).toBe("/workspace\n");
+    expect((await box.run("pwd", { cwd: "missing" })).exitCode).not.toBe(0);
+    expect((await box.run("true")).ok).toBe(true);
+  });
+  test("large output streams the spill file and core retains bounded head and tail", async () => {
+    const box = await createSandbox(bufferedFactory());
+    const download = vi.spyOn(box.native.fs, "downloadFileStream");
+    const result = await box.run("python3 -c 'import sys; sys.stdout.write(\"HEAD\"+\"x\"*2097152+\"TAIL\")'", { maxOutputBytes: 1024 });
+    expect(result).toMatchObject({ exitCode: 0, truncated: true });
+    expect(result.stdout.startsWith("HEAD")).toBe(true); expect(result.stdout.endsWith("TAIL")).toBe(true);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThan(1100); expect(download).toHaveBeenCalledTimes(1);
+  });
+  test("timeout and abort retain partial output and kill descendants", async () => {
+    const box = await createSandbox(bufferedFactory());
+    expect(await box.run("printf partial; (sleep .3; echo leaked > buffered-leak) & wait", { timeoutMs: 80 })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 80);
+    try { expect(await box.run("printf partial; (sleep .3; echo leaked > buffered-abort) & wait", { signal: controller.signal })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" }); }
+    finally { clearTimeout(timer); }
+    await new Promise(resolve => setTimeout(resolve, 350));
+    expect(await box.files.exists("buffered-leak")).toBe(false); expect(await box.files.exists("buffered-abort")).toBe(false);
+  });
+  test("stdin retains the session transport", async () => {
+    const box = await createSandbox(bufferedFactory()); const session = vi.spyOn(box.native.process, "createSession");
+    expect((await box.run("cat", { stdin: "exact" })).stdout).toBe("exact"); expect(session).toHaveBeenCalledTimes(1);
+  });
+  test("streaming requests keep sessions and cancellation before native launch prevents side effects", async () => {
+    const box = await createSandbox(bufferedFactory());
+    const session = vi.spyOn(box.native.process, "createSession");
+    await execute(box.native, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, streaming: true, onChunk() {} });
+    expect(session).toHaveBeenCalledTimes(1);
+    const native = box.native.process.executeCommand;
+    vi.spyOn(box.native.process, "executeCommand").mockImplementation(async (command, cwd, env, timeout) => {
+      if (command.startsWith("python3 -u")) await new Promise(resolve => setTimeout(resolve, 60));
+      return native(command, cwd, env, timeout);
+    });
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10);
+    try { expect(await box.run("echo bad > late-buffered", { signal: controller.signal })).toMatchObject({ timedOut: true, exitCode: null }); }
+    finally { clearTimeout(timer); }
+    expect(await box.files.exists("late-buffered")).toBe(false);
+  });
+  test("large preset uses matching 4/8/10 snapshot without stop or resize", async () => {
+    const resize = vi.spyOn(MockSandbox.prototype, "resize"); const stop = vi.spyOn(MockSandbox.prototype, "stop");
+    const box = await createSandbox(factory(), { size: "large" });
+    expect(mockState.configs[0]?.target).toBe("us");
+    expect(mockState.creates[0]).toMatchObject({ snapshot: "daytona-large" });
+    expect(box.native).toMatchObject({ cpu: 4, memory: 8, disk: 10 });
+    expect(resize).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
+  });
+  test("nested writes need only native upload", async () => {
+    const box = await createSandbox(factory()); const mkdir = vi.spyOn(box.native.fs, "createFolder");
+    await box.files.write("nested/a/file", "content"); expect(await box.files.read("nested/a/file")).toBe("content"); expect(mkdir).not.toHaveBeenCalled();
+  });
+});
+

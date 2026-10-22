@@ -2,7 +2,7 @@
  * Session launch, streaming, PID/group cancellation and durable wrappers are real;
  * only Daytona's control plane is replaced. No cloud calls or credentials.
  */
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { createServer } from "node:net";
@@ -29,8 +29,9 @@ export class MockSandbox {
     const box = new MockSandbox(await fs.mkdtemp(join(tmpdir(), "sdk-daytona-")), params, address.port);
     if ("resources" in params) Object.assign(box, params.resources);
     if ("snapshot" in params && params.snapshot) {
-      const root = mockState.snapshots.get(params.snapshot); if (!root) throw missing();
-      await fs.cp(root, box.root, { recursive: true });
+      if (params.snapshot === "daytona-large") Object.assign(box, { cpu: 4, memory: 8, disk: 10 });
+      else { const root = mockState.snapshots.get(params.snapshot); if (!root) throw missing();
+      await fs.cp(root, box.root, { recursive: true }); }
     }
     mockState.boxes.set(box.id, box); return box;
   }
@@ -42,15 +43,16 @@ export class MockSandbox {
   };
   fs = {
     downloadFile: async (path: string) => { try { return await fs.readFile(this.mapped(path)); } catch { throw missing(); } },
-    uploadFile: async (data: Buffer | string, path: string) => { await fs.writeFile(this.mapped(path), typeof data === "string" ? await fs.readFile(data) : data); },
+    downloadFileStream: async (path: string) => createReadStream(this.mapped(path)),
+    uploadFile: async (data: Buffer | string, path: string) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), typeof data === "string" ? await fs.readFile(data) : data); },
     createFolder: async (path: string, _mode: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
     getFileDetails: (path: string) => this.file(path),
     listFiles: async (path: string) => { try { return await Promise.all((await fs.readdir(this.mapped(path))).map(name => this.file(posix.join(path, name)))); } catch { throw missing(); } },
     deleteFile: async (path: string, recursive = false) => { try { await fs.rm(this.mapped(path), { recursive }); } catch { throw missing(); } },
-  } satisfies Pick<Sandbox["fs"], "uploadFile" | "createFolder" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
+  } satisfies Pick<Sandbox["fs"], "downloadFileStream" | "uploadFile" | "createFolder" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
   private run(command: string, cwd = "/", env: Record<string, string> = {}) {
     const chunks: OutputChunk[] = []; const listeners: ((chunk: OutputChunk) => void)[] = [];
-    const child = spawn("sh", ["-c", this.rewrite(command)], { cwd: this.mapped(cwd), env: { ...process.env, ...this.params.envVars, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("sh", ["-c", this.rewrite(command)], { cwd: this.mapped(cwd), env: { ...process.env, ...this.params.envVars, ...Object.fromEntries(Object.entries(env).map(([key, value]) => [key, this.rewrite(value)])) }, stdio: ["ignore", "pipe", "pipe"] });
     const entry: Command = { chunks, listeners, pid: child.pid, done: Promise.resolve() };
     const emit = (stream: OutputChunk["stream"], data: Buffer) => { const chunk = { stream, text: data.toString().split(this.root).join("") }; chunks.push(chunk); for (const listener of listeners) listener(chunk); };
     child.stdout.on("data", data => emit("stdout", data)); child.stderr.on("data", data => emit("stderr", data));
