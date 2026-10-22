@@ -949,6 +949,7 @@ export async function runV2(
             : {
                 kind: cohort.length < k ? "skipped" : "failure",
                 note: `${success}/${k} ready; ${cohort.length} attempted (budgets may prevent admission)`,
+                ...(cohort.length === k ? {stage: `burst-${k}/all-ready`, elapsedMs: performance.now() - start} : {}),
               },
         phases: {},
         hostBefore: before,
