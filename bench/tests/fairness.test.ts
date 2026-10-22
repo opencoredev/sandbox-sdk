@@ -8,7 +8,7 @@ import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
 import { PhaseClock, firstByteAttempt, perfMetrics, filePayloads } from "../src/measurement.js";
 import { headroom, collectMetadata } from "../src/publication.js";
-import { markdownV2, htmlV2 } from "../src/v2-report.js";
+import { markdownV2, htmlV2, writeV2 } from "../src/v2-report.js";
 import * as snapshots from "../src/snapshots.js";
 const fingerprint = { cpuModel: "fixture", flags: [], nproc: 64, cpuMax: "200000 100000", quotaCpus: 2,
   memoryMax: "1073741824", memTotalBytes: 8 * 1024 ** 3, memoryBytes: 1024 ** 3, diskBytes: 10 * 1024 ** 3,
@@ -501,4 +501,31 @@ it("retains late restored native IDs and cleans them after the outer restore dea
   expect(restored).toMatchObject({sandboxId: restoreId, outcome: {kind: "failure", clockPhase: "adapter-create", lateSettlement: {settled: true, sandboxId: restoreId}}});
   expect(await backing.list({})).toEqual([]);
   expect(report.cleanup[0]?.remaining).toEqual([]);
+});
+
+it.each(["default", "same-spec"])("bounds derived perf failure elapsed time and publishes the other metrics (%s)", async track => {
+  const {mergeSources, readSource} = await import("../src/merge.js");
+  const {siteData} = await import("../src/site-data.js");
+  const provider = fake(); const exec = provider.exec;
+  provider.exec = async (id, input) => {
+    if (!input.command.includes("BENCH_PERF")) return exec(id, input);
+    input.onChunk({stream: "stdout", text: JSON.stringify({
+      metrics: Object.fromEntries(Object.keys(perfMetrics).filter(key => key !== "tcp-ms").map(key => [key, 7])),
+      notes: ["tcp-ms: timed out"], workers: 2, method: "offline partial probe",
+    })});
+    return {exitCode: 0, timedOut: false};
+  };
+  const report = await runV2([ready("boat", provider)], await config(["--track", track, "--scenarios", "perf", "--omit-network-download", "true"]), async () => {});
+  const parent = report.samples.find(s => s.scenario === "perf");
+  expect(parent?.outcome.kind).toBe("sample");
+  const failed = report.samples.find(s => s.scenario === "tcp-ms");
+  expect(failed?.outcome).toMatchObject({kind: "failure", elapsedMs: parent?.durationMs});
+  expect(failed).toMatchObject({startedAt: parent?.startedAt, finishedAt: parent?.finishedAt, durationMs: parent?.durationMs});
+  await writeV2(report, report.config.out);
+  const exported = siteData(mergeSources([await readSource(report.config.out)]), report.config.track);
+  for (const metric of Object.keys(perfMetrics).filter(key => !["tcp-ms", "network-mbps"].includes(key))) {
+    expect(report.samples.find(s => s.scenario === metric)?.outcome).toEqual({kind: "sample", value: 7});
+    expect(exported.metrics.find(m => m.scenario === metric)?.values[0]).toMatchObject({n: 1, p50: 7, failures: 0});
+  }
+  expect(exported.metrics.find(m => m.scenario === "tcp-ms")?.values[0]).toMatchObject({n: 0, p50: null, failures: 1});
 });

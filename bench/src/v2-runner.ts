@@ -500,7 +500,7 @@ export async function runV2(
         finishedAt: clock?.finishedAt ?? new Date().toISOString(),
         durationMs,
         sandboxId: box?.id ?? [...ids][0] ?? (outcome.kind === "failure" ? outcome.sandboxId ?? null : null),
-        outcome: outcome.kind === "failure" ? {...outcome, stage: outcome.stage ?? scenario, elapsedMs: outcome.elapsedMs ?? performance.now() - start} : outcome,
+        outcome: outcome.kind === "failure" ? {...outcome, stage: outcome.stage ?? scenario, elapsedMs: outcome.elapsedMs ?? durationMs} : outcome,
         phases: { ...phaseValues },
         hostBefore: before,
         hostAfter,
