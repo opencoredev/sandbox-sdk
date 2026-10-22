@@ -3,7 +3,8 @@ import type { Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
 import type { Provider, SandboxInfo } from "../../provider.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, superserveError } from "./errors.js";
-import { execute, supervisor, supervisorPath } from "./execute.js";
+import { execute } from "./execute.js";
+import { bootstrap } from "./bootstrap.js";
 export interface SuperserveOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -149,21 +150,19 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         boxes.set(box.id, box);
         try {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          // Disable provider auto-pause: it is not the SDK's hard lifetime limit.
-          await box.update({ timeoutSeconds: null });
-          await (
-            await guest(box.id)
-          ).raw(
-            "mkdir -p /workspace /tmp/.sandbox-sdk && (command -v python3 >/dev/null || (export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null)) && command -v python3 git tar nohup >/dev/null",
-          );
-          const g = await guest(box.id);
-          await g.upload(
-            "/var/lib/sandbox-sdk-env.json",
-            Buffer.from(JSON.stringify(input.env ?? {})),
-          );
-          await g.upload(supervisorPath, Buffer.from(supervisor));
+          // SDK 0.11.4 does not retain createdAt on Sandbox.create's result.
+          // Read authoritative metadata alongside the single guest setup call.
+          const [setup, details] = await Promise.allSettled([
+            bootstrap(box, { env: input.env ?? {}, timeoutMs: timeout, signal: input.signal }),
+            box.getInfo(),
+          ]);
+          if (setup.status === "rejected") throw setup.reason;
+          if (details.status === "rejected") throw details.reason;
+          // Fresh creates omit the timeout. Restores may inherit one from a snapshot.
+          if (details.value.timeoutSeconds !== undefined)
+            await box.update({ timeoutSeconds: null });
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          const result = info(await box.getInfo());
+          const result = info(details.value);
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           return result;
         } catch (error) {

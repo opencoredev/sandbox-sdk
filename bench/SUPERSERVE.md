@@ -59,6 +59,14 @@ The pinned rebuild preserves the original resources and installed software versi
 
 Node 22.23.4, npm 10.9.9, Python 3.11.2, git, tar, and nohup were present. `/dev/shm` was mode 1777 and `multiprocessing.Lock()` acquired and released successfully. The apt history timestamp remained at pinned-template build time. The full 141-package installed Debian inventory matched the original template exactly. All 15 live adapter conformance tests passed against the pinned template. The final native listing contained zero sandboxes; both templates remain ready. Use the pinned template name in report metadata and keep historical results separate.
 
+## Adapter setup reduction
+
+Creation combines tool checks, directory creation, environment JSON, and supervisor installation into one guest command. Caller environment values travel in the command API's environment payload, outside the command string and argv. The environment file is mode 0600. The authoritative metadata read runs alongside setup because native SDK 0.11.4 discards `createdAt` from its create result.
+
+The adapter no longer PATCHes an unset auto-pause timeout. Superserve's creation API documents that an omitted timeout leaves a fresh sandbox active until explicitly paused. A snapshot can inherit a configured timeout, so creation still clears one when the metadata read finds it. This preserves lifecycle behavior while removing an unnecessary request from normal fresh creates.
+
+Five serial samples against the pinned 1x1 template measured adapter `create()` → bare adapter `exec("true")`, matching the harness readiness path and excluding core SDK handle initialization. Before: 0.889, 0.711, 0.666, 0.621, 0.614 seconds (median **0.666 seconds**). After combining setup: 0.707, 0.484, 0.455, 0.472, 0.461 seconds (median **0.472 seconds**). Unlike the earlier native-`true` checks, this path includes the adapter command supervisor. These are small smoke series, not published distributions. Live conformance passed 15/15 after the setup reduction.
+
 ## Collection
 
 Run SDK live conformance from `packages/sdk` with `timeout 1200 bunx vitest run tests/superserve.live.test.ts --maxWorkers=1`, with `SANDBOX_SUPERSERVE_LIVE=1`, `SANDBOX_SUPERSERVE_TEMPLATE=sandbox-bench-node22-py311-1x1-pinned`, and the key in that subprocess environment. List native sandboxes afterward and delete only run-owned leftovers.
