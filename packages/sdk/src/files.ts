@@ -39,15 +39,19 @@ export async function initializeFiles({ provider, id, secretNames }: { provider:
     "set -e",
     `mkdir -p ${sdk}/marks`,
     `[ -d ${gitDir} ] || git init -q --bare ${gitDir}`,
-    `export GIT_DIR=${gitDir} GIT_WORK_TREE=/workspace GIT_INDEX_FILE=${gitDir}/sdk.index`,
+    // A separate index, so a killed attempt can't leave a lock that blocks the per-call fallback.
+    `export GIT_DIR=${gitDir} GIT_WORK_TREE=/workspace GIT_INDEX_FILE=${gitDir}/start.index`,
     "git read-tree --empty",
     // Same file set as tree(): skip .git entries so nested repositories stay plain files.
-    `find . -mindepth 1 \\( -name .git${(provider.files.internal ?? []).map(name => ` -o -path ${quote(`./${name}`)}`).join("")} \\) -prune -o ! -type d -print0 | git update-index --add --remove -z --stdin`,
+    // List to a file first: in a pipeline, sh would ignore a failed find and record a partial tree.
+    `find . -mindepth 1 \\( -name .git${(provider.files.internal ?? []).map(name => ` -o -path ${quote(`./${name}`)}`).join("")} \\) -prune -o ! -type d -print0 > ${sdk}/start.list`,
+    `git update-index --add --remove -z --stdin < ${sdk}/start.list`,
+    `rm -f ${sdk}/start.list`,
     "tree=$(git write-tree)",
     `printf %s "$tree" > ${sdk}/marks/${encodeURIComponent("start")}.json`,
     `printf %s ${quote(secretNames)} > ${sdk}/secret-names.json`,
   ].join("\n");
-  const result = await provider.exec(id, { command: script, cwd: "/workspace", env: defaults, timeoutMs: 30_000, streaming: false, onChunk() {} });
+  const result = await provider.exec(id, { command: script, cwd: "/workspace", env: defaults, timeoutMs: 120_000, streaming: false, onChunk() {} });
   return result.exitCode === 0;
 }
 export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}): Files & Disposable {
