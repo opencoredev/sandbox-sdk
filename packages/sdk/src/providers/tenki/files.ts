@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { Session } from "@tenkicloud/sandbox";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
@@ -47,6 +48,8 @@ function file(value: unknown): FileInfo {
 export function files(
   get: (id: string) => Promise<Session>,
   safe: <T>(id: string, action: () => Promise<T>) => Promise<T>,
+  workspaceRoot: (box: Session) => string | undefined,
+  invalidateWorkspace: (box: Session) => void,
 ): ProviderFiles {
   const call = (id: string, op: string, path: string, data?: Uint8Array, recursive?: boolean) =>
     safe(id, async () => {
@@ -64,16 +67,16 @@ export function files(
         );
       return result;
     });
-  async function nativePath(id: string, path: string) {
-    if (path === "/workspace" || path.startsWith("/workspace/")) {
-      // Tenki uses RESOLVE_BENEATH: even a link leaving and re-entering
-      // /home/tenki is rejected. Resolve the caller's current root in the guest.
-      const root = (await raw(await get(id), ["readlink", "-f", "/workspace"])).replace(/\n$/, "");
-      return root === "/home/tenki" || root.startsWith("/home/tenki/")
-        ? `${root}${path.slice(10)}`
-        : undefined;
+  function nativePath(box: Session, path: string) {
+    const normalized = posix.normalize(path);
+    if (path !== normalized) return undefined;
+    if (normalized === "/workspace" || normalized.startsWith("/workspace/")) {
+      const root = workspaceRoot(box);
+      if (!root) return undefined;
+      const resolved = posix.join(root, normalized.slice(10));
+      return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
     }
-    return path.startsWith("/home/tenki/") ? path : undefined;
+    return normalized.startsWith("/home/tenki/") ? normalized : undefined;
   }
   async function transfer<T>(
     operation: "read" | "write",
@@ -105,7 +108,7 @@ export function files(
     writeCreatesParents: true,
     read: (id, path) =>
       safe(id, async () => {
-        const resolved = await nativePath(id, path);
+        const resolved = nativePath(await get(id), path);
         const fallback = async () =>
           new Uint8Array(Buffer.from(await call(id, "read", path), "base64"));
         return resolved
@@ -114,7 +117,7 @@ export function files(
       }),
     write: (id, path, data) =>
       safe(id, async () => {
-        const resolved = await nativePath(id, path);
+        const resolved = nativePath(await get(id), path);
         const fallback = async () => {
           await call(id, "write", path, data);
         };
@@ -123,10 +126,21 @@ export function files(
         else await fallback();
       }),
     mkdir: async (id, path) => {
-      await call(id, "mkdir", path);
+      if (["/", "/workspace"].includes(posix.normalize(path))) invalidateWorkspace(await get(id));
+      try {
+        await call(id, "mkdir", path);
+      } finally {
+        if (["/", "/workspace"].includes(posix.normalize(path))) invalidateWorkspace(await get(id));
+      }
     },
     remove: async (id, path, options) => {
-      await call(id, "remove", path, undefined, options.recursive);
+      // Any removed symlink may be part of the workspace resolution chain.
+      invalidateWorkspace(await get(id));
+      try {
+        await call(id, "remove", path, undefined, options.recursive);
+      } finally {
+        invalidateWorkspace(await get(id));
+      }
     },
     stat: async (id, path) => file(JSON.parse(await call(id, "stat", path))),
     list: async (id, path) => {

@@ -16,8 +16,9 @@ import type {
 const missing = () => Object.assign(new Error("missing"), { name: "SessionNotFoundError" });
 const configs: ClientOptions[] = [];
 const creates: CreateOptions[] = [];
+const streamExitWaits: (() => Promise<void>)[] = [];
 const streamFailures: {
-  phase: "before-start" | "before-response" | "after-input";
+  phase: "before-start" | "before-response" | "after-input" | "after-output";
   error: Error;
 }[] = [];
 export const tenkiState = {
@@ -31,6 +32,7 @@ export const tenkiState = {
   streaming: true,
   streamAttempts: 0,
   streamFailures,
+  streamExitWaits,
 };
 export class MockSession {
   readonly id = crypto.randomUUID();
@@ -90,6 +92,19 @@ export class MockSession {
       args[2] = args[2].replace(
         "base64.b64encode(data)",
         `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
+      );
+    if (supervised && args[2])
+      args[2] = args[2].replace(
+        "os.path.realpath(v['workspace'])",
+        `os.path.realpath(v['workspace']).removeprefix(${JSON.stringify(this.root)})`,
+      );
+    if (supervised && args[2])
+      args[2] = args[2].replace(
+        "if not e.name.isdecimal(): continue",
+        `if not e.name.isdecimal(): continue
+  try:
+   if not os.readlink('/proc/'+e.name+'/cwd').startswith(${JSON.stringify(this.root)}): continue
+  except OSError: continue`,
       );
     // /tmp is private to each fake VM; prepare creates a symlink there.
     if (args[0] === "sh" && args[2]?.includes("mkdir -p"))
@@ -211,6 +226,7 @@ export class MockSession {
     requests: Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0],
   ) {
     tenkiState.streamAttempts++;
+    const beforeExit = tenkiState.streamExitWaits.shift();
     const failure = tenkiState.streamFailures.shift();
     if (failure?.phase === "before-start") throw failure.error;
     const iterator = requests[Symbol.asyncIterator]();
@@ -248,6 +264,19 @@ export class MockSession {
           `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
         ),
       );
+    if (args[1])
+      args[1] = args[1].replace(
+        "os.path.realpath(v['workspace'])",
+        `os.path.realpath(v['workspace']).removeprefix(${JSON.stringify(this.root)})`,
+      );
+    if (args[1])
+      args[1] = args[1].replace(
+        "if not e.name.isdecimal(): continue",
+        `if not e.name.isdecimal(): continue
+  try:
+   if not os.readlink('/proc/'+e.name+'/cwd').startswith(${JSON.stringify(this.root)}): continue
+  except OSError: continue`,
+      );
     const child = spawn(start.value.cmd[0], args, { stdio: ["pipe", "pipe", "pipe"] });
     const completion = new Promise<number>((resolve) =>
       child.on("close", (code) => resolve(code ?? 137)),
@@ -262,9 +291,14 @@ export class MockSession {
       throw failure.error;
     }
     for await (const chunk of child.stdout) {
+      if (failure?.phase === "after-output") {
+        child.stdout.resume();
+        throw failure.error;
+      }
       const bytes = Buffer.from(chunk);
       yield { frame: { payload: { case: "stdout", value: bytes } } };
     }
+    await beforeExit?.();
     yield { frame: { payload: { case: "exit", value: { exitCode: await completion } } } };
   }
   async waitReady(_timeout?: number, signal?: AbortSignal) {
@@ -334,4 +368,5 @@ export async function cleanupTenki() {
   tenkiState.streaming = true;
   tenkiState.streamAttempts = 0;
   tenkiState.streamFailures.length = 0;
+  tenkiState.streamExitWaits.length = 0;
 }
