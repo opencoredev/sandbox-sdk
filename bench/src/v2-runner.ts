@@ -310,10 +310,9 @@ export async function runV2(
     const reconnectedHandles: Sandbox[] = [];
     let restoredDurationMs = 0;
     let restoredCost: number | null = 0;
-    const lifeStart = performance.now();
+    const lifeStart = performance.now(), startTime = new Date().toISOString();
     let reserve = 0;
     const hostStart = await host();
-    const startTime = new Date().toISOString();
     const phases: Record<string, number> = {};
     const coldClock = new PhaseClock();
     let createClock = coldClock;
@@ -486,9 +485,10 @@ export async function runV2(
       details: unknown = null,
       phaseValues: Record<string, number> = {},
       clock?: PhaseClock,
+      recordedDurationMs?: number,
       observedAfter?: HostSample,
     ) => {
-      const durationMs = clock?.elapsed() ?? performance.now() - start;
+      const durationMs = recordedDurationMs ?? clock?.elapsed() ?? performance.now() - start;
       const hostAfter = observedAfter ?? await host();
       const sample: Sample = {
         ...allocation,
@@ -548,16 +548,18 @@ export async function runV2(
         const result = await deadline(timeout, (signal) =>
           pending.track(action(AbortSignal.any([signal, stopping.signal]))),
         );
+        const durationMs = clock?.elapsed() ?? performance.now() - start;
         const sample = await add(
           scenario,
           "ms",
-          { kind: "sample", value: clock?.elapsed() ?? performance.now() - start },
+          { kind: "sample", value: durationMs },
           start,
           at,
           before,
           result ?? null,
           phaseValues,
           clock,
+          durationMs,
         );
         return { kind: "success" as const, result, sample };
       } catch (error) {
@@ -798,7 +800,8 @@ export async function runV2(
             }
             return { snapshotId: snap.id };
           }, {}, snapshotClock);
-          await add("snapshot-total", "ms", snapshot.kind === "success" ? { kind: "sample", value: performance.now() - snapshotTotalStart } : setup.kind !== "success" ? setup.sample.outcome : snapshot.sample.outcome, snapshotTotalStart, snapshotTotalAt, snapshotTotalHost);
+          const snapshotTotalMs = performance.now() - snapshotTotalStart;
+          await add("snapshot-total", "ms", snapshot.kind === "success" ? { kind: "sample", value: snapshotTotalMs } : setup.kind !== "success" ? setup.sample.outcome : snapshot.sample.outcome, snapshotTotalStart, snapshotTotalAt, snapshotTotalHost, null, {}, undefined, snapshotTotalMs);
           if (snapshotId && clean) {
             const id = snapshotId;
             let restored: Sandbox | undefined;
@@ -901,7 +904,7 @@ export async function runV2(
             clock.start = 0; clock.end = source.durationMs;
             clock.startedAt = source.startedAt; clock.finishedAt = source.finishedAt;
             await add(metric, unit, outcome, 0, source.startedAt, source.hostBefore,
-              probe.kind === "success" ? probe.result : null, {}, clock, source.hostAfter);
+              probe.kind === "success" ? probe.result : null, {}, clock, source.durationMs, source.hostAfter);
           }
           continue;
         }
@@ -1049,6 +1052,8 @@ export async function runV2(
         hostStart,
         { estimatedCost: cost, restoredDurationMs },
         phases,
+        undefined,
+        duration,
       );
       lifetime.estimatedCost = cost;
       if (!box) lifetime.outcome = { kind: "skipped", note: "Creation failed; billed lifetime unknown" };

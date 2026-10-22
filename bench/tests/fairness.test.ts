@@ -530,10 +530,13 @@ it.each(["default", "same-spec"])("bounds derived perf failure elapsed time and 
   expect(exported.metrics.find(m => m.scenario === "tcp-ms")?.values[0]).toMatchObject({n: 0, p50: null, failures: 1});
 });
 
-it.each(["default", "same-spec"])("keeps every offline failure clock within its sample and run (%s)", async track => {
+it.each(["default", "same-spec"])("keeps offline sample values and failure clocks within their recorded intervals (%s)", async track => {
   const checked = new Set<string>();
   const check = (report: Awaited<ReturnType<typeof runV2>>) => {
     for (const row of report.samples) {
+      expect(row.durationMs, row.scenario).toBeLessThanOrEqual(Date.parse(row.finishedAt) - Date.parse(row.startedAt) + 1);
+      if (row.outcome.kind === "sample" && !Object.hasOwn(perfMetrics, row.scenario))
+        expect(row.outcome.value, row.scenario).toBe(row.durationMs);
       if (row.outcome.kind !== "failure") continue;
       checked.add(row.scenario);
       const elapsed = row.outcome.elapsedMs;
