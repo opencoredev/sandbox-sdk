@@ -53,7 +53,9 @@ const schema = z.object({
   "timeout-ms": integer.max(900000).default(180000),
   // How long a resource this run created or admitted may take to appear in
   // provider.list with its labels; adapters can return before listings catch up.
-  "ownership-visibility-ms": integer.max(120000).default(30000),
+  // boxd's list fails whole while any account machine is mid-destroy, so other
+  // suites' churn can hide an owned box for tens of seconds.
+  "ownership-visibility-ms": integer.max(300000).default(120000),
   seed: z.coerce.number().int().default(45),
   "max-sandboxes": integer.default(100),
   "max-dollars": z.coerce.number().positive().finite().default(5),
