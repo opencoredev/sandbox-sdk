@@ -29,6 +29,8 @@ test("a fallback lookup captured before destroy cannot restore a deleted sandbox
   expect(() => provider.native(box.id)).toThrow();
 });
 
+// Stdin above the buffered inline limit forces the session transport.
+const sessionStdin = "x".repeat(64 * 1024);
 for (const chunks of [["X:\nO:eA=="], ["X:\n", "O:eA=="]]) {
   test(`session completion rejects a partial trailing record delivered in ${chunks.length} chunks`, async () => {
     const box = await createSandbox(daytona({ apiKey: "offline" }));
@@ -38,7 +40,7 @@ for (const chunks of [["X:\nO:eA=="], ["X:\n", "O:eA=="]]) {
       for (const chunk of chunks) stdout(chunk);
       await new Promise<void>(() => {});
     });
-    await expect(box.run("ignored", { stdin: "force session", timeoutMs: 1000 })).rejects.toMatchObject({ code: "provider" });
+    await expect(box.run("ignored", { stdin: sessionStdin, timeoutMs: 1000 })).rejects.toMatchObject({ code: "provider" });
   });
 }
 
@@ -50,5 +52,5 @@ test("a split final frame preserves exact preceding user output", async () => {
     stdout("O:ZXhh"); stdout("Y3Q=\nX"); stdout(":\n");
     await new Promise<void>(() => {});
   });
-  expect(await box.run("ignored", { stdin: "force session", timeoutMs: 1000 })).toMatchObject({ stdout: "exact", exitCode: 0, timedOut: false });
+  expect(await box.run("ignored", { stdin: sessionStdin, timeoutMs: 1000 })).toMatchObject({ stdout: "exact", exitCode: 0, timedOut: false });
 });
