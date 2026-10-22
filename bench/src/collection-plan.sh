@@ -22,9 +22,9 @@ account_limits=e2b=25,daytona=10,upstash=25,boat=10,boxd=50,freestyle=25,tenki=2
 # Verified publication K25 cohorts; boxd used cap50. These are collection caps, not inferred plan maxima.
 base=(--account-limits "$account_limits" --omit-network-download true --concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
 default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1-pinned)
-spec_flags=(--track same-spec --template e2b=r1h7gud12rf1f6iu29r0 --template daytona=daytona-large --size upstash=medium --size boxd=4:16384 --size tenki=4:8192)
+spec_flags=(--track same-spec --template e2b=r1h7gud12rf1f6iu29r0 --template daytona=daytona-large --template superserve=sandbox-bench-node22-py311-4x8-pinned --size upstash=medium --size boxd=4:16384 --size tenki=4:8192)
 # E2B template alias: sandbox-bench-same-spec. Boat/Freestyle use defaults.
-# Superserve is deliberately EXCLUDED from same-spec: account cap is 2 vCPU; no 4-vCPU template.
+# Superserve same-spec uses a 4 vCPU / 8 GiB template; it needs the raised account limit (default cap 2 vCPU).
 run() {
   if [[ $dry == 1 ]]; then printf '%q ' "$@"; printf '\n'; else "$@"; fi
 }
@@ -39,7 +39,7 @@ non_boat() {
     providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve
     flags=("${default_flags[@]}")
   else
-    providers=e2b,daytona,upstash,boxd,freestyle,tenki
+    providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve
     flags=("${spec_flags[@]}")
   fi
   snapshot_providers=$providers
@@ -105,7 +105,8 @@ Boat requires an otherwise idle account (12 starts/minute, 60/hour, 200/day):
  One same-spec daytona-large (4/8/10) fits; source + restore need 8/16/20, so that suite is excluded.
  Same-spec Daytona K10/K25 and default K25 are excluded and recorded in policy.
  Default Daytona K10 remains enabled separately: exactly 10 vCPU / 10 GiB / 30 GiB; account must be idle.
- Superserve is excluded from same-spec until a 4-vCPU template is available (account capped at 2).
+ Superserve same-spec runs the 4 vCPU / 8 GiB template sandbox-bench-node22-py311-4x8-pinned.
+ A default Superserve account caps sandboxes at 2 vCPU; Superserve raised this account to paid-plan limits on 2026-10-22.
  Generate policy with `bash bench/src/collection-plan.sh policy > /tmp/swarm/collection-policy.json`.
  Other account-cap skips require verified reasons in that policy. All 27 site metric IDs are
  covered across main, snapshot and burst suites; provider capability/quota exceptions stay explicit.

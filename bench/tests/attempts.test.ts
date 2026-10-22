@@ -55,7 +55,9 @@ it("requires ten cost attempts per track and keeps capability exclusions explici
   expect(attemptTarget("cost", "tool-replay")).toBe(10);
   expect(attemptTarget("cost", "cold")).toBeNull();
   const rows = checkAttempts([], collectionPolicy(), ["same-spec"]);
-  expect(rows.find(r => r.provider === "superserve" && r.suite === "cost")?.pass).toBe(true);
+  // Superserve runs same-spec on its 4x8 template; every suite counts toward its targets.
+  for (const [suite, scenario, target] of [["main", "cold", 100], ["snapshot", "snapshot", 30], ["burst", "burst-25/all-ready", 3], ["cost", "tool-replay", 10]] as const)
+    expect(rows.find(r => r.provider === "superserve" && r.suite === suite && r.scenario === scenario)).toMatchObject({target, reason: null, pass: false});
   expect(rows.find(r => r.provider === "daytona" && r.suite === "cost")).toMatchObject({pass: false, target: 10, reason: null});
 });
 it("rejects shared cost suites and oversized Boat quota windows", async () => {

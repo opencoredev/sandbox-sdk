@@ -309,7 +309,7 @@ it("prices each track from requested and verified CPU/memory instead of default 
   expect(mismatch?.allocationVerification).toMatchObject({verified: false, mismatches: [expect.stringContaining("vCPU")]});
 });
 
-it("exports measured allocation safeguards and never labels boxd or capped Superserve equal-spec", async () => {
+it("exports measured allocation safeguards and never labels boxd or a 2-vCPU Superserve equal-spec", async () => {
   const {siteData} = await import("../src/site-data.js");
   const boxd = siteData(allocationReport("boxd", 4, 16, {cpu: 4, memoryMb: 16384}), "same-spec");
   expect(boxd.providers[0]).toMatchObject({track: "same-spec", requestedAllocation: {size: {cpu: 4, memoryMb: 16384}, compute: {cpu: 4, memoryGiB: 16}}, measuredAllocations: [{cpu: 4, memoryGiB: 16, diskGiB: 100}], equalSpec: false});
@@ -363,6 +363,8 @@ it.each([
   ["superserve", "sandbox-bench-node22-py311-1x1", 1, 0.98, 1],
   ["superserve", "sandbox-bench-node22-py311-1x1-pinned", 1, 0.98, 1],
   ["superserve", "522daf7b-fec9-41d8-80cd-361f3b8b1fa8", 1, 0.98, 1],
+  ["superserve", "sandbox-bench-node22-py311-4x8-pinned", 4, 7.8, 8],
+  ["superserve", "bd88e7c5-139e-419f-9a73-8d2ec34d3edf", 4, 7.8, 8],
 ])("prices provisioned template resources for %s/%s", async (provider, template, cpu, usable, provisioned) => {
   const {allocationEvidence} = await import("../src/allocation.js");
   const {siteData} = await import("../src/site-data.js");
@@ -371,7 +373,8 @@ it.each([
   for (const row of report.samples) row.template = template;
   expect(allocationEvidence(report.samples, provider)).toMatchObject({requestedCompute: {cpu, memoryGiB: provisioned}, verified: true, pricingAllocation: {cpu, memoryGiB: provisioned}});
   expect(siteData(report, "same-spec").providers[0]?.requestedAllocation.compute).toEqual({cpu, memoryGiB: provisioned});
-  if (provider === "e2b" && cpu === 4) expect(hourly(report, provider)).toBeCloseTo(0.3312);
+  if (cpu === 4 && ["e2b", "superserve"].includes(provider)) expect(hourly(report, provider)).toBeCloseTo(0.3312);
+  if (provider === "superserve" && cpu === 4) expect(siteData(report, "same-spec").providers[0]?.equalSpec).toBe(true);
   const first = report.samples[0]; if (!first) throw new Error("fixture required");
   first.fingerprint = allocationFingerprint(cpu + 1, usable);
   expect(allocationEvidence(report.samples, provider)).toMatchObject({verified: false, pricingAllocation: null});

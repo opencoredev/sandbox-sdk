@@ -17,6 +17,9 @@ const templates: Record<string, Record<string, ProvisionedAllocation>> = {
     "sandbox-bench-node22-py311-1x1": {cpu: 1, memoryGiB: 1, diskGiB: 4},
     "sandbox-bench-node22-py311-1x1-pinned": {cpu: 1, memoryGiB: 1, diskGiB: 4},
     "522daf7b-fec9-41d8-80cd-361f3b8b1fa8": {cpu: 1, memoryGiB: 1, diskGiB: 4},
+    // Same-spec template; Template.list reported 4 vCPU / 8192 MiB / 4096 MiB disk on 2026-10-22.
+    "sandbox-bench-node22-py311-4x8-pinned": {cpu: 4, memoryGiB: 8, diskGiB: 4},
+    "bd88e7c5-139e-419f-9a73-8d2ec34d3edf": {cpu: 4, memoryGiB: 8, diskGiB: 4},
   },
 };
 const defaults: Record<string, ProvisionedAllocation> = {

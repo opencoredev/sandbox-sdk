@@ -28,16 +28,15 @@ it("plans every default scenario and all 27 metric IDs on a pinned commit", () =
   expect(script).toContain('git rev-parse HEAD');
   expect(script).toContain('BENCH_COLLECTION_COMMIT');
 });
-it("uses the verified same-spec mapping and leaves capped Superserve out", () => {
+it("uses the verified same-spec mapping, including Superserve at 4x8", () => {
   const output = plan("same-spec-nonboat");
-  expect(output).toContain("--providers e2b,daytona,upstash,boxd,freestyle,tenki");
+  expect(output).toContain("--providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve ");
   expect(output).toContain("--template e2b=r1h7gud12rf1f6iu29r0");
   expect(output).toContain("--template daytona=daytona-large");
   expect(output).toContain("--size upstash=medium");
   expect(output).toContain("--size boxd=4:16384");
   expect(output).toContain("--size tenki=4:8192 ");
-  expect(output).not.toContain("--template superserve=");
-  expect(output).not.toMatch(/--providers [^ ]*superserve/);
+  expect(output).toContain("--template superserve=sandbox-bench-node22-py311-4x8-pinned ");
   expect(script).toContain("DAYTONA_TARGET=us");
 });
 it("keeps Boat windows below verified quotas and documents impossible K25", () => {
@@ -50,7 +49,7 @@ it("keeps Boat windows below verified quotas and documents impossible K25", () =
   }
   const help = plan("help"); expect(help).toContain("26 hours"); expect(help).toContain("65 minutes");
   expect(collectionPolicy().notRun).toContainEqual(expect.objectContaining({provider: "boat", track: "default", scenario: "burst-25/*"}));
-  expect(collectionPolicy().notRun).toContainEqual(expect.objectContaining({provider: "superserve", track: "same-spec", scenario: "cold"}));
+  expect(collectionPolicy().notRun.filter(n => n.provider === "superserve")).toEqual([]);
 });
 
 
