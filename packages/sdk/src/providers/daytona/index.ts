@@ -53,6 +53,7 @@ function fileInfo(path: string, file: NativeFile): FileInfo {
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   let client: Promise<Daytona> | undefined;
   const boxes = new Map<string, DaytonaSandbox>();
+  const recentCreates = new Map<string, number>();
   const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
   async function api() {
@@ -98,15 +99,37 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           "/", undefined, 10,
         );
         if (workspace.exitCode !== 0) throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use a Daytona runtime with sudo -n access.", { code: "provider", provider: "daytona", sandboxId: value.id });
+        recentCreates.set(value.id, Date.now() + 30_000);
         return info(value);
-      } catch (error) { await value.delete(60, true); boxes.delete(value.id); throw error; }
+      } catch (error) { await value.delete(60, true); boxes.delete(value.id); recentCreates.delete(value.id); throw error; }
     }); },
-    async list(labels: Labels) { return safe(async () => { const values: SandboxInfo[] = []; for await (const value of (await api()).list({ labels: { ...labels, ...sdkLabel } })) { if (Object.entries({ ...labels, ...sdkLabel }).every(([key, expected]) => value.labels[key] === expected)) { boxes.set(value.id, value); values.push(info(value)); } } return values; }); },
+    async list(labels: Labels) { return safe(async () => {
+      const requested = { ...labels, ...sdkLabel };
+      const matches = (value: DaytonaSandbox) => Object.entries(requested).every(([key, expected]) => value.labels[key] === expected);
+      const values = new Map<string, SandboxInfo>();
+      for await (const value of (await api()).list({ labels: requested })) {
+        if (matches(value)) { boxes.set(value.id, value); values.set(value.id, info(value)); recentCreates.delete(value.id); }
+      }
+      // Native list can lag behind create/get. Verify only recent local creates
+      // omitted by the index; never resurrect a sandbox from stale cached data.
+      for (const [id, expiresAt] of recentCreates) {
+        if (Date.now() >= expiresAt) { recentCreates.delete(id); continue; }
+        const cached = boxes.get(id); if (!cached || !matches(cached)) continue;
+        try {
+          const value = await (await api()).get(id);
+          if (matches(value)) { boxes.set(id, value); values.set(id, info(value)); }
+        } catch (error) {
+          if (daytonaError(error).code !== "not_found") throw error;
+          recentCreates.delete(id); boxes.delete(id);
+        }
+      }
+      return [...values.values()];
+    }); },
     async find(key) { return (await provider.list({ [keyLabel]: key }))[0]; },
     async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id); },
     async destroy(id) {
       const existing = deletions.get(id); if (existing) return existing;
-      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); } }, id);
+      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); } }, id);
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },

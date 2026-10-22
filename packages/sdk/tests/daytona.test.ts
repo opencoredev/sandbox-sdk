@@ -304,3 +304,11 @@ test("completed session output does not wait for a WebSocket that remains open",
   });
   expect(await box.run("printf exact; exit 7", { timeoutMs: 1000 })).toMatchObject({ stdout: "exact", exitCode: 7, timedOut: false });
 });
+
+test("a fresh sandbox remains discoverable while native listing catches up", async () => {
+  const provider = factory(); const box = await createSandbox(provider);
+  vi.spyOn(MockDaytona.prototype, "list").mockImplementation(async function* () {});
+  expect((await provider.list({})).map(value => value.id)).toContain(box.id);
+  await box.native.delete();
+  expect(await provider.list({})).toEqual([]);
+});
