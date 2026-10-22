@@ -36,5 +36,6 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
     requested, requestedCompute, measured,
     verified: observed.length && requestedCompute ? mismatches.length === 0 : null,
     mismatches, pricingAllocation,
+    equalSpec: observed.length > 0 && observed.every(r => r.cpu === 4 && r.memoryGiB >= 8 * 0.95 && r.memoryGiB <= 8 * 1.05),
   };
 }

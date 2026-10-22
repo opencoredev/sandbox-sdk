@@ -308,3 +308,23 @@ it("prices each track from requested and verified CPU/memory instead of default 
   expect(mismatch?.perVcpuHour).toBeNull();
   expect(mismatch?.allocationVerification).toMatchObject({verified: false, mismatches: [expect.stringContaining("vCPU")]});
 });
+
+it("exports measured allocation safeguards and never labels boxd or capped Superserve equal-spec", async () => {
+  const {siteData} = await import("../src/site-data.js");
+  const boxd = siteData(allocationReport("boxd", 4, 16, {cpu: 4, memoryMb: 16384}), "same-spec");
+  expect(boxd.providers[0]).toMatchObject({track: "same-spec", requestedAllocation: {size: {cpu: 4, memoryMb: 16384}, compute: {cpu: 4, memoryGiB: 16}}, measuredAllocations: [{cpu: 4, memoryGiB: 16, diskGiB: 100}], equalSpec: false});
+  expect(boxd.allocations[0]).toMatchObject({provider: "boxd", track: "same-spec", equalSpec: false});
+  expect(siteData(allocationReport("superserve", 2, 8), "same-spec").providers[0]?.equalSpec).toBe(false);
+  for (const [cpu, memory, expected] of [[4, 7.6, true], [4, 8.4, true], [4, 7.59, false], [4, 8.41, false], [2, 8, false]]) {
+    if (typeof cpu !== "number" || typeof memory !== "number") throw new Error("Invalid fixture");
+    expect(siteData(allocationReport("e2b", cpu, memory), "same-spec").providers[0]?.equalSpec).toBe(expected);
+  }
+  const noFingerprint = allocationReport("e2b", 4, 8);
+  const missing = noFingerprint.samples[0]; if (!missing) throw new Error("Missing fixture");
+  missing.fingerprint = null;
+  expect(siteData(noFingerprint, "same-spec").providers[0]).toMatchObject({equalSpec: false, measuredAllocations: [], hourly: null});
+  const mixed = allocationReport("e2b", 4, 8);
+  const first = mixed.samples[0]; if (!first) throw new Error("Missing fixture");
+  mixed.samples.push({...first, fingerprint: allocationFingerprint(2, 8)});
+  expect(siteData(mixed, "same-spec").providers[0]?.equalSpec).toBe(false);
+});

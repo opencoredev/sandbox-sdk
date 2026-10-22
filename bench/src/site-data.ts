@@ -283,6 +283,10 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const allocation = allocationEvidence(r.samples, name);
     return {
       id: name,
+      track,
+      requestedAllocation: {...allocation.requested, compute: allocation.requestedCompute},
+      measuredAllocations: allocation.measured,
+      equalSpec: allocation.equalSpec,
       currency: price?.currency ?? null,
       hourly: hour,
       commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
@@ -331,7 +335,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
   );
   return {
     track,
-    allocations: names.map(provider => ({ provider, requested: [...new Map(r.samples.filter(s => s.provider === provider).map(s => [JSON.stringify([s.requestedSize ?? null, s.template ?? null]), { size: s.requestedSize ?? null, template: s.template ?? null }])).values()] })),
+    allocations: providers.map(p => ({provider: p.id, track, requested: p.requestedAllocation, measured: p.measuredAllocations, equalSpec: p.equalSpec, verification: p.allocationVerification})),
     generatedFrom: r.runId,
     window: { start: r.timestamp, end: r.finishedAt },
     observations: r.samples.length,
