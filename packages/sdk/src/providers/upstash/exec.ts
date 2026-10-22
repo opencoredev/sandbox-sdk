@@ -59,8 +59,13 @@ export async function execute(box: Box, input: ExecInput): Promise<ExecResult> {
 }
 
 /** Durable work uses command(), never a connection-owned live session. Core owns
- * process logs/specs; this private record only tracks the native wrapper's exit. */
-export async function startProcess(box: Box, input: Omit<ExecInput, "timeoutMs">) {
+ * process logs/specs; this private record only tracks the native wrapper's exit.
+ * `halt` stops a launch whose PID never arrived; it receives the private run directory. */
+export async function startProcess(
+  box: Box,
+  input: Omit<ExecInput, "timeoutMs">,
+  halt: (dir: string) => Promise<unknown>,
+) {
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;
   const envPath = `${dir}/env`;
@@ -100,7 +105,7 @@ export async function startProcess(box: Box, input: Omit<ExecInput, "timeoutMs">
   } catch (error) {
     await box.files.remove(envPath).catch(() => {});
     // Without a confirmed PID, stopping the box is the only safe cleanup.
-    await box.pause();
+    await halt(dir);
     throw error;
   }
   const group = pid;

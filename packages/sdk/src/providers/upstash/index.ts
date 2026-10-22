@@ -6,10 +6,11 @@
  * https://upstash.com/docs/box/overall/network-policy
  * https://upstash.com/docs/box/overall/snapshots
  * https://upstash.com/docs/box/overall/preview
+ * https://upstash.com/docs/box/overall/ephemeral-box (labels, size, env and previews verified live)
  * https://www.npmjs.com/package/@upstash/box
  */
 import { posix } from "node:path";
-import type { Box, BoxConfig, BoxData, BoxSize, FileStat, NetworkPolicy } from "@upstash/box";
+import type { Box, BoxConfig, BoxData, BoxSize, EphemeralBox, EphemeralBoxConfig, FileStat, NetworkPolicy } from "@upstash/box";
 type BoxStatus = BoxData["status"];
 import type {
   Provider,
@@ -25,7 +26,7 @@ import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { listDirectory, readFile, writeFile } from "./files.js";
 
-export type UpstashOptions = Pick<
+type CommonOptions = Pick<
   BoxConfig,
   "apiKey" | "baseUrl" | "runtime" | "enableTelemetry"
 > & {
@@ -34,8 +35,20 @@ export type UpstashOptions = Pick<
   /** Default previews require a bearer token. */
   public?: boolean;
 };
+/** Durable Box: pauses when idle and keeps its files until destroyed. */
+export type UpstashBoxOptions = CommonOptions & { ephemeral?: false };
+/** Ephemeral Box: ready on create, cannot pause, and Upstash deletes it after its TTL. */
+export type UpstashEphemeralOptions = CommonOptions & {
+  ephemeral: true;
+  /** Seconds before Upstash deletes the box: a leak backstop, not a deadline. Defaults to 3600; at most 259200. */
+  ttlSeconds?: number;
+};
+export type UpstashOptions = UpstashBoxOptions | UpstashEphemeralOptions;
 export type UpstashCapability = "pause" | "snapshot" | "size" | "network-policy";
+export type UpstashEphemeralCapability = Exclude<UpstashCapability, "pause">;
 export type UpstashProvider = Provider<Box, UpstashCapability>;
+export type UpstashEphemeralProvider = Provider<Box, UpstashEphemeralCapability>;
+const maxTtlSeconds = 259_200;
 const marker = "sandbox-sdk";
 const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
 // Upstash reruns initCommand on automatic as well as explicit resume. Disk
@@ -110,7 +123,15 @@ function network(input: CreateInput["network"]): NetworkPolicy {
   return { mode: "custom", allowedDomains: input.allow };
 }
 
-export function upstash(options: UpstashOptions = {}): UpstashProvider {
+export function upstash(options: UpstashEphemeralOptions): UpstashEphemeralProvider;
+export function upstash(options?: UpstashBoxOptions): UpstashProvider;
+export function upstash(options: UpstashOptions = {}): UpstashProvider | UpstashEphemeralProvider {
+  const ttl = options.ephemeral ? options.ttlSeconds ?? 3600 : undefined;
+  if (ttl !== undefined && (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > maxTtlSeconds))
+    throw new SandboxError(`Ephemeral ttlSeconds must be a whole number from 1 to ${maxTtlSeconds}.`, {
+      code: "invalid_argument",
+      provider: "upstash",
+    });
   const redactor = new Redactor();
   const boxes = new Map<string, Box>();
   const monitors = new Map<string, Set<() => void>>();
@@ -131,8 +152,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
   };
   const sdk = async () => {
     const config = connection();
-    const { Box } = await import("@upstash/box");
-    return { Box, config };
+    const { Box, EphemeralBox } = await import("@upstash/box");
+    return { Box, EphemeralBox, config };
   };
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = "request"): Promise<T> {
     try {
@@ -209,7 +230,9 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
   const provider: UpstashProvider = {
     name: "upstash",
     keyMode: "best-effort",
-    capabilities: new Set<UpstashCapability>(["pause", "snapshot", "size", "network-policy"]),
+    capabilities: new Set<UpstashCapability>(
+      ttl === undefined ? ["pause", "snapshot", "size", "network-policy"] : ["snapshot", "size", "network-policy"],
+    ),
     create: (input) =>
       safe(async () => {
         if (input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined)
@@ -222,25 +245,38 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           );
         redactor.add(Object.values(input.env ?? {}));
         const policy = network(input.network);
-        const { Box, config } = await sdk();
-        const params: BoxConfig = {
+        const { Box, EphemeralBox, config } = await sdk();
+        const params = {
           ...config,
           runtime: options.runtime,
           size: input.size ?? (input.from === undefined ? undefined : await snapshotSize(input.from)),
+          // Native create-time env; values never enter command text.
           env: input.env,
           // A fresh box has no metadata until setup writes it, and discovery skips
           // boxes without metadata, so labelling at create saves a request.
           // Snapshot clones inherit the source metadata and are labelled after setup.
           labels: input.from === undefined ? [marker] : [],
-          initCommand,
           networkPolicy: policy,
           timeout: options.requestTimeoutMs,
-        };
-        const value =
-          input.from === undefined
-            ? await Box.create(params)
-            : await Box.fromSnapshot(input.from, params);
-        boxes.set(value.id, value);
+        } satisfies BoxConfig & EphemeralBoxConfig;
+        let created: Pick<EphemeralBox, "id" | "exec" | "delete">;
+        let handle: Promise<Box>;
+        if (ttl === undefined) {
+          const value =
+            input.from === undefined
+              ? await Box.create({ ...params, initCommand })
+              : await Box.fromSnapshot(input.from, { ...params, initCommand });
+          created = value;
+          handle = Promise.resolve(value);
+        } else {
+          created =
+            input.from === undefined
+              ? await EphemeralBox.create({ ...params, ttl })
+              : await EphemeralBox.fromSnapshot(input.from, { ...params, ttl });
+          // EphemeralBox hides its Box. Fetch one beside setup for the cache and native().
+          handle = Box.get(created.id, { ...config, timeout: options.requestTimeoutMs });
+          void handle.catch(() => {});
+        }
         try {
           if (input.signal?.aborted)
             throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
@@ -255,22 +291,26 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
           // One guest round trip prepares both directories and persists metadata.
           // Keep this after native create: initCommand also runs on resume and
           // must not overwrite metadata or publish an incomplete snapshot clone.
-          const setup = value.exec.command(
+          // Ephemeral boxes take no initCommand, so a restored clone runs it here.
+          const setup = created.exec.command(
+            (ttl === undefined || input.from === undefined ? "" : `${initCommand} && `) +
             `mkdir -p /workspace ${quote(posix.dirname(metadataPath))} && ` +
             `if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && ` +
             `test -w /workspace && (umask 077; printf %s ${quote(JSON.stringify(meta))} > ${quote(metadataPath)})`,
           );
-          const record = boxData(config, value.id);
+          const record = boxData(config, created.id);
           void record.catch(() => {});
           if ((await setup).exitCode !== 0)
-            throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: value.id });
+            throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: created.id });
+          const value = await handle;
+          boxes.set(value.id, value);
           // Publish discovery only after metadata and the workspace are ready. Native
           // labels allow five short strings; durable metadata preserves arbitrary labels.
           if (input.from !== undefined) await value.labels.add(marker);
           return info(await record, meta);
         } catch (error) {
-          await value.delete();
-          boxes.delete(value.id);
+          await created.delete();
+          boxes.delete(created.id);
           throw error;
         }
       }, undefined, false, "create"),
@@ -316,7 +356,14 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
     exec: (id, input) => safe(async () => execute(await box(id), input), id, false, "exec"),
     startProcess: (id, input) =>
       safe(async () => {
-        const hook = await startProcess(await box(id), input);
+        const value = await box(id);
+        // Ephemeral boxes cannot pause; kill the launcher's group, found by its private run path.
+        const halt = ttl === undefined
+          ? () => value.pause()
+          : (dir: string) => value.exec.command(
+            `for p in $(pgrep -f ${quote(`[${dir[1]}]${dir.slice(2)}/`)}); do kill -KILL -$p 2>/dev/null; done; true`,
+          );
+        const hook = await startProcess(value, input, halt);
         let active = monitors.get(id);
         if (!active) {
           active = new Set();
@@ -388,16 +435,21 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
       void pending.catch(() => ports.delete(port));
       return pending;
     },
-    pause: (id) =>
-      safe(async () => {
-        detach(id);
-        await (await box(id)).pause();
-      }, id, false, "pause"),
-    resume: (id) =>
-      safe(async () => {
-        const value = await box(id);
-        await value.resume();
-      }, id, false, "resume"),
+    // Ephemeral boxes reject pause, so the methods are absent with the capability.
+    ...(ttl === undefined
+      ? {
+        pause: (id: string) =>
+          safe(async () => {
+            detach(id);
+            await (await box(id)).pause();
+          }, id, false, "pause"),
+        resume: (id: string) =>
+          safe(async () => {
+            const value = await box(id);
+            await value.resume();
+          }, id, false, "resume"),
+      }
+      : {}),
     snapshot: (id) =>
       safe(
         async () => {

@@ -9,6 +9,7 @@ import type {
   BoxConfig,
   BoxData,
   BoxSize,
+  EphemeralBoxConfig,
   ExecSessionHandle,
   ExecSessionOptions,
   FileStat,
@@ -17,6 +18,7 @@ const missing = () => Object.assign(new Error("not found"), { statusCode: 404 })
 export const state = {
   boxes: new Map<string, MockBox>(),
   creates: [] as BoxConfig[],
+  ephemeralCreates: [] as EphemeralBoxConfig[],
   snapshots: new Map<string, string>(),
   snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
@@ -27,6 +29,8 @@ export class MockBox {
   readonly data: BoxData;
   readonly size: BoxSize;
   readonly children = new Set<number>();
+  /** Ephemeral boxes reject pause and resume, as Upstash does. */
+  ephemeral = false;
   private constructor(
     readonly root: string,
     readonly params: BoxConfig,
@@ -250,10 +254,12 @@ export class MockBox {
     };
   }
   async pause() {
+    if (this.ephemeral) throw Object.assign(new Error("Ephemeral boxes cannot be paused"), { statusCode: 400 });
     await this.terminate();
     this.data.status = "paused";
   }
   async resume() {
+    if (this.ephemeral) throw Object.assign(new Error("Ephemeral boxes cannot be resumed"), { statusCode: 400 });
     const paused = this.data.status === "paused";
     this.data.status = "running";
     if (paused && this.params.initCommand) await this.exec.command(this.params.initCommand);
@@ -289,12 +295,30 @@ export class MockBox {
     await fs.rm(this.root, { recursive: true, force: true });
   }
 }
+/** Ephemeral create takes no initCommand and returns a box usable at once. */
+export class MockEphemeralBox {
+  static async create(params: EphemeralBoxConfig = {}) {
+    state.ephemeralCreates.push(structuredClone(params));
+    const { ttl: _ttl, ...rest } = params;
+    const value = await MockBox.create(rest);
+    value.ephemeral = true;
+    return value;
+  }
+  static async fromSnapshot(id: string, params: EphemeralBoxConfig = {}) {
+    state.ephemeralCreates.push(structuredClone(params));
+    const { ttl: _ttl, ...rest } = params;
+    const value = await MockBox.fromSnapshot(id, rest);
+    value.ephemeral = true;
+    return value;
+  }
+}
 export async function cleanup() {
   for (const box of state.boxes.values()) await box.delete();
   for (const root of state.snapshots.values()) await fs.rm(root, { recursive: true, force: true });
   state.snapshots.clear();
   state.snapshotMetadata.clear();
   state.creates.length = 0;
+  state.ephemeralCreates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
 }

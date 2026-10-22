@@ -4,11 +4,18 @@ import { upstashError } from "../src/providers/upstash/errors.js";
 import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 import { cleanup, MockBox, state } from "./upstash-mock.js";
-vi.mock("@upstash/box", async () => ({ Box: (await import("./upstash-mock.js")).MockBox }));
+vi.mock("@upstash/box", async () => {
+  const mock = await import("./upstash-mock.js");
+  return { Box: mock.MockBox, EphemeralBox: mock.MockEphemeralBox };
+});
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 const factory = () => upstash({ apiKey: "mock-key" });
 // live:true authorizes this explicitly mocked cloud SDK; no Upstash calls run.
 runConformance(factory, { live: true });
+const ephemeral = () => upstash({ apiKey: "mock-key", ephemeral: true });
+describe("Upstash Ephemeral Box conformance", () => {
+  runConformance(ephemeral, { live: true });
+});
 beforeEach(() => {
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
@@ -407,4 +414,55 @@ test("legacy snapshots inherit a surviving source size or require an explicit ov
 test("an empty native snapshot list returns not_found", async () => {
   vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: null })));
   await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({ code: "not_found" });
+});
+
+describe("Upstash Ephemeral Box mode", () => {
+  test("creates through EphemeralBox with a one-hour TTL, labels, env and no pause", async () => {
+    const provider = ephemeral();
+    expect([...provider.capabilities].sort()).toEqual(["network-policy", "size", "snapshot"]);
+    expect(provider.pause).toBeUndefined();
+    expect(provider.resume).toBeUndefined();
+    const box = await createSandbox(provider, { size: "medium", secrets: { TOKEN: "secret-value" }, labels: { run: "r1" } });
+    expect(state.ephemeralCreates).toHaveLength(1);
+    expect(state.ephemeralCreates[0]).toMatchObject({ ttl: 3600, size: "medium", labels: ["sandbox-sdk"], env: { TOKEN: "secret-value" } });
+    expect(state.ephemeralCreates[0]).not.toHaveProperty("initCommand");
+    expect((await box.run("printf %s \"$TOKEN\"")).stdout).toBe("[REDACTED]");
+    expect(await ephemeral().list({ run: "r1" })).toMatchObject([{ id: box.id }]);
+    expect(box.native.id).toBe(box.id);
+    upstash({ apiKey: "mock-key", ephemeral: true, ttlSeconds: 259_200 });
+  });
+  test("rejects TTLs Upstash cannot honor", () => {
+    for (const ttlSeconds of [0, 1.5, 259_201, Number.NaN])
+      expect(() => upstash({ apiKey: "mock-key", ephemeral: true, ttlSeconds })).toThrow(
+        expect.objectContaining({ code: "invalid_argument" }),
+      );
+  });
+  test("snapshot clones fail restored process records and stay discoverable", async () => {
+    const source = await createSandbox(ephemeral(), { labels: {} });
+    await source.start("sleep 5", { name: "old" });
+    await source.files.write("saved", "kept");
+    const snapshot = await source.snapshot();
+    await source.destroy();
+    const copy = await createSandbox(ephemeral(), { from: snapshot.id, key: "clone", labels: { clone: "yes" } });
+    expect(state.ephemeralCreates.at(-1)).toMatchObject({ labels: [], ttl: 3600 });
+    expect(await copy.files.read("saved")).toBe("kept");
+    expect((await copy.processes())[0]).toMatchObject({ status: "failed", exitCode: 137 });
+    expect(await ephemeral().find("clone")).toMatchObject({ id: copy.id, labels: { clone: "yes" } });
+  });
+  test("a launch without a PID kills its own group instead of pausing", async () => {
+    const provider = ephemeral();
+    const info = await provider.create({ labels: {} });
+    const value = state.boxes.get(info.id);
+    if (!value) throw new Error("Missing mock box");
+    const command = value.exec.command.bind(value.exec);
+    const commands: string[] = [];
+    vi.spyOn(value.exec, "command").mockImplementation(async (text) => {
+      commands.push(text);
+      return text.includes("nohup setsid") ? { exitCode: 1, stdout: "", stderr: "", result: "" } : command(text);
+    });
+    const pause = vi.spyOn(value, "pause");
+    await expect(provider.startProcess?.(info.id, { command: "sleep 5", cwd: "/workspace", env: {}, onChunk() {} })).rejects.toMatchObject({ code: "provider" });
+    expect(pause).not.toHaveBeenCalled();
+    expect(commands.at(-1)).toMatch(/^for p in \$\(pgrep -f '\[t\]mp\/\.sandbox-sdk\/upstash-runs\/[0-9a-f-]+\/'\)/);
+  });
 });
