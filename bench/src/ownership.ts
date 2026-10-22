@@ -85,7 +85,7 @@ export const snapshotProvenanceSchema = z.object({
 });
 export type SnapshotProvenance = z.infer<typeof snapshotProvenanceSchema>;
 /** Capture proof at snapshot admission, while the source can still be verified live. */
-export async function proveSnapshotSource(provider: Provider, sourceId: string, run: string, timeoutMs: number): Promise<SnapshotProvenance> {
-  if (!(await verifyRunOwnership(provider, sourceId, run, timeoutMs))) throw new UnverifiedOwnershipError(sourceId);
+export async function proveSnapshotSource(provider: Provider, sourceId: string, run: string, timeoutMs: number, visibilityBudgetMs: number): Promise<SnapshotProvenance> {
+  if (!(await verifyRunOwnership(provider, sourceId, run, timeoutMs, visibilityBudgetMs))) throw new UnverifiedOwnershipError(sourceId);
   return {sourceId, runLabel: run, sdkLabel: "1", verifiedAt: new Date().toISOString()};
 }

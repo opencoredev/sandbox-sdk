@@ -52,7 +52,7 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
       }
       return true;
     };
-    const owned = async (id: string) => verifyRunOwnership(p.provider, id, config.run, config["timeout-ms"]);
+    const owned = async (id: string) => verifyRunOwnership(p.provider, id, config.run, config["timeout-ms"], config["ownership-visibility-ms"]);
     const forget = async (entry: z.infer<typeof resource>) => {
       if (journal) {journal.resources = journal.resources.filter(r => r !== entry); await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");}
       for (const item of reviews.filter(r => r.provider === entry.provider && r.id === entry.id && r.kind === entry.kind)) reviews.splice(reviews.indexOf(item), 1);

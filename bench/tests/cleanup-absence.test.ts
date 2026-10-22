@@ -14,7 +14,7 @@ const dirs: string[] = [];
 afterEach(async () => {vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map(p => rm(p, {recursive: true, force: true})));});
 async function config() {
  const out = await mkdtemp(join(tmpdir(), "bench-absence-")); dirs.push(out);
- return parseV2(["--providers", "memory", "--run", "absence-run", "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+ return parseV2(["--providers", "memory", "--run", "absence-run", "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
 }
 it.each(["terminal", "not-found", "unavailable"] as const)("resolves an admitted create error only for definitive native %s evidence", async result => {
  const cfg = await config();

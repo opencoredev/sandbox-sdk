@@ -51,6 +51,9 @@ const schema = z.object({
   concurrency: integer.max(32).default(4),
   "provider-concurrency": integer.max(32).default(1),
   "timeout-ms": integer.max(900000).default(180000),
+  // How long a resource this run created or admitted may take to appear in
+  // provider.list with its labels; adapters can return before listings catch up.
+  "ownership-visibility-ms": integer.max(120000).default(30000),
   seed: z.coerce.number().int().default(45),
   "max-sandboxes": integer.default(100),
   "max-dollars": z.coerce.number().positive().finite().default(5),

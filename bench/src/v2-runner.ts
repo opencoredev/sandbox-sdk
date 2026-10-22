@@ -252,7 +252,7 @@ export async function runV2(
     for (let attempt = 0; attempt < 3; attempt++) {
       const verifyStart = performance.now();
       let verified: boolean;
-      try { verified = await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]); }
+      try { verified = await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"], config["ownership-visibility-ms"]); }
       finally { if (measurement) measurement.phases.ownershipVerifyMs = (measurement.phases.ownershipVerifyMs ?? 0) + performance.now() - verifyStart; }
       if (!verified) {
         if (await resolveAbsent(loaded, id)) return;
@@ -390,7 +390,7 @@ export async function runV2(
                 if (restore) restores.identify(restore, info.id, "quarantined");
                 const ownershipCheckStart = performance.now();
                 let verified: boolean;
-                try { verified = await verifyRunOwnership(target, info.id, config.run, timeout, 30_000); }
+                try { verified = await verifyRunOwnership(target, info.id, config.run, timeout, config["ownership-visibility-ms"]); }
                 finally {
                   const ownershipVerifyMs = performance.now() - ownershipCheckStart;
                   createPhases.ownershipVerifyMs = ownershipVerifyMs;
@@ -454,7 +454,7 @@ export async function runV2(
                 if (nativeId && !createEvidence.unverifiedSandboxId) {
                   const admitted = adapterCreateRejected && error instanceof SandboxError && error.provider === p.name &&
                     failure.cause?.operation === "create" && failure.cause.admittedByThisCall === true;
-                  const verified = admitted && await verifyRunOwnership(target, nativeId, config.run, timeout);
+                  const verified = admitted && await verifyRunOwnership(target, nativeId, config.run, timeout, config["ownership-visibility-ms"]);
                   if (!verified) {
                     createEvidence.unverifiedSandboxId = nativeId;
                     review(p.name, nativeId, admitted ? "Admitted error ID lacks live run/SDK ownership proof" : "Create error has no trusted explicit admission marker");
@@ -758,10 +758,16 @@ export async function runV2(
           let snapshotReady = false;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
+          const setupPhases: Record<string, number> = {}, snapshotPhases: Record<string, number> = {};
+          const proveSource = async (phases: Record<string, number>) => {
+            const verifyStart = performance.now();
+            try { return await proveSnapshotSource(p.provider, active.id, config.run, timeout, config["ownership-visibility-ms"]); }
+            finally { phases.ownershipVerifyMs = performance.now() - verifyStart; }
+          };
           const setup = await measure("snapshot-setup", async () => {
             if (!p.provider.capabilities.has("snapshot") || !p.provider.snapshot)
               throw new Skip("Provider has no snapshot");
-            snapshotProof = await proveSnapshotSource(p.provider, active.id, config.run, timeout);
+            snapshotProof = await proveSource(setupPhases);
             const nativeCleaner = await snapshotCleaner(p.name, p.provider, active.id);
             clean = id => {
               if (restores.blocksSnapshot(p.name, id)) throw new Error("Restore cleanup unresolved; snapshot and source retained");
@@ -784,14 +790,14 @@ export async function runV2(
               await persist();
             }
             return true;
-          });
+          }, setupPhases);
           if (setup.kind !== "success") {
             dependencies.set("snapshot", "snapshot-setup");
           }
           const snapshotClock = new PhaseClock();
           const snapshot = await measure("snapshot", async (signal) => {
             if (!p.provider.snapshot) throw new Skip("Provider has no snapshot");
-            snapshotProof = await proveSnapshotSource(p.provider, active.id, config.run, timeout);
+            snapshotProof = await proveSource(snapshotPhases);
             const sourceEntry = owned.get(`${p.name}/snapshot-source/${active.id}`);
             if (sourceEntry) sourceEntry.snapshotProof = snapshotProof;
             if (snapshotId) {
@@ -823,7 +829,7 @@ export async function runV2(
               throw new Error("Late snapshot cleaned after timeout");
             }
             return { snapshotId: snap.id };
-          }, {}, snapshotClock);
+          }, snapshotPhases, snapshotClock);
           const snapshotTotalMs = performance.now() - snapshotTotalStart;
           await add("snapshot-total", "ms", snapshot.kind === "success" ? { kind: "sample", value: snapshotTotalMs } : setup.kind !== "success" ? setup.sample.outcome : snapshot.sample.outcome, snapshotTotalStart, snapshotTotalAt, snapshotTotalHost, null, {}, undefined, snapshotTotalMs);
           if (snapshotId && clean) {

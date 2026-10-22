@@ -27,7 +27,7 @@ it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", 
   },
  };
  try {
-  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
   const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
   expect(destroy).not.toHaveBeenCalled();
   expect((await backing.list({})).map(s => s.id)).toContain(candidate.id);
@@ -61,7 +61,7 @@ it.each(["sdk-unmarked", "generic", "wrong-provider"])("releases %s create-error
   throw new SandboxError("Create failed", {provider: mode === "wrong-provider" ? "tenki" : "memory", code: "provider", sandboxId: candidate.id, cause});
  }};
  try {
-  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
   const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
   expect(destroy.mock.calls).toEqual([[candidate.id]]);
   expect(await backing.list({})).toEqual([]);
@@ -84,7 +84,7 @@ it("reap releases a quarantined sandbox only when labels become readable", async
  const provider: Provider = {...backing, destroy, list: async labels => readable ? backing.list(labels) : [], create: async () => {
   throw new SandboxError("Create failed", {provider: "memory", code: "provider", sandboxId: own.id});
  }};
- const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+ const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
  const loaded = [{kind: "ready", name: "memory", cloud: false, region: null, provider}] satisfies Parameters<typeof reapRun>[0];
  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -116,7 +116,7 @@ it("quarantines a released ID again if live ownership proof disappears before a 
   throw new SandboxError("Create failed", {provider: "memory", code: "provider", sandboxId: own.id});
  }};
  try {
-  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const config = parseV2(["--providers", "memory", "--run", run, "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
   const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
   expect(destroy).toHaveBeenCalledTimes(1);
   expect(report.cleanupReleased).toHaveLength(1);
@@ -138,7 +138,7 @@ it("does not trust an admission marker on an exec error", async () => {
    cause: {operation: "create", admittedByThisCall: true, sandboxId: foreign.id}});
  }};
  try {
-  const config = parseV2(["--providers", "memory", "--run", "exec-safety", "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const config = parseV2(["--providers", "memory", "--run", "exec-safety", "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
   const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
   expect(destroy.mock.calls.some(([id]) => id === foreign.id)).toBe(false);
   expect((await backing.list({})).map(s => s.id)).toEqual([foreign.id]);
@@ -156,7 +156,7 @@ it("rechecks ownership at deletion and records the ID when labels become unreada
   return backing.list(labels);
  }};
  try {
-  const config = parseV2(["--providers", "memory", "--run", "changed-labels", "--runs", "1", "--scenarios", "command", "--bursts", "", "--out", out]);
+  const config = parseV2(["--providers", "memory", "--run", "changed-labels", "--runs", "1", "--scenarios", "command", "--bursts", "", "--ownership-visibility-ms", "300", "--out", out]);
   const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], config, r => writeV2(r, out));
   const [survivor] = await backing.list({});
   expect(survivor).toBeDefined();
