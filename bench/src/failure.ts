@@ -15,6 +15,14 @@ export const failureOutcomeSchema = z.object({
   cause: causeSchema.optional(),
   stage: z.string().optional(),
   elapsedMs: z.number().finite().nonnegative().optional(),
+  clockPhase: z.enum(["adapter-create", "first-command", "sdk-init"]).optional(),
+  lateSettlement: z.object({
+    settled: z.boolean(),
+    sandboxId: z.string().optional(),
+    stage: z.string(),
+    code: z.string().optional(),
+    cause: causeSchema.optional(),
+  }).optional(),
 });
 export type FailureOutcome = z.infer<typeof failureOutcomeSchema>;
 

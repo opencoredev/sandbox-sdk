@@ -205,3 +205,45 @@ it("waits for a run-owned Daytona deletion to disappear before snapshot recovery
     expect(query).toHaveBeenCalled();
   } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); }
 });
+
+it.each(["returned-id", "native-failure", "first-command", "burst", "cleanup-drain"] as const)("retains late create evidence: %s", async (mode) => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm, readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const directory = await mkdtemp(join(tmpdir(), "bench-late-"));
+  const backing = memory();
+  const afterAbort = (signal?: AbortSignal) => new Promise<void>((resolve) => {
+    if (signal?.aborted) resolve();
+    else signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true});
+  });
+  const nativeFailure = () => new Error("native request failed", { cause: { httpStatus: 503, requestId: "native-request", body: "SECRET" } });
+  const provider = { ...backing,
+    create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {
+      if (mode !== "first-command") await afterAbort(input.signal);
+      if (mode === "cleanup-drain") await new Promise(resolve => setTimeout(resolve, 150));
+      if (mode === "native-failure") throw nativeFailure();
+      return backing.create({...input, signal: undefined});
+    },
+    exec: async (id: string, input: import("@opencoredev/sandbox-sdk/provider").ExecInput) => {
+      if (mode === "first-command" && input.command === "true") {
+        await afterAbort(input.signal);
+        throw nativeFailure();
+      }
+      return backing.exec(id, input);
+    },
+  };
+  try {
+    const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}],
+      parseV2(["--providers", "memory", "--runs", "1", "--scenarios", mode === "burst" ? "burst" : "command", "--bursts", mode === "burst" ? "1" : "", "--burst-cohorts", "1", "--timeout-ms", "100", "--out", directory]), async () => {});
+    const cold = report.samples.find(s => s.scenario.endsWith("cold"));
+    expect(cold?.outcome).toMatchObject({kind: "failure", clockPhase: mode === "first-command" ? "first-command" : "adapter-create", lateSettlement: {settled: true}});
+    if (mode === "returned-id" || mode === "burst" || mode === "cleanup-drain") expect(cold?.sandboxId).toBeTruthy();
+    else expect(cold?.outcome).toMatchObject({cause: {httpStatus: 503, requestId: "native-request"}});
+    expect(JSON.stringify(cold)).not.toContain("SECRET");
+    expect(await backing.list({})).toEqual([]);
+    expect(JSON.parse(await readFile(join(directory, "ownership.json"), "utf8")).resources).toEqual([]);
+    const persisted = (await readFile(join(directory, "samples.ndjson"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line));
+    expect(persisted.find(s => s.scenario.endsWith("cold"))).toEqual(cold);
+  } finally { await rm(directory, {recursive: true, force: true}); }
+});

@@ -1,3 +1,5 @@
+export class DeadlineError extends Error {}
+
 /** All scenario races clear their timer. The signal also cancels APIs that support it. */
 export async function deadline<T>(
   ms: number,
@@ -8,7 +10,7 @@ export async function deadline<T>(
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new Error(`Scenario timed out after ${ms}ms`));
+      reject(new DeadlineError(`Scenario timed out after ${ms}ms`));
     }, ms);
   });
   try {

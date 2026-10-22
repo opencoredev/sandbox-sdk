@@ -14,7 +14,7 @@ import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
-import { deadline, PendingWork } from "./timing.js";
+import { DeadlineError, deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import { writeOwnership } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
@@ -259,6 +259,8 @@ export async function runV2(
     let createClock = coldClock;
     let createPhases = phases;
     let restoredId: string | undefined;
+    let createEvidence: { settled: boolean; sandboxId?: string; stage: string; code?: string; cause?: import("./failure.js").FailureOutcome["cause"] } = { settled: false, stage: "adapter-create" };
+    let clockPhase: "adapter-create" | "first-command" | "sdk-init" = "adapter-create";
     const allocation = {
       track: config.track,
       requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
@@ -301,8 +303,12 @@ export async function runV2(
                   if (state.created >= budgetMax) throw new Skip("Sandbox budget prevents restore");
                   state.created++;
                 }
+                createEvidence = { settled: false, stage: "adapter-create" };
+                clockPhase = "adapter-create";
                 createClock.begin();
                 const info = await target.create(input);
+                createEvidence.sandboxId = info.id;
+                createEvidence.stage = "ownership-persist";
                 const returned = performance.now();
                 ids.add(info.id);
                 if (input.from) restoredId = info.id;
@@ -326,6 +332,8 @@ export async function runV2(
                   ids.delete(info.id);
                   throw new Error("Late create cleaned up");
                 }
+                clockPhase = "first-command";
+                createEvidence.stage = "first-command";
                 const firstStart = performance.now();
                 try {
                   const result = await target.exec(info.id, {
@@ -339,8 +347,15 @@ export async function runV2(
                 } finally {
                   createPhases.firstCommandMs = performance.now() - firstStart;
                 }
+                clockPhase = "sdk-init";
+                createEvidence.stage = "sdk-init";
                 return info;
-              })(),
+              })().catch((error: unknown) => {
+                const failure = failureOutcome(error, sanitize);
+                createEvidence.code = failure.code;
+                createEvidence.cause = failure.cause;
+                throw error;
+              }).finally(() => { createEvidence.settled = true; }),
             );
         if (key === "destroy")
           return (id: string) =>
@@ -442,6 +457,8 @@ export async function runV2(
           phaseValues,
           clock,
         );
+        const timedOutCreate = error instanceof DeadlineError && ["cold", "create-from-snapshot"].includes(scenario);
+        if (timedOutCreate && sample.outcome.kind === "failure") sample.outcome.clockPhase = clockPhase;
         if (!(error instanceof Skip)) {
           if (["cold", "reconnect", "pause-resume", "snapshot"].includes(scenario)) blockedBy ??= scenario;
           if (scenario === "fingerprint") dependencies.set("perf", scenario);
@@ -458,6 +475,12 @@ export async function runV2(
           unsafe = true;
           unsafeProviders.add(p.name);
           state.stop = "Timed-out work did not drain; stopped for cleanup safety";
+        }
+        if (timedOutCreate && sample.outcome.kind === "failure") {
+          sample.outcome.lateSettlement = createEvidence;
+          sample.outcome.cause ??= createEvidence.cause;
+          sample.sandboxId ??= createEvidence.sandboxId ?? null;
+          sample.phases = { ...phaseValues };
         }
         return { kind: "unsuccessful" as const, sample };
       }
@@ -1029,6 +1052,12 @@ export async function runV2(
     if (remaining.size) errors.push("Ownership journal or listing still contains resources");
     if (unsafeProviders.has(p.name)) errors.push("Pending work did not settle; late creations remain possible");
     report.cleanup.push({ provider: p.name, remaining: [...remaining], error: errors.length ? errors.join("; ") : null });
+  }
+  for (const sample of report.samples) {
+    if (sample.outcome.kind !== "failure" || !sample.outcome.lateSettlement) continue;
+    const late = sample.outcome.lateSettlement;
+    sample.sandboxId ??= late.sandboxId ?? null;
+    sample.outcome.cause ??= late.cause;
   }
   report.finishedAt = new Date().toISOString();
   report.summaries = summarize(report.samples, config.seed);
