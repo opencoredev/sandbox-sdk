@@ -21,9 +21,6 @@ export interface SuperserveOptions {
   requestTimeoutMs?: number;
 }
 export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot">;
-const specVariable = "SANDBOX_SDK_EXEC";
-// Linux caps one environment string (name=value) at 128 KiB.
-const maxEnvSpecBytes = 96 * 1024;
 export function superserve(options: SuperserveOptions = {}): SuperserveProvider {
   const boxes = new Map<string, Sandbox>();
   const deleting = new Map<string, Promise<void>>();
@@ -238,36 +235,6 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
               return new Uint8Array(Buffer.from(text.trim(), "base64"));
             },
             exec: async (command, stdin, timeoutMs, signal) => {
-              // A one-shot run is about 90 ms faster than a spawned session.
-              // It has no stdin, so pass the spec in a private environment
-              // variable that is removed before the supervisor starts. Specs
-              // beyond the kernel's per-variable limit keep the session path.
-              if (Buffer.byteLength(stdin) <= maxEnvSpecBytes) {
-                if (signal?.aborted) throw failure("Command interrupted", "aborted", id);
-                let abort = () => {};
-                const stopped = new Promise<never>((_, reject) => {
-                  abort = () => {
-                    reject(failure("Command interrupted", "aborted", id));
-                  };
-                });
-                signal?.addEventListener("abort", abort, { once: true });
-                try {
-                  // No native signal: aborting the request could kill the
-                  // supervisor before it records the exit. Cancellation is
-                  // handled by the caller through the supervisor lock instead.
-                  const completion = box.commands.run(
-                    `printf '%s' "$${specVariable}" | (unset ${specVariable}; exec ${command})`,
-                    { env: { [specVariable]: stdin }, timeoutMs },
-                  );
-                  completion.catch(() => {});
-                  const r = await Promise.race([completion, stopped]);
-                  if (r.exitCode !== 0 || r.truncated)
-                    throw failure("Supervisor failed", "provider", id);
-                  return r.stdout;
-                } finally {
-                  signal?.removeEventListener("abort", abort);
-                }
-              }
               const session = await box.commands.spawn(command, {
                 startupSignal: signal,
                 timeoutMs,

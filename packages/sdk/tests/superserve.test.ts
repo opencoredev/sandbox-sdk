@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockGuest } from "./cloud-guest-mock.js";
 import { quote } from "../src/providers/boxd/guest.js";
-import { supervisorPath } from "../src/providers/superserve/execute.js";
 const state = vi.hoisted(() => ({
   boxes: new Map<
     string,
@@ -95,12 +94,6 @@ vi.mock("@superserve/sdk", () => ({
               return `export ${key}=${quote(payload)};`;
             })
             .join(" ");
-          if (state.transportFailure && command.includes(supervisorPath)) {
-            // The response is lost while the supervisor keeps running.
-            state.transportFailure = false;
-            g.raw(`${prefix} ${command}`).catch(() => {});
-            throw new Error("private-native-token");
-          }
           try {
             return { stdout: await g.raw(`${prefix} ${command}`), stderr: "", exitCode: 0 };
           } catch (error) {
@@ -291,23 +284,12 @@ test("snapshot failures retain a safe idempotent recovery name", async () => {
   }
 });
 
-test("small commands skip the native session", async () => {
-  const box = await createSandbox(factory());
-  try {
-    const before = state.closes;
-    expect((await box.run("cat", { stdin: "piped" })).stdout).toBe("piped");
-    expect(state.closes).toBe(before);
-  } finally {
-    await box.destroy();
-  }
-});
 test("stdin setup failure closes the native session", async () => {
   const box = await createSandbox(factory());
   try {
     const before = state.closes;
     state.stdinFailure = true;
-    // Specs above the environment limit still stream through a session.
-    await expect(box.run("true", { stdin: "x".repeat(100 * 1024) })).rejects.toMatchObject({ code: "provider" });
+    await expect(box.run("true")).rejects.toMatchObject({ code: "provider" });
     expect(state.closes).toBeGreaterThan(before);
   } finally {
     state.stdinFailure = false;
