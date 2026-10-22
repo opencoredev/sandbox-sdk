@@ -1,7 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { defaultCompute, priceAtSize, pricing } from "./pricing.js";
+import { priceAtSize, pricing } from "./pricing.js";
+import { allocationEvidence } from "./allocation.js";
 import { hourly } from "./publication-report.js";
 import { publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
 import { statistics } from "./stats.js";
@@ -279,12 +280,15 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const price = pricing[name];
     const hw = hardware(r, name);
     const hour = hourly(r, name);
+    const allocation = allocationEvidence(r.samples, name);
     return {
       id: name,
       currency: price?.currency ?? null,
       hourly: hour,
       commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
-      perVcpuHour: hour != null && hw?.vcpu ? hour / (defaultCompute[name]?.cpu ?? hw.vcpu) : null,
+      perVcpuHour: hour != null && allocation.pricingAllocation ? hour / allocation.pricingAllocation.cpu : null,
+      pricingAllocation: allocation.pricingAllocation,
+      allocationVerification: {verified: allocation.verified, mismatches: allocation.mismatches},
       // Audited resource rates, size tiers and availability; tiered CPU has no per-vCPU rate.
       rates: price
         ? {

@@ -1,5 +1,6 @@
+import { allocationEvidence } from "./allocation.js";
 import { resources } from "./fingerprint.js";
-import { computeHourly, defaultCompute, pricing } from "./pricing.js";
+import { computeHourly, pricing } from "./pricing.js";
 import { distribution } from "./v2-stats.js";
 import {
   discardedRun,
@@ -57,17 +58,8 @@ function costs(r: PublicationReport) {
 export function hourly(r: PublicationReport, provider: string) {
   const price = pricing[provider];
   if (!price) return null;
-  const fingerprints = r.samples
-    .filter((s) => s.provider === provider && s.scenario === "fingerprint")
-    .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));
-  if (fingerprints.length === 0) return null;
-  const allocation = defaultCompute[provider];
-  if (allocation) return computeHourly(price, allocation);
-  const values = fingerprints.flatMap((fp) => {
-    const value = computeHourly(price, resources(fp));
-    return value === null ? [] : [value];
-  });
-  return distribution(values).p50;
+  const allocation = allocationEvidence(r.samples, provider).pricingAllocation;
+  return allocation ? computeHourly(price, allocation) : null;
 }
 export function headline(r: PublicationReport) {
   const headers = [
@@ -86,6 +78,7 @@ export function headline(r: PublicationReport) {
   ];
   const rows = providers(r).map((p) => {
     const rel = reliability(r.samples.filter((s) => s.provider === p));
+    const allocation = allocationEvidence(r.samples, p);
     return [
       p,
       latency(summary(r, p, "cold"), true),
@@ -98,7 +91,7 @@ export function headline(r: PublicationReport) {
       latency(summary(r, p, "tool-replay")),
       latency(summary(r, p, "burst-25/all-ready", "burst")),
       `${pct(rel.raw?.rate)} / ${pct(rel.excludingLimitsAndClient?.rate)}`,
-      money(hourly(r, p), pricing[p]?.currency ?? "unknown"),
+      allocation.mismatches.length ? `Allocation mismatch: ${allocation.mismatches.join("; ")}` : money(hourly(r, p), pricing[p]?.currency ?? "unknown"),
     ];
   });
   return { headers, rows };
@@ -457,7 +450,7 @@ export function publicationMarkdown(r: PublicationReport) {
     "",
     mdTable(head.headers, head.rows),
     "",
-    "All latency cells are seconds and p50 unless stated. Raw/adjusted success counts all observations; see reliability denominators below. Sandbox-hour prices cover compute only at the provisioned size of the template we ran; Tenki uses median measured CPU and usable RAM because its default allocation is undocumented. Disk is excluded from sandbox-hour prices. — means no successful measurement.",
+    "All latency cells are seconds and p50 unless stated. Raw/adjusted success counts all observations; see reliability denominators below. Sandbox-hour prices cover compute only: explicit CPU/memory requests require matching fingerprints (within 5% for usable RAM); otherwise measured allocation is used. Allocation conflicts suppress prices. Disk is excluded from sandbox-hour prices. — means no successful measurement.",
     "",
     "## Reliability",
     "",

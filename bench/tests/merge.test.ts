@@ -281,3 +281,30 @@ it("separates tracks in summaries, attempt selection, and site exports", async (
   const defaultOnlyPolicy = {replacements: [], notRun: [{provider: "daytona", suite: "main" as const, scenario: "cold", reason: "default only"}]};
   expect(selectAttempts(report.samples, defaultOnlyPolicy).samples.every(s => s.track === "same-spec")).toBe(true);
 });
+
+const allocationFingerprint = (cpu: number, memoryGiB: number) => ({
+  cpuModel: "fixture", flags: [], nproc: cpu, cpuMax: "", quotaCpus: cpu,
+  memoryMax: "", memTotalBytes: memoryGiB * 1024 ** 3, memoryBytes: memoryGiB * 1024 ** 3, diskBytes: 100 * 1024 ** 3,
+  df: "", lsblk: "", virtualization: "", hypervisor: false, dmi: "", kernel: "test", distro: "test", user: "test", uid: 1000, sudo: false, stealPercent: 0, egress: null, tools: {}, runtime: "test",
+});
+function allocationReport(provider: string, cpu: number, memory: number, size: Sample["requestedSize"] = null) {
+  const input = source(`${provider}-allocation`, [{...sample(0, "fingerprint"), provider, track: "same-spec", requestedSize: size, fingerprint: allocationFingerprint(cpu, memory)}]);
+  input.config.track = "same-spec";
+  input.providers = [{name: provider, configuredRegion: null, note: "test"}];
+  return mergeSources([input], []);
+}
+it("prices each track from requested and verified CPU/memory instead of default allocations", async () => {
+  const { hourly } = await import("../src/publication-report.js");
+  const { siteData } = await import("../src/site-data.js");
+  const e2b = allocationReport("e2b", 4, 8);
+  expect(hourly(e2b, "e2b")).toBeCloseTo(0.3312);
+  expect(siteData(e2b, "same-spec").providers[0]?.perVcpuHour).toBeCloseTo(0.0828);
+  expect(hourly(allocationReport("upstash", 4, 7.8, "medium"), "upstash")).toBe(0.2);
+  expect(hourly(allocationReport("boxd", 4, 16, {cpu: 4, memoryMb: 16384}), "boxd")).toBeCloseTo(0.348);
+  const mismatch = siteData(allocationReport("daytona", 2, 8, {cpu: 4, memoryMb: 8192}), "same-spec").providers[0];
+  const { publicationMarkdown } = await import("../src/publication-report.js");
+  expect(publicationMarkdown(allocationReport("daytona", 2, 8, {cpu: 4, memoryMb: 8192}))).toContain("Allocation mismatch");
+  expect(mismatch?.hourly).toBeNull();
+  expect(mismatch?.perVcpuHour).toBeNull();
+  expect(mismatch?.allocationVerification).toMatchObject({verified: false, mismatches: [expect.stringContaining("vCPU")]});
+});
