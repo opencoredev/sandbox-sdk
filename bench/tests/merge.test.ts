@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   classifyFailure,
   mergeSources,
+  reliability,
   readSource,
   sampleSchema,
   type MergeSource,
@@ -30,7 +31,7 @@ function sample(
     startedAt: host.timestamp,
     finishedAt: host.timestamp,
     durationMs: 10,
-    sandboxId: "box",
+    sandboxId: `box-${iteration}`,
     outcome,
     phases: { firstCommandOKMs: 10 },
     hostBefore: host,
@@ -173,6 +174,17 @@ describe("offline v2 merge", () => {
     expect(stats?.reliability.raw?.rate).toBeCloseTo(1 / 3);
     expect(stats?.reliability.excludingLimitsAndClient?.rate).toBe(0.5);
     expect(stats?.comparable).toBe(false);
+  });
+  it("counts a sandbox's retried delete as one failure and keeps every raw row", () => {
+    const conflict = { kind: "failure", note: "Daytona request failed (provider)." } as const;
+    // Cleanup retried the failed delete of sandboxes 0 and 2, writing one row per attempt.
+    const rows = [0, 0, 1, 2, 2].map((i) => sample(i, "burst-10/destroy", i === 1 ? undefined : conflict));
+    const report = mergeSources([source("burst", rows)]);
+    expect(report.samples.filter((s) => s.outcome.kind === "failure")).toHaveLength(4);
+    const rel = reliability(report.samples);
+    expect(rel).toMatchObject({ successes: 1, failures: 2, classes: { "provider-operation": 2 } });
+    expect(rel.raw?.rate).toBeCloseTo(1 / 3);
+    expect(report.summaries.find((s) => s.scenario === "burst-10/destroy")?.reliability.failures).toBe(2);
   });
   it("separates overlapping burst member and cohort identities and inherits quota failures", () => {
     const burst = source("burst", [

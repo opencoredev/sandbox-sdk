@@ -144,9 +144,29 @@ function namespace(sample: Sample) {
   const burst = /^(burst-\d+)\/(.+)$/.exec(sample.scenario);
   return burst ? `${burst[1]}/${burst[2] === "all-ready" ? "cohort" : "member"}` : "iteration";
 }
+/** Delete scenarios, including a burst member's (`burst-10/destroy`). */
+const isDelete = (scenario: string) => /(^|\/)(destroy|restore-destroy)$/.test(scenario);
+/**
+ * Failure rows that count against a provider. Cleanup retries a failed delete and writes a row per
+ * attempt, so a delete counts at most once per sandbox; those rows stay in the raw samples. Other
+ * scenarios keep every row: preview-first-byte's retries on one sandbox are separate attempts.
+ */
+export function countedFailures<T extends Pick<MergedSample, "provider" | "scenario" | "outcome"> & { sandboxId?: string | null }>(
+  rows: readonly T[],
+) {
+  const seen = new Set<string>();
+  return rows.filter((s) => {
+    if (s.outcome.kind !== "failure") return false;
+    if (s.sandboxId == null || !isDelete(s.scenario)) return true;
+    const key = JSON.stringify([s.provider, s.scenario, s.sandboxId]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 export function reliability(rows: readonly MergedSample[]) {
   const successes = rows.filter((s) => s.outcome.kind === "sample").length;
-  const failures = rows.filter((s) => s.outcome.kind === "failure");
+  const failures = countedFailures(rows);
   const classes = {
     "provider-account-limit": failures.filter((s) => s.failureClass === "provider-account-limit")
       .length,

@@ -18,7 +18,7 @@ if [[ $dry != 1 && $mode != help && $mode != policy ]]; then
 fi
 main=command,files-1kb,files-10mb,reconnect,pause-resume,perf,git-clone,npm-install,dev-server,preview-first-byte,edit-loop,tool-replay,pip-install
 lifecycle=command,files-1kb,files-10mb,reconnect,pause-resume,perf
-account_limits=e2b=25,daytona=10,upstash=25,boat=10,boxd=50,freestyle=25,tenki=25,superserve=25
+account_limits=e2b=25,daytona=25,upstash=25,boat=10,boxd=50,freestyle=25,tenki=25,superserve=25
 # Verified publication K25 cohorts; boxd used cap50. These are collection caps, not inferred plan maxima.
 base=(--account-limits "$account_limits" --omit-network-download true --concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
 default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1-pinned)
@@ -33,7 +33,7 @@ wait_batch() {
   if [[ $dry == 1 ]]; then echo 'WAIT_SECONDS 65'; else sleep 65; fi
 }
 non_boat() {
-  local track=$1 providers snapshot_providers burst_providers run_prefix
+  local track=$1 providers run_prefix
   local -a flags
   if [[ $track == default ]]; then
     providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve
@@ -42,20 +42,13 @@ non_boat() {
     providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve
     flags=("${spec_flags[@]}")
   fi
-  snapshot_providers=$providers
-  burst_providers=${providers//daytona,/}
-  if [[ $track == same-spec ]]; then snapshot_providers=${providers//daytona,/}; fi
   run_prefix=sbx53-${track}
   run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 100 --workload-runs 30 --scenarios "$main" --bursts '' --timeout-ms 180000 --max-sandboxes 110 --run "${run_prefix}-main" --out "$results_root/${run_prefix}-main"
-  run bun bench --providers "$snapshot_providers" "${flags[@]}" "${base[@]}" --runs 30 --scenarios snapshot --bursts '' --timeout-ms 600000 --max-sandboxes 70 --run "${run_prefix}-snapshot" --out "$results_root/${run_prefix}-snapshot"
+  run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 30 --scenarios snapshot --bursts '' --timeout-ms 600000 --max-sandboxes 70 --run "${run_prefix}-snapshot" --out "$results_root/${run_prefix}-snapshot"
   run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --cost-runs 10 --scenarios cost --bursts '' --timeout-ms 180000 --max-sandboxes 10 --run "${run_prefix}-cost" --out "$results_root/${run_prefix}-cost"
   run bun bench billing --report "$results_root/${run_prefix}-cost"
   # Do not raise account caps simply to fill a table. Inspect skip notes and document actual limits.
-  run bun bench --providers "$burst_providers" "${flags[@]}" --account-limits "$account_limits" --omit-network-download true --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
-  # An otherwise idle Daytona us/container account fits exactly ten default 1/1/3 machines.
-  if [[ $track == default ]]; then
-    run bun bench --providers daytona --track default --omit-network-download true --runs 1 --scenarios burst --bursts 10 --burst-cohorts 3 --concurrency 10 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --max-sandboxes 40 --max-dollars 25 --account-limits daytona=10 --run "${run_prefix}-daytona-burst" --out "$results_root/${run_prefix}-daytona-burst"
-  fi
+  run bun bench --providers "$providers" "${flags[@]}" --account-limits "$account_limits" --omit-network-download true --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
 }
 boat_batch() {
   local track=$1 suite=$2 batch=$3 scenarios=$main run_id=sbx53-${1}-boat-${2}-${3}
@@ -101,10 +94,8 @@ Boat requires an otherwise idle account (12 starts/minute, 60/hour, 200/day):
  First 30 main iterations include workloads. Cost billing is collected immediately; repeat after settlement.
  Never run Boat K=25 on the current plan: 25 simultaneous creates violate 12 starts/minute.
  Record it as notRun, not a failed provider latency. K=10 uses three separate one-cohort commands.
- Daytona us/container quota: CPU 10 vCPU / memory 10 GiB / disk 30 GiB.
- One same-spec daytona-large (4/8/10) fits; source + restore need 8/16/20, so that suite is excluded.
- Same-spec Daytona K10/K25 and default K25 are excluded and recorded in policy.
- Default Daytona K10 remains enabled separately: exactly 10 vCPU / 10 GiB / 30 GiB; account must be idle.
+ Daytona us/container quota was raised to 250 vCPU / 500 GiB / 2000 GiB on 2026-10-22, so Daytona
+ runs every suite and burst size on both tracks; K25 same-spec daytona-large needs 100 vCPU / 200 GiB / 250 GiB.
  Superserve same-spec runs the 4 vCPU / 8 GiB template sandbox-bench-node22-py311-4x8-pinned.
  A default Superserve account caps sandboxes at 2 vCPU; Superserve raised this account to paid-plan limits on 2026-10-22.
  Generate policy with `bash bench/src/collection-plan.sh policy > /tmp/swarm/collection-policy.json`.

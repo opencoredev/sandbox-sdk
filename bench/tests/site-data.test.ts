@@ -94,3 +94,12 @@ describe("pauseSplit", () => {
     expect(pauseSplit([sample({ scenario: "pause-resume" })], "daytona")).toBeNull();
   });
 });
+
+describe("failureReasons per sandbox", () => {
+  it("counts a retried delete of one sandbox once", () => {
+    const conflict = (sandboxId: string) =>
+      sample({ scenario: "burst-10/destroy", sandboxId, outcome: { kind: "failure", note: "Daytona request failed (provider)." }, failureClass: "provider-operation" });
+    const [reason] = failureReasons([conflict("a"), conflict("a"), conflict("b"), conflict("b")], "daytona");
+    expect(reason?.count).toBe(2);
+  });
+});
