@@ -157,8 +157,12 @@ const machineNotes: Notes = {
   superserve: "not measured: our machine probe needs /dev/shm, which Superserve's VMs don't have",
 };
 
+// Superserve's numbers include our own Python install on every create; reruns on its Python template are under way.
+const retesting =
+  "being re-tested. The template we picked had no Python, so our setup installed it on every create, which inflated this number. New results soon.";
+
 const coldNotes: Notes = {
-  superserve: "includes setup our SDK runs after Superserve's create returns (settings, a check for Python, two small uploads), so it overstates Superserve's own start.",
+  superserve: retesting,
   e2b: "ran on E2B's 512 MB base template; E2B's advertised default is 4 GiB.",
 };
 
@@ -363,13 +367,13 @@ export default function Page() {
                 id: "burst-10",
                 tab: "10 at once",
                 what: "10 creates at once, until all 10 run a command",
-                notes: partialBursts("burst-10"),
+                notes: { ...partialBursts("burst-10"), superserve: retesting },
               },
               {
                 id: "burst-25",
                 tab: "25 at once",
                 what: "25 creates at once, until all 25 run a command",
-                notes: Object.fromEntries(Object.entries(notRun["burst-25"] ?? {}).map(([id, why]) => [id, why.replace(/^not-run: /, "not run: ")])),
+                notes: { ...Object.fromEntries(Object.entries(notRun["burst-25"] ?? {}).map(([id, why]) => [id, why.replace(/^not-run: /, "not run: ")])), superserve: retesting },
               },
             ])}
           />
