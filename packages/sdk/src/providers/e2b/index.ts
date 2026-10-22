@@ -1,5 +1,4 @@
 import type { Sandbox as E2BSandbox, SandboxInfo as E2BInfo, EntryInfo, CommandHandle } from "e2b";
-import { posix } from "node:path";
 import type { Provider, SandboxInfo, ExecInput, FileInfo, NativeProcess, CreateInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { e2bError } from "./errors.js";
@@ -7,6 +6,7 @@ import { e2bError } from "./errors.js";
 export interface E2BOptions {
   /** Defaults to E2B_API_KEY. */
   apiKey?: string;
+  /** Template name or ID, including custom hardware templates. Defaults to base. */
   template?: string;
   domain?: string;
 }
@@ -67,13 +67,42 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
   }
   async function launch(id: string, input: Omit<ExecInput, "timeoutMs">) {
     const box = await client(id);
-    const marker = `/tmp/.sandbox-sdk-e2b-${crypto.randomUUID()}`;
-    // setsid can fork when its caller is already a group leader. Read the actual
-    // group PID from inside the session; E2B's command PID need not be that PID.
-    const script = `printf '%s' "$$" > ${quote(marker)}; exec sh -c ${quote(input.command)}`;
+    // setsid may fork: publish the session leader from inside the session,
+    // before user stdout. The launch stream carries this private first line.
+    const prefix = `sandbox-sdk-pgid-${crypto.randomUUID()}:`;
+    let pending = "";
+    let pid: number | undefined;
+    let confirm = (_pid: number) => {};
+    const confirmed = new Promise<number>(resolve => { confirm = resolve; });
+    const script = `printf '%s%s\\n' ${quote(prefix)} "$$"; exec sh -c ${quote(input.command)}`;
     const handle = await box.commands.run(`exec setsid -w sh -c ${quote(script)}`, {
       background: true, cwd: input.cwd, envs: input.env, user: "root", stdin: input.stdin !== undefined,
-      timeoutMs: 0, onStdout: text => input.onChunk({ stream: "stdout", text }), onStderr: text => input.onChunk({ stream: "stderr", text }),
+      timeoutMs: 0,
+      onStdout: text => {
+        if (pid !== undefined) { input.onChunk({ stream: "stdout", text }); return; }
+        pending += text;
+        const start = pending.indexOf(prefix);
+        if (start === -1) {
+          // Login/BASH_ENV hooks can print before the frame. Retain only a
+          // possible split prefix and stream the preceding output unchanged.
+          const length = Math.max(0, pending.length - prefix.length + 1);
+          if (length) input.onChunk({ stream: "stdout", text: pending.slice(0, length) });
+          pending = pending.slice(length);
+          return;
+        }
+        if (start) input.onChunk({ stream: "stdout", text: pending.slice(0, start) });
+        pending = pending.slice(start);
+        const newline = pending.indexOf("\n", prefix.length);
+        if (newline === -1) return;
+        const value = Number(pending.slice(prefix.length, newline));
+        if (!Number.isSafeInteger(value) || value <= 1) return;
+        pid = value;
+        confirm(value);
+        const rest = pending.slice(newline + 1);
+        pending = "";
+        if (rest) input.onChunk({ stream: "stdout", text: rest });
+      },
+      onStderr: text => input.onChunk({ stream: "stderr", text }),
     });
     const active = handles.get(id) ?? new Set<CommandHandle>(); handles.set(id, active); active.add(handle);
     // Attach rejection handling immediately (a short command may already exit).
@@ -84,14 +113,16 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     });
     void result.catch(() => {});
     try {
-      let pid: number | undefined;
-      const end = Date.now() + 10_000;
-      do {
-        try { const value = Number(await box.files.read(marker, { user: "root" })); if (Number.isSafeInteger(value) && value > 1) { pid = value; break; } } catch (cause) { if (e2bError(cause, id, true).code !== "file_not_found") throw cause; }
-        await sleep(5);
-      } while (Date.now() < end);
-      if (!pid) throw new SandboxError("Process start could not be confirmed. No process-group ID arrived. Retry the command.", { code: "outcome_unknown", provider: "e2b", sandboxId: id });
-      await box.files.remove(marker, { user: "root" });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const unconfirmed = () => new SandboxError("Process start could not be confirmed. No process-group ID arrived. Retry the command.", { code: "outcome_unknown", provider: "e2b", sandboxId: id });
+      let groupPid: number;
+      try {
+        groupPid = await Promise.race([
+          confirmed,
+          result.then(() => { if (pid !== undefined) return pid; throw unconfirmed(); }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(unconfirmed()), 10_000); }),
+        ]);
+      } finally { clearTimeout(timer); }
       if (input.stdin !== undefined) {
         try { await handle.sendStdin(input.stdin); await handle.closeStdin(); }
         catch (cause) {
@@ -102,7 +133,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       }
       const settled = result.finally(() => active.delete(handle));
       void settled.catch(() => {});
-      return { box, handle, pid, result: settled };
+      return { box, handle, pid: groupPid, result: settled };
     } catch (cause) {
       // Without a group ID, killing the sandbox is the only safe cleanup.
       await provider.destroy(id);
@@ -161,8 +192,9 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       } finally { clearTimeout(timer); input.signal?.removeEventListener("abort", cancel); }
     }),
     files: {
+      writeCreatesParents: true,
       read: (id, path) => call(id, async () => new Uint8Array(await (await client(id)).files.read(path, { format: "bytes", user: "root" })), true),
-      write: (id, path, data) => call(id, async () => { const box = await client(id); await box.files.makeDir(posix.dirname(path), { user: "root" }); await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); }, true),
+      write: (id, path, data) => call(id, async () => { const box = await client(id); await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); }, true),
       list: (id, path) => call(id, async () => (await (await client(id)).files.list(path, { user: "root", depth: 1 })).map(fileOf), true),
       stat: (id, path) => call(id, async () => fileOf(await (await client(id)).files.getInfo(path, { user: "root" })), true),
       mkdir: (id, path) => call(id, async () => { await (await client(id)).files.makeDir(path, { user: "root" }); }, true),
