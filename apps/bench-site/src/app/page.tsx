@@ -276,7 +276,7 @@ export default function Page() {
           </Headline>
         </div>
 
-        <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns.">
+        <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns. Being re-tested: these times include setup our own SDK runs after each sandbox starts, which we are taking out. New numbers soon.">
           <TabCard
             label="Start-up"
             tabs={[
@@ -359,7 +359,7 @@ export default function Page() {
           />
         </Section>
 
-        <Section id="scale" title="Bursts" lede="10 or 25 sandboxes started at once, as an agent fanning out would, timed until the last one runs a command. Three bursts per size, so treat these as indicative.">
+        <Section id="scale" title="Bursts" lede="10 or 25 sandboxes started at once, as an agent fanning out would, timed until the last one runs a command. Three bursts per size, so treat these as indicative. Being re-tested for the same reason as cold start.">
           <TabCard
             label="Bursts"
             tabs={metricTabs([
