@@ -1,6 +1,17 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { boxdState, MockBoxd } from "./cloud-guest-mock.js";
-vi.mock("@boxd-sh/sdk", () => ({ Boxd: MockBoxd }));
+const mocks = vi.hoisted(() => ({
+  web: [] as MockBoxd[],
+  snapshotCreate: vi.fn(),
+  snapshotGet: vi.fn(),
+  snapshotDelete: vi.fn(),
+}));
+vi.mock("@boxd-sh/sdk", () => ({ Boxd: class extends MockBoxd {
+  snapshots = { create: mocks.snapshotCreate, get: mocks.snapshotGet, delete: mocks.snapshotDelete };
+} }));
+vi.mock("@boxd-sh/sdk/web", () => ({ Boxd: class extends MockBoxd {
+  constructor() { super(); mocks.web.push(this); }
+} }));
 import { boxd } from "../src/providers/boxd/index.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
 import { createSandbox } from "../src/index.js";
@@ -19,13 +30,11 @@ describe("boxd contract", () => {
     const provider = factory();
     const before = boxdState.creates.length;
     for (const opts of [
-      { size: "small" },
       { network: "none" },
       { network: { allow: [] } },
       { network: { allow: ["example.com"] } },
       { idleTimeoutMs: 1000 },
       { timeoutMs: 1000 },
-      { from: "snap" },
     ] satisfies Partial<Parameters<typeof provider.create>[0]>[])
       await expect(provider.create({ labels: {}, ...opts })).rejects.toMatchObject({
         code: "unsupported",
@@ -98,7 +107,7 @@ describe("boxd contract", () => {
 });
 
 import { cloudRegressions } from "./cloud-regressions.js";
-cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest, true);
+cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest);
 
 test("plain BoxdError local exec deadline maps to timeout without native details", () => {
   const result = boxdError(
@@ -315,17 +324,22 @@ test("large binary reads avoid the truncated native download stream", async () =
   } finally { await box.destroy(); vi.restoreAllMocks(); }
 });
 
- test("binary chunk reads retry one native timeout without replaying writes or auth errors", async () => {
+test("whole-file transfers use the web client and preserve authentication errors", async () => {
   const box = await createSandbox(factory());
   try {
     const data = Uint8Array.from({ length: 2 * 1024 * 1024 }, (_, i) => i % 251);
+    // Lazy file transport is initialized on the first transfer.
     await box.files.write("retry.bin", data);
-    const exec = vi.spyOn(box.native.client.machines, "exec").mockRejectedValueOnce(Object.assign(new Error("exec timed out after 30000ms"), { name: "BoxdError" }));
+    const fileClient = mocks.web.at(-1);
+    if (!fileClient) throw new Error("Missing web transport");
+    const read = vi.spyOn(fileClient.machines.files, "download");
+    const native = vi.spyOn(box.native.client.machines, "exec");
     expect(Buffer.from(await box.files.read("retry.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
-    expect(exec).toHaveBeenCalledTimes(3);
-    exec.mockReset().mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 7 }));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(native).not.toHaveBeenCalled();
+    read.mockRejectedValueOnce(Object.assign(new Error("denied"), { grpcCode: 7 }));
     await expect(box.files.read("retry.bin")).rejects.toMatchObject({ code: "auth" });
-    expect(exec).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
   } finally { vi.restoreAllMocks(); await box.destroy(); }
 });
 
@@ -346,4 +360,95 @@ test("boxd listing skips corrupt or vanished per-machine metadata and preserves 
     await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
     read.mockRestore();
   } finally { await box.destroy(); }
+});
+
+
+test("sizes select boxd's coupled CPU and memory classes before allocation", async () => {
+  const provider = factory();
+  expect(provider.capabilities.has("size")).toBe(true);
+  for (const [size, vcpu] of [["small", 1], ["medium", 2], ["large", 4], [{ cpu: 8, memoryMb: 32768, diskGb: 100 }, 8]] satisfies [NonNullable<Parameters<typeof provider.create>[0]["size"]>, number][]) {
+    const info = await provider.create({ labels: {}, size });
+    try { expect(boxdState.creates.at(-1)?.config?.vcpu).toBe(vcpu); }
+    finally { await provider.destroy(info.id); }
+  }
+  const before = boxdState.creates.length;
+  await expect(provider.create({ labels: {}, size: { cpu: 4, memoryMb: 8192, diskGb: 100 } })).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("4 vCPU / 16 GiB") });
+  expect(boxdState.creates.length).toBe(before);
+});
+
+
+test("create writes metadata during setup without a file round trip", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: { example: "quote'雪" }, key: "new" });
+  try {
+    const entry = boxdState.boxes.get(info.id);
+    expect(entry?.guest.commands).toHaveLength(1);
+    expect(entry?.guest.uploads).toHaveLength(0);
+    expect(entry?.guest.reads).toHaveLength(0);
+    expect(await factory().connect(info.id)).toEqual(info);
+  } finally { await provider.destroy(info.id); }
+});
+
+test("snapshots wait until ready and restore without fresh-machine options", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: {} });
+  mocks.snapshotCreate.mockResolvedValue({ status: "pending" });
+  mocks.snapshotGet.mockResolvedValueOnce({ status: "pending" }).mockResolvedValue({ status: "ready" });
+  try {
+    const saved = await provider.snapshot?.(info.id);
+    expect(saved?.id).toMatch(/^sbxsdk-/);
+    expect(mocks.snapshotGet).toHaveBeenCalledTimes(2);
+    const restored = await createSandbox(provider, { labels: { restored: "yes" }, from: saved?.id });
+    try {
+      expect(boxdState.creates.at(-1)).toMatchObject({ fromSnapshot: saved?.id, config: { autoSuspendTimeout: 0 } });
+      expect(boxdState.creates.at(-1)).not.toHaveProperty("image");
+      expect(boxdState.creates.at(-1)).not.toHaveProperty("env");
+      expect(await factory().connect(restored.id)).toMatchObject({ labels: { restored: "yes" } });
+    } finally { await provider.destroy(restored.id); }
+    for (const overrides of [{ size: "small" }, { env: { X: "1" } }] satisfies Partial<Parameters<typeof provider.create>[0]>[]) {
+      await expect(provider.create({ labels: {}, from: saved?.id, ...overrides })).rejects.toMatchObject({ code: "unsupported" });
+    }
+  } finally { await provider.destroy(info.id); mocks.snapshotGet.mockReset(); }
+});
+
+test("failed snapshot capture removes its artifact", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: {} });
+  mocks.snapshotCreate.mockResolvedValue({ status: "pending" });
+  mocks.snapshotGet.mockResolvedValue({ status: "failed" });
+  mocks.snapshotDelete.mockResolvedValue(undefined);
+  try {
+    await expect(provider.snapshot?.(info.id)).rejects.toMatchObject({ code: "provider" });
+    expect(mocks.snapshotDelete).toHaveBeenCalledWith(mocks.snapshotCreate.mock.calls.at(-1)?.[1]);
+  } finally { await provider.destroy(info.id); }
+});
+
+
+test("snapshot creation failures survive cleanup of a nonexistent capture", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: {} });
+  mocks.snapshotCreate.mockRejectedValueOnce(Object.assign(new Error("quota"), { grpcCode: 8 }));
+  mocks.snapshotDelete.mockRejectedValueOnce(Object.assign(new Error("missing"), { grpcCode: 5 }));
+  try {
+    await expect(provider.snapshot?.(info.id)).rejects.toMatchObject({ code: "quota" });
+  } finally { await provider.destroy(info.id); }
+});
+
+test("unconfirmed snapshot cleanup reports the recoverable capture name", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: {} });
+  mocks.snapshotCreate.mockRejectedValueOnce(Object.assign(new Error("private timeout details"), { grpcCode: 4 }));
+  mocks.snapshotDelete.mockRejectedValueOnce(Object.assign(new Error("private transport details"), { grpcCode: 14 }));
+  try {
+    await expect(provider.snapshot?.(info.id)).rejects.toMatchObject({ code: "outcome_unknown", message: expect.stringMatching(/Snapshot sbxsdk-.*cleanup is unconfirmed after timeout/) });
+  } finally { await provider.destroy(info.id); }
+});
+
+
+test("empty snapshot names cannot silently allocate a fresh machine", async () => {
+  const provider = factory();
+  const before = boxdState.creates.length;
+  for (const from of ["", " "])
+    await expect(provider.create({ labels: {}, from })).rejects.toMatchObject({ code: "invalid_argument" });
+  expect(boxdState.creates.length).toBe(before);
 });
