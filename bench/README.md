@@ -279,3 +279,19 @@ Immediately after create/restore, missing or unreadable labels receive exponenti
 A failed ownership listing does not prove absence. Cleanup and reap make an exact read-only native lookup for quarantined sandboxes. A definitive HTTP 404, Tenki gRPC 5, or a native `deleted`/`destroyed`/`terminated` state resolves the entry as absent without deleting anything. `cleanupResolved` records the original reason, lookup method, result, time and allowlisted status/code/state; the sandbox journal entry is removed. Empty lists, missing guest metadata, paused/stopped states, auth failures, rate limits, timeouts and server errors do not resolve quarantine. Persistent snapshots require their own proof even when a parent is absent. Original failure samples remain failures and carry `cleanupResolved: "absent"` when resolved.
 
 Collection watchdogs should call the pure policy in `src/collection-watchdog.py` (`stop_reasons(report)` or JSON on stdin). During a run, sandbox reviews have `status: "checking"` while bounded deletion drain and exact lookup are pending; only `unresolved` entries (including legacy entries without a status) stop admission. A finished report with a remaining check also blocks collection. `cleanupResolved` and `cleanupReleased` are history, not stop conditions; a newer unresolved entry is never hidden by older history. The orchestration watchdog imports this policy.
+
+## Measure SDK overhead
+
+`scripts/sdk-overhead.ts` measures what Sandbox SDK adds on top of each adapter and each provider's own SDK. It is separate from the benchmark and is not published.
+
+For each provider it creates two labelled sandboxes and records the handle cost, which is `createSandbox()` minus the adapter's `provider.create()` for the same sandbox. On the first sandbox it times run, a 1 KB write, read, edit, list and grep N times as both the SDK call and the leanest adapter call, alternating which goes first. It then pairs run and write with the provider's own SDK call (for example E2B `commands.run` and `files.write`). One warm-up pair per op is not recorded. Every sandbox is destroyed, and the script confirms that none with the run label remain.
+
+```sh
+for k in E2B_API_KEY DAYTONA_API_KEY UPSTASH_BOX_API_KEY BOXD_API_KEY BOXD_ORG FREESTYLE_API_KEY TENKI_API_KEY SUPERSERVE_API_KEY; do
+  export "$k=$(cat ~/.config/sandbox-bench/$k)"
+done
+bun bench/scripts/sdk-overhead.ts --providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve \
+  --n 10 --out /tmp/overhead.json --sdk /path/to/worktree/packages/sdk > /tmp/overhead.md
+```
+
+`--sdk` defaults to this checkout's `packages/sdk`. Build it first with `bun run --cwd packages/sdk build`. The JSON records the SDK commit, with `-dirty` when it has uncommitted changes.
