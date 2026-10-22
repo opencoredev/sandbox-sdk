@@ -234,7 +234,8 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
         sourceSampleIndex,
         sourceIteration: s.iteration,
         iterationNamespace: domain,
-        suite,
+        suite: s.scenario.startsWith("burst-") ? "burst"
+          : /^(snapshot(?:-|$)|create-from-snapshot$|restore-)/.test(s.scenario) ? "snapshot" : suite,
         failureClass: classifyFailure(s),
       });
     });

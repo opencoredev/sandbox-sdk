@@ -397,3 +397,21 @@ it("rejects restored memory and disk mismatches even without a known provisioned
     expect(allocationEvidence(report.samples, "unknown-provider")).toMatchObject({verified: false, equalSpec: false, pricingAllocation: null});
   }
 });
+
+
+it("exports snapshot metrics collected in all runs once alongside dedicated suites", async () => {
+  const {siteData} = await import("../src/site-data.js");
+  const all = source("all", [sample(0, "cold"), sample(0, "snapshot"), sample(0, "create-from-snapshot")]);
+  all.config.scenarios = ["all"];
+  const dedicated = source("snapshot-only", [sample(0, "cold"), sample(0, "snapshot"), sample(0, "create-from-snapshot")]);
+  dedicated.config.scenarios = ["snapshot"];
+  const report = mergeSources([all, dedicated], []);
+  expect(report.samples).toHaveLength(6);
+  const exported = siteData(report);
+  for (const id of ["snapshot", "create-from-snapshot"]) {
+    expect(exported.metrics.find(m => m.id === id)?.values[0]).toMatchObject({n: 2, successes: 2});
+    expect(report.summaries.filter(s => s.scenario === id)).toHaveLength(1);
+  }
+  expect(exported.metrics.find(m => m.id === "cold")?.values[0]?.n).toBe(1);
+  expect(siteData(mergeSources([all], [])).metrics.find(m => m.id === "snapshot")?.values[0]?.n).toBe(1);
+});
