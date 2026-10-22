@@ -452,3 +452,199 @@ test("stalled native transfers retain the thirty-second deadline", async () => {
     vi.useRealTimers();
   }
 });
+
+test.each(["complete", "reject"])(
+  "expired native writes drain late %s before reporting their outcome",
+  async (outcome) => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    const events: string[] = [];
+    let settle = () => {};
+    vi.spyOn(box.native, "writeFile").mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          settle = () => {
+            events.push("native settled");
+            if (outcome === "reject")
+              reject(
+                Object.assign(new Error("late authorization failure"), {
+                  name: "UnauthorizedError",
+                }),
+              );
+            else resolve();
+          };
+        }),
+    );
+    const fallback = vi.spyOn(MockSession.prototype, "run");
+    vi.useFakeTimers();
+    const pending = provider.files.write(box.id, "/home/tenki/late-write", new Uint8Array([1]));
+    const checked = expect(pending).rejects.toMatchObject({ code: "outcome_unknown" });
+    void pending.then(
+      () => events.push("caller succeeded"),
+      () => events.push("caller failed"),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(events).toEqual([]);
+      settle();
+      await checked;
+      expect(events).toEqual(["native settled", "caller failed"]);
+      expect(fallback).not.toHaveBeenCalled();
+    } finally {
+      settle();
+      await pending.catch(() => {});
+      vi.useRealTimers();
+    }
+  },
+);
+
+test.each([16, 14, 12, 5])(
+  "retries a rejected pre-launch stream once without terminating the sandbox (RPC %s)",
+  async (code) => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(code === 16);
+    const refresh = vi.spyOn(box.native, "refreshHintedDataPlane");
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "before-start",
+      error: Object.assign(new Error(code === 12 ? "404 route not ready" : "session not found"), {
+        code,
+      }),
+    });
+    expect(
+      await provider.exec(box.id, {
+        command: "printf once >> recovery-count",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5000,
+        onChunk() {},
+      }),
+    ).toEqual({ exitCode: 0, timedOut: false });
+    expect(tenkiState.streamAttempts).toBe(2);
+    expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
+    if (code === 5) expect(refresh).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(await box.files.read("recovery-count")).toBe("once");
+  },
+);
+
+test("repeated pre-launch auth rejection returns auth after one renewal without closing the VM", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const close = vi.spyOn(box.native, "close");
+  const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
+  tenkiState.streamAttempts = 0;
+  for (let i = 0; i < 2; i++)
+    tenkiState.streamFailures.push({
+      phase: "before-start",
+      error: Object.assign(new Error("expired credential"), { code: 16 }),
+    });
+  await expect(
+    provider.exec(box.id, {
+      command: "touch never-launched",
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 5000,
+      onChunk() {},
+    }),
+  ).rejects.toMatchObject({ code: "auth" });
+  expect(renew).toHaveBeenCalledOnce();
+  expect(tenkiState.streamAttempts).toBe(2);
+  expect(close).not.toHaveBeenCalled();
+  expect(await box.files.exists("never-launched")).toBe(false);
+});
+
+test.each([16, 14])(
+  "never replays a command after its input was submitted (RPC %s)",
+  async (code) => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "after-input",
+      error: Object.assign(new Error("connection rejected after submission"), { code }),
+    });
+    await expect(
+      provider.exec(box.id, {
+        command: "sleep 2; touch leaked-after-rejection",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5000,
+        onChunk() {},
+      }),
+    ).rejects.toBeDefined();
+    expect(tenkiState.streamAttempts).toBe(1);
+    expect(renew).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(await box.files.exists("leaked-after-rejection")).toBe(false);
+  },
+);
+
+test.each([
+  [16, "credential rejected"],
+  [12, "HTTP 404 route not ready"],
+  [5, "session not found"],
+  [14, "NGHTTP2_REFUSED_STREAM"],
+])(
+  "recovers an explicit RPC rejection after body submission but before any response (%s)",
+  async (code, message) => {
+    const provider = factory();
+    tenkiState.streaming = false;
+    const box = await createSandbox(provider);
+    tenkiState.streaming = true;
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "before-response",
+      error: Object.assign(new Error(message), { code }),
+    });
+    expect(
+      await provider.exec(box.id, {
+        command: "printf once >> no-handshake-count",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+        onChunk() {},
+      }),
+    ).toEqual({ exitCode: 0, timedOut: false });
+    expect(tenkiState.streamAttempts).toBe(2);
+    expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
+    expect(close).not.toHaveBeenCalled();
+    expect(await box.files.read("no-handshake-count")).toBe("once");
+  },
+);
+
+test.each(["connection reset", "GOAWAY", "service unavailable"])(
+  "does not replay or destroy the VM when submission has an uncertain outcome (%s)",
+  async (message) => {
+    const provider = factory();
+    tenkiState.streaming = false;
+    const box = await createSandbox(provider);
+    tenkiState.streaming = true;
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated");
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "before-response",
+      error: Object.assign(new Error(message), { code: 14 }),
+    });
+    await expect(
+      provider.exec(box.id, {
+        command: "touch uncertain-launch",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+        onChunk() {},
+      }),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(tenkiState.streamAttempts).toBe(1);
+    expect(renew).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect((await box.run("true")).exitCode).toBe(0);
+  },
+);
