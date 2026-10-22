@@ -73,7 +73,7 @@ export class MockSandbox {
   rewrite = (command: string) => command.replace(/\/workspace|\/tmp\/\.sandbox-sdk[^\s'";)]*|\/tmp\/sdk-bare/g, path => this.mapped(path)).replace(/\.listen\(3000,/g, `.listen(${this.port},`);
   files = {
     read: async (path: string, options: { format?: string } = {}) => { try { const data = await fs.readFile(this.mapped(path)); return options.format === "bytes" ? new Uint8Array(data) : data.toString(); } catch { throw new FileNotFoundError("missing file"); } },
-    write: async (path: string, data: ArrayBuffer) => { await fs.writeFile(this.mapped(path), new Uint8Array(data)); },
+    write: async (path: string, data: ArrayBuffer) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), new Uint8Array(data)); },
     makeDir: async (path: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
     remove: async (path: string, options: { user?: string } = {}) => {
       if (path.startsWith("/tmp/.sandbox-sdk-e2b-") && options.user !== "root") throw new Error("Root-owned marker requires root in sticky /tmp");
@@ -91,6 +91,7 @@ export class MockSandbox {
     run: async (command: string, options: CommandStartOpts = {}) => {
       const env = { ...process.env, ...this.environment, ...options.envs };
       if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = this.rewrite(env.GIT_INDEX_FILE);
+      if (env.BASH_ENV) env.BASH_ENV = this.rewrite(env.BASH_ENV);
       const child = spawn("/bin/bash", ["-l", "-c", this.rewrite(command)], { cwd: this.mapped(options.cwd ?? "/"), env, stdio: ["pipe", "pipe", "pipe"] });
       const handle = new MockCommand(child, options, this.root); this.processes.set(handle.pid, handle);
       if (commandDelayMs) await new Promise(resolve => setTimeout(resolve, commandDelayMs));
@@ -112,7 +113,7 @@ class MockCommand {
     if (!child.pid) throw new Error("Mock command did not start"); this.pid = child.pid;
     let stdout = "", stderr = "";
     this.result = new Promise((resolve, reject) => {
-      child.stdout?.on("data", data => { const text = data.toString().split(root).join(""); stdout += text; if (!this.disconnected) void options.onStdout?.(text); });
+      child.stdout?.on("data", data => { const text = data.toString().split(root).join(""); stdout += text; const match = /sandbox-sdk-pgid-[^:]+:(\d+)\n/.exec(stdout); if (match?.[1]) this.groups.add(Number(match[1])); if (!this.disconnected) void options.onStdout?.(text); });
       child.stderr?.on("data", data => { const text = data.toString().split(root).join(""); stderr += text; if (!this.disconnected) void options.onStderr?.(text); });
       child.on("error", reject);
       child.on("close", (code, signal) => { const result = { exitCode: code ?? (signal === "SIGTERM" ? 143 : 137), stdout, stderr }; this.completedCode = result.exitCode; if (result.exitCode) reject(new CommandExitError(result)); else resolve(result); });

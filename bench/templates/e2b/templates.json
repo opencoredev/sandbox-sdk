@@ -1,0 +1,17 @@
+{
+  "baseTemplate": "base",
+  "e2bSdkVersion": "2.56.0",
+  "builtAt": "2026-10-22",
+  "same-spec": {
+    "name": "sandbox-bench-same-spec",
+    "templateId": "r1h7gud12rf1f6iu29r0",
+    "cpuCount": 4,
+    "memoryMB": 8192
+  },
+  "advertised-default": {
+    "name": "sandbox-bench-advertised-default",
+    "templateId": "jwj8b58bmst9azjl2iim",
+    "cpuCount": 2,
+    "memoryMB": 4096
+  }
+}

@@ -102,3 +102,56 @@ test("cancellation wins when a completed command handle arrives late", async () 
   try { expect(await provider.exec(info.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 10, onChunk() {} })).toEqual({ exitCode: null, timedOut: true }); }
   finally { delayCommandStart(0); await provider.destroy(info.id); }
 });
+
+test("launch strips a fragmented control frame and uses no marker file requests", async () => {
+  const box = await createSandbox(e2b());
+  const run = box.native.commands.run.bind(box.native.commands);
+  const command = vi.spyOn(box.native.commands, "run").mockImplementation((text, options) => {
+    const stdout = options?.onStdout;
+    return run(text, { ...options, onStdout: async chunk => {
+      // Force a boundary inside the private frame, then forward the remainder
+      // (which may include user stdout) in one piece.
+      await stdout?.(chunk.slice(0, 3));
+      await stdout?.(chunk.slice(3));
+    } });
+  });
+  const read = vi.spyOn(box.native.files, "read");
+  const remove = vi.spyOn(box.native.files, "remove");
+  try {
+    const result = await box.run("printf 'hello\\n'; printf error >&2; exit 7");
+    expect(result).toMatchObject({ stdout: "hello\n", stderr: "error", exitCode: 7 });
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+  } finally { command.mockRestore(); read.mockRestore(); remove.mockRestore(); await box.destroy(); }
+});
+
+test("file writes create missing parents without mkdir requests", async () => {
+  const box = await createSandbox(e2b());
+  const mkdir = vi.spyOn(box.native.files, "makeDir");
+  const write = vi.spyOn(box.native.files, "write");
+  try {
+    await box.files.write("new/nested/file", "saved");
+    expect(await box.files.read("new/nested/file")).toBe("saved");
+    expect(mkdir).not.toHaveBeenCalled(); expect(write).toHaveBeenCalledTimes(1);
+  } finally { mkdir.mockRestore(); write.mockRestore(); await box.destroy(); }
+});
+
+test("custom hardware templates accept both names and IDs", async () => {
+  for (const template of ["sandbox-bench-same-spec", "r1h7gud12rf1f6iu29r0", "sandbox-bench-advertised-default", "jwj8b58bmst9azjl2iim"]) {
+    const box = await createSandbox(e2b({ template }));
+    try { expect(calls.at(-1)?.template).toBe(template); }
+    finally { await box.destroy(); }
+  }
+});
+
+
+test("shell startup stdout before the control frame is preserved", async () => {
+  const box = await createSandbox(e2b());
+  try {
+    for (const script of ["echo banner", "printf banner"]) {
+      await box.files.write("banner.sh", script);
+      const result = await box.run("printf hello", { env: { BASH_ENV: "/workspace/banner.sh" } });
+      expect(result).toMatchObject({ stdout: script === "echo banner" ? "banner\nhello" : "bannerhello", exitCode: 0 });
+    }
+  } finally { await box.destroy(); }
+});
