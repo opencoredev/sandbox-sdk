@@ -18,6 +18,7 @@ import { deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import { writeOwnership } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
+import { failureOutcome } from "./failure.js";
 export const scenarioNames = [
   "command",
   "files-1kb",
@@ -376,7 +377,7 @@ export async function runV2(
         finishedAt: clock?.finishedAt ?? new Date().toISOString(),
         durationMs,
         sandboxId: box?.id ?? [...ids][0] ?? null,
-        outcome,
+        outcome: outcome.kind === "failure" ? {...outcome, stage: outcome.stage ?? scenario, elapsedMs: outcome.elapsedMs ?? performance.now() - start} : outcome,
         phases: { ...phaseValues },
         hostBefore: before,
         hostAfter,
@@ -433,7 +434,7 @@ export async function runV2(
           "ms",
           error instanceof Skip
             ? { kind: "skipped", note: error.message }
-            : { kind: "failure", note: errorNote(error) },
+            : failureOutcome(error, sanitize),
           start,
           at,
           before,
@@ -697,7 +698,7 @@ export async function runV2(
                   if (sample.provider === p.name && sample.iteration === index &&
                     ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
                     if (sample.scenario === "create-from-snapshot" && restoreDetails.verification?.matches === false) {
-                      sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`};
+                      sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`, stage: "restore-fingerprint", elapsedMs: performance.now() - restoreStart};
                     }
                     sample.sandboxId = restoreId;
                     sample.fingerprint = restoredFingerprint;

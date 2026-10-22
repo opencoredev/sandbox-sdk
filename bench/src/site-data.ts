@@ -195,7 +195,10 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
   for (const s of samples) {
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
     if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
-    const reason = shortReason(s.outcome.note);
+    const evidence = s.outcome.cause;
+    const attribution = [s.outcome.code, evidence?.httpStatus ? `HTTP ${evidence.httpStatus}` : null, evidence?.providerCode,
+      evidence?.operation ? `operation=${evidence.operation}` : null, evidence?.requestId ? `requestId=${evidence.requestId}` : null].filter(Boolean);
+    const reason = shortReason(s.outcome.note) + (attribution.length ? ` (${attribution.join(", ")})` : "");
     const kind = s.failureClass ?? "provider-operation";
     const key = `${kind}|${reason}`;
     const group = groups.get(key) ?? { kind, reason, count: 0, runs: new Set<string>(), tests: new Set<string>() };

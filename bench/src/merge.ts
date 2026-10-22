@@ -10,6 +10,8 @@ import { pricing } from "./pricing.js";
 import { distribution, wilson } from "./v2-stats.js";
 import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 
+import { failureOutcomeSchema } from "./failure.js";
+
 const finite = z.number().finite();
 const hostSchema: z.ZodType<HostSample> = z
   .object({
@@ -35,7 +37,7 @@ export const sampleSchema = z
     sandboxId: z.string().nullable(),
     outcome: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("sample"), value: finite }).passthrough(),
-      z.object({ kind: z.literal("failure"), note: z.string() }).passthrough(),
+      failureOutcomeSchema.passthrough(),
       z.object({ kind: z.literal("skipped"), note: z.string() }).passthrough(),
       z
         .object({ kind: z.literal("blocked"), blocked_by: z.string(), note: z.string() })

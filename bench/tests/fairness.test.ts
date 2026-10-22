@@ -412,3 +412,23 @@ it.each([false, true])("restores inherit allocation without a size override and 
   expect(row?.fingerprint?.quotaCpus).toBe(mismatch ? 1 : 2);
   expect(report.cleanup[0]?.remaining).toEqual([]);
 });
+
+
+it("persists sanitized SDK attribution and lets site failure reasons explain it", async () => {
+  const {SandboxError} = await import("@opencoredev/sandbox-sdk");
+  const {sampleSchema} = await import("../src/merge.js");
+  const {failureReasons} = await import("../src/site-data.js");
+  vi.stubEnv("BENCH_TEST_SECRET_TOKEN", "private-secret-value");
+  const provider = fake({create: async () => {throw new SandboxError("create private-secret-value failed", {code: "quota", cause: "create HTTP 429: code=CAPACITY requestId=req-123 token=private-secret-value body=do-not-copy-this"});}});
+  const report = await runV2([ready("memory", provider)], await config(), async () => {});
+  const sample = report.samples.find(s => s.scenario === "cold");
+  if (!sample) throw new Error("missing failure");
+  expect(sample.outcome).toMatchObject({kind: "failure", code: "quota", stage: "cold", elapsedMs: expect.any(Number), cause: {httpStatus: 429, providerCode: "CAPACITY", requestId: "req-123", operation: "create"}});
+  expect(sampleSchema.parse(sample).outcome).toEqual(sample.outcome);
+  expect(JSON.stringify(sample)).not.toContain("private-secret-value");
+  expect(JSON.stringify(sample)).not.toContain("do-not-copy-this");
+  expect(failureReasons([{...sample, suite: "main", failureClass: "provider-operation"}], "memory")[0]?.reason).toContain("HTTP 429, CAPACITY, operation=create, requestId=req-123");
+  // The runner's append journal is the immediate failure record, before the final report writer.
+  const lines = (await fs.readFile(resolve(report.config.out, "samples.ndjson"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(lines.find(row => row.scenario === "cold").outcome).toEqual(sample.outcome);
+});

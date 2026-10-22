@@ -10,7 +10,7 @@ export interface HostSample {
 }
 export type Outcome =
   | { kind: "sample"; value: number }
-  | { kind: "failure"; note: string }
+  | import("./failure.js").FailureOutcome
   | { kind: "skipped"; note: string }
   | { kind: "blocked"; blocked_by: string; note: string };
 export interface AllocationMetadata {
