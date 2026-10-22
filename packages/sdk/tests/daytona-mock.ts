@@ -43,7 +43,7 @@ export class MockSandbox {
   };
   fs = {
     downloadFile: async (path: string) => { try { return await fs.readFile(this.mapped(path)); } catch { throw missing(); } },
-    downloadFileStream: async (path: string) => createReadStream(this.mapped(path)),
+    downloadFileStream: async (path: string, _options?: number | Parameters<Sandbox["fs"]["downloadFileStream"]>[1]) => createReadStream(this.mapped(path)),
     uploadFile: async (data: Buffer | string, path: string) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), typeof data === "string" ? await fs.readFile(data) : data); },
     createFolder: async (path: string, _mode: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
     getFileDetails: (path: string) => this.file(path),

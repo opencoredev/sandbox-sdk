@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { afterEach, describe, test, expect, vi } from "vitest";
 import { cleanupMock, mockState, MockDaytona, MockSandbox } from "./daytona-mock.js";
 import { daytona } from "../src/providers/daytona/index.js";
@@ -311,4 +312,30 @@ test("a fresh sandbox remains discoverable while native listing catches up", asy
   expect((await provider.list({})).map(value => value.id)).toContain(box.id);
   await box.native.delete();
   expect(await provider.list({})).toEqual([]);
+});
+
+
+test.each(["abort", "deadline"] as const)("buffered spill download settles and destroys its stream on %s", async mode => {
+  const box = await createSandbox(bufferedFactory());
+  const controller = new AbortController();
+  const stalled = new Readable({ read() {} });
+  const download = vi.spyOn(box.native.fs, "downloadFileStream").mockImplementationOnce(async () => {
+    if (mode === "abort") setTimeout(() => controller.abort(), 10);
+    return stalled;
+  });
+  const pending = Promise.resolve(box.run("python3 -c 'print(\"x\"*100000)'", { signal: controller.signal, timeoutMs: mode === "deadline" ? 1000 : 2000 }));
+  let clearWatchdog = () => {};
+  try {
+    const result = await Promise.race([pending, new Promise<undefined>(resolve => { const watchdog = setTimeout(resolve, mode === "deadline" ? 1500 : 500); clearWatchdog = () => clearTimeout(watchdog); })]);
+    expect(result).toMatchObject({ timedOut: true, exitCode: null });
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(stalled.destroyed).toBe(true);
+    const options = download.mock.calls[0]?.[1];
+    expect(options).toMatchObject({ signal: expect.any(AbortSignal), timeout: expect.any(Number) });
+    if (!options || typeof options === "number") throw new Error("Expected cancellable native download options");
+    expect(options.signal?.aborted).toBe(true);
+    expect(options.timeout).toBeLessThanOrEqual(mode === "deadline" ? 1 : 2);
+  } finally {
+    clearWatchdog(); stalled.destroy(); await pending.catch(() => {});
+  }
 });

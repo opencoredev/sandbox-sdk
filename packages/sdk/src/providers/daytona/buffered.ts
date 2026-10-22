@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
@@ -62,12 +63,20 @@ except (FileNotFoundError,ProcessLookupError): pass
 
 export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
+  const deadline = Date.now() + input.timeoutMs;
+  const transferController = new AbortController();
+  let downloadStream: Readable | undefined;
+  let cancelled = false;
+  let wakeTransfer = () => {};
+  const transferCancelled = new Promise<void>(resolve => { wakeTransfer = resolve; });
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
   let cleanupNeeded = true;
   let confirmed = false;
   let cancellation: Promise<unknown> | undefined;
   let cancellationError: unknown;
   const abort = () => {
+    cancelled = true; wakeTransfer(); transferController.abort(); downloadStream?.destroy();
+    if (confirmed) return;
     cancellation ??= box.process.executeCommand(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`, "/", undefined, 10)
       .then(result => { if (result.exitCode !== 0) throw new Error("Cancellation failed"); })
       .catch(error => { cancellationError = error; });
@@ -82,6 +91,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
     if (text) input.onChunk({ stream, text });
   };
   input.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
   try {
     const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
     const lines = result.result.trimEnd().split("\n");
@@ -89,30 +99,42 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
     if (result.exitCode !== 0 || !summary) throw malformed();
     confirmed = true;
     cleanupNeeded = summary[3] === "1";
-    input.signal?.removeEventListener("abort", abort);
     for (const line of lines) if (line) accept(line);
     if (summary[3] === "1") {
-      const stream = await box.fs.downloadFileStream(`${dir}/output`, 30);
-      let pending = "";
-      for await (const data of stream) {
-        if (!(data instanceof Uint8Array)) throw malformed();
-        pending += Buffer.from(data).toString("ascii");
-        let newline: number;
-        while ((newline = pending.indexOf("\n")) >= 0) {
-          accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
-        }
-        if (pending.length > 5466) throw malformed();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) abort();
+      if (!cancelled) {
+        const drain = async () => {
+          const stream = await box.fs.downloadFileStream(`${dir}/output`, { signal: transferController.signal, timeout: Math.max(1, Math.ceil(remainingMs / 1000)) });
+          downloadStream = stream;
+          // A pending native download can resolve after cancellation won the race.
+          if (cancelled) { stream.destroy(); return; }
+          let pending = "";
+          for await (const data of stream) {
+            if (cancelled) return;
+            if (!(data instanceof Uint8Array)) throw malformed();
+            pending += Buffer.from(data).toString("ascii");
+            let newline: number;
+            while ((newline = pending.indexOf("\n")) >= 0) {
+              accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+            }
+            if (pending.length > 5466) throw malformed();
+          }
+          if (pending) throw malformed();
+        };
+        await Promise.race([drain(), transferCancelled]);
       }
-      if (pending) throw malformed();
+      if (cancelled) return { exitCode: null, timedOut: true };
     }
     for (const stream of ["stdout", "stderr"] as const) {
       const text = decoders[stream].decode(); if (text) input.onChunk({ stream, text });
     }
     await cancellation;
     if (cancellationError !== undefined) throw malformed();
-    const timedOut = summary[2] === "1" || input.signal?.aborted === true;
+    const timedOut = summary[2] === "1" || cancelled;
     return { exitCode: timedOut ? null : Number(summary[1]), timedOut };
   } catch (error) {
+    if (confirmed && cancelled) return { exitCode: null, timedOut: true };
     // A lost native response leaves launch/exit ambiguous. The private marker
     // prevents a late launch and the PID kills any already-started group.
     if (!confirmed) {
@@ -125,6 +147,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
     if (cancellationError !== undefined) throw malformed();
     throw error;
   } finally {
+    clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);
     await cancellation;
     // Small successful commands already removed their directory in the guest.
