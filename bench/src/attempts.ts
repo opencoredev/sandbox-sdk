@@ -47,8 +47,10 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   });
   return { samples: complete, removed: Object.fromEntries(removed) };
 }
-export function checkAttempts(samples: MergedSample[], policy: AttemptPolicy) {
-  const tracks = [...new Set(["default" as const, ...samples.map(s => s.track ?? "default")])];
+export function checkAttempts(samples: MergedSample[], policy: AttemptPolicy, sourceTracks?: ("default" | "same-spec")[]) {
+  const tracks = [...new Set(sourceTracks ?? samples.map(s => s.track ?? "default"))];
+  if (!tracks.length) tracks.push(...new Set([...policy.replacements, ...policy.notRun].map(r => r.track ?? "default")));
+  if (!tracks.length) tracks.push("default");
   return tracks.flatMap(track => cloudProviders.flatMap(provider => {
     const tests: {suite: Suite; scenario: string}[] = [
       ...[...mainTests, ...workloads].map(scenario => ({suite: "main" as const, scenario})),
@@ -69,8 +71,8 @@ export async function attemptsCommand(args: string[]) {
   if (!directory) throw new Error("Usage: bun bench attempts results/publication-final-v2");
   const report = z.object({samples: z.array((await import("./merge.js")).sampleSchema.extend({
     sourceRunId: z.string(), sourceSampleIndex: z.number(), sourceIteration: z.number(), iterationNamespace: z.string(), suite: z.enum(["main", "snapshot", "burst"]), failureClass: z.enum(["provider-account-limit", "client-third-party", "provider-operation"]).nullable(),
-  })), attemptPolicy: attemptPolicySchema}).parse(JSON.parse(await readFile(`${directory}/results.json`, "utf8")));
-  const checks = checkAttempts(report.samples, report.attemptPolicy);
+  })), sources: z.array(z.object({config: z.object({track: z.enum(["default", "same-spec"]).optional()})})).optional(), attemptPolicy: attemptPolicySchema}).parse(JSON.parse(await readFile(`${directory}/results.json`, "utf8")));
+  const checks = checkAttempts(report.samples, report.attemptPolicy, report.sources?.map(s => s.config.track ?? "default"));
   process.stdout.write("track\tprovider\tsuite\ttest\tattempts\ttarget\tstatus/reason\n" + checks.map(r => `${r.track}\t${r.provider}\t${r.suite}\t${r.scenario}\t${r.attempts}\t${r.target}\t${r.pass ? "PASS" : "FAIL"}${r.reason ? `: ${r.reason}` : ""}`).join("\n") + "\n");
   if (checks.some(r => !r.pass)) process.exitCode = 1;
 }

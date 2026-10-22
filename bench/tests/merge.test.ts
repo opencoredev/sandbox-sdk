@@ -328,3 +328,11 @@ it("exports measured allocation safeguards and never labels boxd or capped Super
   mixed.samples.push({...first, fingerprint: allocationFingerprint(2, 8)});
   expect(siteData(mixed, "same-spec").providers[0]?.equalSpec).toBe(false);
 });
+
+it("checks same-spec-only attempt counts without creating a default-track requirement", async () => {
+  const {checkAttempts} = await import("../src/attempts.js");
+  const report = allocationReport("e2b", 4, 8);
+  expect(checkAttempts(report.samples, {replacements: [], notRun: []}).every(r => r.track === "same-spec")).toBe(true);
+  expect(checkAttempts([], {replacements: [], notRun: []}, ["same-spec"]).every(r => r.track === "same-spec")).toBe(true);
+  expect(checkAttempts([], {replacements: [], notRun: [{provider: "e2b", suite: "main", scenario: "cold", track: "same-spec", reason: "not collected"}]}).every(r => r.track === "same-spec")).toBe(true);
+});
