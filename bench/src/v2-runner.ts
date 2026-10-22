@@ -160,7 +160,7 @@ export async function runV2(
     methodology: [
       "Daytona snapshots use its native nameable API with a 600-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
-      "Cold and restore time adapter.create through a bare adapter true command before SDK handle initialization; burst all-ready ends at the slowest bare command. adapterCreateMs, firstCommandMs, coldMs and sdkReadyMs expose phases; sdkReadyMs includes SDK initialization and is excluded from the headline. firstCommandOKMs starts at iteration admission before host sampling and budget work. Live ownership verification and durable journal writes are excluded from cold/burst readiness and recorded as ownershipVerifyMs/ownershipPersistMs. Reconnect/resume still use SDK command readiness.",
+      "Cold and restore time adapter.create through a bare adapter true command before SDK handle initialization; burst all-ready ends at the slowest bare command. adapterCreateMs, firstCommandMs, coldMs and sdkReadyMs expose phases; sdkReadyMs includes SDK initialization and is excluded from the headline. firstCommandOKMs starts at iteration admission before host sampling and budget work. Destroy/restore-destroy time only deletion requests (including retries); live ownership verification and journal writes are recorded separately. Live ownership verification and durable journal writes are excluded from cold/burst readiness and recorded as ownershipVerifyMs/ownershipPersistMs. Reconnect/resume still use SDK command readiness.",
       "Tracks remain separate: default uses provider defaults (local medium); same-spec records explicitly requested allocation and factory template per provider. Fingerprints establish actual resources; a track label does not prove resource equality. Fixture uploads run in separate preparation scenarios before npm-install/tool-replay. Image, package, CDN and filesystem caches are uncontrolled.",
       "Dependent scenarios share a sandbox. A failed cold/reconnect/resume/snapshot blocks subsequent work; blocked_by rows are reported separately and excluded from independent failure denominators. App install/provision/start/preview prerequisites also propagate blocking. Cleanup still runs.",
       "Preview provisioning and dev-server start are separate scenarios. Each HTTP attempt is timed through its first chunk only; cancellation and inter-attempt sleeps are outside that measurement. Failed attempts remain failure rows. Snapshot values time native API only; snapshot-setup and snapshot-total expose client setup/journal overhead.",
@@ -223,17 +223,29 @@ export async function runV2(
     if (!report.cleanupReview?.some(v => v.provider === provider && v.id === id && v.kind === kind))
       report.cleanupReview?.push({provider, id: sanitize(id), kind, reason});
   }
-  async function remove(loaded: ReadyProvider, id: string) {
+  async function remove(loaded: ReadyProvider, id: string, measurement?: {clock: PhaseClock; phases: Record<string, number>}) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id) ||
-          !(await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]))) {
+      const verifyStart = performance.now();
+      let verified: boolean;
+      try { verified = !report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id) &&
+        await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]); }
+      finally { if (measurement) measurement.phases.ownershipVerifyMs = (measurement.phases.ownershipVerifyMs ?? 0) + performance.now() - verifyStart; }
+      if (!verified) {
         review(loaded.name, id, "Live run label and SDK ownership marker could not be verified; no deletion attempted");
         throw new UnverifiedOwnershipError(id);
       }
       try {
-        await deadline(config["timeout-ms"], () => loaded.provider.destroy(id));
+        if (measurement) {
+          const {clock} = measurement;
+          if (clock.start === null) clock.begin();
+          else if (clock.end !== null) {clock.excludedMs += performance.now() - clock.end; clock.end = null;}
+        }
+        try { await deadline(config["timeout-ms"], () => loaded.provider.destroy(id)); }
+        finally { measurement?.clock.finish(); }
         owned.delete(`${loaded.name}/${id}`);
-        await persist();
+        const persistStart = performance.now();
+        try { await persist(); }
+        finally { if (measurement) measurement.phases.ownershipPersistMs = (measurement.phases.ownershipPersistMs ?? 0) + performance.now() - persistStart; }
         return;
       } catch (e) {
         if (attempt === 2) throw e;
@@ -474,6 +486,14 @@ export async function runV2(
       );
       return sample;
     };
+    function measureDestroy(scenario: string, id: string) {
+      const clock = new PhaseClock();
+      const phases: Record<string, number> = {};
+      return measure(scenario, async () => {
+        await remove(p, id, {clock, phases});
+        ids.delete(id);
+      }, phases, clock);
+    }
     async function measure<T>(
       scenario: string,
       action: (signal: AbortSignal) => Promise<T>,
@@ -793,7 +813,7 @@ export async function runV2(
                 } finally {
                   fp = sourceFingerprint;
                 }
-                await measure("restore-destroy", () => restoredBox ? restoredBox.destroy() : tracked.destroy(restoreId));
+                await measureDestroy("restore-destroy", restoreId);
                 const restoredMs = performance.now() - restoreStart;
                 restoredDurationMs += restoredMs;
                 const cost = estimateCost(p.name, restoredMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));
@@ -954,12 +974,7 @@ export async function runV2(
           review(p.name, source.id, "Source snapshot recovery could not be verified/completed while source is live", "snapshot-source");
         }
       }
-      for (const id of ids)
-        await measure("destroy", () =>
-          remove(p, id).then(() => {
-            ids.delete(id);
-          }),
-        );
+      for (const id of ids) await measureDestroy("destroy", id);
       if (!(await pending.drain(timeout))) {
         unsafeProviders.add(p.name);
         state.stop = "Cleanup could not drain";

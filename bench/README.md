@@ -111,7 +111,7 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 | `edit-loop` | Edit fixture HTML marker; poll public preview until the changed bytes are served, bypassing caches |
 | `tool-replay` | After any separately recorded `tool-replay-prepare` fixture upload: 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
 | `pip-install` | Pinned requests/numpy and transitive set into a workspace target; imports and versions verified; pinned pip wheel bootstrap with SHA-256 |
-| `destroy` | Deletion request, retries retained; final listing separately verifies eventual deletion |
+| `destroy` | Deletion requests only, retries retained; ownership checks and journal writes appear separately as `ownershipVerifyMs`/`ownershipPersistMs`; final listing verifies eventual deletion |
 
 The fingerprint records CPU model and flags, affinity-aware `nproc`, cgroup CPU quota and memory limit, host MemTotal, df/lsblk capacity/type, virtualization probes and readable DMI, kernel/distro, user/uid/sudo, installed tools, Python version, steal time, and optional no-key ipinfo egress IP/org/region. A failed IP lookup is null. A provider may expose host CPU/RAM/disk information beyond its allocation; prefer cgroup limits and inspect raw fields. Default Docker reference size is `medium` (2 vCPU / 4 GiB); its shared backing filesystem size is not a dedicated disk allocation.
 

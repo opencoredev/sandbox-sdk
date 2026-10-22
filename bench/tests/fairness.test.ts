@@ -356,6 +356,22 @@ it("reports burst all-ready from bare readiness endpoints", async () => {
   expect(members.every(s => (s.phases.sdkReadyMs ?? 0) > (s.phases.coldMs ?? 0) + 15)).toBe(true);
 });
 
+it.each([0, 500])("excludes %d ms of ownership listing from the destroy request metric", async listingMs => {
+  let now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const backing = fake();
+  const provider: Provider = {...backing,
+    list: async labels => {now += listingMs; return backing.list(labels);},
+    destroy: async id => {now += 7; await backing.destroy(id);},
+  };
+  const report = await runV2([ready("memory", provider)], await config(), async () => {});
+  const sample = report.samples.find(s => s.scenario === "destroy");
+  expect(sample?.outcome).toEqual({kind: "sample", value: 7});
+  expect(sample?.durationMs).toBe(7);
+  expect(sample?.phases.ownershipVerifyMs).toBe(listingMs);
+  expect(await backing.list({})).toEqual([]);
+});
+
 it("marks awaited execution buffered and iteration streaming", async () => {
   const backing = memory(); const markers: (boolean | undefined)[] = [];
   const { createSandbox } = await import("@opencoredev/sandbox-sdk");
