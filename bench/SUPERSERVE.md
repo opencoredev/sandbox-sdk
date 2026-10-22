@@ -10,9 +10,13 @@ Sources: [creation API](https://docs.superserve.ai/api-reference/sandboxes/creat
 
 ## Build the benchmark template
 
-The retained template `sandbox-bench-node22-py311-1x1` is ready (UUID `17f4ed04-5542-4956-8cc2-c17d25234e3e`). It has exactly 1 vCPU, 1024 MiB RAM, and 4096 MiB disk, preserving the provider default resource allocation.
+Use the retained pinned template `sandbox-bench-node22-py311-1x1-pinned` (ready, UUID `522daf7b-fec9-41d8-80cd-361f3b8b1fa8`) for reruns. The earlier unpinned template `sandbox-bench-node22-py311-1x1` (UUID `17f4ed04-5542-4956-8cc2-c17d25234e3e`) is retained for provenance. It has exactly 1 vCPU, 1024 MiB RAM, and 4096 MiB disk, preserving the provider default resource allocation.
 
-The build script uses official `@superserve/sdk` 0.11.4 and starts from `node:22-bookworm-slim`. At build time it installs Python 3, venv, pip, git, tar, coreutils, procps, and CA certificates; creates `/dev/shm` with mode 1777; and checks the tools and Python multiprocessing. The live image has Node 22.23.4, npm 10.9.9, and Python 3.11.2. The script reproduces the build recipe; its upstream image tag and Debian package versions can change on future builds.
+The build script uses official `@superserve/sdk` 0.11.4 and starts from `node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d`. Docker Hub returned this same digest for the original floating tag when checked. The digest fixes the base image; Debian and Debian-security use the dated `snapshot.debian.org` mirrors at `20261022T000000Z`, fixing dependency resolution. Archive signatures remain enabled; only snapshot expiry checks are disabled.
+
+At build time it installs Python 3, venv, pip, git, tar, coreutils, procps, and CA certificates; creates `/dev/shm` with mode 1777; and checks the tools and Python multiprocessing. The live image has Node 22.23.4, npm 10.9.9, and Python 3.11.2.
+
+The requested apt packages are additionally pinned to versions recovered from the original template: `python3=3.11.2-1+b1`, `python3-venv=3.11.2-1+b1`, `python3-pip=23.0.1+dfsg-1`, `git=1:2.39.5-0+deb12u3`, `tar=1.34+dfsg-1.2+deb12u1`, `coreutils=9.1-1`, `procps=2:4.0.2-3`, and `ca-certificates=20250419~deb12u2`. The rebuilt template's complete 141-package Debian inventory matches the original. This fixes the image and package inputs; Superserve's template infrastructure remains provider-controlled.
 
 From the repo root, with `SUPERSERVE_API_KEY` exported:
 
@@ -21,9 +25,18 @@ bun install --cwd bench/templates/superserve --frozen-lockfile
 timeout 960 bun bench/templates/superserve/build.ts 1x1
 ```
 
-A successful build waits for ready and writes only the template name to stdout. The script creates a template and retains it. Reuse the ready template for reruns rather than invoking the build again with an existing name.
+A successful build waits for ready, creates a temporary verification sandbox, checks the runtime versions, and writes the template name plus observed Node/npm/Python versions to stdout. It destroys the verification sandbox and retains the template. Expected output:
 
-For the same-spec track, run the same command with `4x8`. The requested name is `sandbox-bench-node22-py311-4x8`, with 4 vCPU, 8192 MiB RAM, and 4096 MiB disk. **BLOCKED:** the live API rejected it with `vcpu must be 1-2 (your team's limit)`. No 4x8 template was created. Retry after Superserve raises the account limit; do not substitute a smaller machine.
+```text
+sandbox-bench-node22-py311-1x1-pinned
+Node v22.23.4
+npm 10.9.9
+Python 3.11.2
+```
+
+Reuse the ready template for reruns rather than invoking the build again with an existing name.
+
+For the same-spec track, run the same command with `4x8`. The pinned recipe requests `sandbox-bench-node22-py311-4x8-pinned`, with 4 vCPU, 8192 MiB RAM, and 4096 MiB disk. **BLOCKED:** the original unpinned 4x8 attempt was rejected by the live API with `vcpu must be 1-2 (your team's limit)`. No 4x8 template was created; the pinned 4x8 recipe has not been retried against this unchanged limit. Retry after Superserve raises the account limit; do not substitute a smaller machine.
 
 `superserve/python-3.11` lacks Node/npm and `/dev/shm`; `superserve/omnara` has different resources (2 vCPU / 4 GiB). Neither substitutes for this default-size template.
 
@@ -40,9 +53,15 @@ Live checks found node, npm, python3, git, tar, and nohup. `/dev/shm` had mode 1
 
 Reruns change the guest image and repair its shared-memory directory. Resource allocation stays the same. Preserve the historical reports and identify the template in new report metadata; these numbers must not be pooled with the original template's results.
 
+## Pinned-template verification on October 21, 2026
+
+The pinned rebuild preserves the original resources and installed software versions. Five serial adapter create → native bare `true` samples measured 0.714, 0.690, 0.700, 0.506, 0.512 seconds; median **0.690 seconds**. Five separate serial native create → bare `true` samples measured 0.427, 0.207, 0.135, 0.290, 0.283 seconds; median **0.283 seconds**. The earlier unpinned medians were 0.548 seconds including adapter setup and 0.270 seconds native. These small smoke series establish usability, not a performance regression or improvement; they are not publication replacements.
+
+Node 22.23.4, npm 10.9.9, Python 3.11.2, git, tar, and nohup were present. `/dev/shm` was mode 1777 and `multiprocessing.Lock()` acquired and released successfully. The apt history timestamp remained at pinned-template build time. The full 141-package installed Debian inventory matched the original template exactly. All 15 live adapter conformance tests passed against the pinned template. The final native listing contained zero sandboxes; both templates remain ready. Use the pinned template name in report metadata and keep historical results separate.
+
 ## Collection
 
-Run SDK live conformance from `packages/sdk` with `timeout 1200 bunx vitest run tests/superserve.live.test.ts --maxWorkers=1`, with `SANDBOX_SUPERSERVE_LIVE=1`, `SANDBOX_SUPERSERVE_TEMPLATE=sandbox-bench-node22-py311-1x1`, and the key in that subprocess environment. List native sandboxes afterward and delete only run-owned leftovers.
+Run SDK live conformance from `packages/sdk` with `timeout 1200 bunx vitest run tests/superserve.live.test.ts --maxWorkers=1`, with `SANDBOX_SUPERSERVE_LIVE=1`, `SANDBOX_SUPERSERVE_TEMPLATE=sandbox-bench-node22-py311-1x1-pinned`, and the key in that subprocess environment. List native sandboxes afterward and delete only run-owned leftovers.
 
 Publication collection uses 100 main iterations and 30 workload iterations, serial within Superserve. Snapshot/restore uses a separate 30-iteration source. Bursts use three cohorts each at K=10 and K=25. The optional network-download probe is omitted. Each run uses the harness dollar and sandbox admission guards; the combined reserved budget is $14, below the $15 task limit. Commands and exact flags are retained in each source report's `config`.
 
