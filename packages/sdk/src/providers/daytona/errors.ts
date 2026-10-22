@@ -1,6 +1,11 @@
 import { SandboxError, type ErrorCode } from "../../errors.js";
 
-export function daytonaError(error: unknown, sandboxId?: string, file = false, operation = file ? "files" : "request", apiKey = process.env.DAYTONA_API_KEY): SandboxError {
+// These codes are already recognized by this adapter. Unknown wire codes are
+// omitted until verified; a spelling filter alone can admit reflected secrets.
+const knownCodes = new Set(["FILE_NOT_FOUND", "QUOTA_EXCEEDED"]);
+const requestIdShape = /^(?:[a-f0-9]{16,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
+
+export function daytonaError(error: unknown, sandboxId?: string, file = false, operation = file ? "files" : "request", apiKey = process.env.DAYTONA_API_KEY, knownSecrets: Iterable<string> = []): SandboxError {
   if (error instanceof SandboxError) return error;
   const status = error && typeof error === "object" && "statusCode" in error ? error.statusCode : undefined;
   const nativeCode = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -17,16 +22,17 @@ export function daytonaError(error: unknown, sandboxId?: string, file = false, o
   const evidence: { status?: number; providerCode?: string; requestId?: string; operation: string; source?: string } = {
     operation: /^(request|create|restore|list|connect|destroy|exec|process|preview|snapshot|files)$/.test(operation) ? operation : "request",
   };
+  const denied = [...knownSecrets, apiKey, process.env.DAYTONA_API_KEY].filter((value): value is string => typeof value === "string" && value.length > 0);
   const safeToken = (value: unknown, pattern: RegExp): value is string =>
-    typeof value === "string" && pattern.test(value) && !(apiKey && value.includes(apiKey));
+    typeof value === "string" && pattern.test(value) && !denied.some(secret => value.includes(secret));
   if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) evidence.status = status;
-  if (safeToken(nativeCode, /^[A-Z][A-Z0-9_]{0,63}$/)) evidence.providerCode = nativeCode;
+  if (safeToken(nativeCode, /^[A-Z_]{1,64}$/) && knownCodes.has(nativeCode)) evidence.providerCode = nativeCode;
   if (error && typeof error === "object") {
-    if ("source" in error && ["DAYTONA_API", "DAYTONA_DAEMON", "DAYTONA_PROXY"].includes(String(error.source))) evidence.source = String(error.source);
+    if ("source" in error && safeToken(error.source, /^DAYTONA_(API|DAEMON|PROXY)$/)) evidence.source = error.source;
     if ("headers" in error && error.headers && typeof error.headers === "object") {
       for (const key of ["x-request-id", "x-daytona-request-id"]) {
         const value: unknown = Reflect.get(error.headers, key);
-        if (safeToken(value, /^[A-Za-z0-9_-]{1,128}$/)) { evidence.requestId = value; break; }
+        if (safeToken(value, requestIdShape)) { evidence.requestId = value; break; }
       }
     }
   }
