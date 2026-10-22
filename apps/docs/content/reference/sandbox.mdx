@@ -35,6 +35,7 @@ await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 
 - `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability matrix](/reference/capabilities).
 - `labels?: Record<string, string>`: your labels. The SDK adds `sandbox-sdk`.
 - `from?: string`: a snapshot ID to start from. Needs the `"snapshot"` capability.
+- `trackChanges?: boolean`: record a `"start"` checkpoint when the sandbox is created, so `files.changes()` works without `since`. Defaults to `false`. It costs one command in the sandbox, so creation is a little slower. Guide: [See what changed](/concepts/files-and-git#see-what-changed).
 - `signal?: AbortSignal`: abort creation. A sandbox that arrives after the abort is destroyed.
 
 ### Returns
@@ -155,7 +156,7 @@ Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/fi
 | `search(query, { path?, glob?, maxMatches? })` | `{ path, line, text }[]` |
 | `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`. |
 | `mark(name?)` | The checkpoint name |
-| `changes({ since? })` | `{ added, modified, removed, patch }` |
+| `changes({ since? })` | `{ added, modified, removed, patch }`. `since` defaults to `"start"`, which exists only if you created the sandbox with `trackChanges: true` or called `mark("start")`. Otherwise it throws `invalid_argument`. |
 
 ## Git
 

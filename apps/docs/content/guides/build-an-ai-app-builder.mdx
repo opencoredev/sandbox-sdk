@@ -153,4 +153,4 @@ Type "a todo app with a dark theme" and send it. The model scaffolds pages, runs
 - **Reap forgotten sandboxes.** Run [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule with `labels: { app: "builder" }` and `idleOnly: true`.
 - **Restart the server after a resume.** A stopped Vercel sandbox resumes on the next call without its processes. If `box.process("dev").status` is `"failed"`, call `restart()` before you return the preview.
 - **Limit the network.** Pass `network: { allow: [...] }` so generated code can only reach the hosts it needs: the npm registry, plus `fonts.googleapis.com` and `fonts.gstatic.com` if apps use `next/font/google`. See [Machine size and network](/guides/machine-size-and-network).
-- **Show diffs.** [`box.files.changes()`](/concepts/files-and-git#see-what-changed) gives you a patch of everything the model changed since the sandbox was created.
+- **Show diffs.** Create the sandbox with `trackChanges: true`, and [`box.files.changes()`](/concepts/files-and-git#see-what-changed) gives you a patch of everything the model changed since then.

@@ -108,13 +108,15 @@ Each event has `type` (`"added"`, `"modified"`, or `"removed"`) and `path`. The 
 
 ## See what changed
 
-`changes` tells you what files differ from a snapshot the SDK took when it created the sandbox. Use it to show a user what their agent did.
+`changes` tells you what files differ from a checkpoint. Use it to show a user what their agent did.
+
+To compare against the sandbox as it was created, pass `trackChanges: true`. The SDK then records a checkpoint named `"start"`, which `changes()` uses when you leave out `since`:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await using box = await createSandbox(local());
+await using box = await createSandbox(local(), { trackChanges: true });
 
 await box.files.write("app/index.ts", "export {};\n");
 
@@ -123,7 +125,9 @@ console.log(diff.added, diff.modified, diff.removed);
 console.log(diff.patch);
 ```
 
-To compare against a later point, set a checkpoint with `mark` and pass its name:
+`trackChanges` is off by default, because recording the checkpoint runs a command in the sandbox before `createSandbox` returns. Without it, `changes()` with no `since` throws an `invalid_argument` error that tells you to pass `trackChanges: true` or call `mark` first.
+
+To compare against a later point, set a checkpoint with `mark` and pass its name. This works with or without `trackChanges`:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -137,7 +141,7 @@ const diff = await box.files.changes({ since: "before-agent" });
 console.log(diff.patch);
 ```
 
-This works on every provider. The SDK uses git with a hidden index, so it doesn't touch your project's own git history.
+This works on every provider. The SDK uses git with a hidden index, so it doesn't touch your project's own git history. Files inside nested git repositories are compared one by one, like any other file, and `.git` directories are skipped.
 
 ## Git
 
