@@ -123,9 +123,11 @@ export function Scatter({
             const inside = px < mx && fy(p.y) < my;
             const flip = px > 0.62 || (inside && mx - px < px);
             // Two points at nearly the same price print their labels on one line, and on a
-            // narrow plot they collide whatever the gap: the further-right label moves below, the other above.
+            // narrow plot they collide whatever the gap: the dearer label moves above, the cheaper below,
+            // so neither runs over the other's dot. At exactly one price the further-right one moves below.
             const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05);
-            const nudge = twin ? (fx(twin.x) < px ? 15 : -15) : 0;
+            const above = twin && (twin.y === p.y ? fx(twin.x) > px : p.y > twin.y);
+            const nudge = twin ? (above ? -15 : 15) : 0;
             return (
               <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
                 <span
