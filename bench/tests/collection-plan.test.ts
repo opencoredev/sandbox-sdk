@@ -65,3 +65,14 @@ it("keeps collection outputs and policy imports stable from root, bench and outs
   expect(expected).toContain(`--out ${root}/bench/results/sbx53-default-main`);
   expect(plan("help", tmpdir())).toContain("ownership.json");
 });
+
+
+it("omits the public CDN download in every collection invocation", () => {
+  for (const track of ["default", "same-spec"]) {
+    for (const mode of [`${track}-nonboat`, ...[0, 1, 2].map(i => `boat-${track}-${i}`)]) {
+      const commands = plan(mode).split("\n").filter(line => line.startsWith("bun bench "));
+      expect(commands.length).toBeGreaterThan(0);
+      for (const command of commands) expect(command).toContain("--omit-network-download true");
+    }
+  }
+});

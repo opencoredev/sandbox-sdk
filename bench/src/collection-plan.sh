@@ -18,7 +18,7 @@ if [[ $dry != 1 && $mode != help && $mode != policy ]]; then
 fi
 main=command,files-1kb,files-10mb,reconnect,pause-resume,perf,git-clone,npm-install,dev-server,preview-first-byte,edit-loop,tool-replay,pip-install
 lifecycle=command,files-1kb,files-10mb,reconnect,pause-resume,perf
-base=(--concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
+base=(--omit-network-download true --concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
 default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1-pinned)
 spec_flags=(--track same-spec --template e2b=r1h7gud12rf1f6iu29r0 --template daytona=daytona-large --size upstash=medium --size boxd=4:16384 --size tenki=4:8192)
 # E2B template alias: sandbox-bench-same-spec. Boat/Freestyle use defaults.
@@ -44,7 +44,7 @@ non_boat() {
   run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 100 --workload-runs 30 --scenarios "$main" --bursts '' --timeout-ms 180000 --max-sandboxes 110 --run "${run_prefix}-main" --out "$results_root/${run_prefix}-main"
   run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --runs 30 --scenarios snapshot --bursts '' --timeout-ms 600000 --max-sandboxes 70 --run "${run_prefix}-snapshot" --out "$results_root/${run_prefix}-snapshot"
   # Do not raise account caps simply to fill a table. Inspect skip notes and document actual limits.
-  run bun bench --providers "$providers" "${flags[@]}" --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
+  run bun bench --providers "$providers" "${flags[@]}" --omit-network-download true --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
 }
 boat_batch() {
   local track=$1 suite=$2 batch=$3 scenarios=$main run_id=sbx53-${1}-boat-${2}-${3}

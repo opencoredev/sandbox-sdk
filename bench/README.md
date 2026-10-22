@@ -249,3 +249,6 @@ A task means one distinct sandbox lifetime. Whole-sandbox charges belong to its 
 
 
 Boat's [machine documentation](https://docs.boat.dev/machines) lists 50 GB for the default machine as the maximum size of user files, excluding the operating system and pre-installed tools. The pilot measured a 68.58 GiB filesystem. Site exports keep those distinct: `requestedAllocation.provisioned.documentedDisk` carries the documented value, unit, scope and source, while `measuredAllocations[].diskGiB` carries the filesystem measurement. Boat disk differences do not affect allocation verification, restore eligibility or its fixed hourly price.
+
+
+Every collection-plan command passes `--omit-network-download true`, matching the original publication. The public CDN download is not collected because the host rate-limits; guest `urllib` connection resets there do not measure provider performance. CPU, memory, disk and TCP probes remain enabled.
