@@ -142,7 +142,12 @@ describe("Tenki mappings", () => {
     expect(tenkiState.boxes.size).toBe(0);
   });
   test("control-plane methods and readiness waits enforce adapter deadlines", async () => {
-    const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 20, resumeTimeoutMs: 100 });
+    const provider = tenki({
+      authToken: "key",
+      requestTimeoutMs: 100,
+      waitTimeoutMs: 20,
+      resumeTimeoutMs: 100,
+    });
     const box = await createSandbox(provider);
     const current = tenkiState.boxes.get(box.id);
     if (!current) throw new Error("Missing mock session");
@@ -236,6 +241,7 @@ describe("Tenki mappings", () => {
     expect(tenkiState.retainedPeakBytes).toBeLessThan(128 * 1024);
   });
   test("stalled termination streams settle after the cancellation grace period", async () => {
+    tenkiState.streaming = false;
     const provider = factory();
     const box = await createSandbox(provider);
     const run = MockSession.prototype.run;
@@ -344,10 +350,15 @@ describe("Tenki mappings", () => {
 });
 
 test("resume RPC has its own bounded budget before readiness", async () => {
-  const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 1000, resumeTimeoutMs: 400 });
+  const provider = tenki({
+    authToken: "key",
+    requestTimeoutMs: 100,
+    waitTimeoutMs: 1000,
+    resumeTimeoutMs: 400,
+  });
   const box = await createSandbox(provider);
   const resume = vi.spyOn(box.native, "resume").mockImplementationOnce(async () => {
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   });
   await box.resume();
   expect(resume).toHaveBeenCalledTimes(1);
@@ -356,29 +367,88 @@ test("resume RPC has its own bounded budget before readiness", async () => {
   await expect(box.resume()).rejects.toMatchObject({ code: "timeout" });
 });
 
-
 test("pause RPC uses the lifecycle budget rather than the ordinary request deadline", async () => {
   const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 400 });
   const box = await createSandbox(provider);
   vi.spyOn(box.native, "pause").mockImplementationOnce(async () => {
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   });
   await box.pause();
 });
 test("transition budgets reject unbounded values before allocation", async () => {
   for (const value of [0, Infinity, -1, 900001]) {
-    await expect(createSandbox(tenki({ authToken: "key", resumeTimeoutMs: value }))).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(createSandbox(tenki({ authToken: "key", waitTimeoutMs: value }))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(
+      createSandbox(tenki({ authToken: "key", resumeTimeoutMs: value })),
+    ).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(
+      createSandbox(tenki({ authToken: "key", waitTimeoutMs: value })),
+    ).rejects.toMatchObject({ code: "invalid_argument" });
   }
 });
-
 
 test("Tenki listing skips SDK entries with missing creation metadata", async () => {
   const box = await createSandbox(factory());
   const native = tenkiState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock session");
-  for (const key of Object.keys(native.metadata)) if (key !== "sandbox-sdk") delete native.metadata[key];
+  for (const key of Object.keys(native.metadata))
+    if (key !== "sandbox-sdk") delete native.metadata[key];
   expect(await factory().list({})).toEqual([]);
-  vi.spyOn(MockTenki.prototype, "list").mockRejectedValue(Object.assign(new Error("denied"), { name: "UnauthorizedError" }));
+  vi.spyOn(MockTenki.prototype, "list").mockRejectedValue(
+    Object.assign(new Error("denied"), { name: "UnauthorizedError" }),
+  );
   await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
+});
+
+test("explicit resources map correctly and omitted disk defaults to five GiB", async () => {
+  const provider = factory();
+  const size = { cpu: 4, memoryMb: 8192, diskGb: 5 };
+  await provider.create({ labels: {}, size });
+  expect(tenkiState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
+  Reflect.deleteProperty(size, "diskGb");
+  await provider.create({ labels: {}, size });
+  expect(tenkiState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
+});
+
+test("quiet commands use one non-buffering Run stream without polling or cleanup RPCs", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const run = vi.spyOn(MockSession.prototype, "run");
+  expect(
+    await provider.exec(box.id, {
+      command: "true",
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+      onChunk() {},
+    }),
+  ).toEqual({ exitCode: 0, timedOut: false });
+  expect(run).not.toHaveBeenCalled();
+});
+
+test("native file transfers follow a retargeted workspace alongside exec and stat", async () => {
+  const box = await createSandbox(factory());
+  await box.run(
+    "mkdir -p /home/tenki/alternate; rm /workspace; ln -s /home/tenki/alternate /workspace",
+    { cwd: "/home/tenki" },
+  );
+  await box.files.write("nested/value", "native");
+  expect(await box.files.read("nested/value")).toBe("native");
+  expect((await box.run("cat nested/value")).stdout).toBe("native");
+  expect((await box.files.stat("nested/value")).size).toBe(6);
+});
+
+test("stalled native transfers retain the thirty-second deadline", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  vi.spyOn(box.native, "readFile").mockImplementationOnce(() => new Promise(() => {}));
+  vi.useFakeTimers();
+  try {
+    const read = expect(provider.files.read(box.id, "/home/tenki/value")).rejects.toMatchObject({
+      code: "timeout",
+    });
+    await vi.advanceTimersByTimeAsync(30_001);
+    await read;
+  } finally {
+    vi.useRealTimers();
+  }
 });

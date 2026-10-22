@@ -1,7 +1,8 @@
 import type { Session } from "@tenkicloud/sandbox";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
-import { failure } from "./errors.js";
+import { failure, tenkiError } from "./errors.js";
+import { deadline } from "./deadline.js";
 const script = `import os,sys,json,stat,shutil,base64
 op,p=sys.argv[1:3]
 def info(p):
@@ -63,11 +64,50 @@ export function files(
         );
       return result;
     });
+  async function nativePath(id: string, path: string) {
+    if (path === "/workspace" || path.startsWith("/workspace/")) {
+      // Tenki uses RESOLVE_BENEATH: even a link leaving and re-entering
+      // /home/tenki is rejected. Resolve the caller's current root in the guest.
+      const root = (await raw(await get(id), ["readlink", "-f", "/workspace"])).replace(/\n$/, "");
+      return root === "/home/tenki" || root.startsWith("/home/tenki/")
+        ? `${root}${path.slice(10)}`
+        : undefined;
+    }
+    return path.startsWith("/home/tenki/") ? path : undefined;
+  }
+  async function transfer<T>(action: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
+    try {
+      return await deadline(action, 30_000);
+    } catch (error) {
+      // Native APIs reject symlinks escaping /home/tenki. Preserve arbitrary
+      // guest paths with the privileged transport in that case.
+      const code = tenkiError(error).code;
+      if (code === "auth" || code === "invalid_argument" || code === "unsupported")
+        return fallback();
+      throw error;
+    }
+  }
   return {
-    read: async (id, path) => new Uint8Array(Buffer.from(await call(id, "read", path), "base64")),
-    write: async (id, path, data) => {
-      await call(id, "write", path, data);
-    },
+    writeCreatesParents: true,
+    read: (id, path) =>
+      safe(id, async () => {
+        const resolved = await nativePath(id, path);
+        const fallback = async () =>
+          new Uint8Array(Buffer.from(await call(id, "read", path), "base64"));
+        return resolved
+          ? transfer(async () => (await get(id)).readFile(resolved), fallback)
+          : fallback();
+      }),
+    write: (id, path, data) =>
+      safe(id, async () => {
+        const resolved = await nativePath(id, path);
+        const fallback = async () => {
+          await call(id, "write", path, data);
+        };
+        if (resolved)
+          await transfer(async () => (await get(id)).writeFile(resolved, data), fallback);
+        else await fallback();
+      }),
     mkdir: async (id, path) => {
       await call(id, "mkdir", path);
     },
