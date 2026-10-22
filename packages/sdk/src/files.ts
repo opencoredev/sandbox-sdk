@@ -29,6 +29,27 @@ export function globMatch(path: string, glob: string) {
   const pattern = glob.split(/(\*\*\/|\*\*|\*|\?)/).map(part => part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "." : part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")).join("");
   return new RegExp(`^${pattern}$`).test(path) || (!glob.includes("/") && new RegExp(`^${pattern}$`).test(posix.basename(path)));
 }
+// One guest command records the "start" checkpoint and the secret-names file. The equivalent
+// mark("start") plus write() costs about eight sequential provider calls. Returns false when the
+// guest cannot run it (no git or find), so the caller falls back to the per-call path.
+export async function initializeFiles({ provider, id, secretNames }: { provider: Provider; id: string; secretNames: string }): Promise<boolean> {
+  if (provider.name === "memory") return false;
+  const sdk = "/tmp/.sandbox-sdk", gitDir = `${sdk}/changes.git`;
+  const script = [
+    "set -e",
+    `mkdir -p ${sdk}/marks`,
+    `[ -d ${gitDir} ] || git init -q --bare ${gitDir}`,
+    `export GIT_DIR=${gitDir} GIT_WORK_TREE=/workspace GIT_INDEX_FILE=${gitDir}/sdk.index`,
+    "git read-tree --empty",
+    // Same file set as tree(): skip .git entries so nested repositories stay plain files.
+    "find . -mindepth 1 -name .git -prune -o ! -type d -print0 | git update-index --add --remove -z --stdin",
+    "tree=$(git write-tree)",
+    `printf %s "$tree" > ${sdk}/marks/${encodeURIComponent("start")}.json`,
+    `printf %s ${quote(secretNames)} > ${sdk}/secret-names.json`,
+  ].join("\n");
+  const result = await provider.exec(id, { command: script, cwd: "/workspace", env: defaults, timeoutMs: 30_000, streaming: false, onChunk() {} });
+  return result.exitCode === 0;
+}
 export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}): Files & Disposable {
   const fs = provider.files; const watchers = new Set<() => void>();
   const hostExec = promisify(execFile);
