@@ -52,6 +52,7 @@ export async function boatMock() {
   let failStream = false;
   let truncate = false;
   let loseCreate = false;
+  let loseWrite = false;
   const idempotent = new Map<string, Box>();
   const json = (res: ServerResponse, data: unknown, statusCode = 200) => {
     res.writeHead(statusCode, { "content-type": "application/json" });
@@ -250,12 +251,18 @@ export async function boatMock() {
         if (content.length > 5 * 1024 * 1024) throw new Error("Boat file API size limit");
         if (!path.startsWith("/tmp/") && !path.startsWith("/home/user/"))
           throw new Error("Boat file API path restriction");
+        await fs.mkdir(join(box.root, path, ".."), { recursive: true });
         await fs.writeFile(join(box.root, path), content);
         fileWrites.push({
           path,
           mode: (await fs.stat(join(box.root, path))).mode & 0o777,
           directoryMode: (await fs.stat(join(box.root, path, ".."))).mode & 0o777,
         });
+        if (loseWrite) {
+          loseWrite = false;
+          req.socket.destroy();
+          return;
+        }
         json(res, {
           ok: true,
           type: "file.written",
@@ -396,6 +403,9 @@ export async function boatMock() {
     },
     set truncate(value: boolean) {
       truncate = value;
+    },
+    set loseWrite(value: boolean) {
+      loseWrite = value;
     },
     set loseCreate(value: boolean) {
       loseCreate = value;

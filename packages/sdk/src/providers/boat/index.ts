@@ -7,7 +7,8 @@
  * https://docs.boat.dev/machines
  */
 import { deflateRawSync, inflateRawSync } from "node:zlib";
-import type { BoatApi, Sandbox as BoatSandbox } from "@boatdev/sdk";
+import { posix } from "node:path";
+import type { BoatApi, CreateSandboxRequest, Sandbox as BoatSandbox } from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
 import { boatError, failure } from "./errors.js";
 import { execute, quote } from "./exec.js";
@@ -15,6 +16,10 @@ import { execute, quote } from "./exec.js";
 export interface BoatOptions {
   apiKey?: string;
   apiUrl?: string;
+  /** Native machine size. Per-create small/medium/large presets take precedence.
+   * small: 2 CPU/4 GB ($0.018/h); default: 4/8 ($0.036/h);
+   * large: 8/16 ($0.072/h); xlarge: 16/32 ($0.20/h, $100+ plan). */
+  type?: CreateSandboxRequest["type"];
   /** Deadline for each control-plane request. Default: 90 seconds. */
   requestTimeoutMs?: number;
 }
@@ -221,7 +226,7 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           createSandboxRequest: {
             noEnv: true,
             env: input.env,
-            type: input.size === undefined ? undefined : presets[input.size],
+            type: input.size === undefined ? options.type : presets[input.size],
           },
         };
         // A response may be lost after Boat accepts the VM. Retry only with the
@@ -311,18 +316,23 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
       return execute(await api(), id, input, environments.get(id), files);
     }, id),
     files: {
+      writeCreatesParents: true,
       readRange: (id, path, range) => readRange(id, path, range.offset, range.length),
       read: async (id, path) => {
-        // Read follows symlinks, so measure the target rather than lstat metadata.
-        const size = Number(
-          await node(
-            id,
-            "process.stdout.write(String(require('fs').statSync(process.argv[1]).size))",
-            [path],
-          ),
+        // Open, measure and read small files in one guest operation. Following
+        // the same fd preserves symlink behavior and bounds command output.
+        const text = await node(id,
+          "const f=require('fs'),fd=f.openSync(process.argv[1],'r');try{const size=f.fstatSync(fd).size,b=Buffer.alloc(Math.min(size,16384)),n=f.readSync(fd,b,0,b.length,0);process.stdout.write(size+'\\n'+b.subarray(0,n).toString('base64'))}finally{f.closeSync(fd)}",
+          [path],
         );
-        if (!Number.isSafeInteger(size) || size < 0) throw failure("Invalid Boat file size");
-        if (size <= 1024 * 1024) return readRange(id, path, 0, size);
+        const separator = text.indexOf("\n");
+        const size = Number(text.slice(0, separator));
+        if (separator < 0 || !Number.isSafeInteger(size) || size < 0)
+          throw failure("Invalid Boat file size");
+        const first = Buffer.from(text.slice(separator + 1), "base64");
+        if (size <= 16_384) return new Uint8Array(first);
+        if (size <= 1024 * 1024)
+          return new Uint8Array(Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]));
         return safe(async () => {
           // Signed downloads have no size limit, but only accept /tmp or
           // /home/user paths. Snapshot the file into private staging first.
@@ -350,41 +360,49 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
       },
       write: (id, path, data) =>
         safe(async () => {
-          // Boat's files API only accepts /home/user and /tmp. Stage bytes there,
-          // then copy inside the VM so /workspace and large writes still work.
-          // File contents (including core's redaction rules) never enter argv.
+          const sdk = await api();
+          const normalized = posix.normalize(path);
+          // The API creates parents, but canonical paths outside these roots
+          // are rejected. Preserve arbitrary paths and external symlinks below.
+          if (data.length <= 4 * 1024 * 1024 &&
+              (normalized.startsWith("/home/user/") || normalized.startsWith("/tmp/"))) {
+            try {
+              await sdk.writeFile({ sandboxId: id, fileWriteRequest: {
+                path, content: Buffer.from(data).toString("base64"), encoding: "base64",
+              } });
+              return;
+            } catch (error) {
+              if (boatError(error).code !== "invalid_argument") throw error;
+            }
+          }
+          // Keep one private directory per write. Reusing a cached directory
+          // would trust permissions after guest commands can remove/change it.
+          // Copy and cleanup share a command; bytes never enter command text.
           const dir = `/tmp/.sandbox-sdk/write-${crypto.randomUUID()}`;
           const chunkPath = `${dir}/chunk`;
+          let cleaned = false;
           try {
-            await node(
-              id,
-              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/chunk','',{flag:'wx',mode:0o600})",
+            await node(id,
+              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700})",
               [dir],
             );
             const chunkSize = 4 * 1024 * 1024;
             for (let offset = 0; offset < Math.max(data.length, 1); offset += chunkSize) {
-              await (
-                await api()
-              ).writeFile({
-                sandboxId: id,
-                fileWriteRequest: {
-                  path: chunkPath,
-                  content: Buffer.from(data.subarray(offset, offset + chunkSize)).toString(
-                    "base64",
-                  ),
-                  encoding: "base64",
-                },
-              });
-              await node(
-                id,
-                "const f=require('fs');f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],f.readFileSync(process.argv[2]),{flag:process.argv[3]})",
-                [path, chunkPath, offset ? "a" : "w"],
+              const last = offset + chunkSize >= data.length;
+              await sdk.writeFile({ sandboxId: id, fileWriteRequest: {
+                path: chunkPath,
+                content: Buffer.from(data.subarray(offset, offset + chunkSize)).toString("base64"),
+                encoding: "base64",
+              } });
+              await node(id,
+                "const f=require('fs');try{f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],f.readFileSync(process.argv[2]+'/chunk'),{flag:process.argv[3]})}finally{if(process.argv[4]==='true')f.rmSync(process.argv[2],{recursive:true,force:true});else f.rmSync(process.argv[2]+'/chunk',{force:true})}",
+                [path, dir, offset ? "a" : "w", String(last)],
               );
+              if (last) cleaned = true;
             }
           } finally {
-            await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
-              dir,
-            ]).catch(() => {});
+            // Includes unknown upload outcomes (response lost after remote write).
+            if (!cleaned) await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [dir]).catch(() => {});
           }
         }, id),
       stat: async (id, path) => {

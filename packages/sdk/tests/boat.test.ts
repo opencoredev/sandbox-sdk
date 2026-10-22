@@ -11,6 +11,76 @@ afterAll(() => mock.dispose());
 runConformance(factory, { live: true });
 
 describe("Boat official SDK transport", () => {
+  test("small file operations avoid redundant setup and keep bytes out of commands", async () => {
+    const box = await createSandbox(factory());
+    const content = "private-file-content-'雪'-$literal";
+    try {
+      await box.files.write("warm", "warm");
+      let before = mock.calls.length;
+      const commandStart = mock.commands.length;
+      await box.files.write("nested/deep/file", content);
+      expect(mock.calls.length - before).toBe(3);
+      before = mock.calls.length;
+      expect(await box.files.read("nested/deep/file")).toBe(content);
+      expect(mock.calls.length - before).toBe(1);
+      before = mock.calls.length;
+      await box.files.edit("nested/deep/file", { find: "private", replace: "edited" });
+      expect(mock.calls.length - before).toBe(4);
+      expect(await box.files.read("nested/deep/file")).toBe(content.replace("private", "edited"));
+      expect(mock.commands.slice(commandStart).join("\n")).not.toContain(content);
+      for (const file of mock.fileWrites.filter(file => file.path.includes("/write-"))) {
+        expect(file.directoryMode).toBe(0o700);
+        expect(await box.files.exists(file.path)).toBe(false);
+      }
+    } finally { await box.destroy(); }
+  });
+
+  test("lost staged upload responses still remove private bytes", async () => {
+    const box = await createSandbox(factory());
+    try {
+      mock.loseWrite = true;
+      await expect(box.files.write("lost-response", "private bytes")).rejects.toMatchObject({ provider: "boat" });
+      expect((await box.run("find /tmp/.sandbox-sdk -name 'write-*' | wc -l")).stdout.trim()).toBe("0");
+    } finally { mock.loseWrite = false; await box.destroy(); }
+  });
+
+  test("allowed upload paths create parents in a single request", async () => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    try {
+      const path = "/tmp/.sandbox-sdk/direct/nested/file";
+      const bytes = Uint8Array.from([0, 255, 1, 128]);
+      const before = mock.calls.length;
+      await provider.files.write(box.id, path, bytes);
+      expect(mock.calls.length - before).toBe(1);
+      expect(await provider.files.read(box.id, path)).toEqual(bytes);
+    } finally { await box.destroy(); }
+  });
+
+  test("core checkpoint index env is inline while arbitrary overrides stay private", async () => {
+    const box = await createSandbox(factory());
+    try {
+      const before = mock.fileWrites.length;
+      await box.files.mark("inline-index");
+      expect(mock.fileWrites.slice(before).filter(file => file.path.endsWith("/env"))).toHaveLength(0);
+      const value = "quoted 'value' $literal\n雪";
+      expect((await box.run('printf %s "$GIT_INDEX_FILE"', { env: { GIT_INDEX_FILE: value } })).stdout).toBe(value);
+      expect(mock.fileWrites.slice(before).filter(file => file.path.endsWith("/env"))).toHaveLength(1);
+      expect(mock.commands.join("\n")).not.toContain(value);
+    } finally { await box.destroy(); }
+  });
+
+  test("native xlarge option and preset precedence match Boat machine types", async () => {
+    for (const [size, type] of [[undefined, "xlarge"], ["small", "small"], ["medium", "default"], ["large", "large"]] as const) {
+      const box = await createSandbox(boat({ apiKey: "test-key", apiUrl: mock.apiUrl, type: "xlarge" }), { size });
+      try {
+        expect(mock.creates.at(-1)).toMatchObject({ type });
+        expect(box.capabilities.has("pause")).toBe(false);
+        expect(box.capabilities.has("snapshot")).toBe(false);
+      } finally { await box.destroy(); }
+    }
+  });
+
   test("unchanged sandbox env needs no per-run upload and reattached env uploads once", async () => {
     const secret = "sbx44-stable-private-env";
     const provider = factory();
