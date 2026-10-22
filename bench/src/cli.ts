@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { snapshotCleaner, snapshotsFromSource } from "./snapshots.js";
 import { resolve } from "node:path";

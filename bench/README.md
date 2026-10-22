@@ -186,7 +186,7 @@ These additions extend schema v2: `metadata`, `providers[].configuredRegion`, `s
 
 Use the same size/template mapping for every suite in a track. Templates map to `template` for E2B/Superserve, `snapshot` for Daytona, `snapshotId` for Freestyle, and `image` for Tenki/boxd/local. Boat and Upstash expose no template option and reject that flag. Omitted size means provider default; E2B and Freestyle allocations come from templates rather than a size argument. The SDK and harness accept omitted `diskGb` and pass no disk override. Each adapter uses its native default: boxd 100 GB, Daytona 10 GB, Tenki 5 GB. `requestedSize` retains the original request.
 
-For a 4-vCPU / 8-GiB target, use a prebuilt E2B template, Daytona's `daytona-large` snapshot with `DAYTONA_TARGET=us`, Upstash `medium`, Boat default, boxd `4:16384` (its nearest allocation is 16 GiB), Freestyle default, Tenki `4:8192:5`, and no Superserve entry until a 4-vCPU template exists. Its account currently caps templates at 2 vCPU. E2B uses `sandbox-bench-same-spec` (`r1h7gud12rf1f6iu29r0`). This is a target comparison with disclosed exceptions, not exact hardware equivalence.
+For a 4-vCPU / 8-GiB target, use a prebuilt E2B template, Daytona's `daytona-large` snapshot with `DAYTONA_TARGET=us`, Upstash `medium`, Boat default, boxd `4:16384` (its nearest allocation is 16 GiB), Freestyle default, Tenki `4:8192` (native 5-GB disk default), and no Superserve entry until a 4-vCPU template exists. Its account currently caps templates at 2 vCPU. E2B uses `sandbox-bench-same-spec` (`r1h7gud12rf1f6iu29r0`). This is a target comparison with disclosed exceptions, not exact hardware equivalence.
 
 `bun bench merge` retains both tracks in JSON/NDJSON and writes separate `index.default.html`, `index.same-spec.html`, `results.default.md`, and `results.same-spec.md` when those tracks exist. `index.html` / `results.md` show default when present, otherwise same-spec. Every HTML/Markdown report uses only its selected track.
 
@@ -212,3 +212,27 @@ Every `site-data --track ...` export contains `track` at the root and on every p
 The root `allocations[]` repeats this evidence per provider/track as `requested`, `measured`, `equalSpec`, and `verification`. Each provider's `hardware` view remains descriptive; do not use its first/mode observation to override these safeguards. A false `equalSpec` can still have a valid price for the actual allocation (for example, boxd 4/16).
 
 Restores omit size overrides and inherit their snapshot's allocation. `restore-fingerprint.details.verification` records source and restored resources, `matches` (null if the source fingerprint is unavailable), and mismatched dimensions. CPU must match exactly; usable memory and disk allow 5%. A mismatch is a failed restore-fingerprint observation; its fingerprint and cleanup remain recorded.
+
+
+### SBX-53 collection windows
+
+The executable recommendations are in `src/collection-plan.sh` (also copied to `/tmp/swarm/core-commands.sh` for orchestration). Run from the repository root. After all adapter merges, build and verify the SDK, then export `BENCH_COLLECTION_COMMIT` as that complete immutable commit. Every invocation refuses a different checkout or uncommitted collection code. Both tracks and all windows must use the same pinned commit.
+
+```sh
+# Preview exact commands without credentials, provider calls or waits:
+BENCH_PLAN_DRY_RUN=1 bash bench/src/collection-plan.sh default-nonboat
+BENCH_PLAN_DRY_RUN=1 bash bench/src/collection-plan.sh same-spec-nonboat
+# Generate documented capability/quota exclusions for the offline merge:
+bash bench/src/collection-plan.sh policy > /tmp/swarm/collection-policy.json
+```
+
+`default-nonboat` covers E2B, Daytona, Upstash, boxd, Freestyle, Tenki and Superserve. It collects 100 lifecycle/probe iterations, workloads on the first 30, a separate 30-iteration snapshot/restore suite, and three cohorts each for K=10/K=25, subject to verified account caps. Cold, fingerprint and destroy always run. The main list explicitly includes command, both file sizes, reconnect, pause/resume, performance, git-clone, npm-install, dev-server, preview-first-byte, edit-loop, tool-replay and pip-install. Across the three suites this covers all 27 site metric IDs. Missing capabilities or capacity remain documented exceptions. No old source data should be pooled into this rerun.
+
+The default templates are E2B `base` and Superserve `sandbox-bench-node22-py311-1x1`, with Node and Python already built in. `same-spec-nonboat` uses E2B `sandbox-bench-same-spec` (`r1h7gud12rf1f6iu29r0`), Daytona `daytona-large` in target `us`, Upstash `medium`, boxd 4/16, Freestyle default, and Tenki `4:8192`. Boat defaults are collected separately in both tracks. Superserve stays out of same-spec until a 4-vCPU template exists; the current account cap is 2 vCPU. boxd remains explicitly unequal via `equalSpec: false`.
+
+Boat requires an otherwise idle account, because its limits are shared with other callers: 12 creates/minute, 60/hour, 200/day. Each batch has at most 10 creates and waits 65 seconds after completion before another batch. Use these windows:
+
+- Day 1: `boat-default-0` collects 60 main starts. At least 65 minutes after that window's last creation, `boat-default-1` collects 40 main and 20 snapshot-suite starts. After another gap of at least 65 minutes from the last creation, `boat-default-2` collects 10 snapshot-suite starts and three isolated K=10 cohorts, for 40 starts. Total: 160 starts. Only the first 30 main iterations run workloads.
+- Day 2: wait at least 26 hours after Day 1's last creation, then run `boat-same-spec-0`, `boat-same-spec-1` and `boat-same-spec-2` with the same 65-minute gaps. Total: 160 starts.
+
+Invoke a window with `bash bench/src/collection-plan.sh WINDOW`. Never attempt Boat K=25 on this plan: a simultaneous cohort would violate the 12-create/minute quota. The generated policy records both tracks' K=25 as not run and snapshots as unsupported. It also records Superserve's same-spec exclusion. Verify and add any other account-cap reasons before using this policy with `bun bench merge --policy ...`; do not raise caps simply to fill the metric table.

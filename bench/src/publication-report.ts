@@ -1,5 +1,4 @@
 import { allocationEvidence } from "./allocation.js";
-import { resources } from "./fingerprint.js";
 import { computeHourly, pricing } from "./pricing.js";
 import { distribution } from "./v2-stats.js";
 import {
