@@ -36,7 +36,8 @@ it("uses the verified same-spec mapping and leaves capped Superserve out", () =>
   expect(output).toContain("--size upstash=medium");
   expect(output).toContain("--size boxd=4:16384");
   expect(output).toContain("--size tenki=4:8192 ");
-  expect(output).not.toContain("superserve=");
+  expect(output).not.toContain("--template superserve=");
+  expect(output).not.toMatch(/--providers [^ ]*superserve/);
   expect(script).toContain("DAYTONA_TARGET=us");
 });
 it("keeps Boat windows below verified quotas and documents impossible K25", () => {
@@ -110,4 +111,14 @@ it("plans isolated sequential cost tasks and recollectable billing for both trac
   }
   expect(script).toContain("set -euo pipefail");
   expect(plan("help")).toContain("170 starts");
+});
+
+it("sets verified explicit account limits for every launched provider", () => {
+ for (const mode of ["default-nonboat", "same-spec-nonboat", "boat-default-0", "boat-default-1", "boat-default-2", "boat-same-spec-0", "boat-same-spec-1", "boat-same-spec-2"]) {
+  for (const line of plan(mode).split("\n").filter(l => l.startsWith("bun bench --"))) {
+   const providers = /--providers ([^ ]+)/.exec(line)?.[1]?.split(",") ?? [];
+   const limits = Object.fromEntries([...line.matchAll(/--account-limits ([^ ]+)/g)].flatMap(m => (m[1] ?? "").split(",").map(entry => entry.split("="))));
+   for (const provider of providers) expect(Number(limits[provider]), `${mode}: ${provider}`).toBeGreaterThanOrEqual(line.includes("--bursts 10,25") ? 25 : 1);
+  }
+ }
 });

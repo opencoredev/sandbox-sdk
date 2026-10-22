@@ -18,7 +18,9 @@ if [[ $dry != 1 && $mode != help && $mode != policy ]]; then
 fi
 main=command,files-1kb,files-10mb,reconnect,pause-resume,perf,git-clone,npm-install,dev-server,preview-first-byte,edit-loop,tool-replay,pip-install
 lifecycle=command,files-1kb,files-10mb,reconnect,pause-resume,perf
-base=(--omit-network-download true --concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
+account_limits=e2b=25,daytona=10,upstash=25,boat=10,boxd=50,freestyle=25,tenki=25,superserve=25
+# Verified publication K25 cohorts; boxd used cap50. These are collection caps, not inferred plan maxima.
+base=(--account-limits "$account_limits" --omit-network-download true --concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
 default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1-pinned)
 spec_flags=(--track same-spec --template e2b=r1h7gud12rf1f6iu29r0 --template daytona=daytona-large --size upstash=medium --size boxd=4:16384 --size tenki=4:8192)
 # E2B template alias: sandbox-bench-same-spec. Boat/Freestyle use defaults.
@@ -49,7 +51,7 @@ non_boat() {
   run bun bench --providers "$providers" "${flags[@]}" "${base[@]}" --cost-runs 10 --scenarios cost --bursts '' --timeout-ms 180000 --max-sandboxes 10 --run "${run_prefix}-cost" --out "$results_root/${run_prefix}-cost"
   run bun bench billing --report "$results_root/${run_prefix}-cost"
   # Do not raise account caps simply to fill a table. Inspect skip notes and document actual limits.
-  run bun bench --providers "$burst_providers" "${flags[@]}" --omit-network-download true --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
+  run bun bench --providers "$burst_providers" "${flags[@]}" --account-limits "$account_limits" --omit-network-download true --runs 1 --scenarios burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --seed 45 --timeout-ms 180000 --max-sandboxes 110 --max-dollars 25 --run "${run_prefix}-burst" --out "$results_root/${run_prefix}-burst"
   # An otherwise idle Daytona us/container account fits exactly ten default 1/1/3 machines.
   if [[ $track == default ]]; then
     run bun bench --providers daytona --track default --omit-network-download true --runs 1 --scenarios burst --bursts 10 --burst-cohorts 3 --concurrency 10 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --max-sandboxes 40 --max-dollars 25 --account-limits daytona=10 --run "${run_prefix}-daytona-burst" --out "$results_root/${run_prefix}-daytona-burst"

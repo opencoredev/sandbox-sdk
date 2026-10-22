@@ -18,6 +18,7 @@ import { DeadlineError, deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import { writeOwnership } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
+import { collectionPolicy } from "./collection-policy.js";
 import { failureOutcome } from "./failure.js";
 export const scenarioNames = [
   "command",
@@ -939,6 +940,15 @@ export async function runV2(
   for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
    for (const k of costSuite ? [] : config.bursts)
     for (const p of ready) {
+      const scenario = `burst-${k}/all-ready`;
+      const excluded = collectionPolicy().notRun.find(rule =>
+        rule.provider === p.name && (rule.track ?? "default") === config.track && rule.suite === "burst" &&
+        (rule.scenario === scenario || rule.scenario === `burst-${k}/*`));
+      if (excluded) {
+        const info = report.providers.find(v => v.name === p.name);
+        if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
+        continue;
+      }
       const configured =
         config["account-limits"][p.name] ??
         { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5 }[p.name] ??
@@ -948,6 +958,8 @@ export async function runV2(
         .then((v) => v.length)
         .catch(() => account);
       if (k > Math.min(account - existing, config.concurrency)) {
+        const reason = `Burst ${k} admission stopped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
+        report.admissionStopped?.push({provider: p.name, scenario, iteration: cohortIndex, track: config.track, reason});
         const info = report.providers.find((v) => v.name === p.name);
         if (info)
           info.note += `; burst ${k} skipped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
