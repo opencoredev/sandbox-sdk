@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { priceAtSize, pricing } from "./pricing.js";
+import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
 import { hourly } from "./publication-report.js";
 import { publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
@@ -286,6 +287,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const allocation = allocationEvidence(r.samples, name);
     return {
       id: name,
+      costPerTask: costPerTask(r, name),
       track,
       requestedAllocation: {...allocation.requested, compute: allocation.requestedCompute, provisioned: allocation.provisioned},
       measuredAllocations: allocation.measured,

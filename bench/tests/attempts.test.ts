@@ -48,3 +48,19 @@ print(json.dumps({'urls':urls,'tcpConnections':len(connections)}))`;
   expect(run(raw)).toEqual({urls: ["https://speed.cloudflare.com/__down?bytes=25000000"], tcpConnections: 5});
   expect(run(performanceScript(raw, true))).toEqual({urls: [], tcpConnections: 5});
 });
+
+it("requires ten cost attempts per track and keeps capability exclusions explicit", async () => {
+  const {attemptTarget} = await import("../src/attempts.js");
+  const {collectionPolicy} = await import("../src/collection-policy.js");
+  expect(attemptTarget("cost", "tool-replay")).toBe(10);
+  expect(attemptTarget("cost", "cold")).toBeNull();
+  const rows = checkAttempts([], collectionPolicy(), ["same-spec"]);
+  expect(rows.find(r => r.provider === "superserve" && r.suite === "cost")?.pass).toBe(true);
+  expect(rows.find(r => r.provider === "daytona" && r.suite === "cost")).toMatchObject({pass: false, target: 10, reason: null});
+});
+it("rejects shared cost suites and oversized Boat quota windows", async () => {
+  const {parseV2} = await import("../src/v2-config.js");
+  expect(() => parseV2(["--scenarios", "cost,command"])).toThrow("must run alone");
+  expect(() => parseV2(["--providers", "boat", "--scenarios", "cost", "--cost-runs", "11"])).toThrow("quota window");
+  expect(parseV2(["--providers", "boat", "--scenarios", "cost"])["cost-runs"]).toBe(10);
+});

@@ -448,3 +448,84 @@ it("shows Boat documented user-file disk separately from measured filesystem wit
   expect(provider?.measuredAllocations.map(r => r.diskGiB)).toEqual([68.58, 100]);
   expect(provider?.hourly).toBe(0.036);
 });
+
+function costSource(provider = "daytona", kind: "billed" | "metered" = "billed", complete = true) {
+  const input = source(`cost-${provider}`, [0, 1].flatMap(i => ["cold", "tool-replay", "destroy", "sandbox-lifetime"].map(scenario => ({...sample(i, scenario), provider, sandboxId: `task-${i}`}))));
+  input.config.scenarios = ["cost"];
+  input.providers = [{name: provider, configuredRegion: null, note: "test"}];
+  input.costBilling = {collectedAt: host.timestamp, providers: [{provider, source: "native usage", account: {window: {start: host.timestamp, end: host.timestamp}}, sandboxes: [1, 3].map((usd, i) => ({id: `task-${i}`, source: "native per-ID usage", cost: {kind, complete, confidence: "medium", scope: "window", usd}}))}]};
+  return input;
+}
+it.each(["billed", "metered"] as const)("exports a %s median only for isolated cost tasks and keeps latency separate", async (kind) => {
+  const {costPerTask} = await import("../src/task-cost.js");
+  const {siteData} = await import("../src/site-data.js");
+  const cost = costSource("daytona", kind);
+  const r = mergeSources([source("main", [sample(0)]), cost]);
+  expect(r.samples.filter(s => s.suite === "cost")).toHaveLength(8);
+  expect(costPerTask(r, "daytona")).toMatchObject({usd: 2, kind, n: 2, settled: true});
+  const site = siteData(r);
+  expect(site.providers.find(p => p.id === "daytona")?.costPerTask).toMatchObject({usd: 2, kind});
+  expect(site.metrics.find(m => m.id === "cold")?.values[0]?.n).toBe(1);
+});
+it("keeps pending native costs in their own kind and never mixes or fills missing evidence", async () => {
+  const {costPerTask} = await import("../src/task-cost.js");
+  const cost = costSource("daytona", "billed", false);
+  expect(costPerTask(mergeSources([cost]), "daytona")).toMatchObject({usd: 2, kind: "billed", settled: false});
+  const billing = cost.costBilling?.providers[0];
+  if (!billing) throw new Error("missing fixture");
+  billing.sandboxes[1] = {id: "task-1", source: "meter", cost: {kind: "metered", usd: 3, complete: true, confidence: "medium", scope: "sandbox-lifetime"}};
+  expect(costPerTask(mergeSources([cost]), "daytona")).toMatchObject({usd: null, n: 0, settled: false});
+  billing.sandboxes.pop();
+  expect(costPerTask(mergeSources([cost]), "daytona").usd).toBeNull();
+});
+it("requires a billing window enclosing the task and a successful replay/destruction", async () => {
+  const {costPerTask} = await import("../src/task-cost.js");
+  const cost = costSource("boxd", "metered", false);
+  expect(costPerTask(mergeSources([cost]), "boxd")).toMatchObject({kind: "metered", usd: 2, settled: false});
+  const provider = cost.costBilling?.providers[0];
+  if (!provider) throw new Error("missing fixture");
+  provider.account = null;
+  expect(costPerTask(mergeSources([cost]), "boxd").usd).toBeNull();
+  const failed = costSource();
+  const replay = failed.samples.find(s => s.scenario === "tool-replay");
+  if (!replay) throw new Error("missing fixture");
+  replay.outcome = {kind: "failure", note: "task failed"};
+  expect(costPerTask(mergeSources([failed]), "daytona").usd).toBeNull();
+});
+it("loads adjacent billing on cost sources at merge time for later recollection", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bench-cost-billing-"));
+  try {
+    const input = costSource();
+    const billing = input.costBilling;
+    delete input.costBilling;
+    await writeFile(join(dir, "results.json"), JSON.stringify(input));
+    await writeFile(join(dir, "samples.ndjson"), input.samples.map(s => JSON.stringify(s)).join("\n") + "\n");
+    expect((await readSource(dir)).costBilling).toBeUndefined();
+    await writeFile(join(dir, "billing.json"), JSON.stringify(billing));
+    expect((await readSource(dir)).costBilling).toEqual(billing);
+  } finally {await rm(dir, {recursive: true, force: true});}
+});
+it.each(["tenki", "freestyle"])("estimates %s task lifetimes only at a verified allocation", async (provider) => {
+  const {costPerTask} = await import("../src/task-cost.js");
+  const cost = costSource(provider);
+  const size = {cpu: 4, memoryMb: 8192};
+  for (const s of cost.samples) s.requestedSize = size;
+  const main = source(`main-${provider}`, [{...sample(0, "fingerprint"), provider, requestedSize: size, fingerprint: {cpuModel: "test", flags: [], nproc: 4, quotaCpus: 4, cpuMax: "400000 100000", memoryMax: "8589934592", memTotalBytes: 8 * 1024 ** 3, memoryBytes: 7.9 * 1024 ** 3, diskBytes: 32 * 1024 ** 3, df: "", lsblk: "", virtualization: "", hypervisor: false, dmi: "", kernel: "test", distro: "test", user: "test", uid: 1000, sudo: false, stealPercent: 0, egress: null, tools: {}, runtime: "test"}}]);
+  expect(costPerTask(mergeSources([cost]), provider).usd).toBeNull();
+  const valid = costPerTask(mergeSources([main, cost]), provider);
+  expect(valid).toMatchObject({kind: "estimate", n: 2, settled: true, confidence: "low"});
+  expect(valid.usd).toBeGreaterThan(0);
+  const fp = main.samples[0]?.fingerprint;
+  if (!fp) throw new Error("missing fixture");
+  fp.quotaCpus = 2;
+  expect(costPerTask(mergeSources([main, cost]), provider).usd).toBeNull();
+});
+it("prices undocumented Tenki defaults from the matching observed fingerprint", async () => {
+  const {costPerTask} = await import("../src/task-cost.js");
+  const cost = costSource("tenki");
+  const {fingerprintSchema} = await import("../src/fingerprint.js");
+  const fp = fingerprintSchema.parse({cpuModel: "test", flags: [], nproc: 2, quotaCpus: 2, cpuMax: "200000 100000", memoryMax: "4294967296", memTotalBytes: 4 * 1024 ** 3, memoryBytes: 3.9 * 1024 ** 3, diskBytes: 5 * 1024 ** 3, df: "", lsblk: "", virtualization: "", hypervisor: false, dmi: "", kernel: "test", distro: "test", user: "test", uid: 1000, sudo: false, stealPercent: 0, egress: null, tools: {}, runtime: "test"});
+  const main = source("tenki-default", [{...sample(0, "fingerprint"), provider: "tenki", fingerprint: fp}]);
+  expect(costPerTask(mergeSources([main, cost]), "tenki")).toMatchObject({kind: "estimate", n: 2, settled: true});
+  expect(costPerTask(mergeSources([main, cost]), "tenki").usd).toBeGreaterThan(0);
+});

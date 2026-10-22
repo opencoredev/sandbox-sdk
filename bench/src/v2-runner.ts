@@ -228,6 +228,7 @@ export async function runV2(
         if (attempt === 2) throw e;
       }
   }
+  const costSuite = config.scenarios.length === 1 && config.scenarios[0] === "cost";
   function selected(scenario: string) {
     return config.scenarios.includes("all") || config.scenarios.includes(scenario);
   }
@@ -273,7 +274,7 @@ export async function runV2(
       p.name,
       estimateCost(
         p.name,
-        timeout * (burst ? 2 : scenarioNames.length + 4),
+        timeout * (costSuite ? 4 : burst ? 2 : scenarioNames.length + 4),
         state.fp ? resources(state.fp) : { cpu: 8, memoryGiB: 16, diskGiB: 100 },
       ) ?? dollarsMax,
     );
@@ -508,6 +509,12 @@ export async function runV2(
       );
       if (!box) return;
       let active: Sandbox = box;
+      if (costSuite) {
+        const prep = await measure("tool-replay-prepare", () => uploadFixture(active));
+        if (prep.kind !== "success") dependencies.set("tool-replay", "tool-replay-prepare");
+        await measure("tool-replay", () => replay(active, timeout));
+        return;
+      }
       // A single guest exec for the fingerprint, including the 1s steal interval.
       await measure("fingerprint", async (signal) => {
         if (p.name === "memory") throw new Skip("Memory is an offline fake");
@@ -913,19 +920,24 @@ export async function runV2(
   }
   const jobs = roundRobin(
     ready.map((p) => p.name),
-    Math.max(config.runs, config["workload-runs"] ?? config.runs),
+    costSuite ? config["cost-runs"] : Math.max(config.runs, config["workload-runs"] ?? config.runs),
   );
   await schedule(
     config.scenarios.includes("burst") && !config.scenarios.includes("all") ? [] : jobs,
-    { global: config.concurrency, perProvider: config["provider-concurrency"] },
+    { global: config.concurrency, perProvider: costSuite ? 1 : config["provider-concurrency"] },
     async (job) => {
       const p = ready.find((p) => p.name === job.provider);
-      if (p) await iteration(p, job.iteration);
+      if (p) {
+        // Cost tasks are capped at ten per Boat quota window.
+        if (costSuite && p.name === "boat" && job.iteration > 0)
+          await new Promise(resolve => setTimeout(resolve, 6500));
+        await iteration(p, job.iteration);
+      }
     },
   );
   // Burst cohorts are isolated from normal iterations. K is bounded by configured account limits.
   for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
-   for (const k of config.bursts)
+   for (const k of costSuite ? [] : config.bursts)
     for (const p of ready) {
       const configured =
         config["account-limits"][p.name] ??

@@ -10,6 +10,7 @@ import { pricing } from "./pricing.js";
 import { distribution, wilson } from "./v2-stats.js";
 import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 
+import { costBillingSchema } from "./task-cost.js";
 import { failureOutcomeSchema } from "./failure.js";
 
 const finite = z.number().finite();
@@ -64,6 +65,7 @@ export const sampleSchema = z
 const priceSchema = z.object({ currency: z.enum(["USD", "EUR"]) }).passthrough();
 const sourceSchema = z
   .object({
+    costBilling: costBillingSchema.optional(),
     schemaVersion: z.literal(2),
     runId: z.string(),
     timestamp: z.iso.datetime(),
@@ -86,7 +88,7 @@ const sourceSchema = z
   })
   .passthrough();
 export type MergeSource = z.infer<typeof sourceSchema>;
-export type Suite = "main" | "snapshot" | "burst";
+export type Suite = "main" | "snapshot" | "burst" | "cost";
 export type FailureClass = "provider-account-limit" | "client-third-party" | "provider-operation";
 export type MergedSample = z.infer<typeof sampleSchema> & {
   sourceRunId: string;
@@ -131,6 +133,7 @@ export function classifyFailure(
   return "provider-operation";
 }
 function suiteFor(source: MergeSource): Suite {
+  if (source.config.scenarios.includes("cost")) return "cost";
   if (source.config.scenarios.includes("burst")) return "burst";
   if (source.config.scenarios.length === 1 && source.config.scenarios.includes("snapshot"))
     return "snapshot";
@@ -322,6 +325,12 @@ export async function readSource(directory: string) {
     const journal = sampleSchema.parse(JSON.parse(line));
     if (JSON.stringify(journal) !== JSON.stringify(source.samples[i]))
       throw new Error(`${directory}: sample ${i} differs from NDJSON`);
+  }
+  if (source.config.scenarios.includes("cost")) {
+    try { source.costBilling = costBillingSchema.parse(JSON.parse(await readFile(join(directory, "billing.json"), "utf8"))); }
+    catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+    }
   }
   return source;
 }

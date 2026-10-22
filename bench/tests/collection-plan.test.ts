@@ -42,10 +42,10 @@ it("uses the verified same-spec mapping and leaves capped Superserve out", () =>
 it("keeps Boat windows below verified quotas and documents impossible K25", () => {
   for (const track of ["default", "same-spec"]) {
     const windows = [0, 1, 2].map(i => plan(`boat-${track}-${i}`));
-    expect(windows.map(w => w.split("\n").filter(l => l.startsWith("bun bench")).length)).toEqual([6, 6, 4]);
+    expect(windows.map(w => w.split("\n").filter(l => l.startsWith("bun bench --")).length)).toEqual([6, 6, 5]);
     expect(windows.join("")).not.toContain("--bursts 10,25");
     expect(windows.join("").match(/--burst-cohorts 1/g)).toHaveLength(3);
-    expect(windows.join("").match(/WAIT_SECONDS 65/g)).toHaveLength(16);
+    expect(windows.join("").match(/WAIT_SECONDS 65/g)).toHaveLength(17);
   }
   const help = plan("help"); expect(help).toContain("26 hours"); expect(help).toContain("65 minutes");
   expect(collectionPolicy().notRun).toContainEqual(expect.objectContaining({provider: "boat", track: "default", scenario: "burst-25/*"}));
@@ -70,7 +70,7 @@ it("keeps collection outputs and policy imports stable from root, bench and outs
 it("omits the public CDN download in every collection invocation", () => {
   for (const track of ["default", "same-spec"]) {
     for (const mode of [`${track}-nonboat`, ...[0, 1, 2].map(i => `boat-${track}-${i}`)]) {
-      const commands = plan(mode).split("\n").filter(line => line.startsWith("bun bench "));
+      const commands = plan(mode).split("\n").filter(line => line.startsWith("bun bench --"));
       expect(commands.length).toBeGreaterThan(0);
       for (const command of commands) expect(command).toContain("--omit-network-download true");
     }
@@ -79,14 +79,14 @@ it("omits the public CDN download in every collection invocation", () => {
 
 
 it("does not launch Daytona cohorts or restores above the verified account quota", () => {
-  const commands = (track: string) => plan(`${track}-nonboat`).split("\n").filter(line => line.startsWith("bun bench "));
+  const commands = (track: string) => plan(`${track}-nonboat`).split("\n").filter(line => line.startsWith("bun bench --"));
   const hasDaytona = (line: string) => /--providers [^ ]*\bdaytona\b/.test(line);
   const defaults = commands("default");
   const spec = commands("same-spec");
   expect(defaults.filter(line => hasDaytona(line) && line.includes("--scenarios burst"))).toHaveLength(1);
   expect(defaults.find(line => hasDaytona(line) && line.includes("--scenarios burst"))).toContain("--bursts 10 --burst-cohorts 3");
   expect(hasDaytona(defaults.find(line => line.includes("--scenarios snapshot")) ?? "")).toBe(true);
-  expect(spec.filter(hasDaytona)).toHaveLength(1);
+  expect(spec.filter(hasDaytona)).toHaveLength(2);
   expect(spec.find(hasDaytona)).toContain("--scenarios command,");
   const policy = collectionPolicy();
   const restrictions = policy.notRun.filter(r => r.provider === "daytona");
@@ -97,4 +97,17 @@ it("does not launch Daytona cohorts or restores above the verified account quota
   for (const k of [10, 25]) expect(restrictions).toContainEqual(expect.objectContaining({track: "same-spec", suite: "burst", scenario: `burst-${k}/*`}));
   expect(restrictions).toContainEqual(expect.objectContaining({track: "default", suite: "burst", scenario: "burst-25/*"}));
   expect(restrictions.some(r => r.track === "default" && r.scenario === "burst-10/*")).toBe(false);
+});
+
+it("plans isolated sequential cost tasks and recollectable billing for both tracks", () => {
+  for (const track of ["default", "same-spec"]) {
+    const nonboat = plan(`${track}-nonboat`);
+    expect(nonboat).toContain("--cost-runs 10 --scenarios cost");
+    expect(nonboat).toContain(`bun bench billing --report `);
+    const boat = plan(`boat-${track}-2`);
+    expect(boat).toContain("--cost-runs 10 --provider-concurrency 1 --scenarios cost");
+    expect(boat).toContain(`sbx53-${track}-boat-cost-1`);
+  }
+  expect(script).toContain("set -euo pipefail");
+  expect(plan("help")).toContain("170 starts");
 });

@@ -462,3 +462,27 @@ it("persists sanitized SDK attribution and lets site failure reasons explain it"
   const lines = (await fs.readFile(resolve(report.config.out, "samples.ndjson"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
   expect(lines.find(row => row.scenario === "cold").outcome).toEqual(sample.outcome);
 });
+
+it("retains late restored native IDs and cleans them after the outer restore deadline", async () => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake();
+  let restoreId: string | undefined;
+  const provider = {...backing,
+    capabilities: new Set(["snapshot"]), snapshot: async () => ({id: "fixture-snapshot"}),
+    create: async (input: Parameters<Provider["create"]>[0]) => {
+      if (input.from) {
+        await new Promise<void>(resolve => input.signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true}));
+        const info = await backing.create({...input, signal: undefined});
+        restoreId = info.id;
+        return info;
+      }
+      return backing.create(input);
+    },
+  } satisfies Provider;
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "snapshot", "--timeout-ms", "100"]), async () => {});
+  const restored = report.samples.find(s => s.scenario === "create-from-snapshot");
+  expect(restoreId).toBeTruthy();
+  expect(restored).toMatchObject({sandboxId: restoreId, outcome: {kind: "failure", clockPhase: "adapter-create", lateSettlement: {settled: true, sandboxId: restoreId}}});
+  expect(await backing.list({})).toEqual([]);
+  expect(report.cleanup[0]?.remaining).toEqual([]);
+});

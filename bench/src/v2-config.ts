@@ -47,6 +47,7 @@ const schema = z.object({
     .pipe(z.array(z.string().regex(/^[a-z][a-z0-9-]*$/))),
   runs: integer.default(2),
   "workload-runs": integer.optional(),
+  "cost-runs": integer.default(10),
   concurrency: integer.max(32).default(4),
   "provider-concurrency": integer.max(32).default(1),
   "timeout-ms": integer.max(900000).default(180000),
@@ -77,5 +78,8 @@ export function parseV2(args: string[]) {
   const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
     Object.keys(schema.shape).map((key) => [key, { type: "string", ...(["size", "template"].includes(key) ? { multiple: true } : {}) }]),
   );
-  return schema.parse(parseArgs({ args, options, strict: true }).values);
+  const config = schema.parse(parseArgs({ args, options, strict: true }).values);
+  if (config.scenarios.includes("cost") && config.scenarios.length !== 1) throw new Error("The cost suite must run alone (--scenarios cost)");
+  if (config.scenarios.includes("cost") && config.providers.includes("boat") && config["cost-runs"] > 10) throw new Error("Boat cost suite allows at most 10 tasks per quota window; split collections into scheduled windows");
+  return config;
 }

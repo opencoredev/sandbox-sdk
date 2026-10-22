@@ -247,3 +247,32 @@ it.each(["returned-id", "native-failure", "first-command", "burst", "cleanup-dra
     expect(persisted.find(s => s.scenario.endsWith("cold"))).toEqual(cold);
   } finally { await rm(directory, {recursive: true, force: true}); }
 });
+
+it.each(["default", "same-spec"])("runs ten isolated sequential cost tasks on %s without fingerprints or bursts", async (track) => {
+  const {memory} = await import("@opencoredev/sandbox-sdk/memory");
+  const {runV2} = await import("../src/v2-runner.js");
+  const {mkdtemp, rm} = await import("node:fs/promises");
+  const {join} = await import("node:path");
+  const directory = await mkdtemp(join(tmpdir(), "bench-cost-"));
+  const backing = memory();
+  backing.register("grep", async ({args, files, stdout}) => { const contents = new TextDecoder().decode(await files.read(args[1] ?? "")); if (!contents.includes(args[0] ?? "")) return 1; stdout(contents); return 0; });
+  backing.register("node", async ({cwd, files}) => {await files.read(`${cwd}/test.mjs`); return 0;});
+  let live = 0, peak = 0;
+  const commands: string[] = [];
+  const provider = {...backing,
+    create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {peak = Math.max(peak, ++live); return backing.create(input);},
+    destroy: async (id: string) => {await backing.destroy(id); live--;},
+    exec: async (id: string, input: import("@opencoredev/sandbox-sdk/provider").ExecInput) => {commands.push(input.command); return backing.exec(id, input);},
+  };
+  try {
+    const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], parseV2(["--providers", "memory", "--track", track, "--scenarios", "cost", "--provider-concurrency", "4", "--out", directory]), async () => {});
+    expect(peak).toBe(1);
+    expect(live).toBe(0);
+    expect(new Set(report.samples.map(s => s.scenario))).toEqual(new Set(["cold", "tool-replay-prepare", "tool-replay", "destroy", "sandbox-lifetime"]));
+    const replays = report.samples.filter(s => s.scenario === "tool-replay");
+    expect(replays).toHaveLength(10);
+    for (const row of replays) {expect(row.outcome.kind, JSON.stringify(row.outcome)).toBe("sample"); expect(row.details).toHaveLength(100);}
+    expect(commands.some(c => c.includes("BENCH_FINGERPRINT") || c.includes("BENCH_PERF"))).toBe(false);
+    expect(report.admissionStopped).toEqual([]);
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
