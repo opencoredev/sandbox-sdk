@@ -1,6 +1,6 @@
 /** Verified against @boxd-sh/sdk 0.2.17 and https://docs.boxd.sh/reference/typescript-sdk. */
 import type { Boxd, Machine } from "@boxd-sh/sdk";
-import type { Provider, SandboxInfo } from "../../provider.js";
+import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
@@ -14,11 +14,22 @@ export interface BoxdNative {
   machine: Machine;
   client: Boxd;
 }
-export type BoxdProvider = Provider<BoxdNative, "pause">;
+export type BoxdProvider = Provider<BoxdNative, "pause" | "size" | "snapshot">;
 const marker = "/var/lib/sandbox-sdk/metadata.json";
+// Each class has fixed 100 GB disk and 4 GiB memory per vCPU.
+function vcpuFor(size: CreateInput["size"]): number | undefined {
+  if (size === undefined) return undefined;
+  if (typeof size === "string") return { small: 1, medium: 2, large: 4 }[size];
+  if (![1, 2, 4, 8].includes(size.cpu))
+    throw failure("boxd sizes are 1 vCPU / 4 GiB, 2 / 8, 4 / 16, or 8 / 32, each with 100 GB disk", "unsupported");
+  if (size.memoryMb !== size.cpu * 4096 || size.diskGb !== 100)
+    throw failure(`boxd gives ${size.cpu} vCPU / ${size.cpu * 4} GiB memory / 100 GB disk; CPU and memory cannot be selected independently`, "unsupported");
+  return size.cpu;
+}
 export function boxd(options: BoxdOptions = {}): BoxdProvider {
   let client: Promise<Boxd> | undefined;
   let current: Boxd | undefined;
+  let webClient: Promise<import("@boxd-sh/sdk/web").Boxd> | undefined;
   const boxes = new Map<string, Machine>();
   async function api() {
     return (client ??= (async () => {
@@ -36,6 +47,20 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         timeout: options.requestTimeoutMs ?? 30000,
         maxRetries: 0,
       }));
+    })());
+  }
+  async function fileApi() {
+    // Validate credentials/options through the native client before constructing
+    // the fetch transport; streamExec continues to use the native client.
+    await api();
+    return (webClient ??= (async () => {
+      const { Boxd } = await import("@boxd-sh/sdk/web");
+      return new Boxd({
+        apiKey: options.apiKey ?? process.env.BOXD_API_KEY,
+        baseURL: options.baseURL,
+        timeout: options.requestTimeoutMs ?? 30000,
+        maxRetries: 0,
+      });
     })());
   }
   async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
@@ -58,45 +83,29 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         return r.stdout;
       },
       upload: async (path, bytes) => {
-        if ((await c.machines.files.upload(id, path, bytes)) !== bytes.length)
+        if ((await (await fileApi()).machines.files.upload(id, path, bytes)) !== bytes.length)
           throw failure("Incomplete file upload", "provider", id);
       },
       read: async (path, range) => {
-        // The native download stream can truncate its last block or exceed the
-        // request deadline on multi-MiB files. Bounded exec reads avoid it.
-        const parts: Uint8Array[] = [];
-        let offset = range?.offset ?? 0;
-        let remaining = range?.length ?? Infinity;
-        while (remaining > 0) {
-          const length = Math.min(1024 * 1024 + 1, remaining);
-          const readChunk = () => c.machines.exec(id, {
-            command: python(
-              "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
-              path, String(offset), String(length),
-            ),
-            encoding: "buffer",
-            timeout: options.requestTimeoutMs ?? 30000,
-          });
-          // This fixed command only reads a byte range. Repeating it cannot
-          // replay a write, even if a timed-out native stream finishes late.
-          const result = await readChunk().catch((error: unknown) => {
-            if (!["timeout", "unavailable"].includes(boxdError(error, id).code)) throw error;
-            return readChunk();
-          });
-          if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
-          const bytes = new Uint8Array(result.stdout);
-          parts.push(bytes);
-          offset += bytes.length;
-          remaining -= bytes.length;
-          if (bytes.length < length) break;
-        }
-        return new Uint8Array(Buffer.concat(parts));
+        if (!range) return (await fileApi()).machines.files.download(id, path);
+        // Tail readers request a bounded range. Seek in the guest rather than
+        // downloading a growing log in full for each page.
+        const result = await c.machines.exec(id, {
+          command: python(
+            "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
+            path, String(range.offset), String(range.length),
+          ),
+          encoding: "buffer",
+          timeout: options.requestTimeoutMs ?? 30000,
+        });
+        if (result.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
+        return new Uint8Array(result.stdout);
       },
     };
   }
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
-    const text = new TextDecoder().decode(await (await api()).machines.files.download(m.id, marker));
+    const text = new TextDecoder().decode(await (await fileApi()).machines.files.download(m.id, marker));
     let value: unknown;
     try { value = JSON.parse(text); }
     catch { throw failure("Invalid SDK metadata", "not_found", m.id); }
@@ -135,30 +144,39 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     name: "boxd",
     keyMode: "best-effort",
     inlineActivity: true,
-    capabilities: new Set(["pause"]),
+    capabilities: new Set(["pause", "size", "snapshot"]),
     create: (input) =>
       safe(undefined, async () => {
         if (
-          input.size !== undefined ||
           (input.network && input.network !== "all") ||
           input.idleTimeoutMs !== undefined ||
-          input.timeoutMs !== undefined ||
-          input.from !== undefined
+          input.timeoutMs !== undefined
         )
           throw failure(
-            "Sizes, network restrictions, idle/lifetime limits and snapshot restore are not implemented",
+            "Network restrictions and idle/lifetime limits are not implemented",
             "unsupported",
           );
+        if (input.from !== undefined && !input.from.trim())
+          throw failure("Snapshot restore requires a nonempty snapshot ID or name", "invalid_argument");
+        if (input.from !== undefined && (input.size !== undefined || Object.keys(input.env ?? {}).length > 0 || options.image !== undefined))
+          throw failure("boxd snapshot restore inherits size, image and environment; overrides are not supported", "unsupported");
+        const vcpu = vcpuFor(input.size);
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const c = await api();
         let m: Machine;
         try {
-          m = await c.machines.create({
-            name: `sbxsdk-${crypto.randomUUID()}`,
+          const name = `sbxsdk-${crypto.randomUUID()}`;
+          m = await c.machines.create(input.from !== undefined ? {
+            name,
+            fromSnapshot: input.from,
+            isolated: true,
+            config: { autoSuspendTimeout: 0 },
+          } : {
+            name,
             image: options.image,
             env: input.env,
             isolated: true,
-            config: { autoSuspendTimeout: 0, autoDestroyTimeout: 0 },
+            config: { autoSuspendTimeout: 0, autoDestroyTimeout: 0, vcpu },
           });
         } catch (error) {
           const mapped = boxdError(error);
@@ -176,21 +194,20 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           });
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           const g = await guest(m.id);
+          const value: SandboxInfo = {
+            id: m.id,
+            key: input.key,
+            labels: input.labels,
+            createdAt: Date.now(),
+            state: "running",
+          };
           await g.raw(
-            "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null",
-          );
-          await g.upload(
-            marker,
-            Buffer.from(
-              JSON.stringify({
-                key: input.key ?? null,
-                labels: input.labels,
-                createdAt: Date.now(),
-              }),
-            ),
+            "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null && " +
+            python("import sys; open(sys.argv[1],'w').write(sys.argv[2])", marker,
+              JSON.stringify({ key: value.key ?? null, labels: value.labels, createdAt: value.createdAt })),
           );
           boxes.set(m.id, ready);
-          return await info(ready);
+          return value;
         } catch (error) {
           await c.machines.delete(m.id);
           throw error;
@@ -255,6 +272,31 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       safe(id, async () => {
         await (await api()).machines.resume(id);
       }),
+    snapshot: (id) => safe(id, async () => {
+      const c = await api();
+      const name = `sbxsdk-${crypto.randomUUID()}`;
+      const deadline = Date.now() + (options.requestTimeoutMs ?? 90000);
+      try {
+        await c.snapshots.create(id, name);
+        while (Date.now() < deadline) {
+          const snapshot = await c.snapshots.get(name);
+          if (snapshot.status === "ready") return { id: name };
+          if (snapshot.status === "failed") throw failure("boxd snapshot capture failed", "provider", id);
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        throw failure("boxd snapshot did not become ready", "timeout", id);
+      } catch (error) {
+        // The API has no core snapshot-delete hook. Remove failed captures here
+        // so retries cannot leave untracked, billable artifacts behind.
+        try {
+          await c.snapshots.delete(name);
+        } catch (cleanupError) {
+          if (boxdError(cleanupError, id).code !== "not_found")
+            throw failure(`Snapshot ${name} cleanup is unconfirmed after ${boxdError(error, id).code}; inspect and remove it before retrying`, "outcome_unknown", id);
+        }
+        throw error;
+      }
+    }),
     native(id) {
       const machine = boxes.get(id);
       if (!machine) throw failure("Connect the machine first", "not_found", id);
