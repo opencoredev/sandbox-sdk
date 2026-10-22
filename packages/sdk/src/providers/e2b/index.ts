@@ -118,15 +118,23 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       clients.set(box.sandboxId, box); if (deadline !== undefined) deadlines.set(box.sandboxId, deadline);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived during E2B creation. Retry with a fresh signal.", { code: "aborted", provider: "e2b" });
-        if (deadline !== undefined) await box.setTimeout(Math.max(1, deadline - Date.now()));
-        const info = await box.getInfo();
+        // Independent requests: overlap them instead of paying one round trip each.
+        // Settle all before cleanup so none outlives a destroy.
+        const [clamped, details, workspace] = await Promise.allSettled([
+          deadline === undefined ? undefined : box.setTimeout(Math.max(1, deadline - Date.now())),
+          box.getInfo(),
+          box.files.makeDir("/workspace", { user: "root" }),
+        ]);
+        if (clamped.status === "rejected") throw clamped.reason;
+        if (details.status === "rejected") throw details.reason;
+        const info = details.value;
         if (input.network === "none" && info.allowInternetAccess !== false && !(info.network?.denyOut?.includes("0.0.0.0/0") && !info.network.allowOut?.length)) throw unsupported("E2B did not confirm that internet access is disabled");
         if (typeof input.network === "object") {
           const requested = input.network.allow;
           const allowed = info.network?.allowOut ?? [];
           if (!info.network?.denyOut?.includes("0.0.0.0/0") || requested.some(host => !allowed.includes(host)) || allowed.some(host => !requested.includes(host))) throw unsupported("E2B did not confirm the requested outbound allow list");
         }
-        await box.files.makeDir("/workspace", { user: "root" });
+        if (workspace.status === "rejected") throw workspace.reason;
         return infoOf(info);
       } catch (cause) { await provider.destroy(box.sandboxId); throw cause; }
     }),
