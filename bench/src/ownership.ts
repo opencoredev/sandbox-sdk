@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
@@ -77,4 +78,14 @@ export async function verifyRunOwnership(provider: Provider, id: string, run: st
     await new Promise(resolve => setTimeout(resolve, Math.min(backoffMs, remainingMs)));
     backoffMs = Math.min(backoffMs * 2, 2000);
   }
+}
+
+export const snapshotProvenanceSchema = z.object({
+  sourceId: z.string().min(1), runLabel: z.string().min(1), sdkLabel: z.literal("1"), verifiedAt: z.iso.datetime(),
+});
+export type SnapshotProvenance = z.infer<typeof snapshotProvenanceSchema>;
+/** Capture proof at snapshot admission, while the source can still be verified live. */
+export async function proveSnapshotSource(provider: Provider, sourceId: string, run: string, timeoutMs: number): Promise<SnapshotProvenance> {
+  if (!(await verifyRunOwnership(provider, sourceId, run, timeoutMs))) throw new UnverifiedOwnershipError(sourceId);
+  return {sourceId, runLabel: run, sdkLabel: "1", verifiedAt: new Date().toISOString()};
 }

@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider } from "./providers.js";
-import { recordAbsentResolution, recordVerifiedRelease, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview, type CleanupRelease, type CleanupResolution } from "./ownership.js";
+import { recordAbsentResolution, recordVerifiedRelease, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview, type CleanupRelease, type CleanupResolution, snapshotProvenanceSchema } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
-import { snapshotCleaner, snapshotsFromSource } from "./snapshots.js";
-const resource = z.object({provider: z.string(), id: z.string(), kind: z.enum(["sandbox", "snapshot", "snapshot-source"]), parent: z.string().nullable()});
-const reviewSchema = resource.omit({parent: true}).extend({reason: z.string(), status: z.enum(["checking", "unresolved"]).optional()});
+import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
+const resource = z.object({provider: z.string(), id: z.string(), kind: z.enum(["sandbox", "snapshot", "snapshot-source"]), parent: z.string().nullable(), snapshotProof: snapshotProvenanceSchema.optional()});
+const reviewSchema = resource.omit({parent: true, snapshotProof: true}).extend({reason: z.string(), status: z.enum(["checking", "unresolved"]).optional()});
 
 /** Recovery never treats a journal ID as permission to delete. */
 export async function reapRun(providers: LoadedProvider[], config: ConfigV2, sanitize: (value: string) => string) {
@@ -55,25 +55,8 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
     const owned = async (id: string) => verifyRunOwnership(p.provider, id, config.run, config["timeout-ms"]);
     const forget = async (entry: z.infer<typeof resource>) => {
       if (journal) {journal.resources = journal.resources.filter(r => r !== entry); await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");}
+      for (const item of reviews.filter(r => r.provider === entry.provider && r.id === entry.id && r.kind === entry.kind)) reviews.splice(reviews.indexOf(item), 1);
     };
-    // Recover snapshots while the source is still live and its labels can be checked.
-    for (const entry of journal?.resources ?? []) {
-      if (entry.provider !== p.name || entry.kind === "sandbox" || reviews.some(r => r.provider === p.name && r.id === entry.id && r.kind === entry.kind)) continue;
-      const parent = entry.kind === "snapshot-source" ? entry.id : entry.parent;
-      if (!parent || !(await owned(parent))) {review(p.name, entry.id, entry.kind, "Live snapshot-parent run/SDK labels unverified; no deletion attempted"); continue;}
-      if (!["daytona", "superserve"].includes(p.name)) {review(p.name, entry.id, entry.kind, "No source-scoped snapshot metadata verifier available; no deletion attempted"); continue;}
-      try {
-        const linked = await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, parent));
-        if (entry.kind === "snapshot" && !linked.some(s => s.id === entry.id || s.name === entry.id)) {review(p.name, entry.id, entry.kind, "Snapshot is not verified as belonging to the labelled source; no deletion attempted"); continue;}
-        const cleaner = await snapshotCleaner(p.name, p.provider, parent);
-        const ids = entry.kind === "snapshot" ? [entry.id] : linked.map(s => s.id);
-        for (const id of ids) {
-          if (!(await owned(parent))) throw new Error("Snapshot parent ownership changed; no further deletion attempted");
-          await deadline(config["timeout-ms"], () => cleaner(id));
-        }
-        await forget(entry);
-      } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"));}
-    }
     const candidates = new Set([
       ...(journal?.resources ?? []).filter(r => r.provider === p.name && r.kind === "sandbox").map(r => r.id),
       ...reviews.filter(r => r.provider === p.name && r.kind === "sandbox").map(r => r.id),
@@ -82,10 +65,10 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
       for (const info of await deadline(config["timeout-ms"], () => p.provider.list({"sandbox-bench-run": config.run, "sandbox-sdk": "1"})))
         if (hasRunOwnership(info, config.run)) candidates.add(info.id);
     } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "List failed"));}
-    for (const id of candidates) {
+    const deleteCandidate = async (id: string) => {
       if (!(await owned(id))) {
         if (!(await resolveAbsent(id))) review(p.name, id, "sandbox", "Live run label and SDK ownership marker unverified; no deletion attempted");
-        continue;
+        return;
       }
       try {
         if (reviews.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
@@ -98,10 +81,46 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
         await deadline(config["timeout-ms"], () => deletions.start(p.name, id, () => p.provider.destroy(id)));
         for (const entry of journal?.resources ?? []) if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id) await forget(entry);
       } catch (error) {
-        if (error instanceof DeadlineError && await resolveAbsent(id)) continue;
+        if (error instanceof DeadlineError && await resolveAbsent(id)) return;
         review(p.name, id, "sandbox", "Deletion failed or timed out; exact existence remains unresolved");
         deletionErrors.set(id, sanitize(error instanceof Error ? error.message : "Reap failed"));
       }
+    }
+
+    const sources = new Set((journal?.resources ?? []).filter(r => r.provider === p.name && r.kind !== "sandbox")
+      .flatMap(r => r.kind === "snapshot-source" ? [r.id] : r.parent ? [r.parent] : []));
+    for (const id of candidates) if (!sources.has(id)) await deleteCandidate(id);
+    const restoresUnresolved = [...candidates].some(id => !sources.has(id) &&
+      ((journal?.resources ?? []).some(r => r.provider === p.name && r.id === id && r.kind === "sandbox") || reviews.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox")));
+    // Source-scoped discovery uses durable proof, even when the source no longer exists.
+    for (const entry of journal?.resources ?? []) {
+      if (entry.provider !== p.name || entry.kind !== "snapshot-source") continue;
+      try {
+        if (restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
+        const proof = snapshotProvenanceSchema.parse(entry.snapshotProof);
+        if (proof.sourceId !== entry.id || proof.runLabel !== config.run) throw new Error("Snapshot-source provenance mismatch");
+        for (const snapshot of await deadline(config["timeout-ms"], () => snapshotsFromSource(p.name, entry.id))) {
+          const item = {provider: p.name, id: snapshot.id, kind: "snapshot" as const, parent: entry.id, snapshotProof: proof};
+          journal?.resources.push(item);
+          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          await deleteProvenSnapshot(p.name, p.provider, item.id, item.parent, proof, config.run, config["timeout-ms"]);
+          await forget(item);
+        }
+        await forget(entry);
+      } catch (error) {review(p.name, entry.id, entry.kind, sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"));}
+    }
+    for (const entry of journal?.resources ?? []) {
+      if (entry.provider !== p.name || entry.kind !== "snapshot") continue;
+      try {
+        if (restoresUnresolved) throw new Error("Restore cleanup unresolved; snapshot and source retained");
+        await deleteProvenSnapshot(p.name, p.provider, entry.id, entry.parent, entry.snapshotProof, config.run, config["timeout-ms"]);
+        await forget(entry);
+      } catch (error) {review(p.name, entry.id, entry.kind, sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"));}
+    }
+    for (const id of candidates) if (sources.has(id)) {
+      const held = (journal?.resources ?? []).some(r => r.provider === p.name && r.kind !== "sandbox" && (r.parent === id || r.id === id));
+      if (!held) await deleteCandidate(id);
+      else if (!(await owned(id)) && !(await resolveAbsent(id))) review(p.name, id, "sandbox", "Source retained for snapshot recovery; live ownership unverified");
     }
     // oxlint-disable-next-line unicorn/no-useless-spread -- resolving removes reviews while iterating.
     for (const item of [...reviews]) if (item.provider === p.name && item.kind === "sandbox") await resolveAbsent(item.id);
@@ -112,7 +131,7 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
           if (signal.aborted) return;
           const left = await p.provider.list({"sandbox-bench-run": config.run, "sandbox-sdk": "1"});
           count = left.filter(s => hasRunOwnership(s, config.run)).length;
-          if (!count || left.filter(s => hasRunOwnership(s, config.run)).every(s => reviews.some(r => r.provider === p.name && r.id === s.id))) return;
+          if (!count || left.filter(s => hasRunOwnership(s, config.run)).every(s => sources.has(s.id) || reviews.some(r => r.provider === p.name && r.id === s.id))) return;
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       });
