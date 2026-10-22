@@ -1,6 +1,7 @@
 /** Verified against @boxd-sh/sdk 0.2.17 and https://docs.boxd.sh/reference/typescript-sdk. */
 import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
+import { SandboxError } from "../../errors.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
@@ -187,9 +188,12 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         }
 
         try {
-          const ready = await c.machines.waitUntilReady(m.id, {
+          const waitUntilReady = () => c.machines.waitUntilReady(m.id, {
             timeout: options.requestTimeoutMs ?? 90000,
           });
+          // waitUntilReady polls get() and then probes with exec("true"). When
+          // create already reports running, setup is itself the exec probe.
+          let ready = m.status === "running" ? m : await waitUntilReady();
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           const g = await guest(m.id);
           const value: SandboxInfo = {
@@ -199,11 +203,21 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             createdAt: Date.now(),
             state: "running",
           };
-          await g.raw(
+          const setup = () => g.raw(
             "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null && " +
             python("import sys; open(sys.argv[1],'w').write(sys.argv[2])", marker,
               JSON.stringify({ key: value.key ?? null, labels: value.labels, createdAt: value.createdAt })),
           );
+          try {
+            await setup();
+          } catch (error) {
+            // A nonzero setup exit is a real failure. Only an exec transport
+            // error on the unprobed path means the guest is not reachable yet.
+            if (ready !== m || error instanceof SandboxError) throw error;
+            ready = await waitUntilReady();
+            if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
+            await setup();
+          }
           boxes.set(m.id, ready);
           return value;
         } catch (error) {
