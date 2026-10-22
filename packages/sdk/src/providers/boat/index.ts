@@ -252,14 +252,27 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
         environments.set(sandbox.id, { ...input.env });
         try {
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          await sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } });
-          // Commands wait for provisioning. /workspace is writable by Boat's user.
-          await raw(
-            sandbox.id,
-            'sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null',
-          );
+          // The rename and guest setup are independent; overlap them. Settle
+          // both before cleanup so neither outlives a destroy.
+          const [renamed, setup] = await Promise.allSettled([
+            sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } }),
+            // Commands wait for provisioning. /workspace is writable by Boat's user.
+            raw(
+              sandbox.id,
+              'sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null',
+            ),
+          ]);
+          if (renamed.status === "rejected") throw renamed.reason;
+          if (setup.status === "rejected") throw setup.reason;
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          return await provider.connect(sandbox.id);
+          // The update response is the same record a get returns. Reuse it
+          // unless it predates readiness; then read the settled state.
+          const updated = renamed.value.sandbox;
+          if (updated.name !== name || !["ready", "idle", "running"].includes(updated.state))
+            return await provider.connect(sandbox.id);
+          const result = info(updated);
+          boxes.set(sandbox.id, updated);
+          return result;
         } catch (error) {
           await provider.destroy(sandbox.id);
           throw error;
