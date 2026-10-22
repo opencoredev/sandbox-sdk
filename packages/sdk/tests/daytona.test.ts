@@ -294,3 +294,13 @@ describe("Daytona buffered native commands", () => {
   });
 });
 
+
+test("completed session output does not wait for a WebSocket that remains open", async () => {
+  const box = await createSandbox(factory());
+  const logs = box.native.process.getSessionCommandLogs;
+  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (session, command, stdout, stderr) => {
+    await logs(session, command, stdout, stderr);
+    await new Promise<void>(() => {});
+  });
+  expect(await box.run("printf exact; exit 7", { timeoutMs: 1000 })).toMatchObject({ stdout: "exact", exitCode: 7, timedOut: false });
+});

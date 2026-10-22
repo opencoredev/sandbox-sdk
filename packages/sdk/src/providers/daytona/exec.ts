@@ -18,6 +18,7 @@ while s.get_map():
   if data: print(key.data+":"+base64.b64encode(data).decode(),flush=True)
   else: s.unregister(key.fileobj)
 code=p.wait()
+print("X:",flush=True)
 sys.exit(code if code>=0 else 128-code)
 `;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -62,7 +63,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     commandId = response.cmdId;
     if (!commandId) throw new SandboxError("Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
     // Observe both promises immediately: stream failures must not become unhandled.
-    let pending = ""; let logsError: unknown;
+    let pending = ""; let logsError: unknown; let bridgeFinished = false;
     const decoders = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
     const readFrames = (text: string) => {
       pending += text;
@@ -70,6 +71,12 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
       while ((newline = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, newline).replace(/\r$/, ""); pending = pending.slice(newline + 1);
         if (!line) continue;
+        if (bridgeFinished) throw new SandboxError("Session output continued after completion. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
+        if (line === "X:") {
+          bridgeFinished = true;
+          for (const stream of ["stdout", "stderr"] as const) { const text = decoders[stream].decode(); if (!finished && text) input.onChunk({ stream, text }); }
+          continue;
+        }
         const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
         if (!frame || line.length > 5466 || Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]) throw new SandboxError("Session output is malformed. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
         const stream = frame[1] === "O" ? "stdout" : "stderr";
@@ -119,7 +126,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
           if (logsError !== undefined && !cancelled) throw logsError;
           if (status.exitCode !== undefined) {
             if (cancelled) cancelDrainStarted ??= Date.now();
-            if (logsFinished || (cancelDrainStarted !== undefined && Date.now() - cancelDrainStarted >= 1000)) {
+            if (logsFinished || bridgeFinished || (cancelDrainStarted !== undefined && Date.now() - cancelDrainStarted >= 1000)) {
               return { exitCode: cancelled ? null : status.exitCode, signal: cancelled ? "SIGKILL" : null };
             }
           }
