@@ -166,7 +166,7 @@ export function reliability(rows: readonly MergedSample[]) {
 export function summarizeMerged(samples: MergedSample[], seed: number) {
   const groups = new Map<string, MergedSample[]>();
   for (const sample of samples) {
-    const key = JSON.stringify([sample.track ?? "default", sample.requestedSize ?? null, sample.template ?? null, sample.suite, sample.provider, sample.scenario, sample.unit]);
+    const key = JSON.stringify([sample.track ?? "default", sample.requestedSize ?? null, sample.template ?? null, sample.product ?? null, sample.suite, sample.provider, sample.scenario, sample.unit]);
     const group = groups.get(key) ?? [];
     group.push(sample);
     groups.set(key, group);
@@ -179,6 +179,7 @@ export function summarizeMerged(samples: MergedSample[], seed: number) {
         track: first.track ?? "default",
         requestedSize: first.requestedSize ?? null,
         template: first.template ?? null,
+        product: first.product ?? null,
         suite: first.suite,
         provider: first.provider,
         scenario: first.scenario,

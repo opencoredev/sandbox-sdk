@@ -48,6 +48,9 @@ it("runs the actual v2 memory consumer, stops at its creation budget, and preser
     expect(summarize([{ ...score, estimatedCost: 10 }], 45)[0]?.performancePerDollar).toBeCloseTo(
       100000000,
     );
+    // Distinct native products never share a distribution.
+    const products = summarize([{ ...score, product: null }, { ...score, product: "ephemeral", outcome: { kind: "sample", value: 10 } }], 45);
+    expect(products.map((row) => [row.product, row.stats.p50])).toEqual([[null, 1000], ["ephemeral", 10]]);
     const { projectCosts } = await import("../src/projection.js");
     const projection = projectCosts({ ...report,
       providers: [{ name: "boat", kind: "ready", note: "test", configuredRegion: null }],

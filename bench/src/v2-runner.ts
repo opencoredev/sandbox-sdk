@@ -75,7 +75,7 @@ async function host(): Promise<HostSample> {
 export function summarize(samples: Sample[], seed: number) {
   const groups = new Map<string, Sample[]>();
   for (const s of samples) {
-    const key = JSON.stringify([s.track ?? "default", s.requestedSize ?? null, s.template ?? null, s.provider, s.scenario, s.unit]);
+    const key = JSON.stringify([s.track ?? "default", s.requestedSize ?? null, s.template ?? null, s.product ?? null, s.provider, s.scenario, s.unit]);
     const values = groups.get(key) ?? [];
     values.push(s);
     groups.set(key, values);
@@ -106,6 +106,7 @@ export function summarize(samples: Sample[], seed: number) {
         track: first.track ?? "default",
         requestedSize: first.requestedSize ?? null,
         template: first.template ?? null,
+        product: first.product ?? null,
         provider: first.provider,
         scenario: first.scenario,
         unit: first.unit,

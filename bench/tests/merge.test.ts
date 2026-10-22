@@ -66,6 +66,14 @@ function source(runId: string, samples: Sample[]): MergeSource {
   };
 }
 describe("offline v2 merge", () => {
+  it("keeps native products in separate summaries", () => {
+    const report = mergeSources([
+      source("box", [sample(0, "cold", { kind: "sample", value: 1000 })]),
+      source("ephemeral", [{ ...sample(0, "cold", { kind: "sample", value: 10 }), product: "ephemeral" }]),
+    ]);
+    const cold = report.summaries.filter((row) => row.scenario === "cold");
+    expect(cold.map((row) => [row.product, row.stats.p50])).toEqual([[null, 1000], ["ephemeral", 10]]);
+  });
   it("offsets restarted iterations, preserves source identity and every original field", () => {
     const original = sample(0);
     const report = mergeSources([
