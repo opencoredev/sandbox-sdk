@@ -302,6 +302,7 @@ export class MockEphemeralBox {
     const { ttl: _ttl, ...rest } = params;
     const value = await MockBox.create(rest);
     value.ephemeral = true;
+    Object.assign(value.data, { ephemeral: true });
     return value;
   }
   static async fromSnapshot(id: string, params: EphemeralBoxConfig = {}) {
@@ -309,6 +310,7 @@ export class MockEphemeralBox {
     const { ttl: _ttl, ...rest } = params;
     const value = await MockBox.fromSnapshot(id, rest);
     value.ephemeral = true;
+    Object.assign(value.data, { ephemeral: true });
     return value;
   }
 }

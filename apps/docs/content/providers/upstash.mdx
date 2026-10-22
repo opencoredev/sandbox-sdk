@@ -54,7 +54,7 @@ await using box = await createSandbox(provider, { size: "medium", env: { MODE: "
 
 `ttlSeconds` defaults to 3600 and accepts whole seconds up to 259200 (three days). Treat it as a backstop for leaked boxes rather than a deadline: Upstash removes expired boxes some time after `expiresAt`, and commands keep working until then. Destroy boxes explicitly when you are done.
 
-Everything else works as on a durable box: sizes, environment variables and secrets, network policies, keys and labels, discovery with `list` and `find`, snapshots, protected previews, and process records. The provider omits the `pause` capability, so the sandbox has no `pause()` or `resume()` methods. Snapshots of an ephemeral box restore into a new ephemeral box. Ephemeral boxes take no native startup command, so the adapter marks process records restored from a snapshot as failed with exit code 137 during creation. `box.native` is still the Upstash SDK's `Box` object; its `pause()` is rejected by Upstash.
+Everything else works as on a durable box: sizes, environment variables and secrets, network policies, keys and labels, discovery with `list` and `find`, snapshots, protected previews, and process records. The provider omits the `pause` capability, so the sandbox has no `pause()` or `resume()` methods. Snapshots of an ephemeral box restore into a new ephemeral box. Each mode lists, finds, and connects only its own product: an ephemeral provider never returns a durable box for a key, and `connect` fails with `unsupported` when the ID belongs to the other product. Ephemeral boxes take no native startup command, so the adapter marks process records restored from a snapshot as failed with exit code 137 during creation. `box.native` is still the Upstash SDK's `Box` object; its `pause()` is rejected by Upstash.
 
 ## Keys
 
@@ -119,7 +119,7 @@ Proxy protected previews through your server when displaying them in an iframe. 
 - `requestTimeoutMs?: number`. Uses the native SDK default when omitted.
 - `enableTelemetry?: boolean`. Uses the native SDK default when omitted.
 - `public?: boolean`. Defaults to `false`; previews require bearer authentication.
-- `ephemeral?: boolean`. Defaults to `false`. `true` creates Ephemeral Boxes and drops the `pause` capability.
+- `ephemeral?: boolean`. Defaults to `false`. `true` creates Ephemeral Boxes and drops the `pause` capability. When the value is only known at runtime, the returned type does not promise `pause`.
 - `ttlSeconds?: number`. Ephemeral mode only. Defaults to `3600`; at most `259200`. Other values throw `invalid_argument` when the provider is created.
 
 Returns a provider. `box.native` is the Upstash SDK's `Box` object.

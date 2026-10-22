@@ -103,6 +103,8 @@ function info(data: Pick<BoxData, "id" | "status" | "created_at">, meta: Metadat
           : "stopped",
   };
 }
+/** Upstash flags ephemeral boxes in list and get records; the 0.7.9 types omit it. */
+const isEphemeral = (data: BoxData) => "ephemeral" in data && data.ephemeral === true;
 function fileInfo(path: string, file: FileStat): FileInfo {
   if (file.type === "other") unsupported("Special filesystem entries are not supported");
   return { path, type: file.type, size: file.size, modifiedAt: Date.parse(file.mod_time) };
@@ -125,6 +127,8 @@ function network(input: CreateInput["network"]): NetworkPolicy {
 
 export function upstash(options: UpstashEphemeralOptions): UpstashEphemeralProvider;
 export function upstash(options?: UpstashBoxOptions): UpstashProvider;
+/** Mode unknown at compile time: pause is not promised. */
+export function upstash(options: UpstashOptions): UpstashEphemeralProvider;
 export function upstash(options: UpstashOptions = {}): UpstashProvider | UpstashEphemeralProvider {
   const ttl = options.ephemeral ? options.ttlSeconds ?? 3600 : undefined;
   if (ttl !== undefined && (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > maxTtlSeconds))
@@ -319,7 +323,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         const { Box, config } = await sdk();
         const result: SandboxInfo[] = [];
         for (const data of await Box.list({ ...config, label: marker })) {
-          if (!data.labels?.includes(marker) || data.status === "deleted") continue;
+          // Each mode owns only its own product, so find() never crosses products.
+          if (!data.labels?.includes(marker) || data.status === "deleted" || isEphemeral(data) !== (ttl !== undefined)) continue;
           try {
             const meta = await readMetadata(await box(data.id));
             if (Object.entries(labels).every(([key, value]) => meta.labels[key] === value))
@@ -338,6 +343,11 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         const { Box, config } = await sdk();
         const data = (await Box.list(config)).find((data) => data.id === id);
         if (!data) throw Object.assign(new Error("Missing box"), { statusCode: 404 });
+        if (isEphemeral(data) !== (ttl !== undefined))
+          throw new SandboxError(
+            `Box ${id} is ${isEphemeral(data) ? "an Ephemeral Box" : "a durable Box"}. Connect with upstash({ ephemeral: ${isEphemeral(data)} }).`,
+            { code: "unsupported", provider: "upstash", sandboxId: id },
+          );
         const value = await box(id);
         return info(data, await readMetadata(value));
       }, id, false, "connect"),

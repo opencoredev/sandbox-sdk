@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { upstash } from "../src/providers/upstash/index.js";
+import { upstash, type UpstashOptions } from "../src/providers/upstash/index.js";
 import { upstashError } from "../src/providers/upstash/errors.js";
 import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -430,6 +430,20 @@ describe("Upstash Ephemeral Box mode", () => {
     expect(await ephemeral().list({ run: "r1" })).toMatchObject([{ id: box.id }]);
     expect(box.native.id).toBe(box.id);
     upstash({ apiKey: "mock-key", ephemeral: true, ttlSeconds: 259_200 });
+  });
+  test("each mode discovers and connects only its own product", async () => {
+    const durable = await factory().create({ key: "shared", labels: { run: "x" } });
+    const short = await ephemeral().create({ key: "shared", labels: { run: "x" } });
+    expect(await factory().find("shared")).toMatchObject({ id: durable.id });
+    expect(await ephemeral().find("shared")).toMatchObject({ id: short.id });
+    expect((await factory().list({ run: "x" })).map((info) => info.id)).toEqual([durable.id]);
+    expect((await ephemeral().list({ run: "x" })).map((info) => info.id)).toEqual([short.id]);
+    await expect(factory().connect(short.id)).rejects.toMatchObject({ code: "unsupported" });
+    await expect(ephemeral().connect(durable.id)).rejects.toMatchObject({ code: "unsupported" });
+    const options: UpstashOptions = { apiKey: "mock-key", ephemeral: true };
+    const unknown = upstash(options);
+    // @ts-expect-error A provider of unknown mode does not promise pause.
+    void unknown.capabilities.has("pause");
   });
   test("rejects TTLs Upstash cannot honor", () => {
     for (const ttlSeconds of [0, 1.5, 259_201, Number.NaN])
