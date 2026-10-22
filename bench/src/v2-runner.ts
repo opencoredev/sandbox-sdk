@@ -16,9 +16,10 @@ import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
 import { DeadlineError, deadline, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
-import { recordVerifiedRelease, UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
+import { recordAbsentResolution, recordVerifiedRelease, UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
+import { isAbsent, lookupSandbox } from "./existence.js";
 import { failureOutcome } from "./failure.js";
 export const scenarioNames = [
   "command",
@@ -156,6 +157,7 @@ export async function runV2(
     cleanup: [],
     cleanupReview: [],
     cleanupReleased: [],
+    cleanupResolved: [],
     budgets: {},
     admissionStopped: [],
     methodology: [
@@ -222,7 +224,23 @@ export async function runV2(
   }
   function review(provider: string, id: string, reason: string, kind: CleanupReview["kind"] = "sandbox") {
     if (!report.cleanupReview?.some(v => v.provider === provider && v.id === id && v.kind === kind))
-      report.cleanupReview?.push({provider, id: sanitize(id), kind, reason});
+      report.cleanupReview?.push({provider, id: sanitize(id), kind, reason, status: kind === "sandbox" ? "checking" : "unresolved"});
+  }
+  async function resolveAbsent(p: ReadyProvider, id: string) {
+    const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
+    if (!isAbsent(evidence)) {
+      for (const item of report.cleanupReview ?? []) if (item.provider === p.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
+      return false;
+    }
+    recordAbsentResolution(report.cleanupReview ?? [], report.cleanupResolved ?? [], p.name, id, evidence);
+    owned.delete(`${p.name}/${id}`);
+    await persist();
+    return true;
+  }
+  async function reconcileReviews(p: ReadyProvider) {
+    // oxlint-disable-next-line unicorn/no-useless-spread -- resolveAbsent removes reviews while iterating.
+    for (const entry of [...report.cleanupReview ?? []])
+      if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
   async function remove(loaded: ReadyProvider, id: string, measurement?: {clock: PhaseClock; phases: Record<string, number>}) {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -231,7 +249,9 @@ export async function runV2(
       try { verified = await verifyRunOwnership(loaded.provider, id, config.run, config["timeout-ms"]); }
       finally { if (measurement) measurement.phases.ownershipVerifyMs = (measurement.phases.ownershipVerifyMs ?? 0) + performance.now() - verifyStart; }
       if (!verified) {
+        if (await resolveAbsent(loaded, id)) return;
         review(loaded.name, id, "Live run label and SDK ownership marker could not be verified; no deletion attempted");
+        for (const item of report.cleanupReview ?? []) if (item.provider === loaded.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
         throw new UnverifiedOwnershipError(id);
       }
       const quarantined = report.cleanupReview?.some(v => v.provider === loaded.name && v.id === id && v.kind === "sandbox");
@@ -1028,6 +1048,7 @@ export async function runV2(
         estimatedUSD: state.estimatedUSD,
         stop: state.stop,
       };
+      await reconcileReviews(p);
       await save();
     }
   }
@@ -1200,6 +1221,8 @@ export async function runV2(
         await persist();
       } catch (e) { errors.push(errorNote(e)); }
     }
+    await reconcileReviews(p);
+    for (const resolution of report.cleanupResolved ?? []) if (resolution.provider === p.name) remaining.delete(resolution.id);
     for (const item of owned.values()) if (item.provider === p.name) remaining.add(item.id);
     if (remaining.size) errors.push("Ownership journal or listing still contains resources");
     if (unsafeProviders.has(p.name)) errors.push("Pending work did not settle; late creations remain possible");
@@ -1230,6 +1253,11 @@ export async function runV2(
       outcome.lateSettlement.sandboxId = id;
       outcome.lateSettlement.cleanupOutcome = owned.has(`${sample.provider}/${id}`) ? "failed" : "succeeded";
     }
+  }
+  for (const sample of report.samples) {
+    if (sample.outcome.kind !== "failure") continue;
+    const id = sample.outcome.unverifiedSandboxId ?? sample.sandboxId;
+    if (id && report.cleanupResolved?.some(r => r.provider === sample.provider && r.id === id)) sample.outcome.cleanupResolved = "absent";
   }
   report.finishedAt = new Date().toISOString();
   report.summaries = summarize(report.samples, config.seed);

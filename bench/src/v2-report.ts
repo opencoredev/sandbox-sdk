@@ -33,6 +33,7 @@ export function markdownV2(r: ReportV2) {
     "",
     `cleanupReview: ${JSON.stringify(r.cleanupReview ?? [])}`,
     `cleanupReleased: ${JSON.stringify(r.cleanupReleased ?? [])}`,
+    `cleanupResolved: ${JSON.stringify(r.cleanupResolved ?? [])}`,
     "",
     `admissionStopped: ${JSON.stringify(r.admissionStopped ?? [])}`,
     "",

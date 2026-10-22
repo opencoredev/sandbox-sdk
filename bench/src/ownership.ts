@@ -2,6 +2,7 @@ import { open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
+import { isAbsent, type LookupEvidence } from "./existence.js";
 
 export class UnverifiedOwnershipError extends Error {
   constructor(readonly unverifiedSandboxId: string) {
@@ -28,7 +29,20 @@ export interface CleanupReview {
   id: string;
   kind: "sandbox" | "snapshot" | "snapshot-source";
   reason: string;
+  status?: "checking" | "unresolved";
 }
+export interface CleanupResolution extends CleanupReview {
+  resolution: "absent";
+  evidence: LookupEvidence;
+}
+export function recordAbsentResolution(reviews: CleanupReview[], resolutions: CleanupResolution[], provider: string, id: string, evidence: LookupEvidence) {
+  if (!isAbsent(evidence)) return false;
+  const entry = reviews.find(r => r.provider === provider && r.id === id && r.kind === "sandbox");
+  resolutions.push({provider, id, kind: "sandbox", reason: entry?.reason ?? "Exact native lookup confirmed absence", resolution: "absent", evidence});
+  for (const review of reviews.filter(r => r.provider === provider && r.id === id && r.kind === "sandbox")) reviews.splice(reviews.indexOf(review), 1);
+  return true;
+}
+export function unresolvedCleanupReviews(reviews: CleanupReview[] = []) {return reviews.filter(r => r.status !== "checking");}
 export interface CleanupRelease extends CleanupReview {
   releasedAt: string;
   proof: "live-run-sdk-labels";

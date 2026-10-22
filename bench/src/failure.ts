@@ -22,6 +22,7 @@ export const failureOutcomeSchema = z.object({
   note: z.string(),
   unverifiedSandboxId: sandboxIdSchema.optional(),
   ownershipReleased: z.boolean().optional(),
+  cleanupResolved: z.literal("absent").optional(),
   sandboxId: sandboxIdSchema.optional(),
   code: z.string().optional(),
   cause: causeSchema.optional(),

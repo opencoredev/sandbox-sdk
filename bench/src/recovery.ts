@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider } from "./providers.js";
-import { recordVerifiedRelease, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview, type CleanupRelease } from "./ownership.js";
+import { recordAbsentResolution, recordVerifiedRelease, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview, type CleanupRelease, type CleanupResolution } from "./ownership.js";
+import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { deadline } from "./timing.js";
 import { snapshotCleaner, snapshotsFromSource } from "./snapshots.js";
 const resource = z.object({provider: z.string(), id: z.string(), kind: z.enum(["sandbox", "snapshot", "snapshot-source"]), parent: z.string().nullable()});
-const reviewSchema = resource.omit({parent: true}).extend({reason: z.string()});
+const reviewSchema = resource.omit({parent: true}).extend({reason: z.string(), status: z.enum(["checking", "unresolved"]).optional()});
 
 /** Recovery never treats a journal ID as permission to delete. */
 export async function reapRun(providers: LoadedProvider[], config: ConfigV2, sanitize: (value: string) => string) {
@@ -26,6 +27,7 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
   catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error; }
   const reviews: CleanupReview[] = z.array(reviewSchema).parse(results?.cleanupReview ?? []);
   const releases: CleanupRelease[] = z.array(reviewSchema.extend({releasedAt: z.string(), proof: z.literal("live-run-sdk-labels")})).parse(results?.cleanupReleased ?? []);
+  const resolutions: CleanupResolution[] = z.array(reviewSchema.extend({resolution: z.literal("absent"), evidence: lookupSchema})).parse(results?.cleanupResolved ?? []);
   const review = (provider: string, id: string, kind: CleanupReview["kind"], reason: string) => {
     if (!reviews.some(r => r.provider === provider && r.id === id && r.kind === kind)) reviews.push({provider, id: sanitize(id), kind, reason});
   };
@@ -33,6 +35,19 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
   for (const p of providers) {
     if (p.kind === "skipped") { process.stderr.write(`SKIP ${p.name}: ${p.note}\n`); continue; }
     const errors: string[] = [];
+    const resolveAbsent = async (id: string) => {
+      const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
+      if (!isAbsent(evidence)) {
+        for (const item of reviews) if (item.provider === p.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
+        return false;
+      }
+      recordAbsentResolution(reviews, resolutions, p.name, id, evidence);
+      if (journal) {
+        journal.resources = journal.resources.filter(r => !(r.provider === p.name && r.id === id && r.kind === "sandbox"));
+        await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+      }
+      return true;
+    };
     const owned = async (id: string) => verifyRunOwnership(p.provider, id, config.run, config["timeout-ms"]);
     const forget = async (entry: z.infer<typeof resource>) => {
       if (journal) {journal.resources = journal.resources.filter(r => r !== entry); await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");}
@@ -64,7 +79,10 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
         if (hasRunOwnership(info, config.run)) candidates.add(info.id);
     } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "List failed"));}
     for (const id of candidates) {
-      if (!(await owned(id))) {review(p.name, id, "sandbox", "Live run label and SDK ownership marker unverified; no deletion attempted"); continue;}
+      if (!(await owned(id))) {
+        if (!(await resolveAbsent(id))) review(p.name, id, "sandbox", "Live run label and SDK ownership marker unverified; no deletion attempted");
+        continue;
+      }
       try {
         if (reviews.some(r => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
           journal ??= {runId: config.run, resources: []};
@@ -77,6 +95,8 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
         for (const entry of journal?.resources ?? []) if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id) await forget(entry);
       } catch (error) {errors.push(sanitize(error instanceof Error ? error.message : "Reap failed"));}
     }
+    // oxlint-disable-next-line unicorn/no-useless-spread -- resolving removes reviews while iterating.
+    for (const item of [...reviews]) if (item.provider === p.name && item.kind === "sandbox") await resolveAbsent(item.id);
     let count = 0;
     try {
       await deadline(config["timeout-ms"], async signal => {
@@ -95,15 +115,17 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
   }
   for (const entry of reviews) process.stderr.write(`cleanupReview: ${JSON.stringify(entry)}\n`);
   for (const entry of releases) process.stdout.write(`cleanupReleased: ${JSON.stringify(entry)}\n`);
-  if (results || reviews.length || releases.length) {
+  for (const entry of resolutions) process.stdout.write(`cleanupResolved: ${JSON.stringify(entry)}\n`);
+  if (results || reviews.length || releases.length || resolutions.length) {
     const record = results ?? {runId: config.run};
     record.cleanupReview = reviews;
     record.cleanupReleased = releases;
+    record.cleanupResolved = resolutions;
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
-  if (reviews.length || releases.length) {
+  if (reviews.length || releases.length || resolutions.length) {
     const md = await readFile(join(config.out, "results.md"), "utf8").catch(() => "");
-    await writeFile(join(config.out, "results.md"), md.replace(/^cleanup(?:Review|Released):.*\n/gm, "") + `\ncleanupReview: ${JSON.stringify(reviews)}\ncleanupReleased: ${JSON.stringify(releases)}\n`);
+    await writeFile(join(config.out, "results.md"), md.replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, "") + `\ncleanupReview: ${JSON.stringify(reviews)}\ncleanupReleased: ${JSON.stringify(releases)}\ncleanupResolved: ${JSON.stringify(resolutions)}\n`);
   }
   return failed || reviews.length > 0;
 }
