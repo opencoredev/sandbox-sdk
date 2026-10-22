@@ -929,3 +929,44 @@ test("native evidence rejects secret scalars and arbitrary native properties", a
     '{"operation":"connect","status":504,"providerCode":"UNAVAILABLE"}',
   );
 });
+
+test("repeated resumes refresh workspace roots and recover expired first-command credentials once", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const current = tenkiState.boxes.get(box.id);
+  if (!current) throw new Error("Missing mock session");
+  const resume = current.resume.bind(current);
+  const renew = vi.spyOn(current, "reauthOnUnauthenticated").mockResolvedValue(true);
+  const close = vi.spyOn(current, "close");
+  const write = vi.spyOn(current, "writeFile");
+  const read = vi.spyOn(current, "readFile");
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    const root = `/home/tenki/resumed-${cycle}`;
+    vi.spyOn(current, "resume").mockImplementationOnce(async () => {
+      await resume();
+      // Simulate a restored guest with a different workspace alias. This does
+      // not pass through adapter exec invalidation, just like native restore.
+      const result = await current.run([
+        "sh",
+        "-c",
+        `mkdir -p ${root}; rm /workspace; ln -s ${root} /workspace`,
+      ]);
+      expect(result.exitCode).toBe(0);
+    });
+    await provider.pause?.(box.id);
+    await provider.resume?.(box.id);
+    await provider.files.write(box.id, "/workspace/value", new Uint8Array([cycle]));
+    expect(write).toHaveBeenLastCalledWith(`${root}/value`, new Uint8Array([cycle]));
+    expect(await provider.files.read(box.id, "/workspace/value")).toEqual(new Uint8Array([cycle]));
+    expect(read).toHaveBeenLastCalledWith(`${root}/value`);
+    tenkiState.streamFailures.push({
+      phase: "before-start",
+      error: Object.assign(new Error("expired resumed credential"), { code: 16 }),
+    });
+    const result = await box.run("printf once >> /home/tenki/resume-count; printf resumed");
+    expect(result).toMatchObject({ stdout: "resumed", exitCode: 0 });
+    expect(renew).toHaveBeenCalledTimes(cycle);
+  }
+  expect((await box.run("cat /home/tenki/resume-count")).stdout).toBe("onceonceonce");
+  expect(close).not.toHaveBeenCalled();
+});
