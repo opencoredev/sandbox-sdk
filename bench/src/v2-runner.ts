@@ -9,7 +9,7 @@ import type { LoadedProvider, ReadyProvider } from "./providers.js";
 import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
-import { resources, parseFingerprint, type Fingerprint } from "./fingerprint.js";
+import { resources, verifyRestoredResources, parseFingerprint, type Fingerprint } from "./fingerprint.js";
 import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
@@ -650,7 +650,6 @@ export async function runV2(
                 await measure("create-from-snapshot", async (signal) => {
                   restored = await createSandbox(tracked, {
                     from: id,
-                    ...(createSize === null ? {} : { size: createSize }),
                     labels: { "sandbox-bench-run": config.run },
                     ports: [3000],
                     signal,
@@ -665,6 +664,7 @@ export async function runV2(
                 const restoreId = restoredId;
                 const sourceFingerprint: Fingerprint | null = fp;
                 let restoredFingerprint: Fingerprint | null = null;
+                const restoreDetails: {verification: ReturnType<typeof verifyRestoredResources> | null} = {verification: null};
                 try {
                   await measure("restore-fingerprint", async (signal) => {
                     if (!restoredBox) throw new Error("Restore handle unavailable");
@@ -680,8 +680,11 @@ export async function runV2(
                         signal,
                       ),
                     );
-                    return fp;
-                  });
+                    restoreDetails.verification = verifyRestoredResources(sourceFingerprint, fp);
+                    if (restoreDetails.verification.matches === false)
+                      throw new Error(`Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`);
+                    return restoreDetails;
+                  }, {}, undefined, restoreDetails);
                 } finally {
                   fp = sourceFingerprint;
                 }

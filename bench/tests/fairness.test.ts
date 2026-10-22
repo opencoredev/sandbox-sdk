@@ -280,7 +280,7 @@ it("ends cold and restore at bare true before SDK setup", async () => {
       order.push(`sdk:${id}`); await wait(30); return backing.files.write(id, path, data);
     }},
     create: async (input: Parameters<Provider["create"]>[0]) => {
-      expect(input.size).toEqual({cpu: 4, memoryMb: 8192});
+      expect(input.size).toEqual(input.from ? undefined : {cpu: 4, memoryMb: 8192});
       return backing.create({...input, size: undefined});
     },
     exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
@@ -383,4 +383,31 @@ it("flushes complete ownership before bare execution and excludes that flush fro
   expect(cold?.outcome.kind).toBe("sample");
   expect(cold?.phases.ownershipPersistMs).toBeGreaterThan(0);
   expect((cold?.phases.sdkReadyMs ?? 0) - (cold?.phases.coldMs ?? 0)).toBeGreaterThanOrEqual(cold?.phases.ownershipPersistMs ?? 0);
+});
+
+it.each([false, true])("restores inherit allocation without a size override and record fingerprint comparison (mismatch=%s)", async mismatch => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake(); let restoredId: string | undefined;
+  const provider = { ...backing, capabilities: new Set(["snapshot", "size"]), snapshot: async () => ({id: "snapshot"}),
+    create: async (input: Parameters<Provider["create"]>[0]) => {
+      expect(input.size).toEqual(input.from ? undefined : {cpu: 4, memoryMb: 8192});
+      const info = await backing.create({...input, size: undefined});
+      if (input.from) restoredId = info.id;
+      return info;
+    },
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+      if (id === restoredId && mismatch && input.command.includes("BENCH_FINGERPRINT")) {
+        input.onChunk({stream: "stdout", text: JSON.stringify({...fingerprint, quotaCpus: 1})});
+        return {exitCode: 0, timedOut: false};
+      }
+      return backing.exec(id, input);
+    },
+  } satisfies Provider;
+  const report = await runV2([ready("boat", provider)], await config(["--track", "same-spec", "--size", "boat=4:8192", "--scenarios", "snapshot"]), async () => {});
+  expect(report.samples.find(s => s.scenario === "create-from-snapshot")?.outcome.kind).toBe("sample");
+  const row = report.samples.find(s => s.scenario === "restore-fingerprint");
+  expect(row?.outcome.kind).toBe(mismatch ? "failure" : "sample");
+  expect(row?.details).toMatchObject({verification: {matches: !mismatch, source: {cpu: 2}, restored: {cpu: mismatch ? 1 : 2}}});
+  expect(row?.fingerprint?.quotaCpus).toBe(mismatch ? 1 : 2);
+  expect(report.cleanup[0]?.remaining).toEqual([]);
 });

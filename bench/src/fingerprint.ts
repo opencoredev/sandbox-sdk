@@ -35,3 +35,15 @@ export function resources(fp: Fingerprint) {
     diskGiB: fp.diskBytes / 1024 ** 3,
   };
 }
+
+export function verifyRestoredResources(source: Fingerprint | null, restored: Fingerprint) {
+  const actual = resources(restored);
+  if (!source) return { matches: null, source: null, restored: actual, mismatches: ["Source fingerprint unavailable"] };
+  const original = resources(source);
+  const mismatches = [
+    ...(original.cpu === actual.cpu ? [] : ["cpu"]),
+    ...(Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05 ? [] : ["memoryGiB"]),
+    ...(Math.abs(actual.diskGiB - original.diskGiB) <= original.diskGiB * 0.05 ? [] : ["diskGiB"]),
+  ];
+  return { matches: mismatches.length === 0, source: original, restored: actual, mismatches };
+}
