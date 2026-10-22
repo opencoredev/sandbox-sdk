@@ -53,7 +53,7 @@ function fileInfo(path: string, file: NativeFile): FileInfo {
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   let client: Promise<Daytona> | undefined;
   const boxes = new Map<string, DaytonaSandbox>();
-  const recentCreates = new Map<string, number>();
+  const recentCreates = new Map<string, { expiresAt: number }>();
   const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
   async function api() {
@@ -99,7 +99,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           "/", undefined, 10,
         );
         if (workspace.exitCode !== 0) throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use a Daytona runtime with sudo -n access.", { code: "provider", provider: "daytona", sandboxId: value.id });
-        recentCreates.set(value.id, Date.now() + 30_000);
+        recentCreates.set(value.id, { expiresAt: Date.now() + 30_000 });
         return info(value);
       } catch (error) { await value.delete(60, true); boxes.delete(value.id); recentCreates.delete(value.id); throw error; }
     }); },
@@ -112,11 +112,14 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       }
       // Native list can lag behind create/get. Verify only recent local creates
       // omitted by the index; never resurrect a sandbox from stale cached data.
-      for (const [id, expiresAt] of recentCreates) {
-        if (Date.now() >= expiresAt) { recentCreates.delete(id); continue; }
+      for (const [id, creation] of recentCreates) {
+        if (Date.now() >= creation.expiresAt) { recentCreates.delete(id); continue; }
         const cached = boxes.get(id); if (!cached || !matches(cached)) continue;
         try {
           const value = await (await api()).get(id);
+          // Each creation record is an eligibility token. Destroy removes it,
+          // so invalidation survives removal of the in-flight deletion entry.
+          if (recentCreates.get(id) !== creation || deletions.has(id) || Date.now() >= creation.expiresAt) continue;
           if (matches(value)) { boxes.set(id, value); values.set(id, info(value)); }
         } catch (error) {
           if (daytonaError(error).code !== "not_found") throw error;
