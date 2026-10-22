@@ -48,6 +48,8 @@ export interface ProviderFiles {
   readonly transfer?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
+  /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */
+  readonly internal?: readonly string[];
   readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array): Promise<void>;

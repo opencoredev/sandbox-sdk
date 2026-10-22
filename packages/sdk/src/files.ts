@@ -42,7 +42,7 @@ export async function initializeFiles({ provider, id, secretNames }: { provider:
     `export GIT_DIR=${gitDir} GIT_WORK_TREE=/workspace GIT_INDEX_FILE=${gitDir}/sdk.index`,
     "git read-tree --empty",
     // Same file set as tree(): skip .git entries so nested repositories stay plain files.
-    "find . -mindepth 1 -name .git -prune -o ! -type d -print0 | git update-index --add --remove -z --stdin",
+    `find . -mindepth 1 \\( -name .git${(provider.files.internal ?? []).map(name => ` -o -path ${quote(`./${name}`)}`).join("")} \\) -prune -o ! -type d -print0 | git update-index --add --remove -z --stdin`,
     "tree=$(git write-tree)",
     `printf %s "$tree" > ${sdk}/marks/${encodeURIComponent("start")}.json`,
     `printf %s ${quote(secretNames)} > ${sdk}/secret-names.json`,
@@ -95,7 +95,8 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     }
     // Feed individual files: git add would collapse nested repositories into gitlinks.
     const paths: string[] = [];
-    async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git") continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
+    const internal = new Set((fs.internal ?? []).map(name => pathOf(name)));
+    async function collect(dir: string) { for (const entry of await fs.list(id, dir)) { if (posix.basename(entry.path) === ".git" || internal.has(entry.path)) continue; if (entry.type === "directory") await collect(entry.path); else paths.push(posix.relative("/workspace", entry.path)); } }
     await collect("/workspace"); await git("read-tree --empty");
     if (paths.length) await git("update-index --add --remove -z --stdin", paths.join("\0") + "\0");
     return (await git("write-tree")).trim();
