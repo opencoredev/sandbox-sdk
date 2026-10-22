@@ -4,11 +4,14 @@ import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
+import { FileTransfers } from "./transfers.js";
 export interface BoxdOptions {
   apiKey?: string;
   baseURL?: string;
   image?: string;
   requestTimeoutMs?: number;
+  /** Cancels this adapter's file transfers, including in-flight uploads/downloads. */
+  fileTransferSignal?: AbortSignal;
 }
 export interface BoxdNative {
   machine: Machine;
@@ -29,7 +32,7 @@ function vcpuFor(size: CreateInput["size"]): number | undefined {
 export function boxd(options: BoxdOptions = {}): BoxdProvider {
   let client: Promise<Boxd> | undefined;
   let current: Boxd | undefined;
-  let webClient: Promise<import("@boxd-sh/sdk/web").Boxd> | undefined;
+  let webClient: FileTransfers | undefined;
   const boxes = new Map<string, Machine>();
   async function api() {
     return (client ??= (async () => {
@@ -50,18 +53,13 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     })());
   }
   async function fileApi() {
-    // Validate credentials/options through the native client before constructing
-    // the fetch transport; streamExec continues to use the native client.
     await api();
-    return (webClient ??= (async () => {
-      const { Boxd } = await import("@boxd-sh/sdk/web");
-      return new Boxd({
-        apiKey: options.apiKey ?? process.env.BOXD_API_KEY,
-        baseURL: options.baseURL,
-        timeout: options.requestTimeoutMs ?? 30000,
-        maxRetries: 0,
-      });
-    })());
+    return (webClient ??= new FileTransfers({
+      apiKey: options.apiKey ?? process.env.BOXD_API_KEY,
+      baseURL: options.baseURL,
+      timeout: options.requestTimeoutMs ?? 30000,
+      maxRetries: 0,
+    }, options.fileTransferSignal));
   }
   async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
     try {
@@ -83,11 +81,11 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         return r.stdout;
       },
       upload: async (path, bytes) => {
-        if ((await (await fileApi()).machines.files.upload(id, path, bytes)) !== bytes.length)
+        if ((await (await fileApi()).upload(id, path, bytes)) !== bytes.length)
           throw failure("Incomplete file upload", "provider", id);
       },
       read: async (path, range) => {
-        if (!range) return (await fileApi()).machines.files.download(id, path);
+        if (!range) return (await fileApi()).download(id, path);
         // Tail readers request a bounded range. Seek in the guest rather than
         // downloading a growing log in full for each page.
         const result = await c.machines.exec(id, {
@@ -105,7 +103,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
   }
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
-    const text = new TextDecoder().decode(await (await fileApi()).machines.files.download(m.id, marker));
+    const text = new TextDecoder().decode(await (await fileApi()).download(m.id, marker));
     let value: unknown;
     try { value = JSON.parse(text); }
     catch { throw failure("Invalid SDK metadata", "not_found", m.id); }
@@ -215,17 +213,22 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       }),
     list: (labels) =>
       safe(undefined, async () => {
-        const result: SandboxInfo[] = [];
-        for (const m of await (await api()).machines.list()) {
-          if (!m.name.startsWith("sbxsdk-") || m.status === "destroyed") continue;
-          try {
-            const v = await info(m);
-            if (Object.entries(labels).every(([k, vv]) => v.labels[k] === vv)) result.push(v);
-          } catch (error) {
-            if (boxdError(error).code !== "not_found") throw error;
+        try {
+          const result: SandboxInfo[] = [];
+          for (const m of await (await api()).machines.list()) {
+            if (!m.name.startsWith("sbxsdk-") || m.status === "destroyed") continue;
+            try {
+              const v = await info(m);
+              if (Object.entries(labels).every(([k, vv]) => v.labels[k] === vv)) result.push(v);
+            } catch (error) {
+              if (boxdError(error).code !== "not_found") throw error;
+            }
           }
+          return result;
+        } finally {
+          // A listing-only adapter has no handle that will later call close().
+          if (!boxes.size) await webClient?.releaseIdle();
         }
-        return result;
       }),
     async find(key) {
       const v = (await provider.list({})).find((v) => v.key === key);
@@ -233,10 +236,14 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     },
     connect: (id) =>
       safe(id, async () => {
-        const m = await (await api()).machines.get(id);
-        const value = await info(m);
-        boxes.set(id, m);
-        return value;
+        try {
+          const m = await (await api()).machines.get(id);
+          const value = await info(m);
+          boxes.set(id, m);
+          return value;
+        } finally {
+          if (!boxes.size) await webClient?.releaseIdle();
+        }
       }),
     destroy: (id) =>
       safe(id, async () => {
@@ -246,9 +253,13 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           if (boxdError(error).code !== "not_found") throw error;
         }
         boxes.delete(id);
+        await webClient?.closeMachine(id);
+        if (!boxes.size) await webClient?.releaseIdle();
       }),
     async close(id) {
       boxes.delete(id);
+      await webClient?.closeMachine(id);
+      if (!boxes.size) await webClient?.releaseIdle();
     },
     exec: (id, input) => safe(id, async () => execute(await api(), id, input)),
     files: files(guest, safe),
