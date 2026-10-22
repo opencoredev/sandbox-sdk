@@ -9,8 +9,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@boxd-sh/sdk", () => ({ Boxd: class extends MockBoxd {
   snapshots = { create: mocks.snapshotCreate, get: mocks.snapshotGet, delete: mocks.snapshotDelete };
 } }));
-vi.mock("@boxd-sh/sdk/web", () => ({ Boxd: class extends MockBoxd {
-  constructor() { super(); mocks.web.push(this); }
+vi.mock("../src/providers/boxd/transfers.js", () => ({ FileTransfers: class {
+  private client = new MockBoxd();
+  constructor() { mocks.web.push(this.client); }
+  upload(id: string, path: string, bytes: Uint8Array) { return this.client.machines.files.upload(id, path, bytes); }
+  download(id: string, path: string) { return this.client.machines.files.download(id, path); }
+  async close() {}
+  async closeMachine() {}
+  async releaseIdle() {}
 } }));
 import { boxd } from "../src/providers/boxd/index.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
