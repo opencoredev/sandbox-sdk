@@ -9,13 +9,13 @@ Install `@opencoredev/sandbox-sdk` and `@superserve/sdk`, then set `SUPERSERVE_A
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 
-await using box = await createSandbox(superserve());
+await using box = await createSandbox(superserve({ installPython: true }));
 console.log((await box.run("node --version")).stdout);
 ```
 
-The adapter uses `@superserve/sdk` 0.11.4 or later. Options are `apiKey`, `baseUrl`, `template`, and `requestTimeoutMs` (90,000 by default). The default template is `superserve/node-22`: 1 vCPU, 1 GiB RAM, and 4 GiB disk when checked on October 21, 2026. It includes Node 22; creation installs Python 3, pip, and venv if Python is absent. This setup needs root and package-repository access, and counts toward creation time. Custom templates must provide Python 3, Git, GNU tar, and `nohup`, or permit that setup.
+The adapter uses `@superserve/sdk` 0.11.4 or later. Options are `apiKey`, `baseUrl`, `template`, `installPython`, and `requestTimeoutMs` (90,000 by default). The default template is `superserve/node-22`: 1 vCPU, 1 GiB RAM, and 4 GiB disk when checked on October 21, 2026. It includes Node 22 but not Python, which the adapter needs for its command supervisor. Creation fails with a clear error when Python 3 is missing, unless you pass `installPython: true`. That option installs Python 3, pip, and venv during creation, which needs root and package-repository access and adds to creation time. For fast starts, use a template that already has Python 3, Git, GNU tar, and `nohup`. The benchmark builds one with `bench/templates/superserve/build.ts`.
 
-Resources come from the template. Explicit `size`, restricted `network`, `idleTimeoutMs`, and hard sandbox `timeoutMs` requests fail with `unsupported` before allocation. The adapter disables native auto-pause because it is a per-session active-time window, not the SDK's hard lifetime limit. Terminal support is unavailable.
+Resources come from the template. Explicit `size`, restricted `network`, `idleTimeoutMs`, and hard sandbox `timeoutMs` requests fail with `unsupported` before allocation. If the template sets a native auto-pause timeout, the adapter clears it, because it is a per-session active-time window, not the SDK's hard lifetime limit. Terminal support is unavailable.
 
 Pause and resume preserve the VM state. Snapshots can be restored with `createSandbox(superserve(), { from: snapshot.id })`. Snapshots persist after sandbox destruction; delete them with native `Snapshot.deleteById(id)`. A snapshot failure reports an `outcome_unknown` recovery name. List snapshots of the reported source sandbox before retrying.
 
