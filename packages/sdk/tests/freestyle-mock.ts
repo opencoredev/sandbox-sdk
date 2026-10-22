@@ -59,6 +59,16 @@ export class MockVm {
     const result = options.stdin
       ? await this.guest.buffered(options.command, Buffer.from(options.stdin, "base64").toString())
       : { stdout: await this.guest.raw(options.command), stderr: "", statusCode: 0 };
+    if (options.command.includes("for path,content in json.load(sys.stdin)") && result.statusCode === 0) {
+      // The guest runs under a temporary host root. Normalize encoded output
+      // just as MockGuest.upload does for supervisors installed by file RPC.
+      const path = this.guest.rewrite("/var/lib/sandbox-sdk-exec-v2.py");
+      const script = await fs.readFile(path, "utf8");
+      await fs.writeFile(path, script.replace(
+        "base64.b64encode(data)",
+        `base64.b64encode(data.replace(${JSON.stringify(this.guest.root)}.encode(),b''))`,
+      ));
+    }
     const stdout = result.stdout;
     freestyleState.peak = Math.max(freestyleState.peak, Buffer.byteLength(stdout));
     return result;
@@ -112,7 +122,7 @@ export class MockFreestyle {
       const value = new MockVm(guest, params);
       freestyleState.boxes.set(value.id, value);
       if (freestyleState.delay) await new Promise((r) => setTimeout(r, freestyleState.delay));
-      return { vm: value, vmId: value.id, data: value.record, firewallRules: [], tlsRules: [] };
+      return { vm: value, vmId: value.id, data: value.record, firewallRules: (await value.firewallRules()).rules, tlsRules: [] };
     },
     ref: (id: string) => this.get(id),
     get: async (id: string) => this.get(id).record,
