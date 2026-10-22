@@ -14,7 +14,7 @@ fi
 main=command,files-1kb,files-10mb,reconnect,pause-resume,perf,git-clone,npm-install,dev-server,preview-first-byte,edit-loop,tool-replay,pip-install
 lifecycle=command,files-1kb,files-10mb,reconnect,pause-resume,perf
 base=(--concurrency 4 --provider-concurrency 1 --seed 45 --max-dollars 25)
-default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1)
+default_flags=(--track default --template e2b=base --template superserve=sandbox-bench-node22-py311-1x1-pinned)
 spec_flags=(--track same-spec --template e2b=r1h7gud12rf1f6iu29r0 --template daytona=daytona-large --size upstash=medium --size boxd=4:16384 --size tenki=4:8192)
 # E2B template alias: sandbox-bench-same-spec. Boat/Freestyle use defaults.
 # Superserve is deliberately EXCLUDED from same-spec: account cap is 2 vCPU; no 4-vCPU template.

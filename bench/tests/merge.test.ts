@@ -361,6 +361,8 @@ it.each([
   ["e2b", "base", 2, 0.49, 0.5],
   ["daytona", "daytona-large", 4, 7.9, 8],
   ["superserve", "sandbox-bench-node22-py311-1x1", 1, 0.98, 1],
+  ["superserve", "sandbox-bench-node22-py311-1x1-pinned", 1, 0.98, 1],
+  ["superserve", "522daf7b-fec9-41d8-80cd-361f3b8b1fa8", 1, 0.98, 1],
 ])("prices provisioned template resources for %s/%s", async (provider, template, cpu, usable, provisioned) => {
   const {allocationEvidence} = await import("../src/allocation.js");
   const {siteData} = await import("../src/site-data.js");

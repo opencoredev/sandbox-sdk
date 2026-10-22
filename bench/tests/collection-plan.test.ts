@@ -19,7 +19,8 @@ it("plans every default scenario and all 27 metric IDs on a pinned commit", () =
     expect(covered, def.id).toBe(true);
   }
   expect(output).toContain("--template e2b=base");
-  expect(output).toContain("--template superserve=sandbox-bench-node22-py311-1x1");
+  expect(output).toContain("--template superserve=sandbox-bench-node22-py311-1x1-pinned ");
+  expect(output).not.toContain("--template superserve=sandbox-bench-node22-py311-1x1 ");
   expect(script).toContain('git rev-parse HEAD');
   expect(script).toContain('BENCH_COLLECTION_COMMIT');
 });

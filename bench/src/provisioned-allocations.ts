@@ -13,7 +13,11 @@ const templates: Record<string, Record<string, ProvisionedAllocation>> = {
     base: {cpu: 2, memoryGiB: 0.5},
   },
   daytona: {"daytona-large": {cpu: 4, memoryGiB: 8, diskGiB: 10}},
-  superserve: {"sandbox-bench-node22-py311-1x1": {cpu: 1, memoryGiB: 1, diskGiB: 4}},
+  superserve: {
+    "sandbox-bench-node22-py311-1x1": {cpu: 1, memoryGiB: 1, diskGiB: 4},
+    "sandbox-bench-node22-py311-1x1-pinned": {cpu: 1, memoryGiB: 1, diskGiB: 4},
+    "522daf7b-fec9-41d8-80cd-361f3b8b1fa8": {cpu: 1, memoryGiB: 1, diskGiB: 4},
+  },
 };
 const defaults: Record<string, ProvisionedAllocation> = {
   e2b: {cpu: 2, memoryGiB: 0.5},
