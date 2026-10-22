@@ -10,7 +10,7 @@ import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { execute, raw } from "./exec.js";
 import { files } from "./files.js";
-import { tenkiError, failure } from "./errors.js";
+import { tenkiError, failure, type TenkiOperation } from "./errors.js";
 
 export interface TenkiOptions {
   /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY. */
@@ -155,11 +155,15 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       });
     })());
   }
-  async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
+  async function safe<T>(
+    operation: TenkiOperation,
+    id: string | undefined,
+    action: () => Promise<T>,
+  ): Promise<T> {
     try {
       return await action();
     } catch (error) {
-      throw tenkiError(error, id);
+      throw tenkiError(error, id, operation, [options.authToken ?? ""]);
     }
   }
   async function box(id: string) {
@@ -176,7 +180,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     processRecordRoot: "/home/tenki/.sandbox-sdk/procs",
     capabilities: new Set<TenkiCapability>(["pause", "snapshot", "size", "network-policy"]),
     create: (input) =>
-      safe(undefined, async () => {
+      safe("create", undefined, async () => {
         if (input.idleTimeoutMs !== undefined)
           throw failure(
             "Tenki no longer auto-pauses on idle; idleTimeoutMs is unavailable",
@@ -263,7 +267,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         }
       }),
     list: (labels) =>
-      safe(undefined, async () =>
+      safe("list", undefined, async () =>
         (await request(async () => (await api()).list()))
           .filter(
             (value) =>
@@ -287,7 +291,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       return found ? provider.connect(found.id) : undefined;
     },
     connect: (id) =>
-      safe(id, async () => {
+      safe("connect", id, async () => {
         const value = await request(async () => (await api()).get(id));
         const result = info(value);
         if (["TERMINATED", "TERMINATING"].includes(value.state))
@@ -299,7 +303,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     destroy(id) {
       const pending = destroying.get(id);
       if (pending) return pending;
-      const operation = safe(id, async () => {
+      const operation = safe("destroy", id, async () => {
         let terminated = false;
         try {
           await request(async () => (await box(id)).close());
@@ -319,7 +323,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       boxes.delete(id);
     },
     exec: (id, input) =>
-      safe(id, async () => {
+      safe("exec", id, async () => {
         const value = await box(id);
         // Commands can replace the workspace alias. While one runs, use the
         // original guest path; its completion refreshes the cache without an RPC.
@@ -345,7 +349,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       }),
     files: files(
       box,
-      safe,
+      (id, action) => safe("files", id, action),
       (value) => {
         const state = workspaceState(value);
         return state.active || state.untracked ? undefined : workspaceRoots.get(value);
@@ -353,20 +357,20 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       invalidateWorkspace,
     ),
     previewUrl: (id, port) =>
-      safe(id, async () => {
+      safe("preview", id, async () => {
         const current = await box(id);
         const value = await request(() => current.exposePort(port));
         return { url: value.previewUrl, expiresAt: value.expiresAt?.getTime() };
       }),
     pause: (id) =>
-      safe(id, async () => {
+      safe("pause", id, async () => {
         const value = await box(id);
         const timeoutMs = options.waitTimeoutMs ?? 180_000;
         await deadline(() => value.pause(), timeoutMs);
         await wait((signal) => value.waitPaused(timeoutMs, signal), timeoutMs);
       }),
     resume: (id) =>
-      safe(id, async () => {
+      safe("resume", id, async () => {
         const value = await box(id);
         await deadline(() => value.resume(), resumeTimeoutMs);
         const timeoutMs = options.waitTimeoutMs ?? 180_000;
@@ -374,7 +378,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         await prepareBox(value);
       }),
     snapshot: (id) =>
-      safe(id, async () => {
+      safe("snapshot", id, async () => {
         const client = await api();
         const snapshot = await request(() => client.createSnapshot(id, { async: true }));
         const timeoutMs = options.waitTimeoutMs ?? 300_000;

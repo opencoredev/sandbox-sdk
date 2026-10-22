@@ -875,3 +875,57 @@ test("a failed destroy preserves cache disablement across reconnect", async () =
   expect(write).not.toHaveBeenCalled();
   expect((await box.run("cat value")).stdout).toBe("survived");
 });
+
+test("native failures retain safe evidence through public redaction", async () => {
+  const provider = tenki({ authToken: "secret-key" });
+  const box = await createSandbox(provider);
+  const native = box.native;
+  const transport = Object.assign(new Error("Bearer secret-key response body private-command"), {
+    code: 14,
+    metadata: new Headers({ "x-request-id": "req-123", authorization: "Bearer secret-key" }),
+  });
+  vi.spyOn(native, "resume").mockRejectedValueOnce(
+    Object.assign(new Error("private-body"), {
+      name: "ResumeFailedError",
+      status: 503,
+      cause: transport,
+    }),
+  );
+  const error = await box.resume().catch((error) => error);
+  expect(error).toMatchObject({ code: "provider", provider: "tenki" });
+  expect(JSON.parse(String(error.cause))).toEqual({
+    operation: "resume",
+    nativeName: "ResumeFailedError",
+    status: 503,
+    providerCode: 14,
+    requestId: "req-123",
+  });
+  expect(String(error.cause)).not.toMatch(/secret-key|private|Bearer|authorization/);
+});
+
+test("native evidence rejects secret scalars and arbitrary native properties", async () => {
+  const provider = tenki({ authToken: "SECRET" });
+  vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(
+    Object.assign(new Error("private"), {
+      status: "503",
+      code: "SECRET_CODE",
+      requestId: "req-SECRET",
+      operation: "private/path",
+      body: "private",
+      cause: Object.assign(new Error("private"), {
+        statusCode: 504,
+        code: "UNAVAILABLE",
+        requestId: "https://secret",
+      }),
+    }),
+  );
+  const error = await provider.connect("missing").catch((error) => error);
+  expect(error.cause).toMatchObject({
+    operation: "connect",
+    status: 504,
+    providerCode: "UNAVAILABLE",
+  });
+  expect(error.cause.message).toBe(
+    '{"operation":"connect","status":504,"providerCode":"UNAVAILABLE"}',
+  );
+});
