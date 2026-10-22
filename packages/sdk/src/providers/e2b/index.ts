@@ -67,41 +67,15 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
   }
   async function launch(id: string, input: Omit<ExecInput, "timeoutMs">) {
     const box = await client(id);
-    // setsid may fork: publish the session leader from inside the session,
-    // before user stdout. The launch stream carries this private first line.
-    const prefix = `sandbox-sdk-pgid-${crypto.randomUUID()}:`;
-    let pending = "";
-    let pid: number | undefined;
-    let confirm = (_pid: number) => {};
-    const confirmed = new Promise<number>(resolve => { confirm = resolve; });
-    const script = `printf '%s%s\\n' ${quote(prefix)} "$$"; exec sh -c ${quote(input.command)}`;
-    const handle = await box.commands.run(`exec setsid -w sh -c ${quote(script)}`, {
+    // E2B supplies the launch PID out of band. Keep that PID as the group
+    // leader: setsid must not fork when envd already made it a group leader.
+    // /proc fields after the final ')' are state, parent PID, then group PID.
+    // No user output is interpreted as transport metadata.
+    const script = `set -- "$(</proc/$$/stat)" || exit 125; set -- \${1##*) }; [[ "$3" =~ ^[0-9]+$ ]] || exit 125; if [[ "$3" = "$$" ]]; then exec sh -c ${quote(input.command)}; else exec setsid -w sh -c ${quote(input.command)}; fi`;
+    const handle = await box.commands.run(script, {
       background: true, cwd: input.cwd, envs: input.env, user: "root", stdin: input.stdin !== undefined,
       timeoutMs: 0,
-      onStdout: text => {
-        if (pid !== undefined) { input.onChunk({ stream: "stdout", text }); return; }
-        pending += text;
-        const start = pending.indexOf(prefix);
-        if (start === -1) {
-          // Login/BASH_ENV hooks can print before the frame. Retain only a
-          // possible split prefix and stream the preceding output unchanged.
-          const length = Math.max(0, pending.length - prefix.length + 1);
-          if (length) input.onChunk({ stream: "stdout", text: pending.slice(0, length) });
-          pending = pending.slice(length);
-          return;
-        }
-        if (start) input.onChunk({ stream: "stdout", text: pending.slice(0, start) });
-        pending = pending.slice(start);
-        const newline = pending.indexOf("\n", prefix.length);
-        if (newline === -1) return;
-        const value = Number(pending.slice(prefix.length, newline));
-        if (!Number.isSafeInteger(value) || value <= 1) return;
-        pid = value;
-        confirm(value);
-        const rest = pending.slice(newline + 1);
-        pending = "";
-        if (rest) input.onChunk({ stream: "stdout", text: rest });
-      },
+      onStdout: text => input.onChunk({ stream: "stdout", text }),
       onStderr: text => input.onChunk({ stream: "stderr", text }),
     });
     const active = handles.get(id) ?? new Set<CommandHandle>(); handles.set(id, active); active.add(handle);
@@ -113,16 +87,6 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     });
     void result.catch(() => {});
     try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const unconfirmed = () => new SandboxError("Process start could not be confirmed. No process-group ID arrived. Retry the command.", { code: "outcome_unknown", provider: "e2b", sandboxId: id });
-      let groupPid: number;
-      try {
-        groupPid = await Promise.race([
-          confirmed,
-          result.then(() => { if (pid !== undefined) return pid; throw unconfirmed(); }),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(unconfirmed()), 10_000); }),
-        ]);
-      } finally { clearTimeout(timer); }
       if (input.stdin !== undefined) {
         try { await handle.sendStdin(input.stdin); await handle.closeStdin(); }
         catch (cause) {
@@ -133,9 +97,9 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       }
       const settled = result.finally(() => active.delete(handle));
       void settled.catch(() => {});
-      return { box, handle, pid: groupPid, result: settled };
+      return { box, handle, pid: handle.pid, result: settled };
     } catch (cause) {
-      // Without a group ID, killing the sandbox is the only safe cleanup.
+      // Failed stdin delivery can leave work running; destroy before returning.
       await provider.destroy(id);
       throw cause;
     }
@@ -185,7 +149,9 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
         if (input.signal?.aborted || Date.now() - started >= input.timeoutMs) cancel();
         const outcome = cancelled ? "cancelled" : await Promise.race([running.result, cancellation]);
         if (outcome !== "cancelled") return { exitCode: outcome.exitCode, timedOut: false };
-        try { await groupSignal(running.box, running.pid, "KILL"); await running.handle.kill(); }
+        // Stop bootstrap first: it may not have established its group yet.
+        // The final group signal then catches every descendant it did launch.
+        try { await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }
         catch (cause) { await provider.destroy(id); throw cause; }
         await running.handle.disconnect();
         return { exitCode: null, timedOut: true };
@@ -206,7 +172,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     snapshot: id => call(id, async () => ({ id: (await (await client(id)).createSnapshot()).snapshotId })),
     startProcess: (id, input) => call(id, async (): Promise<NativeProcess> => {
       const running = await launch(id, input);
-      return { pid: running.pid, wait: () => call(id, async () => { try { return await running.result; } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { const value = await handle.wait(); return { exitCode: value.exitCode, signal: null }; } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return { exitCode: cause.exitCode, signal: null }; throw cause; } }), stop: options => call(id, async () => { await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await groupSignal(running.box, running.pid, "KILL"); await running.handle.kill(); }) };
+      return { pid: running.pid, wait: () => call(id, async () => { try { return await running.result; } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { const value = await handle.wait(); return { exitCode: value.exitCode, signal: null }; } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return { exitCode: cause.exitCode, signal: null }; throw cause; } }), stop: options => call(id, async () => { await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }) };
     }),
   };
   return provider;
