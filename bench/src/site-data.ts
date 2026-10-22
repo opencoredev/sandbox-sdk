@@ -246,8 +246,8 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
   const r = publicationTrack(input, track);
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
   for (const provider of names) {
-    const allocations = new Set(r.samples.filter(s => s.provider === provider).map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null])));
-    if (allocations.size > 1) throw new Error(`${provider}: multiple allocations in ${track}; merge each allocation separately before site-data`);
+    const allocations = new Set(r.samples.filter(s => s.provider === provider).map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null, s.product ?? null])));
+    if (allocations.size > 1) throw new Error(`${provider}: multiple allocations or native products in ${track}; merge each separately before site-data`);
   }
   const metrics = metricDefs.map((def) => ({
     ...def,

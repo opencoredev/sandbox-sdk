@@ -66,6 +66,16 @@ function source(runId: string, samples: Sample[]): MergeSource {
   };
 }
 describe("offline v2 merge", () => {
+  it("refuses to publish one provider from two native products", async () => {
+    const { publicationMarkdown } = await import("../src/publication-report.js");
+    const { siteData } = await import("../src/site-data.js");
+    const report = mergeSources([
+      source("box", [sample(0)]),
+      source("ephemeral", [{ ...sample(0), product: "ephemeral" }]),
+    ]);
+    expect(() => publicationMarkdown(report)).toThrow(/more than one native product/);
+    expect(() => siteData(report)).toThrow(/native products/);
+  });
   it("keeps native products in separate summaries", () => {
     const report = mergeSources([
       source("box", [sample(0, "cold", { kind: "sample", value: 1000 })]),

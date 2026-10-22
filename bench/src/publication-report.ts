@@ -60,7 +60,19 @@ export function hourly(r: PublicationReport, provider: string) {
   const allocation = allocationEvidence(r.samples, provider).pricingAllocation;
   return allocation ? computeHourly(price, allocation) : null;
 }
+/** Summaries are looked up by provider, so one provider and track must carry one native product. */
+function assertSingleProduct(r: PublicationReport) {
+  const seen = new Map<string, string | null>();
+  for (const s of r.samples) {
+    const key = `${s.provider}/${s.track ?? "default"}`;
+    const product = s.product ?? null;
+    if (seen.has(key) && seen.get(key) !== product)
+      throw new Error(`${s.provider}: samples from more than one native product in the ${s.track ?? "default"} track; exclude one product's runs before publishing`);
+    seen.set(key, product);
+  }
+}
 export function headline(r: PublicationReport) {
+  assertSingleProduct(r);
   const headers = [
     "Provider",
     "Cold p50 / p95 (s)",
