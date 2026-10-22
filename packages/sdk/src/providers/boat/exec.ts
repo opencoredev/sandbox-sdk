@@ -43,11 +43,17 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
   try {
     // Boat has no per-command env field. Transfer values through its files API,
     // inside a private directory, never through recorded command text or argv.
-    const overrides = Object.entries(input.env).filter(([key, value]) =>
+    let overrides = Object.entries(input.env).filter(([key, value]) =>
       !Object.entries(defaults).some(([name, setting]) => key === name && value === setting) && sandboxEnv[key] !== value);
     const fixed = Object.entries(defaults).filter(([key, value]) => input.env[key] === value);
     let environment = fixed.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("; ");
     if (environment) environment += "; ";
+    // Only the core's fixed, non-secret index path may bypass private env-file
+    // transport. Arbitrary user values may be secrets, regardless of their size.
+    const indexPath = "/tmp/.sandbox-sdk/changes.git/sdk.index";
+    const inline = overrides.filter(([key, value]) => key === "GIT_INDEX_FILE" && value === indexPath);
+    overrides = overrides.filter(([key, value]) => key !== "GIT_INDEX_FILE" || value !== indexPath);
+    for (const [key, value] of inline) environment += `export ${quote(`${key}=${value}`)}; `;
     if (overrides.length) {
       const key = JSON.stringify(overrides);
       const cached = input.envMode === "sandbox" ? environmentFiles.get(key) : undefined;
