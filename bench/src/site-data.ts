@@ -5,7 +5,7 @@ import { priceAtSize, pricing } from "./pricing.js";
 import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
 import { hourly } from "./publication-report.js";
-import { publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
+import { countedFailures, publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
 import { statistics } from "./stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
@@ -153,7 +153,7 @@ const label = (sample: Pick<MergedSample, "suite" | "scenario">) =>
   sample.scenario.replace(/^burst-(\d+)\/.*$/, "$1 at once");
 
 type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass"> &
-  Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration">>;
+  Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration" | "sandboxId">>;
 
 /**
  * Failures the site does not pin on the provider: ones our own harness
@@ -193,7 +193,7 @@ const skipped = new Set(["network-mbps", "snapshot-total"]);
  */
 export function failureReasons(samples: readonly FailureInput[], provider: string) {
   const groups = new Map<string, { kind: string; reason: string; count: number; runs: Set<string>; tests: Set<string> }>();
-  for (const s of samples) {
+  for (const s of countedFailures(samples)) {
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
     if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
     const evidence = s.outcome.cause;
@@ -216,7 +216,7 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
 /** Failures set aside rather than counted, grouped by reason, with the runs they hit. */
 export function ourFailures(samples: readonly FailureInput[], provider: string) {
   const groups = new Map<string, { reason: string; count: number; runs: Set<string> }>();
-  for (const s of samples) {
+  for (const s of countedFailures(samples)) {
     if (s.provider !== provider || skipped.has(s.scenario)) continue;
     const reason = ourFailure(s);
     if (!reason) continue;
@@ -249,6 +249,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const allocations = new Set(r.samples.filter(s => s.provider === provider).map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null])));
     if (allocations.size > 1) throw new Error(`${provider}: multiple allocations in ${track}; merge each allocation separately before site-data`);
   }
+  const counted = countedFailures(r.samples);
   const metrics = metricDefs.map((def) => ({
     ...def,
     comparable: def.comparable ?? true,
@@ -259,7 +260,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       if (!s) return [];
       const scaled = (v: number | null | undefined) => (v == null ? null : v * def.scale);
       // Our own failures are not attempts against the provider.
-      const ours = r.samples.filter(
+      const ours = counted.filter(
         (x) => x.suite === def.suite && x.provider === provider && x.scenario === def.scenario && ourFailure(x),
       ).length;
       return [

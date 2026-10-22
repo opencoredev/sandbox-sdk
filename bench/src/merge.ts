@@ -143,9 +143,26 @@ function namespace(sample: Sample) {
   const burst = /^(burst-\d+)\/(.+)$/.exec(sample.scenario);
   return burst ? `${burst[1]}/${burst[2] === "all-ready" ? "cohort" : "member"}` : "iteration";
 }
+/**
+ * Failure rows that count against a provider: at most one per sandbox and scenario.
+ * Cleanup retries a failed delete and writes a row per attempt; those rows stay in the raw samples.
+ */
+export function countedFailures<T extends Pick<MergedSample, "provider" | "scenario" | "outcome"> & { sandboxId?: string | null }>(
+  rows: readonly T[],
+) {
+  const seen = new Set<string>();
+  return rows.filter((s) => {
+    if (s.outcome.kind !== "failure") return false;
+    if (s.sandboxId == null) return true;
+    const key = JSON.stringify([s.provider, s.scenario, s.sandboxId]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 export function reliability(rows: readonly MergedSample[]) {
   const successes = rows.filter((s) => s.outcome.kind === "sample").length;
-  const failures = rows.filter((s) => s.outcome.kind === "failure");
+  const failures = countedFailures(rows);
   const classes = {
     "provider-account-limit": failures.filter((s) => s.failureClass === "provider-account-limit")
       .length,
