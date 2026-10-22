@@ -5,6 +5,8 @@ const causeSchema = z.object({
   providerCode: z.string().optional(),
   requestId: z.string().optional(),
   operation: z.string().optional(),
+  stage: z.string().optional(),
+  elapsedMs: z.number().finite().nonnegative().optional(),
 });
 export const failureOutcomeSchema = z.object({
   kind: z.literal("failure"),
@@ -22,36 +24,52 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
     ? sanitize(error.code).slice(0, 100) : undefined;
   const raw = error instanceof Error ? error.cause : undefined;
   const cause: z.infer<typeof causeSchema> = {};
-  if (raw && typeof raw === "object" && !(raw instanceof Error)) {
-    const metadata = z.object({
-      httpStatus: z.number().optional(), status: z.number().optional(), statusCode: z.number().optional(),
-      providerCode: z.string().optional(), code: z.string().optional(), requestId: z.string().optional(), operation: z.string().optional(),
-    }).safeParse(raw);
-    if (metadata.success) {
-      const v = metadata.data;
-      const status = v.httpStatus ?? v.statusCode ?? v.status;
-      if (status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599) cause.httpStatus = status;
-      if (v.providerCode ?? v.code) cause.providerCode = sanitize(v.providerCode ?? v.code ?? "").slice(0, 200);
-      if (v.requestId) cause.requestId = sanitize(v.requestId).slice(0, 200);
-      if (v.operation) cause.operation = sanitize(v.operation).slice(0, 200);
+  const metadataSchema = z.object({
+    httpStatus: z.coerce.number().int().min(100).max(599).optional(),
+    status: z.coerce.number().int().min(100).max(599).optional(),
+    statusCode: z.coerce.number().int().min(100).max(599).optional(),
+    providerCode: z.string().optional(), provider_code: z.string().optional(), code: z.string().optional(),
+    requestId: z.string().optional(), request_id: z.string().optional(), operation: z.string().optional(),
+    stage: z.string().optional(), elapsedMs: z.coerce.number().finite().nonnegative().optional(),
+  });
+  let metadata: unknown = raw;
+  if (typeof raw === "string" || raw instanceof Error) {
+    const text = sanitize(typeof raw === "string" ? raw : raw.message).slice(0, 16000);
+    // Parse JSON before extracting text so nested bodies/headers never become evidence.
+    try { metadata = JSON.parse(text); }
+    catch {
+      const fields: Record<string, string> = {};
+      const safeText = text.split(/\b(?:body|headers|authorization)\s*[:=]/i)[0] ?? "";
+      const pairs = /["']?\b(httpStatus|statusCode|status|providerCode|provider_code|code|requestId|request_id|operation|stage|elapsedMs)\b["']?\s*[:=]\s*("(?:\\.|[^"\\])*"|'[^']*'|[\w./:-]+)/gi;
+      for (const match of safeText.matchAll(pairs)) {
+        const key = match[1], token = match[2];
+        if (!key || !token) continue;
+        if (token.startsWith('"')) {
+          try {
+            const value: unknown = JSON.parse(token);
+            if (typeof value === "string") fields[key] = value;
+          } catch { /* Malformed quoted evidence is omitted. */ }
+        } else fields[key] = token.startsWith("'") ? token.slice(1, -1) : token;
+      }
+      const status = /\bHTTP\s+(\d{3})\b/i.exec(safeText)?.[1];
+      if (status) fields.httpStatus = status;
+      const prefix = /^([\w./-]+)\s+HTTP\s+\d{3}\b/.exec(safeText)?.[1];
+      if (!fields.operation && prefix) fields.operation = prefix;
+      metadata = fields;
     }
-  } else if (typeof raw === "string" || raw instanceof Error) {
-    // SDK redactors turn safe adapter evidence into text. Extract identifiers only.
-    const text = sanitize(typeof raw === "string" ? raw : raw.message);
-    const status = /\bHTTP\s+(\d{3})\b|\b(?:statusCode|status)\s*[:=]\s*(\d{3})\b/i.exec(text);
-    if (status) cause.httpStatus = Number(status[1] ?? status[2]);
-    if (cause.httpStatus !== undefined && (cause.httpStatus < 100 || cause.httpStatus > 599)) delete cause.httpStatus;
-    const fields = [
-      ["providerCode", /\b(?:providerCode|provider[_ -]?code|code)\s*[:=]\s*([\w.-]+)/i],
-      ["requestId", /\brequest[_ -]?id\s*[:=]\s*([\w.-]+)/i],
-      ["operation", /\boperation\s*[:=]\s*([\w./-]+)/i],
-    ] as const;
-    for (const [key, pattern] of fields) {
-      const value = pattern.exec(text)?.[1];
-      if (value) cause[key] = value.slice(0, 200);
-    }
-    const prefix = /^([\w./-]+)\s+HTTP\s+\d{3}\b/.exec(text)?.[1];
-    if (!cause.operation && prefix) cause.operation = prefix;
+  }
+  const parsed = metadataSchema.safeParse(metadata);
+  if (parsed.success) {
+    const v = parsed.data;
+    const status = v.httpStatus ?? v.statusCode ?? v.status;
+    if (status !== undefined) cause.httpStatus = status;
+    const providerCode = v.providerCode ?? v.provider_code ?? v.code;
+    const requestId = v.requestId ?? v.request_id;
+    if (providerCode) cause.providerCode = sanitize(providerCode).slice(0, 200);
+    if (requestId) cause.requestId = sanitize(requestId).slice(0, 200);
+    if (v.operation) cause.operation = sanitize(v.operation).slice(0, 200);
+    if (v.stage) cause.stage = sanitize(v.stage).slice(0, 200);
+    if (v.elapsedMs !== undefined) cause.elapsedMs = v.elapsedMs;
   }
   return {kind: "failure", note: sanitize(error instanceof Error ? error.message : "Unknown failure"), code,
     ...(Object.keys(cause).length ? {cause} : {})};
