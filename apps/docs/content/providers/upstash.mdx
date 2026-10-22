@@ -40,6 +40,22 @@ await using box = await createSandbox(provider, { size: "medium" });
 
 `apiKey` overrides the environment key. `baseUrl` selects the Box API endpoint and otherwise uses `UPSTASH_BOX_BASE_URL` when set. `runtime` selects an Upstash runtime, such as `node` or `python`. `requestTimeoutMs` configures native command request and live-session handshake deadlines. It does not bound provisioning or the box's lifetime. `enableTelemetry: false` disables the native SDK's telemetry headers.
 
+## Ephemeral boxes
+
+Pass `ephemeral: true` to run on [Upstash Ephemeral Box](https://upstash.com/docs/box/overall/ephemeral-box) instead of a durable box. An ephemeral box is ready as soon as the create request returns, so creation skips the provisioning wait. It cannot pause, and Upstash deletes it after its time to live.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+const provider = upstash({ ephemeral: true, ttlSeconds: 1800 });
+await using box = await createSandbox(provider, { size: "medium", env: { MODE: "ci" } });
+```
+
+`ttlSeconds` defaults to 3600 and accepts whole seconds up to 259200 (three days). Treat it as a backstop for leaked boxes rather than a deadline: Upstash removes expired boxes some time after `expiresAt`, and commands keep working until then. Destroy boxes explicitly when you are done.
+
+Everything else works as on a durable box: sizes, environment variables and secrets, network policies, keys and labels, discovery with `list` and `find`, snapshots, protected previews, and process records. The provider omits the `pause` capability, so the sandbox has no `pause()` or `resume()` methods. Snapshots of an ephemeral box restore into a new ephemeral box. Ephemeral boxes take no native startup command, so the adapter marks process records restored from a snapshot as failed with exit code 137 during creation. `box.native` is still the Upstash SDK's `Box` object; its `pause()` is rejected by Upstash.
+
 ## Keys
 
 Key mode is **best-effort**. The adapter stores keys and labels in `/tmp/.sandbox-sdk/upstash.json` inside the box. It uses one native `sandbox-sdk` label to discover initialized boxes, then reads their metadata. Arbitrary SDK labels are preserved without using Upstash's limited native label slots.
@@ -62,7 +78,7 @@ Presets map directly to Upstash's native sizes. Exact `{ cpu, memoryMb, diskGb }
 
 ## Idle and lifetime limits
 
-Upstash controls automatic idle pause. The adapter cannot set a custom idle deadline or hard lifetime on durable boxes. Both `idleTimeoutMs` and `timeoutMs` fail with `unsupported` before creating a box. Command `timeoutMs` still works and kills the command's process tree.
+Upstash controls automatic idle pause. Ephemeral boxes never pause; see [Ephemeral boxes](#ephemeral-boxes) for their time to live. The adapter cannot set a custom idle deadline or hard lifetime on durable boxes. Both `idleTimeoutMs` and `timeoutMs` fail with `unsupported` before creating a box. Command `timeoutMs` still works and kills the command's process tree.
 
 ## Pause and snapshots
 
@@ -103,6 +119,8 @@ Proxy protected previews through your server when displaying them in an iframe. 
 - `requestTimeoutMs?: number`. Uses the native SDK default when omitted.
 - `enableTelemetry?: boolean`. Uses the native SDK default when omitted.
 - `public?: boolean`. Defaults to `false`; previews require bearer authentication.
+- `ephemeral?: boolean`. Defaults to `false`. `true` creates Ephemeral Boxes and drops the `pause` capability.
+- `ttlSeconds?: number`. Ephemeral mode only. Defaults to `3600`; at most `259200`. Other values throw `invalid_argument` when the provider is created.
 
 Returns a provider. `box.native` is the Upstash SDK's `Box` object.
 
