@@ -293,7 +293,7 @@ it("ends cold and restore at bare true before SDK setup", async () => {
       return backing.exec(id, input);
     },
   } satisfies Provider;
-  const report = await runV2([ready("memory", provider)], await config(["--scenarios", "snapshot", "--track", "same-spec", "--size", "memory=4:8192", "--template", "memory=test"]), async () => {});
+  const report = await runV2([ready("local", provider)], await config(["--scenarios", "snapshot", "--track", "same-spec", "--size", "local=4:8192", "--template", "local=test"]), async () => {});
   for (const scenario of ["cold", "create-from-snapshot"]) {
     const row = report.samples.find(s => s.scenario === scenario);
     expect(row?.outcome.kind).toBe("sample");
@@ -309,7 +309,7 @@ it("ends cold and restore at bare true before SDK setup", async () => {
   expect(report.samples.every(s => s.track === "same-spec" && s.template === "test")).toBe(true);
   expect(report.providers[0]).toMatchObject({ track: "same-spec", requestedSize: { cpu: 4, memoryMb: 8192 }, template: "test" });
   expect(report.summaries.every(s => s.track === "same-spec")).toBe(true);
-  expect(report.cleanup).toEqual([{provider: "memory", remaining: [], error: null}]);
+  expect(report.cleanup).toEqual([{provider: "local", remaining: [], error: null}]);
 });
 
 it("keeps fixture upload delays and failures outside workload timings", async () => {
@@ -412,6 +412,30 @@ it.each([false, true])("restores inherit allocation without a size override and 
   expect(row?.outcome.kind).toBe(mismatch ? "failure" : "sample");
   expect(row?.details).toMatchObject({verification: {matches: !mismatch, source: {cpu: 2}, restored: {cpu: mismatch ? 1 : 2}}});
   expect(row?.fingerprint?.quotaCpus).toBe(mismatch ? 1 : 2);
+  expect(report.cleanup[0]?.remaining).toEqual([]);
+});
+
+it("keeps an unverified restore unranked without charging it to the provider", async () => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake(); let restoredId: string | undefined;
+  const provider = { ...backing, capabilities: new Set(["snapshot"]), snapshot: async () => ({id: "snapshot"}),
+    create: async (input: Parameters<Provider["create"]>[0]) => {
+      const info = await backing.create(input);
+      if (input.from) restoredId = info.id;
+      return info;
+    },
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+      if (id === restoredId && input.command.includes("BENCH_FINGERPRINT")) {
+        input.onChunk({stream: "stdout", text: "not json"});
+        return {exitCode: 0, timedOut: false};
+      }
+      return backing.exec(id, input);
+    },
+  } satisfies Provider;
+  const report = await runV2([ready("boat", provider)], await config(["--scenarios", "snapshot"]), async () => {});
+  expect(report.samples.find(s => s.scenario === "restore-fingerprint")?.outcome.kind).toBe("failure");
+  expect(report.samples.find(s => s.scenario === "create-from-snapshot")?.outcome).toMatchObject({kind: "blocked", blocked_by: "restore-fingerprint"});
+  expect(report.summaries.find(s => s.scenario === "create-from-snapshot")?.stats.p50).toBeNull();
   expect(report.cleanup[0]?.remaining).toEqual([]);
 });
 

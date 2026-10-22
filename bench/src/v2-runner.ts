@@ -699,6 +699,11 @@ export async function runV2(
                     ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
                     if (sample.scenario === "create-from-snapshot" && restoreDetails.verification?.matches === false) {
                       sample.outcome = {kind: "failure", note: `Restored allocation differs from source: ${restoreDetails.verification.mismatches.join(", ")}`, stage: "restore-fingerprint", elapsedMs: performance.now() - restoreStart};
+                    } else if (sample.scenario === "create-from-snapshot" && sample.outcome.kind === "sample" && restoreDetails.verification?.matches !== true) {
+                      // Only a restore proven to match its source ranks. An unverifiable one is kept, unranked, and not
+                      // charged to the provider: a failed restore-fingerprint row already records any provider fault.
+                      const why = restoreDetails.verification ? "source fingerprint unavailable" : "restored fingerprint failed";
+                      sample.outcome = {kind: "blocked", blocked_by: "restore-fingerprint", note: `Restore not verified: ${why}`};
                     }
                     sample.sandboxId = restoreId;
                     sample.fingerprint = restoredFingerprint;
