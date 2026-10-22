@@ -116,9 +116,19 @@ describe("Daytona mappings", () => {
   });
   test("stream failures kill the command and map errors", async () => {
     const box = await createSandbox(factory()); mockState.failLogs = true;
-    await expect(box.run("sleep .2; echo bad > stream-leak")).rejects.toMatchObject({ code: "unavailable", provider: "daytona" });
+    await expect((async () => {
+      for await (const chunk of box.run("sleep .2; echo bad > stream-leak")) { void chunk; }
+    })()).rejects.toMatchObject({ code: "unavailable", provider: "daytona" });
     mockState.failLogs = false; await new Promise(resolve => setTimeout(resolve, 250)); expect(await box.files.exists("stream-leak")).toBe(false);
   });
+});
+
+test("session log failures do not affect awaited buffered commands", async () => {
+  const box = await createSandbox(factory());
+  mockState.failLogs = true;
+  const logs = vi.spyOn(box.native.process, "getSessionCommandLogs");
+  expect(await box.run("printf buffered")).toMatchObject({ ok: true, exitCode: 0, stdout: "buffered" });
+  expect(logs).not.toHaveBeenCalled();
 });
 
 test("creation provisions workspace when the native filesystem cannot create root directories", async () => {
@@ -177,7 +187,9 @@ test("framed output retains a leading UTF-8 BOM", async () => {
 test("incomplete base64 output fails closed", async () => {
   const box = await createSandbox(factory());
   vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => { stdout("O:Y\n"); });
-  await expect(box.run("sleep .1")).rejects.toMatchObject({ code: "provider" });
+  await expect((async () => {
+    for await (const chunk of box.run("sleep .1")) { void chunk; }
+  })()).rejects.toMatchObject({ code: "provider" });
 });
 
 test("malformed output arriving during exit status lookup cannot report success", async () => {
@@ -197,7 +209,9 @@ test("malformed output arriving during exit status lookup cannot report success"
     emit("O:Y\n"); finish(); await new Promise(resolve => setTimeout(resolve, 0));
     return { ...result, exitCode: 0 };
   });
-  await expect(box.run("sleep .2")).rejects.toMatchObject({ code: "provider" });
+  await expect((async () => {
+    for await (const chunk of box.run("sleep .2")) { void chunk; }
+  })()).rejects.toMatchObject({ code: "provider" });
 });
 
 test("snapshot passes a sufficient bounded timeout and exposes its recovery name on failure", async () => {
