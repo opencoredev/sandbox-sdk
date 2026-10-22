@@ -9,7 +9,7 @@
  * https://www.npmjs.com/package/@upstash/box
  */
 import { posix } from "node:path";
-import type { Box, BoxConfig, BoxData, FileStat, NetworkPolicy } from "@upstash/box";
+import type { Box, BoxConfig, BoxData, BoxSize, FileStat, NetworkPolicy } from "@upstash/box";
 import type {
   Provider,
   SandboxInfo,
@@ -149,6 +149,37 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
   const onFile = <T>(id: string, operation: string, action: (value: Box) => Promise<T>) =>
     safe(async () => action(await box(id)), id, true, `files.${operation}`);
   const readMetadata = async (value: Box) => metadata(await value.files.read(metadataPath));
+  async function snapshotSize(id: string): Promise<BoxSize> {
+    const config = connection();
+    const baseUrl = (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
+    // The native SDK only lists snapshots per source box. The account endpoint
+    // also covers snapshots whose source has been deleted, preserving native IDs.
+    const response = await fetch(`${baseUrl}/v2/box/snapshots`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? 30_000),
+    });
+    if (!response.ok)
+      throw Object.assign(new Error("Snapshot metadata lookup failed"), { statusCode: response.status });
+    const data: unknown = await response.json();
+    if (!data || typeof data !== "object" || !("snapshots" in data) || (data.snapshots !== null && !Array.isArray(data.snapshots)))
+      throw new SandboxError("Invalid snapshot metadata response. Upstash did not return a snapshot list. Retry when the service is available.", { code: "provider", provider: "upstash" });
+    for (const item of data.snapshots ?? []) {
+      const snapshot: unknown = item;
+      if (!snapshot || typeof snapshot !== "object" || !("id" in snapshot) || snapshot.id !== id) continue;
+      if ("name" in snapshot && typeof snapshot.name === "string") {
+        const size = /^sdk-v1-(small|medium|large)-/.exec(snapshot.name)?.[1];
+        if (size === "small" || size === "medium" || size === "large") return size;
+      }
+      // Legacy/native snapshots have no SDK size tag. A surviving source box
+      // supplies its actual size; never silently default a vanished source to Small.
+      if ("box_id" in snapshot && typeof snapshot.box_id === "string") {
+        try { return (await box(snapshot.box_id)).size; }
+        catch (error) { if (upstashError(error).code !== "not_found") throw error; }
+      }
+      unsupported("Snapshot size is unknown because its source box is unavailable; pass an explicit size");
+    }
+    throw new SandboxError("Snapshot was not found. It may have been deleted. Check the snapshot ID and account.", { code: "not_found", provider: "upstash" });
+  }
   const provider: UpstashProvider = {
     name: "upstash",
     keyMode: "best-effort",
@@ -169,7 +200,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
         const params: BoxConfig = {
           ...config,
           runtime: options.runtime,
-          size: input.size,
+          size: input.size ?? (input.from === undefined ? undefined : await snapshotSize(input.from)),
           env: input.env,
           labels: [],
           initCommand,
@@ -332,9 +363,10 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider {
       }, id, false, "resume"),
     snapshot: (id) =>
       safe(
-        async () => ({
-          id: (await (await box(id)).snapshot({ name: `sdk-${crypto.randomUUID()}` })).id,
-        }),
+        async () => {
+          const value = await box(id);
+          return { id: (await value.snapshot({ name: `sdk-v1-${value.size}-${crypto.randomUUID()}` })).id };
+        },
         id,
         false,
         "snapshot",

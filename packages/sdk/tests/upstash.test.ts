@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { upstash } from "../src/providers/upstash/index.js";
 import { upstashError } from "../src/providers/upstash/errors.js";
 import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
@@ -9,6 +9,14 @@ vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 const factory = () => upstash({ apiKey: "mock-key" });
 // live:true authorizes this explicitly mocked cloud SDK; no Upstash calls run.
 runConformance(factory, { live: true });
+beforeEach(() => {
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    if (String(input) === "https://us-east-1.box.upstash.com/v2/box/snapshots")
+      return Promise.resolve(new Response(JSON.stringify({ snapshots: [...state.snapshotMetadata.values()] })));
+    return fetch(input, init);
+  });
+});
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -362,4 +370,32 @@ test("native Authorization headers redact credentials for every scheme", () => {
     expect(mapped.cause).not.toContain("dXNlcjpwYXNz");
     expect(mapped.cause).not.toContain("hidden");
   }
+});
+
+
+test("snapshots preserve native IDs and source size after source deletion and fresh clients", async () => {
+  const source = await createSandbox(factory(), { size: "medium" });
+  const snapshot = await source.snapshot();
+  expect(state.snapshots.has(snapshot.id)).toBe(true);
+  await source.destroy();
+  const restored = await createSandbox(factory(), { from: snapshot.id });
+  expect(restored.native.size).toBe("medium");
+  expect(state.creates.at(-1)?.size).toBe("medium");
+  const override = await createSandbox(factory(), { from: snapshot.id, size: "large" });
+  expect(override.native.size).toBe("large");
+});
+
+test("legacy snapshots inherit a surviving source size or require an explicit override", async () => {
+  const source = await createSandbox(factory(), { size: "medium" });
+  const snapshot = await source.native.snapshot({ name: "legacy-sdk-snapshot" });
+  expect((await createSandbox(factory(), { from: snapshot.id })).native.size).toBe("medium");
+  await source.destroy();
+  await expect(createSandbox(factory(), { from: snapshot.id })).rejects.toMatchObject({ code: "unsupported" });
+  expect((await createSandbox(factory(), { from: snapshot.id, size: "medium" })).native.size).toBe("medium");
+  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("an empty native snapshot list returns not_found", async () => {
+  vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: null })));
+  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({ code: "not_found" });
 });
