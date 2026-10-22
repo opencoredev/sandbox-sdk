@@ -1,5 +1,6 @@
 import {afterEach, beforeEach, expect, it, vi} from "vitest";
 import {memory} from "@opencoredev/sandbox-sdk/memory";
+import {spawnSync} from "node:child_process";
 import {lookupError, lookupSandbox, nativeModules} from "../src/existence.js";
 const native = vi.hoisted(() => ({get: vi.fn(), status: vi.fn()}));
 beforeEach(() => {
@@ -21,6 +22,13 @@ it("accepts exact HTTP404 and Tenki gRPC5, rejecting contradictory and transient
  expect(lookupError(Object.assign(new Error("opaque"), {status: 503, statusCode: 404}), "upstash", "get").result).toBe("unavailable");
  expect(lookupError(Object.assign(new Error("metadata missing"), {code: "not_found"}), "upstash", "get").result).toBe("unavailable");
 });
+it("retains only allowlisted lookup evidence and redacts known secrets", () => {
+ vi.stubEnv("TEST_NATIVE_TOKEN", "native-secret");
+ const error = Object.assign(new Error("body native-secret"), {statusCode: 404, code: "native-secret", body: "private body", headers: {authorization: "native-secret"}});
+ const result = lookupError(error, "upstash", "get");
+ expect(result).toMatchObject({result: "not-found", httpStatus: 404, nativeCode: "[REDACTED]"});
+ expect(JSON.stringify(result)).not.toMatch(/native-secret|private body|authorization/);
+});
 it.each(["TERMINATED", "deleted", "destroyed", "PAUSED", "TERMINATING", "FAILED"])("reads exact Tenki native %s state without guest attachment", async state => {
  vi.stubEnv("TENKI_API_KEY", "offline");
  native.get.mockResolvedValue({id: "target", state});
@@ -34,13 +42,20 @@ it("does not accept a terminal state returned for a different ID", async () => {
 });
 it("Upstash uses exact native get/status and preserves definitive404, not transient500", async () => {
  vi.stubEnv("UPSTASH_BOX_API_KEY", "offline");
- native.get.mockResolvedValue({getStatus: native.status}); native.status.mockResolvedValue({status: "deleted"});
+ native.get.mockResolvedValue({id: "target", getStatus: native.status}); native.status.mockResolvedValue({status: "deleted"});
  expect((await lookupSandbox({...memory(), name: "upstash"}, "target", 100)).result).toBe("terminal");
  expect(native.get).toHaveBeenCalledWith("target");
  native.get.mockRejectedValue(Object.assign(new Error("native"), {statusCode: 404}));
  expect((await lookupSandbox({...memory(), name: "upstash"}, "target", 100)).result).toBe("not-found");
  native.get.mockRejectedValue(Object.assign(new Error("not found"), {statusCode: 500}));
  expect((await lookupSandbox({...memory(), name: "upstash"}, "target", 100)).result).toBe("unavailable");
+});
+it("does not resolve an Upstash lookup that returns a different box ID", async () => {
+ vi.stubEnv("UPSTASH_BOX_API_KEY", "offline");
+ native.get.mockResolvedValue({id: "foreign", getStatus: native.status});
+ native.status.mockResolvedValue({status: "deleted"});
+ expect((await lookupSandbox({...memory(), name: "upstash"}, "target", 100)).result).toBe("unavailable");
+ expect(native.status).not.toHaveBeenCalled();
 });
 it("Superserve performs GET, never its activating connect path", async () => {
  vi.stubEnv("SUPERSERVE_API_KEY", "offline");
@@ -77,4 +92,13 @@ it("accepts E2B's actual native SandboxNotFoundError type, never a name or messa
  expect((await lookupSandbox({...memory(), name: "e2b"}, "target", 100)).result).toBe("not-found");
  native.get.mockRejectedValue(Object.assign(new Error("not found"), {name: "SandboxNotFoundError"}));
  expect((await lookupSandbox({...memory(), name: "e2b"}, "target", 100)).result).toBe("unavailable");
+});
+it("loads all eight installed native SDKs with Bun's import conditions and no network", () => {
+ const moduleURL = new URL("../src/existence.ts", import.meta.url).href;
+ const source = `globalThis.fetch=async()=>{throw new Error("Network forbidden")};
+ const {nativeModules}=await import(${JSON.stringify(moduleURL)});
+ for(const name of ["e2b","@daytonaio/sdk","@upstash/box","@boatdev/sdk","@boxd-sh/sdk","freestyle","@tenkicloud/sandbox","@superserve/sdk"]){await nativeModules.load(name); console.log(name);}`;
+ const output = spawnSync("bun", ["-e", source], {encoding: "utf8", timeout: 10000});
+ expect(output.status, output.stderr).toBe(0);
+ expect(output.stdout.trim().split("\n")).toHaveLength(8);
 });

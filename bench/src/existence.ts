@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { z } from "zod";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
@@ -16,6 +15,11 @@ export const lookupSchema = z.object({
 });
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 const terminal = new Set(["deleted", "destroyed", "terminated"]);
+function redact(value: string) {
+  for (const [key, secret] of Object.entries(process.env))
+    if (/KEY|TOKEN|SECRET|PASSWORD/.test(key) && secret && secret.length > 5) value = value.replaceAll(secret, "[REDACTED]");
+  return value;
+}
 
 /** Only called on errors from an exact native lookup, never SDK metadata/connect errors. */
 export function lookupError(error: unknown, name: string, method: string): LookupEvidence {
@@ -26,7 +30,7 @@ export function lookupError(error: unknown, name: string, method: string): Looku
   const codes = fields.flatMap(v => v.code === undefined ? [] : [String(v.code)]);
   const absent = statuses.length ? statuses.every(v => v === 404) : name === "tenki" && codes.length > 0 && codes.every(v => v === "5");
   return {result: absent ? "not-found" : "unavailable", method, checkedAt: new Date().toISOString(),
-    ...(statuses[0] === undefined ? {} : {httpStatus: statuses[0]}), ...(codes[0] === undefined ? {} : {nativeCode: codes[0]})};
+    ...(statuses[0] === undefined ? {} : {httpStatus: statuses[0]}), ...(codes[0] === undefined ? {} : {nativeCode: redact(codes[0])})};
 }
 const fn = z.custom<(...args: unknown[]) => Promise<unknown>>(v => typeof v === "function");
 const ctor = z.custom<new (options?: unknown) => unknown>(v => typeof v === "function");
@@ -36,7 +40,7 @@ function member(value: unknown, key: string): unknown {
 }
 async function call(value: unknown, key: string, ...args: unknown[]) {return fn.parse(member(value, key)).apply(value, args);}
 async function sdk(name: string): Promise<unknown> {
-  return import(createRequire(new URL("../../packages/sdk/package.json", import.meta.url)).resolve(name));
+  return import(import.meta.resolve(name, new URL("../../packages/sdk/package.json", import.meta.url).href));
 }
 export const nativeModules = {load: sdk};
 async function client(pkg: string, key: string, options?: unknown) {return new (ctor.parse(member(await nativeModules.load(pkg), key)))(options);}
@@ -55,6 +59,7 @@ export async function lookupSandbox(provider: Provider, id: string, timeoutMs: n
         case "tenki": return call(await client("@tenkicloud/sandbox", "TenkiSandbox", {authToken: process.env.TENKI_API_KEY}), "get", id);
         case "upstash": {
           const box = await call(member(await nativeModules.load("@upstash/box"), "Box"), "get", id);
+          if (member(box, "id") !== id) throw new Error("Native lookup ID mismatch");
           return {id, ...z.object({status: z.string()}).parse(await call(box, "getStatus"))};
         }
         case "e2b": {
@@ -88,7 +93,7 @@ export async function lookupSandbox(provider: Provider, id: string, timeoutMs: n
     if ((info.id ?? info.Id ?? info.sandboxId) !== id) throw new Error("Native lookup ID mismatch");
     const state = z.string().regex(/^[\w-]{1,64}$/).safeParse(info.state ?? info.status);
     return {result: state.success && terminal.has(state.data.toLowerCase()) ? "terminal" : "present", checkedAt: new Date().toISOString(), method,
-      ...(state.success ? {nativeState: state.data} : {})};
+      ...(state.success ? {nativeState: redact(state.data)} : {})};
   } catch (error) {
     if (name === "memory" && error && typeof error === "object" && "code" in error && error.code === "not_found")
       return {result: "not-found", checkedAt: new Date().toISOString(), method};

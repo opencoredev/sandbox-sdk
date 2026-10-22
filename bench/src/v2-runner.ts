@@ -526,6 +526,7 @@ export async function runV2(
       return measure(scenario, async () => {
         await remove(p, id, {clock, phases});
         ids.delete(id);
+        if (clock.start === null) throw new Skip("Sandbox already absent; no deletion request to time");
       }, phases, clock);
     }
     async function measure<T>(

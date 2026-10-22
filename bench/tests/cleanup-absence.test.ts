@@ -99,3 +99,18 @@ it("resolves an absent resource even when its native delete promise never settle
  expect(report.admissionStopped).toEqual([]);
  expect(await backing.list({})).toEqual([]);
 });
+it("does not publish lookup latency as destroy latency when no delete request was needed", async () => {
+ const cfg = await config(); const backing = memory();
+ let lists = 0;
+ const destroy = vi.fn(backing.destroy);
+ const provider = {...backing, destroy, list: async (labels: Parameters<typeof backing.list>[0]) => {
+  const rows = await backing.list(labels);
+  if (++lists > 1) {for (const row of rows) await backing.destroy(row.id); return [];}
+  return rows;
+ }};
+ const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], cfg, r => writeV2(r, cfg.out));
+ expect(destroy).not.toHaveBeenCalled();
+ expect(report.samples.find(s => s.scenario === "destroy")?.outcome.kind).toBe("skipped");
+ expect(report.cleanupResolved).toContainEqual(expect.objectContaining({resolution: "absent"}));
+ expect(report.cleanupReview).toEqual([]);
+});
