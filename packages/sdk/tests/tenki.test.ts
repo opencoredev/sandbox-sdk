@@ -583,3 +583,68 @@ test.each([16, 14])(
     expect(await box.files.exists("leaked-after-rejection")).toBe(false);
   },
 );
+
+test.each([
+  [16, "credential rejected"],
+  [12, "HTTP 404 route not ready"],
+  [5, "session not found"],
+  [14, "NGHTTP2_REFUSED_STREAM"],
+])(
+  "recovers an explicit RPC rejection after body submission but before any response (%s)",
+  async (code, message) => {
+    const provider = factory();
+    tenkiState.streaming = false;
+    const box = await createSandbox(provider);
+    tenkiState.streaming = true;
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "before-response",
+      error: Object.assign(new Error(message), { code }),
+    });
+    expect(
+      await provider.exec(box.id, {
+        command: "printf once >> no-handshake-count",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+        onChunk() {},
+      }),
+    ).toEqual({ exitCode: 0, timedOut: false });
+    expect(tenkiState.streamAttempts).toBe(2);
+    expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
+    expect(close).not.toHaveBeenCalled();
+    expect(await box.files.read("no-handshake-count")).toBe("once");
+  },
+);
+
+test.each(["connection reset", "GOAWAY", "service unavailable"])(
+  "does not replay or destroy the VM when submission has an uncertain outcome (%s)",
+  async (message) => {
+    const provider = factory();
+    tenkiState.streaming = false;
+    const box = await createSandbox(provider);
+    tenkiState.streaming = true;
+    const close = vi.spyOn(box.native, "close");
+    const renew = vi.spyOn(box.native, "reauthOnUnauthenticated");
+    tenkiState.streamAttempts = 0;
+    tenkiState.streamFailures.push({
+      phase: "before-response",
+      error: Object.assign(new Error(message), { code: 14 }),
+    });
+    await expect(
+      provider.exec(box.id, {
+        command: "touch uncertain-launch",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+        onChunk() {},
+      }),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(tenkiState.streamAttempts).toBe(1);
+    expect(renew).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect((await box.run("true")).exitCode).toBe(0);
+  },
+);

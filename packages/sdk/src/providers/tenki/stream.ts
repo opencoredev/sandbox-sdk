@@ -96,11 +96,7 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
       const attemptTransport = new AbortController();
       const signal = AbortSignal.any([transport.signal, attemptTransport.signal]);
       let plane: Plane | undefined;
-      let started = () => {};
-      const ready = new Promise<void>((resolve) => {
-        started = resolve;
-        signal.addEventListener("abort", () => resolve(), { once: true });
-      });
+      let receivedResponse = false;
       async function* requests() {
         signal.throwIfAborted();
         yield {
@@ -116,9 +112,7 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
             },
           },
         } satisfies Request;
-        // The supervisor cannot launch user code without this JSON input.
-        // Withhold it until started, making establishment failures safe to retry.
-        await ready;
+        // Send input immediately: waiting for started adds a network round trip.
         signal.throwIfAborted();
         mayHaveLaunched = true;
         yield { frame: { payload: { case: "stdin", value: spec } } } satisfies Request;
@@ -135,9 +129,9 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
         for await (const response of plane.run(requests(), { signal })) {
           const frame = response.frame?.payload;
           if (!frame) continue;
+          if (frame.case !== "keepalive") receivedResponse = true;
           if (frame.case === "started") {
             box.markDataPlaneServing(plane);
-            started();
           } else if (frame.case === "stdout") {
             pending += decoder.decode(frame.value, { stream: true });
             let end: number;
@@ -160,33 +154,42 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
         throw failure("Command stream closed before exit");
       } catch (error) {
         attemptTransport.abort();
-        if (mayHaveLaunched || transport.signal.aborted) throw error;
+        if (transport.signal.aborted) throw error;
         const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
         const message = error instanceof Error ? error.message : "";
         const auth = code === 16 || tenkiError(error).code === "auth";
-        if (auth) {
-          if (attempt === 0 && (await box.reauthOnUnauthenticated(error))) continue;
-          throw failure("Command authorization rejected before launch", "auth");
-        }
         const provisioning =
           code === 5 &&
           /\bsession not found\b/i.test(message) &&
           plane !== undefined &&
           box.dataPlaneProvisioningPending(plane);
-        const transient =
-          code === 14 ||
+        // These statuses reject the RPC before dispatch, even if the transport
+        // consumed our request iterator. Generic Unavailable/reset/GOAWAY do not
+        // prove that: the peer may have launched the command and lost its reply.
+        const rejected =
+          auth ||
+          provisioning ||
           (code === 12 && /\b404\b/.test(message)) ||
-          ((code === 10 || code === 13) &&
-            /REFUSED_STREAM|GOAWAY|ECONNRESET|connection reset|socket hang up|unexpected EOF|stream closed before headers/i.test(
-              message,
-            ));
-        if (provisioning || transient) {
-          if (attempt === 0) {
-            if (provisioning && plane) await box.refreshHintedDataPlane(plane);
-            continue;
+          ((code === 10 || code === 13 || code === 14) && /REFUSED_STREAM/i.test(message));
+        if (!receivedResponse && (rejected || !mayHaveLaunched)) {
+          mayHaveLaunched = false;
+          if (auth) {
+            if (attempt === 0 && (await box.reauthOnUnauthenticated(error))) continue;
+            throw failure("Command authorization rejected before launch", "auth");
           }
-          throw failure("Command transport rejected before launch", "unavailable");
+          if (rejected || code === 14) {
+            if (attempt === 0) {
+              if (provisioning && plane) await box.refreshHintedDataPlane(plane);
+              continue;
+            }
+            throw failure("Command transport rejected before launch", "unavailable");
+          }
         }
+        if (mayHaveLaunched)
+          throw failure(
+            "Command stream failed after submission; execution outcome is unknown",
+            "outcome_unknown",
+          );
         throw error;
       } finally {
         attemptTransport.abort();
@@ -224,9 +227,8 @@ else: raise RuntimeError('PID unavailable')`,
         // A completed supervisor can remove its PID while cancellation is in flight.
         // Its valid exit record confirms completion even if the kill RPC found no PID.
         if (!exited) {
-          await deadline(() => box.close(), 1000).catch(() => {});
           throw failure(
-            "Process cancellation could not be confirmed; VM termination was requested",
+            "Process cancellation could not be confirmed; execution outcome is unknown",
             "outcome_unknown",
           );
         }

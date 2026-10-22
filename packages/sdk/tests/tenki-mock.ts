@@ -16,7 +16,10 @@ import type {
 const missing = () => Object.assign(new Error("missing"), { name: "SessionNotFoundError" });
 const configs: ClientOptions[] = [];
 const creates: CreateOptions[] = [];
-const streamFailures: { phase: "before-start" | "after-input"; error: Error }[] = [];
+const streamFailures: {
+  phase: "before-start" | "before-response" | "after-input";
+  error: Error;
+}[] = [];
 export const tenkiState = {
   configs,
   creates,
@@ -215,21 +218,6 @@ export class MockSession {
     if (first.done) throw new Error("Missing start");
     const start = first.value.frame?.payload;
     if (start?.case !== "start" || !start.value.cmd?.[0]) throw new Error("Missing command");
-    const args = start.value.cmd
-      .slice(1)
-      .map((arg) =>
-        arg.replace(
-          "base64.b64encode(data)",
-          `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
-        ),
-      );
-    const child = spawn(start.value.cmd[0], args, { stdio: ["pipe", "pipe", "pipe"] });
-    const completion = new Promise<number>((resolve) =>
-      child.on("close", (code) => resolve(code ?? 137)),
-    );
-    child.stdin.on("error", () => {});
-    child.stderr.resume();
-    yield { frame: { payload: { case: "started", value: { pid: BigInt(child.pid ?? 0) } } } };
     const next = await iterator.next();
     if (next.done) throw new Error("Missing input");
     const input = next.value.frame?.payload;
@@ -251,6 +239,22 @@ export class MockSession {
             : value,
       ]),
     );
+    if (failure?.phase === "before-response") throw failure.error;
+    const args = start.value.cmd
+      .slice(1)
+      .map((arg) =>
+        arg.replace(
+          "base64.b64encode(data)",
+          `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
+        ),
+      );
+    const child = spawn(start.value.cmd[0], args, { stdio: ["pipe", "pipe", "pipe"] });
+    const completion = new Promise<number>((resolve) =>
+      child.on("close", (code) => resolve(code ?? 137)),
+    );
+    child.stdin.on("error", () => {});
+    child.stderr.resume();
+    yield { frame: { payload: { case: "started", value: { pid: BigInt(child.pid ?? 0) } } } };
     child.stdin.end(JSON.stringify(mapped));
     await iterator.next();
     if (failure?.phase === "after-input") {
