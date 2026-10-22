@@ -14,7 +14,7 @@ import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
-import { DeadlineError, deadline, PendingWork } from "./timing.js";
+import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import { recordAbsentResolution, recordVerifiedRelease, UnverifiedOwnershipError, hasRunOwnership, verifyRunOwnership, writeOwnership, type CleanupReview } from "./ownership.js";
 import { snapshotCleaner, createNamedDaytonaSnapshot, snapshotsFromSource } from "./snapshots.js";
@@ -212,6 +212,7 @@ export async function runV2(
   await mkdir(runDir, { recursive: true });
   // The durable journal records cleanup candidates; live labels authorize deletion.
   const unsafeProviders = new Set<string>();
+  const deletions = new DeletionWork();
   const owned = new Map<
     string,
     { provider: string; id: string; kind: "sandbox" | "snapshot" | "snapshot-source"; parent: string | null }
@@ -227,6 +228,7 @@ export async function runV2(
       report.cleanupReview?.push({provider, id: sanitize(id), kind, reason, status: kind === "sandbox" ? "checking" : "unresolved"});
   }
   async function resolveAbsent(p: ReadyProvider, id: string) {
+    await deletions.wait(p.name, id, Math.min(config["timeout-ms"], 30_000));
     const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
     if (!isAbsent(evidence)) {
       for (const item of report.cleanupReview ?? []) if (item.provider === p.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
@@ -266,7 +268,7 @@ export async function runV2(
           if (clock.start === null) clock.begin();
           else if (clock.end !== null) {clock.excludedMs += performance.now() - clock.end; clock.end = null;}
         }
-        try { await deadline(config["timeout-ms"], () => loaded.provider.destroy(id)); }
+        try { await deadline(config["timeout-ms"], () => deletions.start(loaded.name, id, () => loaded.provider.destroy(id))); }
         finally { measurement?.clock.finish(); }
         owned.delete(`${loaded.name}/${id}`);
         const persistStart = performance.now();
@@ -274,6 +276,12 @@ export async function runV2(
         finally { if (measurement) measurement.phases.ownershipPersistMs = (measurement.phases.ownershipPersistMs ?? 0) + performance.now() - persistStart; }
         return;
       } catch (e) {
+        if (e instanceof DeadlineError) {
+          if (await resolveAbsent(loaded, id)) return;
+          review(loaded.name, id, "Deletion deadline expired; exact existence remains unresolved");
+          for (const item of report.cleanupReview ?? []) if (item.provider === loaded.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
+          throw e;
+        }
         if (attempt === 2) throw e;
       }
     }
@@ -1153,6 +1161,7 @@ export async function runV2(
     }
   for (const p of ready) {
     const errors: string[] = [];
+    const deletionErrors = new Map<string, string>();
     for (const item of [...owned.values()].filter(
       (v) => v.provider === p.name && v.kind === "snapshot",
     )) {
@@ -1179,7 +1188,7 @@ export async function runV2(
         if (hasRunOwnership(item, config.run)) ids.add(item.id);
     } catch (e) { errors.push(errorNote(e)); }
     for (const id of ids) {
-      try { await remove(p, id); } catch (e) { errors.push(errorNote(e)); }
+      try { await remove(p, id); } catch (e) { deletionErrors.set(id, errorNote(e)); }
     }
     const remaining = new Set<string>();
     try {
@@ -1223,6 +1232,9 @@ export async function runV2(
     }
     await reconcileReviews(p);
     for (const resolution of report.cleanupResolved ?? []) if (resolution.provider === p.name) remaining.delete(resolution.id);
+    for (const [id, error] of deletionErrors) {
+      if (!report.cleanupResolved?.some(r => r.provider === p.name && r.id === id)) errors.push(error);
+    }
     for (const item of owned.values()) if (item.provider === p.name) remaining.add(item.id);
     if (remaining.size) errors.push("Ownership journal or listing still contains resources");
     if (unsafeProviders.has(p.name)) errors.push("Pending work did not settle; late creations remain possible");

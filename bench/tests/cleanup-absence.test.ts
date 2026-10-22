@@ -9,6 +9,7 @@ import {runV2} from "../src/v2-runner.js";
 import {parseV2} from "../src/v2-config.js";
 import {writeV2} from "../src/v2-report.js";
 import {reapRun} from "../src/recovery.js";
+import {DeletionWork, deadline} from "../src/timing.js";
 const dirs: string[] = [];
 afterEach(async () => {vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map(p => rm(p, {recursive: true, force: true})));});
 async function config() {
@@ -43,4 +44,41 @@ it.each(["not-found", "unavailable"] as const)("reap rechecks quarantined journa
  expect(report.cleanupReview).toHaveLength(result === "unavailable" ? 1 : 0);
  expect(report.cleanupResolved).toHaveLength(result === "unavailable" ? 0 : 1);
  expect(JSON.parse(await readFile(join(cfg.out, "ownership.json"), "utf8")).resources).toHaveLength(result === "unavailable" ? 1 : 0);
+});
+
+it("retains a native deletion across the deadline without submitting a second deletion", async () => {
+ const work = new DeletionWork();
+ let complete = () => {};
+ const operation = vi.fn(() => new Promise<void>(resolve => {complete = resolve;}));
+ const native = work.start("memory", "target", operation);
+ await expect(deadline(10, () => native)).rejects.toThrow("timed out");
+ expect(work.start("memory", "target", operation)).toBe(native);
+ complete(); await work.wait("memory", "target", 100);
+ expect(operation).toHaveBeenCalledTimes(1);
+});
+
+it.each([false, true])("resolves a delete that completes after its deadline (reap=%s)", async reap => {
+ const cfg = {...await config(), "timeout-ms": 200};
+ const backing = memory();
+ const destroy = vi.fn(async (id: string) => {
+  await new Promise(resolve => setTimeout(resolve, 250));
+  await backing.destroy(id);
+ });
+ const provider = {...backing, destroy};
+ const loaded = [{kind: "ready", name: "memory", cloud: false, region: null, provider}] satisfies Parameters<typeof reapRun>[0];
+ if (reap) {
+  const own = await backing.create({labels: {"sandbox-bench-run": cfg.run, "sandbox-sdk": "1"}});
+  await writeFile(join(cfg.out, "ownership.json"), JSON.stringify({runId: cfg.run, resources: [{provider: "memory", id: own.id, kind: "sandbox", parent: null}]}));
+  expect(await reapRun(loaded, cfg, s => s)).toBe(false);
+ } else {
+  const report = await runV2(loaded, cfg, r => writeV2(r, cfg.out));
+  expect(report.samples.find(s => s.scenario === "destroy")?.outcome).toMatchObject({kind: "failure", cleanupResolved: "absent"});
+  expect(report.cleanupReview).toEqual([]);
+  expect(report.cleanup.every(p => !p.error && !p.remaining.length)).toBe(true);
+ }
+ expect(destroy).toHaveBeenCalledTimes(1);
+ expect(await backing.list({})).toEqual([]);
+ const report = JSON.parse(await readFile(join(cfg.out, "results.json"), "utf8"));
+ expect(report.cleanupResolved).toContainEqual(expect.objectContaining({resolution: "absent", evidence: expect.objectContaining({result: "not-found"})}));
+ expect(JSON.parse(await readFile(join(cfg.out, "ownership.json"), "utf8")).resources).toEqual([]);
 });

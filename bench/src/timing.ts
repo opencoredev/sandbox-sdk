@@ -58,3 +58,23 @@ export class PendingWork {
     }
   }
 }
+
+/** Retain the native delete promise across deadline races; never submit it twice while pending. */
+export class DeletionWork {
+  private readonly pending = new Map<string, Promise<void>>();
+  start(provider: string, id: string, action: () => Promise<void>) {
+    const key = JSON.stringify([provider, id]);
+    const existing = this.pending.get(key);
+    if (existing) return existing;
+    const task = Promise.resolve().then(action);
+    this.pending.set(key, task);
+    const settled = () => {if (this.pending.get(key) === task) this.pending.delete(key);};
+    void task.then(settled, settled);
+    return task;
+  }
+  async wait(provider: string, id: string, budgetMs: number) {
+    const task = this.pending.get(JSON.stringify([provider, id]));
+    if (!task) return;
+    try {await deadline(budgetMs, () => task);} catch { /* Exact lookup decides whether cleanup resolved. */ }
+  }
+}
