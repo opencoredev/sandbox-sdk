@@ -8,18 +8,14 @@ import { quote } from "./exec.js";
 // spooled in the guest and downloaded as a stream, never buffered by the SDK.
 // The child owns a separate process group, including inherited output pipes.
 const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil
-command,directory,cwd,limit=sys.argv[1:5]
+command,directory,cwd,limit=sys.argv[1:]
 os.makedirs(directory,mode=0o700,exist_ok=True)
 cancel=directory+"/cancel"
 if os.path.exists(cancel):
  shutil.rmtree(directory)
  print("R:0:1:0")
  sys.exit(0)
-stdin=subprocess.DEVNULL
-if len(sys.argv)>5:
- with open(directory+"/stdin","wb") as f: f.write(base64.b64decode(sys.argv[5]))
- stdin=open(directory+"/stdin","rb")
-p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=stdin,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
 with open(directory+"/pid","w") as f: f.write(str(p.pid))
 s=selectors.DefaultSelector()
 s.register(p.stdout,selectors.EVENT_READ,"O")
@@ -97,7 +93,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
   input.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
   try {
-    const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}${input.stdin === undefined ? "" : ` ${quote(Buffer.from(input.stdin).toString("base64"))}`}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
+    const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
     const lines = result.result.trimEnd().split("\n");
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
     if (result.exitCode !== 0 || !summary) throw malformed();

@@ -162,14 +162,12 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
 }
 
-// Stdin travels base64-encoded inside one command argument; keep it far below
-// Linux's 128 KiB single-argument limit. Larger stdin uses a session upload.
-const bufferedStdinBytes = 48 * 1024;
-
 export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }): Promise<ExecResult> {
   // Only explicit live-chunk requests need a session. Core-internal commands
   // (checkpoints, secret probes, process helpers) omit the flag and collect output.
-  if (input.streaming !== true && (input.stdin === undefined || Buffer.byteLength(input.stdin) <= bufferedStdinBytes)) return bufferedExecute(box, input);
+  // Stdin always goes through a session upload: carrying it in the command line
+  // would expose it in the guest's process list.
+  if (input.streaming !== true && input.stdin === undefined) return bufferedExecute(box, input);
   const process = await sessionProcess(box, input, input.timeoutMs);
   const result = await process.wait();
   return { exitCode: result.exitCode, timedOut: result.signal === "SIGKILL" };
