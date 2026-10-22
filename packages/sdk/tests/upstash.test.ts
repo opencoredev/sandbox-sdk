@@ -202,7 +202,9 @@ describe("Upstash Box mappings", () => {
       const mapped = upstashError(Object.assign(new Error("Bearer secret"), { statusCode }));
       expect(mapped.code).toBe(code);
       expect(mapped.message).not.toContain("secret");
-      expect(mapped.cause).toBeUndefined();
+      expect(mapped.message).toContain(`HTTP ${statusCode}`);
+      expect(mapped.cause).toContain(`HTTP ${statusCode}`);
+      expect(mapped.cause).not.toContain("secret");
     }
     expect(upstashError({ statusCode: 404 }, "box", true).code).toBe("file_not_found");
     const box = await createSandbox(factory());
@@ -290,4 +292,74 @@ test("Upstash listing skips corrupt or vanished metadata and preserves auth fail
   expect(await factory().list({})).toEqual([]);
   read.mockRejectedValue(Object.assign(new Error("denied"), { statusCode: 401 }));
   await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
+});
+
+test("cold setup persists shell-safe discovery metadata in one guest call", async () => {
+  const create = MockBox.create.bind(MockBox);
+  const commands: string[] = [];
+  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
+    const value = await create(params);
+    const command = value.exec.command;
+    vi.spyOn(value.exec, "command").mockImplementation(async text => {
+      commands.push(text);
+      return command(text);
+    });
+    vi.spyOn(value.files, "mkdir").mockRejectedValue(new Error("Unnecessary setup RPC"));
+    vi.spyOn(value.files, "write").mockRejectedValue(new Error("Unnecessary setup RPC"));
+    return value;
+  });
+  const provider = factory();
+  const key = "owner:'; touch workspace/injected; #\n$(false)";
+  const labels = { app: "quotes ' \" $literal \n雪" };
+  const info = await provider.create({ key, labels });
+  expect(commands).toHaveLength(1);
+  expect(await factory().connect(info.id)).toMatchObject({ key, labels });
+  expect(await factory().find(key)).toMatchObject({ id: info.id });
+  await expect(provider.files.stat(info.id, "/workspace/injected")).rejects.toMatchObject({ code: "file_not_found" });
+  const { stat } = await import("node:fs/promises");
+  expect((await stat(state.boxes.get(info.id)?.map("/tmp/.sandbox-sdk/upstash.json") ?? "")).mode & 0o777).toBe(0o600);
+});
+
+test("failed cold setup is never discoverable and removes its box", async () => {
+  const create = MockBox.create.bind(MockBox);
+  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
+    const value = await create(params);
+    vi.spyOn(value.exec, "command").mockResolvedValue({ exitCode: 1, stdout: "", stderr: "", result: "" });
+    return value;
+  });
+  await expect(factory().create({ labels: {} })).rejects.toMatchObject({ code: "provider" });
+  expect(await factory().list({})).toEqual([]);
+  expect(state.boxes.size).toBe(0);
+});
+
+test("errors preserve operation, HTTP status and sanitized nested cause through core", async () => {
+  const box = await createSandbox(factory(), { secrets: { TOKEN: "private-env-value" } });
+  const native = Object.assign(new Error('Request https://host/path?token=url-secret failed; Authorization: Bearer header-secret; apiKey="mock-key" private-env-value', {
+    cause: new Error("socket reset; password=nested-secret"),
+  }), { statusCode: 503, request: { headers: { authorization: "unretained-secret" } } });
+  vi.spyOn(box.native.files, "read").mockRejectedValue(native);
+  try {
+    await box.files.read("missing");
+    throw new Error("Expected read failure");
+  } catch (error) {
+    expect(error).toMatchObject({ code: "unavailable", provider: "upstash", retryable: true });
+    expect(error).toHaveProperty("cause", expect.stringContaining("files.read HTTP 503"));
+    expect(error).toHaveProperty("cause", expect.stringContaining("socket reset"));
+    const evidence = String(error) + String(error instanceof Error ? error.cause : "");
+    for (const secret of ["url-secret", "header-secret", "mock-key", "private-env-value", "nested-secret", "unretained-secret"])
+      expect(evidence).not.toContain(secret);
+  }
+});
+
+test("native Authorization headers redact credentials for every scheme", () => {
+  for (const header of [
+    "Authorization: Basic dXNlcjpwYXNz",
+    "authorization=Digest username=hidden, nonce=hidden",
+    '"Authorization": "Basic dXNlcjpwYXNz"',
+    "Authorization: Bearer hidden",
+  ]) {
+    const mapped = upstashError(new Error(header));
+    expect(mapped.cause).not.toContain("dXNlcjpwYXNz");
+    expect(mapped.cause).not.toContain("hidden");
+  }
 });
