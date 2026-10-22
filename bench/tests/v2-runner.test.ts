@@ -86,7 +86,7 @@ it("does not delete returned IDs when live ownership cannot be verified", async 
   try {
     const report = await runV2(
       [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
-      parseV2(["--providers", "memory", "--runs", "1", "--bursts", "", "--scenarios", "command", "--out", directory]),
+      parseV2(["--providers", "memory", "--runs", "1", "--bursts", "", "--scenarios", "command", "--timeout-ms", "100", "--out", directory]),
       async () => {},
     );
     expect(attempts).toBe(0);
@@ -96,7 +96,7 @@ it("does not delete returned IDs when live ownership cannot be verified", async 
   } finally { for (const info of await backing.list({})) await backing.destroy(info.id); await rm(directory, { recursive: true, force: true }); }
 });
 
-it("continues VM deletion when snapshot cleanup fails", async () => {
+it("retains the source until snapshot cleanup can complete", async () => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
   const { runV2 } = await import("../src/v2-runner.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
@@ -104,6 +104,8 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
   expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
+  const snapshots = await import("../src/snapshots.js");
+  vi.spyOn(snapshots.snapshotMetadata, "inspect").mockResolvedValue({exists: true});
   const failures = new Map<string, number>();
   const provider = {
     ...backing,
@@ -121,18 +123,18 @@ it("continues VM deletion when snapshot cleanup fails", async () => {
   try {
     const report = await runV2(
       [{ kind: "ready", name: "local", cloud: false, region: null, provider }],
-      parseV2(["--providers", "local", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--out", directory]),
+      parseV2(["--providers", "local", "--runs", "1", "--bursts", "", "--scenarios", "snapshot", "--timeout-ms", "100", "--out", directory]),
       async () => {},
     );
-    expect(await backing.list({})).toHaveLength(0);
+    expect(await backing.list({})).toHaveLength(1);
     const cold = report.samples.find((s) => s.scenario === "cold");
     if (cold?.outcome.kind === "failure") throw new Error(cold.outcome.note);
     const restored = report.samples.find((s) => s.scenario === "create-from-snapshot");
     expect(restored?.sandboxId).not.toBe(cold?.sandboxId);
     expect(report.samples.find((s) => s.scenario === "restore-fingerprint")?.sandboxId).toBe(restored?.sandboxId);
-    expect(report.cleanup[0]?.remaining).toEqual(["owned-snapshot"]);
+    expect(report.cleanup[0]?.remaining).toEqual(expect.arrayContaining(["owned-snapshot", cold?.sandboxId]));
     expect(report.cleanup[0]?.error).toContain("snapshot deletion unavailable");
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { vi.restoreAllMocks(); for (const info of await backing.list({})) await backing.destroy(info.id); await rm(directory, { recursive: true, force: true }); }
 });
 
 
@@ -145,17 +147,24 @@ it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out cr
   const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
   expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
+  vi.spyOn(snapshots.snapshotMetadata, "inspect").mockImplementation(async (_name, _provider, _source, id) => ({exists: id === "late-snapshot"}));
   const deleted: string[] = [];
   let queries = 0;
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async (id) => { deleted.push(id); });
-  vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockRejectedValue(new Error("native timeout"));
+  const snapshotFailure = async () => {
+    const journal = JSON.parse(await readFile(resolve(directory, "ownership.json"), "utf8"));
+    const source = journal.resources.find((r: {kind: string}) => r.kind === "snapshot-source");
+    expect(source.snapshotProof).toEqual({sourceId: source.id, runLabel: journal.runId, sdkLabel: "1", verifiedAt: expect.any(String)});
+    throw new Error("native timeout");
+  };
+  vi.spyOn(snapshots, "createNamedDaytonaSnapshot").mockImplementation(snapshotFailure);
   vi.spyOn(snapshots, "snapshotsFromSource").mockImplementation(async () => {
     expect(await backing.list({})).toHaveLength(1);
     return ++queries <= 2 ? [{ id: "late-snapshot", name: "late-snapshot" }] : [];
   });
   const provider = { ...backing,
     capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
-    snapshot: async () => {throw new Error("native timeout");},
+    snapshot: snapshotFailure,
   } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
   try {
     const report = await runV2(
@@ -173,7 +182,7 @@ it.each(["daytona", "superserve"])("reaps late %s snapshots after a timed-out cr
   }
 });
 
-it("recovers snapshots only while the live source ownership can be verified", async () => {
+it("recovers a named snapshot using recorded source proof despite stale sandbox listings", async () => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
   const { runV2 } = await import("../src/v2-runner.js");
   const snapshots = await import("../src/snapshots.js");
@@ -182,6 +191,7 @@ it("recovers snapshots only while the live source ownership can be verified", as
   const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
   expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
   const backing = memory();
+  vi.spyOn(snapshots.snapshotMetadata, "inspect").mockResolvedValue({exists: false});
   let stale: Awaited<ReturnType<typeof backing.list>> = [];
   let afterDeleteLists = 0;
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});

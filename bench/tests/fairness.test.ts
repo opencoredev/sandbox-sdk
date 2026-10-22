@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { it, expect, vi, afterEach } from "vitest";
+import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import { resolve } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
@@ -18,6 +18,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return { ...original, appendFile: vi.fn(original.appendFile), writeFile: vi.fn(original.writeFile) };
 });
 const dirs: string[] = [];
+beforeEach(() => {vi.spyOn(snapshots.snapshotMetadata, "inspect").mockResolvedValue({exists: true});});
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true }))); });
 async function config(args: string[] = []) {
   const dir = await fs.mkdtemp(resolve(tmpdir(), "sandbox-bench-test-")); dirs.push(dir);
