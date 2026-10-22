@@ -228,7 +228,7 @@ export async function runV2(
       report.cleanupReview?.push({provider, id: sanitize(id), kind, reason, status: kind === "sandbox" ? "checking" : "unresolved"});
   }
   async function resolveAbsent(p: ReadyProvider, id: string) {
-    await deletions.wait(p.name, id, Math.min(config["timeout-ms"], 30_000));
+    await deletions.wait(p.name, id, Math.min(config["timeout-ms"] / 2, 30_000));
     const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
     if (!isAbsent(evidence)) {
       for (const item of report.cleanupReview ?? []) if (item.provider === p.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";

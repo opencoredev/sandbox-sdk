@@ -82,3 +82,20 @@ it.each([false, true])("resolves a delete that completes after its deadline (rea
  expect(report.cleanupResolved).toContainEqual(expect.objectContaining({resolution: "absent", evidence: expect.objectContaining({result: "not-found"})}));
  expect(JSON.parse(await readFile(join(cfg.out, "ownership.json"), "utf8")).resources).toEqual([]);
 });
+
+it("resolves an absent resource even when its native delete promise never settles", async () => {
+ const cfg = {...await config(), "timeout-ms": 200};
+ const backing = memory();
+ const destroy = vi.fn(async (id: string) => {
+  await backing.destroy(id);
+  await new Promise<void>(() => {});
+ });
+ const provider = {...backing, destroy};
+ const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}], cfg, r => writeV2(r, cfg.out));
+ expect(destroy).toHaveBeenCalledTimes(1);
+ expect(report.cleanupResolved).toContainEqual(expect.objectContaining({resolution: "absent"}));
+ expect(report.cleanupReview).toEqual([]);
+ expect(report.cleanup.every(p => !p.error && !p.remaining.length)).toBe(true);
+ expect(report.admissionStopped).toEqual([]);
+ expect(await backing.list({})).toEqual([]);
+});

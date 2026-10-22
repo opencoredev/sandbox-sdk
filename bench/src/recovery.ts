@@ -38,7 +38,7 @@ export async function reapRun(providers: LoadedProvider[], config: ConfigV2, san
     const errors: string[] = [];
     const deletionErrors = new Map<string, string>();
     const resolveAbsent = async (id: string) => {
-      await deletions.wait(p.name, id, Math.min(config["timeout-ms"], 30_000));
+      await deletions.wait(p.name, id, Math.min(config["timeout-ms"] / 2, 30_000));
       const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
       if (!isAbsent(evidence)) {
         for (const item of reviews) if (item.provider === p.name && item.id === id && item.kind === "sandbox") item.status = "unresolved";
