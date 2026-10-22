@@ -3,6 +3,7 @@
  * https://www.freestyle.sh/docs/vms/network/firewall
  * https://www.freestyle.sh/docs/vms/network/tls-inbound
  */
+import { createHash } from "node:crypto";
 import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from "freestyle";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../boxd/guest.js";
@@ -19,6 +20,7 @@ export interface FreestyleOptions {
 }
 export type FreestyleProvider = Provider<Vm, "pause" | "snapshot" | "network-policy">;
 const marker = "/var/lib/sandbox-sdk.json";
+const supervisorHash = createHash("sha256").update(supervisor).digest("hex");
 // Native metadata is committed with VM allocation, before guest setup can be
 // interrupted. Freestyle allows 64 entries with at most 63 characters each.
 const nativeInfo = "sandbox-sdk-info";
@@ -51,6 +53,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
   const boxes = new Map<string, Vm>();
   const installations = new Map<string, Promise<void>>();
+  const verifiedSupervisors = new Set<string>();
   const previews = new Map<string, string>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30000;
   async function api() {
@@ -135,7 +138,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
     };
   }
-  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
+  async function readInfo(data: VmData, nativeOwnership = false): Promise<{ info: SandboxInfo; supervisorHash?: string }> {
     if (data.metadata["sandbox-sdk"] !== "1") throw failure("Not an SDK VM", "not_found", data.id);
     let text: string;
     if (nativeOwnership && data.metadata[nativeInfo] !== undefined) {
@@ -170,17 +173,56 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     const createdAt = Date.parse(data.createdAt);
     if (!Number.isFinite(createdAt)) throw failure("Invalid VM creation time", "provider", data.id);
     return {
-      id: data.id,
-      key: value.key ?? undefined,
-      labels,
-      createdAt,
-      state:
-        data.state === "running"
-          ? "running"
-          : data.state === "paused" || data.state === "pausing"
-            ? "paused"
-            : "stopped",
+      supervisorHash: "supervisorHash" in value && typeof value.supervisorHash === "string" ? value.supervisorHash : undefined,
+      info: {
+        id: data.id,
+        key: value.key ?? undefined,
+        labels,
+        createdAt,
+        state:
+          data.state === "running"
+            ? "running"
+            : data.state === "paused" || data.state === "pausing"
+              ? "paused"
+              : "stopped",
+      },
     };
+  }
+  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
+    return (await readInfo(data, nativeOwnership)).info;
+  }
+  async function installSupervisor(id: string): Promise<void> {
+    let installation = installations.get(id);
+    if (!installation) {
+      installation = (async () => {
+        const g = await guest(id);
+        await g.raw(
+          python(
+            `import os,sys,tempfile
+p,content=sys.argv[1:]
+try:
+ with open(p) as f: current=f.read()
+except FileNotFoundError: current=None
+if current!=content:
+ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(p))
+ try:
+  with os.fdopen(fd,'w') as f: f.write(content)
+  os.replace(tmp,p)
+ finally:
+  if os.path.exists(tmp): os.unlink(tmp)`,
+            supervisorPath,
+            supervisor,
+          ),
+        );
+      })();
+      installations.set(id, installation);
+    }
+    try {
+      await installation;
+      verifiedSupervisors.add(id);
+    } finally {
+      if (installations.get(id) === installation) installations.delete(id);
+    }
   }
   const provider: FreestyleProvider = {
     name: "freestyle",
@@ -272,7 +314,7 @@ for path,content in json.load(sys.stdin):
  finally:
   if os.path.exists(tmp): os.unlink(tmp)`),
               stdin: Buffer.from(JSON.stringify([
-                [marker, JSON.stringify({ key: input.key ?? null, labels: input.labels })],
+                [marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })],
                 [envFile, JSON.stringify(input.env ?? {})],
                 [supervisorPath, supervisor],
               ])).toString("base64"),
@@ -332,38 +374,12 @@ for path,content in json.load(sys.stdin):
     connect: (id) =>
       safe(id, async () => {
         const data = await (await api()).vms.get(id);
-        // One promise per sandbox in this client; atomic replace also handles
-        // independent clients reconnecting to the same older sandbox.
-        let installation = installations.get(id);
-        if (!installation) {
-          installation = (async () => {
-            const g = await guest(id);
-            await g.raw(
-              python(
-                `import os,sys,tempfile
-p,content=sys.argv[1:]
-try:
- with open(p) as f: current=f.read()
-except FileNotFoundError: current=None
-if current!=content:
- fd,tmp=tempfile.mkstemp(dir=os.path.dirname(p))
- try:
-  with os.fdopen(fd,'w') as f: f.write(content)
-  os.replace(tmp,p)
- finally:
-  if os.path.exists(tmp): os.unlink(tmp)`,
-                supervisorPath,
-                supervisor,
-              ),
-            );
-          })();
-          installations.set(id, installation);
-          installation.catch(() => {
-            if (installations.get(id) === installation) installations.delete(id);
-          });
-        }
-        await installation;
-        return info(data);
+        const stored = await readInfo(data);
+        // Current markers attest to the helper installed during create. Older
+        // VMs retain the atomic upgrade path; no eager guest check for new VMs.
+        if (stored.supervisorHash !== supervisorHash && !verifiedSupervisors.has(id))
+          await installSupervisor(id);
+        return stored.info;
       }),
     destroy: (id) =>
       safe(id, async () => {
@@ -374,6 +390,7 @@ if current!=content:
         }
         boxes.delete(id);
         installations.delete(id);
+        verifiedSupervisors.delete(id);
         for (const key of previews.keys()) if (key.startsWith(id + ":")) previews.delete(key);
       }),
     async close(id) {
@@ -396,12 +413,22 @@ if current!=content:
               safe(
                 id,
                 async () => {
-                  const result = await value.exec({
+                  const run = () => value.exec({
                     command,
                     stdin: Buffer.from(stdin).toString("base64"),
                     linuxUser: "root",
                     timeoutMs,
                   });
+                  let result = await run();
+                  // Python has not opened the helper, so no user command ran.
+                  // Never retry transport errors or ordinary command failures.
+                  if (result.statusCode === 2 &&
+                    result.stderr?.includes("can't open file") &&
+                    result.stderr.includes(supervisorPath) &&
+                    result.stderr.includes("[Errno 2]")) {
+                    await installSupervisor(id);
+                    result = await run();
+                  }
                   if (result.statusCode !== 0 || !result.stdout)
                     throw failure("Guest execution failed", "provider", id);
                   return result.stdout;

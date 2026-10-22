@@ -305,13 +305,15 @@ for (const kind of ["timeout", "abort"] as const)
     }
   });
 
-test("concurrent reconnects dedupe helper installation and converge across clients", async () => {
+test.each(["missing", "outdated"])("legacy %s-version reconnects dedupe helper installation and converge across clients", async version => {
   const { promises: fs } = await import("node:fs");
   const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
   const box = await createSandbox(factory());
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   try {
+    const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
+    await fs.writeFile(path, JSON.stringify({ key: null, labels: box.labels, ...(version === "outdated" ? { supervisorHash: "old-version" } : {}) }));
     await fs.rm(native.guest.rewrite(supervisorPath));
     const provider = factory();
     const before = native.guest.commands.length;
@@ -496,4 +498,54 @@ test("Freestyle native ownership fits the documented limits and rejects overflow
     await expect(provider.create({ labels: { oversized: "x".repeat(4000) } })).rejects.toMatchObject({ code: "unsupported" });
     expect(freestyleState.creates.length).toBe(before);
   } finally { await box.destroy(); }
+});
+
+
+test("current-version reconnect trusts the recorded supervisor without a guest RPC", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  try {
+    const before = native.guest.commands.length;
+    const info = await factory().connect(box.id);
+    expect(info.id).toBe(box.id);
+    expect(native.guest.commands.length - before).toBe(0);
+  } finally { await box.destroy(); }
+});
+
+test("a missing current supervisor is repaired lazily without replaying the user command", async () => {
+  const { promises: fs } = await import("node:fs");
+  const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  try {
+    await fs.rm(native.guest.rewrite(supervisorPath));
+    const client = factory();
+    const before = native.guest.commands.length;
+    await client.connect(box.id);
+    expect(native.guest.commands.length - before).toBe(0);
+    const chunks: string[] = [];
+    expect(await client.exec(box.id, { command: "echo once >> executions; echo ready", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk: c => chunks.push(c.text) })).toMatchObject({ exitCode: 0 });
+    expect(chunks.join("")).toBe("ready\n");
+    expect(await fs.readFile(native.guest.rewrite("/workspace/executions"), "utf8")).toBe("once\n");
+    expect(native.guest.commands.length - before).toBe(3);
+    const next = native.guest.commands.length;
+    expect(await client.exec(box.id, { command: "exit 2", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk() {} })).toMatchObject({ exitCode: 2 });
+    expect(native.guest.commands.length - next).toBe(1);
+  } finally { await box.destroy(); }
+});
+
+test("other supervisor failures never trigger installation or replay", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock VM");
+  const exec = vi.spyOn(native, "exec").mockResolvedValueOnce({
+    statusCode: 2, stdout: "", stderr: "python3: can't open file '/var/lib/sandbox-sdk-exec-v2.py': [Errno 13] Permission denied",
+  });
+  try {
+    await expect(box.run("echo should-not-run")).rejects.toMatchObject({ code: "provider" });
+    // One failed exec plus the existing cancellation/recovery RPC, no install.
+    expect(exec).toHaveBeenCalledTimes(2);
+  } finally { exec.mockRestore(); await box.destroy(); }
 });
