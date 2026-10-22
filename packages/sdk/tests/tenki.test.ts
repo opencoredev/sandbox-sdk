@@ -648,3 +648,230 @@ test.each(["connection reset", "GOAWAY", "service unavailable"])(
     expect((await box.run("true")).exitCode).toBe(0);
   },
 );
+
+test("workspace transfers use one native call each after create, without guest path probes", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const run = vi.spyOn(MockSession.prototype, "run");
+  const write = vi.spyOn(MockSession.prototype, "writeFile");
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  for (let i = 0; i < 2; i++) {
+    const bytes = new Uint8Array([i, 2, 3]);
+    await provider.files.write(box.id, "/workspace/nested/value", bytes);
+    expect(await provider.files.read(box.id, "/workspace/nested/value")).toEqual(bytes);
+  }
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(run).not.toHaveBeenCalled();
+});
+
+test("connect resolves a custom workspace once and resume refreshes the cached alias", async () => {
+  const original = factory();
+  const box = await createSandbox(original);
+  await box.run("mkdir -p /home/tenki/custom; rm /workspace; ln -s /home/tenki/custom /workspace", {
+    cwd: "/home/tenki",
+  });
+  const provider = factory();
+  await provider.connect(box.id);
+  const run = vi.spyOn(MockSession.prototype, "run");
+  await provider.files.write(box.id, "/workspace/value", new Uint8Array([1]));
+  expect(await provider.files.read(box.id, "/workspace/value")).toEqual(new Uint8Array([1]));
+  expect(run).not.toHaveBeenCalled();
+  await provider.pause?.(box.id);
+  await provider.resume?.(box.id);
+  run.mockClear();
+  expect(await provider.files.read(box.id, "/workspace/value")).toEqual(new Uint8Array([1]));
+  expect(run).not.toHaveBeenCalled();
+});
+
+test("removing the workspace alias invalidates the native root", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  await box.files.write("original", "old root");
+  await provider.files.remove(box.id, "/workspace", { recursive: false });
+  await provider.files.mkdir(box.id, "/workspace");
+  const write = vi.spyOn(MockSession.prototype, "writeFile");
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  await box.files.write("replacement", "new root");
+  expect(await box.files.read("replacement")).toBe("new root");
+  expect(write).not.toHaveBeenCalled();
+  expect(read).not.toHaveBeenCalled();
+  expect(await box.files.exists("original")).toBe(false);
+});
+
+test("native symlink-escape rejection falls back to the logical workspace path", async () => {
+  const box = await createSandbox(factory());
+  await box.run("mkdir -p /tmp/sdk-bare; ln -s /tmp/sdk-bare escape");
+  const denied = () =>
+    Object.assign(new Error("outside native root"), { name: "PermissionDeniedError" });
+  const write = vi.spyOn(MockSession.prototype, "writeFile").mockRejectedValueOnce(denied());
+  const read = vi.spyOn(MockSession.prototype, "readFile").mockRejectedValueOnce(denied());
+  await box.files.write("escape/value", "escaped");
+  expect(await box.files.read("escape/value")).toBe("escaped");
+  expect(write).toHaveBeenCalledOnce();
+  expect(read).toHaveBeenCalledOnce();
+  expect((await box.run("cat /tmp/sdk-bare/value")).stdout).toBe("escaped");
+});
+
+test("overlapping command responses cannot repopulate the root cache out of order", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  let ready = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  tenkiState.streamExitWaits.push(async () => {
+    ready();
+    await gate;
+  });
+  const old = box.run("true").then((result) => result);
+  try {
+    await waiting;
+    await box.run(
+      "mkdir -p /home/tenki/new-root; rm /workspace; ln -s /home/tenki/new-root /workspace",
+      { cwd: "/home/tenki" },
+    );
+  } finally {
+    release();
+  }
+  await old;
+  const native = vi.spyOn(MockSession.prototype, "writeFile");
+  await box.files.write("after-overlap", "new root");
+  expect(native).not.toHaveBeenCalled();
+  expect((await box.run("cat after-overlap")).stdout).toBe("new root");
+});
+
+test("retained native handles keep the workspace cache disabled after ordinary commands", async () => {
+  const box = await createSandbox(factory());
+  const native = box.native;
+  await box.run("true");
+  await native.run(
+    [
+      "sh",
+      "-c",
+      "mkdir -p /home/tenki/native-root; rm /workspace; ln -s /home/tenki/native-root /workspace",
+    ],
+    { privileged: true },
+  );
+  const write = vi.spyOn(MockSession.prototype, "writeFile");
+  await box.files.write("native-mutation", "new root");
+  expect(write).not.toHaveBeenCalled();
+  expect((await box.run("cat native-mutation")).stdout).toBe("new root");
+});
+
+test("removing an intermediate workspace symlink invalidates its resolved root", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  await box.run(
+    "mkdir -p /home/tenki/actual; ln -s /home/tenki/actual /home/tenki/alias; rm /workspace; ln -s /home/tenki/alias /workspace",
+    { cwd: "/home/tenki" },
+  );
+  await box.files.write("value", "old root");
+  await provider.files.remove(box.id, "/home/tenki/alias", { recursive: false });
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  await expect(box.files.read("value")).rejects.toMatchObject({ code: "file_not_found" });
+  expect(read).not.toHaveBeenCalled();
+});
+
+test("surviving detached workers cannot leave a stale workspace root", async () => {
+  const box = await createSandbox(factory());
+  await box.run(
+    "mkdir -p /home/tenki/later; printf old > value; printf new > /home/tenki/later/value",
+  );
+  await box.run(
+    "nohup setsid sh -c 'while [ ! -e /home/tenki/release-worker ]; do sleep .01; done; rm /workspace; ln -s /home/tenki/later /workspace; touch /home/tenki/worker-done' >/dev/null 2>&1 </dev/null &",
+  );
+  await box.files.write("/home/tenki/release-worker", "go");
+  await vi.waitFor(
+    async () => expect(await box.files.exists("/home/tenki/worker-done")).toBe(true),
+    { timeout: 2000, interval: 10 },
+  );
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  expect(await box.files.read("value")).toBe("new");
+  expect(read).not.toHaveBeenCalled();
+});
+
+test("a delayed removal invalidates snapshots taken before it settles", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  await box.run(
+    "mkdir -p /home/tenki/removal-root; ln -s /home/tenki/removal-root /home/tenki/removal-alias; rm /workspace; ln -s /home/tenki/removal-alias /workspace; printf old > /workspace/value",
+    { cwd: "/home/tenki" },
+  );
+  const run = MockSession.prototype.run;
+  vi.spyOn(MockSession.prototype, "run").mockImplementation(
+    function (this: MockSession, argv, options) {
+      if (argv[3] === "remove" && argv[4] === "/home/tenki/removal-alias") {
+        argv = [...argv];
+        argv[2] =
+          "import os,time\nopen('/home/tenki/removal-started','w').close()\nwhile not os.path.exists('/home/tenki/release-removal'): time.sleep(.01)\n" +
+          argv[2];
+      }
+      return run.call(this, argv, options);
+    },
+  );
+  const removing = provider.files.remove(box.id, "/home/tenki/removal-alias", { recursive: false });
+  try {
+    await vi.waitFor(
+      async () => expect(await box.files.exists("/home/tenki/removal-started")).toBe(true),
+      { timeout: 2000, interval: 10 },
+    );
+    await box.run("true");
+  } finally {
+    await box.files.write("/home/tenki/release-removal", "go");
+  }
+  await removing;
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  await expect(box.files.read("value")).rejects.toMatchObject({ code: "file_not_found" });
+  expect(read).not.toHaveBeenCalled();
+});
+
+test("a failed command with surviving workers cannot refill the cache on a later command", async () => {
+  const box = await createSandbox(factory());
+  await box.run(
+    "mkdir -p /home/tenki/after-failure; mkfifo /home/tenki/release-failed-worker; printf old > value; printf new > /home/tenki/after-failure/value",
+  );
+  tenkiState.streamFailures.push({
+    phase: "after-output",
+    error: Object.assign(new Error("connection reset after output"), { code: 14 }),
+  });
+  await expect(
+    box.run(
+      "nohup setsid sh -c 'touch /home/tenki/failed-worker-ready; read go < /home/tenki/release-failed-worker; rm /workspace; ln -s /home/tenki/after-failure /workspace; touch /home/tenki/failed-worker-done' >/dev/null 2>&1 </dev/null & while [ ! -e /home/tenki/failed-worker-ready ]; do sleep .01; done; printf launched; sleep 5",
+    ),
+  ).rejects.toMatchObject({ code: "outcome_unknown" });
+  await box.run("true");
+  await box.files.write("/home/tenki/release-failed-worker", "go\n");
+  await vi.waitFor(
+    async () => expect(await box.files.exists("/home/tenki/failed-worker-done")).toBe(true),
+    { timeout: 2000, interval: 10 },
+  );
+  const read = vi.spyOn(MockSession.prototype, "readFile");
+  expect(await box.files.read("value")).toBe("new");
+  expect(read).not.toHaveBeenCalled();
+});
+
+test("a failed destroy preserves cache disablement across reconnect", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const native = box.native;
+  vi.spyOn(native, "close").mockRejectedValueOnce(new Error("close unavailable"));
+  await expect(provider.destroy(box.id)).rejects.toMatchObject({ code: "provider" });
+  await provider.connect(box.id);
+  await native.run(
+    [
+      "sh",
+      "-c",
+      "mkdir -p /home/tenki/survived; rm /workspace; ln -s /home/tenki/survived /workspace",
+    ],
+    { privileged: true },
+  );
+  const write = vi.spyOn(MockSession.prototype, "writeFile");
+  await box.files.write("value", "survived");
+  expect(write).not.toHaveBeenCalled();
+  expect((await box.run("cat value")).stdout).toBe("survived");
+});

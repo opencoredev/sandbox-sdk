@@ -12,6 +12,18 @@ import { executeStream } from "./stream.js";
 // One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
 const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time,pwd
 v=json.load(sys.stdin)
+def processes():
+ ids=set()
+ for e in os.scandir('/proc'):
+  if not e.name.isdecimal(): continue
+  try: ids.add((e.name,e.inode()))
+  except FileNotFoundError: continue
+  if len(ids)>4096: return None
+ return ids
+before=processes()
+def stable():
+ after=processes()
+ return before is not None and after is not None and after.issubset(before)
 env={**os.environ,**v['env'],'PWD':v['cwd']}
 if os.geteuid()==0 and 'SUDO_UID' not in env:
  try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
@@ -34,7 +46,7 @@ with tempfile.TemporaryFile() as f, open(v['marker']+'.out','wb',buffering=0) as
    if data: out.write((json.dumps([key.data,base64.b64encode(data).decode()])+'\\n').encode())
    else: sel.unregister(key.fileobj); key.fileobj.close()
  code=p.wait()
- with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed},m)
+ with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed,'workspaceStable':stable(),'workspaceRoot':os.path.realpath(v['workspace'])},m)
 `;
 const page = `import sys,json
 pos=int(sys.argv[2]); chunks=[]
@@ -70,8 +82,12 @@ export async function raw(
     throw failure("Guest operation failed", result.timedOut ? "timeout" : "provider");
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(result.stdout);
 }
-export async function execute(box: Session, input: ExecInput) {
-  if (typeof box.requireDataPlane === "function") return executeStream(box, input);
+export async function execute(
+  box: Session,
+  input: ExecInput,
+  workspaceRoot?: (root: string, stable: boolean) => void,
+) {
+  if (typeof box.requireDataPlane === "function") return executeStream(box, input, workspaceRoot);
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
   const spec = Buffer.from(
@@ -82,6 +98,7 @@ export async function execute(box: Session, input: ExecInput) {
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),
       timeoutMs: input.timeoutMs,
       marker,
+      workspace: "/workspace",
     }),
   );
   let cancelled = false;
@@ -201,6 +218,11 @@ export async function execute(box: Session, input: ExecInput) {
       typeof value.timedOut !== "boolean"
     )
       throw failure("Invalid command result");
+    if ("workspaceRoot" in value && typeof value.workspaceRoot === "string")
+      workspaceRoot?.(
+        value.workspaceRoot,
+        "workspaceStable" in value && value.workspaceStable === true,
+      );
     return { exitCode: value.exitCode, timedOut: value.timedOut };
   });
   void completion.catch(() => {});

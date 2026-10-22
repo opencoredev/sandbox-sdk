@@ -8,6 +8,18 @@ import { raw } from "./exec.js";
 // The supervisor owns the deadline and process group even after an RPC disconnect.
 const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time,pwd
 v=json.load(sys.stdin)
+def processes():
+ ids=set()
+ for e in os.scandir('/proc'):
+  if not e.name.isdecimal(): continue
+  try: ids.add((e.name,e.inode()))
+  except FileNotFoundError: continue
+  if len(ids)>4096: return None
+ return ids
+before=processes()
+def stable():
+ after=processes()
+ return before is not None and after is not None and after.issubset(before)
 env={**os.environ,**v['env'],'PWD':v['cwd']}
 if os.geteuid()==0 and 'SUDO_UID' not in env:
  try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
@@ -32,7 +44,7 @@ with tempfile.TemporaryFile() as f:
     if data: emit([key.data,base64.b64encode(data).decode()])
     else: sel.unregister(key.fileobj); key.fileobj.close()
   code=p.wait()
-  emit({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed})
+  emit({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed,'workspaceStable':stable(),'workspaceRoot':os.path.realpath(v['workspace'])})
  except BaseException:
   try: os.killpg(p.pid,signal.SIGKILL)
   except ProcessLookupError: pass
@@ -42,7 +54,11 @@ with tempfile.TemporaryFile() as f:
   except FileNotFoundError: pass
 `;
 
-export async function executeStream(box: Session, input: ExecInput): Promise<ExecResult> {
+export async function executeStream(
+  box: Session,
+  input: ExecInput,
+  workspaceRoot?: (root: string, stable: boolean) => void,
+): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
   const spec = Buffer.from(
@@ -53,6 +69,7 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),
       timeoutMs: input.timeoutMs,
       marker,
+      workspace: "/workspace",
     }),
   );
   const transport = new AbortController();
@@ -86,6 +103,11 @@ export async function executeStream(box: Session, input: ExecInput): Promise<Exe
       "timedOut" in value &&
       typeof value.timedOut === "boolean"
     ) {
+      if ("workspaceRoot" in value && typeof value.workspaceRoot === "string")
+        workspaceRoot?.(
+          value.workspaceRoot,
+          "workspaceStable" in value && value.workspaceStable === true,
+        );
       result = { exitCode: value.exitCode, timedOut: value.timedOut };
     } else throw failure("Invalid command output record");
   }
