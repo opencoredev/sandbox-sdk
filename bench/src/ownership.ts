@@ -57,10 +57,24 @@ export function recordVerifiedRelease(reviews: CleanupReview[], releases: Cleanu
 export function hasRunOwnership(info: Pick<SandboxInfo, "labels">, run: string) {
   return info.labels["sandbox-bench-run"] === run && info.labels["sandbox-sdk"] === "1";
 }
-/** Listing is read-only. A journal, create error, or bare ID is never ownership proof. */
-export async function verifyRunOwnership(provider: Provider, id: string, run: string, timeoutMs: number) {
-  try {
-    const matches = await deadline(timeoutMs, () => provider.list({"sandbox-bench-run": run, "sandbox-sdk": "1"}));
-    return matches.some(info => info.id === id && hasRunOwnership(info, run));
-  } catch { return false; }
+/** Listing is read-only; only the exact ID's live labels can establish ownership.
+ * Newly created sandboxes may need bounded control-plane visibility retries. */
+export async function verifyRunOwnership(provider: Provider, id: string, run: string, timeoutMs: number, visibilityBudgetMs = 0) {
+  const end = performance.now() + Math.min(timeoutMs, visibilityBudgetMs || timeoutMs);
+  let backoffMs = 100;
+  for (;;) {
+    try {
+      const matches = await deadline(Math.max(1, end - performance.now()), () => provider.list(
+        visibilityBudgetMs ? {} : {"sandbox-bench-run": run, "sandbox-sdk": "1"},
+      ));
+      const exact = matches.find(info => info.id === id);
+      if (exact && hasRunOwnership(exact, run)) return true;
+      if (exact && ((exact.labels["sandbox-bench-run"] !== undefined && exact.labels["sandbox-bench-run"] !== run)
+        || (exact.labels["sandbox-sdk"] !== undefined && exact.labels["sandbox-sdk"] !== "1"))) return false;
+    } catch { /* Missing/unreadable metadata is retried only for a just-created resource. */ }
+    const remainingMs = end - performance.now();
+    if (!visibilityBudgetMs || remainingMs <= 0) return false;
+    await new Promise(resolve => setTimeout(resolve, Math.min(backoffMs, remainingMs)));
+    backoffMs = Math.min(backoffMs * 2, 2000);
+  }
 }

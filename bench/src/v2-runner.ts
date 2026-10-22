@@ -378,7 +378,7 @@ export async function runV2(
                 const returned = performance.now();
                 const ownershipCheckStart = performance.now();
                 let verified: boolean;
-                try { verified = await verifyRunOwnership(target, info.id, config.run, timeout); }
+                try { verified = await verifyRunOwnership(target, info.id, config.run, timeout, 30_000); }
                 finally {
                   const ownershipVerifyMs = performance.now() - ownershipCheckStart;
                   createPhases.ownershipVerifyMs = ownershipVerifyMs;
