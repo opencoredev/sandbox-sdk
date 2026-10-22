@@ -118,8 +118,8 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
   return (command: string, initial: RunOptions = {}): RunHandle => {
     let options = { ...initial }; let promise: Promise<RunResult> | undefined;
     const bus = new OutputBus();
-    const begin = () => promise ??= execute().catch(error => { const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped; });
-    async function execute(): Promise<RunResult> {
+    const begin = (streaming = false) => promise ??= execute(streaming).catch(error => { const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped; });
+    async function execute(streaming: boolean): Promise<RunResult> {
       guard();
       const timeoutMs = options.timeoutMs ?? 120_000; const max = options.maxOutputBytes ?? 1_048_576;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(max) || max < 1) invalid("timeoutMs and maxOutputBytes must be positive");
@@ -144,7 +144,7 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
           // Drain both pipes before removing activity: background descendants
           // can retain stdout/stderr after the command shell itself has exited.
           command: provider.inlineActivity ? command : activityCommand(command, activePath, provider.commandShell), cwd, env: { ...baseEnv, ...options.env, ...defaults }, stdin: options.stdin,
-          timeoutMs, signal: controller.signal, envMode: options.env === undefined ? "sandbox" : undefined, activityPath: provider.inlineActivity ? activePath : undefined, onChunk: chunk => filter.push(chunk),
+          timeoutMs, signal: controller.signal, streaming, envMode: options.env === undefined ? "sandbox" : undefined, activityPath: provider.inlineActivity ? activePath : undefined, onChunk: chunk => filter.push(chunk),
         });
         completed = result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 128 && !result.timedOut && !controller.signal.aborted;
         timedOut ||= result.timedOut;
@@ -163,7 +163,7 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       [Symbol.asyncIterator]() {
         const iterator = bus.stream();
         // Subscribe before synchronous provider chunks can arrive.
-        const first = iterator.next(); void begin().catch(() => {});
+        const first = iterator.next(); void begin(true).catch(() => {});
         let initial = true;
         return { next: () => { if (initial) { initial = false; return first; } return iterator.next(); }, return: () => iterator.return(undefined) };
       },

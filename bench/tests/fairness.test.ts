@@ -271,3 +271,100 @@ it("stores separate pause and resume phases on successful observations", async (
   expect(row?.phases.resumeReturnedMs).toBeGreaterThan(0);
   expect(row?.phases.resumeReadyMs).toBeGreaterThanOrEqual(row?.phases.resumeReturnedMs ?? Infinity);
 });
+
+it("ends cold and restore at bare true before SDK setup", async () => {
+  vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
+  const backing = fake(); const order: string[] = [];
+  const provider = { ...backing, capabilities: new Set(["snapshot", "size"]), snapshot: async () => ({ id: "snap" }),
+    files: {...backing.files, write: async (id: string, path: string, data: Uint8Array) => {
+      order.push(`sdk:${id}`); await wait(30); return backing.files.write(id, path, data);
+    }},
+    create: async (input: Parameters<Provider["create"]>[0]) => {
+      expect(input.size).toEqual({cpu: 4, memoryMb: 8192, diskGb: 5});
+      return backing.create({...input, size: undefined});
+    },
+    exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+      if (input.command === "true") {
+        order.push(`bare:${id}`);
+        expect(input).toMatchObject({ cwd: "/workspace", env: {}, streaming: false });
+      } else { order.push(`sdk:${id}`); await wait(30); }
+      return backing.exec(id, input);
+    },
+  } satisfies Provider;
+  const report = await runV2([ready("memory", provider)], await config(["--scenarios", "snapshot", "--track", "same-spec", "--size", "memory=4:8192", "--template", "memory=test"]), async () => {});
+  for (const scenario of ["cold", "create-from-snapshot"]) {
+    const row = report.samples.find(s => s.scenario === scenario);
+    expect(row?.outcome.kind).toBe("sample");
+    expect(row?.phases).toMatchObject({ adapterCreateMs: expect.any(Number), firstCommandMs: expect.any(Number), coldMs: expect.any(Number), sdkReadyMs: expect.any(Number) });
+    if (!row || row.outcome.kind !== "sample") throw new Error("Missing readiness sample");
+    const {coldMs = 0, sdkReadyMs = 0, firstCommandOKMs = 0} = row.phases;
+    expect(row.outcome.value).toBe(coldMs);
+    expect(row.durationMs).toBe(coldMs);
+    expect(sdkReadyMs - coldMs).toBeGreaterThanOrEqual(25);
+    expect(firstCommandOKMs).toBeGreaterThanOrEqual(coldMs);
+    expect(order.filter(o => o.endsWith(`:${row.sandboxId}`))[0]).toBe(`bare:${row.sandboxId}`);
+  }
+  expect(report.samples.every(s => s.track === "same-spec" && s.template === "test")).toBe(true);
+  expect(report.providers[0]).toMatchObject({ track: "same-spec", requestedSize: { cpu: 4, memoryMb: 8192 }, template: "test" });
+  expect(report.summaries.every(s => s.track === "same-spec")).toBe(true);
+  expect(report.cleanup).toEqual([{provider: "memory", remaining: [], error: null}]);
+});
+
+it("keeps fixture upload delays and failures outside workload timings", async () => {
+  const backing = fake(); const write = backing.files.write;
+  const provider = { ...backing, files: { ...backing.files, write: async (id: string, path: string, data: Uint8Array) => {
+    if (path.startsWith("/workspace/bench-app/")) await wait(25);
+    return write(id, path, data);
+  } } } satisfies Provider;
+  const report = await runV2([ready("memory", provider)], await config(["--scenarios", "npm-install,tool-replay"]), async () => {});
+  const prep = report.samples.filter(s => s.scenario.endsWith("-prepare"));
+  expect(prep.length).toBeGreaterThan(0);
+  expect(prep.every(s => s.durationMs >= 25 && s.outcome.kind === "sample")).toBe(true);
+  for (const workload of ["npm-install", "tool-replay"]) {
+    const row = report.samples.find(s => s.scenario === workload);
+    if (!row) throw new Error("Missing workload");
+    expect(prep.some(p => Date.parse(p.finishedAt) <= Date.parse(row.startedAt))).toBe(true);
+  }
+  const brokenBacking = fake(); const original = brokenBacking.files.write;
+  const broken = { ...brokenBacking, files: { ...brokenBacking.files, write: async (id, path, data) => {
+    if (path.startsWith("/workspace/bench-app/")) throw new Error("upload unavailable");
+    return original(id, path, data);
+  } } } satisfies Provider;
+  const failed = await runV2([ready("memory", broken)], await config(["--scenarios", "npm-install,tool-replay"]), async () => {});
+  for (const workload of ["npm-install", "tool-replay"]) {
+    expect(failed.samples.find(s => s.scenario === `${workload}-prepare`)?.outcome.kind).toBe("failure");
+    expect(failed.samples.find(s => s.scenario === workload)?.outcome).toMatchObject({kind: "blocked", blocked_by: `${workload}-prepare`});
+  }
+});
+
+it("reports burst all-ready from bare readiness endpoints", async () => {
+  const backing = fake();
+  const provider = { ...backing, files: {...backing.files, write: async (id: string, path: string, data: Uint8Array) => {
+    await wait(20); return backing.files.write(id, path, data);
+  }}, exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+    if (input.command !== "true") await wait(20);
+    return backing.exec(id, input);
+  } } satisfies Provider;
+  const report = await runV2([ready("boat", provider)], await config(["--scenarios", "burst", "--bursts", "2", "--burst-cohorts", "1"]), async () => {});
+  const cohort = report.samples.find(s => s.scenario === "burst-2/all-ready");
+  if (!cohort) throw new Error("Missing cohort");
+  const members = report.samples.filter(s => s.scenario === "burst-2/cold");
+  expect(members).toHaveLength(2);
+  expect(cohort.outcome).toEqual({kind: "sample", value: Math.max(...members.map(s => Date.parse(s.finishedAt) - Date.parse(cohort.startedAt)))});
+  expect(members.every(s => (s.phases.sdkReadyMs ?? 0) > (s.phases.coldMs ?? 0) + 15)).toBe(true);
+});
+
+it("marks awaited execution buffered and iteration streaming", async () => {
+  const backing = memory(); const markers: (boolean | undefined)[] = [];
+  const { createSandbox } = await import("@opencoredev/sandbox-sdk");
+  const provider = { ...backing, exec: async (id: string, input: Parameters<Provider["exec"]>[1]) => {
+    markers.push(input.streaming); return backing.exec(id, input);
+  } } satisfies Provider;
+  const box = await createSandbox(provider);
+  markers.length = 0;
+  try {
+    await box.run("echo awaited");
+    for await (const _chunk of box.run("echo streamed")) { /* consume chunks */ }
+    expect(markers).toEqual([false, true]);
+  } finally { await box.destroy(); }
+});

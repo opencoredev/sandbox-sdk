@@ -136,3 +136,25 @@ describe("published compute-only size comparisons", () => {
     expect(priceAtSize("boat", { cpu: 3, memoryGiB: 6 })).toBeNull();
   });
 });
+
+it("parses repeatable allocation flags and rejects malformed requests", async () => {
+  const { parseV2 } = await import("../src/v2-config.js");
+  const config = parseV2(["--track", "same-spec", "--size", "upstash=medium", "--size", "boxd=4:16384", "--size", "tenki=4:8192:5", "--template", "e2b=id", "--template", "daytona=daytona-large"]);
+  expect(config).toMatchObject({track: "same-spec", size: {upstash: "medium", boxd: {cpu: 4, memoryMb: 16384}, tenki: {cpu: 4, memoryMb: 8192, diskGb: 5}}, template: {e2b: "id", daytona: "daytona-large"}});
+  expect(parseV2([]).track).toBe("default");
+  for (const value of ["x=4:0", "x=4:8192:0", "x=4:8192:5:6", "x=huge", "x=4:", "=medium"])
+    expect(() => parseV2(["--size", value])).toThrow();
+  expect(() => parseV2(["--track", "mixed"])).toThrow();
+});
+
+it("maps template flags to native factory options", async () => {
+  const { loadProvider } = await import("../src/providers.js");
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  for (const [name, key] of [["e2b", "template"], ["daytona", "snapshot"], ["freestyle", "snapshotId"], ["tenki", "image"], ["superserve", "template"]]) {
+    if (!name || !key) throw new Error("Missing test mapping");
+    const seen: unknown[] = [];
+    const env = {E2B_API_KEY: "fixture", DAYTONA_API_KEY: "fixture", FREESTYLE_API_KEY: "fixture", TENKI_API_KEY: "fixture", SUPERSERVE_API_KEY: "fixture"};
+    await loadProvider(name, env, async () => ({[name]: (options: unknown) => {seen.push(options); return memory();}}), {template: {[name]: "requested"}});
+    expect(seen).toEqual([{[key]: "requested"}]);
+  }
+});

@@ -24,7 +24,8 @@ export function markdownV2(r: ReportV2) {
   const rows = [
     `# Sandbox provider benchmark ${r.runId}`,
     "",
-    `Schema v2 · ${r.timestamp} · seed ${r.config.seed}`,
+    `Schema v2 · ${r.timestamp} · seed ${r.config.seed} · track ${r.config.track}`,
+    ...r.providers.map(p => `Allocation ${p.name}: requested ${JSON.stringify(p.requestedSize ?? null)}; template ${p.template ?? "default"}`),
     `Collection: ${r.timestamp} through ${r.finishedAt || "in progress"}`,
     `Host: ${r.host.cpu}; ${r.host.os}; ${r.host.runtime}`,
     `Metadata: ${JSON.stringify(r.metadata)}`,

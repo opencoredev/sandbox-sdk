@@ -1,5 +1,17 @@
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
+import type { ConfigV2 } from "./v2-config.js";
+
+export function templateOptions(name: string, template: string | undefined) {
+  if (template === undefined) return {};
+  const keys: Record<string, string> = {
+    e2b: "template", superserve: "template", daytona: "snapshot",
+    freestyle: "snapshotId", tenki: "image", boxd: "image", local: "image",
+  };
+  const key = keys[name];
+  if (!key) throw new Error(`${name} has no template/image factory option`);
+  return { [key]: template };
+}
 
 export interface ReadyProvider {
   kind: "ready";
@@ -70,6 +82,7 @@ export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
+  config?: Pick<ConfigV2, "template">,
 ): Promise<LoadedProvider> {
   if (!(name in credentials) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
@@ -95,7 +108,7 @@ export async function loadProvider(
   if (typeof factory !== "function")
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
   // Factory failures are real configuration errors, not missing-provider skips.
-  const value: unknown = await factory();
+  const value: unknown = await factory(templateOptions(name, config?.template[name]));
   return {
     kind: "ready",
     name,

@@ -17,7 +17,29 @@ const overrides = z
         }),
     ),
   );
+export const trackSchema = z.enum(["default", "same-spec"]);
+export const sizeSchema = z.union([
+  z.enum(["small", "medium", "large"]),
+  z.object({ cpu: z.number().positive().finite(), memoryMb: z.number().int().positive(), diskGb: z.number().positive().finite().optional() }),
+]);
+const assignments = (value: string[]): Record<string, string> => Object.fromEntries(value.map(entry => {
+  const match = /^([a-z][a-z0-9-]*)=(.+)$/.exec(entry);
+  if (!match) throw new Error("Expected provider=value");
+  return z.tuple([z.string(), z.string()]).parse([match[1], match[2]]);
+}));
+const sizes = z.array(z.string()).default([]).transform(value => Object.fromEntries(
+  Object.entries(assignments(value)).map(([name, raw]) => {
+    if (!raw) throw new Error("Expected provider=size");
+    const parts = raw.split(":");
+    return [name, sizeSchema.parse(parts.length === 1 ? raw : parts.length <= 3
+      ? { cpu: Number(parts[0]), memoryMb: Number(parts[1]), ...(parts[2] === undefined ? {} : { diskGb: Number(parts[2]) }) }
+      : null)];
+  }),
+));
 const schema = z.object({
+  track: trackSchema.default("default"),
+  size: sizes,
+  template: z.array(z.string()).default([]).transform(assignments),
   providers: z
     .string()
     .default("local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,superserve,railway,vercel")
@@ -52,8 +74,8 @@ const schema = z.object({
 });
 export type ConfigV2 = z.infer<typeof schema>;
 export function parseV2(args: string[]) {
-  const options: Record<string, { type: "string" }> = Object.fromEntries(
-    Object.keys(schema.shape).map((key) => [key, { type: "string" }]),
+  const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
+    Object.keys(schema.shape).map((key) => [key, { type: "string", ...(["size", "template"].includes(key) ? { multiple: true } : {}) }]),
   );
   return schema.parse(parseArgs({ args, options, strict: true }).values);
 }

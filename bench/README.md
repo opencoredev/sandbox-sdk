@@ -1,6 +1,6 @@
 # Independent sandbox provider benchmark
 
-The v2 harness measures the SDK, guest hardware, guest performance, deterministic agent work, and lifecycle cost. It keeps failures and raw observations. It makes no combined provider ranking. `local` is a Docker reference baseline, not a cloud product. Provider defaults are deliberately visible: this is a default-experience comparison, not a claim that differently sized machines are equivalent.
+The v2 harness measures the SDK, guest hardware, guest performance, deterministic agent work, and lifecycle cost. It keeps failures and raw observations. It makes no combined provider ranking. `local` is a Docker reference baseline, not a cloud product. The `default` track compares provider defaults. The `same-spec` track records explicit size and template choices, with fingerprints showing actual resources and any remaining differences.
 
 Build the SDK and run a small pilot before collecting publication data:
 
@@ -29,7 +29,7 @@ bun bench merge results/run-a results/run-b --out results/merged --seed 45
 
 `--exclude run-id` can be repeated. The aborted `publication-001` is always excluded. Duplicate run IDs, invalid schemas, different JSON/NDJSON samples, and an output path equal to an input are rejected. Existing output files with these four names are replaced.
 
-The merged schema is `publication-merge-v1`, documented in `results.json.schema` and the report. Every included observation remains, including failures, blocked dependencies and skips. `sourceRunId` and zero-based `sourceSampleIndex` identify its original row. `sourceIteration` preserves the original iteration; `iteration` is reassigned per provider across source runs and burst namespaces. Scenario rows from one sandbox iteration share the new identity. Main, snapshot and burst summaries stay separate.
+The merged schema is `publication-merge-v1`, documented in `results.json.schema` and the report. Every included observation remains, including failures, blocked dependencies and skips. `sourceRunId` and zero-based `sourceSampleIndex` identify its original row. `sourceIteration` preserves the original iteration; `iteration` is reassigned per provider across source runs and burst namespaces. Scenario rows from one sandbox iteration share the new identity. Main, snapshot and burst summaries stay separate. Tracks, requested sizes and templates also have separate summary groups. Historical rows without a track belong to `default`. Do not pool older SDK-inclusive cold measurements with the SBX-53 bare-readiness method.
 
 Distributions and confidence intervals are recomputed from successful samples with the existing statistics code. Raw success rates remain beside rates excluding specifically classified account-limit and client/third-party failures; skips and blocked rows have separate counts. Unknown operation causes remain operation failures. `network-mbps` stays in the data but is labelled not comparable, without a chart or rank. Source commits, flags, regions, seeds, host data, pricing, budget diagnostics and cleanup records remain attached to each source. The default report explicitly discloses the budget-fix top-ups and the discarded run.
 
@@ -39,7 +39,9 @@ Run-cost estimates sum only known `sandbox-lifetime` estimates, which already in
 
 Pass `--policy path/to/policy.json` to `bun bench merge` to apply the publication targets: 100 main attempts, 30 workload and snapshot attempts, and three burst cohorts per size. The policy contains `replacements` (`provider`, `suite`, `scenario`, `sourceRunIds`) and `notRun` (`provider`, `suite`, `scenario`, `reason`) arrays. A scenario ending in `/*` matches its burst member and aggregate rows. Use replacement rules to select only the fresh pause/resume sources and fresh Boat bursts. Document unsupported capabilities and account limits in `notRun`; these are not provider failures.
 
-Selection drops classified account-limit and client/third-party failures, then keeps the first N attempts per provider, suite and test in `startedAt` order. Ties use source run ID and original sample index. Provider-operation failures count as attempts. Blocked and skipped rows do not. Selecting burst cohorts also selects their associated member rows. Original source files remain unchanged, and the report records selection removals and every source date/configuration.
+Policy rules accept an optional `track` (`default` when omitted). Attempt targets and counts are independent per track, and an old default-track replacement or not-run rule never applies to same-spec.
+
+Selection drops classified account-limit and client/third-party failures, then keeps the first N attempts per track, provider, suite and test in `startedAt` order. Ties use source run ID and original sample index. Provider-operation failures count as attempts. Blocked and skipped rows do not. Selecting burst cohorts also selects their associated member rows. Original source files remain unchanged, and the report records selection removals and every source date/configuration.
 
 Run `bun bench attempts results/publication-final-v2` to print every required provider/test count and fail on missing or excess attempts without a documented not-run reason. It also checks the three phase fields on successful pause/resume samples. Pause/resume failures retain whichever phases completed; the total sample value remains elapsed time. Use `--omit-network-download true` for performance top-ups that must omit the optional CDN download while retaining CPU, memory, disk and TCP probes.
 
@@ -47,6 +49,9 @@ Run `bun bench attempts results/publication-final-v2` to print every required pr
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `--track` | `default` | `default` or `same-spec`; retained in provider metadata, samples and summaries |
+| `--size` | no override | Repeat `provider=small`, `provider=medium`, `provider=large`, or `provider=cpu:memoryMb[:diskGb]` |
+| `--template` | no override | Repeat `provider=name`; maps to the factory template, snapshot or image option |
 | `--providers` | `local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,railway,vercel` | Provider factories; missing credentials produce a skip note |
 | `--runs` | `2` | Sandbox iterations per provider for lifecycle, command, files and guest probes |
 | `--workload-runs` | same as runs | Number of iterations that include agent workloads |
@@ -91,7 +96,7 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 
 | Scenario | Measurement |
 | --- | --- |
-| `cold` | Client create through first successful `true`; raw create-return and first-command phases recorded |
+| `cold` | Adapter create start through a successful bare adapter `true` in `/workspace`, before SDK handle initialization |
 | `command` | One successful `true` round trip |
 | `files-1kb`, `files-10mb` | Write + read with byte equality validation; 1,024 / 10,485,760 bytes |
 | `fingerprint` | One guest exec for the hardware script, including one-second CPU steal sample |
@@ -100,11 +105,11 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 | `pause-resume` | Pause, resume, first command, with pause and resume-ready phases; unsupported providers skip |
 | `snapshot`, `create-from-snapshot` | Native snapshot API and restored first-command readiness measured separately; setup, total, and teardown separately recorded |
 | `git-clone` | Depth-one clone and pinned fetch of `octocat/Hello-World`, commit `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`; checkout verified |
-| `npm-install` | Committed React 19.1.0 / Vite 6.3.5 fixture and npm lockfile, `npm ci --ignore-scripts --no-audit --no-fund` |
+| `npm-install` | After the separately recorded `npm-install-prepare` fixture upload: committed React 19.1.0 / Vite 6.3.5 fixture and npm lockfile, `npm ci --ignore-scripts --no-audit --no-fund` |
 | `dev-server` | Start fixture Vite server on port 3000 to listening log |
 | `preview-first-byte` | Provider preview URL and access headers through first non-empty HTTP response chunk |
 | `edit-loop` | Edit fixture HTML marker; poll public preview until the changed bytes are served, bypassing caches |
-| `tool-replay` | 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
+| `tool-replay` | After any separately recorded `tool-replay-prepare` fixture upload: 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
 | `pip-install` | Pinned requests/numpy and transitive set into a workspace target; imports and versions verified; pinned pip wheel bootstrap with SHA-256 |
 | `destroy` | Deletion request, retries retained; final listing separately verifies eventual deletion |
 
@@ -143,7 +148,7 @@ SIGINT/SIGTERM stop admission and cancel signal-aware operations, then run norma
 
 V2 is an intentional format change. `src/v2-model.ts` owns the model. Existing v1 results/readers and `src/model.ts` remain unchanged; run `bun bench --v1 ...` for the original harness, including mocked-native SDK CPU overhead measurements. See [the v1 reference](README-v1.md). V1 readers must gate on `schemaVersion` and reject v2 rather than interpret it as v1.
 
-V2 top-level fields are `schemaVersion: 2`, `runId`, ISO timestamps, validated `config`, harness `host`, `providers` (ready/skipped plus notes), raw `samples`, `summaries`, `budgets`, `cleanup`, `methodology`, and the serialized pricing table. Each sample includes provider/iteration/scenario/unit, start/end timestamps, client monotonic `durationMs`, native ID, `outcome` (`sample` with numeric value, `failure` or `skipped` with note, or `blocked` with note and `blocked_by`), phases, host before/after, fingerprint, nullable estimated cost and scenario-specific details. Performance metrics use their native units; their `durationMs` records the enclosing performance probe time. Tool replay details contain per-op milliseconds. Summaries key on provider + scenario + unit and contain stats/CIs, Wilson success intervals, failure/skip counts, estimated cost, per-1000 estimate and performance-per-currency-unit.
+V2 top-level fields are `schemaVersion: 2`, `runId`, ISO timestamps, validated `config`, harness `host`, `providers` (ready/skipped plus notes), raw `samples`, `summaries`, `budgets`, `cleanup`, `methodology`, and the serialized pricing table. Each sample includes provider/iteration/scenario/unit, start/end timestamps, client monotonic `durationMs`, native ID, `outcome` (`sample` with numeric value, `failure` or `skipped` with note, or `blocked` with note and `blocked_by`), phases, host before/after, fingerprint, nullable estimated cost and scenario-specific details. Performance metrics use their native units; their `durationMs` records the enclosing performance probe time. Tool replay details contain per-op milliseconds. Samples, summaries and provider metadata include `track`, `requestedSize` and `template`. Summaries key on track + requested size + template + provider + scenario + unit and contain stats/CIs, Wilson success intervals, failure/skip counts, estimated cost, per-1000 estimate and performance-per-currency-unit.
 
 ```sh
 bun run --cwd bench test
@@ -160,9 +165,13 @@ See [the validation pilot](PILOT.md) for observed failures, cost projections, an
 
 `--burst-cohorts N` repeats every configured burst size N times (default 3). Each aggregate carries its cohort index in `iteration` and `details.cohort`; cold samples have a unique iteration within that size. Three K=10 plus three K=25 cohorts require 105 sandbox attempts per provider, so the burst command reserves 110. Account and dollar caps still apply; a blocked admission is reported rather than silently reducing K. Three cohorts validate a distribution but are insufficient for a stable tail estimate; use more cohorts only within explicit account and spend budgets.
 
-The comparison uses provider default allocations and images, with the local Docker reference at medium size. It does not normalize resources. Publish the hardware table beside timing results. Image, dependency, CDN and filesystem caches remain uncontrolled. Workloads on the same sandbox share installed files and process state.
+The default track uses provider default allocations and images, with the local Docker reference at medium size. The same-spec track uses the supplied per-provider sizes and templates. A track label alone does not establish equal hardware. Publish the hardware table beside timing results. Image, dependency, CDN and filesystem caches remain uncontrolled. Workloads on the same sandbox share installed files and process state.
 
 A failed lifecycle transition marks later scenarios with outcome `kind: blocked` and `blocked_by: <scenario>`. App prerequisite failures propagate similarly. These rows appear separately from skips and independent failures; success-rate denominators include only successful and independently failed attempts. Latency distributions contain successful values only. Every expected guest performance metric receives a failure row when the probe fails, times out, returns invalid JSON, or omits that metric.
+
+Cold and create-from-snapshot use the client monotonic clock immediately before `adapter.create` and stop after a bare `adapter.exec("true")` succeeds. Ownership is registered and its journal write is queued before the command; the journal flush is awaited and SDK handle initialization runs after the readiness endpoint. `adapterCreateMs` stops at the create return, `firstCommandMs` covers the bare command, and `coldMs` is the headline. `sdkReadyMs` covers create through the fully initialized SDK handle and is reported separately. `firstCommandOKMs` starts earlier, at iteration admission before host sampling and budget work. Burst all-ready uses the last member's bare-command endpoint, even when SDK setup finishes later. Failed bare commands retain failure rows and owned resources for cleanup.
+
+Fixture preparation and uploads are separate `npm-install-prepare` and `tool-replay-prepare` rows, outside the headline workload windows. Preparation failures remain failures; the workload and its dependents become blocked rows.
 
 File payloads are prepared once before scheduling. Reconnect preserves the previous handle if attachment fails; successful reconnections defer old-handle cleanup until after destruction because providers cache clients by sandbox ID. `preview-provisioning` measures public URL provisioning separately from `dev-server`. Each `preview-first-byte` row is a single HTTP attempt through its first nonempty chunk; up to three attempts retain failures separately. Reader cancellation and the 500 ms gap between attempts are outside that row’s timing. The edit loop depends on successful provisioning/start and, when collected, a successful first-byte attempt. `snapshot` measures only the native API; `snapshot-setup` exposes cleanup-client loading and durable journal preparation, and `snapshot-total` includes that setup and post-API journal work. Cost projections use the total, not a sum of overlapping snapshot rows.
 
@@ -171,3 +180,21 @@ Reports include configured provider regions, collection start/end, repository/ha
 Percentiles use nearest rank. p50 and mean intervals use 2,000 seeded bootstrap resamples; independent success rates use Wilson 95% intervals. At n=100, p99 depends on roughly the two slowest observations and remains unstable. Publish raw data, counts, failures and blocked dependencies rather than presenting a precise tail ranking. Costs remain estimates with per-provider source retrieval dates. EUR and USD remain separate; subscriptions, credits and excluded charges are documented in the pricing table.
 
 These additions extend schema v2: `metadata`, `providers[].configuredRegion`, `samples[].headroom`, blocked outcomes, and `summaries[].blocked`. Consumers must handle the new outcome variant. Older v2 pilot reports lack these fields and are historical artifacts; v1 compatibility is unchanged. The earlier pilot predates these fairness fixes and has not been rerun on cloud accounts.
+
+
+## Collect and publish separate tracks
+
+Use the same size/template mapping for every suite in a track. Templates map to `template` for E2B/Superserve, `snapshot` for Daytona, `snapshotId` for Freestyle, and `image` for Tenki/boxd/local. Boat and Upstash expose no template option and reject that flag. Omitted size means provider default; E2B and Freestyle allocations come from templates rather than a size argument. The harness accepts omitted `diskGb`; until all SDK adapters accept it, it supplies 10 GB for Daytona and 5 GB for other custom size requests. `requestedSize` retains the original request. The SDK's `CreateInput` disk field remains required during that compatibility transition.
+
+For a 4-vCPU / 8-GiB target, use a prebuilt E2B template, Daytona's `daytona-large` snapshot with `DAYTONA_TARGET=us`, Upstash `medium`, Boat default, boxd `4:16384` (its nearest allocation is 16 GiB), Freestyle default, Tenki `4:8192:5`, and a verified Superserve template. Supply the E2B and Superserve template IDs before collection. This is a target comparison with disclosed exceptions, not exact hardware equivalence.
+
+`bun bench merge` retains both tracks in JSON/NDJSON and writes separate `index.default.html`, `index.same-spec.html`, `results.default.md`, and `results.same-spec.md` when those tracks exist. `index.html` / `results.md` show default when present, otherwise same-spec. Every HTML/Markdown report uses only its selected track.
+
+Export one site dataset per track, with an explicit output path so the files cannot overwrite each other:
+
+```sh
+bun bench site-data --report results/merged --track default --out results/site-default.json
+bun bench site-data --report results/merged --track same-spec --out results/site-same-spec.json
+```
+
+The export includes `track` and requested allocations. Each export filters metrics, raw cold samples, hardware, costs and failures to that track. Multiple allocations for the same provider within one track are rejected by site-data; merge those allocations separately. Attempt-policy rules may specify `track`; omission selects default only. Conservative account caps still apply to both tracks: K=25 can remain skipped until account capacity has been verified, and start-rate quotas can require separate collection windows.

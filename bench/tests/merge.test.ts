@@ -259,3 +259,25 @@ it("keeps collection costs for an excluded account-limited burst", () => {
   expect(report.samples).toHaveLength(0);
   expect(report.sources[0]?.lifetimeCosts).toEqual([{provider: "daytona", sourceRunId: "burst", currency: "USD", known: 0.12, missing: 0, lifetimes: 1}]);
 });
+
+it("separates tracks in summaries, attempt selection, and site exports", async () => {
+  const { siteData } = await import("../src/site-data.js");
+  const { selectAttempts, checkAttempts } = await import("../src/attempts.js");
+  const a = source("default-track", Array.from({length: 101}, (_, i) => sample(i)));
+  const b = source("same-spec-track", Array.from({length: 101}, (_, i) => ({...sample(i), track: "same-spec" as const, requestedSize: {cpu: 4, memoryMb: 8192}, template: "four-eight", outcome: {kind: "sample" as const, value: 1000}})));
+  b.config.track = "same-spec";
+  const report = mergeSources([a, b], [], 45);
+  expect(report.summaries.filter(s => s.scenario === "cold")).toHaveLength(2);
+  expect(report.summaries.map(s => s.track)).toEqual(["default", "same-spec"]);
+  const policy = {replacements: [], notRun: []};
+  const selected = selectAttempts(report.samples, policy);
+  expect(selected.samples.filter(s => s.track === "default")).toHaveLength(100);
+  expect(selected.samples.filter(s => s.track === "same-spec")).toHaveLength(100);
+  expect(checkAttempts(selected.samples, policy).filter(s => s.provider === "daytona" && s.scenario === "cold").map(s => s.pass)).toEqual([true, true]);
+  expect(siteData(report).coldSamples.daytona).toHaveLength(101);
+  expect(siteData(report).coldSamples.daytona?.[0]).toBe(0.01);
+  expect(siteData(report, "same-spec").coldSamples.daytona?.[0]).toBe(1);
+  expect(siteData(report, "same-spec").metrics.find(m => m.id === "cold")?.values[0]?.p50).toBe(1);
+  const defaultOnlyPolicy = {replacements: [], notRun: [{provider: "daytona", suite: "main" as const, scenario: "cold", reason: "default only"}]};
+  expect(selectAttempts(report.samples, defaultOnlyPolicy).samples.every(s => s.track === "same-spec")).toBe(true);
+});

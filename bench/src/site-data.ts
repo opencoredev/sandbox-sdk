@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { defaultCompute, priceAtSize, pricing } from "./pricing.js";
 import { hourly } from "./publication-report.js";
-import { reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
+import { publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
 import { statistics } from "./stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
@@ -237,8 +237,13 @@ export function pauseSplit(samples: readonly PauseInput[], provider: string) {
   return pause.p50 === null || resume.p50 === null ? null : { pause: pause.p50, resume: resume.p50, n: pause.count };
 }
 
-export function siteData(r: PublicationReport) {
+export function siteData(input: PublicationReport, track: "default" | "same-spec" = "default") {
+  const r = publicationTrack(input, track);
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
+  for (const provider of names) {
+    const allocations = new Set(r.samples.filter(s => s.provider === provider).map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null])));
+    if (allocations.size > 1) throw new Error(`${provider}: multiple allocations in ${track}; merge each allocation separately before site-data`);
+  }
   const metrics = metricDefs.map((def) => ({
     ...def,
     comparable: def.comparable ?? true,
@@ -321,6 +326,8 @@ export function siteData(r: PublicationReport) {
     ]),
   );
   return {
+    track,
+    allocations: names.map(provider => ({ provider, requested: [...new Map(r.samples.filter(s => s.provider === provider).map(s => [JSON.stringify([s.requestedSize ?? null, s.template ?? null]), { size: s.requestedSize ?? null, template: s.template ?? null }])).values()] })),
     generatedFrom: r.runId,
     window: { start: r.timestamp, end: r.finishedAt },
     observations: r.samples.length,
@@ -337,6 +344,7 @@ export async function siteDataCommand(args: string[]) {
   const { values } = parseArgs({
     args,
     options: {
+      track: { type: "string", default: "default" },
       report: { type: "string", default: "results/publication-final" },
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
     },
@@ -345,7 +353,8 @@ export async function siteDataCommand(args: string[]) {
   const report: PublicationReport = JSON.parse(
     await readFile(join(values.report, "results.json"), "utf8"),
   );
-  await writeFile(values.out, `${JSON.stringify(siteData(report), null, 1)}\n`);
+  const track = (await import("./v2-config.js")).trackSchema.parse(values.track);
+  await writeFile(values.out, `${JSON.stringify(siteData(report, track), null, 1)}\n`);
 
   process.stdout.write(`Wrote ${values.out}\n`);
 }

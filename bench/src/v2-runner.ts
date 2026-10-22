@@ -70,7 +70,7 @@ async function host(): Promise<HostSample> {
 export function summarize(samples: Sample[], seed: number) {
   const groups = new Map<string, Sample[]>();
   for (const s of samples) {
-    const key = `${s.provider}/${s.scenario}/${s.unit}`;
+    const key = JSON.stringify([s.track ?? "default", s.requestedSize ?? null, s.template ?? null, s.provider, s.scenario, s.unit]);
     const values = groups.get(key) ?? [];
     values.push(s);
     groups.set(key, values);
@@ -98,6 +98,9 @@ export function summarize(samples: Sample[], seed: number) {
         : null;
     return [
       {
+        track: first.track ?? "default",
+        requestedSize: first.requestedSize ?? null,
+        template: first.template ?? null,
         provider: first.provider,
         scenario: first.scenario,
         unit: first.unit,
@@ -133,22 +136,27 @@ export async function runV2(
     summaries: [],
     providers: loaded.map((p) => ({
       name: p.name,
+      track: config.track,
+      requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
+      template: config.template[p.name] ?? null,
       kind: p.kind,
       configuredRegion: p.kind === "ready" ? p.region : null,
       note:
         p.kind === "skipped"
           ? p.note
-          : p.name === "local"
-            ? "Docker reference baseline; host costs excluded"
-            : "Provider default image and allocation",
+          : config.size[p.name] || config.template[p.name]
+            ? "Requested allocation/template overrides; verify actual resources in fingerprints"
+            : p.name === "local"
+              ? "Docker reference baseline; host costs excluded"
+              : "Provider default image and allocation",
     })),
     cleanup: [],
     budgets: {},
     methodology: [
       "Daytona snapshots use its native nameable API with a 600-second completion budget to journal a run-owned snapshot name before creation. The SDK wrapper retains recovery names in errors, but generates them internally. Other lifecycle calls use the common SDK. Snapshot timeout is retained as failure and cleanup uses only journaled names.",
       "Round-robin iteration admission, independent per-provider and global limits. Seeded scenario groups; dependencies (install → dev → preview → edit) retain order. Fingerprint first, cold first, destroy last. No warmup samples discarded.",
-      "Cold/reconnect/resume/restore use client monotonic clock through a successful true command. API-return and readiness phase timestamps are recorded separately. Create API phase includes provider-native readiness but excludes SDK handle initialization.",
-      "Default-size comparison: each provider uses its default image/allocation; local uses medium. This is not a resource-matched hardware comparison. Image, package, CDN and filesystem caches are uncontrolled; installed runtime versions are retained.",
+      "Cold and restore time adapter.create through a bare adapter true command before SDK handle initialization; burst all-ready ends at the slowest bare command. adapterCreateMs, firstCommandMs, coldMs and sdkReadyMs expose phases; sdkReadyMs includes SDK initialization and is excluded from the headline. firstCommandOKMs starts at iteration admission before host sampling and budget work. Reconnect/resume still use SDK command readiness.",
+      "Tracks remain separate: default uses provider defaults (local medium); same-spec records explicitly requested allocation and factory template per provider. Fingerprints establish actual resources; a track label does not prove resource equality. Fixture uploads run in separate preparation scenarios before npm-install/tool-replay. Image, package, CDN and filesystem caches are uncontrolled.",
       "Dependent scenarios share a sandbox. A failed cold/reconnect/resume/snapshot blocks subsequent work; blocked_by rows are reported separately and excluded from independent failure denominators. App install/provision/start/preview prerequisites also propagate blocking. Cleanup still runs.",
       "Preview provisioning and dev-server start are separate scenarios. Each HTTP attempt is timed through its first chunk only; cancellation and inter-attempt sleeps are outside that measurement. Failed attempts remain failure rows. Snapshot values time native API only; snapshot-setup and snapshot-total expose client setup/journal overhead.",
       "Repeated burst cohorts retain independent cohort indices. Client-headroom flags use load1/logical CPUs >=1 or sampled host CPU utilization >=90%; overlapping samples share host counters and must not be summed as provider-attributable traffic.",
@@ -245,6 +253,15 @@ export async function runV2(
     const hostStart = await host();
     const startTime = new Date().toISOString();
     const phases: Record<string, number> = {};
+    const coldClock = new PhaseClock();
+    let createClock = coldClock;
+    let createPhases = phases;
+    let restoredId: string | undefined;
+    const allocation = {
+      track: config.track,
+      requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
+      template: config.template[p.name] ?? null,
+    };
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
     reserve = budgetUSD(
@@ -271,6 +288,11 @@ export async function runV2(
     }
     state.created++;
     state.reserved += reserve;
+    // Until adapters accept omitted disk, preserve their existing CreateInput contract.
+    const requestedSize = allocation.requestedSize;
+    const createSize = requestedSize && typeof requestedSize === "object"
+      ? { ...requestedSize, diskGb: requestedSize.diskGb ?? (p.name === "daytona" ? 10 : 5) }
+      : requestedSize;
     const tracked = new Proxy(p.provider, {
       get(target, key) {
         if (key === "create")
@@ -281,21 +303,41 @@ export async function runV2(
                   if (state.created >= budgetMax) throw new Skip("Sandbox budget prevents restore");
                   state.created++;
                 }
-                const start = performance.now();
+                createClock.begin();
                 const info = await target.create(input);
-                phases.apiReturnedMs = performance.now() - start;
+                const returned = performance.now();
                 ids.add(info.id);
+                if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
                   provider: p.name,
                   id: info.id,
                   kind: "sandbox",
                   parent: null,
                 });
-                await persist();
+                createPhases.adapterCreateMs = returned - (createClock.start ?? returned);
+                createPhases.apiReturnedMs = createPhases.adapterCreateMs;
+                // Start journaling immediately; await its flush after readiness so host I/O is not timed.
+                const registered = persist();
+                void registered.catch(() => {});
                 if (input.signal?.aborted) {
+                  await registered;
                   await remove(p, info.id);
                   ids.delete(info.id);
                   throw new Error("Late create cleaned up");
+                }
+                const firstStart = performance.now();
+                try {
+                  const result = await target.exec(info.id, {
+                    command: "true", cwd: "/workspace", env: {}, timeoutMs: timeout,
+                    signal: input.signal ?? stopping.signal, streaming: false, onChunk() {},
+                  });
+                  if (result.exitCode !== 0 || result.timedOut || input.signal?.aborted) throw new Error(`First command failed (exit ${result.exitCode}, timedOut ${result.timedOut})`);
+                  createClock.finish();
+                  createPhases.coldMs = createClock.elapsed() ?? 0;
+                  createPhases.firstCommandOKMs = performance.now() - lifeStart;
+                } finally {
+                  createPhases.firstCommandMs = performance.now() - firstStart;
+                  await registered;
                 }
                 return info;
               })(),
@@ -326,6 +368,7 @@ export async function runV2(
       const durationMs = clock?.elapsed() ?? performance.now() - start;
       const hostAfter = observedAfter ?? await host();
       const sample: Sample = {
+        ...allocation,
         provider: p.name,
         iteration: index,
         scenario: burst ? `burst-${burst}/${scenario}` : scenario,
@@ -427,12 +470,12 @@ export async function runV2(
             labels: { "sandbox-bench-run": config.run },
             ports: [3000],
             signal,
-            ...(p.name === "local" ? { size: "medium" } : {}),
+            ...(createSize === null ? {} : { size: createSize }),
           });
-          await command(box, "true", timeout, signal);
-          phases.firstCommandOKMs = performance.now() - lifeStart;
+          phases.sdkReadyMs = performance.now() - (coldClock.start ?? lifeStart);
         },
         phases,
+        coldClock,
       );
       if (!box) return;
       let active: Sandbox = box;
@@ -485,9 +528,14 @@ export async function runV2(
         if (!targets.some(selected)) continue;
         if (group === "app") {
           if (index >= (config["workload-runs"] ?? config.runs)) continue;
-          await measure("npm-install", async (signal) => {
+          const prep = await measure("npm-install-prepare", async () => {
             await uploadFixture(active);
             fixture = true;
+          });
+          if (prep.kind !== "success")
+            for (const target of ["npm-install", "dev-server", "preview-provisioning", "preview-first-byte", "edit-loop"])
+              dependencies.set(target, "npm-install-prepare");
+          await measure("npm-install", async (signal) => {
             return command(
               active,
               "cd /workspace/bench-app && npm ci --ignore-scripts --no-audit --no-fund",
@@ -597,26 +645,30 @@ export async function runV2(
             let restored: Sandbox | undefined;
             const restoreStart = performance.now();
             try {
-              if (snapshotReady)
+              if (snapshotReady) {
+                createClock = new PhaseClock();
+                createPhases = {};
                 await measure("create-from-snapshot", async (signal) => {
-                  const start = performance.now();
                   restored = await createSandbox(tracked, {
                     from: id,
+                    ...(createSize === null ? {} : { size: createSize }),
                     labels: { "sandbox-bench-run": config.run },
                     ports: [3000],
                     signal,
                   });
-                  const returnedMs = performance.now() - start;
-                  await command(restored, "true", timeout, signal);
-                  return { apiReturnedMs: returnedMs, firstCommandOKMs: performance.now() - start };
-                });
+                  createPhases.sdkReadyMs = performance.now() - (createClock.start ?? lifeStart);
+                  return { ...createPhases };
+                }, createPhases, createClock);
+              }
             } finally {
-              if (restored) {
+              if (restoredId) {
                 const restoredBox = restored;
+                const restoreId = restoredId;
                 const sourceFingerprint: Fingerprint | null = fp;
                 let restoredFingerprint: Fingerprint | null = null;
                 try {
                   await measure("restore-fingerprint", async (signal) => {
+                    if (!restoredBox) throw new Error("Restore handle unavailable");
                     const script = await readFile(
                       new URL("../probes/fingerprint.py", import.meta.url),
                       "utf8",
@@ -634,7 +686,7 @@ export async function runV2(
                 } finally {
                   fp = sourceFingerprint;
                 }
-                await measure("restore-destroy", () => restoredBox.destroy());
+                await measure("restore-destroy", () => restoredBox ? restoredBox.destroy() : tracked.destroy(restoreId));
                 const restoredMs = performance.now() - restoreStart;
                 restoredDurationMs += restoredMs;
                 const cost = estimateCost(p.name, restoredMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));
@@ -642,7 +694,7 @@ export async function runV2(
                 for (const sample of report.samples) {
                   if (sample.provider === p.name && sample.iteration === index &&
                     ["create-from-snapshot", "restore-fingerprint", "restore-destroy"].includes(sample.scenario)) {
-                    sample.sandboxId = restoredBox.id;
+                    sample.sandboxId = restoreId;
                     sample.fingerprint = restoredFingerprint;
                     sample.estimatedCost = estimateCost(p.name, sample.durationMs, restoredFingerprint ? resources(restoredFingerprint) : (pricing[p.name]?.fixed ?? null));
                   }
@@ -682,6 +734,13 @@ export async function runV2(
               probe.kind === "success" ? probe.result : null, {}, clock, source.hostAfter);
           }
           continue;
+        }
+        if (group === "tool-replay" && !fixture) {
+          const prep = await measure("tool-replay-prepare", async () => {
+            await uploadFixture(active);
+            fixture = true;
+          });
+          if (prep.kind !== "success") dependencies.set("tool-replay", "tool-replay-prepare");
         }
         const reconnectClock = group === "reconnect" ? new PhaseClock() : undefined;
         const lifecyclePhases: Record<string, number> = {};
@@ -732,10 +791,6 @@ export async function runV2(
             case "git-clone":
               return command(active, cloneCommand, timeout, signal);
             case "tool-replay":
-              if (!fixture) {
-                await uploadFixture(active);
-                fixture = true;
-              }
               return replay(active, timeout);
             case "pip-install": {
               const script = await readFile(
@@ -863,20 +918,25 @@ export async function runV2(
       const cohort = report.samples.slice(offset).filter((s) => s.scenario === `burst-${k}/cold`);
       const success = cohort.filter((s) => s.outcome.kind === "sample").length;
       const cohortHostAfter = await host();
+      const readyAt = success === k ? Math.max(...cohort.map(s => Date.parse(s.finishedAt))) : Date.now();
+      const readyMs = readyAt - Date.parse(at);
       report.samples.push({
+        track: config.track,
+        requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
+        template: config.template[p.name] ?? null,
         provider: p.name,
         iteration: cohortIndex,
         scenario: `burst-${k}/all-ready`,
         unit: "ms",
         startedAt: at,
-        finishedAt: new Date().toISOString(),
-        durationMs: performance.now() - start,
+        finishedAt: new Date(readyAt).toISOString(),
+        durationMs: success === k ? readyMs : performance.now() - start,
         sandboxId: null,
         outcome:
           success === k
             ? {
                 kind: "sample",
-                value: Math.max(...cohort.map((s) => Date.parse(s.finishedAt) - Date.parse(at))),
+                value: readyMs,
               }
             : {
                 kind: cohort.length < k ? "skipped" : "failure",

@@ -43,7 +43,7 @@ export async function main() {
   const providers = [];
   for (const name of config.providers) {
     try {
-      providers.push(await loadProvider(name));
+      providers.push(await loadProvider(name, process.env, undefined, config));
     } catch (error) {
       providers.push({
         kind: "skipped" as const,

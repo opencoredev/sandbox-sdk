@@ -13,7 +13,12 @@ export type Outcome =
   | { kind: "failure"; note: string }
   | { kind: "skipped"; note: string }
   | { kind: "blocked"; blocked_by: string; note: string };
-export interface Sample {
+export interface AllocationMetadata {
+  track?: ConfigV2["track"];
+  requestedSize?: ConfigV2["size"][string] | null;
+  template?: string | null;
+}
+export interface Sample extends AllocationMetadata {
   provider: string;
   iteration: number;
   scenario: string;
@@ -31,7 +36,7 @@ export interface Sample {
   estimatedCost: number | null;
   details: unknown;
 }
-export interface Summary {
+export interface Summary extends AllocationMetadata {
   provider: string;
   scenario: string;
   unit: string;
@@ -54,7 +59,7 @@ export interface ReportV2 {
   host: { cpu: string; os: string; runtime: string };
   samples: Sample[];
   summaries: Summary[];
-  providers: { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null }[];
+  providers: (AllocationMetadata & { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null })[];
   cleanup: { provider: string; remaining: string[]; error: string | null }[];
   budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;
   methodology: string[];

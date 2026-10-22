@@ -37,6 +37,8 @@ export interface ExecInput {
   signal?: AbortSignal;
   /** Core-owned activity record, maintained atomically by opted-in exec transports. */
   activityPath?: string;
+  /** false permits buffered execution; true requests live chunks. Omission preserves adapter defaults. */
+  streaming?: boolean;
   onChunk(chunk: OutputChunk): void;
 }
 export interface ExecResult { exitCode: number | null; timedOut: boolean }

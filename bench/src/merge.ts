@@ -5,6 +5,7 @@ import { z } from "zod";
 import { fingerprintSchema } from "./fingerprint.js";
 import type { HostSample, Sample } from "./v2-model.js";
 import { attemptPolicySchema, selectAttempts, type AttemptPolicy } from "./attempts.js";
+import { sizeSchema, trackSchema } from "./v2-config.js";
 import { pricing } from "./pricing.js";
 import { distribution, wilson } from "./v2-stats.js";
 import { publicationHtml, publicationMarkdown } from "./publication-report.js";
@@ -21,6 +22,9 @@ const hostSchema: z.ZodType<HostSample> = z
   .passthrough();
 export const sampleSchema = z
   .object({
+    track: trackSchema.optional(),
+    requestedSize: sizeSchema.nullable().optional(),
+    template: z.string().nullable().optional(),
     provider: z.string(),
     iteration: z.number().int().nonnegative(),
     scenario: z.string(),
@@ -63,7 +67,7 @@ const sourceSchema = z
     timestamp: z.iso.datetime(),
     finishedAt: z.iso.datetime(),
     config: z
-      .object({ seed: z.number().int(), scenarios: z.array(z.string()), bursts: z.array(finite) })
+      .object({ seed: z.number().int(), scenarios: z.array(z.string()), bursts: z.array(finite), track: trackSchema.optional(), size: z.record(z.string(), sizeSchema).optional(), template: z.record(z.string(), z.string()).optional() })
       .passthrough(),
     metadata: z.object({ harnessCommit: z.string(), sdkCommit: z.string() }).passthrough(),
     host: z.object({ cpu: z.string(), os: z.string(), runtime: z.string() }).passthrough(),
@@ -156,7 +160,7 @@ export function reliability(rows: readonly MergedSample[]) {
 export function summarizeMerged(samples: MergedSample[], seed: number) {
   const groups = new Map<string, MergedSample[]>();
   for (const sample of samples) {
-    const key = JSON.stringify([sample.suite, sample.provider, sample.scenario, sample.unit]);
+    const key = JSON.stringify([sample.track ?? "default", sample.requestedSize ?? null, sample.template ?? null, sample.suite, sample.provider, sample.scenario, sample.unit]);
     const group = groups.get(key) ?? [];
     group.push(sample);
     groups.set(key, group);
@@ -166,6 +170,9 @@ export function summarizeMerged(samples: MergedSample[], seed: number) {
     if (!first) return [];
     return [
       {
+        track: first.track ?? "default",
+        requestedSize: first.requestedSize ?? null,
+        template: first.template ?? null,
         suite: first.suite,
         provider: first.provider,
         scenario: first.scenario,
@@ -217,6 +224,9 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
       if (iteration === undefined) throw new Error("Missing iteration mapping");
       samples.push({
         ...s,
+        track: s.track ?? source.config.track ?? "default",
+        requestedSize: s.requestedSize ?? source.config.size?.[s.provider] ?? null,
+        template: s.template ?? source.config.template?.[s.provider] ?? null,
         iteration,
         sourceRunId: source.runId,
         sourceSampleIndex,
@@ -269,7 +279,7 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
       sources:
         "Original non-sample metadata, flags/config, commits, pricing, cleanup and budgets per source; original cached summaries omitted. iterationMappings documents every remapping.",
       summaries:
-        "Recomputed by suite/provider/scenario/unit. Distributions use successes only; 2000 seeded bootstrap resamples, nearest-rank percentiles, Wilson success intervals. No outliers removed. Suite separation prevents pooling snapshot cold creates with main cold creates.",
+        "Recomputed by track/requested size/template/suite/provider/scenario/unit. Distributions use successes only; 2000 seeded bootstrap resamples, nearest-rank percentiles, Wilson success intervals. No outliers removed. Suite separation prevents pooling snapshot cold creates with main cold creates.",
       reliability:
         "Raw = successes / (successes + failures). Excluding limits/client = successes / (successes + provider-operation failures). Skipped and blocked rows are separate in both denominators. Aggregate rates count observations, including correlated/derived metrics, not unique sandbox reliability.",
       failureClass:
@@ -286,6 +296,15 @@ export function mergeSources(inputs: MergeSource[], excluded = [discardedRun], s
 }
 export type PublicationReport = ReturnType<typeof mergeSources>;
 export type PublicationSummary = PublicationReport["summaries"][number];
+export function publicationTrack(input: PublicationReport, track: "default" | "same-spec"): PublicationReport {
+  return {
+    ...input,
+    samples: input.samples.filter(s => (s.track ?? "default") === track),
+    summaries: input.summaries.filter(s => (s.track ?? "default") === track),
+    sources: input.sources.filter(s => (s.config.track ?? "default") === track),
+  };
+}
+
 export async function readSource(directory: string) {
   const source = sourceSchema.parse(
     JSON.parse(await readFile(join(directory, "results.json"), "utf8")),
@@ -339,8 +358,16 @@ export async function mergeCommand(args: string[]) {
     report.samples.map((s) => JSON.stringify(s)).join("\n") + "\n",
   );
   await writeFile(join(output, "results.json"), JSON.stringify(report, null, 2) + "\n");
-  await writeFile(join(output, "results.md"), publicationMarkdown(report));
-  await writeFile(join(output, "index.html"), publicationHtml(report));
+  const tracks = [...new Set(report.samples.map(s => s.track ?? "default"))];
+  const primaryTrack = tracks.includes("default") ? "default" : "same-spec";
+  const primary = publicationTrack(report, primaryTrack);
+  await writeFile(join(output, "results.md"), publicationMarkdown(primary));
+  await writeFile(join(output, "index.html"), publicationHtml(primary));
+  for (const track of tracks) {
+    const selected = publicationTrack(report, track);
+    await writeFile(join(output, `results.${track}.md`), publicationMarkdown(selected));
+    await writeFile(join(output, `index.${track}.html`), publicationHtml(selected));
+  }
   process.stdout.write(
     `Merged ${report.sources.length} runs; ${report.samples.length} / ${report.inputSampleCount} samples retained. Reports: ${output}\n`,
   );
