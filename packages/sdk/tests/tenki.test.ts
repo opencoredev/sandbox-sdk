@@ -168,7 +168,10 @@ describe("Tenki mappings", () => {
     vi.spyOn(current, "close").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.destroy(box.id)).rejects.toMatchObject({ code: "timeout" });
     vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(
-      () => new Promise(() => {}),
+      function (this: MockSession) {
+        this.state = "CREATING";
+        return new Promise(() => {});
+      },
     );
     await expect(createSandbox(provider)).rejects.toMatchObject({ code: "timeout" });
   });
@@ -969,4 +972,94 @@ test("repeated resumes refresh workspace roots and recover expired first-command
   }
   expect((await box.run("cat /home/tenki/resume-count")).stdout).toBe("onceonceonce");
   expect(close).not.toHaveBeenCalled();
+});
+
+test("create timeout retains the admitted id, readiness state and native polling evidence publicly", async () => {
+  vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(function (this: MockSession) {
+    this.state = "CREATING";
+    return new Promise(() => {});
+  });
+  vi.spyOn(MockSession.prototype, "refresh").mockRejectedValue(
+    Object.assign(new Error("private-body"), {
+      code: 14,
+      metadata: new Headers({ "x-request-id": "poll-123", authorization: "secret" }),
+    }),
+  );
+  const error = await createSandbox(tenki({ authToken: "secret", waitTimeoutMs: 200 })).catch(
+    (error) => error,
+  );
+  expect(error).toMatchObject({ code: "timeout" });
+  expect(JSON.parse(error.cause)).toMatchObject({
+    operation: "create",
+    stage: "waitReady",
+    state: "CREATING",
+    providerCode: 14,
+    requestId: "poll-123",
+    sandboxId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+  });
+  expect(error.cause).not.toMatch(/secret|private|authorization/);
+  expect(tenkiState.boxes.size).toBe(0);
+});
+
+test("create cleanup failure preserves the primary native error and admitted id", async () => {
+  vi.spyOn(MockSession.prototype, "waitReady").mockRejectedValueOnce(
+    Object.assign(new Error("private primary"), {
+      name: "UnauthorizedError",
+      cause: Object.assign(new Error("private token"), { code: 16 }),
+    }),
+  );
+  vi.spyOn(MockSession.prototype, "close").mockRejectedValueOnce(
+    Object.assign(new Error("private cleanup"), { name: "QuotaExceededError" }),
+  );
+  const error = await factory()
+    .create({ labels: {} })
+    .catch((error) => error);
+  expect(error).toMatchObject({ code: "auth", sandboxId: expect.any(String) });
+  expect(JSON.parse(error.cause.message)).toMatchObject({
+    operation: "create",
+    stage: "waitReady",
+    nativeName: "UnauthorizedError",
+    providerCode: 16,
+    cleanupCode: "quota",
+    sandboxId: error.sandboxId,
+  });
+  expect(error.cause.message).not.toMatch(/private|token/);
+});
+
+test("create setup failures identify the prepare stage and preserve native evidence", async () => {
+  vi.spyOn(MockSession.prototype, "run").mockImplementationOnce(() => {
+    throw Object.assign(new Error("private setup response"), {
+      name: "DataPlaneNotReadyError",
+      cause: Object.assign(new Error("private"), { code: 14 }),
+    });
+  });
+  const error = await factory()
+    .create({ labels: {} })
+    .catch((error) => error);
+  expect(error).toMatchObject({ code: "unavailable", sandboxId: expect.any(String) });
+  expect(JSON.parse(error.cause.message)).toMatchObject({
+    stage: "prepare",
+    state: "RUNNING",
+    providerCode: 14,
+  });
+  expect(tenkiState.boxes.size).toBe(0);
+});
+
+test("create preserves an allowlisted native readiness name without a transport code", async () => {
+  vi.spyOn(MockSession.prototype, "waitReady").mockRejectedValueOnce(
+    Object.assign(new Error("private server response"), {
+      name: "WaitReadyFailedError",
+    }),
+  );
+  const error = await factory()
+    .create({ labels: {} })
+    .catch((error) => error);
+  expect(error).toMatchObject({ code: "provider" });
+  expect(JSON.parse(error.cause.message)).toMatchObject({
+    operation: "create",
+    stage: "waitReady",
+    nativeName: "WaitReadyFailedError",
+    sandboxId: error.sandboxId,
+  });
+  expect(error.cause.message).not.toContain("private");
 });
