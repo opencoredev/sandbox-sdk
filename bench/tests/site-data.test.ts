@@ -62,22 +62,21 @@ describe("failureReasons runs", () => {
 describe("ourFailure", () => {
   const fail = (provider: string, scenario: string, note: string) =>
     sample({ provider, scenario, outcome: { kind: "failure", note }, failureClass: "provider-operation" });
-  it("sets aside only failures our harness provably caused", () => {
+  it("sets aside failures our harness caused", () => {
     expect(ourFailure(fail("superserve", "cpu-single", "Traceback ...\n_multiprocessing.SemLock(\nFileNotFoundError"))).toMatch(/dev\/shm/);
   });
-  it("keeps timeouts and wrapped errors counted, labelled unclear", () => {
+  it("sets aside failures we can't pin on the provider", () => {
     const rows = [
       fail("boxd", "files-10mb", "boxd request timed out. Check boxd configuration and retry."),
       fail("freestyle", "files-10mb", "Freestyle request failed. Check Freestyle configuration and retry."),
       fail("tenki", "cold", "Process cancellation could not be confirmed; VM termination was requested."),
     ];
-    for (const row of rows) expect(ourFailure(row)).toBeNull();
-    expect(failureReasons(rows, "boxd")[0]?.kind).toBe("unclear");
-    expect(failureReasons(rows, "freestyle")[0]?.kind).toBe("unclear");
-    expect(failureReasons(rows, "tenki")[0]?.kind).toBe("unclear");
+    for (const row of rows) expect(ourFailure(row)).toMatch(/can't tell whose side failed/);
+    for (const p of ["boxd", "freestyle", "tenki"]) expect(failureReasons(rows, p)).toEqual([]);
   });
   it("leaves errors the provider returned as the provider's", () => {
     expect(ourFailure(fail("e2b", "command", "E2B request failed. The provider reported unavailable."))).toBeNull();
+    expect(ourFailure(fail("freestyle", "preview", "Freestyle request failed. Check Freestyle configuration and retry."))).toBeNull();
     expect(failureReasons([fail("daytona", "snapshot", "<html><title>502 Bad Gateway</title></html>")], "daytona")[0]?.kind).toBe("provider-operation");
   });
   it("lists our failures apart from the provider's", () => {

@@ -13,12 +13,6 @@ const plain = (reason: string) =>
     .replace(/^Scenario timed out after 600000ms$/, "Hung for 10 minutes")
     .replace(/\.$/, "");
 
-const Unclear = () => (
-  <span className="ml-2 inline-block rounded border border-[var(--line)] px-1.5 py-px text-[11px] whitespace-nowrap text-[var(--muted)]">
-    our timeout or theirs
-  </span>
-);
-
 /**
  * Failed attempts per 1,000, fewest first, with every cause behind one
  * disclosure so the section stays a single chart until someone asks.
@@ -70,7 +64,6 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
                       {p.failureReasons.map((f) => (
                         <li key={f.reason} className="text-[13px] leading-snug">
                           <span className="font-mono tabular-nums">{f.runs}×</span> {plain(f.reason)}
-                          {f.kind === "unclear" ? <Unclear /> : null}
                           <span className="block text-[12px] text-[var(--muted)]">
                             {f.tests.length > 3 ? `${f.tests.length} tests` : f.tests.join(", ")}
                           </span>
@@ -101,7 +94,6 @@ export function Reliability({ providers }: { providers: readonly Provider[] }) {
                   <td className="px-4 py-1.5 align-top font-mono tabular-nums">{f.runs}</td>
                   <td className="px-4 py-1.5 align-top">
                     {plain(f.reason)}
-                    {f.kind === "unclear" ? <Unclear /> : null}
                   </td>
                   <td className="px-4 py-1.5 align-top text-[var(--muted)]">
                     {f.tests.length > 3 ? `${f.tests.length} tests` : f.tests.join(", ")}

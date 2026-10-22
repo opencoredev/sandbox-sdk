@@ -183,7 +183,7 @@ const methodRows = [
   ["One location", "Every run started from one server in Florida, US. Distance to each provider's region affects every call; the Hardware tab under Machines shows where each sandbox ran."],
   ["Default sizes", "Each provider ran the sandbox it gives you by default, so machines differ. E2B ran its 512 MB base template, below its advertised 4 GiB default."],
   ["Attempts", "100 per quick test, 30 per agent task and snapshot test, 3 bursts per size. Missing attempts were rerun on Oct 21; extras beyond the target were dropped, keeping the earliest."],
-  ["Failures", "Every failure counts against the provider unless our own code caused it. Our machine probe could not run on Superserve (it needs /dev/shm), so those runs are left out rather than counted. Failures we can't pin on either side count and are marked unclear. Attempts blocked by our own plan limits were rerun."],
+  ["Failures", "Only failures the provider caused count against it. Two kinds are left out: our machine probe, which can't run on Superserve (it needs /dev/shm), and failures where our own SDK timed out or couldn't confirm its cleanup, so we can't tell whose side failed. Attempts blocked by our own plan limits were rerun. results.json lists every set-aside failure."],
   ["Ties", "Medians within each other's 95% confidence intervals are effectively tied. Focus or hover a bar for its interval and attempt count."],
   ["Left out", "Download speed, because the public test host rate-limited several providers. One early run was discarded in full after snapshot timeouts blocked a provider."],
 ] as const;
@@ -274,26 +274,6 @@ export default function Page() {
             <Columns columns={commonColumns().columns} label={`Price of a ${commonSize.label} sandbox`} compact />
           </Headline>
         </div>
-
-        <Card className="mt-4">
-          <ChartHead
-            title="Agent work vs cost per task"
-            sub="Median tool replay time against what 1,000 tool replays cost on the machine that ran them · Both lower is better"
-          />
-          <Scatter
-            points={replayPoints}
-            xTicks={[10, 20, 50, 100]}
-            yTicks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
-            xTitle="Median tool replay, seconds (log scale)"
-            yTitle="Cost of 1,000 tool replays (USD)"
-          />
-          <Footnotes
-            items={[
-              { text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on." },
-              { text: <><Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU, so its cost is an upper bound.</> },
-            ]}
-          />
-        </Card>
 
         <Section id="startup" title="Start-up" lede="Cold start is the wait before an agent can do anything: from create() until the first command returns.">
           <TabCard
@@ -450,7 +430,7 @@ export default function Page() {
           </Card>
         </Section>
 
-        <Section id="cost" title="Cost" lede="Published prices, compared on the same machine, and for the default machine each provider gives you.">
+        <Section id="cost" title="Cost" lede="Published prices on the same machine and on each default machine, and what a task costs.">
           <TabCard
             label="Cost"
             tabs={[
@@ -458,6 +438,25 @@ export default function Page() {
               { id: "hour", label: "Default sandbox", content: <PriceChart k="hourly" title="Price of each default sandbox" what="The machine each provider gives you by default, so sizes differ" /> },
             ]}
           />
+          <Card className="mt-4">
+            <ChartHead
+              title="Agent work vs cost per task"
+              sub="Median tool replay time against what 1,000 tool replays cost on the machine that ran them · Both lower is better"
+            />
+            <Scatter
+              points={replayPoints}
+              xTicks={[10, 20, 50, 100]}
+              yTicks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
+              xTitle="Median tool replay, seconds (log scale)"
+              yTitle="Cost of 1,000 tool replays (USD)"
+            />
+            <Footnotes
+              items={[
+                { text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on." },
+                { text: <><Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU, so its cost is an upper bound.</> },
+              ]}
+            />
+          </Card>
         </Section>
 
         <Section id="method" title="Method" lede="How the numbers were made, and what could bias them.">

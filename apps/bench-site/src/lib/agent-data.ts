@@ -154,7 +154,7 @@ export function agentData() {
         },
         reliability: { attempts: rel.attempts, succeeded: rel.succeeded, successRate: rel.rate === null ? null : Math.round(rel.rate * 1e5) / 1e5 },
         failures: p.failureReasons,
-        setAsideAsOurs: p.ourFailures,
+        setAside: p.ourFailures,
         pauseSplit: p.pauseSplit,
       };
     }),
@@ -190,7 +190,7 @@ export function agentMarkdown() {
     "",
     "## Providers",
     "",
-    "| Provider | Default size | Ran in | Price per hour, default | Price per hour, 2 vCPU 4 GB | Success rate |",
+    `| Provider | Default size | Ran in | Price per hour, default | Price per hour, ${commonSize.label} | Success rate |`,
     "| --- | --- | --- | --- | --- | --- |",
     ...d.providers.map(
       (p) =>
@@ -219,8 +219,8 @@ export function agentMarkdown() {
   }
   lines.push("## What failed", "");
   for (const p of d.providers) {
-    const counted = p.failures.length === 0 ? "no failures counted against the provider." : p.failures.map((f) => `${f.reason}: ${f.runs} runs, ${f.count} failed tests (${f.kind}; ${f.tests.join(", ")})`).join("; ");
-    const aside = p.setAsideAsOurs.map((f) => ` Set aside as ours: ${f.reason} (${f.runs} runs, ${f.count} failed tests).`).join("");
+    const counted = p.failures.length === 0 ? "no failures counted against the provider." : `${p.failures.map((f) => `${f.reason}: ${f.runs} runs, ${f.count} failed tests (${f.kind}; ${f.tests.join(", ")})`).join("; ")}.`;
+    const aside = p.setAside.map((f) => ` Set aside, not counted: ${f.reason} (${f.runs} runs, ${f.count} failed tests).`).join("");
     lines.push(`- ${p.name}: ${counted}${aside}`);
   }
   return `${lines.join("\n")}\n`;

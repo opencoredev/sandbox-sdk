@@ -154,10 +154,11 @@ type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outc
   Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration">>;
 
 /**
- * Failures our own harness provably caused, not the provider. The site leaves
- * them out of attempts and the failure list and discloses how many; the raw
- * report keeps them. Each rule says why it is ours. Anything less certain
- * stays counted (see unclearRules).
+ * Failures the site does not pin on the provider: ones our own harness
+ * caused, and ones we can't tell apart from our side (a timeout in our SDK
+ * while waiting on the provider, or the SDK's generic error wrapper). The
+ * site leaves them out of attempts and the failure list and discloses how
+ * many; the raw report keeps them. Each rule says why it is set aside.
  */
 const ourFailureRules: readonly { test: (s: FailureInput) => boolean; reason: string }[] = [
   {
@@ -165,23 +166,20 @@ const ourFailureRules: readonly { test: (s: FailureInput) => boolean; reason: st
     test: (s) => s.provider === "superserve" && s.outcome.kind === "failure" && /SemLock|\/dev\/shm/.test(s.outcome.note),
     reason: "Our machine probe needs /dev/shm, which Superserve's VMs don't have",
   },
+  {
+    test: (s) =>
+      s.scenario === "files-10mb" &&
+      s.outcome.kind === "failure" &&
+      /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
+    reason: "Our SDK timed out or wrapped the error moving 10 MB, so we can't tell whose side failed",
+  },
+  {
+    test: (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
+    reason: "Our SDK could not confirm its own cleanup, so we can't tell whose side failed",
+  },
 ];
 
-/**
- * Failures whose cause we can't pin on either side: a timeout in our SDK
- * while waiting on the provider, or the SDK's generic error wrapper, which
- * also covers provider 5xx responses. They count against the provider but
- * are labelled as unclear.
- */
-const unclearRules: readonly ((s: FailureInput) => boolean)[] = [
-  (s) =>
-    s.scenario === "files-10mb" &&
-    s.outcome.kind === "failure" &&
-    /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
-  (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
-];
-
-/** Why a failure is ours, or null when the provider returned the error. */
+/** Why a failure is set aside, or null when it counts against the provider. */
 export const ourFailure = (s: FailureInput) => ourFailureRules.find((r) => r.test(s))?.reason ?? null;
 
 const skipped = new Set(["network-mbps", "snapshot-total"]);
@@ -197,7 +195,7 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
     if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
     const reason = shortReason(s.outcome.note);
-    const kind = unclearRules.some((rule) => rule(s)) ? "unclear" : (s.failureClass ?? "provider-operation");
+    const kind = s.failureClass ?? "provider-operation";
     const key = `${kind}|${reason}`;
     const group = groups.get(key) ?? { kind, reason, count: 0, runs: new Set<string>(), tests: new Set<string>() };
     group.count += 1;
@@ -210,7 +208,7 @@ export function failureReasons(samples: readonly FailureInput[], provider: strin
     .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, runs: g.runs.size, tests: [...g.tests] }));
 }
 
-/** Failures we left out because they are ours, grouped by reason, with the runs they hit. */
+/** Failures set aside rather than counted, grouped by reason, with the runs they hit. */
 export function ourFailures(samples: readonly FailureInput[], provider: string) {
   const groups = new Map<string, { reason: string; count: number; runs: Set<string> }>();
   for (const s of samples) {
