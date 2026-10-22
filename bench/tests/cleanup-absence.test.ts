@@ -58,10 +58,10 @@ it("retains a native deletion across the deadline without submitting a second de
 });
 
 it.each([false, true])("resolves a delete that completes after its deadline (reap=%s)", async reap => {
- const cfg = {...await config(), "timeout-ms": 200};
+ const cfg = {...await config(), "timeout-ms": 1000};
  const backing = memory();
  const destroy = vi.fn(async (id: string) => {
-  await new Promise(resolve => setTimeout(resolve, 250));
+  await new Promise(resolve => setTimeout(resolve, 1250));
   await backing.destroy(id);
  });
  const provider = {...backing, destroy};
@@ -84,7 +84,7 @@ it.each([false, true])("resolves a delete that completes after its deadline (rea
 });
 
 it("resolves an absent resource even when its native delete promise never settles", async () => {
- const cfg = {...await config(), "timeout-ms": 200};
+ const cfg = {...await config(), "timeout-ms": 1000};
  const backing = memory();
  const destroy = vi.fn(async (id: string) => {
   await backing.destroy(id);

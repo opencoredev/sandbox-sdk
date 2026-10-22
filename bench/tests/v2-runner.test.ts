@@ -222,7 +222,7 @@ it.each(["returned-id", "native-failure", "first-command", "burst", "cleanup-dra
   const provider = { ...backing,
     create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {
       if (mode !== "first-command") await afterAbort(input.signal);
-      if (mode === "cleanup-drain") await new Promise(resolve => setTimeout(resolve, 150));
+      if (mode === "cleanup-drain") await new Promise(resolve => setTimeout(resolve, 1500));
       if (mode === "native-failure") throw nativeFailure();
       return backing.create({...input, signal: undefined});
     },
@@ -236,7 +236,7 @@ it.each(["returned-id", "native-failure", "first-command", "burst", "cleanup-dra
   };
   try {
     const report = await runV2([{kind: "ready", name: "memory", cloud: false, region: null, provider}],
-      parseV2(["--providers", "memory", "--runs", "1", "--scenarios", mode === "burst" ? "burst" : "command", "--bursts", mode === "burst" ? "1" : "", "--burst-cohorts", "1", "--timeout-ms", "100", "--out", directory]), async () => {});
+      parseV2(["--providers", "memory", "--runs", "1", "--scenarios", mode === "burst" ? "burst" : "command", "--bursts", mode === "burst" ? "1" : "", "--burst-cohorts", "1", "--timeout-ms", "1000", "--out", directory]), async () => {});
     const cold = report.samples.find(s => s.scenario.endsWith("cold"));
     expect(cold?.outcome).toMatchObject({kind: "failure", clockPhase: mode === "first-command" ? "first-command" : "adapter-create", lateSettlement: {settled: true}});
     if (mode === "returned-id" || mode === "burst" || mode === "cleanup-drain") expect(cold?.sandboxId).toBeTruthy();
@@ -291,7 +291,10 @@ it.each([false, true])("journals and cleans a late rejected admitted ID after li
   list: backing.list,
   create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {
    const info = await backing.create({...input, signal: undefined}); nativeId = info.id;
-   await new Promise<void>(resolve => input.signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true}));
+   await new Promise<void>(resolve => {
+    if (input.signal?.aborted) resolve();
+    else input.signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true});
+   });
    throw new SandboxError("safe late rejection", {provider: "tenki", code: "provider", sandboxId: info.id, cause: new Error(JSON.stringify({sandboxId: info.id, admittedByThisCall: true, state: "CREATING", stage: "waitReady", operation: "create", requestId: "native-request", providerCode: 14, cleanupCode: "unavailable", body: "SECRET"}))});
   },
   destroy: async (id: string) => {
@@ -303,7 +306,7 @@ it.each([false, true])("journals and cleans a late rejected admitted ID after li
   },
  };
  try {
-  const report = await runV2([{kind: "ready", name: "tenki", cloud: false, region: null, provider}], parseV2(["--providers", "tenki", "--runs", "1", "--scenarios", "command", "--bursts", "", "--timeout-ms", "100", "--out", directory]), async () => {});
+  const report = await runV2([{kind: "ready", name: "tenki", cloud: false, region: null, provider}], parseV2(["--providers", "tenki", "--runs", "1", "--scenarios", "command", "--bursts", "", "--timeout-ms", "1000", "--out", directory]), async () => {});
   const cold = report.samples.find(s => s.scenario === "cold");
   expect(cold).toMatchObject({sandboxId: nativeId, outcome: {kind: "failure", clockPhase: "adapter-create", cause: {sandboxId: nativeId, nativeState: "CREATING", stage: "waitReady", providerCode: "14", cleanupCode: "unavailable", requestId: "native-request"}, lateSettlement: {sandboxId: nativeId, stage: "waitReady", settled: true, cleanupOutcome: "succeeded"}}});
   expect(JSON.stringify(cold)).not.toContain("SECRET");

@@ -72,7 +72,7 @@ it.each(["command-error", "timeout", "invalid-json", "missing-metrics"])("record
     input.onChunk({ stream: "stdout", text: mode === "invalid-json" ? "invalid" : JSON.stringify({ metrics: {}, notes: [], workers: 2, method: "fixture" }) });
     return { exitCode: 0, timedOut: false };
   };
-  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "100"]), async () => {});
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "1000"]), async () => {});
   for (const metric of Object.keys(perfMetrics)) {
     const rows = report.samples.filter((s) => s.scenario === metric);
     expect(rows).toHaveLength(1); expect(rows[0]?.outcome.kind).toBe("failure");
@@ -198,7 +198,7 @@ it("records client egress geography and runtime/commit metadata without provider
 it("publishes each perf metric once even when metric persistence exceeds the guest deadline", async () => {
   const append = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).appendFile;
   vi.spyOn(fs, "appendFile").mockImplementation(async (path, data, options) => {
-    if (String(data).includes('"scenario":"cpu-single"')) await wait(120);
+    if (String(data).includes('"scenario":"cpu-single"')) await wait(1200);
     return append(path, data, options);
   });
   const provider = fake(); const exec = provider.exec;
@@ -207,7 +207,7 @@ it("publishes each perf metric once even when metric persistence exceeds the gue
     input.onChunk({ stream: "stdout", text: JSON.stringify({ metrics: Object.fromEntries(Object.keys(perfMetrics).map((key) => [key, 1])), notes: [], workers: 2, method: "fixture" }) });
     return { exitCode: 0, timedOut: false };
   };
-  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "80"]), async () => {});
+  const report = await runV2([ready("fixture", provider)], await config(["--scenarios", "perf", "--timeout-ms", "1000"]), async () => {});
   for (const metric of Object.keys(perfMetrics)) {
     const rows = report.samples.filter((s) => s.scenario === metric);
     expect(rows).toHaveLength(1); expect(rows[0]?.outcome.kind).toBe("sample");
