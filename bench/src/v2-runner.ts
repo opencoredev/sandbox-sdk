@@ -262,7 +262,7 @@ export async function runV2(
     let createClock = coldClock;
     let createPhases = phases;
     let restoredId: string | undefined;
-    let createEvidence: { settled: boolean; sandboxId?: string; stage: string; code?: string; cause?: import("./failure.js").FailureOutcome["cause"] } = { settled: false, stage: "adapter-create" };
+    let createEvidence: { cleanupOutcome?: "succeeded" | "failed" | "already-absent" | "unknown"; settled: boolean; sandboxId?: string; stage: string; code?: string; cause?: import("./failure.js").FailureOutcome["cause"] } = { settled: false, stage: "adapter-create" };
     let clockPhase: "adapter-create" | "first-command" | "sdk-init" = "adapter-create";
     const allocation = {
       track: config.track,
@@ -358,10 +358,28 @@ export async function runV2(
                 clockPhase = "sdk-init";
                 createEvidence.stage = "sdk-init";
                 return info;
-              })().catch((error: unknown) => {
+              })().catch(async (error: unknown) => {
                 const failure = failureOutcome(error, sanitize);
                 createEvidence.code = failure.code;
                 createEvidence.cause = failure.cause;
+                createEvidence.stage = failure.cause?.stage ?? createEvidence.stage;
+                const nativeId = failure.sandboxId;
+                if (nativeId) {
+                  createEvidence.sandboxId = nativeId;
+                  ids.add(nativeId);
+                  if (input.from) restoredId = nativeId;
+                  owned.set(`${p.name}/${nativeId}`, {provider: p.name, id: nativeId, kind: "sandbox", parent: null});
+                  // Adapter rejection can still represent an admitted resource. Persist before any cleanup.
+                  await persist();
+                  try {
+                    await remove(p, nativeId);
+                    ids.delete(nativeId);
+                    createEvidence.cleanupOutcome = "succeeded";
+                  } catch {
+                    // Preserve the native error; the normal cleanup passes retry the journaled ID.
+                    createEvidence.cleanupOutcome = "failed";
+                  }
+                }
                 throw error;
               }).finally(() => { createEvidence.settled = true; }),
             );
@@ -399,7 +417,7 @@ export async function runV2(
         startedAt: clock?.startedAt ?? startedAt,
         finishedAt: clock?.finishedAt ?? new Date().toISOString(),
         durationMs,
-        sandboxId: box?.id ?? [...ids][0] ?? null,
+        sandboxId: box?.id ?? [...ids][0] ?? (outcome.kind === "failure" ? outcome.sandboxId ?? null : null),
         outcome: outcome.kind === "failure" ? {...outcome, stage: outcome.stage ?? scenario, elapsedMs: outcome.elapsedMs ?? performance.now() - start} : outcome,
         phases: { ...phaseValues },
         hostBefore: before,
@@ -1087,6 +1105,7 @@ export async function runV2(
     if (sample.outcome.kind !== "failure" || !sample.outcome.lateSettlement) continue;
     const late = sample.outcome.lateSettlement;
     sample.sandboxId ??= late.sandboxId ?? null;
+    if (late.sandboxId && !owned.has(`${sample.provider}/${late.sandboxId}`)) late.cleanupOutcome = "succeeded";
     sample.outcome.cause ??= late.cause;
   }
   report.finishedAt = new Date().toISOString();

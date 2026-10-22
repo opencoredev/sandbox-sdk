@@ -276,3 +276,41 @@ it.each(["default", "same-spec"])("runs ten isolated sequential cost tasks on %s
     expect(report.admissionStopped).toEqual([]);
   } finally {await rm(directory, {recursive: true, force: true});}
 });
+
+it.each([false, true])("journals and cleans a late rejected admitted ID even when listings omit it (cleanup retry=%s)", async retry => {
+ const {memory} = await import("@opencoredev/sandbox-sdk/memory");
+ const {SandboxError} = await import("@opencoredev/sandbox-sdk");
+ const {runV2} = await import("../src/v2-runner.js");
+ const {mkdtemp, rm, readFile} = await import("node:fs/promises");
+ const {join} = await import("node:path");
+ const directory = await mkdtemp(join(tmpdir(), "bench-late-reject-"));
+ const backing = memory();
+ let nativeId = "", destroyCalls = 0;
+ const provider = {...backing,
+  list: async () => [],
+  create: async (input: import("@opencoredev/sandbox-sdk/provider").CreateInput) => {
+   const info = await backing.create({...input, signal: undefined}); nativeId = info.id;
+   await new Promise<void>(resolve => input.signal?.addEventListener("abort", () => setTimeout(resolve, 5), {once: true}));
+   throw new SandboxError("safe late rejection", {provider: "tenki", code: "provider", sandboxId: info.id, cause: new Error(JSON.stringify({sandboxId: info.id, state: "CREATING", stage: "waitReady", operation: "create", requestId: "native-request", providerCode: 14, cleanupCode: "unavailable", body: "SECRET"}))});
+  },
+  destroy: async (id: string) => {
+   destroyCalls++;
+   const journal = JSON.parse(await readFile(join(directory, "ownership.json"), "utf8"));
+   expect(journal.resources).toContainEqual(expect.objectContaining({id, provider: "tenki"}));
+   if (retry && destroyCalls <= 3) throw new Error("cleanup transient fault");
+   await backing.destroy(id);
+  },
+ };
+ try {
+  const report = await runV2([{kind: "ready", name: "tenki", cloud: false, region: null, provider}], parseV2(["--providers", "tenki", "--runs", "1", "--scenarios", "command", "--bursts", "", "--timeout-ms", "100", "--out", directory]), async () => {});
+  const cold = report.samples.find(s => s.scenario === "cold");
+  expect(cold).toMatchObject({sandboxId: nativeId, outcome: {kind: "failure", clockPhase: "adapter-create", cause: {sandboxId: nativeId, nativeState: "CREATING", stage: "waitReady", providerCode: "14", cleanupCode: "unavailable", requestId: "native-request"}, lateSettlement: {sandboxId: nativeId, stage: "waitReady", settled: true, cleanupOutcome: "succeeded"}}});
+  expect(JSON.stringify(cold)).not.toContain("SECRET");
+  expect(await backing.list({})).toEqual([]);
+  expect(JSON.parse(await readFile(join(directory, "ownership.json"), "utf8")).resources).toEqual([]);
+  expect(report.cleanup).toEqual([{provider: "tenki", remaining: [], error: null}]);
+  expect(destroyCalls).toBe(retry ? 4 : 1);
+  const ndjson = (await readFile(join(directory, "samples.ndjson"), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line));
+  expect(ndjson.find(s => s.scenario === "cold")).toEqual(cold);
+ } finally {await rm(directory, {recursive: true, force: true});}
+});

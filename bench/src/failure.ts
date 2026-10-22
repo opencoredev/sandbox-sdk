@@ -1,6 +1,13 @@
 import { z } from "zod";
 
+const sandboxIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/);
+const stateSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/);
+const cleanupSchema = z.enum(["succeeded", "failed", "already-absent", "unknown"]);
 const causeSchema = z.object({
+  sandboxId: sandboxIdSchema.optional(),
+  nativeState: stateSchema.optional(),
+  cleanupCode: stateSchema.optional(),
+  cleanupOutcome: cleanupSchema.optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   providerCode: z.string().optional(),
   requestId: z.string().optional(),
@@ -11,6 +18,7 @@ const causeSchema = z.object({
 export const failureOutcomeSchema = z.object({
   kind: z.literal("failure"),
   note: z.string(),
+  sandboxId: sandboxIdSchema.optional(),
   code: z.string().optional(),
   cause: causeSchema.optional(),
   stage: z.string().optional(),
@@ -20,6 +28,7 @@ export const failureOutcomeSchema = z.object({
     settled: z.boolean(),
     sandboxId: z.string().optional(),
     stage: z.string(),
+    cleanupOutcome: cleanupSchema.optional(),
     code: z.string().optional(),
     cause: causeSchema.optional(),
   }).optional(),
@@ -34,6 +43,9 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
   const cause: z.infer<typeof causeSchema> = {};
   const nativeCode = z.union([z.string(), z.number().finite()]).transform(String);
   const metadataSchema = z.object({
+    sandboxId: sandboxIdSchema.optional().catch(undefined),
+    nativeState: stateSchema.optional().catch(undefined), state: stateSchema.optional().catch(undefined),
+    cleanupCode: stateSchema.optional().catch(undefined), cleanupOutcome: cleanupSchema.optional().catch(undefined),
     httpStatus: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
     status: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
     statusCode: z.coerce.number().int().min(100).max(599).optional().catch(undefined),
@@ -49,7 +61,7 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
     catch {
       const fields: Record<string, string> = {};
       const safeText = text.split(/\b(?:body|headers|authorization)\s*[:=]/i)[0] ?? "";
-      const pairs = /["']?\b(httpStatus|statusCode|status|providerCode|provider_code|code|requestId|request_id|operation|stage|elapsedMs)\b["']?\s*[:=]\s*("(?:\\.|[^"\\])*"|'[^']*'|[\w./:-]+)/gi;
+      const pairs = /["']?\b(httpStatus|statusCode|status|providerCode|provider_code|code|requestId|request_id|operation|stage|elapsedMs|sandboxId|nativeState|state|cleanupCode|cleanupOutcome)\b["']?\s*[:=]\s*("(?:\\.|[^"\\])*"|'[^']*'|[\w./:-]+)/gi;
       for (const match of safeText.matchAll(pairs)) {
         const key = match[1], token = match[2];
         if (!key || !token) continue;
@@ -70,6 +82,13 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
   const parsed = metadataSchema.safeParse(metadata);
   if (parsed.success) {
     const v = parsed.data;
+    const native = {sandboxId: v.sandboxId, nativeState: v.nativeState ?? v.state, cleanupCode: v.cleanupCode, cleanupOutcome: v.cleanupOutcome};
+    for (const key of ["sandboxId", "nativeState", "cleanupCode", "cleanupOutcome"] as const) {
+      const value = native[key];
+      if (!value) continue;
+      const field = causeSchema.shape[key].safeParse(sanitize(value));
+      if (field.success && field.data !== undefined) Object.assign(cause, {[key]: field.data});
+    }
     const status = v.httpStatus ?? v.statusCode ?? v.status;
     if (status !== undefined) cause.httpStatus = status;
     const providerCode = v.providerCode ?? v.provider_code ?? v.code;
@@ -80,6 +99,9 @@ export function failureOutcome(error: unknown, sanitize: (text: string) => strin
     if (v.stage) cause.stage = sanitize(v.stage).slice(0, 200);
     if (v.elapsedMs !== undefined) cause.elapsedMs = v.elapsedMs;
   }
-  return {kind: "failure", note: sanitize(error instanceof Error ? error.message : "Unknown failure"), code,
+  const nativeId = error && typeof error === "object" && "sandboxId" in error && typeof error.sandboxId === "string"
+    ? sandboxIdSchema.safeParse(sanitize(error.sandboxId)) : null;
+  const sandboxId = nativeId?.success ? nativeId.data : cause.sandboxId;
+  return {kind: "failure", ...(sandboxId ? {sandboxId} : {}), note: sanitize(error instanceof Error ? error.message : "Unknown failure"), code,
     ...(Object.keys(cause).length ? {cause} : {})};
 }

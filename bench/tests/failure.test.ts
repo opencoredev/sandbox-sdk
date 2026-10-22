@@ -37,3 +37,10 @@ it("omits only malformed allowlisted fields, retaining valid siblings and aliase
   expect(outcome.cause).toEqual({providerCode: "0", httpStatus: 503, operation: "create", stage: "waitReady"});
   expect(JSON.stringify(outcome)).not.toContain("secret");
 });
+
+it("allowlists admitted IDs, native state and cleanup evidence with sanitized short values", () => {
+ const error = Object.assign(new Error("create failed", {cause: new Error(JSON.stringify({sandboxId: "native-id", state: "CREATING", stage: "waitReady", cleanupCode: "unavailable", cleanupOutcome: "failed", providerCode: 14, body: "secret-body"}))}), {sandboxId: "native-id"});
+ expect(failureOutcome(error, s => s)).toMatchObject({sandboxId: "native-id", cause: {sandboxId: "native-id", nativeState: "CREATING", stage: "waitReady", cleanupCode: "unavailable", cleanupOutcome: "failed", providerCode: "14"}});
+ expect(failureOutcome(new Error("safe", {cause: {nativeState: {body: "secret"}, cleanupCode: "arbitrary error body with spaces", operation: "create"}}), s => s).cause).toEqual({operation: "create"});
+ expect(failureOutcome(error, s => s.replaceAll("native-id", "[REDACTED]")).sandboxId).toBeUndefined();
+});
