@@ -128,6 +128,7 @@ export function tenkiError(
   );
 }
 export type CreateStage = "waitReady" | "validate" | "prepare";
+// Only called after this invocation's CreateSession returned the session ID.
 export function createError(
   error: unknown,
   context: { id: string; state: string; stage: CreateStage },
@@ -142,6 +143,7 @@ export function createError(
   ].filter(Boolean);
   const evidence = {
     operation: "create",
+    admittedByThisCall: true,
     stage: context.stage,
     ...(/^[0-9a-f-]{36}$/i.test(context.id) && !denied.some((secret) => context.id.includes(secret))
       ? { sandboxId: context.id }
