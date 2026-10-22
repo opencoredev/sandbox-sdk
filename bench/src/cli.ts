@@ -12,6 +12,10 @@ import { writeV2 } from "./v2-report.js";
 import { deadline } from "./timing.js";
 export async function main() {
   const args = process.argv.slice(2);
+  if (args[0] === "billing") {
+    await (await import("./billing.js")).billingCommand(args.slice(1));
+    return;
+  }
   if (args[0] === "attempts") {
     await (await import("./attempts.js")).attemptsCommand(args.slice(1));
     return;
