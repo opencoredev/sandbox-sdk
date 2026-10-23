@@ -1,10 +1,46 @@
 {
   "name": "@opencoredev/sandbox-sdk",
-  "version": "1.0.0",
-  "files": [
-    "dist"
+  "version": "1.0.0-beta.0",
+  "description": "One TypeScript API for cloud and local sandboxes: E2B, Daytona, Vercel, Upstash, Docker, and more. Run commands, edit files, start servers, and give AI agents a sandbox.",
+  "keywords": [
+    "sandbox",
+    "code-execution",
+    "ai-agents",
+    "agent-tools",
+    "e2b",
+    "daytona",
+    "vercel-sandbox",
+    "upstash",
+    "docker",
+    "microvm",
+    "ai-sdk",
+    "mastra",
+    "openai-agents",
+    "typescript"
   ],
+  "homepage": "https://sandbox-sdk.app",
+  "bugs": {
+    "url": "https://github.com/opencoredev/sandbox-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "license": "MIT",
+  "author": "OpenCore",
   "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

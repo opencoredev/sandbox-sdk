@@ -1,248 +1,211 @@
-# Sandbox SDK core
+# Sandbox SDK
 
-`@opencoredev/sandbox-sdk` 1.0.0 is ESM for Node 22+ and Bun 1.3+. The root exposes lifecycle functions, `SandboxError`, and the public handle types. Provider adapters import the primitive contract from `/provider`; `/memory` supplies an offline fake; `/testing` registers the shared Vitest suite.
+One TypeScript API for running code in a sandbox: E2B, Daytona, Vercel, Upstash, Docker, and eight more providers. Write the code once and change one import to switch.
 
-```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { memory } from "@opencoredev/sandbox-sdk/memory";
+> **1.0 beta.** This is an early preview of the 1.0 rewrite, published under the `next` tag. The API may still change before 1.0.0. Coming from 0.2? See the [upgrade guide](https://github.com/opencoredev/sandbox-sdk/blob/main/apps/docs/content/upgrade-from-0-2.mdx).
 
-await using box = await createSandbox(memory());
-await box.files.write("hello.txt", "hello\n");
-const result = await box.$`cat ${"hello.txt"}`;
-console.log(result.stdout);
+## Install
+
+```sh
+npm install @opencoredev/sandbox-sdk@next e2b
 ```
 
-The result is `hello` followed by a newline. Commands are lazy: awaiting or iterating a `RunHandle` starts execution, after its chained options have been applied. Iteration streams live output; awaiting returns the capped result. Stream failures throw `SandboxError`. Nonzero exits, timeouts, and aborts return results.
+Install the SDK plus the package for the provider you use (the table below lists it). Provider packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
-## Implement an adapter
+Requires Node.js 22+ or Bun 1.3+. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
-Implement `Provider<Native, CapabilityLiterals>` from `src/provider.ts`. The capability type parameter must be the literal union the adapter actually supports, such as `"pause" | "snapshot"`. It controls optional handle methods. Runtime capability declarations must have matching hooks.
-
-- `create` receives native resource options, SDK labels, and the merged environment. Honor size, network policy, hard lifetime, and idle timeout, or reject with `unsupported`. Never silently drop restrictions. `find` and `list` should restrict discovery to SDK-created resources.
-- `keyMode: "exact"` means the native resource name is unique. `find` must return that same native resource for a key. `connect` reports `not_found` for stale IDs.
-- `exec` closes stdin, emits stdout/stderr chunks in arrival order, and settles only after the remote process group is terminated on timeout or abort. Return nonzero exits without throwing. Stream decoding belongs in the transport so split UTF-8 sequences survive.
-- File paths are absolute POSIX paths. `mkdir` creates parents and succeeds for existing directories. `list` returns immediate children with absolute paths. `read` and `write` transfer bytes unchanged. Missing files use `file_not_found`; missing sandboxes use `not_found`.
-- `previewUrl` returns the URL and any required access headers and expiry. Core performs HTTP probing when requested.
-- `native` returns the fully typed client. `close` detaches local transport resources; it must leave the remote sandbox running.
-- Optional native process hooks must keep their process alive when local resources detach. Core owns the durable records and log framing. A shell fallback requires Linux `sh`, `setsid`, `nohup`, `mkfifo`, GNU `sed -u`, and standard file utilities. File checkpoints require Git, and directory transfer requires tar.
-
-All provider errors must use `SandboxError`. Core wraps unknown failures and sanitizes native causes to prevent nested credential objects from escaping. File reads preserve data exactly; command output, process output, search results, patches, and errors are redacted. Reconnect restores redaction values by reading the recorded secret variable names from the sandbox environment. That environment must survive connection changes.
-
-Run conformance from a provider test file:
-
-```ts
-import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { runConformance } from "@opencoredev/sandbox-sdk/testing";
-
-runConformance(() => memory(), { live: false });
-```
-
-Use `timeout 120s vitest run --maxWorkers=4`. Cloud providers require `live: true`; the caller gates that flag on its credentials. `/testing` imports Vitest through an optional peer dependency. The core and memory entry points have no runtime package dependencies.
-
-## Memory behavior
-
-Each `memory()` instance owns an isolated virtual filesystem and process table. It never launches host programs or contacts the network. The handler table includes echo, printf, cat, ls, pwd, true, false, sleep, exit, and printenv. It supports quotes, variable interpolation, `;`, `&&`, `||`, a final stdout redirect (`> file`), stdout-to-stderr (`>&2`), and per-call cwd/env. Pipes, background `&`, append/input redirects, file-descriptor redirects, and malformed stdout redirects return exit code 127 with an `Unsupported shell syntax` stderr message before any command runs. Quoted or escaped operators remain literal arguments. It is a shell subset, not a full POSIX shell. Custom handlers must honor their abort signal and must not perform external effects.
-
-Register handlers with `memory({ handlers })` or `provider.register(name, handler)`. Handlers receive arguments, cwd, environment, stdin, abort signal, stdout/stderr callbacks, and scoped file primitives. Memory uses portable byte snapshots and recursive file transfer instead of Git and tar. Its conformance suite explicitly skips real Git and HTTP probes. Fake previews end in `.memory.invalid`.
-
-## Limits and spec clarifications
-
-- A two-function locator cannot enforce cross-host uniqueness: `get` followed by `set` is not atomic. A best-effort provider accepts it for cached lookup and stale-ID recovery. Requesting `keyMode: "exact"` additionally requires `locator.withLock(key, action)`, implemented with a distributed lock or transaction. Core also serializes same-key calls on one provider instance within the current JS realm.
-- `reapSandboxes({ idleOnly: true })` means no active SDK run record and no running SDK background process. It does not infer provider-specific idle state or account for commands launched outside the SDK. A server crash can leave a run record behind; cleanup is conservative.
-- Persistent process logs rotate at 10 MB. Native output waiting for storage is capped at 1 MB; if a producer outruns storage, older pending records are discarded and the cursor advances. A stale cursor returns `truncated: true`. The shell fallback records partial chunks and conservatively masks secret fragments at chunk boundaries. Incomplete lines retain at most 1 MB and carry a truncation marker.
-- Linux native hooks launch the same durable shell wrapper as the fallback, so log capture survives loss of the host client. Memory captures output in-process because its entire sandbox lifetime is in-process.
-- The root module loads the handle implementation on first creation/connection. The size gate measures the minified root entry (under 8 KB); feature chunks are reported separately. This is an entry-size budget, not an 8 KB budget for all SDK features combined.
-
-Run `bun run build`, `bun run typecheck`, `bun run lint`, and `bun run test` from this package. The test script also enforces the root size and zero runtime dependency checks.
-
-## Give an agent a sandbox
-
-Install the framework you use and `zod`. Import its adapter, then pass the tools to your agent:
-
-```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
-
-await using box = await createSandbox(memory());
-const tools = sandboxTools(box);
-```
-
-`/ai` returns an AI SDK tool map; `/mastra` returns a Mastra tool map; `/openai` returns an OpenAI Agents tool array. The adapters require AI SDK 7, Mastra 1.78, or OpenAI Agents 0.20 respectively, and Zod 4.6. They are optional peers and never load through the SDK root. `/tools` exposes `createSandboxTools`, `toolSchemas` (Zod schemas, convertible with `z.toJSONSchema`), and the shared option and event types for other integrations.
-
-The default tools are `run`, `read_file`, `write_file`, `edit_file`, `start_process`, `process_logs`, and `stop_process`. Use `allow` to opt into `search`, `list_files`, `changes`, or `preview`; `deny` takes precedence. Parameters are flat and validated. `read_file` uses zero-based line offsets, returns numbered lines and a SHA-256, and reports `nextOffset` for pagination. Binary files return metadata. Edits require exactly one literal match; they do not provide optimistic concurrency checks.
-
-```ts
-const tools = sandboxTools(box, {
-  root: "/workspace/app",
-  allow: ["run", "read_file", "edit_file", "start_process", "process_logs", "stop_process"],
-  beforeRun: command => command.includes("rm -rf") ? false : command,
-  limits: { run: { timeoutMs: 30_000, maxOutputBytes: 16_384 } },
-  onEvent: event => sendToUI(event),
-});
-
-function sendToUI(event: { text: string }) {
-  process.stdout.write(event.text);
-}
-```
-
-`beforeRun` returns `false` to deny, a string to rewrite, or `true` to allow. It also applies to `start_process`. The `root` confines file parameters and working directories and rejects symlink components. It is not an OS security boundary: shell commands retain the sandbox's privileges, can use absolute paths, and can change directories. Configure sandbox isolation and command policy for untrusted agents. File checks cannot prevent a concurrent process from changing a path after validation.
-
-Each result starts with `OK` or `FAILED`, followed by `output:`. Nonzero exits and timeouts are results. Commands default to a 30-second timeout; caller timeouts cannot exceed the configured tool limit. Output defaults to a 16,384-byte budget, with head and tail retained and a cut marker. The minimum budget is 256 bytes. Per-tool limits also support `maxReadBytes` (default 1 MB for reads) and `maxMatches` (default 100 for search).
-
-Truncated foreground output includes a generated name and `cursor=0` for `process_logs`. The replay window retains the last 1 MB of each of the eight most recent foreground runs or long-line reads per tool collection; expired bytes are labeled. Background logs read the SDK's durable process records, normalize and redact them before paging, and return tool-specific byte cursors. These cursors are not interchangeable with `box.process(name).logs()` cursors; restart at zero after log rotation. File pagination stops at line boundaries where possible. A single line larger than the output budget includes a `process_logs` replay name and cursor so the cut content remains readable. Search, listings, and change summaries are capped summaries; narrow the path or query when they are cut. `changes` compares file hashes within `root` against a snapshot taken when the tools are created.
-
-`onEvent` receives redacted foreground chunks and requested log pages before model formatting. Framework cancellation signals stop foreground runs; returning an AI preliminary iterator aborts and awaits its command. AI SDK also receives those foreground chunks as preliminary results; its `toModelOutput` returns only the final compact result to the model. Consumers that fall behind AI preliminary output have a bounded 1 MB queue. Background startup waits for a supplied `port`; without a port it confirms launch only. A readiness timeout returns `ready=false` and leaves the process available for logs or stopping. Preview access headers stay server-side. Registered sandbox secrets are redacted from every model result, including file contents, errors, and preview URLs; raw `box.files.read` remains unchanged. Tools require handles created or connected by this SDK so their secret redactor is available.
-
-Framework API references checked for these adapters: [AI SDK tool](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool), [Mastra createTool](https://mastra.ai/reference/tools/create-tool), and [OpenAI Agents tools](https://openai.github.io/openai-agents-js/guides/tools/).
-
-## Local Docker
-
-Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `createSandbox`. Docker Engine must be running and accessible at `unix:///var/run/docker.sock`. Set `DOCKER_HOST` or `local({ dockerHost })` to another absolute `unix://` socket. Remote TCP engines are unsupported because preview URLs must reach this machine.
-
-The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
-
-Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom sizes are rejected because their required `diskGb` limit cannot be enforced portably. Local accepts idle and lifetime options with client/reaper enforcement, described below. Docker provides no native deadline timer.
-
-`network: "none"` uses Docker's isolated network namespace with loopback only. Domain allow-lists fail with `unsupported`. The default network is Docker bridge. Declare preview ports at creation; each maps to an ephemeral host port bound exclusively to `127.0.0.1`. Omitting `ports` declares port 3000. Previews are accessible on the Docker host. They are unavailable with network `none`.
-
-Keys map to SHA-256 container names for Docker-enforced uniqueness. Discovery is restricted to containers labeled `sandbox-sdk=1`. Pause/resume use Docker pause/unpause. Snapshots use Docker commit and persist as local images until explicitly removed through Docker. `close()` leaves the container and detached background processes running. `destroy()` removes the container and anonymous volumes, while preserving the shared base image.
-
-Exec streams Docker's framed stdout/stderr, closes stdin after the supplied input, and kills the command's process group on timeout or abort. Files transfer through Node exec with base64 encoding, preserving binary bytes; core directory upload/download uses tar. Usage combines core command/output counters with container creation time. No Docker CLI, dockerode dependency, or container-side SDK daemon is required.
-
-Run live verification with `timeout 1200s env SANDBOX_LOCAL_LIVE=1 bunx vitest run packages/sdk/tests/local.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000`. The suite creates labeled containers and removes its containers and snapshot images.
-
-## E2B
-
-Install the optional `e2b` peer (`^2.56.0`) and set `E2B_API_KEY`, or pass `apiKey` to the factory:
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await using box = await createSandbox(e2b({ template: "base" }));
-console.log((await box.run("echo hello")).stdout);
+// Reads E2B_API_KEY from the environment.
+await using box = await createSandbox(e2b());
+
+await box.files.write("hello.py", "print('hello from the sandbox')");
+const result = await box.run("python3 hello.py");
+console.log(result.ok, result.stdout);
 ```
 
-`e2b({ apiKey?, template?, domain? })` loads E2B on first provider operation. The root entry never imports E2B. `box.native` is typed as the official E2B `Sandbox`.
+`await using` deletes the sandbox when the scope ends, even if your code throws. A command that exits non-zero resolves with `ok: false`; it never throws.
 
-- Keys use metadata lookup and can race across hosts (`keyMode: "best-effort"`). Labels become E2B metadata; listing paginates over SDK-owned running and paused sandboxes. `sandbox-sdk-key` and `sandbox-sdk-deadline` are reserved metadata keys.
-- Omitted `size` uses the template's CPU, RAM and disk. Every explicit preset (`small`, `medium`, `large`) and custom size fails with `unsupported`: E2B chooses resources when building the template, not when creating a sandbox.
-- `network: "all"` enables internet access. `"none"` uses `allowInternetAccess: false`. `{ allow }` combines E2B `allowOut` with `denyOut: ["0.0.0.0/0"]`. E2B domain rules use HTTP Host/TLS SNI and permit DNS resolution; shared endpoints can admit other destinations on the same endpoint. These are E2B's native network guarantees, not a separate SDK firewall. See [E2B internet access](https://docs.e2b.dev/network/internet-access).
-- `timeoutMs` maps to E2B's native timeout with kill-on-expiry. A metadata deadline prevents a fresh client's connect/resume from extending the requested lifetime. If omitted, E2B's default timeout applies. `idleTimeoutMs` fails with `unsupported`: E2B exposes an elapsed-time timeout, not an idle detector. Ports need no advance registration.
-- Commands use native stdout/stderr callbacks, stdin delivery and EOF. A separate POSIX session lets timeout/abort kill the entire process group. Templates need `sh`, `bash`, `setsid` and `git`; commands and file operations run as root to make `/workspace` and SDK records accessible.
-- Native background commands back process hooks. Process records and logs remain core-owned files, so a new client can reattach. Lost streams reconnect with `commands.connect`. `close()` disconnects local streams and leaves the sandbox running; `destroy()` kills it.
-- Pause/resume and snapshots are advertised capabilities. Snapshots return E2B's `snapshotId`; pass it as `from` to create a sandbox from that state. PTYs are not exposed by this adapter. Preview URLs use HTTPS and `getHost(port)`.
-
-The offline E2B tests replace the official SDK transport with isolated Linux commands and files, including real Git and HTTP probes. `tests/e2b.live.test.ts` registers the full conformance suite and skips it without `E2B_API_KEY`. With credentials, the suite creates billable sandboxes; run it with `timeout 600s node_modules/.bin/vitest run tests/e2b.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000` from this package.
-
-## Vercel
-
-Install `@vercel/sandbox` 3.8 or later, then import `vercel` from
-`@opencoredev/sandbox-sdk/vercel`. The provider dynamically loads the optional
-peer SDK on its first remote operation. `box.native` is typed as Vercel's
-`Sandbox`.
+To try the API with no account, swap in the in-memory provider. It runs a small shell subset inside your process, which makes it a good fit for unit tests:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 
-await using box = await createSandbox(vercel(), {
-  key: "user:123",
-  ports: [3000],
-  size: "small",
-  network: { allow: ["registry.npmjs.org"] },
-});
+await using box = await createSandbox(memory());
 await box.files.write("hello.txt", "hello\n");
 console.log((await box.run("cat hello.txt")).stdout);
 ```
 
-Authentication uses the Vercel SDK's OIDC context (`VERCEL_OIDC_TOKEN`), or
-`VERCEL_TOKEN` with `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. Explicit
-`vercel({ token, teamId, projectId })` values take precedence over environment
-variables. Token authentication requires all three values.
+## Providers
 
-Keys map to deterministic SHA-256 names, unique within the Vercel project.
-The adapter uses `Sandbox.get` and `Sandbox.create`, rather than
-`getOrCreate`, so the core can distinguish creation from a concurrent
-unique-name conflict. Labels become native tags. Vercel allows five tags in
-total; the SDK reserves `sandbox-sdk`, plus `sandbox-sdk-key` for keyed boxes.
-Extra tags fail with `unsupported`. Discovery filters the SDK tag and then
-filters all requested labels locally across every page.
+Import each provider from its own subpath. The root entry never loads a provider SDK.
 
-Sizes map to 1, 2, and 4 vCPUs for `small`, `medium`, and `large`, with 2048 MiB
-RAM per vCPU. Custom CPU/memory/disk objects fail with `unsupported`, because
-Vercel cannot configure disk allocation. `network: "none"` maps to `deny-all`;
-allowlists map to native default-deny domain rules. `idleTimeoutMs` is rejected.
-Ports must be declared at creation, with at most 15 distinct ports.
-`preview()` calls `domain(port)` and rejects undeclared ports.
+| Provider | Import from | Credentials | Peer package | Capabilities |
+| --- | --- | --- | --- | --- |
+| [E2B](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/e2b.md) | `/e2b` | `E2B_API_KEY` | `e2b` | pause, snapshot, network-policy |
+| [Daytona](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/daytona.md) | `/daytona` | `DAYTONA_API_KEY` | `@daytonaio/sdk` | snapshot, size, network-policy |
+| [Vercel](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/vercel.md) | `/vercel` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox` | pause, snapshot, size, network-policy |
+| Upstash Box | `/upstash` | `UPSTASH_BOX_API_KEY` | `@upstash/box` | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
+| Railway | `/railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | `railway` | snapshot |
+| Tenki | `/tenki` | `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy |
+| boxd | `/boxd` | `BOXD_API_KEY` | `@boxd-sh/sdk` | pause, snapshot, size |
+| Freestyle | `/freestyle` | `FREESTYLE_API_KEY` | `freestyle` | pause, snapshot, network-policy |
+| Superserve | `/superserve` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot |
+| Boat | `/boat` | `BOAT_API_KEY` | `@boatdev/sdk` | size |
+| [Local (Docker)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/local.md) | `/local` | none; needs a running Docker Engine | none | pause, snapshot, size, network-policy |
+| agentOS | `/agentos` | none | `@rivet-dev/agentos-core` | network-policy |
+| [Memory](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/memory.md) | `/memory` | none | none | network-policy |
 
-Commands run detached, stream the native log iterator, and close stdin after
-any supplied input. A remote watchdog enforces command timeouts even if the
-client disconnects. Timeout and abort terminate the remote process group.
-Background processes use the core's durable shell wrapper with core-owned
-records and logs, so closing a handle leaves them running. The native process
-hook is omitted: its host-side completion bookkeeping could automatically
-resume a paused Vercel session.
+Every factory also accepts its credential as an option, such as `e2b({ apiKey })`. Capabilities are typed: `box.snapshot()` only exists on a sandbox whose provider supports snapshots, so calling it on Boat is a compile error, not a runtime surprise. Options a provider can't enforce, such as a `size` it can't honor, fail with `unsupported` instead of being silently dropped.
 
-Pause and snapshots stop the Vercel session. Resume restores the filesystem
-into a new session; it does not restore running OS processes. Restored process
-records without an exit status are marked failed with exit code 137. Call
-`process(name).restart()` to launch them again. The same cleanup runs for
-snapshot clones and automatic SDK resumes. Snapshot creation stops the source
-box; its next command resumes it. PTYs are not exposed by this adapter.
+## Core API
 
-Vercel's native `timeout` is a session timeout reset by resume. It cannot
-enforce the SDK's absolute lifetime across multiple sessions, so creation
-`timeoutMs` fails with `unsupported`. Command `timeoutMs` is supported. The
-native SDK also expires stored snapshots according to its retention policy.
+### Create, reconnect, clean up
 
-The offline tests run the full shared suite against a mock SDK backed by real
-Linux commands. With either OIDC or all three token environment variables set,
-`tests/vercel.live.test.ts` runs the full suite against Vercel:
+```ts
+import { createSandbox, connectSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-```sh
-timeout 600s bunx vitest run tests/vercel.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000
+const box = await createSandbox(e2b(), {
+  key: "user:123",                // same key returns the same sandbox
+  env: { NODE_ENV: "development" },
+  secrets: { GITHUB_TOKEN: "ghp_example" }, // redacted from all output and errors
+  network: { allow: ["registry.npmjs.org"] },
+  timeoutMs: 30 * 60_000,
+});
+
+await box.close();   // detach; the sandbox keeps running
+const again = await connectSandbox(e2b(), box.id);
+await again.destroy(); // delete it
 ```
 
-Run this command from `packages/sdk`. It creates and deletes billable sandboxes.
-The implementation was checked against the official [JavaScript SDK reference](https://vercel.com/docs/sandbox/sdk-reference)
-and the published `@vercel/sandbox` 3.8.0 types and source.
+With a `key`, `await using` calls `close()` so the sandbox survives for the next request. Without one, it calls `destroy()`. `listSandboxes(provider)` and `reapSandboxes(provider, { olderThanMs })` find and delete sandboxes this SDK created.
 
-## Daytona
+### Run commands
 
-Install `@daytonaio/sdk@^0.225.0` alongside this package, then import `daytona` from `@opencoredev/sandbox-sdk/daytona`. The adapter loads the optional SDK on its first operation. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, apiUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
+```ts
+const result = await box.run("npm test", { cwd: "app", timeoutMs: 60_000 });
+if (!result.ok) console.log(result.exitCode, result.output);
 
-Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. Pause/resume calls Daytona stop/start, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a typed Daytona `Sandbox`. Terminal support is not exposed.
+const branch = "feature/login";
+await box.$`git checkout ${branch}`; // interpolated values are shell-quoted
 
-Size presets map to `{ cpu, memoryMb, diskGb }`: small is `{ 1, 1024, 10 }`, medium is `{ 2, 4096, 20 }`, and large is `{ 4, 8192, 40 }`. Custom sizes require positive integer CPUs, memory in whole GiB (`memoryMb` divisible by 1024), and positive integer disk GiB. Image creation allocates resources directly. Snapshot creation stops, resizes, and restarts before returning; Daytona cannot shrink a snapshot's disk, so a smaller disk request fails and the new sandbox is deleted. Provider quotas and resource limits still apply.
+for await (const chunk of box.run("npm install")) process.stdout.write(chunk.text);
+```
 
-`idleTimeoutMs` rounds up to whole minutes for `autoStopInterval`. A hard `timeoutMs` rounds down to whole minutes for Daytona's wall-clock `ttlMinutes`; values below one minute fail with `unsupported`. Auto-pause is disabled so idle behavior uses stop consistently. Network `none` blocks all traffic. An allowlist uses Daytona's enforced `domainAllowList`; entries must be DNS hostnames without schemes, ports, commas, or wildcards. An empty allowlist blocks all traffic. Unsupported expressions fail before creation.
+Commands start in `/workspace`, time out after 120 seconds by default, and keep up to 1 MB per stream. A timeout resolves with `timedOut: true`.
 
-Commands use fresh sessions with streamed stdout/stderr and separate Linux process groups. Stdin is a private file closed at EOF, including when omitted. Timeout/abort kills the group before returning; an ambiguous launch failure stops the sandbox. Commands require `sh`, `env`, `setsid --wait`, and `/bin/kill` in the image. Background hooks launch core's durable wrapper through a session, preserving records and logs after local detachment. `close()` leaves those processes running.
+### Files
 
-Previews are private. `preview()` returns the URL and `X-Daytona-Preview-Token` header. Daytona's standard preview-link response has no expiry, so `expiresAt` is omitted rather than guessed. Do not discard the headers when fetching a preview.
+```ts
+await box.files.write({ "app/package.json": "{}", "app/index.js": "console.log(1)" });
+const text = await box.files.read("app/index.js");
+await box.files.edit("app/index.js", { find: "console.log(1)", replace: "console.log(2)" });
+const matches = await box.files.search("console.log", { path: "app" });
+await box.files.upload("./local-project", "app", { ignore: ["node_modules"] });
+const diff = await box.files.changes({ since: await box.files.mark() });
+```
 
-The offline Daytona tests replace the SDK transport with an SDK-shaped mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
+Relative paths resolve against `/workspace`. `edit` fails with `edit_not_found` or `edit_not_unique` unless the text matches exactly once.
 
-API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
+### Background processes and previews
 
-A command timeout or abort returns a `timedOut` result only after the adapter confirms termination. Cancellation or remote cleanup failures throw `SandboxError`, including `outcome_unknown` when termination cannot be confirmed.
+```ts
+const dev = await box.start("npm run dev", { name: "dev", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url, preview.headers);
 
-Secret filtering protects each command stream and the interleaved `output` and async chunks, including secrets split between stdout and stderr.
+const { text } = await box.process("dev").logs();
+await dev.stop();
+```
 
-Process line cursors include unfinished fragments from both streams. Pass the opaque string unchanged when resuming, including from another client. Malformed serialized cursors fail with `invalid_argument`.
+`start` returns once the port answers (or a log line matches, with `ready: { log: /ready/ }`). The name is the process's durable ID: any client can find it with `box.process("dev")`, even after your server restarts. Some providers need ports declared up front with `createSandbox(provider, { ports: [3000] })`. Always send `preview.headers` with requests; private previews need them.
 
-Durable process logs preserve UTF-8 code points across shell-reader blocks. The fallback requires the standard Linux `dd`, `tail`, and `od` utilities.
+### Git
 
-Process log pages use bounded remote ranges under the rotation lock. `maxBytes` is an upper bound; a page may stop at 64 KiB even when a larger budget is requested. Follow `nextCursor` while `truncated` is true. Reads include bounded framing lookaround and never download the entire 10 MiB log. Memory providers may implement the optional `files.readRange` primitive.
+```ts
+await box.git.clone("https://github.com/opencoredev/sandbox-sdk", { dir: "repo", depth: 1 });
+await box.git.commit("repo", { message: "Update docs", all: true });
+await box.git.push("repo", { token: process.env.GITHUB_TOKEN });
+```
 
-Readiness failures include the retained last 50 log lines, even when subsequent cursor pages are empty. The retained diagnostic tail is capped at 256 KiB for unusually long lines.
+Tokens reach git through a temporary credential helper, never argv, env, or shell history, and are redacted from output.
 
-Local creation stores the absolute lifetime deadline and idle interval in container labels. A fresh `connectSandbox` (including keyed lookup) checks these settings and destroys an expired container before returning `not_found`. Idle time runs from the last SDK command or file operation; active SDK runs and background process records prevent idle expiry. `reapSandboxes` destroys containers selected by its normal age/label/idle filters. Schedule it to enforce cleanup when no client reconnects. These timers are client/reaper enforced: Docker does not stop an unattended container at its deadline, and an existing handle does not check the deadline before every operation. Paused containers defer idle checking until running again; absolute lifetime still applies. Use a scheduled reaper when you need cleanup after disconnecting.
+### Snapshots and pause
 
-The benchmark requests creation lifetime only from memory, E2B, and Daytona. Local and Vercel runs omit creation lifetime and rely on tracked cleanup, including deletion of late arrivals. No benchmark requests idle timeout. Each report includes this cleanup policy in its notes. Vercel still rejects creation `timeoutMs` because its native timer resets with each resumed session.
+```ts
+const snap = await box.snapshot();
+await using copy = await createSandbox(e2b(), { from: snap.id });
 
-For local startup diagnosis, `usage()` includes `createInspectMs` (including any pull), `createContainerMs`, `createStartMs`, `createPrerequisiteMs`, and `firstCommandMs`. Timings are milliseconds from this adapter instance, so a newly connected client has no historical phase timings. First-command timing includes command execution and temporary PID-file cleanup. It measures the first adapter exec, which may be the SDK initialization checkpoint before your first `run`. Compare it with wall-clock `createSandbox` and `run` durations to separate container startup from SDK initialization.
+await box.pause();
+await box.resume();
+```
 
-The offline `memory()` provider does not advertise machine size. Explicit `size` options fail with `unsupported`; use a real provider to enforce CPU, memory, and disk limits.
+These methods exist only when the provider supports them (see the Capabilities column). Check at runtime with `box.capabilities.has("pause")`.
+
+### Errors
+
+```ts
+import { SandboxError } from "@opencoredev/sandbox-sdk";
+
+try {
+  await box.files.read("missing.txt");
+} catch (error) {
+  if (!(error instanceof SandboxError)) throw error;
+  console.error(error.code, error.message, error.hint, error.retryable);
+}
+```
+
+The SDK only throws `SandboxError`. `code` is one of 15 strings, such as `auth`, `not_found`, `quota`, `unsupported`, or `file_not_found`. `hint` is the next step on its own, and `retryable` says whether the same call can succeed again. Secrets are redacted from every field. See the [error reference](https://github.com/opencoredev/sandbox-sdk/blob/main/apps/docs/content/reference/errors.mdx).
+
+## Give an agent a sandbox
+
+Install `zod` and your agent framework, then pass the tools to your agent:
+
+```ts
+import { generateText, stepCountIs } from "ai";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+const { text } = await generateText({
+  model: "anthropic/claude-opus-5-5",
+  tools: sandboxTools(box, { root: "/workspace/app" }),
+  stopWhen: stepCountIs(20),
+  prompt: "Add a /health route to the Express app and run its tests.",
+});
+```
+
+| Framework | Import | Returns |
+| --- | --- | --- |
+| AI SDK 7 | `@opencoredev/sandbox-sdk/ai` | tool map for `generateText` / `streamText` |
+| Mastra 1.78+ | `@opencoredev/sandbox-sdk/mastra` | tool map for `new Agent({ tools })` |
+| OpenAI Agents 0.20+ | `@opencoredev/sandbox-sdk/openai` | tool array for `new Agent({ tools })` |
+| Anything else | `@opencoredev/sandbox-sdk/tools` | `createSandboxTools` and Zod `toolSchemas` |
+
+The default tools are `run`, `read_file`, `write_file`, `edit_file`, `start_process`, `process_logs`, and `stop_process`. Opt into `search`, `list_files`, `changes`, or `preview` with `allow`. Results are compact and capped for model context, and registered secrets never reach the model. Use `beforeRun` to deny or rewrite commands. `root` limits file paths, but it is not a security boundary; the sandbox is. Details: [agent tools](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/agent-tools.md).
+
+## Performance
+
+The SDK aims for near-zero overhead on top of each provider's own API. The root entry is under 8 KB minified, providers load on first use, and `createSandbox` adds no provider calls beyond the create itself unless you pass `secrets`, `from`, or `trackChanges: true` (one exec each).
+
+<!-- TODO(lead): replace with measured numbers from bench/scripts/sdk-overhead.ts -->
+| Provider | Create: SDK vs native | `run("true")`: SDK vs native |
+| --- | --- | --- |
+| TODO | TODO | TODO |
+
+Measured with `bench/scripts/sdk-overhead.ts`. See [bench/README.md](https://github.com/opencoredev/sandbox-sdk/blob/main/bench/README.md) to reproduce.
+
+## More
+
+- [Core behavior details](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/core-behavior.md): timeouts, redaction, log cursors.
+- [Write a provider adapter](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/adapters.md) and test it with `runConformance` from `/testing`.
+- [Full documentation](https://sandbox-sdk.app/docs).
+- [Changelog](./CHANGELOG.md).
+
+## License
+
+MIT
