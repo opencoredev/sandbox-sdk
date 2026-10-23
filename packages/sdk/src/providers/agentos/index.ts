@@ -47,6 +47,8 @@ async function fileStat(vm: AgentOs, path: string, symbolic?: boolean): Promise<
 
 /** Embedded, Docker-free V8/WebAssembly runtime. Docker remains local()'s default. */
 export function agentos(options: AgentosOptions = {}): Provider<AgentOs, AgentosCapability> {
+  let module: Promise<typeof import("@rivet-dev/agentos-core")> | undefined;
+  const sdk = () => module ??= import("@rivet-dev/agentos-core").catch(() => { throw failure("Install @rivet-dev/agentos-core@0.4.1 and its platform sidecar package", "unavailable"); });
   async function safe<T>(id: string, action: (vm: AgentOs) => Promise<T>, file = false): Promise<T> {
     try { return await action(entry(id).vm); } catch (error) { throw agentosError(error, id, file); }
   }
@@ -66,7 +68,7 @@ export function agentos(options: AgentosOptions = {}): Provider<AgentOs, Agentos
       async function create(): Promise<SandboxInfo> {
         let vm: AgentOs | undefined;
         try {
-          const { AgentOs } = await import("@rivet-dev/agentos-core").catch(() => { throw failure("Install @rivet-dev/agentos-core@0.4.1 and its platform sidecar package", "unavailable"); });
+          const { AgentOs } = await sdk();
           vm = await AgentOs.create({ permissions, ...(Object.keys(input.env ?? {}).length ? { environment: { PATH: "/opt/agentos/bin:/usr/local/bin:/usr/bin:/bin", HOME: "/home/agentos", ...input.env } } : {}) });
           await vm.software.install(options.gitPackagePath ? { type: "path", path: options.gitPackagePath } : { type: "url", url: gitUrl, expectedDigest: gitDigest });
           await vm.filesystem.mkdir("/workspace", { recursive: true });
@@ -127,6 +129,7 @@ export function agentos(options: AgentosOptions = {}): Provider<AgentOs, Agentos
       });
     },
     files: {
+      writeCreatesParents: true,
       transfer: "files",
       read: (id, path) => safe(id, async vm => new Uint8Array(await vm.filesystem.readFile(path)), true),
       write: (id, path, data) => safe(id, async vm => { await vm.filesystem.mkdir(posix.dirname(path), { recursive: true }); await vm.filesystem.writeFile(path, data); }, true),

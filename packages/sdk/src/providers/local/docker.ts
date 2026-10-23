@@ -1,4 +1,4 @@
-import { request } from "node:http";
+import { Agent, request } from "node:http";
 import { StringDecoder } from "node:string_decoder";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 import type { OutputChunk } from "../../provider.js";
@@ -40,6 +40,8 @@ export class Demux {
 
 export class Docker {
   readonly socketPath: string;
+  private connectionPool: Agent | undefined;
+  private pool() { return this.connectionPool ??= new Agent({ keepAlive: true, timeout: 5_000 }); }
   constructor(host = process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock") {
     if (!host.startsWith("unix://") || !host.slice(7).startsWith("/")) throw failure("DOCKER_HOST must be an absolute unix:// socket URL; remote Docker hosts cannot provide localhost previews", "unsupported");
     this.socketPath = host.slice(7);
@@ -47,7 +49,7 @@ export class Docker {
   async call(method: string, path: string, body?: unknown): Promise<unknown> {
     const data = body === undefined ? undefined : JSON.stringify(body);
     const bytes = await new Promise<Buffer>((resolve, reject) => {
-      const req = request({ socketPath: this.socketPath, path: `/v1.44${path}`, method, headers: { "Content-Type": "application/json" } }, res => {
+      const req = request({ agent: this.pool(), socketPath: this.socketPath, path: `/v1.44${path}`, method, headers: { "Content-Type": "application/json" } }, res => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("error", error => reject(failure(error.message, "unavailable")));
@@ -74,7 +76,7 @@ export class Docker {
     const execId = string(created.Id);
     await new Promise<void>((resolve, reject) => {
       const demux = new Demux(options.onChunk);
-      const req = request({ socketPath: this.socketPath, path: `/v1.44/exec/${encode(execId)}/start`, method: "POST", headers: { "Content-Type": "application/json", Connection: "Upgrade", Upgrade: "tcp" } });
+      const req = request({ agent: this.pool(), socketPath: this.socketPath, path: `/v1.44/exec/${encode(execId)}/start`, method: "POST", headers: { "Content-Type": "application/json", Connection: "Upgrade", Upgrade: "tcp" } });
       const consume = (stream: import("node:stream").Readable) => {
         stream.on("data", (chunk: Buffer) => { try { demux.push(chunk); } catch (error) { stream.destroy(); reject(error); } });
         stream.on("error", error => reject(failure(error.message, "unavailable")));

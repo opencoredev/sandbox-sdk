@@ -265,12 +265,11 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           if (renamed.status === "rejected") throw renamed.reason;
           if (setup.status === "rejected") throw setup.reason;
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          // The update response is the same record a get returns. Reuse it
-          // unless it predates readiness; then read the settled state.
+          // The setup command already confirmed readiness after provisioning.
+          // Rename may have returned an earlier provisioning state.
           const updated = renamed.value.sandbox;
-          if (updated.name !== name || !["ready", "idle", "running"].includes(updated.state))
-            return await provider.connect(sandbox.id);
-          const result = info(updated);
+          if (updated.name !== name) return await provider.connect(sandbox.id);
+          const result = { ...info(updated), state: "running" } satisfies SandboxInfo;
           boxes.set(sandbox.id, updated);
           return result;
         } catch (error) {

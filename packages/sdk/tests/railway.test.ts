@@ -140,3 +140,19 @@ test("Railway listing skips malformed guest metadata and preserves auth failures
     await expect(listSandboxes(railway(options))).rejects.toMatchObject({ code: "auth" });
   } finally { read.mockRestore(); await box.destroy(); }
 });
+
+test("writes reuse the attached native client and let native uploads create parents", async () => {
+  const box = await createSandbox(railway(options));
+  const native = mock.state.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock sandbox");
+  const mkdir = vi.spyOn(native.files, "mkdir");
+  const connect = vi.spyOn(mock.MockSandbox, "connect");
+  try {
+    await box.files.write("nested/deep/file", "first");
+    expect(await box.files.read("nested/deep/file")).toBe("first");
+    await box.run("rm -rf nested");
+    await box.files.write("nested/deep/file", "second");
+    expect(await box.files.read("nested/deep/file")).toBe("second");
+    expect(mkdir).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
+  } finally { mkdir.mockRestore(); connect.mockRestore(); await box.destroy(); }
+});

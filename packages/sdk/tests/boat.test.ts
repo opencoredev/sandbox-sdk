@@ -346,3 +346,16 @@ test("preview includes native auth for ordinary fetch and custom paths", async (
     expect(new URL(preview.url).searchParams.has("_token")).toBe(false);
   } finally { await box.destroy(); }
 });
+
+test("completed guest setup confirms readiness without another control-plane GET", async () => {
+  mock.staleRename = true;
+  const provider = factory();
+  const before = mock.calls.length;
+  let id: string | undefined;
+  try {
+    const created = await provider.create({ labels: { verification: "sbx57" } }); id = created.id;
+    expect(created.state).toBe("running");
+    expect(mock.calls.slice(before)).toHaveLength(3);
+    expect((await provider.connect(id)).labels).toMatchObject({ verification: "sbx57" });
+  } finally { mock.staleRename = false; if (id) await provider.destroy(id); }
+});

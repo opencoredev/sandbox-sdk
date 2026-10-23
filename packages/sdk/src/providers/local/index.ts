@@ -122,16 +122,16 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
       const pidfile = `/tmp/.sandbox-sdk-exec-${randomUUID()}`;
       let cancelled = false;
-      const cancel = () => { cancelled = true; };
+      let cancel = () => {};
+      const cancellation = new Promise<"cancelled">(resolve => { cancel = () => { cancelled = true; resolve("cancelled"); }; });
       input.signal?.addEventListener("abort", cancel, { once: true });
       const timer = setTimeout(cancel, input.timeoutMs);
       // The wrapper writes its session leader PID before running any user code.
       const command = ["setsid", "--wait", "sh", "-c", `echo $$ > ${quote(pidfile)}; ${timers.has(id) ? `touch ${activity}; trap 'touch ${activity}' EXIT;` : ""} sh -c ${quote(input.command)}`];
-      let settled = false;
-      const execution = client.exec(id, command, { cwd: input.cwd, env: input.env, stdin: input.stdin, onChunk: input.onChunk }).finally(() => { settled = true; });
+      const execution = client.exec(id, command, { cwd: input.cwd, env: input.env, stdin: input.stdin, onChunk: input.onChunk });
       void execution.catch(() => {});
       try {
-        while (!settled && !cancelled) await new Promise(resolve => setTimeout(resolve, 5));
+        await Promise.race([execution, cancellation]);
         if (cancelled) {
           // Wait for the PID publication if cancellation raced exec startup. No
           // success is reported until the negative-PID kill has been delivered.
@@ -146,6 +146,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       }
     },
     files: {
+      writeCreatesParents: true,
       async read(id, path) { return new Uint8Array(Buffer.from(await node(id, "process.stdout.write(require('fs').readFileSync(process.argv[1]).toString('base64'))", [path]), "base64")); },
       async write(id, path, data) { await node(id, "const f=require('fs');f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],Buffer.from(f.readFileSync(0,'utf8'),'base64'))", [path], Buffer.from(data).toString("base64")); },
       async stat(id, path) { return fileInfo(parse(await node(id, statScript + "process.stdout.write(JSON.stringify(stat(process.argv[1])))", [path]))); },

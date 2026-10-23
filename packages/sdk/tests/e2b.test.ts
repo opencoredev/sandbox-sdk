@@ -259,3 +259,18 @@ test.each(["timeout", "stop"] as const)("%s before bootstrap cannot launch desce
     expect(await box.files.exists("escaped-bootstrap")).toBe(false);
   } finally { spy.mockRestore(); await box.destroy(); }
 });
+
+test("create uses one native acquisition and operations reuse its connection", async () => {
+  const create = vi.spyOn(MockSandbox, "create");
+  const connect = vi.spyOn(MockSandbox, "connect");
+  const provider = e2b();
+  const box = await createSandbox(provider, { labels: { verification: "sbx57" } });
+  try {
+    const native = box.native;
+    await box.run("printf reused");
+    await box.files.write("nested/reused", "bytes");
+    expect(await box.files.read("nested/reused")).toBe("bytes");
+    expect(box.native).toBe(native);
+    expect(create).toHaveBeenCalledTimes(1); expect(connect).not.toHaveBeenCalled();
+  } finally { await box.destroy(); create.mockRestore(); connect.mockRestore(); }
+});

@@ -64,3 +64,17 @@ test("symlinks and dangling links retain metadata without recursive traversal", 
     await expect(box.files.download("links", "/tmp/sbx40-symlink-rejected")).rejects.toMatchObject({ code: "invalid_argument" });
   } finally { await box.destroy(); }
 }, 120_000);
+
+test("nested writes create parents once and recover after guest removal", async () => {
+  const box = await createSandbox(agentos());
+  const mkdir = vi.spyOn(box.native.filesystem, "mkdir");
+  try {
+    await box.files.write("nested/deep/file", "first");
+    expect(mkdir).toHaveBeenCalledTimes(1);
+    expect(await box.files.read("nested/deep/file")).toBe("first");
+    await box.run("rm -rf nested"); mkdir.mockClear();
+    await box.files.write("nested/deep/file", "second");
+    expect(mkdir).toHaveBeenCalledTimes(1);
+    expect(await box.files.read("nested/deep/file")).toBe("second");
+  } finally { mkdir.mockRestore(); await box.destroy(); }
+});

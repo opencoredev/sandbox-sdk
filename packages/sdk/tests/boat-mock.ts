@@ -42,6 +42,7 @@ type Box = {
   commands: Map<number, Command>;
 };
 export async function boatMock() {
+  let staleRename = false;
   const boxes = new Map<string, Box>();
   const creates: unknown[] = [];
   const calls: string[] = [];
@@ -225,7 +226,7 @@ export async function boatMock() {
           );
           return;
         }
-        json(res, { ok: true, type: "sandbox.info", sandbox: sandbox(box) });
+        json(res, { ok: true, type: "sandbox.info", sandbox: { ...sandbox(box), ...(req.method === "PATCH" && staleRename ? { state: "provisioning" } : {}) } });
         return;
       }
       if (parts[2] === "files" && parts[3] === "download-url" && req.method === "POST") {
@@ -387,6 +388,7 @@ export async function boatMock() {
   if (!address || typeof address === "string") throw new Error("Missing test server port");
   return {
     apiUrl: `http://127.0.0.1:${address.port}`,
+    set staleRename(value: boolean) { staleRename = value; },
     boxes,
     creates,
     calls,

@@ -19,6 +19,8 @@ const invalidate = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ]
 /** Internal injection point used by the offline SDK contract tests. */
 export function createVercelProvider<N extends NativeSandbox>(load: () => Promise<VercelClient<N>>, options: VercelOptions = {}): Provider<N, VercelCapability> {
   const boxes = new Map<string, N>();
+  let client: Promise<VercelClient<N>> | undefined;
+  const sdk = () => client ??= load();
   const safe = async <T>(id: string | undefined, action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw vercelError(error, id); } };
   function credentials() {
     const token = options.token ?? process.env.VERCEL_TOKEN;
@@ -39,7 +41,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     return { id: box.name, key, labels, createdAt: box.createdAt.getTime(), state: box.status === "running" || box.status === "pending" ? "running" : box.status === "stopped" ? "paused" : "stopped" };
   }
   const attach = async (id: string, resume = false) => {
-    const client = await load(); let box = await client.get({ ...credentials(), name: id, resume, onResume: clean });
+    const client = await sdk(); let box = await client.get({ ...credentials(), name: id, resume, onResume: clean });
     const deadline = Date.now() + 60_000;
     while (box.tags?.["sandbox-sdk"] === "pending") {
       if (Date.now() >= deadline) throw new SandboxError("Sandbox initialization is incomplete. The creator has not finished setup. Retry connection later.", { code: "unavailable", provider: "vercel", sandboxId: id, retryable: true });
@@ -96,7 +98,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
       if (new Set(input.ports).size > 15) unsupported("Vercel supports at most fifteen declared ports");
       const common = { ...credentials(), name: input.key === undefined ? `sdk-${crypto.randomUUID()}` : keyName(input.key), persistent: true, env: input.env, tags, ports: input.ports, resources: resources(input.size), networkPolicy: input.network === "none" ? "deny-all" : typeof input.network === "object" ? { allow: input.network.allow } : "allow-all", signal: input.signal, onResume: clean } satisfies Parameters<typeof Sandbox.create>[0];
       const pending = { ...common, tags: { ...tags, "sandbox-sdk": "pending" } };
-      const box = await (await load()).create(input.from ? { ...pending, source: { type: "snapshot", snapshotId: input.from } } : pending);
+      const box = await (await sdk()).create(input.from ? { ...pending, source: { type: "snapshot", snapshotId: input.from } } : pending);
       boxes.set(box.name, box);
       try {
         const init = await box.runCommand({ cmd: "sh", args: ["-c", "mkdir -p /workspace && chmod 777 /workspace"], sudo: true, detached: true });
@@ -108,7 +110,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     }),
     find: key => safe(undefined, async () => { try { const box = await attach(keyName(key)); return box.tags?.["sandbox-sdk"] === "1" && box.tags[keyTag] === key ? info(box) : undefined; } catch (error) { if (vercelError(error).code === "not_found") return undefined; throw error; } }),
     connect: id => safe(id, async () => info(await attach(id))),
-    list: labels => safe(undefined, async () => { const result: SandboxInfo[] = []; for await (const entry of await (await load()).list({ ...credentials(), tags: { "sandbox-sdk": "1" } })) {
+    list: labels => safe(undefined, async () => { const result: SandboxInfo[] = []; for await (const entry of await (await sdk()).list({ ...credentials(), tags: { "sandbox-sdk": "1" } })) {
       try {
         const item = info(await attach(entry.name));
         if (item.labels["sandbox-sdk"] === "1" && Object.entries(labels).every(([k, v]) => item.labels[k] === v)) result.push(item);
@@ -134,6 +136,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
       finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
     }),
     files: {
+      writeCreatesParents: true,
       read: (id, path) => safe(id, async () => new Uint8Array(await (await get(id)).fs.readFile(path))),
       write: (id, path, data) => safe(id, async () => { const box = await get(id); await box.fs.mkdir(posix.dirname(path), { recursive: true }); await box.fs.writeFile(path, data); }),
       stat: (id, path) => safe(id, () => fileInfo(id, path)),
