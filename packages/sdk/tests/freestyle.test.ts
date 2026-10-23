@@ -96,7 +96,7 @@ describe("Freestyle official SDK contract", () => {
       expect(native?.guest.commands.join("\n")).not.toContain("freestyle-private-雪");
       const { promises: fs } = await import("node:fs");
       if (!native) throw new Error("Missing mock VM");
-      for (const path of ["/var/lib/sandbox-sdk.json", "/var/lib/sandbox-sdk-env.json", "/var/lib/sandbox-sdk-exec-v2.py"])
+      for (const path of ["/var/lib/sandbox-sdk.json", "/var/lib/sandbox-sdk-env.json"])
         expect((await fs.stat(native.guest.rewrite(path))).mode & 0o777).toBe(0o600);
     } finally {
       await box.destroy();
@@ -312,7 +312,7 @@ for (const kind of ["timeout", "abort"] as const)
     }
   });
 
-test.each(["missing", "outdated"])("legacy %s-version reconnects dedupe helper installation and converge across clients", async version => {
+test.each(["missing", "outdated"])("legacy %s-version reconnects run inline without helper installation", async version => {
   const { promises: fs } = await import("node:fs");
   const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
   const box = await createSandbox(factory());
@@ -322,12 +322,12 @@ test.each(["missing", "outdated"])("legacy %s-version reconnects dedupe helper i
   try {
     const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
     await fs.writeFile(path, JSON.stringify({ key: null, labels: box.labels, ...(version === "outdated" ? { supervisorHash: "old-version" } : {}) }));
-    await fs.rm(native.guest.rewrite(supervisorPath));
+    await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
     const provider = factory();
     const before = native.guest.commands.length;
     await Promise.all(Array.from({ length: 8 }, () => provider.connect(box.id)));
-    expect(native.guest.commands.length - before).toBe(1);
-    await fs.rm(native.guest.rewrite(supervisorPath));
+    expect(native.guest.commands.length - before).toBe(0);
+    await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
     const clients = Array.from({ length: 8 }, () => factory());
     // Warm the mocked dynamic import serially: Vitest can expose importActual
     // while its async mock factory is resolving concurrent imports.
@@ -413,7 +413,7 @@ test("paging cancellation preserves split UTF-8 characters across recovery", asy
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   const controller = new AbortController();
-  const record = (bytes: Uint8Array) => ["stdout", Buffer.from(bytes).toString("base64")];
+  const record = (bytes: Uint8Array) => ["stdout", Buffer.from(bytes).toString("hex")];
   const exec = vi
     .spyOn(native, "exec")
     .mockResolvedValueOnce({
@@ -526,7 +526,7 @@ test("current-version reconnect trusts the recorded supervisor without a guest R
   } finally { await box.destroy(); }
 });
 
-test("a missing current supervisor is repaired lazily without replaying the user command", async () => {
+test("a missing installed helper does not add requests or replay the user command", async () => {
   const { promises: fs } = await import("node:fs");
   const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
   const box = await createSandbox(factory());
@@ -534,7 +534,7 @@ test("a missing current supervisor is repaired lazily without replaying the user
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   try {
-    await fs.rm(native.guest.rewrite(supervisorPath));
+    await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
     const client = factory();
     const before = native.guest.commands.length;
     await client.connect(box.id);
@@ -543,7 +543,7 @@ test("a missing current supervisor is repaired lazily without replaying the user
     expect(await client.exec(box.id, { command: "echo once >> executions; echo ready", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk: c => chunks.push(c.text) })).toMatchObject({ exitCode: 0 });
     expect(chunks.join("")).toBe("ready\n");
     expect(await fs.readFile(native.guest.rewrite("/workspace/executions"), "utf8")).toBe("once\n");
-    expect(native.guest.commands.length - before).toBe(3);
+    expect(native.guest.commands.length - before).toBe(1);
     const next = native.guest.commands.length;
     expect(await client.exec(box.id, { command: "exit 2", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk() {} })).toMatchObject({ exitCode: 2 });
     expect(native.guest.commands.length - next).toBe(1);
@@ -616,4 +616,13 @@ test("configured snapshots replace inherited identity and environment before rec
       expect((await connected.run('printf %s "$SOURCE_ONLY"')).stdout).toBe("");
     } finally { await connected.destroy(); }
   } finally { await source.destroy(); }
+});
+
+test("first execution preserves the inherited umask", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const first = await box.run("umask");
+    const second = await box.run("umask");
+    expect(first.stdout).toBe(second.stdout);
+  } finally { await box.destroy(); }
 });

@@ -71,14 +71,17 @@ home=os.path.join(os.path.dirname(workspace),'home','tenki')
 tmp=os.path.join(os.path.dirname(workspace),'tmp')
 os.makedirs(home+'/.sandbox-sdk',exist_ok=True)
 os.makedirs(tmp,exist_ok=True)
-if not os.path.exists(home+'/.sandbox-sdk/prepared'):
- if not os.path.exists(workspace):
-  os.makedirs(home+'/workspace',exist_ok=True)
-  try: os.symlink(home+'/workspace',workspace)
-  except FileExistsError: pass
- elif not os.path.islink(workspace) and not os.path.exists(home+'/workspace'):
-  os.rename(workspace,home+'/workspace'); os.symlink(home+'/workspace',workspace)
- with open(home+'/.sandbox-sdk/prepared','w'): pass
+import fcntl
+with open(home+'/.sandbox-sdk/setup.lock','w') as setup_lock:
+ fcntl.flock(setup_lock,fcntl.LOCK_EX)
+ if not os.path.exists(home+'/.sandbox-sdk/prepared'):
+  if not os.path.exists(workspace):
+   os.makedirs(home+'/workspace',exist_ok=True)
+   try: os.symlink(home+'/workspace',workspace)
+   except FileExistsError: pass
+  elif not os.path.islink(workspace) and not os.path.exists(home+'/workspace'):
+   os.rename(workspace,home+'/workspace'); os.symlink(home+'/workspace',workspace)
+  with open(home+'/.sandbox-sdk/prepared','w'): pass
 if not os.path.exists(tmp+'/.sandbox-sdk'):
  try: os.symlink(home+'/.sandbox-sdk',tmp+'/.sandbox-sdk')
  except FileExistsError: pass

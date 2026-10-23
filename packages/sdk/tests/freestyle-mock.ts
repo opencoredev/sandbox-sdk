@@ -57,26 +57,26 @@ export class MockVm {
   };
   async exec(options: ExecOptions) {
     let input = options.stdin ? Buffer.from(options.stdin, "base64").toString() : "";
-    if (options.command.includes("for path,content in v")) {
+    if (options.command.includes("for path,content in v") && !options.command.includes("marshal.loads")) {
       const envelope: unknown = JSON.parse(input);
       if (envelope && typeof envelope === "object" && "command" in envelope && typeof envelope.command === "string" && envelope.command.includes("sandbox-sdk-exec-v2.py") && "stdin" in envelope && typeof envelope.stdin === "string") {
         envelope.stdin = Buffer.from(this.guest.rewrite(Buffer.from(envelope.stdin, "base64").toString())).toString("base64");
         input = JSON.stringify(envelope);
       }
     }
+    const mapping = `
+def sdk_paths(value):
+ if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(this.guest.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/var/lib/"+"sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/var/lib/sandbox-sdk").toString("hex")}").decode())
+ if isinstance(value,list): return [sdk_paths(x) for x in value]
+ if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
+ return value
+v=sdk_paths(v)`;
+    const command = options.command.includes("class Process:")
+      ? options.command.replace("v=marshal.loads(bytes.fromhex(sys.stdin.read()))", "v=marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping).replace("data.hex()", `data.replace(${JSON.stringify(this.guest.root)}.encode(),bytes()).hex()`)
+      : options.command;
     const result = options.stdin
-      ? await this.guest.buffered(options.command, input)
+      ? await this.guest.buffered(command, input)
       : { stdout: await this.guest.raw(options.command), stderr: "", statusCode: 0 };
-    if ((options.command.includes("for path,content in json.load(sys.stdin)") || options.command.includes("for path,content in v")) && result.statusCode === 0) {
-      // The guest runs under a temporary host root. Normalize encoded output
-      // just as MockGuest.upload does for supervisors installed by file RPC.
-      const path = this.guest.rewrite("/var/lib/sandbox-sdk-exec-v2.py");
-      const script = await fs.readFile(path, "utf8");
-      await fs.writeFile(path, script.replace(
-        "base64.b64encode(data)",
-        `base64.b64encode(data.replace(${JSON.stringify(this.guest.root)}.encode(),b''))`,
-      ));
-    }
     const stdout = result.stdout;
     freestyleState.peak = Math.max(freestyleState.peak, Buffer.byteLength(stdout));
     return result;

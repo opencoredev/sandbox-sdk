@@ -1,3 +1,4 @@
+import { guestSpec } from "../freestyle/wire.js";
 import { guestProcess } from "../boxd/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
@@ -8,9 +9,9 @@ import { workspaceSetup } from "./ready.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
 // The supervisor owns the deadline and process group even after an RPC disconnect.
-const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
+const supervisor = `import os,sys,marshal,_signal as signal,select,time,pwd
 ${guestProcess}
-v=json.load(sys.stdin)
+v=marshal.loads(bytes.fromhex(sys.stdin.read()))
 ${workspaceSetup}
 def processes():
  ids=set()
@@ -28,30 +29,28 @@ env={**os.environ,**v['env'],'PWD':v['cwd']}
 if os.geteuid()==0 and 'SUDO_UID' not in env:
  try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
  except KeyError: pass
-def emit(v): print(json.dumps(v),flush=True)
 with stdin_file() as f:
- f.write(base64.b64decode(v['stdin'])); f.seek(0)
+ f.write(v['stdin'].encode()); f.seek(0)
  p=Process(v,env,f,True)
  try:
   with open(v['marker'],'w') as m: m.write(str(p.pid))
   if v.get('activityPath'):
    os.makedirs(os.path.dirname(v['activityPath']),exist_ok=True)
    with open(v['activityPath'],'w') as a: a.write('1')
-  sel=selectors.DefaultSelector()
-  sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
+  stdout=p.stdout.fileno(); streams={stdout:'stdout',p.stderr.fileno():'stderr'}
   end=time.monotonic()+v['timeoutMs']/1000
   timed=False
-  while sel.get_map() or p.poll() is None:
+  while streams or p.poll() is None:
    if not timed and time.monotonic()>=end:
     timed=True
     try: os.killpg(p.pid,signal.SIGKILL)
     except ProcessLookupError: pass
-   for key,_ in sel.select(.01):
-    data=os.read(key.fd,16384)
-    if data: emit([key.data,base64.b64encode(data).decode()])
-    else: sel.unregister(key.fileobj); key.fileobj.close()
+   for fd in select.select(list(streams),[],[],.01)[0]:
+    data=os.read(fd,8192)
+    if data: print('["'+streams[fd]+'","'+data.hex()+'"]',flush=True)
+    else: del streams[fd]; (p.stdout if fd==stdout else p.stderr).close()
   code=p.wait()
-  emit({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed,'workspaceStable':stable(),'workspaceRoot':os.path.realpath(v['workspace'])})
+  print('{"exitCode":%s,"timedOut":%s,"workspaceStable":%s,"workspaceRootHex":"%s"}'%('null' if timed else str(code if code>=0 else 128-code),str(timed).lower(),str(stable()).lower(),os.path.realpath(v['workspace']).encode().hex()),flush=True)
  except BaseException:
   try: os.killpg(p.pid,signal.SIGKILL)
   except ProcessLookupError: pass
@@ -70,18 +69,11 @@ export async function executeStream(
 ): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
-  const spec = Buffer.from(
-    JSON.stringify({
-      command: input.command,
-      cwd: input.cwd,
-      env: input.env,
-      stdin: Buffer.from(input.stdin ?? "").toString("base64"),
-      timeoutMs: input.timeoutMs,
-      marker,
-      activityPath: input.activityPath,
-      workspace: "/workspace",
-    }),
-  );
+  const spec = Buffer.from(guestSpec({
+    command: input.command, cwd: input.cwd, env: input.env,
+    stdin: input.stdin ?? "", timeoutMs: input.timeoutMs,
+    marker, activityPath: input.activityPath, workspace: "/workspace",
+  }).toString("hex"));
   const transport = new AbortController();
   let result: ExecResult | undefined;
   let exited = false;
@@ -102,7 +94,7 @@ export async function executeStream(
       value[1].length <= 21848
     ) {
       const stream = value[0] === "stdout" ? "stdout" : "stderr";
-      const text = decoders[stream].decode(Buffer.from(value[1], "base64"), { stream: true });
+      const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
       if (text) input.onChunk({ stream, text });
     } else if (
       value &&
@@ -113,9 +105,9 @@ export async function executeStream(
       "timedOut" in value &&
       typeof value.timedOut === "boolean"
     ) {
-      if ("workspaceRoot" in value && typeof value.workspaceRoot === "string")
+      if ("workspaceRootHex" in value && typeof value.workspaceRootHex === "string")
         workspaceRoot?.(
-          value.workspaceRoot,
+          Buffer.from(value.workspaceRootHex, "hex").toString(),
           "workspaceStable" in value && value.workspaceStable === true,
         );
       result = { exitCode: value.exitCode, timedOut: value.timedOut };
@@ -137,7 +129,7 @@ export async function executeStream(
               case: "start",
               value: {
                 sessionId: box.id,
-                cmd: ["python3", "-c", supervisor],
+                cmd: ["python3", "-S", "-c", supervisor],
                 privileged: true,
                 streamStdin: true,
               },

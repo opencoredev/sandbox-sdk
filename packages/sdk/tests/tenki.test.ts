@@ -322,7 +322,7 @@ describe("Tenki mappings", () => {
             { ...handle },
           );
         }
-        if (!argv[2]?.includes("v=json.load(sys.stdin)")) return handle;
+        if (!argv[argv.indexOf("-c") + 1]?.includes("v=json.load(sys.stdin)")) return handle;
         transportSignal = options?.signal;
         transportSignal?.addEventListener("abort", () => events.push("transport aborted"), {
           once: true,
@@ -1163,5 +1163,16 @@ test("plain create has no guest call and first list prepares in one request", as
     expect(run).toHaveBeenCalledTimes(1);
     await box.run("rm /workspace", { cwd: "/" });
     expect(await box.files.exists("/workspace")).toBe(false);
+  } finally { await box.destroy(); }
+});
+
+test("concurrent first commands preserve an existing workspace during migration", async () => {
+  const box = await createSandbox(factory());
+  try {
+    await box.native.run(["sh", "-c", "mkdir -p /workspace; printf retained > /workspace/existing"], { privileged: true });
+    const results = await Promise.all([box.run("cat existing"), box.run("cat existing")]);
+    expect(results.map(result => result.stdout)).toEqual(["retained", "retained"]);
+    expect((await box.run("test -L /workspace && test -f /home/tenki/workspace/existing")).ok).toBe(true);
+    expect(await box.files.read("existing")).toBe("retained");
   } finally { await box.destroy(); }
 });

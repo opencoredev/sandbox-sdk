@@ -8,7 +8,7 @@ import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from 
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, freestyleError, requestEvidence, recordRequest, recordResponse } from "./errors.js";
-import { execute, supervisor, supervisorPath } from "./execute.js";
+import { execute, supervisor } from "./execute.js";
 import { deadline, operationSignal } from "./deadline.js";
 export interface FreestyleOptions {
   /** Defaults to FREESTYLE_API_KEY; required on first use. */
@@ -55,8 +55,6 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
   const boxes = new Map<string, Vm>();
   const pending = new Map<string, [string, string][]>();
-  const installations = new Map<string, Promise<void>>();
-  const verifiedSupervisors = new Set<string>();
   const previews = new Map<string, string>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30000;
   async function api() {
@@ -226,39 +224,6 @@ with tempfile.TemporaryFile() as f:
   async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
     return (await readInfo(data, nativeOwnership)).info;
   }
-  async function installSupervisor(id: string): Promise<void> {
-    let installation = installations.get(id);
-    if (!installation) {
-      installation = (async () => {
-        const g = await guest(id);
-        await g.raw(
-          python(
-            `import os,sys,tempfile
-p,content=sys.argv[1:]
-try:
- with open(p) as f: current=f.read()
-except FileNotFoundError: current=None
-if current!=content:
- fd,tmp=tempfile.mkstemp(dir=os.path.dirname(p))
- try:
-  with os.fdopen(fd,'w') as f: f.write(content)
-  os.replace(tmp,p)
- finally:
-  if os.path.exists(tmp): os.unlink(tmp)`,
-            supervisorPath,
-            supervisor,
-          ),
-        );
-      })();
-      installations.set(id, installation);
-    }
-    try {
-      await installation;
-      verifiedSupervisors.add(id);
-    } finally {
-      if (installations.get(id) === installation) installations.delete(id);
-    }
-  }
   const provider: FreestyleProvider = {
     name: "freestyle",
     keyMode: "best-effort",
@@ -333,11 +298,10 @@ if current!=content:
               throw failure("Freestyle did not confirm the requested firewall", "unsupported", id);
             if (tls.length)
               throw failure("Unexpected TLS egress grants", "unsupported", id);
-            pending.set(id, [
-              [marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })],
-              [envFile, JSON.stringify(input.env ?? {})],
-              [supervisorPath, supervisor],
-            ]);
+            const contents: [string, string][] = [[marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })]];
+            if (Object.keys(input.env ?? {}).length || input.from !== undefined || options.snapshotId !== undefined)
+              contents.push([envFile, JSON.stringify(input.env ?? {})]);
+            pending.set(id, contents);
             // Private create-time env must survive reconnects before first use.
             if (Object.keys(input.env ?? {}).length || input.from !== undefined || options.snapshotId !== undefined) {
               const setup = await run(value, "true", undefined, requestTimeoutMs);
@@ -399,12 +363,8 @@ if current!=content:
         catch (error) {
           if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code)) throw error;
           stored = await readInfo(data, true);
-          pending.set(id, [[marker, JSON.stringify({ key: stored.info.key ?? null, labels: stored.info.labels, supervisorHash })], [envFile, "{}"], [supervisorPath, supervisor]]);
+          pending.set(id, [[marker, JSON.stringify({ key: stored.info.key ?? null, labels: stored.info.labels, supervisorHash })]]);
         }
-        // Current markers attest to the helper installed during create. Older
-        // VMs retain the atomic upgrade path; no eager guest check for new VMs.
-        if (!pending.has(id) && stored.supervisorHash !== supervisorHash && !verifiedSupervisors.has(id))
-          await installSupervisor(id);
         return stored.info;
       }),
     destroy: (id) =>
@@ -416,8 +376,6 @@ if current!=content:
         }
         boxes.delete(id);
         pending.delete(id);
-        installations.delete(id);
-        verifiedSupervisors.delete(id);
         for (const key of previews.keys()) if (key.startsWith(id + ":")) previews.delete(key);
       }),
     async close(id) {
@@ -428,7 +386,8 @@ if current!=content:
         if (!boxes.has(id)) await provider.connect(id);
         const value = await vm(id);
         const g = await guest(id);
-        return await execute(
+        const contents = pending.get(id);
+        const result = await execute(
           {
             raw: g.raw,
             read: (path, range, signal) =>
@@ -441,17 +400,7 @@ if current!=content:
               safe(
                 id,
                 async () => {
-                  const invoke = () => run(value, command, Buffer.from(stdin).toString("base64"), timeoutMs);
-                  let result = await invoke();
-                  // Python has not opened the helper, so no user command ran.
-                  // Never retry transport errors or ordinary command failures.
-                  if (result.statusCode === 2 &&
-                    result.stderr?.includes("can't open file") &&
-                    result.stderr.includes(supervisorPath) &&
-                    result.stderr.includes("[Errno 2]")) {
-                    await installSupervisor(id);
-                    result = await invoke();
-                  }
+                  const result = await value.exec({ command, stdin: Buffer.from(stdin).toString("base64"), linuxUser: "root", timeoutMs });
                   if (result.statusCode !== 0 || !result.stdout)
                     throw failure("Guest execution failed", "provider", id);
                   return result.stdout;
@@ -461,7 +410,10 @@ if current!=content:
               ),
           },
           input,
+          contents,
         );
+        if (!result.timedOut && pending.get(id) === contents) pending.delete(id);
+        return result;
       } catch (error) {
         throw freestyleError(error, id);
       }

@@ -496,7 +496,7 @@ test("buffered cancellation retries when completion removes the locked directory
       } finally { release(); }
     }
     const result = await command(text);
-    if (text.includes("python3 -u")) await cancelled;
+    if (text.includes("python3 -S -u")) await cancelled;
     return result;
   });
   try {
@@ -518,7 +518,7 @@ test("a lost buffered response prevents delayed launch without deleting unrelate
   const command = box.native.exec.command;
   let late: Promise<unknown> | undefined;
   vi.spyOn(box.native.exec, "command").mockImplementation(async text => {
-    if (text.includes("python3 -u")) {
+    if (text.includes("python3 -S -u")) {
       late = new Promise<void>(resolve => { setTimeout(resolve, 100); }).then(() => command(text));
       void late.catch(() => {});
       throw new Error("private-native-token");

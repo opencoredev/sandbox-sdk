@@ -1,9 +1,11 @@
+import { guestProcess } from "../boxd/guest.js";
 import type { Box } from "@upstash/box";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { defaults, quote } from "../../run.js";
 
-const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil,fcntl
+const bridge = `import os,select,_signal as signal,sys,time,fcntl
+${guestProcess}
 command,directory,cwd,limit,activity=sys.argv[1:]
 if activity:
  os.makedirs(os.path.dirname(activity),exist_ok=True)
@@ -15,25 +17,29 @@ with open(directory+"/lock","w") as lock:
  if os.path.exists(cancel):
   print("R:0:1:1")
   sys.exit(0)
- p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ try:
+  with stdin_file() as f: p=Process(dict(command=command,cwd=cwd),dict(os.environ,PWD=cwd),f,True)
+ except OSError as error:
+  print("E:"+str(error).encode().hex())
+  print("R:2:0:0")
+  os.unlink(directory+"/lock"); os.rmdir(directory)
+  sys.exit(0)
  with open(directory+"/pid","w") as f: f.write(str(p.pid))
-s=selectors.DefaultSelector()
-s.register(p.stdout,selectors.EVENT_READ,"O")
-s.register(p.stderr,selectors.EVENT_READ,"E")
+streams={p.stdout.fileno():"O",p.stderr.fileno():"E"}
 deadline=time.monotonic()+float(limit)
 timedout=False
 size=0
 spill=None
 try:
- while s.get_map() or p.poll() is None:
+ while streams or p.poll() is None:
   if not timedout and (time.monotonic()>=deadline or os.path.exists(cancel)):
    timedout=True
    try: os.killpg(p.pid,signal.SIGKILL)
    except ProcessLookupError: pass
-  for key,_ in s.select(0.02):
-   data=os.read(key.fileobj.fileno(),4096)
-   if not data: s.unregister(key.fileobj); continue
-   frame=key.data+":"+base64.b64encode(data).decode()+"\\n"
+  for fd in select.select(list(streams),[],[],0.02)[0]:
+   data=os.read(fd,4096)
+   if not data: del streams[fd]; continue
+   frame=streams[fd]+":"+data.hex()+"\\n"
    size+=len(frame)
    if size>65536:
     if spill is None: spill=open(directory+"/output","w")
@@ -47,9 +53,15 @@ except BaseException:
  p.wait()
  raise
 finally:
- if activity: shutil.rmtree(activity,ignore_errors=True)
+ if activity:
+  try: os.rmdir(activity)
+  except FileNotFoundError: pass
  if spill is not None: spill.close()
- else: shutil.rmtree(directory)
+ else:
+  for name in ('pid','lock','cancel'):
+   try: os.unlink(directory+'/'+name)
+   except FileNotFoundError: pass
+  os.rmdir(directory)
 `;
 
 const cancelBridge = `import os,signal,sys,fcntl,time
@@ -81,7 +93,7 @@ export async function bufferedExecute(box: Box, input: ExecInput, prepare?: stri
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
   const env = Object.entries(defaults).filter(([key]) => key in input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
-  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
+  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
   let cancelled = false, confirmed = false, cleanupNeeded = false;
@@ -99,10 +111,10 @@ export async function bufferedExecute(box: Box, input: ExecInput, prepare?: stri
   };
   const decoders = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
   const accept = (line: string) => {
-    const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
-    if (!frame || line.length > 5466 || Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]) throw malformed();
+    const frame = /^(O|E):([0-9a-f]*)$/.exec(line);
+    if (!frame || line.length > 8194 || Buffer.from(frame[2] ?? "", "hex").toString("hex") !== frame[2]) throw malformed();
     const stream = frame[1] === "O" ? "stdout" : "stderr";
-    const text = decoders[stream].decode(Buffer.from(frame[2] ?? "", "base64"), { stream: true });
+    const text = decoders[stream].decode(Buffer.from(frame[2] ?? "", "hex"), { stream: true });
     if (text) input.onChunk({ stream, text });
   };
   input.signal?.addEventListener("abort", abort, { once: true });
@@ -130,7 +142,7 @@ export async function bufferedExecute(box: Box, input: ExecInput, prepare?: stri
         while ((newline = pending.indexOf("\n")) >= 0) {
           accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
         }
-        if (pending.length > 5466) throw malformed();
+        if (pending.length > 8194) throw malformed();
         if (bytes.length < 65536) { if (pending) throw malformed(); break; }
       }
     }

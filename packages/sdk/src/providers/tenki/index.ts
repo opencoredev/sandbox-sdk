@@ -89,7 +89,7 @@ function info(value: Session): SandboxInfo {
 const prepare = [
   "sh",
   "-c",
-  "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null; readlink -f /workspace",
+  "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; exec 9>/home/tenki/.sandbox-sdk/setup.lock; flock -x 9; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; flock -u 9; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null; readlink -f /workspace",
 ];
 export function tenki(options: TenkiOptions = {}): TenkiProvider {
   let client:

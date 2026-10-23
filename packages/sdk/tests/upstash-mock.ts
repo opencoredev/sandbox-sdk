@@ -80,6 +80,7 @@ export class MockBox {
   }
   rewrite(text: string) {
     return text
+      .replace("data.hex()", `data.replace(${JSON.stringify(this.root)}.encode(),bytes()).hex()`)
       .replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b""))`)
       // Emulate the guest's passwordless install using the host-owned test root.
       .replace(/sudo -n install/g, "install")
