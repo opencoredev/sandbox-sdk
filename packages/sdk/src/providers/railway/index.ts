@@ -169,6 +169,7 @@ export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapsh
     native(id) { const box = clients.get(id); if (!box) throw new SandboxError("Sandbox client is detached. No cached Railway object exists. Connect first.", { code: "not_found", provider: "railway", sandboxId: id }); return box; },
     exec: (id, input) => call(id, () => execute(id, input)),
     files: {
+      writeCreatesParents: true,
       read: (id, path) => call(id, async () => (await client(id)).files.read(path, { format: "bytes" })),
       readRange: (id, path, range) => call(id, async () => range.length === 0 ? new Uint8Array() : (await client(id)).files.read(path, { format: "bytes", ...range })),
       write: (id, path, data) => call(id, async () => { await (await client(id)).files.write(path, data); }),

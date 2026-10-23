@@ -98,3 +98,23 @@ test("Vercel listing skips a VM deleted after the native list but preserves auth
     await expect(provider().list({})).rejects.toMatchObject({ code: "auth" });
   } finally { get.mockRestore(); await box.destroy(); }
 });
+
+test("nested writes create parents once and recover after guest removal", async () => {
+  const { vi } = await import("vitest");
+  const load = vi.fn(async () => mock.client);
+  const adapter = createVercelProvider(load, { token: "mock-token", teamId: "team", projectId: "project" });
+  expect(load).not.toHaveBeenCalled();
+  const box = await createSandbox(adapter);
+  const mkdir = vi.spyOn(box.native.fs, "mkdir");
+  try {
+    await box.files.write("nested/deep/file", "first");
+    expect(mkdir).toHaveBeenCalledTimes(1);
+    expect(await box.files.read("nested/deep/file")).toBe("first");
+    await box.run("rm -rf nested"); mkdir.mockClear();
+    await box.files.write("nested/deep/file", "second");
+    expect(mkdir).toHaveBeenCalledTimes(1);
+    expect(await box.files.read("nested/deep/file")).toBe("second");
+    await adapter.list({});
+    expect(load).toHaveBeenCalledTimes(1);
+  } finally { mkdir.mockRestore(); await box.destroy(); }
+});

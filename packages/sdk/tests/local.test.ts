@@ -68,3 +68,41 @@ test("local usage exposes creation phase and first-command timings", async () =>
     }
   } finally { call.mockRestore(); exec.mockRestore(); }
 });
+
+test("file writes use one native exec with parent creation", async () => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const { createSandbox } = await import("../src/index.js");
+  const call = vi.spyOn(Docker.prototype, "call").mockImplementation(async (_, path) => {
+    if (path.startsWith("/containers/create")) return { Id: "write-once" };
+    return { Id: "write-once", Created: new Date().toISOString(), Config: { Labels: { "sandbox-sdk": "1" } }, State: { Running: true } };
+  });
+  const exec = vi.spyOn(Docker.prototype, "exec").mockResolvedValue(0);
+  const box = await createSandbox(local());
+  try {
+    exec.mockClear();
+    await box.files.write("nested/deep/file", "bytes");
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec.mock.calls[0]?.[1].join(" ")).toContain("mkdirSync");
+  } finally { await box.destroy(); call.mockRestore(); exec.mockRestore(); }
+});
+
+test("Docker reuses one keepalive connection across control requests", async () => {
+  const { createServer } = await import("node:http");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const directory = await mkdtemp(join(tmpdir(), "sbx57-docker-"));
+  const path = join(directory, "docker.sock");
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end('{"ok":true}'); });
+  server.on("connection", socket => sockets.add(socket));
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  try {
+    const client = new Docker(`unix://${path}`);
+    expect(await client.call("GET", "/info")).toEqual({ ok: true });
+    expect(await client.call("GET", "/info")).toEqual({ ok: true });
+    expect(sockets.size).toBe(1);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
+});

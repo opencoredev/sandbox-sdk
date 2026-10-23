@@ -4,13 +4,18 @@ import { createSandbox } from "../src/index.js";
 import { local } from "../src/providers/local/index.js";
 
 if (process.env.SANDBOX_LOCAL_LIVE === "1") {
-  runConformance(() => local(), { live: true });
+  runConformance(() => {
+    const provider = local();
+    const create = provider.create;
+    provider.create = input => create({ ...input, labels: { ...input.labels, sbx57: "adapters-c-conformance" } });
+    return provider;
+  }, { live: true });
   describe("Docker enforcement", () => {
     test("size, isolation, exact keys across clients, pause and snapshot restore", async () => {
-      const provider = local(); const key = `sbx25-${crypto.randomUUID()}`;
+      const provider = local(); const key = `sbx57-${crypto.randomUUID()}`;
       const boxes: string[] = []; let snapshot: string | undefined;
       try {
-        const first = await createSandbox(provider, { key, size: "small", network: "none", labels: { verification: "sbx25" } }); boxes.push(first.id);
+        const first = await createSandbox(provider, { key, size: "small", network: "none", labels: { verification: "sbx57" } }); boxes.push(first.id);
         const second = await createSandbox(local(), { key }); expect(second.id).toBe(first.id); expect(second.created).toBe(false);
         const inspect = await first.native.client.call("GET", `/containers/${first.id}/json`);
         expect(inspect).toMatchObject({ HostConfig: { NanoCpus: 1e9, Memory: 1073741824, NetworkMode: "none" } });
@@ -46,7 +51,7 @@ else { test.skip("Docker live suite requires SANDBOX_LOCAL_LIVE=1", () => {}); }
 if (process.env.SANDBOX_LOCAL_LIVE === "1") {
   test("local lifecycle labels survive fresh clients and reap expired idle boxes", async () => {
     const { connectSandbox, reapSandboxes } = await import("../src/index.js");
-    const labels = { "review-lifecycle": crypto.randomUUID() }; const provider = local(); const ids: string[] = [];
+    const labels = { "review-lifecycle": crypto.randomUUID(), sbx57: "adapters-c-lifecycle" }; const provider = local(); const ids: string[] = [];
     try {
       const lifetime = await createSandbox(provider, { labels, timeoutMs: 10_000, idleTimeoutMs: 30_000 }); ids.push(lifetime.id);
       expect(Number(lifetime.labels["sandbox-sdk.local.deadline"])).toBeGreaterThan(Date.now());
