@@ -4,12 +4,14 @@ import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
 import { raw } from "./exec.js";
+import { workspaceSetup } from "./ready.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
 // The supervisor owns the deadline and process group even after an RPC disconnect.
 const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
 ${guestProcess}
 v=json.load(sys.stdin)
+${workspaceSetup}
 def processes():
  ids=set()
  for e in os.scandir('/proc'):

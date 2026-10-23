@@ -12,6 +12,7 @@ ${guestProcess}
 # to the default disposition when the user shell execs.
 signal.signal(signal.SIGTERM,lambda *_:None)
 v=json.load(sys.stdin)
+if v.get('preparing'): print('SDK_PREPARED:',end='',flush=True)
 a=v.get('activityPath')
 m=v['pidPath']
 try:
@@ -65,10 +66,10 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
-export async function execute(client: Boxd, id: string, input: ExecInput): Promise<ExecResult> {
+export async function execute(client: Boxd, id: string, input: ExecInput, setup = "", onPrepared?: () => void): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const pidPath = `/tmp/sandbox-sdk-${crypto.randomUUID()}.pid`;
-  const stream = client.machines.streamExec(id, { command: python(launcher) });
+  const stream = client.machines.streamExec(id, { command: setup + python(launcher) });
   let cancelled = false;
   let interrupted = false;
   const completion = stream.wait().then(
@@ -79,9 +80,21 @@ export async function execute(client: Boxd, id: string, input: ExecInput): Promi
   // queues. Consume at that boundary rather than scheduling two independent
   // iterators, which loses inter-stream ordering and buffers unbounded output.
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+  let prepared = !setup;
+  let acknowledgment = "";
   for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
     stream[name].push = (bytes) => {
-      const text = decoders[name].decode(bytes, { stream: true });
+      let text = decoders[name].decode(bytes, { stream: true });
+      if (name === "stdout" && !prepared) {
+        acknowledgment += text;
+        if ("SDK_PREPARED:".startsWith(acknowledgment) && acknowledgment.length < 13) return;
+        if (acknowledgment.startsWith("SDK_PREPARED:")) {
+          prepared = true;
+          onPrepared?.();
+          text = acknowledgment.slice(13);
+        } else text = acknowledgment;
+        acknowledgment = "";
+      }
       if (text) input.onChunk({ stream: name, text });
     };
   }
@@ -101,6 +114,7 @@ export async function execute(client: Boxd, id: string, input: ExecInput): Promi
     stream.write(
       JSON.stringify({
         pidPath,
+        preparing: Boolean(setup),
         command: input.command,
         cwd: input.cwd,
         env: input.env,

@@ -4,6 +4,7 @@ import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 import { executeStream } from "./stream.js";
+import { workspaceSetup } from "./ready.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
@@ -14,6 +15,7 @@ import { executeStream } from "./stream.js";
 const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
 ${guestProcess}
 v=json.load(sys.stdin)
+${workspaceSetup}
 def processes():
  ids=set()
  for e in os.scandir('/proc'):

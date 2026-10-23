@@ -1,7 +1,6 @@
 /** Verified against @boxd-sh/sdk 0.2.17 and https://docs.boxd.sh/reference/typescript-sdk. */
 import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
-import { SandboxError } from "../../errors.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, quote, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
@@ -69,19 +68,37 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       throw boxdError(error, id);
     }
   }
+  const pending = new Map<string, string>();
+  function preparation(metadata: string) { return "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && " +
+            `printf %s ${quote(metadata)} > ${quote(marker)} && `; }
+  function setup(id: string) { return pending.get(id) ?? ""; }
   async function guest(id: string): Promise<Guest> {
     const c = await api();
     return {
       name: "boxd",
       raw: async (command) => {
+        const prefix = setup(id);
+        const ack = "SDK_PREPARED:";
         const r = await c.machines.exec(id, {
-          command,
+          command: prefix ? prefix + `printf %s ${quote(ack)} && ` + command : command,
           timeout: options.requestTimeoutMs ?? 30000,
         });
+        const prepared = prefix && r.stdout.startsWith(ack);
+        if (prepared) pending.delete(id);
         if (r.exitCode !== 0) throw failure("Guest operation failed", "provider", id);
-        return r.stdout;
+        return prepared ? r.stdout.slice(ack.length) : r.stdout;
       },
       upload: async (path, bytes) => {
+        const prefix = setup(id);
+        if (prefix) {
+          const result = await execute(c, id, {
+            command: python("import os,sys,base64; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(base64.b64decode(sys.stdin.buffer.read())); f.close()", path),
+            cwd: "/", env: {}, stdin: Buffer.from(bytes).toString("base64"),
+            timeoutMs: options.requestTimeoutMs ?? 30000, onChunk() {},
+          }, prefix, () => pending.delete(id));
+          if (result.exitCode !== 0) throw failure("File upload failed", "provider", id);
+          return;
+        }
         if ((await (await fileApi()).upload(id, path, bytes)) !== bytes.length)
           throw failure("Incomplete file upload", "provider", id);
       },
@@ -104,7 +121,18 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
   }
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
-    const text = new TextDecoder().decode(await (await fileApi()).download(m.id, marker));
+    let text: string;
+    let deferred = false;
+    try { text = new TextDecoder().decode(await (await fileApi()).download(m.id, marker)); }
+    catch (error) {
+      if (!["not_found", "file_not_found"].includes(boxdError(error).code)) throw error;
+      const parts = m.name.split("-");
+      if (parts[1] !== "v2" || !["0", "1"].includes(parts[2] ?? "")) throw failure("SDK metadata is missing", "not_found", m.id);
+      const createdAt = Number.parseInt(parts[3] ?? "", 36);
+      if (!Number.isFinite(createdAt) || createdAt <= 0) throw failure("Invalid SDK metadata", "not_found", m.id);
+      text = JSON.stringify({ key: null, labels: parts[2] === "1" ? { "sandbox-sdk": "1" } : {}, createdAt });
+      deferred = true;
+    }
     let value: unknown;
     try { value = JSON.parse(text); }
     catch { throw failure("Invalid SDK metadata", "not_found", m.id); }
@@ -121,6 +149,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       (value.key !== null && typeof value.key !== "string")
     )
       throw failure("Invalid SDK metadata", "not_found", m.id);
+    if (deferred && !pending.has(m.id)) pending.set(m.id, preparation(text));
     const labels: Record<string, string> = {};
     for (const [k, v] of Object.entries(value.labels)) {
       if (typeof v !== "string") throw failure("Invalid SDK labels", "not_found", m.id);
@@ -130,7 +159,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       id: m.id,
       key: value.key ?? undefined,
       labels,
-      createdAt: value.createdAt,
+      createdAt: m.createdAt?.getTime() ?? value.createdAt,
       state:
         m.status === "running"
           ? "running"
@@ -162,9 +191,14 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         const vcpu = vcpuFor(input.size);
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const c = await api();
+        const createdAt = Date.now();
+        const metadata = JSON.stringify({ key: input.key ?? null, labels: input.labels, createdAt });
+        const nativeOwnership = input.key === undefined && Object.keys(input.labels).every(key => key === "sandbox-sdk" && input.labels[key] === "1") && input.from === undefined;
         let m: Machine;
         try {
-          const name = `sbxsdk-${crypto.randomUUID()}`;
+          const name = nativeOwnership
+            ? `sbxsdk-v2-${input.labels["sandbox-sdk"] === "1" ? "1" : "0"}-${createdAt.toString(36)}-${crypto.randomUUID()}`
+            : `sbxsdk-${crypto.randomUUID()}`;
           m = await c.machines.create(input.from !== undefined ? {
             name,
             fromSnapshot: input.from,
@@ -188,36 +222,12 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         }
 
         try {
-          const waitUntilReady = () => c.machines.waitUntilReady(m.id, {
-            timeout: options.requestTimeoutMs ?? 90000,
-          });
-          // Setup is itself the exec probe, including when allocation still
-          // reports pending. Fall back to readiness only on transport failure.
-          let ready = m;
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          const g = await guest(m.id);
-          const value: SandboxInfo = {
-            id: m.id,
-            key: input.key,
-            labels: input.labels,
-            createdAt: Date.now(),
-            state: "running",
-          };
-          const setup = () => g.raw(
-            "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null && " +
-            `printf %s ${quote(JSON.stringify({ key: value.key ?? null, labels: value.labels, createdAt: value.createdAt }))} > ${quote(marker)}`,
-          );
-          try {
-            await setup();
-          } catch (error) {
-            // A nonzero setup exit is a real failure. Only an exec transport
-            // error on the unprobed path means the guest is not reachable yet.
-            if (ready !== m || error instanceof SandboxError) throw error;
-            ready = await waitUntilReady();
-            if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-            await setup();
-          }
-          boxes.set(m.id, { ...ready, status: "running" });
+          if (m.status !== "running") m = await c.machines.waitUntilReady(m.id, { timeout: options.requestTimeoutMs ?? 90000 });
+          const value: SandboxInfo = { id: m.id, key: input.key, labels: input.labels, createdAt: m.createdAt?.getTime() ?? createdAt, state: "running" };
+          pending.set(m.id, preparation(metadata));
+          boxes.set(m.id, m);
+          if (!nativeOwnership) await (await guest(m.id)).raw("true");
           return value;
         } catch (error) {
           await c.machines.delete(m.id);
@@ -266,6 +276,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           if (boxdError(error).code !== "not_found") throw error;
         }
         boxes.delete(id);
+        pending.delete(id);
         await webClient?.closeMachine(id);
         if (!boxes.size) await webClient?.releaseIdle();
       }),
@@ -274,7 +285,11 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       await webClient?.closeMachine(id);
       if (!boxes.size) await webClient?.releaseIdle();
     },
-    exec: (id, input) => safe(id, async () => execute(await api(), id, input)),
+    exec: (id, input) => safe(id, async () => {
+      const prefix = setup(id);
+      const result = await execute(await api(), id, input, prefix, () => pending.delete(id));
+      return result;
+    }),
     files: files(guest, safe),
     previewUrl: (id, port) =>
       safe(id, async () => {

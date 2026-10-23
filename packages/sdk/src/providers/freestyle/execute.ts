@@ -54,7 +54,7 @@ try:
      timed=True
      try: os.killpg(p.pid,signal.SIGKILL)
      except ProcessLookupError: pass
-    for key,_ in sel.select(.01):
+    for key,_ in sel.select(.01 if sel.get_map() else .001):
      data=os.read(key.fd,16384)
      if data: out.write((json.dumps([key.data,base64.b64encode(data).decode()])+'\\n').encode())
      else: sel.unregister(key.fileobj); key.fileobj.close()

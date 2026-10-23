@@ -268,8 +268,6 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
                 value.egress.allowCidrs.length))
           )
             throw failure("Tenki did not confirm the requested network policy", "unsupported");
-          stage = "prepare";
-          await prepareBox(value);
           return info(value);
         } catch (error) {
           const context = { id: value.id, state: value.state, stage };

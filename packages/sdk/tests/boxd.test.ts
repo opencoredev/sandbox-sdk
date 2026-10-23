@@ -31,27 +31,21 @@ afterAll(async () => {
   await Promise.all([...boxdState.boxes.values()].map((v) => v.guest.destroy()));
   boxdState.boxes.clear();
 });
-test.each([false, true])("pending allocation uses setup as its readiness probe (retry %s)", async (retry) => {
+test("pending allocations use only native readiness before returning", async () => {
   const provider = factory();
   const first = await createSandbox(provider);
   const client = first.native.client;
   const create = client.machines.create.bind(client.machines);
-  const allocation = vi.spyOn(client.machines, "create").mockImplementationOnce(async (input) => ({ ...await create(input), status: "pending" }));
+  const allocation = vi.spyOn(client.machines, "create").mockImplementationOnce(async input => ({ ...await create(input), status: "pending" }));
   const wait = vi.spyOn(client.machines, "waitUntilReady");
   const exec = vi.spyOn(client.machines, "exec");
-  if (retry) exec.mockRejectedValueOnce(Object.assign(new Error("not serving"), { grpcCode: 14 }));
-  const labels = { quoted: "'$(touch injected)\n雪" };
-  let second: typeof first | undefined;
+  const second = await createSandbox(provider);
   try {
-    second = await createSandbox(provider, { labels });
-    expect(wait).toHaveBeenCalledTimes(retry ? 1 : 0);
-    expect(second.native.machine.status).toBe("running");
-    expect(await factory().connect(second.id)).toMatchObject({ labels });
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(exec).not.toHaveBeenCalled();
+    expect(await factory().connect(second.id)).toMatchObject({ labels: second.labels });
     expect(await second.files.exists("injected")).toBe(false);
-  } finally {
-    allocation.mockRestore(); wait.mockRestore(); exec.mockRestore();
-    await second?.destroy(); await first.destroy();
-  }
+  } finally { allocation.mockRestore(); wait.mockRestore(); exec.mockRestore(); await second.destroy(); await first.destroy(); }
 });
 describe("boxd contract", () => {
   test("rejects every unenforceable option before allocating", async () => {
@@ -135,7 +129,12 @@ describe("boxd contract", () => {
 });
 
 import { cloudRegressions } from "./cloud-regressions.js";
-cloudRegressions(factory, (id) => boxdState.boxes.get(id)?.guest);
+cloudRegressions(() => {
+  const provider = factory();
+  const create = provider.create;
+  provider.create = async input => { const info = await create(input); await provider.files.list(info.id, "/workspace"); return info; };
+  return provider;
+}, (id) => boxdState.boxes.get(id)?.guest);
 
 test("plain BoxdError local exec deadline maps to timeout without native details", () => {
   const result = boxdError(
@@ -356,6 +355,7 @@ test("whole-file transfers use the web client and preserve authentication errors
   const box = await createSandbox(factory());
   try {
     const data = Uint8Array.from({ length: 2 * 1024 * 1024 }, (_, i) => i % 251);
+    await box.files.list(".");
     // Lazy file transport is initialized on the first transfer.
     await box.files.write("retry.bin", data);
     const fileClient = mocks.web.at(-1);
@@ -383,7 +383,7 @@ test("boxd listing skips corrupt or vanished per-machine metadata and preserves 
       expect(await factory().list({})).toEqual([]);
     }
     read.mockRejectedValue(Object.assign(new Error("gone"), { grpcCode: 5 }));
-    expect(await factory().list({})).toEqual([]);
+    expect((await factory().list({})).map(value => value.id)).toEqual([box.id]);
     read.mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 16 }));
     await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
     read.mockRestore();
@@ -405,7 +405,7 @@ test("sizes select boxd's coupled CPU and memory classes before allocation", asy
 });
 
 
-test("create writes metadata during setup without a file round trip", async () => {
+test("custom ownership metadata is persisted before returning", async () => {
   const provider = factory();
   const info = await provider.create({ labels: { example: "quote'雪" }, key: "new" });
   try {
@@ -514,4 +514,29 @@ test.each(["missing", "unsupported", "restricted"])("guest launch retains the po
     await new Promise(resolve => setTimeout(resolve, 600));
     expect(await box.files.exists("fallback-leak")).toBe(false);
   } finally { spy.mockRestore(); await box.destroy(); }
+});
+
+
+test("plain create has no guest call and first list prepares in one request", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const guest = boxdState.boxes.get(box.id)?.guest;
+  if (!guest) throw new Error("Missing guest");
+  try {
+    expect(guest.commands).toHaveLength(0);
+    expect(await box.files.list(".")).toEqual([]);
+    expect(guest.commands).toHaveLength(1);
+    await box.run("rm -rf /workspace", { cwd: "/" });
+    expect(await box.files.exists("/workspace")).toBe(false);
+  } finally { await box.destroy(); }
+});
+
+test("fresh client prepares a sandbox closed before first use", async () => {
+  const box = await createSandbox(factory());
+  const id = box.id;
+  await box.close();
+  const { connectSandbox } = await import("../src/index.js");
+  const connected = await connectSandbox(factory(), id);
+  try { expect(await connected.run("pwd")).toMatchObject({ stdout: "/workspace\n", exitCode: 0 }); }
+  finally { await connected.destroy(); }
 });
