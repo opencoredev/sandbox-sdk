@@ -17,10 +17,14 @@ import Link from "next/link";
 import { useRef } from "react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { otherOpenCoreSites } from "@/lib/opencore-sites";
 
 import styles from "./landing.module.css";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
+
+// Plain followed links on purpose: they share authority between our sites.
+const openCoreSites = otherOpenCoreSites("https://sandbox-sdk.app");
 
 export default function HomePage() {
   const root = useRef<HTMLElement>(null);
@@ -206,6 +210,18 @@ export default function HomePage() {
             Read the docs <HugeiconsIcon icon={ArrowRight01Icon} size={20} strokeWidth={2} />
           </Link>
         </div>
+        <nav aria-labelledby="footer-family-label" className={styles.footerFamily}>
+          <span id="footer-family-label">More from OpenCore</span>
+          <ul>
+            {openCoreSites.map((site) => (
+              <li key={site.url}>
+                <a href={site.url}>
+                  <span>{site.name}</span> {site.description}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
         <div className={styles.footerBar}>
           <Link href="/" className={styles.brand}>
             <BrandMark className={styles.brandMark} />
