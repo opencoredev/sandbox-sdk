@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import type { Provider, CreateInput, SandboxInfo, ExecInput, ExecResult, FileInfo, NativeProcess } from "./provider.js";
 import { SandboxError } from "./errors.js";
+import { secretRecoveryCommand } from "./run.js";
 export interface CommandContext {
   args: string[]; cwd: string; env: Record<string, string>; stdin: string; signal: AbortSignal;
   stdout(text: string): void; stderr(text: string): void;
@@ -30,6 +31,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
     }
   }
   const files: Provider["files"] = {
+    writeCreatesParents: true,
     async readRange(id, path, options) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(options.offset, options.offset + options.length); },
     async read(id, path) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(); },
     async write(id, path, data) { const m = machine(id); mkdir(id, posix.dirname(path)); m.nodes.set(posix.resolve("/", path), { data: data.slice(), modifiedAt: Math.max(now(), (m.nodes.get(path)?.modifiedAt ?? 0) + 1) }); },
@@ -82,6 +84,13 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
     let cwd = input.cwd; const env = { ...m.env, ...input.env }; let exitCode = 0; let exited = false;
     try {
       if (input.activityPath) { mkdir(id, posix.dirname(input.activityPath)); await files.write(id, input.activityPath, new Uint8Array([1])); }
+      // Execute the core's recovery transaction without implementing host shell
+      // conditionals or exposing environment through the fake's native handle.
+      if (input.command === secretRecoveryCommand) {
+        const record = m.nodes.get("/tmp/.sandbox-sdk/secret-names.json");
+        if (record?.data) input.onChunk({ stream: "stdout", text: new TextDecoder().decode(record.data) + "\0" + Object.entries(env).map(([key, value]) => `${key}=${value}\0`).join("") });
+        return { exitCode: 0, timedOut: false };
+      }
       const tokens = tokenize(input.command, env);
       const unsupported = tokens.find(token => token.operator && ![";", "&&", "||", ">", ">&2"].includes(token.text));
       const badRedirect = tokens.find((token, index) => token.operator && token.text === ">" && (!tokens[index + 1] || tokens[index + 1]?.operator || (tokens[index + 2] && !tokens[index + 2]?.operator)));
