@@ -3,7 +3,7 @@ import type { Daytona, DaytonaConfig, Sandbox as DaytonaSandbox, CreateSandboxFr
 import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { daytonaError, unsupported } from "./errors.js";
-import { execute, sessionProcess } from "./exec.js";
+import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
 
 export interface DaytonaOptions {
   apiKey?: string;
@@ -39,9 +39,9 @@ function network(input: CreateInput["network"]) {
   if (input.allow.some(domain => !/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(domain) || domain.length > 253)) unsupported("Network allow entries must be DNS hostnames without schemes, ports, commas, or wildcards");
   return { networkBlockAll: false, domainAllowList: input.allow.join(",") };
 }
-function info(box: DaytonaSandbox): SandboxInfo {
-  const createdAt = Date.parse(box.createdAt ?? "");
-  if (!Number.isFinite(createdAt)) throw new SandboxError("Sandbox creation time is missing. Daytona returned incomplete metadata. Refresh the sandbox metadata.", { code: "provider", provider: "daytona", sandboxId: box.id });
+function info(box: DaytonaSandbox, fallbackCreatedAt?: number): SandboxInfo {
+  const createdAt = Date.parse(box.createdAt ?? "") || fallbackCreatedAt;
+  if (createdAt === undefined || !Number.isFinite(createdAt)) throw new SandboxError("Sandbox creation time is missing. Daytona returned incomplete metadata. Refresh the sandbox metadata.", { code: "provider", provider: "daytona", sandboxId: box.id });
   return { id: box.id, key: box.labels[keyLabel], labels: { ...box.labels }, createdAt, state: box.state === "started" ? "running" : box.state === "paused" ? "paused" : "stopped" };
 }
 type NativeFile = Awaited<ReturnType<DaytonaSandbox["fs"]["getFileDetails"]>>;
@@ -60,6 +60,8 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     for (const value of Object.values(env)) if (value) knownSecrets.add(value);
   };
   const boxes = new Map<string, DaytonaSandbox>();
+  const unprepared = new Set<string>();
+  const workspace = workspaceCommand;
   const recentCreates = new Map<string, { expiresAt: number }>();
   const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
@@ -74,7 +76,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     })();
   }
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = file ? "files" : "request"): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file, operation, options.apiKey ?? process.env.DAYTONA_API_KEY, knownSecrets); } }
-  async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); return value; }
+  async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); unprepared.add(id); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
   const provider: DaytonaProvider = {
     name: "daytona", inlineActivity: true, keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["snapshot", "size", "network-policy"]),
@@ -93,6 +95,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         ttlMinutes: input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
       };
       const params: CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams = image ? { ...base, image, resources: allocation } : { ...base, snapshot: input.from ?? options.snapshot ?? (allocation?.cpu === 4 && allocation.memory === 8 && allocation.disk === 10 ? "daytona-large" : undefined) };
+      const createdAt = Date.now();
       const value = await (await api()).create(params, { timeout: 60 });
       boxes.set(value.id, value);
       try {
@@ -101,13 +104,9 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           if (allocation.disk < value.disk) unsupported("Snapshot disk cannot shrink; choose diskGb at least as large as the snapshot");
           await value.stop(); await value.resize(allocation); await value.start();
         }
-        const workspace = await value.process.executeCommand(
-          'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace',
-          "/", undefined, 10,
-        );
-        if (workspace.exitCode !== 0) throw new SandboxError("Workspace is not writable. Guest setup requires passwordless sudo. Use a Daytona runtime with sudo -n access.", { code: "provider", provider: "daytona", sandboxId: value.id });
+        unprepared.add(value.id);
         recentCreates.set(value.id, { expiresAt: Date.now() + 30_000 });
-        return info(value);
+        return info(value, createdAt);
       } catch (error) { await value.delete(60, true); boxes.delete(value.id); recentCreates.delete(value.id); throw error; }
     }, undefined, false, input.from ? "restore" : "create"); },
     async list(labels: Labels) { return safe(async () => {
@@ -115,7 +114,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       const matches = (value: DaytonaSandbox) => Object.entries(requested).every(([key, expected]) => value.labels[key] === expected);
       const values = new Map<string, SandboxInfo>();
       for await (const value of (await api()).list({ labels: requested })) {
-        if (matches(value)) { boxes.set(value.id, value); values.set(value.id, info(value)); recentCreates.delete(value.id); }
+        if (matches(value)) { if (!boxes.has(value.id)) unprepared.add(value.id); boxes.set(value.id, value); values.set(value.id, info(value)); recentCreates.delete(value.id); }
       }
       // Native list can lag behind create/get. Verify only recent local creates
       // omitted by the index; never resurrect a sandbox from stale cached data.
@@ -136,16 +135,17 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       return [...values.values()];
     }, undefined, false, "list"); },
     async find(key) { return (await provider.list({ [keyLabel]: key }))[0]; },
-    async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); return info(value); }, id, false, "connect"); },
+    async connect(id) { return safe(async () => { const value = await (await api()).get(id); boxes.set(id, value); unprepared.add(id); return info(value); }, id, false, "connect"); },
     async destroy(id) {
       const existing = deletions.get(id); if (existing) return existing;
-      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); } }, id, false, "destroy");
+      const deletion = safe(async () => { try { await (await box(id)).delete(60, true); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } finally { boxes.delete(id); recentCreates.delete(id); unprepared.delete(id); } }, id, false, "destroy");
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },
-    exec: (id, input) => { rememberEnv(input.env); return safe(async () => execute(await box(id), input), id, false, "exec"); },
+    exec: (id, input) => { rememberEnv(input.env); return safe(async () => execute(await box(id), input, unprepared.has(id) ? workspace : "").then(result => { if (!result.timedOut) unprepared.delete(id); return result; }), id, false, "exec"); },
     startProcess: (id, input) => { rememberEnv(input.env); return safe(async () => {
-      const hook = await sessionProcess(await box(id), input);
+      const hook = await sessionProcess(await box(id), input, undefined, unprepared.has(id) ? workspace : "");
+      if (hook.pid > 0) unprepared.delete(id);
       let active = monitors.get(id); if (!active) { active = new Set(); monitors.set(id, active); }
       active.add(hook.detach);
       void hook.wait().finally(() => active.delete(hook.detach)).catch(() => {});
@@ -155,11 +155,36 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     files: {
       writeCreatesParents: true,
       read: (id, path) => onFile(id, async value => new Uint8Array(await value.fs.downloadFile(path))),
-      write: (id, path, data) => onFile(id, value => value.fs.uploadFile(Buffer.from(data), path)),
-      list: (id, path) => onFile(id, async value => (await value.fs.listFiles(path)).map(file => fileInfo(posix.join(path, file.name), file))),
-      stat: (id, path) => onFile(id, async value => fileInfo(path, await value.fs.getFileDetails(path))),
-      remove: (id, path, settings) => onFile(id, value => value.fs.deleteFile(path, settings.recursive)),
-      mkdir: (id, path) => onFile(id, value => value.fs.createFolder(path, "755")),
+      write: (id, path, data) => onFile(id, async value => {
+        if (!unprepared.has(id)) return value.fs.uploadFile(Buffer.from(data), path);
+        // Code is a request body, so even a large first write avoids argv limits.
+        const result = await value.process.codeRun(`import os,base64,subprocess
+subprocess.run(["sh","-c",${JSON.stringify(workspace)}],check=True)
+p=${JSON.stringify(path)}
+os.makedirs(os.path.dirname(p),exist_ok=True)
+with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))`, undefined, 120);
+        if (result.exitCode !== 0) throw new SandboxError("File write failed. Workspace setup or the native code operation failed. Check guest permissions.", { code: "provider", provider: "daytona", sandboxId: id });
+        unprepared.delete(id);
+      }),
+      list: (id, path) => onFile(id, async value => {
+        try { return (await value.fs.listFiles(path)).map(file => fileInfo(posix.join(path, file.name), file)); }
+        catch (error) { if (path !== "/workspace" || !unprepared.has(id) || daytonaError(error, id, true).code !== "file_not_found") throw error; return []; }
+      }),
+      stat: (id, path) => onFile(id, async value => {
+        try { return fileInfo(path, await value.fs.getFileDetails(path)); }
+        catch (error) { if (path !== "/workspace" || !unprepared.has(id) || daytonaError(error, id, true).code !== "file_not_found") throw error; return { path, type: "directory", size: 0, modifiedAt: Date.parse(value.createdAt ?? "") || Date.now() }; }
+      }),
+      remove: (id, path, settings) => onFile(id, async value => {
+        try { await value.fs.deleteFile(path, settings.recursive); }
+        catch (error) { if (path !== "/workspace" || !unprepared.has(id) || daytonaError(error, id, true).code !== "file_not_found") throw error; }
+        if (path === "/workspace") unprepared.delete(id);
+      }),
+      mkdir: (id, path) => onFile(id, async value => {
+        if (!unprepared.has(id)) return value.fs.createFolder(path, "755");
+        const result = await value.process.executeCommand(`${workspace} && mkdir -p ${quote(path)}`, "/", undefined, 10);
+        if (result.exitCode !== 0) throw new SandboxError("Directory creation failed. Check guest permissions.", { code: "provider", provider: "daytona", sandboxId: id });
+        unprepared.delete(id);
+      }),
     },
     previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id, false, "preview"),
     snapshot: id => safe(async () => {

@@ -10,9 +10,10 @@ export function daytonaError(error: unknown, sandboxId?: string, file = false, o
   const status = error && typeof error === "object" && "statusCode" in error ? error.statusCode : undefined;
   const nativeCode = error && typeof error === "object" && "code" in error ? error.code : undefined;
   const name = error instanceof Error ? error.name : "";
+  const missingFile = file && status === 400 && error instanceof Error && /(?:\bENOENT\b|no such file or directory|\bnot found\b|\bdoes not exist\b)/i.test(error.message);
   let code: ErrorCode = "provider";
   if (status === 401 || status === 403) code = "auth";
-  else if (nativeCode === "FILE_NOT_FOUND" || (file && status === 404)) code = "file_not_found";
+  else if (nativeCode === "FILE_NOT_FOUND" || (file && status === 404) || missingFile) code = "file_not_found";
   else if (status === 404 || status === 410) code = "not_found";
   else if (status === 429 || status === 402 || nativeCode === "QUOTA_EXCEEDED") code = "quota";
   else if (status === 408 || status === 504 || name.includes("Timeout")) code = "timeout";

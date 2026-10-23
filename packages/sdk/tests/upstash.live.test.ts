@@ -4,7 +4,12 @@ import { createSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 describe.skipIf(!process.env.UPSTASH_BOX_API_KEY)("Upstash Box live", () => {
-  runConformance(() => upstash(), { live: true });
+  runConformance(() => {
+    const provider = upstash();
+    const create = provider.create;
+    provider.create = input => create({ ...input, labels: { ...input.labels, "sbx57-create-a-live": "1" } });
+    return provider;
+  }, { live: true });
   test("medium snapshots retain 4 vCPU and 8 GiB after source deletion", async () => {
     const { Box } = await import("@upstash/box");
     const medium = () => createSandbox(upstash(), { size: "medium" });

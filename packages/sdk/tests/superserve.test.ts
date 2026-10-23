@@ -78,7 +78,7 @@ vi.mock("@superserve/sdk", () => ({
       return {
         run: async (command: string, options: { env?: Record<string, string> } = {}) => {
           if (command.includes("SANDBOX_SDK_BOOTSTRAP")) await state.bootstrap?.();
-          if (state.transportFailure && !command.includes("SANDBOX_SDK_BOOTSTRAP")) {
+          if (state.transportFailure) {
             state.transportFailure = false;
             void g.raw(command).catch(() => {});
             throw new Error("private-native-token");
@@ -122,10 +122,12 @@ vi.mock("@superserve/sdk", () => ({
             onStdout?: (s: string) => void;
             onStderr?: (s: string) => void;
             startupSignal?: AbortSignal;
+            env?: Record<string, string>;
           },
         ) => {
           if (options.startupSignal?.aborted) throw new DOMException("aborted", "AbortError");
-          const stream = g.stream(command);
+          const prefix = Object.entries(options.env ?? {}).map(([key, value]) => `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(b'${g.root}',b''))`))};`).join(" ");
+          const stream = g.stream(`${prefix} ${command}`);
           let stdout = "",
             stderr = "";
           stream.stdout.push = (bytes) => {
@@ -245,30 +247,17 @@ test("transport failure confirms termination before a delayed side effect", asyn
     await box.destroy();
   }
 });
-test("cancellation during bootstrap destroys the allocated sandbox", async () => {
-  let release = () => {},
-    entered = () => {};
-  const gate = new Promise<void>((r) => {
-      release = r;
-    }),
-    started = new Promise<void>((r) => {
-      entered = r;
-    });
-  const controller = new AbortController();
-  state.bootstrap = async () => {
-    entered();
-    await gate;
-  };
-  const pending = createSandbox(factory(), { signal: controller.signal });
-  await started;
-  controller.abort();
-  release();
+test("creation defers bootstrap, and first execution installs it", async () => {
+  let calls = 0;
+  state.bootstrap = async () => { calls++; };
+  const box = await createSandbox(factory());
   try {
-    await expect(pending).rejects.toMatchObject({ code: "aborted" });
-    await expect.poll(() => state.boxes.size, { timeout: 2000 }).toBe(0);
-  } finally {
-    state.bootstrap = undefined;
-  }
+    expect(calls).toBe(0);
+    expect((await box.run("true")).ok).toBe(true);
+    expect(calls).toBe(1);
+    expect((await box.run("true")).ok).toBe(true);
+    expect(calls).toBe(1);
+  } finally { state.bootstrap = undefined; await box.destroy(); }
 });
 test("snapshot failures retain a safe idempotent recovery name", async () => {
   const box = await createSandbox(factory());
@@ -344,7 +333,7 @@ test("snapshot restore takes precedence over a custom template", async () => {
   }
 });
 
-test("creation prepares the environment and supervisor in one guest call without patching an unset timeout", async () => {
+test("first execution prepares the environment and supervisor in its single guest call", async () => {
   const provider = factory();
   const before = state.updates.length;
   const value = "literal'$(echo injected)";
@@ -352,7 +341,7 @@ test("creation prepares the environment and supervisor in one guest call without
   try {
     const guest = state.boxes.get(box.id)?.guest;
     if (!guest) throw new Error("missing guest");
-    expect(guest.commands).toHaveLength(1);
+    expect(guest.commands).toHaveLength(0);
     expect(guest.uploads).toHaveLength(0);
     expect(state.updates).toHaveLength(before);
     const chunks: string[] = [];
@@ -366,6 +355,7 @@ test("creation prepares the environment and supervisor in one guest call without
       }),
     ).toMatchObject({ exitCode: 0, timedOut: false });
     expect(chunks.join("")).toBe(value);
+    expect(guest.commands).toHaveLength(1);
   } finally {
     await provider.destroy(box.id);
   }
@@ -387,20 +377,14 @@ test("restores clear an inherited auto-pause timeout", async () => {
   }
 });
 
-test("missing Python fails clearly and destroys the sandbox without running apt", async () => {
+test("missing Python fails on first use without running apt", async () => {
   const path = await mkdtemp(join(tmpdir(), "superserve-no-python-"));
-  const before = state.boxes.size;
   state.bootstrapPath = path;
+  const provider = factory();
+  const box = await provider.create({ labels: {} });
   try {
-    await expect(factory().create({ labels: {} })).rejects.toMatchObject({
-      code: "unsupported",
-      message: expect.stringContaining("explicitly set installPython: true"),
-    });
-    expect(state.boxes.size).toBe(before);
-  } finally {
-    state.bootstrapPath = "";
-    await rm(path, { recursive: true, force: true });
-  }
+    await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("explicitly set installPython: true") });
+  } finally { state.bootstrapPath = ""; await provider.destroy(box.id); await rm(path, { recursive: true, force: true }); }
 });
 
 test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
@@ -420,6 +404,7 @@ if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "
   try {
     const box = await provider.create({ labels: {} });
     try {
+      await provider.files.list(box.id, "/workspace");
       expect(await readFile(log, "utf8")).toBe(
         "update -qq\ninstall -y -qq python3 python3-venv python3-pip\n",
       );
@@ -447,4 +432,19 @@ test("quote-heavy commands use stdin transport before shell argument expansion e
   const box = await createSandbox(factory());
   try { expect(await box.run(": #" + "'".repeat(40_000))).toMatchObject({ exitCode: 0 }); }
   finally { await box.destroy(); }
+});
+
+test("fresh files prepare the workspace before execution", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  try {
+    const guest = state.boxes.get(box.id)?.guest;
+    if (!guest) throw new Error("Missing guest");
+    expect(guest.commands).toHaveLength(0);
+    expect(await box.files.list(".")).toEqual([]);
+    expect((await box.files.stat(".")).type).toBe("directory");
+    await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
+    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
+    expect((await Promise.all([box.run("echo one"), box.run("echo two")])).map(x => x.stdout)).toEqual(["one\n", "two\n"]);
+  } finally { await box.destroy(); }
 });

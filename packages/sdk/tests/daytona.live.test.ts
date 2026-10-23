@@ -8,7 +8,7 @@ describe.skipIf(!process.env.DAYTONA_API_KEY)("Daytona live", () => {
   runConformance(() => {
     const provider = daytona();
     const create = provider.create;
-    provider.create = input => create({ ...input, labels: { ...input.labels, "daytona-live-suite": process.env.DAYTONA_BUFFERED_TEST === "1" ? "buffered" : "session" } });
+    provider.create = input => create({ ...input, labels: { ...input.labels, "sbx57-create-a-live": "1", "daytona-live-suite": process.env.DAYTONA_BUFFERED_TEST === "1" ? "buffered" : "session" } });
     if (process.env.DAYTONA_BUFFERED_TEST === "1") provider.exec = (id, input) => execute(provider.native(id), { ...input, streaming: false });
     return provider;
   }, { live: true });

@@ -4,7 +4,7 @@ import type { Provider, SandboxInfo } from "../../provider.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
-import { bootstrap } from "./bootstrap.js";
+import { bootstrapCommand, checkBootstrap } from "./bootstrap.js";
 export interface SuperserveOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -13,8 +13,8 @@ export interface SuperserveOptions {
    * Template-owned resources cannot be overridden by the SDK size option.
    */
   template?: string;
-  /** Allow apt to install missing Python 3, pip and venv during creation.
-   * Defaults to false: a template without Python fails with unsupported.
+  /** Allow apt to install missing Python 3, pip and venv on first use.
+   * Defaults to false: a template without Python fails with unsupported on first use.
    * The public default superserve/node-22 currently requires this opt-in.
    */
   installPython?: boolean;
@@ -23,6 +23,9 @@ export interface SuperserveOptions {
 export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot">;
 export function superserve(options: SuperserveOptions = {}): SuperserveProvider {
   const boxes = new Map<string, Sandbox>();
+  const environments = new Map<string, Record<string, string>>();
+  const workspacePrepared = new Set<string>();
+  const prepared = new Set<string>();
   const deleting = new Map<string, Promise<void>>();
   const connection = () => {
     const apiKey = options.apiKey ?? process.env.SUPERSERVE_API_KEY;
@@ -70,12 +73,24 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             : "stopped",
     };
   }
+  function preparation(id: string, command: string, execution: boolean) {
+    if (execution ? prepared.has(id) : workspacePrepared.has(id)) return { command, env: {} };
+    const setup = bootstrapCommand({ env: environments.get(id), installPython: options.installPython, execution });
+    return { command: `${setup.command} && ${command}`, env: setup.env };
+  }
+  async function runGuest(id: string, command: string, settings: { env?: Record<string, string>; timeoutMs: number; signal?: AbortSignal }, execution = false) {
+    const setup = preparation(id, command, execution);
+    const result = await (await vm(id)).commands.run(setup.command, { ...settings, env: { ...settings.env, ...setup.env } });
+    checkBootstrap(result.exitCode, id);
+    if (result.exitCode === 0) { workspacePrepared.add(id); if (execution) prepared.add(id); }
+    return result;
+  }
   async function guest(id: string): Promise<Guest> {
     const box = await vm(id);
     return {
       name: "superserve",
       raw: async (command) => {
-        const r = await box.commands.run(command, { timeoutMs: timeout });
+        const r = await runGuest(id, command, { timeoutMs: timeout });
         if (r.exitCode !== 0) throw failure("Guest operation failed", "provider", id);
         return r.stdout;
       },
@@ -83,7 +98,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       read: async (path, range) => {
         try {
           if (range) {
-            const r = await box.commands.run(
+            const r = await runGuest(id,
               python(
                 "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
                 path,
@@ -129,6 +144,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           ...(input.key !== undefined ? { "sdk-key": input.key } : {}),
         };
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
+        const createdAt = Date.now();
         let box: Sandbox;
         try {
           box = await (
@@ -156,26 +172,12 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         boxes.set(box.id, box);
         try {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          // SDK 0.11.4 does not retain createdAt on Sandbox.create's result.
-          // Read authoritative metadata alongside the single guest setup call.
-          const [setup, details] = await Promise.allSettled([
-            bootstrap(box, {
-              env: input.env ?? {},
-              timeoutMs: timeout,
-              signal: input.signal,
-              installPython: options.installPython,
-            }),
-            box.getInfo(),
-          ]);
-          if (setup.status === "rejected") throw setup.reason;
-          if (details.status === "rejected") throw details.reason;
-          // Fresh creates omit the timeout. Restores may inherit one from a snapshot.
-          if (details.value.timeoutSeconds !== undefined)
-            await box.update({ timeoutSeconds: null });
-          if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          const result = info(details.value);
-          if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-          return result;
+          environments.set(box.id, { ...input.env });
+          if (input.from) {
+            const details = await box.getInfo();
+            if (details.timeoutSeconds !== undefined) await box.update({ timeoutSeconds: null });
+          }
+          return { id: box.id, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" }, createdAt, state: "running" };
         } catch (error) {
           await provider.destroy(box.id);
           throw error;
@@ -207,7 +209,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           await (
             await api()
           ).Sandbox.killById(id, { ...connection(), signal: AbortSignal.timeout(timeout) });
-          boxes.delete(id);
+          boxes.delete(id); environments.delete(id); prepared.delete(id); workspacePrepared.delete(id);
         });
         deleting.set(id, pending);
         pending.finally(() => deleting.delete(id)).catch(() => {});
@@ -215,7 +217,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       return pending;
     },
     async close(id) {
-      boxes.delete(id);
+      boxes.delete(id); environments.delete(id); prepared.delete(id); workspacePrepared.delete(id);
     },
     exec: (id, input) =>
       safe(id, async () => {
@@ -244,14 +246,16 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
               signal?.addEventListener("abort", abort, { once: true });
               try {
                 // Keep the supervisor alive for lock-based cancellation and exit recovery.
-                const completion = box.commands.run(command, { env, timeoutMs });
+                const completion = runGuest(id, command, { env, timeoutMs }, true);
                 const r = await Promise.race([completion, stopped]);
                 if (r.exitCode !== 0 || r.truncated) throw failure("Supervisor failed", "provider", id);
                 return r.stdout;
               } finally { signal?.removeEventListener("abort", abort); }
             },
             exec: async (command, stdin, timeoutMs, signal) => {
-              const session = await box.commands.spawn(command, {
+              const setup = preparation(id, command, true);
+              const session = await box.commands.spawn(setup.command, {
+                env: setup.env,
                 startupSignal: signal,
                 timeoutMs,
               });
@@ -270,7 +274,9 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
                 const completion = session.wait().finally(() => session.close());
                 waiting = true;
                 const r = await Promise.race([completion, stopped]);
+                checkBootstrap(r.exitCode, id);
                 if (r.exitCode !== 0) throw failure("Supervisor failed", "provider", id);
+                prepared.add(id); workspacePrepared.add(id);
                 return r.stdout;
               } finally {
                 signal?.removeEventListener("abort", abort);

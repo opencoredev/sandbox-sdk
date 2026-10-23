@@ -10,8 +10,7 @@
  * https://www.npmjs.com/package/@upstash/box
  */
 import { posix } from "node:path";
-import type { Box, BoxConfig, BoxData, BoxSize, EphemeralBox, EphemeralBoxConfig, FileStat, NetworkPolicy } from "@upstash/box";
-type BoxStatus = BoxData["status"];
+import type { Box, BoxConfig, BoxData, BoxSize, EphemeralBoxConfig, FileStat, NetworkPolicy } from "@upstash/box";
 import type {
   Provider,
   SandboxInfo,
@@ -51,12 +50,12 @@ export type UpstashProvider = Provider<Box, UpstashCapability>;
 export type UpstashEphemeralProvider = Provider<Box, UpstashEphemeralCapability>;
 const maxTtlSeconds = 259_200;
 const marker = "sandbox-sdk";
+const metadataEnv = "SANDBOX_SDK_UPSTASH_METADATA";
+const workspace = `mkdir -p /workspace && if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && test -w /workspace`;
 const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
 // Upstash reruns initCommand on automatic as well as explicit resume. Disk
 // snapshots retain process records, but cannot restore those OS processes.
 const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/upstash-runs; true`;
-const boxStatuses = ["creating", "idle", "running", "paused", "error", "deleted"] as const satisfies readonly BoxStatus[];
-const isBoxStatus = (value: unknown): value is BoxStatus => boxStatuses.some((status) => status === value);
 type Metadata = { version: 1; key?: string; labels: Labels };
 function metadata(text: string): Metadata {
   let value: unknown;
@@ -139,6 +138,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     });
   const redactor = new Redactor();
   const boxes = new Map<string, Box>();
+  const unprepared = new Set<string>();
+  const nativeFactories = new Map<string, () => Box>();
   const environments = new Map<string, Record<string, string>>();
   let module: Promise<typeof import("@upstash/box")> | undefined;
   const monitors = new Map<string, Set<() => void>>();
@@ -170,16 +171,22 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     }
   }
   async function box(id: string) {
+    const lazy = nativeFactories.get(id);
+    if (lazy) { const value = lazy(); boxes.set(id, value); nativeFactories.delete(id); return value; }
     const cached = boxes.get(id);
     if (cached) return cached;
     const { Box, config } = await sdk();
     const value = await Box.get(id, { ...config, timeout: options.requestTimeoutMs });
-    boxes.set(id, value);
+    boxes.set(id, value); unprepared.add(id);
     return value;
   }
   const onFile = <T>(id: string, operation: string, action: (value: Box) => Promise<T>) =>
     safe(async () => action(await box(id)), id, true, `files.${operation}`);
-  const readMetadata = async (value: Box) => metadata(await value.files.read(metadataPath));
+  const readMetadata = async (value: Box) => {
+    const result = await value.exec.command(`if [ -n "$${metadataEnv}" ]; then printf %s "$${metadataEnv}"; else cat ${quote(metadataPath)}; fi`);
+    if (result.exitCode !== 0) throw new SandboxError("SDK metadata was not found", { code: "not_found", provider: "upstash", sandboxId: value.id });
+    return metadata(result.stdout);
+  };
   async function snapshotSize(id: string): Promise<BoxSize> {
     const config = connection();
     const baseUrl = (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
@@ -211,29 +218,6 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     }
     throw new SandboxError("Snapshot was not found. It may have been deleted. Check the snapshot ID and account.", { code: "not_found", provider: "upstash" });
   }
-  /** One box record; Box.list returns every box on the account. */
-  async function boxData(config: ReturnType<typeof connection>, id: string): Promise<Pick<BoxData, "id" | "status" | "created_at">> {
-    const baseUrl = (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
-    const response = await fetch(`${baseUrl}/v2/box/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${config.apiKey}` },
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? 30_000),
-    });
-    if (!response.ok)
-      throw Object.assign(new Error("Box metadata lookup failed"), { statusCode: response.status });
-    const data: unknown = await response.json();
-    const status = data && typeof data === "object" && "status" in data ? data.status : undefined;
-    if (
-      !data ||
-      typeof data !== "object" ||
-      !("id" in data) ||
-      data.id !== id ||
-      !isBoxStatus(status) ||
-      !("created_at" in data) ||
-      typeof data.created_at !== "number"
-    )
-      throw new SandboxError("Invalid box metadata response. Upstash did not return the created box. Retry when the service is available.", { code: "provider", provider: "upstash", sandboxId: id });
-    return { id, status, created_at: data.created_at };
-  }
   const provider: UpstashProvider = {
     name: "upstash",
     keyMode: "best-effort",
@@ -250,75 +234,53 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           unsupported(
             "Use small, medium, or large; exact CPU, memory, and disk sizes are unavailable",
           );
+        if (input.env && metadataEnv in input.env)
+          throw new SandboxError(`${metadataEnv} is reserved for SDK discovery metadata. Choose another environment variable name.`, { code: "invalid_argument", provider: "upstash" });
         redactor.add(Object.values(input.env ?? {}));
         const policy = network(input.network);
         const { Box, EphemeralBox, config } = await sdk();
+        const meta: Metadata = { version: 1, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" } };
         const params = {
           ...config,
           runtime: options.runtime,
           size: input.size ?? (input.from === undefined ? undefined : await snapshotSize(input.from)),
           // Native create-time env; values never enter command text.
-          env: input.env,
-          // A fresh box has no metadata until setup writes it, and discovery skips
-          // boxes without metadata, so labelling at create saves a request.
-          // Snapshot clones inherit the source metadata and are labelled after setup.
-          labels: input.from === undefined ? [marker] : [],
+          env: { ...input.env, [metadataEnv]: JSON.stringify(meta) },
+          labels: [marker],
           networkPolicy: policy,
           timeout: options.requestTimeoutMs,
         } satisfies BoxConfig & EphemeralBoxConfig;
-        let created: Pick<EphemeralBox, "id" | "exec" | "delete">;
-        let handle: Promise<Box>;
-        if (ttl === undefined) {
-          const value =
-            input.from === undefined
-              ? await Box.create({ ...params, initCommand })
-              : await Box.fromSnapshot(input.from, { ...params, initCommand });
-          created = value;
-          handle = Promise.resolve(value);
-        } else {
-          created =
-            input.from === undefined
-              ? await EphemeralBox.create({ ...params, ttl })
-              : await EphemeralBox.fromSnapshot(input.from, { ...params, ttl });
-          // EphemeralBox hides its Box. Fetch one beside setup for the cache and native().
-          handle = Box.get(created.id, { ...config, timeout: options.requestTimeoutMs });
-          void handle.catch(() => {});
-        }
+        const createdAt = Date.now();
+        const created = ttl === undefined
+          ? input.from === undefined ? await Box.create({ ...params, initCommand }) : await Box.fromSnapshot(input.from, { ...params, initCommand })
+          : input.from === undefined ? await EphemeralBox.create({ ...params, ttl }) : await EphemeralBox.fromSnapshot(input.from, { ...params, ttl });
         try {
           if (input.signal?.aborted)
             throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
               code: "aborted",
               provider: "upstash",
             });
-          const meta: Metadata = {
-            version: 1,
-            key: input.key,
-            labels: { ...input.labels, "sandbox-sdk": "1" },
-          };
-          // One guest round trip prepares both directories and persists metadata.
-          // Keep this after native create: initCommand also runs on resume and
-          // must not overwrite metadata or publish an incomplete snapshot clone.
-          // Ephemeral boxes take no initCommand, so a restored clone runs it here.
-          const setup = created.exec.command(
-            (ttl === undefined || input.from === undefined ? "" : `${initCommand} && `) +
-            `mkdir -p /workspace ${quote(posix.dirname(metadataPath))} && ` +
-            `if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && ` +
-            `test -w /workspace && (umask 077; printf %s ${quote(JSON.stringify(meta))} > ${quote(metadataPath)})`,
-          );
-          const record = boxData(config, created.id);
-          void record.catch(() => {});
-          if ((await setup).exitCode !== 0)
-            throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: created.id });
-          const value = await handle;
-          boxes.set(value.id, value);
-          environments.set(value.id, { ...input.env, ...defaults });
-          // Publish discovery only after metadata and the workspace are ready. Native
-          // labels allow five short strings; durable metadata preserves arbitrary labels.
-          if (input.from !== undefined) await value.labels.add(marker);
-          return info(await record, meta);
+          if (created instanceof Box) boxes.set(created.id, created);
+          else {
+            // native() is synchronous. The public Box constructor attaches a fully
+            // typed handle without fetching metadata the create call already fixed.
+            nativeFactories.set(created.id, () => new Box({
+              id: created.id, status: "running", created_at: createdAt / 1000, updated_at: createdAt / 1000,
+              size: params.size ?? "small", labels: [marker],
+              network_policy: { mode: policy.mode, ...("allowedDomains" in policy ? { allowed_domains: policy.allowedDomains } : {}) },
+            }, {
+              baseUrl: (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, ""),
+              headers: { "X-Box-Api-Key": config.apiKey }, timeout: options.requestTimeoutMs ?? 600_000, debug: false,
+            }));
+          }
+          if (ttl !== undefined && input.from !== undefined && (await created.exec.command(initCommand)).exitCode !== 0)
+            throw new SandboxError("Restored process records could not be invalidated", { code: "provider", provider: "upstash", sandboxId: created.id });
+          environments.set(created.id, { ...input.env, ...defaults });
+          unprepared.add(created.id);
+          return { id: created.id, key: meta.key, labels: meta.labels, createdAt, state: "running" };
         } catch (error) {
           await created.delete();
-          boxes.delete(created.id);
+          boxes.delete(created.id); nativeFactories.delete(created.id); unprepared.delete(created.id); environments.delete(created.id);
           throw error;
         }
       }, undefined, false, "create"),
@@ -352,7 +314,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
             `Box ${id} is ${isEphemeral(data) ? "an Ephemeral Box" : "a durable Box"}. Connect with upstash({ ephemeral: ${isEphemeral(data)} }).`,
             { code: "unsupported", provider: "upstash", sandboxId: id },
           );
-        const value = await box(id);
+        const value = await box(id); unprepared.add(id);
         return info(data, await readMetadata(value));
       }, id, false, "connect"),
     destroy: (id) =>
@@ -365,7 +327,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           detach(id);
           previews.delete(id);
           boxes.delete(id);
-          environments.delete(id);
+          environments.delete(id); nativeFactories.delete(id); unprepared.delete(id);
         }
       }, id, false, "destroy"),
     exec: (id, input) => safe(async () => {
@@ -374,10 +336,12 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
       if (input.streaming !== true && input.stdin === undefined &&
         input.timeoutMs + 15_000 <= (options.requestTimeoutMs ?? 600_000) &&
         Object.entries(input.env).every(([key, item]) => env[key] === item)) {
-        const result = await bufferedExecute(value, input);
-        if (result) return result;
+        const result = await bufferedExecute(value, input, unprepared.has(id) ? workspace : undefined);
+        if (result) { if (!result.timedOut) unprepared.delete(id); return result; }
       }
-      return execute(value, input);
+      const result = await execute(value, input, unprepared.has(id) ? workspace : undefined);
+      if (!result.timedOut) unprepared.delete(id);
+      return result;
     }, id, false, "exec"),
     startProcess: (id, input) =>
       safe(async () => {
@@ -388,7 +352,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           : (dir: string) => value.exec.command(
             `for p in $(pgrep -f ${quote(`[${dir[1]}]${dir.slice(2)}/`)}); do kill -KILL -$p 2>/dev/null; done; true`,
           );
-        const hook = await startProcess(value, input, halt);
+        const hook = await startProcess(value, input, halt, unprepared.has(id) ? workspace : undefined);
+        unprepared.delete(id);
         let active = monitors.get(id);
         if (!active) {
           active = new Set();
@@ -408,7 +373,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     async close(id) {
       detach(id);
       boxes.delete(id);
-      environments.delete(id);
+      environments.delete(id); nativeFactories.delete(id); unprepared.delete(id);
     },
     files: {
       writeCreatesParents: true,
@@ -416,15 +381,17 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
       internal: [".step-git"],
       read: (id, path) => onFile(id, "read", value => readFile(value, path)),
       readRange: (id, path, range) => onFile(id, "readRange", value => readFile(value, path, range)),
-      write: (id, path, data) => onFile(id, "write", value => writeFile(value, path, data)),
+      write: (id, path, data) => onFile(id, "write", value => writeFile(value, path, data, unprepared.has(id) ? workspace : undefined).then(() => { unprepared.delete(id); })),
       list: (id, path) =>
         onFile(id, "list", async (value) => {
-          const entries = await listDirectory(value, path);
-          if (entries)
+          const entries = await listDirectory(value, path, unprepared.has(id) ? workspace : undefined);
+          if (entries) {
+            unprepared.delete(id);
             return entries.map((entry) => {
               if (entry.type === "other") unsupported("Special filesystem entries are not supported");
               return { path: posix.join(path, entry.name), type: entry.type, size: entry.size, modifiedAt: entry.modifiedAt };
             });
+          }
           return Promise.all(
             (await value.files.list(path)).map(async (entry) => {
               const full = posix.join(path, entry.name);
@@ -432,9 +399,21 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
             }),
           );
         }),
-      stat: (id, path) => onFile(id, "stat", async (value) => fileInfo(path, await value.files.stat(path))),
-      remove: (id, path, settings) => onFile(id, "remove", (value) => value.files.remove(path, settings)),
-      mkdir: (id, path) => onFile(id, "mkdir", (value) => value.files.mkdir(path, { parents: true })),
+      stat: (id, path) => onFile(id, "stat", async (value) => {
+        try { return fileInfo(path, await value.files.stat(path)); }
+        catch (error) { if (path !== "/workspace" || !unprepared.has(id) || upstashError(error, id, true).code !== "file_not_found") throw error; return { path, type: "directory", size: 0, modifiedAt: Date.now() }; }
+      }),
+      remove: (id, path, settings) => onFile(id, "remove", async value => {
+        try { await value.files.remove(path, settings); }
+        catch (error) { if (path !== "/workspace" || !unprepared.has(id) || upstashError(error, id, true).code !== "file_not_found") throw error; }
+        if (path === "/workspace") unprepared.delete(id);
+      }),
+      mkdir: (id, path) => onFile(id, "mkdir", async value => {
+        if (!unprepared.has(id)) return value.files.mkdir(path, { parents: true });
+        const result = await value.exec.command(`${workspace} && mkdir -p ${quote(path)}`);
+        if (result.exitCode !== 0) throw new SandboxError("Directory creation failed. Check guest permissions.", { code: "provider", provider: "upstash", sandboxId: id });
+        unprepared.delete(id);
+      }),
     },
     previewUrl: (id, port) => {
       let ports = previews.get(id);
@@ -487,6 +466,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         "snapshot",
       ),
     native(id) {
+      const lazy = nativeFactories.get(id);
+      if (lazy) { const value = lazy(); boxes.set(id, value); nativeFactories.delete(id); return value; }
       const value = boxes.get(id);
       if (!value)
         throw new SandboxError(
