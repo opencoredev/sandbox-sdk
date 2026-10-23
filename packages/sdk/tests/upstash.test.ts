@@ -208,7 +208,7 @@ describe("Upstash Box mappings", () => {
       wait: async () => -1,
       close() {},
     });
-    await expect(box.run("echo lost")).rejects.toMatchObject({ code: "unavailable" });
+    await expect(box.run("echo lost", { stdin: "" })).rejects.toMatchObject({ code: "unavailable" });
   });
   test("maps errors without credential leakage", async () => {
     for (const [statusCode, code] of [
@@ -479,4 +479,47 @@ describe("Upstash Ephemeral Box mode", () => {
     expect(pause).not.toHaveBeenCalled();
     expect(commands.at(-1)).toMatch(/^for p in \$\(pgrep -f '\[t\]mp\/\.sandbox-sdk\/upstash-runs\/[0-9a-f-]+\/'\)/);
   });
+});
+
+test("buffered commands preserve large ordered output and isolate environment overrides", async () => {
+  const box = await createSandbox(factory(), { env: { TOKEN: "native-secret" } });
+  try {
+    const result = await box.run("python3 -c 'import sys; sys.stdout.write(\"雪\"*50000); sys.stdout.flush(); sys.stderr.write(\"END\")'");
+    expect(result.stdout).toBe("雪".repeat(50000));
+    expect(result.stderr).toBe("END");
+    expect((await box.run('printf %s "$TOKEN"')).stdout).toBe("native-secret");
+    expect((await box.run('printf %s "$TOKEN"', { env: { TOKEN: "override-secret" } })).stdout).toBe("override-secret");
+    expect((await box.run('printf %s "$TOKEN"')).stdout).toBe("native-secret");
+    expect((await box.run("cat")).stdout).toBe("");
+  } finally { await box.destroy(); }
+});
+
+test("buffered cancellation retries when completion removes the locked directory", async () => {
+  const { bufferedExecute } = await import("../src/providers/upstash/buffered.js");
+  const box = await createSandbox(factory());
+  const command = box.native.exec.command;
+  let release = () => {};
+  const cancelled = new Promise<void>(resolve => { release = resolve; });
+  vi.spyOn(box.native.exec, "command").mockImplementation(async text => {
+    if (text.includes("for attempt in range(3)")) {
+      try {
+        return await command(text.replace(/^( *)open\(p\+"\/cancel","w"\)\.close\(\)/m, (_match: string, indent: string) => `${indent}if attempt==0:\n${indent} import shutil\n${indent} shutil.rmtree(p)\n${indent}open(p+"/cancel","w").close()`));
+      } finally { release(); }
+    }
+    const result = await command(text);
+    if (text.includes("python3 -u")) await cancelled;
+    return result;
+  });
+  try {
+    expect(await bufferedExecute(box.native, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 200, onChunk() {} })).toEqual({ exitCode: null, timedOut: true });
+  } finally { release(); await box.destroy(); }
+});
+
+test("quote-heavy commands fall back to a session without destroying sandbox files", async () => {
+  const box = await createSandbox(factory());
+  try {
+    await box.files.write("kept", "yes");
+    expect(await box.run(": #" + "'".repeat(10_000))).toMatchObject({ exitCode: 0 });
+    expect(await box.files.read("kept")).toBe("yes");
+  } finally { await box.destroy(); }
 });

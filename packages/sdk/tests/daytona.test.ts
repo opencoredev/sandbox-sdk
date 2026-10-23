@@ -353,3 +353,22 @@ test.each(["abort", "deadline"] as const)("buffered spill download settles and d
     clearWatchdog(); stalled.destroy(); await pending.catch(() => {});
   }
 });
+
+test("activity survives shell exit until inherited pipes drain on both transports", async () => {
+  const box = await createSandbox(factory());
+  try {
+    for (const streaming of [false, true]) {
+      const active = `/tmp/.sandbox-sdk/runs/activity-${crypto.randomUUID()}`;
+      const provider = factory();
+      await provider.connect(box.id);
+      let finished = false;
+      const run = provider.exec(box.id, { command: "(sleep .3; printf tail) &", cwd: "/workspace", env: {}, timeoutMs: 3000, streaming, activityPath: active, onChunk() {} }).finally(() => { finished = true; });
+      await expect.poll(async () => {
+        try { await provider.files.stat(box.id, active); return true; } catch { return false; }
+      }, { interval: 10, timeout: 2000 }).toBe(true);
+      expect(finished).toBe(false);
+      expect(await run).toMatchObject({ exitCode: 0, timedOut: false });
+      await expect(provider.files.stat(box.id, active)).rejects.toMatchObject({ code: "file_not_found" });
+    }
+  } finally { await box.destroy(); }
+});

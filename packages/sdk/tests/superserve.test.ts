@@ -78,6 +78,11 @@ vi.mock("@superserve/sdk", () => ({
       return {
         run: async (command: string, options: { env?: Record<string, string> } = {}) => {
           if (command.includes("SANDBOX_SDK_BOOTSTRAP")) await state.bootstrap?.();
+          if (state.transportFailure && !command.includes("SANDBOX_SDK_BOOTSTRAP")) {
+            state.transportFailure = false;
+            void g.raw(command).catch(() => {});
+            throw new Error("private-native-token");
+          }
           const env = { ...options.env };
           if (command.includes("SANDBOX_SDK_BOOTSTRAP") && state.bootstrapPath)
             env.PATH = state.bootstrapPath;
@@ -289,7 +294,7 @@ test("stdin setup failure closes the native session", async () => {
   try {
     const before = state.closes;
     state.stdinFailure = true;
-    await expect(box.run("true")).rejects.toMatchObject({ code: "provider" });
+    await expect(box.run("cat", { stdin: "private-input" })).rejects.toMatchObject({ code: "provider" });
     expect(state.closes).toBeGreaterThan(before);
   } finally {
     state.stdinFailure = false;
@@ -425,4 +430,21 @@ if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "
     state.bootstrapPath = "";
     await rm(path, { recursive: true, force: true });
   }
+});
+
+test("one-shot execution keeps env values out of argv and preserves stdin sessions", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const secret = "private-command-secret";
+    const probe = await box.run("python3 -c 'import os; print(open(\"/proc/%s/cmdline\" % os.getppid(), \"rb\").read().decode()); print(os.environ[\"TOKEN\"])'", { env: { TOKEN: secret } });
+    expect(probe.stdout.trim().split("\n").at(-1)).toBe(secret);
+    expect(probe.stdout.slice(0, probe.stdout.lastIndexOf(secret))).not.toContain(secret);
+    expect((await box.run("cat", { stdin: secret })).stdout).toBe(secret);
+  } finally { await box.destroy(); }
+});
+
+test("quote-heavy commands use stdin transport before shell argument expansion exceeds its limit", async () => {
+  const box = await createSandbox(factory());
+  try { expect(await box.run(": #" + "'".repeat(40_000))).toMatchObject({ exitCode: 0 }); }
+  finally { await box.destroy(); }
 });
