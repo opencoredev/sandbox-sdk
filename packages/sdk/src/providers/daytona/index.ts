@@ -147,7 +147,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       deletions.set(id, deletion);
       try { await deletion; } finally { deletions.delete(id); }
     },
-    exec: (id, input) => { rememberEnv(input.env); return safe(async () => execute(await box(id), input, unprepared.has(id) ? workspace : "").then(result => { if (!result.timedOut) unprepared.delete(id); return result; }), id, false, "exec"); },
+    exec: (id, input) => { rememberEnv(input.env); return safe(async () => execute(await box(id), input, unprepared.has(id) ? workspace : "", () => unprepared.delete(id)), id, false, "exec"); },
     startProcess: (id, input) => { rememberEnv(input.env); return safe(async () => {
       const hook = await sessionProcess(await box(id), input, undefined, unprepared.has(id) ? workspace : "");
       if (hook.pid > 0) unprepared.delete(id);

@@ -5,7 +5,7 @@ import { upstashError } from "./errors.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 
 /** Session signals target the whole process tree; wait acknowledges termination. */
-export async function execute(box: Box, input: ExecInput, prepare?: string): Promise<ExecResult> {
+export async function execute(box: Box, input: ExecInput, prepare?: string, prepared?: () => void): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   let session: ExecSessionHandle | undefined;
   let timedOut = false;
@@ -15,15 +15,29 @@ export async function execute(box: Box, input: ExecInput, prepare?: string): Pro
   };
   const timer = setTimeout(cancel, input.timeoutMs);
   input.signal?.addEventListener("abort", cancel, { once: true });
+  const setupMarker = `sdk-prepared-${crypto.randomUUID()}\n`;
+  let setupOutput = "";
+  let setupPending = prepare !== undefined;
   const stdout = new StringDecoder("utf8");
   const stderr = new StringDecoder("utf8");
   try {
     session = await box.exec.session({
-      argv: prepare ? ["sh", "-c", `${prepare} && cd "$1" && exec sh -c "$2"`, "sh", input.cwd, input.command] : ["sh", "-c", input.command],
+      argv: prepare ? ["sh", "-c", `${prepare} && printf '%s\n' '${setupMarker.trimEnd()}' && cd "$1" && exec sh -c "$2"`, "sh", input.cwd, input.command] : ["sh", "-c", input.command],
       cwd: prepare ? "/" : input.cwd,
       env: Object.entries(input.env).map(([key, value]) => `${key}=${value}`),
       onStdout: (data) => {
-        const text = stdout.write(Buffer.from(data));
+        let text = stdout.write(Buffer.from(data));
+        if (setupPending) {
+          setupOutput += text;
+          const index = setupOutput.indexOf(setupMarker);
+          if (index >= 0) {
+            text = setupOutput.slice(0, index) + setupOutput.slice(index + setupMarker.length);
+            setupOutput = ""; setupPending = false; prepared?.();
+          } else {
+            const length = Math.max(0, setupOutput.length - setupMarker.length + 1);
+            text = setupOutput.slice(0, length); setupOutput = setupOutput.slice(length);
+          }
+        }
         if (text) input.onChunk({ stream: "stdout", text });
       },
       onStderr: (data) => {
@@ -42,7 +56,7 @@ export async function execute(box: Box, input: ExecInput, prepare?: string): Pro
         "Command session disconnected. Upstash could not confirm an exit code. Inspect the box before retrying.",
         { code: "unavailable", provider: "upstash", sandboxId: box.id },
       );
-    const out = stdout.end();
+    const out = setupOutput + stdout.end();
     if (out) input.onChunk({ stream: "stdout", text: out });
     const err = stderr.end();
     if (err) input.onChunk({ stream: "stderr", text: err });

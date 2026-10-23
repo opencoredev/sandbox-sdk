@@ -73,7 +73,7 @@ for attempt in range(3):
   if attempt==2: raise
 `;
 
-export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = workspaceCommand): Promise<ExecResult> {
+export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const deadline = Date.now() + input.timeoutMs;
   const transferController = new AbortController();
@@ -110,6 +110,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = 
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
     if (result.exitCode !== 0 || !summary) throw malformed();
     confirmed = true;
+    prepared?.();
     cleanupNeeded = summary[3] === "1";
     for (const line of lines) if (line) accept(line);
     if (summary[3] === "1") {

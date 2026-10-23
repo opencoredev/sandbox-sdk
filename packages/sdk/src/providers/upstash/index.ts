@@ -348,8 +348,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         const result = await bufferedExecute(value, input, unprepared.has(id) ? workspace : undefined);
         if (result) { if (!result.timedOut) unprepared.delete(id); return result; }
       }
-      const result = await execute(value, input, unprepared.has(id) ? workspace : undefined);
-      if (!result.timedOut) unprepared.delete(id);
+      const result = await execute(value, input, unprepared.has(id) ? workspace : undefined, () => unprepared.delete(id));
       return result;
     }, id, false, "exec"),
     startProcess: (id, input) =>

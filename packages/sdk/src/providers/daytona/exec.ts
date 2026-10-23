@@ -169,13 +169,14 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
 }
 
-export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }, prepare = workspaceCommand): Promise<ExecResult> {
+export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
   // Only explicit live-chunk requests need a session. Core-internal commands
   // (checkpoints, secret probes, process helpers) omit the flag and collect output.
   // Stdin always goes through a session upload: carrying it in the command line
   // would expose it in the guest's process list.
-  if (input.streaming !== true && input.stdin === undefined) return bufferedExecute(box, input, prepare);
+  if (input.streaming !== true && input.stdin === undefined) return bufferedExecute(box, input, prepare, prepared);
   const process = await sessionProcess(box, input, input.timeoutMs, prepare);
+  if (process.pid > 0) prepared?.();
   const result = await process.wait();
   return { exitCode: result.exitCode, timedOut: result.signal === "SIGKILL" };
 }
