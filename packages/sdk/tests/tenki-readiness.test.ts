@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { TenkiSandbox } from "@tenkicloud/sandbox";
 import { expect, test, vi } from "vitest";
-import { waitReady } from "../src/providers/tenki/ready.js";
+import { waitReady, workspaceSetup } from "../src/providers/tenki/ready.js";
 
 // Exercise the installed SDK and its own protocol dependency, without adding
 // production dependencies just for this in-memory transport.
@@ -93,4 +95,37 @@ test("an allocation with RUNNING state and a native data plane skips readiness",
   const controller = new AbortController();
   controller.abort();
   await expect(waitReady(session, 200, controller.signal)).rejects.toMatchObject({ code: "aborted" });
+});
+
+
+test("guest initialization serializes concurrent migrations and preserves existing files", async () => {
+  const script = `import os,tempfile,threading,json
+with tempfile.TemporaryDirectory(prefix='sdk-tenki-lock-') as root:
+ workspace=root+'/workspace'
+ os.mkdir(workspace)
+ with open(workspace+'/existing','w') as f: f.write('retained')
+ rename=os.rename
+ entered=threading.Event()
+ release=threading.Event()
+ def delayed_rename(a,b):
+  entered.set()
+  release.wait(timeout=.2)
+  return rename(a,b)
+ os.rename=delayed_rename
+ errors=[]
+ def worker():
+  try: exec(${JSON.stringify(workspaceSetup)}, {'os':os,'v':{'workspace':workspace}})
+  except Exception as e: errors.append(type(e).__name__)
+ first=threading.Thread(target=worker)
+ first.start()
+ if not entered.wait(timeout=2): raise RuntimeError('migration did not start')
+ second=threading.Thread(target=worker)
+ second.start()
+ first.join(timeout=3); second.join(timeout=3)
+ if first.is_alive() or second.is_alive(): raise RuntimeError('initialization deadlocked')
+ with open(workspace+'/existing') as f: content=f.read()
+ print(json.dumps({'errors':errors,'symlink':os.path.islink(workspace),'content':content}))
+`;
+  const result = await promisify(execFile)("python3", ["-c", script], { timeout: 5000 });
+  expect(JSON.parse(result.stdout)).toEqual({ errors: [], symlink: true, content: "retained" });
 });

@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { afterEach, describe, test, expect, vi } from "vitest";
 import { cleanupMock, mockState, MockDaytona, MockSandbox } from "./daytona-mock.js";
+import { workspaceCommand } from "../src/providers/daytona/exec.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -425,4 +426,23 @@ test("fresh workspace handles verified missing-path HTTP 400 without swallowing 
     vi.mocked(box.native.fs.listFiles).mockRejectedValue(Object.assign(new Error("invalid path argument"), { statusCode: 400 }));
     await expect(box.files.list(".")).rejects.toMatchObject({ code: "invalid_argument" });
   } finally { await box.destroy(); }
+});
+
+
+test("failed first session setup is retried before the next command", async () => {
+  const box = await createSandbox(factory());
+  const native = box.native;
+  const execute = native.process.executeSessionCommand.bind(native.process);
+  vi.spyOn(native.process, "executeSessionCommand").mockImplementationOnce((id, input) =>
+    execute(id, { ...input, command: input.command.replace(workspaceCommand, "false") }));
+  expect((await box.run("true", { stdin: "" })).exitCode).toBe(1);
+  expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
+});
+
+test("successful session setup survives a nonzero user command", async () => {
+  const box = await createSandbox(factory());
+  expect((await box.run("exit 7", { stdin: "" })).exitCode).toBe(7);
+  await box.native.fs.deleteFile("/workspace", true);
+  expect((await box.run("true", { stdin: "", cwd: "/" })).ok).toBe(true);
+  expect(await box.files.exists("/workspace")).toBe(false);
 });

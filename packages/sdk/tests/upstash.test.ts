@@ -573,3 +573,34 @@ test("reserved discovery environment cannot silently replace caller values", asy
   await expect(factory().create({ labels: {}, env: { SANDBOX_SDK_UPSTASH_METADATA: "caller value" } })).rejects.toMatchObject({ code: "invalid_argument" });
   expect(state.creates).toHaveLength(0);
 });
+
+
+test.each([factory, ephemeral])("failed first session setup is retried before the next command", async make => {
+  const box = await createSandbox(make());
+  const session = box.native.exec.session.bind(box.native.exec);
+  vi.spyOn(box.native.exec, "session").mockImplementationOnce(input => session({
+    ...input,
+    argv: input.argv?.map((arg, i) => i === 2 ? arg.replace(/^[\s\S]*? && cd "\$1"/, 'false && cd "$1"') : arg),
+  }));
+  expect((await box.run("true", { stdin: "" })).exitCode).toBe(1);
+  expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
+});
+
+test.each([factory, ephemeral])("successful session setup survives a nonzero user command", async make => {
+  const box = await createSandbox(make());
+  expect((await box.run("exit 7", { stdin: "" })).exitCode).toBe(7);
+  await box.native.files.remove("/workspace", { recursive: true });
+  expect((await box.run("true", { stdin: "", cwd: "/" })).ok).toBe(true);
+  expect(await box.files.exists("/workspace")).toBe(false);
+});
+
+
+test("session setup confirmation tolerates split transport chunks without leaking into output", async () => {
+  const box = await createSandbox(factory());
+  const session = box.native.exec.session.bind(box.native.exec);
+  vi.spyOn(box.native.exec, "session").mockImplementation(input => session({
+    ...input,
+    onStdout: data => { for (const byte of data) input.onStdout?.(new Uint8Array([byte])); },
+  }));
+  expect(await box.run("printf 'é\\n'; exit 7", { stdin: "" })).toMatchObject({ exitCode: 7, stdout: "é\n", stderr: "" });
+});
