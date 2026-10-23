@@ -7,16 +7,17 @@ import { quote } from "./exec.js";
 // A single native command returns at most 64 KiB of frames. Larger output is
 // spooled in the guest and downloaded as a stream, never buffered by the SDK.
 // The child owns a separate process group, including inherited output pipes.
-const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil
+const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil,fcntl
 command,directory,cwd,limit=sys.argv[1:]
 os.makedirs(directory,mode=0o700,exist_ok=True)
 cancel=directory+"/cancel"
-if os.path.exists(cancel):
- shutil.rmtree(directory)
- print("R:0:1:0")
- sys.exit(0)
-p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-with open(directory+"/pid","w") as f: f.write(str(p.pid))
+with open(directory+"/lock","w") as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ if os.path.exists(cancel):
+  print("R:0:1:1")
+  sys.exit(0)
+ p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ with open(directory+"/pid","w") as f: f.write(str(p.pid))
 s=selectors.DefaultSelector()
 s.register(p.stdout,selectors.EVENT_READ,"O")
 s.register(p.stderr,selectors.EVENT_READ,"E")
@@ -51,14 +52,21 @@ finally:
  else: shutil.rmtree(directory)
 `;
 
-const cancelBridge = `import os,signal,sys
+const cancelBridge = `import os,signal,sys,fcntl
 p=sys.argv[1]
-os.makedirs(p,mode=0o700,exist_ok=True)
-open(p+"/cancel","w").close()
-try:
- with open(p+"/pid") as f: pid=int(f.read())
- os.killpg(pid,signal.SIGKILL)
-except (FileNotFoundError,ProcessLookupError): pass
+for attempt in range(3):
+ try:
+  os.makedirs(p,mode=0o700,exist_ok=True)
+  with open(p+"/lock","w") as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX)
+   open(p+"/cancel","w").close()
+   try:
+    with open(p+"/pid") as f: pid=int(f.read())
+    os.killpg(pid,signal.SIGKILL)
+   except (FileNotFoundError,ProcessLookupError): pass
+  break
+ except FileNotFoundError:
+  if attempt==2: raise
 `;
 
 export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<ExecResult> {
