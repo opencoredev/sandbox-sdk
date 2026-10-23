@@ -40,7 +40,7 @@ export async function vercelMock() {
     }
     map(path: string) { return join(this.directory, path); }
     rewrite(value: string) {
-      let result = value.replace(/\/workspace|\/vercel\/sandbox|\/tmp\//g, path => this.map(path));
+      let result = value.replace(/\/workspace|\/vercel\/sandbox|\/tmp(?=\/|$)/g, path => this.map(path)).replace(/sudo (mkdir|chmod) /g, "$1 ");
       for (const [port, local] of this.serverPorts) result = result.replaceAll(`.listen(${port},`, `.listen(${local},`);
       return result;
     }

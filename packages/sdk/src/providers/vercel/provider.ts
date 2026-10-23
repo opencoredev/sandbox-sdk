@@ -12,13 +12,29 @@ export interface VercelOptions { token?: string; teamId?: string; projectId?: st
 export type VercelCapability = "pause" | "snapshot" | "network-policy" | "size";
 const keyTag = "sandbox-sdk-key";
 const keyName = (key: string) => `sdk-${createHash("sha256").update(key).digest("hex")}`;
-// Files survive a session; OS processes do not. Invalidate core-owned live records
-// on every restore, including automatic restores initiated by another SDK call.
+const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chmod 777 /workspace && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
+const guestStat = `stat --printf '%n\\0%f %s %y\\0' --`;
+function decodeStats(text: string): FileInfo[] {
+  const fields = text.split("\0");
+  if (fields.pop() !== "" || fields.length % 2) throw new Error("Invalid Vercel file metadata");
+  const result: FileInfo[] = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const path = fields[i], line = fields[i + 1];
+    const match = line?.match(/^([0-9a-f]+) ([0-9]+) (.+)$/);
+    if (path === undefined || !match) throw new Error("Invalid Vercel stat response");
+    const mode = Number.parseInt(match[1] ?? "", 16), size = Number(match[2]), modifiedAt = Date.parse(match[3] ?? "");
+    if (![mode, size, modifiedAt].every(Number.isFinite)) throw new Error("Invalid Vercel stat fields");
+    result.push({ path, type: (mode & 0xf000) === 0xa000 ? "symlink" : (mode & 0xf000) === 0x4000 ? "directory" : "file", size, modifiedAt });
+  }
+  return result;
+}
+// Files survive a session; processes do not. Invalidate inherited live records.
 const invalidate = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; true`;
 
 /** Internal injection point used by the offline SDK contract tests. */
 export function createVercelProvider<N extends NativeSandbox>(load: () => Promise<VercelClient<N>>, options: VercelOptions = {}): Provider<N, VercelCapability> {
   const boxes = new Map<string, N>();
+  const prepared = new Set<string>();
   let client: Promise<VercelClient<N>> | undefined;
   const sdk = () => client ??= load();
   const safe = async <T>(id: string | undefined, action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw vercelError(error, id); } };
@@ -34,7 +50,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     // partial credentials prevents that SDK path, so omit all three together.
     return {};
   }
-  const clean = async (box: NativeSandbox) => { const cmd = await box.runCommand({ cmd: "sh", args: ["-c", invalidate], detached: true }); if ((await cmd.wait()).exitCode !== 0) throw new Error("Could not invalidate restored processes"); };
+  const clean = async (box: NativeSandbox, workspaceReady = false) => { const cmd = await box.runCommand({ cmd: "sh", args: ["-c", invalidate + (workspaceReady ? "; mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace" : "")], detached: true }); if ((await cmd.wait()).exitCode !== 0) throw new Error("Could not invalidate restored processes"); };
   const native = (id: string): N => { const box = boxes.get(id); if (!box) throw new SandboxError("Sandbox is not attached. No local native object exists. Connect the sandbox first.", { code: "not_found", provider: "vercel", sandboxId: id }); return box; };
   function info(box: N): SandboxInfo {
     const labels = { ...box.tags }; const key = labels[keyTag]; delete labels[keyTag];
@@ -60,12 +76,31 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     const stat = await (await get(id)).fs.lstat(path);
     return { path, type: stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file", size: stat.size, modifiedAt: stat.mtimeMs };
   };
+  async function initialFile(id: string, script: string, args: string[], data?: Uint8Array): Promise<string | undefined> {
+    if (prepared.has(id) || !(args[0] === "/workspace" || args[0]?.startsWith("/workspace/"))) return undefined;
+    const box = await get(id);
+    // First-use setup and the file operation share one native command. A guest
+    // marker makes initialization idempotent across clients and concurrent ops.
+    const command = await box.runCommand({ cmd: "sh", args: ["-c", `${workspace}; ${script}`, "sh", ...args], cwd: "/", env: { LC_ALL: "C" }, stdin: data === undefined ? false : Readable.from([data]), detached: true });
+    let output = "", stderr = "";
+    const logs = (async () => { for await (const chunk of command.logs()) { if (chunk.stream === "stdout") output += chunk.data; else stderr += chunk.data; } })();
+    const [exit] = await Promise.all([command.wait(), logs]);
+    if (exit.exitCode !== 0) {
+      if (/No such file or directory/.test(stderr)) throw vercelError({ code: "ENOENT" }, id);
+      if (/Not a directory|Directory not empty/.test(stderr)) throw vercelError({ code: "ENOTDIR" }, id);
+      throw new Error("Vercel workspace or file operation failed");
+    }
+    prepared.add(id);
+    return output;
+  }
   async function launch(box: N, input: ExecInput, timeoutMs: number) {
     const path = `/tmp/sandbox-sdk-${crypto.randomUUID()}.pid`;
     // GNU timeout owns this new session's process group. Its remote timer
     // survives client loss and leaves no sleeping watchdog behind on success.
-    const wrapper = `echo $$ > ${quote(path)}; exec timeout --signal=KILL ${timeoutMs / 1000}s sh -c ${quote(input.command)}`;
-    const command = await box.runCommand({ cmd: "setsid", args: ["--wait", "sh", "-c", wrapper], cwd: input.cwd, env: input.env, stdin: input.stdin === undefined ? false : Readable.from([input.stdin]), detached: true });
+    const errorPath = `${path}.error`;
+    const inner = `${prepared.has(box.name) ? "" : `(${workspace}) || { echo setup-error > ${quote(errorPath)}; exit 125; }; `}cd ${quote(input.cwd)} || { echo cwd-error > ${quote(errorPath)}; exit 125; }; exec sh -c ${quote(input.command)}`;
+    const wrapper = `echo $$ > ${quote(path)}; exec timeout --signal=KILL ${timeoutMs / 1000}s sh -c ${quote(inner)}`;
+    const command = await box.runCommand({ cmd: "setsid", args: ["--wait", "sh", "-c", wrapper], cwd: "/", env: input.env, stdin: input.stdin === undefined ? false : Readable.from([input.stdin]), detached: true });
     let pid: number | undefined;
     try {
       for (let attempt = 0; attempt < 200; attempt++) {
@@ -86,7 +121,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
     const kill = async (signal: "KILL" | "TERM") => {
       const control = await box.runCommand({ cmd: "sh", args: ["-c", `kill -${signal} -${group} 2>/dev/null || true`], detached: true }); await control.wait();
     };
-    return { command, pid, kill };
+    return { command, pid, kill, errorPath };
   }
   const provider: Provider<N, VercelCapability> = {
     name: "vercel", keyMode: "exact", capabilities: new Set<VercelCapability>(["pause", "snapshot", "network-policy", "size"]), native,
@@ -98,13 +133,15 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
       if (new Set(input.ports).size > 15) unsupported("Vercel supports at most fifteen declared ports");
       const common = { ...credentials(), name: input.key === undefined ? `sdk-${crypto.randomUUID()}` : keyName(input.key), persistent: true, env: input.env, tags, ports: input.ports, resources: resources(input.size), networkPolicy: input.network === "none" ? "deny-all" : typeof input.network === "object" ? { allow: input.network.allow } : "allow-all", signal: input.signal, onResume: clean } satisfies Parameters<typeof Sandbox.create>[0];
       const pending = { ...common, tags: { ...tags, "sandbox-sdk": "pending" } };
-      const box = await (await sdk()).create(input.from ? { ...pending, source: { type: "snapshot", snapshotId: input.from } } : pending);
+      const box = await (await sdk()).create(input.from ? { ...pending, source: { type: "snapshot", snapshotId: input.from } } : common);
       boxes.set(box.name, box);
       try {
+        if (!input.from) return info(box);
         const init = await box.runCommand({ cmd: "sh", args: ["-c", "mkdir -p /workspace && chmod 777 /workspace"], sudo: true, detached: true });
         if ((await init.wait()).exitCode !== 0) throw new Error("Could not initialize /workspace");
-        if (input.from) await clean(box);
+        await clean(box, true);
         await box.update({ tags });
+        prepared.add(box.name);
         return info(box);
       } catch (error) { await box.delete(); boxes.delete(box.name); throw error; }
     }),
@@ -116,7 +153,7 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
         if (item.labels["sandbox-sdk"] === "1" && Object.entries(labels).every(([k, v]) => item.labels[k] === v)) result.push(item);
       } catch (error) { if (vercelError(error, entry.name).code !== "not_found") throw error; }
     } return result; }),
-    destroy: id => safe(id, async () => { try { await (await get(id)).delete(); } catch (error) { if (vercelError(error).code !== "not_found") throw error; } boxes.delete(id); }),
+    destroy: id => safe(id, async () => { try { await (await get(id)).delete(); } catch (error) { if (vercelError(error).code !== "not_found") throw error; } boxes.delete(id); prepared.delete(id); }),
     exec: (id, input) => safe(id, async () => {
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
       const started = Date.now(); const box = await get(id); const task = await launch(box, input, input.timeoutMs);
@@ -131,21 +168,47 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
         // The remote watchdog also enforces the deadline if this client disconnects.
         if (exit.exitCode === 137 && Date.now() - started >= input.timeoutMs) timedOut = true;
         await stopping;
+        if (!timedOut && exit.exitCode === 125) {
+          let failure: string | undefined;
+          try { failure = (await box.fs.readFile(task.errorPath)).toString().trim(); }
+          catch (error) { if (vercelError(error, id).code !== "file_not_found") throw error; }
+          if (failure !== undefined) {
+            await box.fs.rm(task.errorPath, { force: true });
+            throw new SandboxError("Command could not start. Workspace initialization or the requested working directory failed. Check the directory and sandbox permissions.", { code: failure === "cwd-error" ? "invalid_argument" : "provider", provider: "vercel", sandboxId: id });
+          }
+        }
+        if (!timedOut && exit.exitCode === 0) prepared.add(id);
         return { exitCode: timedOut ? null : exit.exitCode, timedOut };
       } catch (error) { await task.kill("KILL"); await task.command.wait(); throw error; }
       finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
     }),
     files: {
       writeCreatesParents: true,
-      read: (id, path) => safe(id, async () => new Uint8Array(await (await get(id)).fs.readFile(path))),
-      write: (id, path, data) => safe(id, async () => { const box = await get(id); await box.fs.mkdir(posix.dirname(path), { recursive: true }); await box.fs.writeFile(path, data); }),
-      stat: (id, path) => safe(id, () => fileInfo(id, path)),
-      list: (id, path) => safe(id, async () => Promise.all((await (await get(id)).fs.readdir(path)).map(name => fileInfo(id, posix.join(path, name))))),
-      mkdir: (id, path) => safe(id, async () => { await (await get(id)).fs.mkdir(path, { recursive: true }); }),
-      remove: (id, path, settings) => safe(id, async () => { await (await get(id)).fs.rm(path, { recursive: settings.recursive }); }),
+      read: (id, path) => safe(id, async () => {
+        const value = await initialFile(id, 'base64 -- "$1"', [path]);
+        return value === undefined ? new Uint8Array(await (await get(id)).fs.readFile(path)) : new Uint8Array(Buffer.from(value, "base64"));
+      }),
+      write: (id, path, data) => safe(id, async () => { if (await initialFile(id, 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', [path], data) !== undefined) return;
+        const box = await get(id); await box.fs.mkdir(posix.dirname(path), { recursive: true }); await box.fs.writeFile(path, data); }),
+      stat: (id, path) => safe(id, async () => {
+        const value = await initialFile(id, `${guestStat} "$1"`, [path]);
+        if (value === undefined) return fileInfo(id, path);
+        const entry = decodeStats(value)[0];
+        if (!entry) throw new Error("Missing Vercel stat response");
+        return entry;
+      }),
+      list: (id, path) => safe(id, async () => {
+        const value = await initialFile(id, `if [ ! -d "$1" ]; then if [ -e "$1" ] || [ -L "$1" ]; then echo 'Not a directory' >&2; else echo 'No such file or directory' >&2; fi; exit 1; fi; find -H "$1" -mindepth 1 -maxdepth 1 -exec ${guestStat} {} +`, [path]);
+        if (value === undefined) return Promise.all((await (await get(id)).fs.readdir(path)).map(name => fileInfo(id, posix.join(path, name))));
+        return decodeStats(value);
+      }),
+      mkdir: (id, path) => safe(id, async () => { if (await initialFile(id, 'mkdir -p -- "$1"', [path]) !== undefined) return;
+        await (await get(id)).fs.mkdir(path, { recursive: true }); }),
+      remove: (id, path, settings) => safe(id, async () => { if (await initialFile(id, 'if [ "$2" = true ]; then rm -r -- "$1"; else rm -- "$1"; fi', [path, String(settings.recursive)]) !== undefined) return;
+        await (await get(id)).fs.rm(path, { recursive: settings.recursive }); }),
     },
     previewUrl: (id, port) => safe(id, async () => { const box = await get(id); if (!box.routes.some(route => route.port === port)) throw new SandboxError(`Port ${port} was not declared at creation. Vercel needs ports in CreateInput. Recreate with ports: [${port}].`, { code: "invalid_argument", provider: "vercel", sandboxId: id }); return { url: box.domain(port) }; }),
-    close: async id => { boxes.delete(id); },
+    close: async id => { boxes.delete(id); prepared.delete(id); },
     pause: id => safe(id, async () => { await (await get(id)).stop(); }),
     resume: id => safe(id, async () => { await attach(id, true); }),
     snapshot: id => safe(id, async () => ({ id: (await (await get(id)).snapshot()).snapshotId })),

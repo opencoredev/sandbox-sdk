@@ -75,7 +75,10 @@ export class MockSandbox {
   rewrite = (command: string) => command.replace(/\/workspace|\/tmp\/\.sandbox-sdk[^\s'";)]*|\/tmp\/sdk-bare/g, path => this.mapped(path)).replace(/\.listen\(3000,/g, `.listen(${this.port},`);
   files = {
     read: async (path: string, options: { format?: string } = {}) => { try { const data = await fs.readFile(this.mapped(path)); return options.format === "bytes" ? new Uint8Array(data) : data.toString(); } catch { throw new FileNotFoundError("missing file"); } },
-    write: async (path: string, data: ArrayBuffer) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), new Uint8Array(data)); },
+    write: async (path: string | { path: string; data: string | ArrayBuffer }[], data?: string | ArrayBuffer | { user: string }) => {
+      const files = typeof path === "string" ? [{ path, data: typeof data === "string" || data instanceof ArrayBuffer ? data : new ArrayBuffer(0) }] : path;
+      for (const file of files) { await fs.mkdir(posix.dirname(this.mapped(file.path)), { recursive: true }); await fs.writeFile(this.mapped(file.path), typeof file.data === "string" ? file.data : new Uint8Array(file.data)); }
+    },
     makeDir: async (path: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
     remove: async (path: string, options: { user?: string } = {}) => {
       if (path.startsWith("/tmp/.sandbox-sdk-e2b-") && options.user !== "root") throw new Error("Root-owned marker requires root in sticky /tmp");

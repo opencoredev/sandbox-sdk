@@ -106,3 +106,20 @@ test("Docker reuses one keepalive connection across control requests", async () 
     expect(sockets.size).toBe(1);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
 });
+
+
+test("plain local create returns after Docker start without guest setup or metadata GET", async () => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const call = vi.spyOn(Docker.prototype, "call").mockImplementation(async (_, path) => path.startsWith("/containers/create") ? { Id: "fast-create" } : undefined);
+  const exec = vi.spyOn(Docker.prototype, "exec").mockResolvedValue(0);
+  try {
+    const before = Date.now();
+    const created = await local().create({ labels: { verification: "sbx57" }, key: "fast-key" });
+    expect(created).toMatchObject({ id: "fast-create", state: "running", key: "fast-key", labels: { verification: "sbx57", "sandbox-sdk": "1" } });
+    expect(created.createdAt).toBeGreaterThanOrEqual(before);
+    expect(created.createdAt).toBeLessThanOrEqual(Date.now());
+    expect(call.mock.calls.map(([method, path]) => `${method} ${path}`)).toEqual(["GET /images/node%3A22-bookworm/json", expect.stringMatching(/^POST \/containers\/create/), "POST /containers/fast-create/start"]);
+    expect(exec).not.toHaveBeenCalled();
+  } finally { call.mockRestore(); exec.mockRestore(); }
+});

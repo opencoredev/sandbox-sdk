@@ -274,3 +274,109 @@ test("create uses one native acquisition and operations reuse its connection", a
     expect(create).toHaveBeenCalledTimes(1); expect(connect).not.toHaveBeenCalled();
   } finally { await box.destroy(); create.mockRestore(); connect.mockRestore(); }
 });
+
+test("plain create makes no metadata, deadline or workspace request after acquisition", async () => {
+  const getInfo = vi.spyOn(MockSandbox.prototype, "getInfo");
+  const setTimeout = vi.spyOn(MockSandbox.prototype, "setTimeout");
+  const provider = e2b();
+  const box = await createSandbox(provider, { timeoutMs: 60_000 });
+  try {
+    expect(getInfo).not.toHaveBeenCalled();
+    // The fixture's native create applies its timeout once.
+    expect(setTimeout).toHaveBeenCalledTimes(1);
+    expect(await box.files.list("/workspace")).toEqual([]);
+    expect(await box.files.stat("/workspace")).toMatchObject({ type: "directory" });
+    expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
+  } finally { await box.destroy(); getInfo.mockRestore(); setTimeout.mockRestore(); }
+});
+
+test.each(["write", "mkdir", "remove", "connect", "snapshot"] as const)("fresh workspace supports first %s without eager setup", async operation => {
+  const provider = e2b(); const box = await createSandbox(provider);
+  try {
+    if (operation === "write") { await box.files.write("nested/first", "ok"); expect(await box.files.read("nested/first")).toBe("ok"); }
+    if (operation === "mkdir") { await provider.files.mkdir(box.id, "/workspace/nested"); expect(await box.files.list("/workspace")).toHaveLength(1); }
+    if (operation === "remove") { await box.files.remove("/workspace"); expect(await box.files.exists("/workspace")).toBe(false); return; }
+    if (operation === "connect") { const fresh = await connectSandbox(e2b(), box.id); expect((await fresh.run("pwd")).stdout.trim()).toBe("/workspace"); }
+    if (operation === "snapshot") { const saved = await box.snapshot(); const restored = await createSandbox(e2b(), { from: saved.id }); try { expect(await restored.files.list("/workspace")).toEqual([]); } finally { await restored.destroy(); } }
+    expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
+    await box.run("rmdir /workspace/nested 2>/dev/null; rm -rf /workspace");
+    expect(await box.files.exists("/workspace")).toBe(false);
+  } finally { await box.destroy(); }
+});
+
+test("fresh root lists the workspace and cannot replace it with a file", async () => {
+  const box = await createSandbox(e2b());
+  try {
+    expect((await box.files.list("/")).filter(file => file.path === "/workspace")).toHaveLength(1);
+    await expect(box.files.write("/workspace", "bad")).rejects.toMatchObject({ code: "invalid_argument" });
+    expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
+  } finally { await box.destroy(); }
+});
+
+test("fresh overlapping launches keep setup until completion, including cancelled bootstrap", async () => {
+  const provider = e2b(); const box = await createSandbox(provider);
+  const original = box.native.commands.run.bind(box.native.commands);
+  const spy = vi.spyOn(box.native.commands, "run").mockImplementation((command, options) => original(command.startsWith("set --") ? `sleep .05; ${command}` : command, options));
+  try {
+    const first = Promise.resolve(box.run("echo first", { timeoutMs: 10 }));
+    const second = Promise.resolve(box.run("pwd"));
+    expect(await first).toMatchObject({ timedOut: true });
+    expect((await second).stdout.trim()).toBe("/workspace");
+    expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
+  } finally { spy.mockRestore(); await box.destroy(); }
+});
+
+test.each(["exec", "write", "remove"] as const)("reconnect preserves workspace removal after first %s", async first => {
+  const box = await createSandbox(e2b());
+  try {
+    if (first === "exec") await box.run("rm -rf /workspace");
+    else { if (first === "write") await box.files.write("file", "ok"); await box.files.remove("/workspace", { recursive: true }); }
+    const fresh = e2b(); await fresh.connect(box.id);
+    await expect(fresh.files.stat(box.id, "/workspace")).rejects.toMatchObject({ code: "file_not_found" });
+    expect(await fresh.exec(box.id, { command: "test ! -e /workspace", cwd: "/", env: {}, timeoutMs: 1000, onChunk() {} })).toMatchObject({ exitCode: 0 });
+    await expect(fresh.files.stat(box.id, "/workspace")).rejects.toMatchObject({ code: "file_not_found" });
+  } finally { await box.destroy(); }
+});
+
+test.each(["exit", "abort"] as const)("first %s after deleting workspace does not leave a synthetic directory", async mode => {
+  const box = await createSandbox(e2b());
+  try {
+    if (mode === "exit") expect((await box.run("rm -rf /workspace; exit 130")).exitCode).toBe(130);
+    else {
+      const controller = new AbortController();
+      const run = box.run("rm -rf /workspace; echo removed; sleep 5", { signal: controller.signal });
+      const output = (async () => { for await (const chunk of run) if (chunk.text.includes("removed")) controller.abort(); })();
+      await output; expect((await run).timedOut).toBe(true);
+    }
+    expect(await box.files.exists("/workspace")).toBe(false);
+    expect((await box.files.list("/")).some(file => file.path === "/workspace")).toBe(false);
+    await box.files.write("/workspace", "replacement");
+    expect(await box.files.read("/workspace")).toBe("replacement");
+  } finally { await box.destroy(); }
+});
+
+test("adopting a markerless existing workspace preserves later removal", async () => {
+  const first = e2b(); const box = await createSandbox(first);
+  try {
+    await box.native.files.makeDir("/workspace");
+    const adopted = e2b(); await adopted.connect(box.id);
+    await adopted.files.remove(box.id, "/workspace", { recursive: true });
+    const fresh = e2b(); await fresh.connect(box.id);
+    await expect(fresh.files.stat(box.id, "/workspace")).rejects.toMatchObject({ code: "file_not_found" });
+  } finally { await box.destroy(); }
+});
+
+test("concurrent workspace initialization cannot recreate a directory removed by the first user", async () => {
+  const box = await createSandbox(e2b());
+  const original = box.native.commands.run.bind(box.native.commands);
+  let launch = 0;
+  const spy = vi.spyOn(box.native.commands, "run").mockImplementation((command, options) => {
+    const delay = launch++ === 0 ? ".03" : ".1";
+    return original(command.replaceAll("mkdir -p /workspace", `sleep ${delay}; mkdir -p /workspace`), options);
+  });
+  try {
+    const [first, second] = await Promise.all([box.run("rm -rf /workspace; touch /tmp/.sandbox-sdk-deleted"), box.run("while [ ! -e /tmp/.sandbox-sdk-deleted ]; do sleep .01; done; test ! -e /workspace", { cwd: "/" })]);
+    expect(first.ok).toBe(true); expect(second.ok).toBe(true);
+    expect(await box.files.exists("/workspace")).toBe(false);
+  } finally { spy.mockRestore(); await box.destroy(); }
+});

@@ -2,6 +2,7 @@ import type { BoatApi } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { defaults } from "../../run.js";
 import { boatError, failure } from "./errors.js";
+export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** Detached commands have no 600-second limit. Boat's stopCommand kills the
@@ -26,6 +27,7 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
   let launchAttempted = false;
   let stdinPath: string | undefined;
   let envDir: string | undefined;
+  const setupError = `/tmp/.sandbox-sdk-setup-${crypto.randomUUID()}`;
   async function stop() {
     if (processId === undefined) return;
     try {
@@ -113,7 +115,7 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
       redirect = ` < ${quote(stdinPath)}`;
     }
     if (cancelled) return { exitCode: null, timedOut: true };
-    const command = `${source}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
+    const command = `(${workspace}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; ${source}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
     launchAttempted = true;
     const started = await api.command({
       sandboxId: id,
@@ -152,6 +154,13 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
       stream.abort();
       await completion.catch(() => {});
       return { exitCode: null, timedOut: true };
+    }
+    if (!result.timedOut && result.exitCode === 125) {
+      const status = await api.command({ sandboxId: id, commandRequest: {
+        command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`, timeoutSeconds: 10,
+      } });
+      if (!("stdout" in status) || status.exitCode !== 0) throw failure("Boat could not confirm command initialization", "outcome_unknown", id);
+      if (status.stdout.trim() === "setup-failed") throw failure("Boat workspace initialization failed; the requested command did not run", "provider", id);
     }
     return result;
   } catch (error) {

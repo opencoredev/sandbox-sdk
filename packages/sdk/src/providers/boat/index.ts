@@ -11,7 +11,7 @@ import { posix } from "node:path";
 import type { BoatApi, CreateSandboxRequest, Sandbox as BoatSandbox } from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
 import { boatError, failure } from "./errors.js";
-import { execute, quote } from "./exec.js";
+import { execute, quote, workspace } from "./exec.js";
 
 export interface BoatOptions {
   apiKey?: string;
@@ -150,10 +150,10 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
       throw boatError(error, id);
     }
   }
-  async function raw(id: string, command: string, file = false) {
+  async function raw(id: string, command: string, file = false, prepare = false) {
     const result = await (
       await api()
-    ).command({ sandboxId: id, commandRequest: { command, timeoutSeconds: 60 } });
+    ).command({ sandboxId: id, commandRequest: { command: prepare ? `${workspace}; ${command}` : command, timeoutSeconds: 60 } });
     if (!("stdout" in result))
       throw failure("Boat returned an unexpected detached result", "outcome_unknown", id);
     if (result.stdoutTruncated || result.stderrTruncated)
@@ -180,6 +180,7 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           id,
           `node -e ${quote(`try {${script}} catch(e) {process.exit(e.code==='ENOENT'?44:45)}`)} ${args.map(quote).join(" ")}`,
           true,
+          args.some(path => path === "/workspace" || path.startsWith("/workspace/")),
         ),
       id,
     );
@@ -252,22 +253,11 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
         environments.set(sandbox.id, { ...input.env });
         try {
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          // The rename and guest setup are independent; overlap them. Settle
-          // both before cleanup so neither outlives a destroy.
-          const [renamed, setup] = await Promise.allSettled([
-            sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } }),
-            // Commands wait for provisioning. /workspace is writable by Boat's user.
-            raw(
-              sandbox.id,
-              'sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null',
-            ),
-          ]);
-          if (renamed.status === "rejected") throw renamed.reason;
-          if (setup.status === "rejected") throw setup.reason;
+          // Boat has no name at create. Preserve durable cross-client metadata;
+          // its command API waits for provisioning when first use arrives early.
+          const renamed = await sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } });
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          // The setup command already confirmed readiness after provisioning.
-          // Rename may have returned an earlier provisioning state.
-          const updated = renamed.value.sandbox;
+          const updated = renamed.sandbox;
           if (updated.name !== name) return await provider.connect(sandbox.id);
           const result = { ...info(updated), state: "running" } satisfies SandboxInfo;
           boxes.set(sandbox.id, updated);

@@ -78,3 +78,28 @@ test("nested writes create parents once and recover after guest removal", async 
     expect(await box.files.read("nested/deep/file")).toBe("second");
   } finally { mkdir.mockRestore(); await box.destroy(); }
 });
+
+test("public run uses the process-local activity registry without another guest shell", async () => {
+  const box = await createSandbox(agentos());
+  const exec = vi.spyOn(box.native.process, "exec");
+  try {
+    expect((await box.run("printf direct")).stdout).toBe("direct");
+    expect(exec).toHaveBeenCalledWith("exec < /dev/null\nprintf direct", expect.objectContaining({ cwd: "/workspace" }));
+    expect(await box.files.exists("/tmp/.sandbox-sdk/runs")).toBe(false);
+  } finally { exec.mockRestore(); await box.destroy(); }
+});
+
+test("idle reaping sees public runs through a fresh adapter factory", async () => {
+  const { reapSandboxes } = await import("../src/index.js");
+  const labels = { sbx57: crypto.randomUUID() };
+  const box = await createSandbox(agentos(), { labels });
+  let ready = () => {};
+  const running = new Promise<void>(resolve => { ready = resolve; });
+  const run = (async () => { for await (const chunk of box.run("echo READY; sleep .2")) if (chunk.text.includes("READY")) ready(); })();
+  try {
+    await running;
+    expect(await reapSandboxes(agentos(), { labels, olderThanMs: 0, idleOnly: true })).toBe(0);
+    await run;
+    expect(await reapSandboxes(agentos(), { labels, olderThanMs: 0, idleOnly: true })).toBe(1);
+  } finally { await run; await box.destroy(); }
+});
