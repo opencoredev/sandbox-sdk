@@ -16,10 +16,10 @@ export function makeGit(run: (command: string, options?: RunOptions) => RunHandl
     redactor.add([token]);
     const helper = `/tmp/.sandbox-sdk/credential-${crypto.randomUUID()}`;
     // Token travels only in stdin; the helper reads its sibling file. Never argv/env/history.
-    await run(`umask 077; mkdir -p /tmp/.sandbox-sdk; cat > ${quote(helper + ".token")}`, { stdin: token });
-    await files.write(helper, `#!/bin/sh\nif [ "$1" = get ]; then printf 'username=x-access-token\\npassword='; cat ${quote(helper + ".token")}; printf '\\n'; fi\n`);
+    const script = `#!/bin/sh\nif [ "$1" = get ]; then printf 'username=x-access-token\\npassword='; cat ${quote(helper + ".token")}; printf '\\n'; fi\n`;
+    await run(`umask 077; mkdir -p /tmp/.sandbox-sdk; cat > ${quote(helper + ".token")}; printf '%s' ${quote(script)} > ${quote(helper)}`, { stdin: token });
     try { return await run(`git -c credential.helper= -c ${quote(`credential.helper=!sh ${quote(helper)}`)} ${command}`, { cwd }); }
-    finally { await files.remove(helper).catch(() => {}); await files.remove(helper + ".token").catch(() => {}); }
+    finally { await Promise.all([files.remove(helper).catch(() => {}), files.remove(helper + ".token").catch(() => {})]); }
   }
   return {
     clone: (url, options = {}) => auth(`clone ${options.branch ? `--branch ${quote(options.branch)} ` : ""}${options.depth ? `--depth ${quote(options.depth)} ` : ""}-- ${quote(url)} ${quote(options.dir ?? "app")}`, options.token),

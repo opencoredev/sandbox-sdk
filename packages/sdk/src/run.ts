@@ -5,20 +5,15 @@ import type { RunHandle, RunOptions, RunResult } from "./types.js";
 export const defaults = { CI: "1", PAGER: "cat", GIT_TERMINAL_PROMPT: "0", DEBIAN_FRONTEND: "noninteractive", TERM: "dumb", NO_COLOR: "1" };
 export const pathOf = (path = ".") => posix.resolve("/workspace", path);
 export const quote = (value: unknown) => `'${String(value).replaceAll("'", "'\\''")}'`;
-// The relays keep activity alive until inherited output pipes close, even when
-// the user shell exits before a background child. All children keep the adapter's
-// process group; timeout/abort still kills the entire group.
+export const secretRecoveryCommand = `if [ -f /tmp/.sandbox-sdk/secret-names.json ]; then cat /tmp/.sandbox-sdk/secret-names.json || exit 1; printf '\\000'; env -0; fi`;
+// Anonymous-pipe relays keep activity alive until inherited stdout/stderr close.
+// Close the routing descriptors in the user shell: only its actual output pipes
+// should keep the relays alive. Every child remains in the adapter's process group.
 const activityScript = `trap 'rm -rf -- "$2"' EXIT
-mkdir -p /tmp/.sandbox-sdk/runs && (umask 077; mkdir "$2" && mkfifo "$2/out" "$2/err") || exit 1
-cat "$2/out" &
-set -- "$@" "$!"
-cat "$2/err" >&2 &
-set -- "$@" "$!"
-"$3" -c "$1" > "$2/out" 2> "$2/err"
-set -- "$@" "$?"
-wait "$4"
-wait "$5"
-exit "$6"`;
+(umask 077; mkdir -p "$2") || exit 1
+{ { "$3" -c "$1" 3>&- 4>&-; printf '%s\\n' "$?" > "$2/status"; } 2>&1 >&3 | cat >&4; } 3>&1 4>&2 | cat
+read -r code < "$2/status"
+exit "$code"`;
 const activityCommand = (command: string, path: string, shell = "sh") => `sh -c ${quote(activityScript)} sh ${quote(command)} ${quote(path)} ${quote(shell)}`;
 // Guest markers cover independent SDK clients after launch. This registry also
 // covers transport setup/queueing before the guest can publish its marker.
@@ -89,8 +84,16 @@ export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => 
   const queue: OutputChunk[] = [];
   function drain(final = false) {
     const secrets = redactor.secrets;
+    const leading = new Set(secrets.map(secret => secret[0]));
     while (queue.length) {
       const first = queue[0]; if (!first) break;
+      if (!leading.has(first.text[0])) {
+        let count = 1;
+        while (count < first.text.length && !leading.has(first.text[count])) count++;
+        emit({ stream: first.stream, text: first.text.slice(0, count) }); first.text = first.text.slice(count);
+        if (!first.text) queue.shift();
+        continue;
+      }
       const text = queue.filter(chunk => interleaved || chunk.stream === first.stream).map(chunk => chunk.text).join("");
       const secret = secrets.find(secret => text.startsWith(secret));
       if (secret) {
@@ -106,7 +109,7 @@ export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => 
         }
         // Emit up to the next potentially secret-leading character.
         let count = 1;
-        while (count < first.text.length && !secrets.some(secret => secret.startsWith(first.text[count] ?? ""))) count++;
+        while (count < first.text.length && !leading.has(first.text[count])) count++;
         emit({ stream: first.stream, text: first.text.slice(0, count) }); first.text = first.text.slice(count);
       }
       for (let index = queue.length - 1; index >= 0; index--) if (!queue[index]?.text) queue.splice(index, 1);

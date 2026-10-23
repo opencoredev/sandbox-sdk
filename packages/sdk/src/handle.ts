@@ -2,12 +2,12 @@ import type { Provider, SandboxInfo, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
-import { makeRun, quote, chunkRedactor, defaults } from "./run.js";
+import { makeRun, quote, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
 import { makeFiles } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
 import { makeProcesses } from "./processes.js";
-export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, created: boolean, options: CreateOptions, redactor: Redactor): Promise<SandboxBase<N>> {
+export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, created: boolean, options: CreateOptions, redactor: Redactor, recoverSecrets = true): Promise<SandboxBase<N>> {
   let closed = false; let destroyed = false; let commands = 0; let bytesOut = 0;
   const check = () => { if (closed || destroyed) throw new SandboxError("Sandbox handle is closed. Local resources were detached. Connect a new handle.", { code: "not_found", provider: provider.name, sandboxId: info.id }); };
   const files = makeFiles(provider, info.id, redactor, check);
@@ -27,14 +27,25 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
         if (result.exitCode !== 0) throw new SandboxError("Secret setup failed. Could not record secret names in /tmp/.sandbox-sdk. Ensure /tmp is writable.", { code: "provider", provider: provider.name, sandboxId: info.id });
       }
     }
-  } else if (await files.exists(namesPath)) {
-    const names: unknown = JSON.parse(await files.read(namesPath));
-    if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) invalid("Invalid secret names record");
-    for (const name of names) {
-      if (typeof name !== "string") continue;
-      let secret = "";
-      await provider.exec(info.id, { command: `printenv ${quote(name)}`, cwd: "/workspace", env: {}, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") secret += chunk.text; } });
-      recovered[name] = secret.replace(/\n$/, ""); redactor.add([recovered[name]]);
+  } else if (recoverSecrets) {
+    // Read the record and environment together. Values stay private to this
+    // recovery step, and only explicitly recorded names enter the redactor/env.
+    let wire = "";
+    const result = await provider.exec(info.id, { command: secretRecoveryCommand, cwd: "/workspace", env: {}, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") wire += chunk.text; } });
+    if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Secret recovery failed. Could not read the sandbox environment. Retry connecting.", { code: "provider", provider: provider.name, sandboxId: info.id });
+    if (wire) {
+      const separator = wire.indexOf("\0");
+      if (separator < 0) invalid("Invalid secret recovery record");
+      let names: unknown;
+      try { names = JSON.parse(wire.slice(0, separator)); } catch { throw new SandboxError("Secret recovery failed. The secret names record is not valid JSON. Repair the record and reconnect.", { code: "provider" }); }
+      if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) invalid("Invalid secret names record");
+      const environment = new Map<string, string>();
+      for (const entry of wire.slice(separator + 1).split("\0")) {
+        const equal = entry.indexOf("=");
+        if (equal >= 0) environment.set(entry.slice(0, equal), entry.slice(equal + 1));
+      }
+      for (const name of names) if (typeof name === "string") recovered[name] = environment.get(name) ?? "";
+      redactor.add(Object.values(recovered));
     }
   }
   const baseEnv = { ...recovered, ...options.env, ...options.secrets };

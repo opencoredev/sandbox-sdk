@@ -94,8 +94,11 @@ export async function reapSandboxes(provider: Provider, options: { olderThanMs?:
   try { for (const info of await listSandboxes(provider, options)) if (Date.now() - info.createdAt >= (options.olderThanMs ?? 0)) { if (options.idleOnly) {
       if (isActive(provider.name, info.id)) continue;
       let box;
-      try { box = await connectSandbox(provider, info.id); } catch (error) { if (error instanceof SandboxError && error.code === "not_found") { count++; continue; } throw error; }
-      try { if ((await box.processes()).some(process => process.status === "running" || process.status === "starting") || (await box.files.exists("/tmp/.sandbox-sdk/runs") && (await box.files.list("/tmp/.sandbox-sdk/runs")).length > 0)) continue; }
+      try { const connected = await provider.connect(info.id); const { makeHandle } = await import("./handle.js"); box = await makeHandle(provider, connected, false, {}, new Redactor(), false); } catch (error) { if (error instanceof SandboxError && error.code === "not_found") { count++; continue; } throw error; }
+      try {
+        const [processes, runs] = await Promise.all([box.processes(), box.files.list("/tmp/.sandbox-sdk/runs").catch(async error => { if (error instanceof SandboxError && (["file_not_found", "not_found"].includes(error.code) || error.code === "provider" && !(await box.files.exists("/tmp/.sandbox-sdk/runs")))) return []; throw error; })]);
+        if (processes.some(process => process.status === "running" || process.status === "starting") || runs.length > 0) continue;
+      }
       finally { await box.close(); }
     }
     if (isActive(provider.name, info.id)) continue;
