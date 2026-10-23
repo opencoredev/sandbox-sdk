@@ -139,14 +139,15 @@ export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapsh
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived while provisioning. Retry with a fresh signal.", { code: "aborted", provider: "railway" });
         const data: Metadata = { version: 1, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" } };
-        await box.files.mkdir("/workspace");
-        if (source !== undefined) {
-          // Checkpoints preserve files, not processes. Invalidate inherited PIDs
-          // before a restored record can signal an unrelated process in this VM.
-          const result = await execute(box.id, { command: `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; true`, cwd: "/", env: {}, timeoutMs: 30_000, onChunk() {} });
-          if (result.timedOut || result.exitCode !== 0) throw new Error("Railway checkpoint process cleanup failed");
-        }
-        await box.files.write(marker, JSON.stringify(data));
+        // The marker is required for discovery from another client. Fold the
+        // workspace and restore cleanup into the same guest request.
+        const cleanup = source === undefined ? "" : `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; `;
+        const result = await execute(box.id, {
+          command: `mkdir -p /workspace /tmp/.sandbox-sdk && { ${cleanup}printf %s ${quote(JSON.stringify(data))} > ${quote(marker)}; }`,
+          cwd: "/", env: {}, timeoutMs: 30_000, onChunk() {},
+        });
+        if (result.timedOut || result.exitCode !== 0) throw new Error("Railway workspace and ownership initialization failed");
+        if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived during initialization. Retry with a fresh signal.", { code: "aborted", provider: "railway" });
         return info(box, data);
       } catch (cause) { await provider.destroy(box.id); throw cause; }
     }),

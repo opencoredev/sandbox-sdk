@@ -156,3 +156,16 @@ test("writes reuse the attached native client and let native uploads create pare
     expect(mkdir).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
   } finally { mkdir.mockRestore(); connect.mockRestore(); await box.destroy(); }
 });
+
+
+test("creation combines workspace and cross-client ownership in one guest operation", async () => {
+  const mkdir = vi.spyOn(mock.MockSandbox.prototype, "exec");
+  const before = mock.state.execs.length;
+  const box = await createSandbox(railway(options), { labels: { verification: "sbx57" } });
+  try {
+    expect(mock.state.execs.length - before).toBe(1);
+    expect(mkdir.mock.calls.at(-1)?.[0]).toContain("mkdir -p /workspace");
+    expect(await box.files.list("/workspace")).toEqual([]);
+    expect((await connectSandbox(railway(options), box.id)).labels).toMatchObject({ verification: "sbx57", "sandbox-sdk": "1" });
+  } finally { mkdir.mockRestore(); await box.destroy(); }
+});

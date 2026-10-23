@@ -347,7 +347,7 @@ test("preview includes native auth for ordinary fetch and custom paths", async (
   } finally { await box.destroy(); }
 });
 
-test("completed guest setup confirms readiness without another control-plane GET", async () => {
+test("Boat create retains only the metadata rename without guest warmup or GET", async () => {
   mock.staleRename = true;
   const provider = factory();
   const before = mock.calls.length;
@@ -355,7 +355,54 @@ test("completed guest setup confirms readiness without another control-plane GET
   try {
     const created = await provider.create({ labels: { verification: "sbx57" } }); id = created.id;
     expect(created.state).toBe("running");
-    expect(mock.calls.slice(before)).toHaveLength(3);
+    expect(mock.calls.slice(before)).toHaveLength(2);
     expect((await provider.connect(id)).labels).toMatchObject({ verification: "sbx57" });
   } finally { mock.staleRename = false; if (id) await provider.destroy(id); }
+});
+
+
+test("normal Boat completion makes no cancellation confirmation request", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const before = mock.calls.length;
+    expect((await box.run("true")).ok).toBe(true);
+    expect(mock.calls.slice(before).filter(call => call.endsWith("/stop"))).toEqual([]);
+    expect(mock.calls.slice(before).filter(call => /POST .*\/commands$/.test(call))).toHaveLength(1);
+  } finally { await box.destroy(); }
+});
+
+
+test.each(["list", "stat", "read", "write", "mkdir", "remove", "exec"])("fresh Boat first %s lazily prepares the workspace", async operation => {
+  const provider = factory();
+  const before = mock.commands.length;
+  const box = await createSandbox(provider);
+  try {
+    expect(mock.commands.length).toBe(before);
+    if (operation === "list") expect(await box.files.list("/workspace")).toEqual([]);
+    if (operation === "stat") expect(await box.files.stat("/workspace")).toMatchObject({ type: "directory" });
+    if (operation === "read") await expect(box.files.read("missing")).rejects.toMatchObject({ code: "file_not_found" });
+    if (operation === "write") { await box.files.write("nested/file", "bytes"); expect(await box.files.read("nested/file")).toBe("bytes"); }
+    if (operation === "mkdir") await provider.files.mkdir(box.id, "/workspace/nested");
+    if (operation === "remove") await box.files.remove("/workspace", { recursive: true });
+    if (operation === "exec") expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
+  } finally { await box.destroy(); }
+});
+
+test("Boat first-use marker prevents recreating a workspace removed by user code", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect((await box.run("rm -rf /workspace", { cwd: "/" })).ok).toBe(true);
+    await expect(box.files.stat("/workspace")).rejects.toMatchObject({ code: "file_not_found" });
+  } finally { await box.destroy(); }
+});
+
+test("Boat setup failure rejects without running user code and user exits remain results", async () => {
+  const box = await createSandbox(factory());
+  try {
+    mock.failSetup = true;
+    await expect(box.run("touch /tmp/.sandbox-sdk-user-ran", { cwd: "/" })).rejects.toMatchObject({ code: "provider", provider: "boat" });
+    mock.failSetup = false;
+    expect(await box.files.exists("/tmp/.sandbox-sdk-user-ran")).toBe(false);
+    for (const exitCode of [1, 125]) expect(await box.run(`exit ${exitCode}`)).toMatchObject({ exitCode, ok: false, timedOut: false });
+  } finally { mock.failSetup = false; await box.destroy(); }
 });

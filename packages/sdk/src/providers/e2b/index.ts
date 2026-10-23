@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { Sandbox as E2BSandbox, SandboxInfo as E2BInfo, EntryInfo, CommandHandle } from "e2b";
 import type { Provider, SandboxInfo, ExecInput, FileInfo, NativeProcess, CreateInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
@@ -11,8 +12,11 @@ export interface E2BOptions {
   domain?: string;
 }
 const keyTag = "sandbox-sdk-key";
+const workspaceMarker = "/tmp/.sandbox-sdk-workspace-ready";
 const deadlineTag = "sandbox-sdk-deadline";
 const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
+const prepareWorkspace = `flock -x ${workspaceMarker}.lock sh -c ${quote(`if [ ! -e ${workspaceMarker} ]; then mkdir -p /workspace && touch ${workspaceMarker} || exit 125; fi`)} || exit 125`;
+const missing = (cause: unknown) => e2bError(cause, undefined, true).code === "file_not_found" || (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT");
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const unsupported = (message: string) => new SandboxError(`${message}. E2B cannot enforce this option. Choose a compatible template or omit the option.`, { code: "unsupported", provider: "e2b" });
 const infoOf = (info: E2BInfo): SandboxInfo => ({ id: info.sandboxId, key: info.metadata[keyTag], labels: Object.fromEntries(Object.entries(info.metadata).filter(([key]) => ![keyTag, deadlineTag].includes(key))), state: info.state, createdAt: info.startedAt.getTime() });
@@ -27,6 +31,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
   const api = () => ({ apiKey: options.apiKey ?? process.env.E2B_API_KEY, domain: options.domain });
   const clients = new Map<string, E2BSandbox>();
   const deadlines = new Map<string, number>();
+  const workspaces = new Map<string, number>();
   const detached = new Map<string, { wait: Promise<void>; release(): void }>();
   function detach(id: string) {
     if (detached.has(id)) return;
@@ -49,12 +54,24 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     }
     const box = await Sandbox.connect(id, { ...api(), timeoutMs: deadlines.has(id) ? Math.max(1, (deadlines.get(id) ?? 0) - Date.now()) : undefined });
     clients.set(id, box);
+    // Reconnect may precede the original creator's first guest operation.
+    try { await box.files.getInfo("/workspace", { user: "root" }); await box.files.write(workspaceMarker, "ready", { user: "root" }); workspaces.delete(id); }
+    catch (cause) {
+      if (!missing(cause)) throw cause;
+      try { await box.files.getInfo(workspaceMarker, { user: "root" }); workspaces.delete(id); }
+      catch (cause) { if (!missing(cause)) throw cause; workspaces.set(id, info.startedAt.getTime()); }
+    }
     // connect may lengthen the native timeout; clamp it back to the hard deadline.
     if (deadlines.has(id)) await box.setTimeout(Math.max(1, (deadlines.get(id) ?? 0) - Date.now()));
     attached(id);
     return { ...info, state: "running" };
   }
   async function client(id: string) { if (!clients.has(id)) await attach(id); const box = clients.get(id); if (!box) throw new SandboxError("Sandbox is detached. No local client exists. Connect first.", { code: "not_found", provider: "e2b", sandboxId: id }); return box; }
+  async function reconcileWorkspace(id: string, box: E2BSandbox) {
+    if (!workspaces.has(id)) return;
+    try { await box.files.getInfo(workspaceMarker, { user: "root" }); workspaces.delete(id); }
+    catch (cause) { if (!missing(cause)) throw cause; }
+  }
   async function list(metadata: Record<string, string>) {
     const { Sandbox } = await sdk();
     const pages = Sandbox.list({ ...api(), query: { metadata: { ...metadata, "sandbox-sdk": "1" }, state: ["running", "paused"] } });
@@ -71,9 +88,11 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     // leader: setsid must not fork when envd already made it a group leader.
     // /proc fields after the final ')' are state, parent PID, then group PID.
     // No user output is interpreted as transport metadata.
-    const script = `set -- "$(</proc/$$/stat)" || exit 125; set -- \${1##*) }; [[ "$3" =~ ^[0-9]+$ ]] || exit 125; if [[ "$3" = "$$" ]]; then exec sh -c ${quote(input.command)}; else exec setsid -w sh -c ${quote(input.command)}; fi`;
+    const pending = workspaces.has(id);
+    const command = pending ? `${prepareWorkspace}; cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}` : input.command;
+    const script = `set -- "$(</proc/$$/stat)" || exit 125; set -- \${1##*) }; [[ "$3" =~ ^[0-9]+$ ]] || exit 125; if [[ "$3" = "$$" ]]; then exec sh -c ${quote(command)}; else exec setsid -w sh -c ${quote(command)}; fi`;
     const handle = await box.commands.run(script, {
-      background: true, cwd: input.cwd, envs: input.env, user: "root", stdin: input.stdin !== undefined,
+      background: true, cwd: pending ? "/" : input.cwd, envs: input.env, user: "root", stdin: input.stdin !== undefined,
       timeoutMs: 0,
       onStdout: text => input.onChunk({ stream: "stdout", text }),
       onStderr: text => input.onChunk({ stream: "stderr", text }),
@@ -95,7 +114,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
           if (handle.exitCode === undefined) throw cause;
         }
       }
-      const settled = result.finally(() => active.delete(handle));
+      const settled = result.then(async value => { if (pending) { if (value.exitCode >= 0 && value.exitCode < 128 && value.exitCode !== 125) workspaces.delete(id); else await reconcileWorkspace(id, box); } return value; }).finally(() => active.delete(handle));
       void settled.catch(() => {});
       return { box, handle, pid: handle.pid, result: settled };
     } catch (cause) {
@@ -109,7 +128,8 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     create: input => call(undefined, async () => {
       validate(input);
       const { Sandbox } = await sdk();
-      const deadline = input.timeoutMs === undefined ? undefined : Date.now() + input.timeoutMs;
+      const createdAt = Date.now();
+      const deadline = input.timeoutMs === undefined ? undefined : createdAt + input.timeoutMs;
       const box = await Sandbox.create(input.from ?? options.template ?? "base", {
         ...api(), envs: input.env, metadata: { ...input.labels, "sandbox-sdk": "1", ...(input.key === undefined ? {} : { [keyTag]: input.key }), ...(deadline === undefined ? {} : { [deadlineTag]: String(deadline) }) },
         timeoutMs: input.timeoutMs, lifecycle: { onTimeout: "kill", autoResume: false },
@@ -118,30 +138,24 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       clients.set(box.sandboxId, box); if (deadline !== undefined) deadlines.set(box.sandboxId, deadline);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived during E2B creation. Retry with a fresh signal.", { code: "aborted", provider: "e2b" });
-        // Independent requests: overlap them instead of paying one round trip each.
-        // Settle all before cleanup so none outlives a destroy.
-        const [clamped, details, workspace] = await Promise.allSettled([
-          deadline === undefined ? undefined : box.setTimeout(Math.max(1, deadline - Date.now())),
-          box.getInfo(),
-          box.files.makeDir("/workspace", { user: "root" }),
-        ]);
-        if (clamped.status === "rejected") throw clamped.reason;
-        if (details.status === "rejected") throw details.reason;
-        const info = details.value;
-        if (input.network === "none" && info.allowInternetAccess !== false && !(info.network?.denyOut?.includes("0.0.0.0/0") && !info.network.allowOut?.length)) throw unsupported("E2B did not confirm that internet access is disabled");
+        // The native create object carries connection fields, not network policy.
+        const info = input.network === "none" || typeof input.network === "object" ? await box.getInfo() : undefined;
+        if (input.network === "none" && info?.allowInternetAccess !== false && !(info?.network?.denyOut?.includes("0.0.0.0/0") && !info?.network.allowOut?.length)) throw unsupported("E2B did not confirm that internet access is disabled");
         if (typeof input.network === "object") {
           const requested = input.network.allow;
-          const allowed = info.network?.allowOut ?? [];
-          if (!info.network?.denyOut?.includes("0.0.0.0/0") || requested.some(host => !allowed.includes(host)) || allowed.some(host => !requested.includes(host))) throw unsupported("E2B did not confirm the requested outbound allow list");
+          const allowed = info?.network?.allowOut ?? [];
+          if (!info?.network?.denyOut?.includes("0.0.0.0/0") || requested.some(host => !allowed.includes(host)) || allowed.some(host => !requested.includes(host))) throw unsupported("E2B did not confirm the requested outbound allow list");
         }
-        if (workspace.status === "rejected") throw workspace.reason;
-        return infoOf(info);
+        workspaces.set(box.sandboxId, createdAt);
+        if (input.from !== undefined) await reconcileWorkspace(box.sandboxId, box);
+        if (input.signal?.aborted) throw new SandboxError("Creation aborted during E2B policy confirmation", { code: "aborted", provider: "e2b" });
+        return { id: box.sandboxId, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" }, state: "running", createdAt };
       } catch (cause) { await provider.destroy(box.sandboxId); throw cause; }
     }),
     find: key => call(undefined, async () => { const info = (await list({ [keyTag]: key }))[0]; return info ? provider.connect(info.id) : undefined; }),
     connect: id => call(id, async () => infoOf(await attach(id))),
     list: labels => call(undefined, () => list(labels)),
-    destroy: id => call(id, async () => { const { Sandbox } = await sdk(); await Sandbox.kill(id, api()); clients.delete(id); deadlines.delete(id); attached(id); for (const handle of handles.get(id) ?? []) await handle.disconnect(); handles.delete(id); }),
+    destroy: id => call(id, async () => { const { Sandbox } = await sdk(); await Sandbox.kill(id, api()); clients.delete(id); workspaces.delete(id); deadlines.delete(id); attached(id); for (const handle of handles.get(id) ?? []) await handle.disconnect(); handles.delete(id); }),
     close: id => call(id, async () => { detach(id); for (const handle of handles.get(id) ?? []) await handle.disconnect(); handles.delete(id); clients.delete(id); }),
     native(id) { const box = clients.get(id); if (!box) throw new SandboxError("Sandbox client is detached. There is no cached native object. Connect the sandbox first.", { code: "not_found", provider: "e2b", sandboxId: id }); return box; },
     exec: (id, input) => call(id, async () => {
@@ -161,6 +175,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
         // The final group signal then catches every descendant it did launch.
         try { await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }
         catch (cause) { await provider.destroy(id); throw cause; }
+        await running.result.catch(() => {});
         await running.handle.disconnect();
         return { exitCode: null, timedOut: true };
       } finally { clearTimeout(timer); input.signal?.removeEventListener("abort", cancel); }
@@ -168,16 +183,50 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
     files: {
       writeCreatesParents: true,
       read: (id, path) => call(id, async () => new Uint8Array(await (await client(id)).files.read(path, { format: "bytes", user: "root" })), true),
-      write: (id, path, data) => call(id, async () => { const box = await client(id); await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); }, true),
-      list: (id, path) => call(id, async () => (await (await client(id)).files.list(path, { user: "root", depth: 1 })).map(fileOf), true),
-      stat: (id, path) => call(id, async () => fileOf(await (await client(id)).files.getInfo(path, { user: "root" })), true),
-      mkdir: (id, path) => call(id, async () => { await (await client(id)).files.makeDir(path, { user: "root" }); }, true),
-      remove: (id, path, options) => call(id, async () => { const box = await client(id); if (!options.recursive && (await box.files.getInfo(path, { user: "root" })).type === "dir" && (await box.files.list(path, { user: "root", depth: 1 })).length) throw new SandboxError("Directory is not empty. Recursive removal was not requested. Pass recursive: true.", { code: "invalid_argument", provider: "e2b", sandboxId: id }); await box.files.remove(path, { user: "root" }); }, true),
+      write: (id, path, data) => call(id, async () => { const box = await client(id); if (handles.get(id)?.size) await reconcileWorkspace(id, box); if (posix.normalize(path) === "/workspace" && workspaces.has(id)) throw new SandboxError("Cannot write a file over the workspace directory", { code: "invalid_argument", provider: "e2b", sandboxId: id });
+        if (workspaces.has(id) && posix.normalize(path).startsWith("/workspace/")) {
+          await box.files.write([{ path, data: new Uint8Array(data).buffer }, { path: workspaceMarker, data: "ready" }], { user: "root" }); workspaces.delete(id);
+        } else await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); }, true),
+      list: (id, path) => call(id, async () => {
+        try {
+          const entries = (await (await client(id)).files.list(path, { user: "root", depth: 1 })).map(fileOf);
+          if (handles.get(id)?.size) await reconcileWorkspace(id, await client(id));
+          const createdAt = workspaces.get(id);
+          if (posix.normalize(path) === "/" && createdAt !== undefined && !entries.some(entry => entry.path === "/workspace")) entries.push({ path: "/workspace", type: "directory", size: 0, modifiedAt: createdAt });
+          return entries;
+        }
+        catch (cause) { if (handles.get(id)?.size) await reconcileWorkspace(id, await client(id)); if (posix.normalize(path) === "/workspace" && workspaces.has(id) && missing(cause)) return []; throw cause; }
+      }, true),
+      stat: (id, path) => call(id, async () => {
+        try { return fileOf(await (await client(id)).files.getInfo(path, { user: "root" })); }
+        catch (cause) { if (handles.get(id)?.size) await reconcileWorkspace(id, await client(id)); const createdAt = workspaces.get(id); if (posix.normalize(path) === "/workspace" && createdAt !== undefined && missing(cause)) return { path, type: "directory", size: 0, modifiedAt: createdAt }; throw cause; }
+      }, true),
+      mkdir: (id, path) => call(id, async () => {
+        const box = await client(id);
+        if (workspaces.has(id)) {
+          await box.commands.run(`${prepareWorkspace}; mkdir -p ${quote(path)}`, { user: "root", cwd: "/", stdin: false }); workspaces.delete(id);
+        } else await box.files.makeDir(path, { user: "root" });
+      }, true),
+      remove: (id, path, options) => call(id, async () => {
+        const box = await client(id);
+        if (posix.normalize(path) === "/workspace" && workspaces.has(id)) {
+          try {
+            await box.commands.run(`${prepareWorkspace}; if [ -L /workspace ]; then rm /workspace; else ${options.recursive ? "rm -rf" : "rmdir"} /workspace; fi`, { user: "root", cwd: "/", stdin: false });
+            workspaces.delete(id); return;
+          } catch (cause) {
+            const { CommandExitError } = await sdk();
+            if (!options.recursive && cause instanceof CommandExitError) throw new SandboxError("Directory is not empty. Pass recursive: true.", { code: "invalid_argument", provider: "e2b", sandboxId: id });
+            throw cause;
+          }
+        }
+        if (!options.recursive && (await box.files.getInfo(path, { user: "root" })).type === "dir" && (await box.files.list(path, { user: "root", depth: 1 })).length) throw new SandboxError("Directory is not empty. Recursive removal was not requested. Pass recursive: true.", { code: "invalid_argument", provider: "e2b", sandboxId: id });
+        await box.files.remove(path, { user: "root" });
+      }, true),
     },
     previewUrl: (id, port) => call(id, async () => ({ url: `https://${(await client(id)).getHost(port)}` })),
     pause: id => call(id, async () => { detach(id); try { const { Sandbox } = await sdk(); await Sandbox.pause(id, api()); clients.delete(id); for (const handle of handles.get(id) ?? []) await handle.disconnect(); } catch (cause) { attached(id); throw cause; } }),
     resume: id => call(id, async () => { await attach(id); }),
-    snapshot: id => call(id, async () => ({ id: (await (await client(id)).createSnapshot()).snapshotId })),
+    snapshot: id => call(id, async () => { const box = await client(id); if (workspaces.has(id)) { await box.commands.run(prepareWorkspace, { user: "root", cwd: "/", stdin: false }); workspaces.delete(id); } return { id: (await box.createSnapshot()).snapshotId }; }),
     startProcess: (id, input) => call(id, async (): Promise<NativeProcess> => {
       const running = await launch(id, input);
       return { pid: running.pid, wait: () => call(id, async () => { try { return await running.result; } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { const value = await handle.wait(); return { exitCode: value.exitCode, signal: null }; } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return { exitCode: cause.exitCode, signal: null }; throw cause; } }), stop: options => call(id, async () => { await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }) };

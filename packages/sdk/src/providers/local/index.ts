@@ -63,9 +63,11 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       const ports = [...new Set(input.ports ?? [3000])];
       const bindings = Object.fromEntries(ports.map(port => [`${port}/tcp`, [{ HostIp: "127.0.0.1", HostPort: "" }]]));
       phase = performance.now();
+      const createdAt = Date.now();
+      const labels = { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", ...(input.timeoutMs === undefined ? {} : { [deadlineLabel]: String(createdAt + input.timeoutMs) }), ...(input.idleTimeoutMs === undefined ? {} : { [idleLabel]: String(input.idleTimeoutMs) }) };
       const created = object(await client.call("POST", `/containers/create?name=${encode(input.key ? name(input.key) : `sandbox-sdk-${randomUUID()}`)}`, {
-        Image: source, WorkingDir: "/workspace", Cmd: ["sh", "-c", "mkdir -p /workspace; exec sleep infinity"],
-        Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", ...(input.timeoutMs === undefined ? {} : { [deadlineLabel]: String(Date.now() + input.timeoutMs) }), ...(input.idleTimeoutMs === undefined ? {} : { [idleLabel]: String(input.idleTimeoutMs) }) },
+        Image: source, WorkingDir: "/workspace", Cmd: ["sh", "-c", "exec sleep infinity"],
+        Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: labels,
         ExposedPorts: Object.fromEntries(ports.map(port => [`${port}/tcp`, {}])),
         HostConfig: { ...resources, NetworkMode: input.network === "none" ? "none" : "bridge", PortBindings: input.network === "none" ? {} : bindings, Init: true },
       }));
@@ -75,11 +77,12 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
       try {
         phase = performance.now();
         await client.call("POST", `/containers/${encode(id)}/start`);
-        phases.createStartMs = performance.now() - phase; phase = performance.now();
-        await raw(id, ["sh", "-c", "mkdir -p /workspace; command -v node git tar setsid nohup mkfifo sed >/dev/null"]);
-        phases.createPrerequisiteMs = performance.now() - phase;
+        phases.createStartMs = performance.now() - phase;
+        // Docker creates WorkingDir before starting the container.
+        phases.createPrerequisiteMs = 0;
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-        return await provider.connect(id);
+        if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) return await provider.connect(id);
+        return { id, key: input.key, labels, state: "running", createdAt };
       } catch (error) { await provider.destroy(id); throw error; }
     },
     async find(key) { try { const found = await provider.connect(name(key)); return found.key === key ? found : undefined; } catch (error) { if (error instanceof SandboxError && error.code === "not_found") return undefined; throw error; } },

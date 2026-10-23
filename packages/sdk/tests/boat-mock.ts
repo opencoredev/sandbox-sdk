@@ -51,6 +51,7 @@ export async function boatMock() {
   let status = 0;
   let launchDelayMs = 0;
   let failStream = false;
+  let failSetup = false;
   let truncate = false;
   let loseCreate = false;
   let loseWrite = false;
@@ -69,6 +70,7 @@ export async function boatMock() {
   });
   const rewrite = (box: Box, text: string) =>
     text
+      .replace(/sudo mkdir /g, failSetup ? "false && mkdir " : "mkdir ").replace(/sudo chown /g, "chown ")
       .replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) => join(box.root, path))
       .replace(/\.listen\(3000/g, `.listen(${box.port}`);
   function run(box: Box, command: string): Command {
@@ -156,6 +158,7 @@ export async function boatMock() {
             state: "idle",
             commands: new Map(),
           };
+          await fs.mkdir(join(box.root, "tmp"), { recursive: true });
           boxes.set(box.id, box);
           idempotent.set(key, box);
           if (loseCreate) {
@@ -400,6 +403,7 @@ export async function boatMock() {
     set launchDelayMs(value: number) {
       launchDelayMs = value;
     },
+    set failSetup(value: boolean) { failSetup = value; },
     set failStream(value: boolean) {
       failStream = value;
     },
