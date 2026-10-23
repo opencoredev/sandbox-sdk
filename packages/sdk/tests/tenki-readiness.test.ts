@@ -80,3 +80,17 @@ test("caller abort wins over a RUNNING frame without stream EOF", async () => {
   await expect(pending).rejects.toMatchObject({ code: "aborted" });
   expect(queried).not.toHaveBeenCalled();
 });
+
+test("an allocation with RUNNING state and a native data plane skips readiness", async () => {
+  const { client, queried } = nativeSession(false);
+  const session = await client.create({ waitReady: false });
+  session.state = "RUNNING";
+  Object.defineProperty(session, "dataPlaneRPC", { value: () => ({}) });
+  const wait = vi.spyOn(session, "waitReady");
+  await expect(waitReady(session, 200)).resolves.toBeUndefined();
+  expect(wait).not.toHaveBeenCalled();
+  expect(queried).not.toHaveBeenCalled();
+  const controller = new AbortController();
+  controller.abort();
+  await expect(waitReady(session, 200, controller.signal)).rejects.toMatchObject({ code: "aborted" });
+});

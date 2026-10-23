@@ -1,3 +1,4 @@
+import { guestProcess } from "../boxd/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
@@ -6,7 +7,8 @@ import { raw } from "./exec.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
 // The supervisor owns the deadline and process group even after an RPC disconnect.
-const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time,pwd
+const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
+${guestProcess}
 v=json.load(sys.stdin)
 def processes():
  ids=set()
@@ -25,11 +27,14 @@ if os.geteuid()==0 and 'SUDO_UID' not in env:
  try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
  except KeyError: pass
 def emit(v): print(json.dumps(v),flush=True)
-with tempfile.TemporaryFile() as f:
+with stdin_file() as f:
  f.write(base64.b64decode(v['stdin'])); f.seek(0)
- p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ p=Process(v,env,f,True)
  try:
   with open(v['marker'],'w') as m: m.write(str(p.pid))
+  if v.get('activityPath'):
+   os.makedirs(os.path.dirname(v['activityPath']),exist_ok=True)
+   with open(v['activityPath'],'w') as a: a.write('1')
   sel=selectors.DefaultSelector()
   sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
   end=time.monotonic()+v['timeoutMs']/1000
@@ -50,8 +55,10 @@ with tempfile.TemporaryFile() as f:
   except ProcessLookupError: pass
   raise
  finally:
-  try: os.unlink(v['marker'])
-  except FileNotFoundError: pass
+  for path in [v['marker'],v.get('activityPath')]:
+   if path:
+    try: os.unlink(path)
+    except FileNotFoundError: pass
 `;
 
 export async function executeStream(
@@ -69,6 +76,7 @@ export async function executeStream(
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),
       timeoutMs: input.timeoutMs,
       marker,
+      activityPath: input.activityPath,
       workspace: "/workspace",
     }),
   );

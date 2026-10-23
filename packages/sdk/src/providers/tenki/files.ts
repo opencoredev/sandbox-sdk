@@ -4,13 +4,14 @@ import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
 import { failure, tenkiError } from "./errors.js";
 import { deadline } from "./deadline.js";
-const script = `import os,sys,json,stat,shutil,base64
+const script = `import os,sys,json,stat
 op,p=sys.argv[1:3]
 def info(p):
  s=os.lstat(p)
  return dict(path=p,type='symlink' if stat.S_ISLNK(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'file',size=s.st_size,modifiedAt=s.st_mtime*1000)
 try:
  if op=='read':
+  import base64
   with open(p,'rb') as f: print(base64.b64encode(f.read()).decode())
  elif op=='write':
   os.makedirs(os.path.dirname(p),exist_ok=True)
@@ -20,7 +21,9 @@ try:
  elif op=='list': print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)]))
  elif op=='remove':
   if os.path.isdir(p) and not os.path.islink(p):
-   if sys.argv[3]=='true': shutil.rmtree(p)
+   if sys.argv[3]=='true':
+    import shutil
+    shutil.rmtree(p)
    else: os.rmdir(p)
   else: os.unlink(p)
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')

@@ -376,7 +376,7 @@ test("abort after supervisor completion recovers output before response delivery
   }
 });
 
-test("later commands sweep expired completed response spools without extra RPCs", async () => {
+test("later commands amortize expired response cleanup without extra RPCs", async () => {
   const { promises: fs } = await import("node:fs");
   const { join } = await import("node:path");
   const box = await createSandbox(factory());
@@ -388,6 +388,9 @@ test("later commands sweep expired completed response spools without extra RPCs"
     const old = (await fs.readdir(parent)).find((n) => n.startsWith("run-"));
     if (!old) throw new Error("No recovery spool");
     await fs.writeFile(join(parent, old, "expires"), "0");
+    await box.run("true");
+    expect((await fs.readdir(parent)).includes(old)).toBe(true);
+    await fs.utimes(join(parent, ".sweep"), 0, 0);
     const before = native.guest.commands.length;
     await box.run("true");
     expect(native.guest.commands.length - before).toBe(1);
@@ -548,4 +551,18 @@ test("other supervisor failures never trigger installation or replay", async () 
     // One failed exec plus the existing cancellation/recovery RPC, no install.
     expect(exec).toHaveBeenCalledTimes(2);
   } finally { exec.mockRestore(); await box.destroy(); }
+});
+
+
+test("command shells restore SIGPIPE and use the supplied PATH", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({ exitCode: 141, stdout: "" });
+    const pipe = await box.run("yes | head -n 1");
+    expect(pipe.stderr).toBe("");
+    await box.files.write("shell-path/sh", '#!/bin/sh\nprintf selected >&2\nexec /bin/sh "$@"\n');
+    await box.files.write("blocked-path/sh", "not executable");
+    await box.run("chmod +x shell-path/sh");
+    expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally { await box.destroy(); }
 });

@@ -3,6 +3,56 @@ import { SandboxError, type ErrorCode } from "../../errors.js";
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 export const python = (code: string, ...args: string[]) =>
   `python3 -c ${quote(code)} ${args.map(quote).join(" ")}`;
+// Linux guests can launch without importing subprocess/tempfile on every run.
+// posix_spawn establishes the session before returning its PID to cancellation.
+export const guestProcess = `def stdin_file():
+ try: return os.fdopen(os.memfd_create('sandbox-sdk-stdin'),'w+b')
+ except (AttributeError,OSError):
+  import tempfile
+  return tempfile.TemporaryFile()
+class Process:
+ def __init__(self,v,env,stdin,session=False):
+  if not all(hasattr(os,name) for name in ['posix_spawn','waitstatus_to_exitcode']):
+   self.legacy(v,env,stdin,session); return
+  directory=os.open('.',os.O_RDONLY)
+  r,w=os.pipe(); e,x=os.pipe()
+  try:
+   os.chdir(v['cwd'])
+   error=FileNotFoundError(2,os.strerror(2),'sh')
+   signals=[getattr(signal,s) for s in ['SIGPIPE','SIGXFZ','SIGXFSZ'] if hasattr(signal,s)]
+   for path in os.get_exec_path(env):
+    try:
+     self.pid=os.posix_spawn(os.path.join(path,'sh'),['sh','-c',v['command']],env,file_actions=[(os.POSIX_SPAWN_DUP2,stdin.fileno(),0),(os.POSIX_SPAWN_DUP2,w,1),(os.POSIX_SPAWN_DUP2,x,2)],setsid=session,setsigdef=signals)
+     break
+    except (FileNotFoundError,NotADirectoryError): pass
+    except OSError as failure:
+     if failure.errno==38: raise NotImplementedError()
+     error=failure
+   else: raise error
+  except NotImplementedError:
+   os.close(r); os.close(e)
+   self.legacy(v,env,stdin,session); return
+  except BaseException:
+   os.close(r); os.close(e); raise
+  finally:
+   os.fchdir(directory); os.close(directory); os.close(w); os.close(x)
+  self.stdout=os.fdopen(r,'rb',buffering=0); self.stderr=os.fdopen(e,'rb',buffering=0)
+  self.code=None
+ def legacy(self,v,env,stdin,session):
+  import subprocess
+  self.child=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=stdin,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=session)
+  self.pid=self.child.pid; self.stdout=self.child.stdout; self.stderr=self.child.stderr
+ def poll(self):
+  if hasattr(self,'child'): return self.child.poll()
+  if self.code is None:
+   pid,status=os.waitpid(self.pid,os.WNOHANG)
+   if pid: self.code=os.waitstatus_to_exitcode(status)
+  return self.code
+ def wait(self):
+  if hasattr(self,'child'): return self.child.wait()
+  if self.code is None: self.code=os.waitstatus_to_exitcode(os.waitpid(self.pid,0)[1])
+  return self.code
+`;
 export interface Guest {
   name: string;
   raw(command: string): Promise<string>;

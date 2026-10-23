@@ -15,6 +15,23 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   await cleanupTenki();
 });
+test.each([false, true])("exec owns activity through inherited output pipes (streaming transport %s)", async (streaming) => {
+  tenkiState.streaming = streaming;
+  const provider = factory();
+  const box = await createSandbox(provider);
+  const activityPath = "/tmp/.sandbox-sdk/runs/direct";
+  let ready = () => {};
+  const started = new Promise<void>((resolve) => { ready = resolve; });
+  const pending = provider.exec(box.id, {
+    command: "(sleep .4; echo child) & echo ready",
+    cwd: "/workspace", env: {}, timeoutMs: 5000, activityPath,
+    onChunk(chunk) { if (chunk.text.includes("ready")) ready(); },
+  });
+  await started;
+  expect(await box.files.exists(activityPath)).toBe(true);
+  expect(await pending).toEqual({ exitCode: 0, timedOut: false });
+  expect(await box.files.exists(activityPath)).toBe(false);
+});
 describe("Tenki mappings", () => {
   test("native stat and list match the guest transport, falling back on other errors", async () => {
     const box = await createSandbox(factory());
@@ -305,7 +322,7 @@ describe("Tenki mappings", () => {
             { ...handle },
           );
         }
-        if (!argv[2]?.includes("subprocess.Popen")) return handle;
+        if (!argv[2]?.includes("v=json.load(sys.stdin)")) return handle;
         transportSignal = options?.signal;
         transportSignal?.addEventListener("abort", () => events.push("transport aborted"), {
           once: true,
@@ -1128,4 +1145,18 @@ test("create preserves an allowlisted native readiness name without a transport 
     sandboxId: error.sandboxId,
   });
   expect(error.cause.message).not.toContain("private");
+});
+
+
+test("command shells restore SIGPIPE and use the supplied PATH", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({ exitCode: 141, stdout: "" });
+    const pipe = await box.run("yes | head -n 1");
+    expect(pipe.stderr).toBe("");
+    await box.files.write("shell-path/sh", '#!/bin/sh\nprintf selected >&2\nexec /bin/sh "$@"\n');
+    await box.files.write("blocked-path/sh", "not executable");
+    await box.run("chmod +x shell-path/sh");
+    expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally { await box.destroy(); }
 });

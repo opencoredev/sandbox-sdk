@@ -3,7 +3,7 @@ import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { boxdError, failure } from "./errors.js";
-import { files, python, type Guest } from "./guest.js";
+import { files, python, quote, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
 import { FileTransfers } from "./transfers.js";
 export interface BoxdOptions {
@@ -191,9 +191,9 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           const waitUntilReady = () => c.machines.waitUntilReady(m.id, {
             timeout: options.requestTimeoutMs ?? 90000,
           });
-          // waitUntilReady polls get() and then probes with exec("true"). When
-          // create already reports running, setup is itself the exec probe.
-          let ready = m.status === "running" ? m : await waitUntilReady();
+          // Setup is itself the exec probe, including when allocation still
+          // reports pending. Fall back to readiness only on transport failure.
+          let ready = m;
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           const g = await guest(m.id);
           const value: SandboxInfo = {
@@ -205,8 +205,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
           };
           const setup = () => g.raw(
             "if ! mkdir -p /workspace /var/lib/sandbox-sdk 2>/dev/null || [ ! -w /workspace ] || [ ! -w /var/lib/sandbox-sdk ]; then sudo -n install -d -o \"$(id -u)\" -g \"$(id -g)\" /workspace /var/lib/sandbox-sdk; fi && test -w /workspace && test -w /var/lib/sandbox-sdk && mkdir -p /tmp/.sandbox-sdk && command -v python3 git tar nohup >/dev/null && " +
-            python("import sys; open(sys.argv[1],'w').write(sys.argv[2])", marker,
-              JSON.stringify({ key: value.key ?? null, labels: value.labels, createdAt: value.createdAt })),
+            `printf %s ${quote(JSON.stringify({ key: value.key ?? null, labels: value.labels, createdAt: value.createdAt }))} > ${quote(marker)}`,
           );
           try {
             await setup();
@@ -218,7 +217,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
             await setup();
           }
-          boxes.set(m.id, ready);
+          boxes.set(m.id, { ...ready, status: "running" });
           return value;
         } catch (error) {
           await c.machines.delete(m.id);

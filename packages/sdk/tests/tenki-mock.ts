@@ -84,7 +84,7 @@ export class MockSession {
       )
       .replace(/\.listen\(3000/g, `.listen(${this.port}`);
   run(argv: string[], options: ProcessRunOptions = {}) {
-    const supervised = argv[0] === "python3" && argv[2]?.includes("subprocess.Popen");
+    const supervised = argv[0] === "python3" && argv[2]?.includes("v=json.load(sys.stdin)");
     const args = supervised ? [...argv] : argv.map((arg) => this.rewrite(arg));
     // Normalize VM-local paths before encoding spool records, just as the mock
     // normalizes native stdout below. Production guests need no path mapping.
