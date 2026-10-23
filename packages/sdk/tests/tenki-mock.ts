@@ -325,7 +325,8 @@ v=sdk_paths(v)`;
   async waitResumed() {}
   async close() {
     tenkiState.boxes.delete(this.id);
-    await fs.rm(this.root, { recursive: true, force: true });
+    // A watcher poll stopped just before close can still be writing here; retry ENOTEMPTY.
+    await fs.rm(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
   async exposePort(_port: number) {
     return {
