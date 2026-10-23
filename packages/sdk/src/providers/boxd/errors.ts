@@ -1,6 +1,6 @@
 import { SandboxError, type ErrorCode } from "../../errors.js";
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string) {
-  return new SandboxError(`${message}. Check boxd configuration and retry.`, {
+  return new SandboxError(code === "auth" ? message : `${message}. Check boxd configuration and retry.`, {
     code,
     provider: "boxd",
     sandboxId,

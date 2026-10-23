@@ -1,6 +1,6 @@
 import { SandboxError, type ErrorCode } from "../../errors.js";
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string) {
-  return new SandboxError(`${message}. Check superserve configuration and retry.`, {
+  return new SandboxError(code === "auth" ? message : `${message}. Check superserve configuration and retry.`, {
     code,
     provider: "superserve",
     sandboxId,

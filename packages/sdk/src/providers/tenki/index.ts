@@ -20,12 +20,17 @@ import {
 } from "./errors.js";
 
 export interface TenkiOptions {
-  /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY. */
+  /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY; required on first use. */
+  apiKey?: string;
+  /** @deprecated Use apiKey. Removed in 1.0.0. */
   authToken?: string;
+  /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
   baseUrl?: string;
+  /** Base image; default: the Tenki service default image. */
   image?: string;
-  /** Deadline for control-plane requests, in milliseconds. */
+  /** Control-plane deadline. Default: 30 s. */
   requestTimeoutMs?: number;
+  /** Readiness budget, 1–900000 ms. Default: 180 s; snapshots: 300 s. */
   waitTimeoutMs?: number;
   /** Resume RPC deadline, separate from readiness. Default: 180 seconds; maximum: 15 minutes. */
   resumeTimeoutMs?: number;
@@ -151,10 +156,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       )
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
       const authToken =
-        options.authToken ??
+        options.apiKey ?? options.authToken ??
         (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
       if (!authToken)
-        throw failure("Tenki API key is missing; set TENKI_API_KEY or TENKI_AUTH_TOKEN", "auth");
+        throw failure("Tenki API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.", "auth");
       const { TenkiSandbox } = await import("@tenkicloud/sandbox");
       return new TenkiSandbox({
         authToken,
@@ -170,7 +175,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     try {
       return await action();
     } catch (error) {
-      throw tenkiError(error, id, operation, [options.authToken ?? ""]);
+      throw tenkiError(error, id, operation, [options.apiKey ?? options.authToken ?? ""]);
     }
   }
   async function box(id: string) {
@@ -280,7 +285,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           throw createError(
             input.signal?.aborted ? failure("Creation aborted", "aborted") : error,
             context,
-            [options.authToken ?? ""],
+            [options.apiKey ?? options.authToken ?? ""],
             cleanupError,
           );
         }

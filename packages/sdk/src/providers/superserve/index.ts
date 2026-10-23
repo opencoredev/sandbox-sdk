@@ -6,7 +6,9 @@ import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
 import { bootstrapCommand, checkBootstrap } from "./bootstrap.js";
 export interface SuperserveOptions {
+  /** Defaults to SUPERSERVE_API_KEY; required on first use. */
   apiKey?: string;
+  /** Defaults to SUPERSERVE_BASE_URL, then https://api.superserve.ai. */
   baseUrl?: string;
   /** Native template name or UUID. Defaults to superserve/node-22.
    * Must include git, tar, and nohup. Python 3 is required unless installPython is enabled.
@@ -18,6 +20,7 @@ export interface SuperserveOptions {
    * The public default superserve/node-22 currently requires this opt-in.
    */
   installPython?: boolean;
+  /** Native request deadline. Default: 90 s. */
   requestTimeoutMs?: number;
 }
 export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot">;
@@ -29,7 +32,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
   const deleting = new Map<string, Promise<void>>();
   const connection = () => {
     const apiKey = options.apiKey ?? process.env.SUPERSERVE_API_KEY;
-    if (!apiKey?.trim()) throw failure("Set SUPERSERVE_API_KEY", "auth");
+    if (!apiKey?.trim()) throw failure("Superserve API key is missing. Authentication is required. Set SUPERSERVE_API_KEY or pass apiKey.", "auth");
     return { apiKey, baseUrl: options.baseUrl };
   };
   const timeout = options.requestTimeoutMs ?? 90000;

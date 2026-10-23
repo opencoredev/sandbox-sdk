@@ -5,10 +5,11 @@ import { SandboxError } from "../../errors.js";
 import { e2bError } from "./errors.js";
 
 export interface E2BOptions {
-  /** Defaults to E2B_API_KEY. */
+  /** Defaults to E2B_API_KEY; required on first use. */
   apiKey?: string;
   /** Template name or ID, including custom hardware templates. Defaults to base. */
   template?: string;
+  /** Self-hosted domain. Defaults to E2B_DOMAIN, then e2b.app. */
   domain?: string;
 }
 const keyTag = "sandbox-sdk-key";
@@ -22,13 +23,18 @@ const unsupported = (message: string) => new SandboxError(`${message}. E2B canno
 const infoOf = (info: E2BInfo): SandboxInfo => ({ id: info.sandboxId, key: info.metadata[keyTag], labels: Object.fromEntries(Object.entries(info.metadata).filter(([key]) => ![keyTag, deadlineTag].includes(key))), state: info.state, createdAt: info.startedAt.getTime() });
 const fileOf = (entry: EntryInfo): FileInfo => ({ path: entry.path, type: entry.type === "dir" ? "directory" : entry.type === "symlink" ? "symlink" : "file", size: entry.size, modifiedAt: entry.modifiedTime?.getTime() ?? 0 });
 
+export type E2BProvider = Provider<E2BSandbox, "pause" | "snapshot" | "network-policy">;
 /** E2B's template fixes CPU, RAM and disk; explicit size requests fail closed.
  * Cloud modules are loaded only on first provider I/O, never by importing core.
  */
-export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "snapshot" | "network-policy"> {
+export function e2b(options: E2BOptions = {}): E2BProvider {
   let module: Promise<typeof import("e2b")> | undefined;
   const sdk = () => module ??= import("e2b");
-  const api = () => ({ apiKey: options.apiKey ?? process.env.E2B_API_KEY, domain: options.domain });
+  const api = () => {
+    const apiKey = options.apiKey ?? process.env.E2B_API_KEY;
+    if (!apiKey?.trim()) throw new SandboxError("E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.", { code: "auth", provider: "e2b" });
+    return { apiKey, domain: options.domain };
+  };
   const clients = new Map<string, E2BSandbox>();
   const deadlines = new Map<string, number>();
   const workspaces = new Map<string, number>();
@@ -123,7 +129,7 @@ export function e2b(options: E2BOptions = {}): Provider<E2BSandbox, "pause" | "s
       throw cause;
     }
   }
-  const provider: Provider<E2BSandbox, "pause" | "snapshot" | "network-policy"> = {
+  const provider: E2BProvider = {
     name: "e2b", keyMode: "best-effort", capabilities: new Set(["pause", "snapshot", "network-policy"]),
     create: input => call(undefined, async () => {
       validate(input);

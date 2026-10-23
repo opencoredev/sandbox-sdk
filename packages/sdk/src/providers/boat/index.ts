@@ -14,11 +14,15 @@ import { boatError, failure } from "./errors.js";
 import { execute, quote, workspace } from "./exec.js";
 
 export interface BoatOptions {
+  /** Defaults to BOAT_API_KEY; required on first use. */
   apiKey?: string;
+  /** Defaults to BOAT_API_BASE, then https://boat.dev/api/v1. */
+  baseUrl?: string;
+  /** @deprecated Use baseUrl. Removed in 1.0.0. */
   apiUrl?: string;
-  /** Native machine size. Per-create small/medium/large presets take precedence.
-   * small: 2 CPU/4 GB ($0.018/h); default: 4/8 ($0.036/h);
-   * large: 8/16 ($0.072/h); xlarge: 16/32 ($0.20/h, $100+ plan). */
+  /** Native machine size; default: Boat default (4 CPU/8 GB). Per-create size wins. */
+  machine?: CreateSandboxRequest["type"];
+  /** @deprecated Use machine. Removed in 1.0.0. */
   type?: CreateSandboxRequest["type"];
   /** Deadline for each control-plane request. Default: 90 seconds. */
   requestTimeoutMs?: number;
@@ -112,8 +116,9 @@ function fileInfo(value: unknown): FileInfo {
 }
 const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
+export type BoatProvider = Provider<BoatNative, "size">;
 /** Direct optional SDK with no installed remote agent or local daemon. */
-export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
+export function boat(options: BoatOptions = {}): BoatProvider {
   let client: Promise<BoatApi> | undefined;
   let nativeClient: BoatApi | undefined;
   const environmentFiles = new Map<string, Map<string, Promise<string>>>();
@@ -122,14 +127,14 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
   async function api() {
     return (client ??= (async () => {
       const key = options.apiKey ?? process.env.BOAT_API_KEY;
-      if (!key) throw failure("Boat API key is missing; set BOAT_API_KEY or apiKey", "auth");
+      if (!key) throw failure("Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey.", "auth");
       const timeoutMs = options.requestTimeoutMs ?? 90_000;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const { BoatApi, Configuration } = await import("@boatdev/sdk");
       nativeClient = new BoatApi(
         new Configuration({
-          basePath: options.apiUrl ?? process.env.BOAT_API_BASE ?? "https://boat.dev/api/v1",
+          basePath: options.baseUrl ?? options.apiUrl ?? process.env.BOAT_API_BASE ?? "https://boat.dev/api/v1",
           accessToken: key,
           fetchApi: (url, init) =>
             fetch(url, {
@@ -199,7 +204,7 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
     }
     return new Uint8Array(Buffer.concat(chunks));
   }
-  const provider: Provider<BoatNative, "size"> = {
+  const provider: BoatProvider = {
     name: "boat",
     keyMode: "best-effort",
     capabilities: new Set(["size"]),
@@ -227,7 +232,7 @@ export function boat(options: BoatOptions = {}): Provider<BoatNative, "size"> {
           createSandboxRequest: {
             noEnv: true,
             env: input.env,
-            type: input.size === undefined ? options.type : presets[input.size],
+            type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
           },
         };
         // A response may be lost after Boat accepts the VM. Retry only with the

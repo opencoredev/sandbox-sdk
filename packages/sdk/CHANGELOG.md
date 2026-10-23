@@ -4,6 +4,11 @@
 
 First preview of the 1.0 rewrite, published under the `next` tag. The SDK was rewritten from scratch; most of the 0.2 surface changed. The API may still change before 1.0.0. The [upgrade guide](https://github.com/opencoredev/sandbox-sdk/blob/main/apps/docs/content/upgrade-from-0-2.mdx) maps every 0.2 call to its 1.0 form.
 
+### Unreleased
+
+- Provider options now use `baseUrl` instead of `boxd.baseURL`, `daytona.apiUrl`, and `boat.apiUrl`; `tenki.apiKey` replaces `authToken`, and `boat.machine` replaces `type`. Old names remain deprecated aliases until 1.0.0. When both are supplied, the new name wins.
+- Provider option hovers document defaults and environment variables. All provider subpaths export a named provider type. Missing-credential errors explain the next step; E2B checks its key on first use and reads environment values set after factory construction.
+
 ### Breaking changes since 0.2.0
 
 - `createSandbox(provider, options?)` takes the provider as its first argument instead of `createSandbox({ provider })`. The `cwd` option is gone; every sandbox starts in `/workspace`.

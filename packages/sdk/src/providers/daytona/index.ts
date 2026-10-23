@@ -6,14 +6,19 @@ import { daytonaError, unsupported } from "./errors.js";
 import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
 
 export interface DaytonaOptions {
+  /** Defaults to DAYTONA_API_KEY; required on first use. */
   apiKey?: string;
+  /** Defaults to DAYTONA_API_URL, then DAYTONA_SERVER_URL, then https://app.daytona.io/api. */
+  baseUrl?: string;
+  /** @deprecated Use baseUrl. Removed in 1.0.0. */
   apiUrl?: string;
+  /** Defaults to DAYTONA_TARGET, then us. */
   target?: string;
-  /** An image allows resources to be allocated at creation. Otherwise the
-   * default/named snapshot is resized only when its resources differ. */
+  /** Container image; default: use the default or named snapshot. */
   image?: string;
+  /** Snapshot name; default: the Daytona service default snapshot. */
   snapshot?: string;
-  /** Provider control-plane request deadline, in milliseconds. */
+  /** Control-plane deadline. Default: 30 s. */
   requestTimeoutMs?: number;
   /** Snapshot completion budget. Default: 600 seconds; maximum: 15 minutes. */
   snapshotTimeoutMs?: number;
@@ -69,8 +74,8 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     return client ??= (async () => {
       if (!Number.isSafeInteger(options.snapshotTimeoutMs ?? 600_000) || (options.snapshotTimeoutMs ?? 600_000) <= 0 || (options.snapshotTimeoutMs ?? 600_000) > 900_000)
         throw new SandboxError("snapshotTimeoutMs must be an integer from 1 to 900000.", { code: "invalid_argument", provider: "daytona" });
-      const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
-      if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or apiKey.", { code: "auth", provider: "daytona" });
+      const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.baseUrl ?? options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
+      if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.", { code: "auth", provider: "daytona" });
       const { Daytona } = await import("@daytonaio/sdk");
       return new Daytona(config);
     })();

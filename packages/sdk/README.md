@@ -52,16 +52,34 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [Vercel](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/vercel.md) | `/vercel` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox` | pause, snapshot, size, network-policy |
 | Upstash Box | `/upstash` | `UPSTASH_BOX_API_KEY` | `@upstash/box` | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
 | Railway | `/railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | `railway` | snapshot |
-| Tenki | `/tenki` | `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy |
-| boxd | `/boxd` | `BOXD_API_KEY` | `@boxd-sh/sdk` | pause, snapshot, size |
+| [Tenki (`apiKey`)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/tenki.md) | `/tenki` | `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy |
+| [boxd (`baseUrl`)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/boxd.md) | `/boxd` | `BOXD_API_KEY` | `@boxd-sh/sdk` | pause, snapshot, size |
 | Freestyle | `/freestyle` | `FREESTYLE_API_KEY` | `freestyle` | pause, snapshot, network-policy |
 | Superserve | `/superserve` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot |
-| Boat | `/boat` | `BOAT_API_KEY` | `@boatdev/sdk` | size |
+| [Boat (`baseUrl`, `machine`)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/boat.md) | `/boat` | `BOAT_API_KEY` | `@boatdev/sdk` | size |
 | [Local (Docker)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/local.md) | `/local` | none; needs a running Docker Engine | none | pause, snapshot, size, network-policy |
 | agentOS | `/agentos` | none | `@rivet-dev/agentos-core` | network-policy |
 | [Memory](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/memory.md) | `/memory` | none | none | network-policy |
 
 Every factory also accepts its credential as an option, such as `e2b({ apiKey })`. Capabilities are typed: `box.snapshot()` only exists on a sandbox whose provider supports snapshots, so calling it on Boat is a compile error, not a runtime surprise. Options a provider can't enforce, such as a `size` it can't honor, fail with `unsupported` instead of being silently dropped.
+
+Provider endpoints use `baseUrl` (boxd, Daytona, and Boat), Tenki credentials use `apiKey`, and Boat's native size uses `machine`:
+
+```ts
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+const providers = [
+  boxd({ baseUrl: "https://boxd.sh:9443" }),
+  daytona({ baseUrl: "https://app.daytona.io/api" }),
+  boat({ baseUrl: "https://boat.dev/api/v1", machine: "small" }),
+  tenki({ apiKey: process.env.TENKI_API_KEY }),
+];
+```
+
+The old names (`boxd.baseURL`, `daytona.apiUrl`, `boat.apiUrl`, `tenki.authToken`, and `boat.type`) still work as deprecated aliases until 1.0.0. When both names are set, the new name wins. Factory construction performs no provider I/O.
 
 ## Core API
 

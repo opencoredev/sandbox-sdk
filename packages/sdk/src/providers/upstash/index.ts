@@ -26,19 +26,28 @@ import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { listDirectory, readFile, writeFile } from "./files.js";
 
-type CommonOptions = Pick<
-  BoxConfig,
-  "apiKey" | "baseUrl" | "runtime" | "enableTelemetry"
-> & {
-  /** Native SDK operation timeout, not a sandbox lifetime. */
+type CommonOptions = {
+  /** Defaults to UPSTASH_BOX_API_KEY; required on first use. */
+  apiKey?: BoxConfig["apiKey"];
+  /** Defaults to UPSTASH_BOX_BASE_URL, then https://us-east-1.box.upstash.com. */
+  baseUrl?: BoxConfig["baseUrl"];
+  /** Runtime; default: the Upstash service default. */
+  runtime?: BoxConfig["runtime"];
+  /** Native telemetry; default: true, overridden by UPSTASH_DISABLE_TELEMETRY. */
+  enableTelemetry?: BoxConfig["enableTelemetry"];
+  /** Native SDK operation timeout, not a sandbox lifetime. Default: 600 s; snapshot listing: 30 s. */
   requestTimeoutMs?: number;
-  /** Default previews require a bearer token. */
+  /** Public previews. Default: false (previews require a bearer token). */
   public?: boolean;
 };
 /** Durable Box: pauses when idle and keeps its files until destroyed. */
-export type UpstashBoxOptions = CommonOptions & { ephemeral?: false };
+export type UpstashBoxOptions = CommonOptions & {
+  /** Durable mode. Default: false. */
+  ephemeral?: false;
+};
 /** Ephemeral Box: ready on create, cannot pause, and Upstash deletes it after its TTL. */
 export type UpstashEphemeralOptions = CommonOptions & {
+  /** Select ephemeral mode; required for ephemeral options. Default: false. */
   ephemeral: true;
   /** Seconds before Upstash deletes the box: a leak backstop, not a deadline. Defaults to 3600; at most 259200. */
   ttlSeconds?: number;
@@ -152,7 +161,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     const apiKey = options.apiKey ?? process.env.UPSTASH_BOX_API_KEY;
     if (!apiKey)
       throw new SandboxError(
-        "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or apiKey.",
+        "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey.",
         { code: "auth", provider: "upstash" },
       );
     redactor.add([apiKey]);

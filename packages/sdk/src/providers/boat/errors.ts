@@ -28,7 +28,7 @@ export function boatError(cause: unknown, sandboxId?: string): SandboxError {
   });
 }
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string) {
-  return new SandboxError(`${message}. Check the Boat provider configuration and retry.`, {
+  return new SandboxError(code === "auth" ? message : `${message}. Check the Boat provider configuration and retry.`, {
     code,
     provider: "boat",
     sandboxId,

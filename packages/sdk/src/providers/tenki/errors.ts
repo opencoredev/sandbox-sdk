@@ -164,7 +164,7 @@ export function createError(
 
 export function failure(message: string, code: ErrorCode = "provider"): SandboxError {
   return new SandboxError(
-    `${message}. Tenki could not honor the request. Check the provider options.`,
+    code === "auth" ? message : `${message}. Tenki could not honor the request. Check the provider options.`,
     { code, provider: "tenki" },
   );
 }

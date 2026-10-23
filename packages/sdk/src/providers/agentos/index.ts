@@ -45,14 +45,15 @@ async function fileStat(vm: AgentOs, path: string, symbolic?: boolean): Promise<
   return { path, type: "symlink", size: result.value.size, modifiedAt: result.value.modifiedAt };
 }
 
+export type AgentosProvider = Provider<AgentOs, AgentosCapability>;
 /** Embedded, Docker-free V8/WebAssembly runtime. Docker remains local()'s default. */
-export function agentos(options: AgentosOptions = {}): Provider<AgentOs, AgentosCapability> {
+export function agentos(options: AgentosOptions = {}): AgentosProvider {
   let module: Promise<typeof import("@rivet-dev/agentos-core")> | undefined;
   const sdk = () => module ??= import("@rivet-dev/agentos-core").catch(() => { throw failure("Install @rivet-dev/agentos-core@0.4.1 and its platform sidecar package", "unavailable"); });
   async function safe<T>(id: string, action: (vm: AgentOs) => Promise<T>, file = false): Promise<T> {
     try { return await action(entry(id).vm); } catch (error) { throw agentosError(error, id, file); }
   }
-  const provider: Provider<AgentOs, AgentosCapability> = {
+  const provider: AgentosProvider = {
     name: "agentos", inlineActivity: true, keyMode: "exact", processMode: "unsupported", capabilities: new Set<AgentosCapability>(["network-policy"]),
     async create(input) {
       if (input.size !== undefined || input.from !== undefined) throw failure("agentOS cannot enforce machine sizes or restore SDK snapshots", "unsupported");

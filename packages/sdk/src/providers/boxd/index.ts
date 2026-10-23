@@ -6,11 +6,17 @@ import { files, python, quote, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
 import { FileTransfers } from "./transfers.js";
 export interface BoxdOptions {
+  /** Defaults to BOXD_API_KEY; required on first use. */
   apiKey?: string;
+  /** Defaults to BOXD_BASE_URL, then BOXD_API_URL, then https://boxd.sh:9443. */
+  baseUrl?: string;
+  /** @deprecated Use baseUrl. Removed in 1.0.0. */
   baseURL?: string;
+  /** Container image. Defaults to the boxd service image. */
   image?: string;
+  /** Default: 30 s for control calls (including create); readiness: 90 s. */
   requestTimeoutMs?: number;
-  /** Cancels this adapter's file transfers, including in-flight uploads/downloads. */
+  /** Cancels file transfers; default: no adapter-wide cancellation. */
   fileTransferSignal?: AbortSignal;
 }
 export interface BoxdNative {
@@ -42,11 +48,11 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       )
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.BOXD_API_KEY;
-      if (!apiKey?.trim()) throw failure("Set BOXD_API_KEY", "auth");
+      if (!apiKey?.trim()) throw failure("boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey.", "auth");
       const { Boxd } = await import("@boxd-sh/sdk");
       return (current = new Boxd({
         apiKey,
-        baseURL: options.baseURL,
+        baseURL: (options.baseUrl ?? options.baseURL),
         timeout: options.requestTimeoutMs ?? 30000,
         maxRetries: 0,
       }));
@@ -56,7 +62,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     await api();
     return (webClient ??= new FileTransfers({
       apiKey: options.apiKey ?? process.env.BOXD_API_KEY,
-      baseURL: options.baseURL,
+      baseURL: (options.baseUrl ?? options.baseURL),
       timeout: options.requestTimeoutMs ?? 30000,
       maxRetries: 0,
     }, options.fileTransferSignal));

@@ -11,7 +11,9 @@ import { failure, freestyleError, requestEvidence, recordRequest, recordResponse
 import { execute, supervisor, supervisorPath } from "./execute.js";
 import { deadline, operationSignal } from "./deadline.js";
 export interface FreestyleOptions {
+  /** Defaults to FREESTYLE_API_KEY; required on first use. */
   apiKey?: string;
+  /** API endpoint. Default: https://api.freestyle.sh. */
   baseUrl?: string;
   /** Base snapshot ID or slug. Defaults to freestyle/ubuntu. */
   snapshotId?: string;
@@ -62,7 +64,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
       if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.FREESTYLE_API_KEY;
-      if (!apiKey?.trim()) throw failure("Set FREESTYLE_API_KEY", "auth");
+      if (!apiKey?.trim()) throw failure("Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.", "auth");
       const { Freestyle, FreestyleApiError, FreestyleClient } = await import("freestyle");
       const transport = new FreestyleClient({ apiKey, baseUrl: options.baseUrl });
       return new Freestyle({

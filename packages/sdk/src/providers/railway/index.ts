@@ -13,8 +13,26 @@ import type { Provider, SandboxInfo, Labels, FileInfo, ExecInput } from "../../p
 import { SandboxError } from "../../errors.js";
 import { railwayError, unsupported } from "./errors.js";
 
-export type RailwayOptions = Pick<CreateOptions, "token" | "environmentId" | "region" | "networkIsolation" | "authType"> &
-  ({ template?: SandboxTemplate; checkpoint?: never } | { template?: never; checkpoint?: string });
+export type RailwayOptions = {
+  /** Defaults to RAILWAY_API_TOKEN; required for authentication. */
+  token?: CreateOptions["token"];
+  /** Defaults to RAILWAY_ENVIRONMENT_ID; required for authentication. */
+  environmentId?: CreateOptions["environmentId"];
+  /** Deployment region; default: the Railway service default. */
+  region?: CreateOptions["region"];
+  /** Network isolation; default: the native Railway SDK setting. */
+  networkIsolation?: CreateOptions["networkIsolation"];
+  /** Token kind; default: the native Railway SDK authentication mode. */
+  authType?: CreateOptions["authType"];
+} & ({
+  /** Base template; default: the Railway service default; mutually exclusive with checkpoint. */
+  template?: SandboxTemplate;
+  checkpoint?: never;
+} | {
+  template?: never;
+  /** Checkpoint to restore; default: none; mutually exclusive with template. */
+  checkpoint?: string;
+});
 const marker = "/tmp/.sandbox-sdk/railway.json";
 const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
 type Metadata = { version: 1; key?: string; labels: Labels };
@@ -33,7 +51,8 @@ function info(box: Sandbox, data: Metadata): SandboxInfo {
   return { id: box.id, key: data.key, labels: data.labels, state: box.status === "RUNNING" ? "running" : "stopped", createdAt };
 }
 
-export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapshot"> {
+export type RailwayProvider = Provider<Sandbox, "snapshot">;
+export function railway(options: RailwayOptions = {}): RailwayProvider {
   let module: Promise<typeof import("railway")> | undefined;
   const sdk = () => module ??= import("railway");
   const api = () => ({ token: options.token ?? process.env.RAILWAY_API_TOKEN, environmentId: options.environmentId ?? process.env.RAILWAY_ENVIRONMENT_ID, authType: options.authType });
@@ -47,7 +66,7 @@ export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapsh
   // GraphQL connection, then use SDK clients for all sandbox operations.
   async function ids(): Promise<string[]> {
     const config = api();
-    if (!config.token || !config.environmentId) throw new SandboxError("Railway credentials are missing. Both token and environment ID are required. Set RAILWAY_API_TOKEN and RAILWAY_ENVIRONMENT_ID.", { code: "auth", provider: "railway" });
+    if (!config.token || !config.environmentId) throw new SandboxError("Railway credentials are missing. Authentication requires a token and environment ID. Set RAILWAY_API_TOKEN and RAILWAY_ENVIRONMENT_ID or pass token and environmentId.", { code: "auth", provider: "railway" });
     const result: string[] = []; let after: string | null = null;
     do {
       const response = await fetch((await sdk()).DEFAULT_RAILWAY_GRAPHQL_ENDPOINT, {
@@ -121,7 +140,7 @@ export function railway(options: RailwayOptions = {}): Provider<Sandbox, "snapsh
     if (![mode, size, modifiedAt].every(Number.isFinite)) throw new Error("Invalid Railway stat output");
     return { path, type: (mode & 0xf000) === 0xa000 ? "symlink" : (mode & 0xf000) === 0x4000 ? "directory" : "file", size, modifiedAt };
   }
-  const provider: Provider<Sandbox, "snapshot"> = {
+  const provider: RailwayProvider = {
     name: "railway", commandShell: "bash", keyMode: "best-effort", capabilities: new Set(["snapshot"]),
     create: input => call(undefined, async () => {
       if (input.size !== undefined) unsupported("Railway resources set CPU and memory but cannot set diskGb; size presets and exact sizes are unavailable");

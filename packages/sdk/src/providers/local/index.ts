@@ -3,7 +3,12 @@ import type { Provider, SandboxInfo, FileInfo, CreateInput } from "../../provide
 import { SandboxError } from "../../errors.js";
 import { Docker, object, string, number, array, encode, failure, parse } from "./docker.js";
 
-export interface LocalOptions { image?: string; dockerHost?: string }
+export interface LocalOptions {
+  /** Default: node:22-bookworm; requires git, tar, setsid, nohup, mkfifo and GNU sed. */
+  image?: string;
+  /** Defaults to DOCKER_HOST, then unix:///var/run/docker.sock; absolute unix:// sockets only. */
+  dockerHost?: string;
+}
 export interface LocalNative { readonly id: string; readonly client: Docker }
 type LocalCapability = "pause" | "snapshot" | "size" | "network-policy";
 const deadlineLabel = "sandbox-sdk.local.deadline";
@@ -26,8 +31,9 @@ function info(value: unknown): SandboxInfo {
   if (labels["sandbox-sdk"] !== "1") throw failure("Container was not created by Sandbox SDK", "not_found");
   return { id: string(raw.Id), key: labels[keyLabel] || undefined, labels, state: state.Paused ? "paused" : state.Running ? "running" : "stopped", createdAt: Date.parse(string(raw.Created)) };
 }
+export type LocalProvider = Provider<LocalNative, LocalCapability>;
 /** Local Docker Engine transport. No Docker CLI or daemon inside the container. */
-export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCapability> {
+export function local(options: LocalOptions = {}): LocalProvider {
   const client = new Docker(options.dockerHost); const image = options.image ?? "node:22-bookworm";
   const destroying = new Map<string, Promise<void>>();
   const timers = new Set<string>();
@@ -47,7 +53,7 @@ export function local(options: LocalOptions = {}): Provider<LocalNative, LocalCa
     if (type !== "file" && type !== "directory" && type !== "symlink") throw failure("Invalid file type");
     return { path: string(item.path), type, size: number(item.size), modifiedAt: number(item.modifiedAt) };
   }
-  const provider: Provider<LocalNative, LocalCapability> = {
+  const provider: LocalProvider = {
     name: "local", keyMode: "exact", capabilities: new Set<LocalCapability>(["pause", "snapshot", "size", "network-policy"]),
     async create(input) {
       if (typeof input.network === "object") throw failure("Network allow-lists cannot be enforced by this Docker adapter", "unsupported");

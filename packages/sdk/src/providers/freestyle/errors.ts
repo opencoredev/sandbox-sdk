@@ -38,7 +38,7 @@ export function recordResponse(response: Response, apiKey: string) {
     safeId(response.headers.get("x-freestyle-request-id")) ?? context.backgroundRequestId;
 }
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string, cause?: unknown) {
-  return new SandboxError(`${message}. Check Freestyle configuration and retry.`, {
+  return new SandboxError(code === "auth" ? message : `${message}. Check Freestyle configuration and retry.`, {
     code,
     provider: "freestyle",
     sandboxId,
