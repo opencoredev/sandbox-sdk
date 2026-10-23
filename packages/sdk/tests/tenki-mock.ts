@@ -84,22 +84,23 @@ export class MockSession {
       )
       .replace(/\.listen\(3000/g, `.listen(${this.port}`);
   run(argv: string[], options: ProcessRunOptions = {}) {
-    const supervised = argv[0] === "python3" && argv[2]?.includes("v=json.load(sys.stdin)");
+    const codeIndex = argv.indexOf("-c") + 1;
+    const supervised = argv[0] === "python3" && argv[codeIndex]?.includes("v=json.load(sys.stdin)");
     const args = supervised ? [...argv] : argv.map((arg) => this.rewrite(arg));
     // Normalize VM-local paths before encoding spool records, just as the mock
     // normalizes native stdout below. Production guests need no path mapping.
-    if (supervised && args[2])
-      args[2] = args[2].replace(
+    if (supervised && args[codeIndex])
+      args[codeIndex] = args[codeIndex].replace(
         "base64.b64encode(data)",
         `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
       );
-    if (supervised && args[2])
-      args[2] = args[2].replace(
+    if (supervised && args[codeIndex])
+      args[codeIndex] = args[codeIndex].replace(
         "os.path.realpath(v['workspace'])",
         `os.path.realpath(v['workspace']).removeprefix(${JSON.stringify(this.root)})`,
       );
-    if (supervised && args[2])
-      args[2] = args[2].replace(
+    if (supervised && args[codeIndex])
+      args[codeIndex] = args[codeIndex].replace(
         "if not e.name.isdecimal(): continue",
         `if not e.name.isdecimal(): continue
   try:
@@ -238,7 +239,8 @@ export class MockSession {
     if (next.done) throw new Error("Missing input");
     const input = next.value.frame?.payload;
     if (input?.case !== "stdin" || !input.value) throw new Error("Missing input");
-    const data: unknown = JSON.parse(Buffer.from(input.value).toString());
+    const wire = start.value.cmd.some(arg => arg.includes("marshal.loads"));
+    const data: unknown = wire ? {} : JSON.parse(Buffer.from(input.value).toString());
     if (!data || typeof data !== "object") throw new Error("Invalid spec");
     const mapped = Object.fromEntries(
       Object.entries(data).map(([key, value]) => [
@@ -256,21 +258,27 @@ export class MockSession {
       ]),
     );
     if (failure?.phase === "before-response") throw failure.error;
-    const args = start.value.cmd
-      .slice(1)
-      .map((arg) =>
-        arg.replace(
-          "base64.b64encode(data)",
-          `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b''))`,
-        ),
-      );
-    if (args[1])
-      args[1] = args[1].replace(
+    const mapping = `
+def sdk_paths(value):
+ if isinstance(value,str):
+  import re
+  return re.sub(r'(?<![a-zA-Z0-9_./-])/workspace|/home/tenki|/tmp/[.]sandbox-sdk|/tmp/sdk-bare',lambda match: bytes.fromhex("${Buffer.from(this.root).toString("hex")}").decode()+match.group(),value).replace(".listen(3000", ".listen(${this.port}")
+ if isinstance(value,list): return [sdk_paths(x) for x in value]
+ if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
+ return value
+v=sdk_paths(v)`;
+    const args = start.value.cmd.slice(1).map(arg => arg
+      .replace("v=marshal.loads(bytes.fromhex(sys.stdin.read()))", "v=marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping)
+      .replace("data.hex()", `data.replace(${JSON.stringify(this.root)}.encode(),bytes()).hex()`)
+      .replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),bytes()))`));
+    const codeIndex = args.indexOf("-c") + 1;
+    if (args[codeIndex])
+      args[codeIndex] = args[codeIndex].replace(
         "os.path.realpath(v['workspace'])",
         `os.path.realpath(v['workspace']).removeprefix(${JSON.stringify(this.root)})`,
       );
-    if (args[1])
-      args[1] = args[1].replace(
+    if (args[codeIndex])
+      args[codeIndex] = args[codeIndex].replace(
         "if not e.name.isdecimal(): continue",
         `if not e.name.isdecimal(): continue
   try:
@@ -284,7 +292,7 @@ export class MockSession {
     child.stdin.on("error", () => {});
     child.stderr.resume();
     yield { frame: { payload: { case: "started", value: { pid: BigInt(child.pid ?? 0) } } } };
-    child.stdin.end(JSON.stringify(mapped));
+    child.stdin.end(wire ? Buffer.from(input.value) : JSON.stringify(mapped));
     await iterator.next();
     if (failure?.phase === "after-input") {
       child.stdout.resume();

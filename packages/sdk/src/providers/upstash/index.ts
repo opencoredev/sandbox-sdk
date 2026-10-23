@@ -60,7 +60,7 @@ export type UpstashEphemeralProvider = Provider<Box, UpstashEphemeralCapability>
 const maxTtlSeconds = 259_200;
 const marker = "sandbox-sdk";
 const metadataEnv = "SANDBOX_SDK_UPSTASH_METADATA";
-const workspace = `mkdir -p /workspace && if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && test -w /workspace`;
+const workspace = `if ! mkdir -p /workspace 2>/dev/null || [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi && test -w /workspace`;
 const metadataPath = "/tmp/.sandbox-sdk/upstash.json";
 // Upstash reruns initCommand on automatic as well as explicit resume. Disk
 // snapshots retain process records, but cannot restore those OS processes.

@@ -8,11 +8,11 @@ if any(shutil.which(tool) is None for tool in ('git','tar','nohup')): sys.exit(7
 os.makedirs('/workspace',exist_ok=True)
 os.makedirs('/tmp/.sandbox-sdk',exist_ok=True)
 os.makedirs(os.path.dirname('${supervisorPath}'),exist_ok=True)
+if v.get('env') is not None:
+ with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f:
+  json.dump(v['env'],f)
+ os.replace(f.name,'/var/lib/sandbox-sdk-env.json')
 if v.get('supervisor') is not None:
- if v.get('env') is not None or not os.path.exists('/var/lib/sandbox-sdk-env.json'):
-  with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f:
-   json.dump(v.get('env') or {},f)
-  os.replace(f.name,'/var/lib/sandbox-sdk-env.json')
  with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f: f.write(v['supervisor'])
  os.replace(f.name,'${supervisorPath}')`);
 
@@ -20,6 +20,10 @@ export function bootstrapCommand(options: { env?: Record<string, string>; instal
   const missingPython = options.installPython === true
     ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
     : "exit 78";
+  if (options.execution) return {
+    command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; command -v git tar nohup >/dev/null || exit 79; mkdir -p /workspace /tmp/.sandbox-sdk`,
+    env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env }) },
+  };
   return {
     command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
     env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env, supervisor: options.execution ? supervisor : undefined }) },

@@ -131,7 +131,7 @@ export async function execute(
     },
   });
   const transport = new AbortController();
-  const handle = box.run(["python3", "-c", supervisor], {
+  const handle = box.run(["python3", "-S", "-c", supervisor], {
     privileged: true,
     stdin,
     signal: transport.signal,

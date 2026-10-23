@@ -7,7 +7,7 @@ describe.skipIf(!process.env.UPSTASH_BOX_API_KEY)("Upstash Box live", () => {
   runConformance(() => {
     const provider = upstash();
     const create = provider.create;
-    provider.create = input => create({ ...input, labels: { ...input.labels, "sbx57-create-a-live": "1" } });
+    provider.create = input => create({ ...input, labels: { ...input.labels, "sbx57-create-a-live": "1", "live-run": process.env.SANDBOX_TEST_RUN_ID ?? "upstash-conformance" } });
     return provider;
   }, { live: true });
   test("medium snapshots retain 4 vCPU and 8 GiB after source deletion", async () => {

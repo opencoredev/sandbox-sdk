@@ -75,16 +75,27 @@ vi.mock("@superserve/sdk", () => ({
     }
     get commands() {
       const g = this.value.guest;
+      const launch = (command: string) => {
+        const mapping = `
+def sdk_paths(value):
+ if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(g.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(g.root + "/tmp/.sandbox-sdk").toString("hex")}").decode())
+ if isinstance(value,list): return [sdk_paths(x) for x in value]
+ if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
+ return value
+v=sdk_paths(v)`;
+        return command.replace("else marshal.loads(bytes.fromhex(sys.stdin.read()))", "else marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping).replace("data.hex()", `data.replace(${JSON.stringify(g.root)}.encode(),bytes()).hex()`);
+
+      };
       return {
         run: async (command: string, options: { env?: Record<string, string> } = {}) => {
-          if (command.includes("SANDBOX_SDK_BOOTSTRAP")) await state.bootstrap?.();
+          if (options.env?.SANDBOX_SDK_BOOTSTRAP) await state.bootstrap?.();
           if (state.transportFailure) {
             state.transportFailure = false;
             void g.raw(command).catch(() => {});
             throw new Error("private-native-token");
           }
           const env = { ...options.env };
-          if (command.includes("SANDBOX_SDK_BOOTSTRAP") && state.bootstrapPath)
+          if ((options.env?.SANDBOX_SDK_BOOTSTRAP) && state.bootstrapPath)
             env.PATH = state.bootstrapPath;
           const prefix = Object.entries(env)
             .map(([key, value]) => {
@@ -93,14 +104,14 @@ vi.mock("@superserve/sdk", () => ({
                 key === "SANDBOX_SDK_BOOTSTRAP"
                   ? value.replace(
                       "base64.b64encode(data)",
-                      `base64.b64encode(data.replace(b'${g.root}',b''))`,
+                      `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
                     )
                   : value;
               return `export ${key}=${quote(payload)};`;
             })
             .join(" ");
           try {
-            return { stdout: await g.raw(`${prefix} ${command}`), stderr: "", exitCode: 0 };
+            return { stdout: await g.raw(`${prefix} ${launch(command)}`), stderr: "", exitCode: 0 };
           } catch (error) {
             if (
               typeof error === "object" &&
@@ -126,8 +137,8 @@ vi.mock("@superserve/sdk", () => ({
           },
         ) => {
           if (options.startupSignal?.aborted) throw new DOMException("aborted", "AbortError");
-          const prefix = Object.entries(options.env ?? {}).map(([key, value]) => `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(b'${g.root}',b''))`))};`).join(" ");
-          const stream = g.stream(`${prefix} ${command}`);
+          const prefix = Object.entries(options.env ?? {}).map(([key, value]) => `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`))};`).join(" ");
+          const stream = g.stream(`${prefix} ${launch(command)}`);
           let stdout = "",
             stderr = "";
           stream.stdout.push = (bytes) => {
@@ -193,7 +204,7 @@ vi.mock("@superserve/sdk", () => ({
 }));
 import { superserve } from "../src/providers/superserve/index.js";
 import { superserveError } from "../src/providers/superserve/errors.js";
-import { createSandbox } from "../src/index.js";
+import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 const factory = () => superserve({ apiKey: "mock" });
 runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
@@ -247,7 +258,7 @@ test("transport failure confirms termination before a delayed side effect", asyn
     await box.destroy();
   }
 });
-test("creation defers bootstrap, and first execution installs it", async () => {
+test("creation defers bootstrap to the first execution", async () => {
   let calls = 0;
   state.bootstrap = async () => { calls++; };
   const box = await createSandbox(factory());
@@ -333,7 +344,7 @@ test("snapshot restore takes precedence over a custom template", async () => {
   }
 });
 
-test("first execution prepares the environment and supervisor in its single guest call", async () => {
+test("first execution prepares the environment and launcher in its single guest call", async () => {
   const provider = factory();
   const before = state.updates.length;
   const value = "literal'$(echo injected)";
@@ -446,5 +457,25 @@ test("fresh files prepare the workspace before execution", async () => {
     await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
     expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
     expect((await Promise.all([box.run("echo one"), box.run("echo two")])).map(x => x.stdout)).toEqual(["one\n", "two\n"]);
+  } finally { await box.destroy(); }
+});
+
+test("an empty create environment clears an inherited snapshot env file", async () => {
+  const box = await createSandbox(factory());
+  try {
+    const guest = state.boxes.get(box.id)?.guest;
+    if (!guest) throw new Error("Missing guest");
+    await guest.upload("/var/lib/sandbox-sdk-env.json", Buffer.from('{"STALE_SNAPSHOT_ENV":"stale"}'));
+    expect((await box.run('printf %s "$STALE_SNAPSHOT_ENV"')).stdout).toBe("");
+  } finally { await box.destroy(); }
+});
+
+test("first file operation persists create environment for a fresh client", async () => {
+  const box = await createSandbox(factory(), { env: { FIRST_FILE_ENV: "persisted" } });
+  try {
+    await box.files.list(".");
+    const reconnected = await connectSandbox(factory(), box.id);
+    try { expect((await reconnected.run('printf %s "$FIRST_FILE_ENV"')).stdout).toBe("persisted"); }
+    finally { await reconnected.close(); }
   } finally { await box.destroy(); }
 });
