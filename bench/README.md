@@ -282,16 +282,26 @@ Collection watchdogs should call the pure policy in `src/collection-watchdog.py`
 
 ## Measure SDK overhead
 
-`scripts/sdk-overhead.ts` measures what Sandbox SDK adds on top of each adapter and each provider's own SDK. It is separate from the benchmark and is not published.
+`scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.
 
-For each provider it creates two labelled sandboxes and records the handle cost, which is `createSandbox()` minus the adapter's `provider.create()` for the same sandbox. On the first sandbox it times run, a 1 KB write, read, edit, list and grep N times as both the SDK call and the leanest adapter call, alternating which goes first. It then pairs run and write with the provider's own SDK call (for example E2B `commands.run` and `files.write`). One warm-up pair per op is not recorded. Every sandbox is destroyed, and the script confirms that none with the run label remain.
+Each provider runs sequentially. `--sandboxes 5` means five SDK creates and five independent native creates, alternating SDK-first and native-first each iteration. The script destroys and checks each sandbox before continuing. All allocations carry a unique `sbx57` label or name. Boat is excluded.
+
+The headline row is cold create → first exec: `createSandbox(provider)` followed immediately by `box.run("true")`, versus native create followed by native exec of `true`. The create floor row separates the native executable-sandbox create, the adapter's `provider.create()` inside the SDK create, and the complete `createSandbox()` call. Adapter and full-SDK create therefore refer to the same allocation. Create clocks include first-use lazy imports/client construction; later samples reuse the process. They measure fresh sandboxes, not fresh processes. Native boxd and Tenki clients reuse their gRPC transport, matching the adapters. Raw Daytona and Freestyle construct client wrappers per sample; their adapters retain the wrapper.
+
+The first SDK sandbox also measures run, 1 KB write, read, edit, list and grep against the adapter, then against the native handle. Each operation has one unrecorded warm-up and `--n 10` recorded pairs, alternating call order. Native run and write use dedicated APIs when available. Native read/list/edit use `cat`, `ls -la` and `sed -i` through native exec; Tenki write uses native exec with base64. These shell floors differ from the SDK file API's result shapes, error checks and atomic edit semantics. Tenki's native handle invalidates its workspace cache, so the SDK/native phase reflects that state; the SDK/adapter phase runs first.
+
+Init measures imports of the SDK root and provider subpath plus provider-factory construction, versus importing the native package alone. Each sample runs in a fresh Bun child process, timing inside the process and excluding process startup. This compares eager initialization; SDK factories load native clients lazily.
 
 ```sh
 for k in E2B_API_KEY DAYTONA_API_KEY UPSTASH_BOX_API_KEY BOXD_API_KEY BOXD_ORG FREESTYLE_API_KEY TENKI_API_KEY SUPERSERVE_API_KEY; do
   export "$k=$(cat ~/.config/sandbox-bench/$k)"
 done
-bun bench/scripts/sdk-overhead.ts --providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve \
-  --n 10 --out /tmp/overhead.json --sdk /path/to/worktree/packages/sdk > /tmp/overhead.md
+timeout --signal=TERM --kill-after=90s 23m bun bench/scripts/sdk-overhead.ts \
+  --providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve \
+  --sandboxes 5 --n 10 --out /tmp/overhead.json \
+  --sdk /path/to/worktree/packages/sdk > /tmp/overhead.md
 ```
 
-`--sdk` defaults to this checkout's `packages/sdk`. Build it first with `bun run --cwd packages/sdk build`. The JSON records the SDK commit, with `-dirty` when it has uncommitted changes.
+`--sdk` defaults to this checkout's `packages/sdk`. Build the selected SDK first with `bun run --cwd /path/to/worktree/packages/sdk build`. Both native modules and SDK modules resolve from that selected package. JSON records its Git commit, with `-dirty` for changes within `packages/sdk`, raw samples, both SDK operation timing series, medians, p90 and ranges. Delta is the difference of medians; cold/init metrics also retain paired-delta statistics. JSON checkpoints after each provider. A nonzero exit means an operation, provider or cleanup check failed.
+
+Defaults match the adapters: E2B `base`, Daytona's default snapshot in target `us` (or `DAYTONA_TARGET`), durable Upstash Box, boxd's default image with isolation and auto-suspend/destroy disabled, Freestyle `freestyle/ubuntu` with idle timeout disabled, and Tenki's default image with inbound/outbound access. Superserve uses `sandbox-bench-node22-py311-1x1-pinned` on both sides; override E2B or Superserve with `--template provider=name`. Raw creates omit SDK workspace preparation and metadata setup, including Upstash's resume init command. Those extra guarantees are part of measured adapter overhead. Raw boxd readiness can include a native exec probe; Tenki uses native readiness rather than the adapter's stream-timeout fallback. Native labels and exact IDs are tracked separately from SDK discovery labels. Cleanup checks cannot prove the absence of an allocation whose create failed before returning its ID; inspect the unique run label/name if a provider reports an unknown outcome.
