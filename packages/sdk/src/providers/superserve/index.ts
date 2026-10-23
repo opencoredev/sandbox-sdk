@@ -37,9 +37,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       throw superserveError(error, id);
     }
   }
+  let sdk: Promise<typeof import("@superserve/sdk")> | undefined;
   async function api() {
     connection();
-    return import("@superserve/sdk");
+    return sdk ??= import("@superserve/sdk");
   }
   async function vm(id: string) {
     let value = boxes.get(id);
@@ -233,6 +234,21 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
                 ),
               );
               return new Uint8Array(Buffer.from(text.trim(), "base64"));
+            },
+            run: async (command, env, timeoutMs, signal) => {
+              if (signal?.aborted) throw failure("Command interrupted", "aborted", id);
+              let abort = () => {};
+              const stopped = new Promise<never>((_, reject) => {
+                abort = () => reject(failure("Command interrupted", "aborted", id));
+              });
+              signal?.addEventListener("abort", abort, { once: true });
+              try {
+                // Keep the supervisor alive for lock-based cancellation and exit recovery.
+                const completion = box.commands.run(command, { env, timeoutMs });
+                const r = await Promise.race([completion, stopped]);
+                if (r.exitCode !== 0 || r.truncated) throw failure("Supervisor failed", "provider", id);
+                return r.stdout;
+              } finally { signal?.removeEventListener("abort", abort); }
             },
             exec: async (command, stdin, timeoutMs, signal) => {
               const session = await box.commands.spawn(command, {

@@ -77,7 +77,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
   const provider: DaytonaProvider = {
-    name: "daytona", keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["snapshot", "size", "network-policy"]),
+    name: "daytona", inlineActivity: true, keyMode: "best-effort", capabilities: new Set<DaytonaCapability>(["snapshot", "size", "network-policy"]),
     async create(input) { rememberEnv(input.env); return safe(async () => {
       if (options.image && options.snapshot) unsupported("Choose either image or snapshot");
       const image = input.from === undefined ? options.image : undefined;

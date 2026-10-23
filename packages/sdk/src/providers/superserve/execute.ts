@@ -7,7 +7,8 @@ export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // and is fetched with native ranged reads, never buffered in an exec response.
 export const supervisor = `import os,sys,json,base64,subprocess,signal,selectors,time,tempfile,fcntl,shutil
 root=sys.argv[1]
-v=json.load(sys.stdin)
+v=json.loads(sys.argv[2]) if len(sys.argv)>2 else json.load(sys.stdin)
+if 'envKeys' in v: v['env']={k:os.environ[k] for k in v['envKeys']}
 os.makedirs(root,mode=0o700,exist_ok=True)
 # Keep small completed responses until their request deadline has passed.
 # Sweep expired responses inline, so no ack RPC or background daemon is needed.
@@ -68,6 +69,7 @@ finally:
 `;
 export interface ExecutionGuest {
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
+  run?(command: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   raw(command: string): Promise<string>;
   read(
     path: string,
@@ -156,19 +158,20 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
   try {
     let text: string;
     try {
-      text = await g.exec(
-        `python3 ${quote(supervisorPath)} ${quote(root)}`,
-        JSON.stringify({
-          command: input.command,
-          env: input.env,
-          cwd: input.cwd,
-          stdin: input.stdin ?? "",
-          timeoutMs: input.timeoutMs,
-          activityPath: input.activityPath,
-        }),
-        input.timeoutMs + 5000,
-        signal,
-      );
+      const spec = {
+        command: input.command, cwd: input.cwd, timeoutMs: input.timeoutMs,
+        activityPath: input.activityPath,
+      };
+      const oneShot = JSON.stringify({ ...spec, envKeys: Object.keys(input.env) });
+      const command = `python3 ${quote(supervisorPath)} ${quote(root)} ${quote(oneShot)}`;
+      if (g.run && input.stdin === undefined && Buffer.byteLength(command) < 96 * 1024)
+        text = await g.run(command, input.env, input.timeoutMs + 5000, signal);
+      else
+        text = await g.exec(
+          `python3 ${quote(supervisorPath)} ${quote(root)}`,
+          JSON.stringify({ ...spec, env: input.env, stdin: input.stdin ?? "" }),
+          input.timeoutMs + 5000, signal,
+        );
     } catch (error) {
       try {
         await cancel();

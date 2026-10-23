@@ -7,7 +7,11 @@ import { SandboxError } from "../../errors.js";
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 // Session logs are line-normalized by the native transport. Encode each pipe
 // chunk so terminal newlines and byte boundaries survive that normalization.
-const outputBridge = `import base64,os,selectors,subprocess,sys
+const outputBridge = `import base64,os,selectors,subprocess,sys,shutil
+a=sys.argv[3]
+if a:
+ os.makedirs(os.path.dirname(a),exist_ok=True)
+ os.mkdir(a,mode=0o700)
 p=subprocess.Popen(["sh","-c",sys.argv[1]],stdin=open(sys.argv[2],"rb"),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 s=selectors.DefaultSelector()
 s.register(p.stdout,selectors.EVENT_READ,"O")
@@ -18,6 +22,7 @@ while s.get_map():
   if data: print(key.data+":"+base64.b64encode(data).decode(),flush=True)
   else: s.unregister(key.fileobj)
 code=p.wait()
+if a: shutil.rmtree(a,ignore_errors=True)
 print("X:",flush=True)
 sys.exit(code if code>=0 else 128-code)
 `;
@@ -35,7 +40,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   let pid: number | undefined;
   let commandId: string | undefined;
   let created = false;
-  let finished = false; let detached = false;
+  let finished = false; let detached = false; let activityFinished = false;
   const persistent = timeoutMs === undefined;
   const abort = () => { cancelled = true; };
   const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
@@ -47,6 +52,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
   async function cleanup() {
     clearTimeout(timer); input.signal?.removeEventListener("abort", abort);
+    if (input.activityPath && !activityFinished) await box.fs.deleteFile(input.activityPath, true).catch(() => {});
     if (created) { try { await box.process.deleteSession(session); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } }
     try { await box.fs.deleteFile(dir, true); } catch (error) { if (daytonaError(error, box.id, true).code !== "file_not_found") throw error; }
   }
@@ -58,7 +64,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     if (cancelled) { await cleanup(); return { pid: 0, wait: async () => ({ exitCode: null, signal: "SIGKILL" }), stop: async () => {}, detach() {} }; }
     await box.process.createSession(session); created = true;
     const env = Object.entries(input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
-    const script = `umask 077; mkdir -p ${quote(dir)} || exit 1; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(input.stdin === undefined ? "/dev/null" : `${dir}/stdin`)}`;
+    const script = `umask 077; mkdir -p ${quote(dir)} || exit 1; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(input.stdin === undefined ? "/dev/null" : `${dir}/stdin`)} ${quote(input.activityPath ?? "")}`;
     const response = await box.process.executeSessionCommand(session, { command: `setsid --wait sh -c ${quote(script)}`, runAsync: true, suppressInputEcho: true });
     commandId = response.cmdId;
     if (!commandId) throw new SandboxError("Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
@@ -73,7 +79,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
         if (!line) continue;
         if (bridgeFinished) throw new SandboxError("Session output continued after completion. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
         if (line === "X:") {
-          bridgeFinished = true;
+          bridgeFinished = true; activityFinished = true;
           for (const stream of ["stdout", "stderr"] as const) { const text = decoders[stream].decode(); if (!finished && text) input.onChunk({ stream, text }); }
           continue;
         }

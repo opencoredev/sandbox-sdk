@@ -21,7 +21,8 @@ import type {
   Preview,
 } from "../../provider.js";
 import { Redactor, SandboxError } from "../../errors.js";
-import { quote } from "../../run.js";
+import { defaults, quote } from "../../run.js";
+import { bufferedExecute } from "./buffered.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { listDirectory, readFile, writeFile } from "./files.js";
@@ -138,6 +139,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     });
   const redactor = new Redactor();
   const boxes = new Map<string, Box>();
+  const environments = new Map<string, Record<string, string>>();
+  let module: Promise<typeof import("@upstash/box")> | undefined;
   const monitors = new Map<string, Set<() => void>>();
   const previews = new Map<string, Map<number, Promise<Preview>>>();
   const detach = (id: string) => {
@@ -156,7 +159,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
   };
   const sdk = async () => {
     const config = connection();
-    const { Box, EphemeralBox } = await import("@upstash/box");
+    const { Box, EphemeralBox } = await (module ??= import("@upstash/box"));
     return { Box, EphemeralBox, config };
   };
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = "request"): Promise<T> {
@@ -308,6 +311,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
             throw new SandboxError("Workspace or discovery metadata setup failed. Check guest write permissions and passwordless sudo access.", { code: "provider", provider: "upstash", sandboxId: created.id });
           const value = await handle;
           boxes.set(value.id, value);
+          environments.set(value.id, { ...input.env, ...defaults });
           // Publish discovery only after metadata and the workspace are ready. Native
           // labels allow five short strings; durable metadata preserves arbitrary labels.
           if (input.from !== undefined) await value.labels.add(marker);
@@ -361,9 +365,20 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           detach(id);
           previews.delete(id);
           boxes.delete(id);
+          environments.delete(id);
         }
       }, id, false, "destroy"),
-    exec: (id, input) => safe(async () => execute(await box(id), input), id, false, "exec"),
+    exec: (id, input) => safe(async () => {
+      const value = await box(id);
+      const env: Record<string, string> = environments.get(id) ?? defaults;
+      if (input.streaming !== true && input.stdin === undefined &&
+        input.timeoutMs + 15_000 <= (options.requestTimeoutMs ?? 600_000) &&
+        Object.entries(input.env).every(([key, item]) => env[key] === item)) {
+        const result = await bufferedExecute(value, input);
+        if (result) return result;
+      }
+      return execute(value, input);
+    }, id, false, "exec"),
     startProcess: (id, input) =>
       safe(async () => {
         const value = await box(id);
@@ -393,6 +408,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     async close(id) {
       detach(id);
       boxes.delete(id);
+      environments.delete(id);
     },
     files: {
       writeCreatesParents: true,

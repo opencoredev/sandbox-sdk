@@ -80,6 +80,7 @@ export class MockBox {
   }
   rewrite(text: string) {
     return text
+      .replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(this.root)}.encode(),b""))`)
       // Emulate the guest's passwordless install using the host-owned test root.
       .replace(/sudo -n install/g, "install")
       .replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) => this.map(path))

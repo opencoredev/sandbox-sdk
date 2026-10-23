@@ -7,16 +7,20 @@ import { quote } from "./exec.js";
 // A single native command returns at most 64 KiB of frames. Larger output is
 // spooled in the guest and downloaded as a stream, never buffered by the SDK.
 // The child owns a separate process group, including inherited output pipes.
-const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil
-command,directory,cwd,limit=sys.argv[1:]
+const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil,fcntl
+command,directory,cwd,limit,activity=sys.argv[1:]
+if activity:
+ os.makedirs(os.path.dirname(activity),exist_ok=True)
+ os.mkdir(activity,mode=0o700)
 os.makedirs(directory,mode=0o700,exist_ok=True)
 cancel=directory+"/cancel"
-if os.path.exists(cancel):
- shutil.rmtree(directory)
- print("R:0:1:0")
- sys.exit(0)
-p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-with open(directory+"/pid","w") as f: f.write(str(p.pid))
+with open(directory+"/lock","w") as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ if os.path.exists(cancel):
+  print("R:0:1:1")
+  sys.exit(0)
+ p=subprocess.Popen(["sh","-c",'cd "$1" || exit; exec sh -c "$2"',"sh",cwd,command],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ with open(directory+"/pid","w") as f: f.write(str(p.pid))
 s=selectors.DefaultSelector()
 s.register(p.stdout,selectors.EVENT_READ,"O")
 s.register(p.stderr,selectors.EVENT_READ,"E")
@@ -47,18 +51,26 @@ except BaseException:
  p.wait()
  raise
 finally:
+ if activity: shutil.rmtree(activity,ignore_errors=True)
  if spill is not None: spill.close()
  else: shutil.rmtree(directory)
 `;
 
-const cancelBridge = `import os,signal,sys
+const cancelBridge = `import os,signal,sys,fcntl
 p=sys.argv[1]
-os.makedirs(p,mode=0o700,exist_ok=True)
-open(p+"/cancel","w").close()
-try:
- with open(p+"/pid") as f: pid=int(f.read())
- os.killpg(pid,signal.SIGKILL)
-except (FileNotFoundError,ProcessLookupError): pass
+for attempt in range(3):
+ try:
+  os.makedirs(p,mode=0o700,exist_ok=True)
+  with open(p+"/lock","w") as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX)
+   open(p+"/cancel","w").close()
+   try:
+    with open(p+"/pid") as f: pid=int(f.read())
+    os.killpg(pid,signal.SIGKILL)
+   except (FileNotFoundError,ProcessLookupError): pass
+  break
+ except FileNotFoundError:
+  if attempt==2: raise
 `;
 
 export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<ExecResult> {
@@ -93,7 +105,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
   input.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
   try {
-    const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
+    const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ${quote(input.activityPath ?? "")}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
     const lines = result.result.trimEnd().split("\n");
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
     if (result.exitCode !== 0 || !summary) throw malformed();
@@ -153,5 +165,6 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
     // Small successful commands already removed their directory in the guest.
     // Spill files and cancellation markers require one cleanup request.
     if (cancellation || cleanupNeeded) await box.fs.deleteFile(dir, true).catch(() => {});
+    if (input.activityPath && cancellation) await box.fs.deleteFile(input.activityPath, true).catch(() => {});
   }
 }
