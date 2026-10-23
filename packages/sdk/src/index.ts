@@ -1,10 +1,10 @@
-import type { Provider, Capability, Labels, SandboxInfo } from "./provider.js";
-import type { CreateOptions, Sandbox, SandboxBase } from "./types.js";
+import type { Provider, Capability, SandboxInfo } from "./provider.js";
+import type { ConnectOptions, CreateOptions, ListOptions, ReapOptions, Sandbox, SandboxBase } from "./types.js";
 import { SandboxError, Redactor, invalid } from "./errors.js";
 import { forgetKey, forgetSandbox, knownKey, rememberKey } from "./keys.js";
 export { SandboxError } from "./errors.js";
-export type { ErrorCode } from "./errors.js";
-export type { Sandbox, SandboxBase, CreateOptions, Locator, RunOptions, RunHandle, RunResult, OutputChunk, Capability, SandboxInfo } from "./types.js";
+export type { ErrorCode, ErrorOptions } from "./errors.js";
+export type { Sandbox, SandboxBase, ProviderSandbox, CreateOptions, ConnectOptions, ListOptions, ReapOptions, PreviewOptions, Usage, Locator, RunOptions, RunHandle, RunResult, OutputChunk, Capability, SandboxInfo, FileInfo, Labels, Preview, Terminal } from "./types.js";
 export type { Files, FileDiff, FileEvent } from "./files.js";
 export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
 export type { Git } from "./git.js";
@@ -77,17 +77,17 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
   const task = previous.catch(() => {}).then(() => options.keyMode === "exact" && provider.keyMode === "best-effort" && locator?.withLock ? locator.withLock(key, acquire) : acquire()); queue.set(options.key, task);
   try { return await task; } finally { if (queue.get(options.key) === task) queue.delete(options.key); }
 }
-export function connectSandbox<N, C extends Capability>(provider: Provider<N, C>, id: string, options?: Pick<CreateOptions, "secrets">): Promise<Sandbox<N, C>>;
-export async function connectSandbox(provider: Provider, id: string, options: Pick<CreateOptions, "secrets"> = {}): Promise<SandboxBase<unknown>> {
+export function connectSandbox<N, C extends Capability>(provider: Provider<N, C>, id: string, options?: ConnectOptions): Promise<Sandbox<N, C>>;
+export async function connectSandbox(provider: Provider, id: string, options: ConnectOptions = {}): Promise<SandboxBase<unknown>> {
   const redactor = new Redactor(); redactor.add(Object.values(options.secrets ?? {}));
   try { validate(provider, options); const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor); }
   catch (error) { throw redactor.error(error, provider.name, id); }
 }
-export async function listSandboxes(provider: Provider, options: { labels?: Labels } = {}): Promise<SandboxInfo[]> {
+export async function listSandboxes(provider: Provider, options: ListOptions = {}): Promise<SandboxInfo[]> {
   try { return (await provider.list({ ...options.labels, ...sdkLabel })).filter(info => info.labels["sandbox-sdk"] === "1"); }
   catch (error) { throw new Redactor().error(error, provider.name); }
 }
-export async function reapSandboxes(provider: Provider, options: { olderThanMs?: number; labels?: Labels; idleOnly?: boolean } = {}): Promise<number> {
+export async function reapSandboxes(provider: Provider, options: ReapOptions = {}): Promise<number> {
   if (options.olderThanMs !== undefined && (!Number.isFinite(options.olderThanMs) || options.olderThanMs < 0)) invalid("olderThanMs must be non-negative");
   const isActive = options.idleOnly ? (await import("./run.js")).isRunActive : () => false;
   let count = 0;
