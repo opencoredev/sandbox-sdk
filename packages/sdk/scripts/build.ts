@@ -1,4 +1,8 @@
+import { rm } from "node:fs/promises";
 import pkg from "../package.json" with { type: "json" };
+
+// Chunk names are content hashes, so stale chunks from earlier builds would otherwise ship.
+await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 
 // Entry points come from package.json exports so each subpath only needs one entry there.
 const entrypoints = Object.values(pkg.exports).map((target) =>
