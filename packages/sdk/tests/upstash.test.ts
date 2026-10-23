@@ -523,3 +523,34 @@ test("quote-heavy commands fall back to a session without destroying sandbox fil
     expect(await box.files.read("kept")).toBe("yes");
   } finally { await box.destroy(); }
 });
+
+test("a lost buffered response prevents delayed launch without deleting unrelated files", async () => {
+  const box = await createSandbox(factory());
+  const command = box.native.exec.command;
+  let late: Promise<unknown> | undefined;
+  vi.spyOn(box.native.exec, "command").mockImplementation(async text => {
+    if (text.includes("python3 -u")) {
+      late = new Promise<void>(resolve => { setTimeout(resolve, 100); }).then(() => command(text));
+      void late.catch(() => {});
+      throw new Error("private-native-token");
+    }
+    return command(text);
+  });
+  try {
+    await box.files.write("kept", "yes");
+    await expect(box.run("echo leaked > delayed")).rejects.toMatchObject({ code: "provider" });
+    await late;
+    expect(await box.files.read("kept")).toBe("yes");
+    expect(await box.files.exists("delayed")).toBe(false);
+  } finally { await late; await box.destroy(); }
+});
+
+test("buffered primitives inherit sandbox defaults unless core explicitly overrides them", async () => {
+  const provider = factory();
+  const info = await provider.create({ labels: {}, env: { CI: "native-ci" } });
+  const chunks: string[] = [];
+  try {
+    expect(await provider.exec(info.id, { command: 'printf %s "$CI"', cwd: "/workspace", env: {}, timeoutMs: 3000, onChunk(chunk) { chunks.push(chunk.text); } })).toMatchObject({ exitCode: 0 });
+    expect(chunks.join("")).toBe("native-ci");
+  } finally { await provider.destroy(info.id); }
+});

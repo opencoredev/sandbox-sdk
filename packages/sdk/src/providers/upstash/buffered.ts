@@ -52,8 +52,9 @@ finally:
  else: shutil.rmtree(directory)
 `;
 
-const cancelBridge = `import os,signal,sys,fcntl
+const cancelBridge = `import os,signal,sys,fcntl,time
 p=sys.argv[1]
+pid=None
 for attempt in range(3):
  try:
   os.makedirs(p,mode=0o700,exist_ok=True)
@@ -67,12 +68,19 @@ for attempt in range(3):
   break
  except FileNotFoundError:
   if attempt==2: raise
+if pid:
+ end=time.monotonic()+2
+ while True:
+  try: os.killpg(pid,0)
+  except ProcessLookupError: break
+  if time.monotonic()>=end: sys.exit(1)
+  time.sleep(.01)
 `;
 
 export async function bufferedExecute(box: Box, input: ExecInput): Promise<ExecResult | undefined> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
-  const env = Object.entries(defaults).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
+  const env = Object.entries(defaults).filter(([key]) => key in input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
   const command = `env ${env} python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
@@ -136,14 +144,14 @@ export async function bufferedExecute(box: Box, input: ExecInput): Promise<ExecR
   } catch (error) {
     if (!confirmed) {
       abort(); await cancellation;
-      // A lost response cannot prove whether a delayed launch consumed the
-      // cancellation marker. Deletion confirms every descendant is dead.
-      await box.delete();
+      // Retain the locked cancellation tombstone on a lost response. A delayed
+      // launch must consume it before spawning; unrelated work stays alive.
+      if (cancellationError !== undefined) throw malformed();
     }
     throw error;
   } finally {
     clearTimeout(timer); input.signal?.removeEventListener("abort", abort);
     await cancellation;
-    if (cancellation || cleanupNeeded) await box.files.remove(dir, { recursive: true }).catch(() => {});
+    if (confirmed && (cancellation || cleanupNeeded)) await box.files.remove(dir, { recursive: true }).catch(() => {});
   }
 }
