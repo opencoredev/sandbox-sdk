@@ -287,7 +287,7 @@ describe("Daytona buffered native commands", () => {
     expect(session).toHaveBeenCalledTimes(1);
     const native = box.native.process.executeCommand;
     vi.spyOn(box.native.process, "executeCommand").mockImplementation(async (command, cwd, env, timeout) => {
-      if (command.startsWith("python3 -u")) await new Promise(resolve => setTimeout(resolve, 60));
+      if (command.includes("python3 -u")) await new Promise(resolve => setTimeout(resolve, 60));
       return native(command, cwd, env, timeout);
     });
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10);
@@ -370,5 +370,59 @@ test("activity survives shell exit until inherited pipes drain on both transport
       expect(await run).toMatchObject({ exitCode: 0, timedOut: false });
       await expect(provider.files.stat(box.id, active)).rejects.toMatchObject({ code: "file_not_found" });
     }
+  } finally { await box.destroy(); }
+});
+
+test("fresh workspace supports first file operations and reconnect before execution", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  try {
+    expect((await box.files.stat(".")).type).toBe("directory");
+    expect(await box.files.exists(".")).toBe(true);
+    expect(await box.files.list(".")).toEqual([]);
+    await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
+    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
+    const fresh = factory();
+    await fresh.connect(box.id);
+    expect(await fresh.exec(box.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 3000, onChunk() {} })).toMatchObject({ exitCode: 0 });
+  } finally { await box.destroy(); }
+});
+
+test("aborted first execution keeps workspace preparation for the next call", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  try {
+    expect(await provider.exec(box.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 3000, signal: AbortSignal.abort(), onChunk() {} })).toMatchObject({ timedOut: true });
+    expect(await provider.exec(box.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 3000, onChunk() {} })).toMatchObject({ exitCode: 0 });
+  } finally { await box.destroy(); }
+});
+
+test("first mkdir prepares nested paths and removing a fresh workspace stays removed", async () => {
+  const provider = factory();
+  const first = await createSandbox(provider);
+  const second = await createSandbox(provider);
+  try {
+    await provider.files.mkdir(first.id, "/workspace/nested/dir");
+    expect((await first.files.stat("nested/dir")).type).toBe("directory");
+    await second.files.remove(".", { recursive: true });
+    expect(await second.files.exists(".")).toBe(false);
+  } finally { await first.destroy(); await second.destroy(); }
+});
+
+test("fresh workspace handles verified missing-path HTTP 400 without swallowing other bad requests", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider);
+  try {
+    const missing = () => Object.assign(new Error("open /workspace: no such file or directory"), { statusCode: 400 });
+    vi.spyOn(box.native.fs, "listFiles").mockRejectedValue(missing());
+    vi.spyOn(box.native.fs, "getFileDetails").mockRejectedValue(missing());
+    expect(await box.files.list(".")).toEqual([]);
+    expect((await box.files.stat(".")).type).toBe("directory");
+    expect(await box.files.exists(".")).toBe(true);
+    vi.spyOn(box.native.fs, "deleteFile").mockRejectedValue(missing());
+    await box.files.remove(".", { recursive: true });
+    expect(await box.files.exists(".")).toBe(false);
+    vi.mocked(box.native.fs.listFiles).mockRejectedValue(Object.assign(new Error("invalid path argument"), { statusCode: 400 }));
+    await expect(box.files.list(".")).rejects.toMatchObject({ code: "invalid_argument" });
   } finally { await box.destroy(); }
 });

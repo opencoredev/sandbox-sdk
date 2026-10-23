@@ -32,7 +32,8 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
  * because session input has no documented EOF operation. Native process hooks
  * run core's durable wrapper unchanged, so logs survive client detachment.
  */
-export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeoutMs">, timeoutMs?: number): Promise<NativeProcess & { detach(): void }> {
+export const workspaceCommand = 'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace';
+export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeoutMs">, timeoutMs?: number, prepare = workspaceCommand): Promise<NativeProcess & { detach(): void }> {
   const session = `sdk-${crypto.randomUUID()}`;
   const dir = `/tmp/.sandbox-sdk/exec/${session}`;
   const pidPath = `${dir}/pid`;
@@ -65,7 +66,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     await box.process.createSession(session); created = true;
     const env = Object.entries(input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
     const script = `umask 077; mkdir -p ${quote(dir)} || exit 1; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(input.stdin === undefined ? "/dev/null" : `${dir}/stdin`)} ${quote(input.activityPath ?? "")}`;
-    const response = await box.process.executeSessionCommand(session, { command: `setsid --wait sh -c ${quote(script)}`, runAsync: true, suppressInputEcho: true });
+    const response = await box.process.executeSessionCommand(session, { command: `${prepare ? `${prepare} && ` : ""}setsid --wait sh -c ${quote(script)}`, runAsync: true, suppressInputEcho: true });
     commandId = response.cmdId;
     if (!commandId) throw new SandboxError("Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
     // Observe both promises immediately: stream failures must not become unhandled.
@@ -168,13 +169,13 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
 }
 
-export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }): Promise<ExecResult> {
+export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }, prepare = workspaceCommand): Promise<ExecResult> {
   // Only explicit live-chunk requests need a session. Core-internal commands
   // (checkpoints, secret probes, process helpers) omit the flag and collect output.
   // Stdin always goes through a session upload: carrying it in the command line
   // would expose it in the guest's process list.
-  if (input.streaming !== true && input.stdin === undefined) return bufferedExecute(box, input);
-  const process = await sessionProcess(box, input, input.timeoutMs);
+  if (input.streaming !== true && input.stdin === undefined) return bufferedExecute(box, input, prepare);
+  const process = await sessionProcess(box, input, input.timeoutMs, prepare);
   const result = await process.wait();
   return { exitCode: result.exitCode, timedOut: result.signal === "SIGKILL" };
 }

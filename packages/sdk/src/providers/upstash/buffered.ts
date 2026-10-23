@@ -77,11 +77,11 @@ if pid:
   time.sleep(.01)
 `;
 
-export async function bufferedExecute(box: Box, input: ExecInput): Promise<ExecResult | undefined> {
+export async function bufferedExecute(box: Box, input: ExecInput, prepare?: string): Promise<ExecResult | undefined> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
   const env = Object.entries(defaults).filter(([key]) => key in input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
-  const command = `env ${env} python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
+  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
   let cancelled = false, confirmed = false, cleanupNeeded = false;

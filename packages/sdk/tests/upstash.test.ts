@@ -307,9 +307,11 @@ test("an upload timeout cannot delete inputs of a still-running atomic assembly"
 
 test("Upstash listing skips corrupt or vanished metadata and preserves auth failures", async () => {
   const box = await createSandbox(factory());
-  const read = vi.spyOn(box.native.files, "read");
+  const native = state.boxes.get(box.id);
+  if (!native) throw new Error("Missing mock box");
+  const read = vi.spyOn(native.exec, "command");
   for (const body of ["{", JSON.stringify({ version: 1, labels: { bad: 2 } })]) {
-    read.mockResolvedValue(body);
+    read.mockResolvedValue({ exitCode: 0, stdout: body, stderr: "", result: body });
     expect(await factory().list({})).toEqual([]);
   }
   read.mockRejectedValue(Object.assign(new Error("gone"), { statusCode: 404 }));
@@ -318,7 +320,7 @@ test("Upstash listing skips corrupt or vanished metadata and preserves auth fail
   await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
 });
 
-test("cold setup persists shell-safe discovery metadata in one guest call", async () => {
+test("create carries shell-safe discovery metadata without a post-create call", async () => {
   const create = MockBox.create.bind(MockBox);
   const commands: string[] = [];
   vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
@@ -336,24 +338,11 @@ test("cold setup persists shell-safe discovery metadata in one guest call", asyn
   const key = "owner:'; touch workspace/injected; #\n$(false)";
   const labels = { app: "quotes ' \" $literal \n雪" };
   const info = await provider.create({ key, labels });
-  expect(commands).toHaveLength(1);
+  expect(commands).toHaveLength(0);
   expect(await factory().connect(info.id)).toMatchObject({ key, labels });
   expect(await factory().find(key)).toMatchObject({ id: info.id });
   await expect(provider.files.stat(info.id, "/workspace/injected")).rejects.toMatchObject({ code: "file_not_found" });
-  const { stat } = await import("node:fs/promises");
-  expect((await stat(state.boxes.get(info.id)?.map("/tmp/.sandbox-sdk/upstash.json") ?? "")).mode & 0o777).toBe(0o600);
-});
-
-test("failed cold setup is never discoverable and removes its box", async () => {
-  const create = MockBox.create.bind(MockBox);
-  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
-    const value = await create(params);
-    vi.spyOn(value.exec, "command").mockResolvedValue({ exitCode: 1, stdout: "", stderr: "", result: "" });
-    return value;
-  });
-  await expect(factory().create({ labels: {} })).rejects.toMatchObject({ code: "provider" });
-  expect(await factory().list({})).toEqual([]);
-  expect(state.boxes.size).toBe(0);
+  expect(state.creates.at(-1)?.env?.SANDBOX_SDK_UPSTASH_METADATA).toBe(JSON.stringify({ version: 1, key, labels: { ...labels, "sandbox-sdk": "1" } }));
 });
 
 test("errors preserve operation, HTTP status and sanitized nested cause through core", async () => {
@@ -458,7 +447,7 @@ describe("Upstash Ephemeral Box mode", () => {
     const snapshot = await source.snapshot();
     await source.destroy();
     const copy = await createSandbox(ephemeral(), { from: snapshot.id, key: "clone", labels: { clone: "yes" } });
-    expect(state.ephemeralCreates.at(-1)).toMatchObject({ labels: [], ttl: 3600 });
+    expect(state.ephemeralCreates.at(-1)).toMatchObject({ labels: ["sandbox-sdk"], ttl: 3600 });
     expect(await copy.files.read("saved")).toBe("kept");
     expect((await copy.processes())[0]).toMatchObject({ status: "failed", exitCode: 137 });
     expect(await ephemeral().find("clone")).toMatchObject({ id: copy.id, labels: { clone: "yes" } });
@@ -553,4 +542,34 @@ test("buffered primitives inherit sandbox defaults unless core explicitly overri
     expect(await provider.exec(info.id, { command: 'printf %s "$CI"', cwd: "/workspace", env: {}, timeoutMs: 3000, onChunk(chunk) { chunks.push(chunk.text); } })).toMatchObject({ exitCode: 0 });
     expect(chunks.join("")).toBe("native-ci");
   } finally { await provider.destroy(info.id); }
+});
+
+test.each([factory, ephemeral])("fresh workspace supports first file operations before the first command", async make => {
+  const provider = make();
+  const box = await createSandbox(provider, { labels: { suite: "sbx57-first-files" } });
+  try {
+    expect((await box.files.stat(".")).type).toBe("directory");
+    expect(await box.files.exists(".")).toBe(true);
+    expect(await box.files.list(".")).toEqual([]);
+    await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
+    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
+    expect((await box.run("pwd")).stdout).toBe("/workspace\n");
+  } finally { await box.destroy(); }
+});
+
+test("first mkdir prepares nested paths and removing a fresh workspace stays removed", async () => {
+  const provider = factory();
+  const first = await createSandbox(provider);
+  const second = await createSandbox(provider);
+  try {
+    await provider.files.mkdir(first.id, "/workspace/nested/dir");
+    expect((await first.files.stat("nested/dir")).type).toBe("directory");
+    await second.files.remove(".", { recursive: true });
+    expect(await second.files.exists(".")).toBe(false);
+  } finally { await first.destroy(); await second.destroy(); }
+});
+
+test("reserved discovery environment cannot silently replace caller values", async () => {
+  await expect(factory().create({ labels: {}, env: { SANDBOX_SDK_UPSTASH_METADATA: "caller value" } })).rejects.toMatchObject({ code: "invalid_argument" });
+  expect(state.creates).toHaveLength(0);
 });

@@ -1,48 +1,32 @@
-import type { Sandbox } from "@superserve/sdk";
 import { python } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 import { supervisor, supervisorPath } from "./execute.js";
 
-const initialize = python(`import os,json,shutil,sys
+const initialize = python(`import os,json,shutil,sys,tempfile
 v=json.loads(os.environ.pop('SANDBOX_SDK_BOOTSTRAP'))
 if any(shutil.which(tool) is None for tool in ('git','tar','nohup')): sys.exit(79)
 os.makedirs('/workspace',exist_ok=True)
 os.makedirs('/tmp/.sandbox-sdk',exist_ok=True)
 os.makedirs(os.path.dirname('${supervisorPath}'),exist_ok=True)
-with open(os.open('/var/lib/sandbox-sdk-env.json',os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600),'w') as f:
- os.fchmod(f.fileno(),0o600)
- json.dump(v['env'],f)
-with open('${supervisorPath}','w') as f: f.write(v['supervisor'])`);
+if v.get('supervisor') is not None:
+ if v.get('env') is not None or not os.path.exists('/var/lib/sandbox-sdk-env.json'):
+  with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f:
+   json.dump(v.get('env') or {},f)
+  os.replace(f.name,'/var/lib/sandbox-sdk-env.json')
+ with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f: f.write(v['supervisor'])
+ os.replace(f.name,'${supervisorPath}')`);
 
-export async function bootstrap(
-  box: Sandbox,
-  options: {
-    env: Record<string, string>;
-    timeoutMs: number;
-    signal?: AbortSignal;
-    installPython?: boolean;
-  },
-) {
-  const missingPython =
-    options.installPython === true
-      ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
-      : "exit 78";
-  const result = await box.commands.run(
-    `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
-    {
-      // Keep caller environment values out of the shell command and its argv.
-      env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env, supervisor }) },
-      timeoutMs: options.timeoutMs,
-      signal: options.signal,
-    },
-  );
-  if (result.exitCode === 78)
-    throw failure(
-      "Template lacks python3; use a template with Python 3 or explicitly set installPython: true to allow apt installation",
-      "unsupported",
-      box.id,
-    );
-  if (result.exitCode === 79)
-    throw failure("Template must include git, tar and nohup", "unsupported", box.id);
-  if (result.exitCode !== 0) throw failure("Guest initialization failed", "provider", box.id);
+export function bootstrapCommand(options: { env?: Record<string, string>; installPython?: boolean; execution?: boolean }) {
+  const missingPython = options.installPython === true
+    ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
+    : "exit 78";
+  return {
+    command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
+    env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env, supervisor: options.execution ? supervisor : undefined }) },
+  };
+}
+
+export function checkBootstrap(exitCode: number, id: string) {
+  if (exitCode === 78) throw failure("Template lacks python3; use a template with Python 3 or explicitly set installPython: true to allow apt installation", "unsupported", id);
+  if (exitCode === 79) throw failure("Template must include git, tar and nohup", "unsupported", id);
 }

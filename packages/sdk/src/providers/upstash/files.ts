@@ -28,7 +28,16 @@ export async function readFile(box: Box, path: string, range?: { offset: number;
   }
   return new Uint8Array(Buffer.concat(parts));
 }
-export async function writeFile(box: Box, path: string, data: Uint8Array) {
+export async function writeFile(box: Box, path: string, data: Uint8Array, prepare?: string) {
+  if (prepare) {
+    const script = "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()";
+    const session = await box.exec.session({ argv: ["sh", "-c", `${prepare} && exec python3 -c "$1" "$2"`, "sh", script, path], cwd: "/" });
+    try {
+      session.write(data); session.endStdin();
+      if (await session.wait() !== 0) throw new SandboxError("File write failed. Check workspace permissions and Python availability.", { code: "provider", provider: "upstash", sandboxId: box.id });
+      return;
+    } finally { session.close(); }
+  }
   const write = async (path: string, bytes: Uint8Array) => {
     const params = { path, content: Buffer.from(bytes).toString("base64"), encoding: "base64" } satisfies Parameters<Box["files"]["write"]>[0];
     try { await box.files.write(params); }
@@ -112,9 +121,9 @@ function listed(value: unknown): ListedEntry[] | undefined {
 }
 /** Returns undefined when the guest cannot answer (no python3, truncated output),
  * so the caller can use the native list-then-stat path instead. */
-export async function listDirectory(box: Box, path: string): Promise<ListedEntry[] | undefined> {
+export async function listDirectory(box: Box, path: string, prepare?: string): Promise<ListedEntry[] | undefined> {
   if (!path.startsWith("/")) return undefined;
-  const result = await box.exec.command(`python3 -c ${quote(listScript)} ${quote(path)}`);
+  const result = await box.exec.command(`${prepare ? `${prepare} && ` : ""}python3 -c ${quote(listScript)} ${quote(path)}`);
   if (result.exitCode !== 0) return undefined;
   const text = result.stdout.trim();
   if (text === "SDK_FILE_NOT_FOUND")

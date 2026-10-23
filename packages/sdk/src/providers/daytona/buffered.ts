@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { quote } from "./exec.js";
+import { quote, workspaceCommand } from "./exec.js";
 
 // A single native command returns at most 64 KiB of frames. Larger output is
 // spooled in the guest and downloaded as a stream, never buffered by the SDK.
@@ -73,7 +73,7 @@ for attempt in range(3):
   if attempt==2: raise
 `;
 
-export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<ExecResult> {
+export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = workspaceCommand): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const deadline = Date.now() + input.timeoutMs;
   const transferController = new AbortController();
@@ -105,7 +105,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput): Promise<E
   input.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
   try {
-    const result = await box.process.executeCommand(`python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ${quote(input.activityPath ?? "")}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
+    const result = await box.process.executeCommand(`${prepare ? `${prepare} && ` : ""}python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ${quote(input.activityPath ?? "")}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
     const lines = result.result.trimEnd().split("\n");
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
     if (result.exitCode !== 0 || !summary) throw malformed();

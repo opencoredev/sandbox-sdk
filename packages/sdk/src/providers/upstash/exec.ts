@@ -5,7 +5,7 @@ import { upstashError } from "./errors.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 
 /** Session signals target the whole process tree; wait acknowledges termination. */
-export async function execute(box: Box, input: ExecInput): Promise<ExecResult> {
+export async function execute(box: Box, input: ExecInput, prepare?: string): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   let session: ExecSessionHandle | undefined;
   let timedOut = false;
@@ -19,8 +19,8 @@ export async function execute(box: Box, input: ExecInput): Promise<ExecResult> {
   const stderr = new StringDecoder("utf8");
   try {
     session = await box.exec.session({
-      argv: ["sh", "-c", input.command],
-      cwd: input.cwd,
+      argv: prepare ? ["sh", "-c", `${prepare} && cd "$1" && exec sh -c "$2"`, "sh", input.cwd, input.command] : ["sh", "-c", input.command],
+      cwd: prepare ? "/" : input.cwd,
       env: Object.entries(input.env).map(([key, value]) => `${key}=${value}`),
       onStdout: (data) => {
         const text = stdout.write(Buffer.from(data));
@@ -65,13 +65,14 @@ export async function startProcess(
   box: Box,
   input: Omit<ExecInput, "timeoutMs">,
   halt: (dir: string) => Promise<unknown>,
+  prepare?: string,
 ) {
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;
   const envPath = `${dir}/env`;
   // command() has no env option, unlike session(). Keep values in a private
   // file so the durable shell's command line contains only the bootstrap path.
-  const wrapper = `chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} || exit 1; echo $$ > ${quote(`${dir}/pid`)}; cd ${quote(input.cwd)} || exit 1; sh -c ${quote(input.command)}; code=$?; printf '%s' "$code" > ${quote(`${dir}/exit`)}; exit "$code"`;
+  const wrapper = `${prepare ? `${prepare} && ` : ""}chmod 600 ${quote(envPath)} && . ${quote(envPath)} && /bin/rm -f -- ${quote(envPath)} || exit 1; echo $$ > ${quote(`${dir}/pid`)}; cd ${quote(input.cwd)} || exit 1; sh -c ${quote(input.command)}; code=$?; printf '%s' "$code" > ${quote(`${dir}/exit`)}; exit "$code"`;
   let pid: number | undefined;
   try {
     const prepared = await box.exec.command(

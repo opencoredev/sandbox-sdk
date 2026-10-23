@@ -60,6 +60,14 @@ export class MockSandbox {
     return entry;
   }
   process = {
+    codeRun: async (code: string) => {
+      const child = spawn("python3", ["-"], { cwd: this.root });
+      let stdout = "";
+      child.stdout.on("data", data => { stdout += data; });
+      child.stdin.end(this.rewrite(code));
+      const exitCode = await new Promise<number>((resolve, reject) => { child.on("error", reject); child.on("close", code => resolve(code ?? 137)); });
+      return { exitCode, result: stdout, artifacts: { stdout } };
+    },
     createSession: async (id: string) => { this.sessions.set(id, new Map()); },
     executeSessionCommand: async (id: string, request: { command: string; runAsync?: boolean; suppressInputEcho?: boolean }) => {
       if (mockState.launchDelayMs) await new Promise(resolve => setTimeout(resolve, mockState.launchDelayMs));
@@ -75,7 +83,7 @@ export class MockSandbox {
     },
     deleteSession: async (id: string) => { this.sessions.delete(id); },
     executeCommand: async (command: string, cwd?: string, env?: Record<string, string>, _timeout?: number) => { const entry = this.run(command, cwd, env); await entry.done; return { exitCode: entry.exitCode ?? 0, result: entry.chunks.map(chunk => chunk.text).join(""), artifacts: { stdout: entry.chunks.filter(c => c.stream === "stdout").map(c => c.text).join("") } }; },
-  } satisfies Pick<Sandbox["process"], "createSession" | "executeSessionCommand" | "getSessionCommand" | "deleteSession" | "executeCommand"> & { getSessionCommandLogs(session: string, command: string, stdout: (text: string) => void, stderr: (text: string) => void): Promise<void> };
+  } satisfies Pick<Sandbox["process"], "createSession" | "executeSessionCommand" | "getSessionCommand" | "deleteSession" | "executeCommand" | "codeRun"> & { getSessionCommandLogs(session: string, command: string, stdout: (text: string) => void, stderr: (text: string) => void): Promise<void> };
   async stop() { this.state = "stopped"; }
   async start() { this.state = "started"; }
   async resize(resources: { cpu?: number; memory?: number; disk?: number }) { Object.assign(this, resources); }
