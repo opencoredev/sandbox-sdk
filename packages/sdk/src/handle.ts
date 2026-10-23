@@ -23,7 +23,7 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
       if (provider.files.writeCreatesParents || provider.name === "memory") await files.write(namesPath, record);
       else {
         // Names are validated identifiers, so mkdir and write fit in one quoted exec.
-        const result = await provider.exec(info.id, { command: `mkdir -p /tmp/.sandbox-sdk && printf '%s' ${quote(record)} > ${quote(namesPath)}`, cwd: "/workspace", env: defaults, timeoutMs: 10_000, onChunk() {} });
+        const result = await provider.exec(info.id, { command: `mkdir -p /tmp/.sandbox-sdk && printf '%s' ${quote(record)} > ${quote(namesPath)}`, cwd: "/", env: defaults, timeoutMs: 10_000, onChunk() {} });
         if (result.exitCode !== 0) throw new SandboxError("Secret setup failed. Could not record secret names in /tmp/.sandbox-sdk. Ensure /tmp is writable.", { code: "provider", provider: provider.name, sandboxId: info.id });
       }
     }
@@ -31,7 +31,7 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
     // Read the record and environment together. Values stay private to this
     // recovery step, and only explicitly recorded names enter the redactor/env.
     let wire = "";
-    const result = await provider.exec(info.id, { command: secretRecoveryCommand, cwd: "/workspace", env: {}, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") wire += chunk.text; } });
+    const result = await provider.exec(info.id, { command: secretRecoveryCommand, cwd: "/", env: {}, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") wire += chunk.text; } });
     if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Secret recovery failed. Could not read the sandbox environment. Retry connecting.", { code: "provider", provider: provider.name, sandboxId: info.id });
     if (wire) {
       const separator = wire.indexOf("\0");
