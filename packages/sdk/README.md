@@ -210,12 +210,21 @@ The default tools are `run`, `read_file`, `write_file`, `edit_file`, `start_proc
 
 The SDK aims for near-zero overhead on top of each provider's own API. The root entry is under 8 KB minified, providers load on first use, and `createSandbox` adds no provider calls beyond the create itself unless you pass `secrets`, `from`, or `trackChanges: true` (one exec each).
 
-<!-- TODO(lead): replace with measured numbers from bench/scripts/sdk-overhead.ts -->
-| Provider | Create: SDK vs native | `run("true")`: SDK vs native |
-| --- | --- | --- |
-| TODO | TODO | TODO |
+Time the SDK adds on top of each provider's own SDK, as median milliseconds. "Cold" is `createSandbox` plus the first `box.run("true")`, compared with the provider SDK's create plus its own exec. "Run" is a warm `run("true")` on an existing sandbox. Negative numbers and small differences are within provider noise.
 
-Measured with `bench/scripts/sdk-overhead.ts`. See [bench/README.md](https://github.com/opencoredev/sandbox-sdk/blob/main/bench/README.md) to reproduce.
+| Provider | Create | Cold: create to first command | Warm `run` |
+| --- | ---: | ---: | ---: |
+| E2B | +24 | +52 | +8 |
+| Daytona | ±0 | ±0 | +38 |
+| Upstash Box | +27 | +69 | +15 |
+| Freestyle | ±0 | +51 | +23 |
+| Tenki | ±0 | +119 | +15 |
+| Superserve | ±0 | +73 | +9 |
+| boxd | +272 | +370 | +52 |
+
+boxd has no native metadata field, so a sandbox created with labels or a `key` writes its ownership record with one extra request before `createSandbox` returns. The other providers send labels with the create call itself and run any guest setup inside your first command.
+
+Measured on 2026-10-22 from one Linux host with `bench/scripts/sdk-overhead.ts`, 5 to 8 cold samples and 10 warm samples per provider. See [bench/README.md](https://github.com/opencoredev/sandbox-sdk/blob/main/bench/README.md) to reproduce.
 
 ## More
 
