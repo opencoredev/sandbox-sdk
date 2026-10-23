@@ -25,7 +25,7 @@ console.log((await box.run("uname -a")).stdout);
 
 ## Configuration
 
-`boxd({ apiKey, baseURL, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. Creation checks these tools and creates `/workspace` and `/var/lib/sandbox-sdk` owned by the guest user. A non-root image must provide passwordless `sudo -n` for this one-time setup.
+`boxd({ apiKey, baseUrl, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. The SDK checks these tools and creates `/workspace` and `/var/lib/sandbox-sdk`, owned by the guest user, with the first command or file operation. With a `key` or custom labels it does this at creation instead, so discovery works right away. A non-root image must provide passwordless `sudo -n` for this one-time setup.
 
 ## Keys and labels
 
@@ -62,7 +62,7 @@ Whole-file reads and ranges use bounded byte-exact native exec calls. Writes use
 | Variable | Purpose |
 | --- | --- |
 | `BOXD_API_KEY` | Required API key, overridden by `apiKey` |
-| `BOXD_BASE_URL` | Optional native SDK endpoint, overridden by `baseURL` |
+| `BOXD_BASE_URL` | Optional native SDK endpoint, overridden by `baseUrl` (`baseURL` is a deprecated alias) |
 
 ## API reference
 

@@ -46,7 +46,7 @@ const provider = daytona({
 await using box = await createSandbox(provider, { size: "medium" });
 ```
 
-- `apiKey`, `apiUrl`, and `target` override `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
+- `apiKey`, `baseUrl`, and `target` override `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
 - `image` starts sandboxes from a container image. `snapshot` starts them from a named Daytona snapshot. Set one or neither: setting both fails with `unsupported`. A `from` passed to `createSandbox` overrides either.
 - `requestTimeoutMs` is the deadline for each request to Daytona's API. It defaults to 30 seconds.
 
@@ -128,7 +128,7 @@ A browser can't add headers to an iframe or a link, so to show a Daytona preview
 ### `daytona(options?)`
 
 - `apiKey?: string`. Defaults to `DAYTONA_API_KEY`.
-- `apiUrl?: string`. Defaults to `DAYTONA_API_URL`.
+- `baseUrl?: string`. Defaults to `DAYTONA_API_URL`. `apiUrl` is a deprecated alias.
 - `target?: string`. Defaults to `DAYTONA_TARGET`.
 - `image?: string`. A container image to start from.
 - `snapshot?: string`. A Daytona snapshot name to start from.

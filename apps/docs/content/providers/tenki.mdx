@@ -39,7 +39,7 @@ await using box = await createSandbox(provider, {
 });
 ```
 
-- `authToken` overrides `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`.
+- `apiKey` overrides `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`. `authToken` is a deprecated alias.
 - `baseUrl` overrides the native SDK's endpoint defaults.
 - `image` selects a Tenki registry image. A `from` snapshot overrides it.
 - `requestTimeoutMs` bounds ordinary control-plane operations (create, get, list, destroy, preview exposure, and snapshot submission). It defaults to 30 seconds. Pause uses `waitTimeoutMs`; the resume RPC uses `resumeTimeoutMs`.
@@ -120,7 +120,7 @@ Snapshots remain in Tenki after a sandbox is destroyed. Delete them through the 
 
 ### `tenki(options?)`
 
-- `authToken?: string`. Defaults to the environment variables above.
+- `apiKey?: string`. Defaults to the environment variables above. `authToken` is a deprecated alias.
 - `baseUrl?: string`. Uses the native SDK's defaults when omitted.
 - `image?: string`. Tenki registry image to start from.
 - `requestTimeoutMs?: number`. Defaults to `30_000`.

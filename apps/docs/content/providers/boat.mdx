@@ -37,8 +37,8 @@ await using box = await createSandbox(provider, { size: "medium" });
 ```
 
 - `apiKey` overrides `BOAT_API_KEY`.
-- `apiUrl` overrides `BOAT_API_BASE`. The default is `https://boat.dev/api/v1`.
-- `type` picks Boat's native machine size for every sandbox from this provider: `small`, `default`, `large`, or `xlarge` (16 CPUs, 32 GB, which needs a $100+ plan). A per-create `size` preset takes precedence.
+- `baseUrl` overrides `BOAT_API_BASE` (`apiUrl` is a deprecated alias). The default is `https://boat.dev/api/v1`.
+- `machine` picks Boat's native machine size for every sandbox from this provider: `small`, `default`, `large`, or `xlarge` (16 CPUs, 32 GB, which needs a $100+ plan). A per-create `size` preset takes precedence.
 - `requestTimeoutMs` sets the deadline for each API request. It defaults to 90 seconds. Command timeouts are separate.
 
 ## Keys
@@ -57,7 +57,7 @@ The encoded name must fit Boat's 120-character limit. Keys or labels that exceed
 | `medium` | `default` | 4 | 8192 MiB | 50 GB |
 | `large` | `large` | 8 | 16384 MiB | 125 GB |
 
-Omitting `size` uses the provider's `type`, or Boat's `default` when neither is set. Custom `{ cpu, memoryMb, diskGb }` sizes fail with `unsupported`. Your account's size and quota limits still apply.
+Omitting `size` uses the provider's `machine`, or Boat's `default` when neither is set. Custom `{ cpu, memoryMb, diskGb }` sizes fail with `unsupported`. Your account's size and quota limits still apply.
 
 ## Network
 
@@ -102,7 +102,7 @@ Boat’s native URL exchanges a query token for a `_port_auth` cookie through a 
 ### `boat(options?)`
 
 - `apiKey?: string`. Defaults to `BOAT_API_KEY`.
-- `apiUrl?: string`. Defaults to `BOAT_API_BASE`, then `https://boat.dev/api/v1`.
+- `baseUrl?: string`. Defaults to `BOAT_API_BASE`, then `https://boat.dev/api/v1`.
 - `requestTimeoutMs?: number`. Defaults to `90_000`.
 
 Returns a provider. `box.native.sandbox` is Boat's sandbox metadata, and `box.native.client` is the official SDK's `BoatApi` client.
