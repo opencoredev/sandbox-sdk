@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { freestyle } from "../src/providers/freestyle/index.js";
-import { FreestyleApiError } from "freestyle";
+import { FreestyleApiError, FreestyleClient } from "freestyle";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -17,7 +17,7 @@ test("overall deadline stops the real SDK's HTTP 202 polling without another net
       );
     }),
   );
-  const provider = freestyle({ apiKey: "mock", requestTimeoutMs: 20 });
+  const provider = freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 20 });
   const start = Date.now();
   await expect(provider.list({})).rejects.toMatchObject({ code: "timeout" });
   expect(Date.now() - start).toBeLessThan(500);
@@ -44,7 +44,7 @@ test("every awaited native operation is bounded and aborts its fetch", async () 
         }),
     ),
   );
-  const p = freestyle({ apiKey: "mock", requestTimeoutMs: 20 });
+  const p = freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 20 });
   const operations = [
     () => p.create({ labels: {} }),
     () => p.connect("offline"),
@@ -91,7 +91,7 @@ test("caller abort interrupts a pending native create and its HTTP request", asy
     ),
   );
   await expect(
-    freestyle({ apiKey: "mock", requestTimeoutMs: 1000 }).create({ labels: {}, signal: c.signal }),
+    freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 1000 }).create({ labels: {}, signal: c.signal }),
   ).rejects.toMatchObject({ code: "aborted" });
   expect(fetchSignal?.aborted).toBe(true);
 });
@@ -102,7 +102,7 @@ test("an already-aborted operation makes no native request", async () => {
   const c = new AbortController();
   c.abort();
   await expect(
-    freestyle({ apiKey: "mock" }).create({ labels: {}, signal: c.signal }),
+    freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create({ labels: {}, signal: c.signal }),
   ).rejects.toMatchObject({ code: "aborted" });
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -125,7 +125,7 @@ test.each(["running", "starting"])("cold create returns running after successful
     if (path === "/v5/vms/offline/exec-await") return Response.json({ statusCode: 0, stdout: "", stderr: "" });
     throw new Error("Unexpected cold setup request");
   }));
-  const result = await freestyle({ apiKey: "mock" }).create({ labels: { test: "cold" }, network: "none", env: { TOKEN: "private-test-value" } });
+  const result = await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create({ labels: { test: "cold" }, network: "none", env: { TOKEN: "private-test-value" } });
   expect(result).toMatchObject({ id: "offline", labels: { test: "cold" }, state: "running" });
   expect(requests.map(r => `${r.method} ${r.path}`)).toEqual(["POST /v5/vms", "POST /v5/vms/offline/exec-await"]);
   expect(requests[0]?.body).toMatchObject({ snapshotId: "freestyle/ubuntu", firewall: { rules: [] }, tls: { rules: [] }, vpcs: [] });
@@ -141,7 +141,7 @@ test("HTTP failures retain status, code, request ID and operation through public
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({
     code: "PAYLOAD_TOO_LARGE", message: "secret-response-body", authorization: "Bearer secret-key",
   }, { status: 413, headers: { "x-request-id": "req-123", "set-cookie": "secret-cookie" } })));
-  const p = freestyle({ apiKey: "secret-key" });
+  const p = freestyle({ baseUrl: "http://offline.invalid", apiKey: "secret-key" });
   await expect(p.files.read("private-vm", "/private/secret-file")).rejects.toMatchObject({
     code: "provider", cause: { status: 413, providerCode: "PAYLOAD_TOO_LARGE", requestId: "req-123", operation: "GET /v5/vms/:id/fs/read" },
   });
@@ -164,7 +164,7 @@ test("concurrent failures keep their own request IDs and reject unsafe header va
       status: first ? 404 : 413, headers: { "x-request-id": first ? "req-first" : "Bearer unsafe-token" },
     });
   }));
-  const provider = freestyle({ apiKey: "mock" });
+  const provider = freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" });
   const results = await Promise.allSettled([provider.files.read("first", "/one"), provider.files.read("second", "/two")]);
   const errors = results.map(r => { if (r.status !== "rejected") throw new Error("Expected failure"); return r.reason; });
   expect(errors[0]).toMatchObject({ cause: { requestId: "req-first", providerCode: "FIRST_ERROR" } });
@@ -177,7 +177,7 @@ test("configured credentials are excluded even from otherwise valid diagnostic i
     status: 413, headers: { "x-request-id": "req-PRIVATE_TOKEN" },
   })));
   try {
-    await freestyle({ apiKey: "PRIVATE_TOKEN" }).files.read("offline", "/file");
+    await freestyle({ baseUrl: "http://offline.invalid", apiKey: "PRIVATE_TOKEN" }).files.read("offline", "/file");
     throw new Error("Expected failure");
   } catch (error) {
     if (!(error instanceof Error)) throw error;
@@ -191,7 +191,7 @@ test("background failures retain the original operation and accepted request ID"
   vi.stubGlobal("fetch", vi.fn(async () => ++requests === 1
     ? Response.json({ resultUrl: "/v5/background-requests/bg-123" }, { status: 202, headers: { "x-freestyle-background-request-id": "bg-123" } })
     : Response.json({ code: "BACKGROUND_RESULT_UNSTORABLE", message: "private body" }, { status: 413 })));
-  await expect(freestyle({ apiKey: "mock", requestTimeoutMs: 5000 }).pause?.("offline")).rejects.toMatchObject({
+  await expect(freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 5000 }).pause?.("offline")).rejects.toMatchObject({
     cause: { status: 413, providerCode: "BACKGROUND_RESULT_UNSTORABLE", requestId: "bg-123", operation: "POST /v5/vms/:id/pause" },
   });
   expect(requests).toBe(2);
@@ -216,7 +216,7 @@ test.each(["vpc", "tls", "firewall", "limits", "setup"])("unconfirmed %s in allo
       tlsRules: kind === "tls" ? [{ source: { vmId: "offline" } }] : [],
     });
   }));
-  await expect(freestyle({ apiKey: "mock" }).create({ labels: {}, network: "none", timeoutMs: 180000 })).rejects.toMatchObject({ code: kind === "setup" ? "provider" : "unsupported" });
+  await expect(freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create({ labels: {}, network: "none", timeoutMs: 180000, ...(kind === "setup" ? { env: { SETUP: "required" } } : {}) })).rejects.toMatchObject({ code: kind === "setup" ? "provider" : "unsupported" });
   expect(requests.at(-1)).toBe("DELETE /v5/vms/offline");
   expect(requests.filter(r => r.startsWith("GET"))).toEqual([]);
 });
@@ -236,11 +236,24 @@ test("a later setup failure never inherits the allocation's background request I
     return Response.json({ id: "offline", state: "running", metadata, vpcs: [], firewallRules: [], tlsRules: [] });
   }));
   try {
-    await freestyle({ apiKey: "mock", requestTimeoutMs: 5000 }).create({ labels: {}, network: "none" });
+    await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 5000 }).create({ labels: {}, network: "none", env: { SETUP: "required" } });
     throw new Error("Expected failure");
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     expect(error.cause).toMatchObject({ status: 413, providerCode: "SETUP_FAILED", operation: "POST /v5/vms/:id/exec-await" });
     expect(String(error.cause)).not.toContain("allocation");
   }
+});
+
+
+test("the deadline wrapper keeps the native transport rather than replacing it with global fetch", async () => {
+  const transport = vi.spyOn(FreestyleClient.prototype, "fetch").mockResolvedValue(Response.json({ vms: [], totalCount: 0 }));
+  const globalFetch = vi.fn(() => { throw new Error("Unexpected global transport"); });
+  vi.stubGlobal("fetch", globalFetch);
+  try {
+    expect(await freestyle({ apiKey: "mock" }).list({})).toEqual([]);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(transport.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+  } finally { transport.mockRestore(); }
 });

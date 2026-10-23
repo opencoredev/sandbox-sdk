@@ -52,6 +52,7 @@ function rules(input: CreateInput): InlineFirewallRule[] {
 export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
   const boxes = new Map<string, Vm>();
+  const pending = new Map<string, [string, string][]>();
   const installations = new Map<string, Promise<void>>();
   const verifiedSupervisors = new Set<string>();
   const previews = new Map<string, string>();
@@ -62,7 +63,8 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.FREESTYLE_API_KEY;
       if (!apiKey?.trim()) throw failure("Set FREESTYLE_API_KEY", "auth");
-      const { Freestyle, FreestyleApiError } = await import("freestyle");
+      const { Freestyle, FreestyleApiError, FreestyleClient } = await import("freestyle");
+      const transport = new FreestyleClient({ apiKey, baseUrl: options.baseUrl });
       return new Freestyle({
         apiKey,
         baseUrl: options.baseUrl,
@@ -78,7 +80,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
           if (signal.aborted) throw stopped();
           recordRequest(url, init?.method, apiKey);
           try {
-            const response = await fetch(url, {
+            const response = await transport.fetch(url instanceof Request ? url.url : String(url), {
               ...init,
               signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
             });
@@ -114,13 +116,42 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     }
     return value;
   }
+  async function run(value: Vm, command: string, stdin: string | undefined, timeoutMs: number) {
+    const contents = pending.get(value.id);
+    if (!contents) return value.exec({ command, stdin, linuxUser: "root", timeoutMs });
+    const result = await value.exec({
+      command: python(`import os,sys,json,tempfile,base64
+v=json.load(sys.stdin)
+for path in ['/workspace','/tmp/.sandbox-sdk']:
+ os.makedirs(path,exist_ok=True)
+for path,content in v['files']:
+ os.makedirs(os.path.dirname(path),exist_ok=True)
+ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
+ try:
+  with os.fdopen(fd,'w') as f: f.write(content)
+  os.replace(tmp,path)
+ finally:
+  if os.path.exists(tmp): os.unlink(tmp)
+with tempfile.TemporaryFile() as f:
+ f.write(base64.b64decode(v.get('stdin') or '')); f.seek(0); os.dup2(f.fileno(),0)
+ print('SDK_PREPARED:',end='',flush=True)
+ os.execvp('sh',['sh','-c',v['command']])`),
+      stdin: Buffer.from(JSON.stringify({ files: contents, command, stdin })).toString("base64"),
+      linuxUser: "root", timeoutMs,
+    });
+    if (result.stdout?.startsWith("SDK_PREPARED:")) {
+      pending.delete(value.id);
+      return { ...result, stdout: result.stdout.slice(13) };
+    }
+    return result;
+  }
   async function guest(id: string): Promise<Guest> {
     const value = await vm(id);
     return {
       name: "freestyle",
       raw: async (command) => {
         const r = await safe(id, () =>
-          value.exec({ command, linuxUser: "root", timeoutMs: requestTimeoutMs }),
+          run(value, command, undefined, requestTimeoutMs),
         );
         if (r.statusCode !== 0)
           throw failure(
@@ -130,10 +161,12 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
           );
         return r.stdout ?? "";
       },
-      upload: (path, bytes) =>
-        safe(id, () =>
-          value.fs.writeFile(path, bytes, { mode: 0o600, signal: operationSignal.getStore() }),
-        ),
+      upload: (path, bytes) => safe(id, async () => {
+        if (pending.has(id)) {
+          const result = await run(value, python("import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(sys.stdin.buffer.read()); f.close(); os.chmod(sys.argv[1],0o600)", path), Buffer.from(bytes).toString("base64"), requestTimeoutMs);
+          if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
+        } else await value.fs.writeFile(path, bytes, { mode: 0o600, signal: operationSignal.getStore() });
+      }),
       read: (path, range) =>
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
     };
@@ -257,6 +290,7 @@ if current!=content:
           // No retries: a transport failure may have allocated a VM. An unknown
           // outcome must be inspected before another create is attempted.
           let result: Awaited<ReturnType<Freestyle["vms"]["create"]>>;
+          const createdAt = Date.now();
           try {
             result = await (await api()).vms.create(params);
           } catch (error) {
@@ -297,36 +331,18 @@ if current!=content:
               throw failure("Freestyle did not confirm the requested firewall", "unsupported", id);
             if (tls.length)
               throw failure("Unexpected TLS egress grants", "unsupported", id);
-            // One guest operation: use image-provided tools and pass private
-            // contents over stdin, never in command arguments or metadata.
-            const setup = await value.exec({
-              command: python(`import os,sys,json,tempfile,shutil
-for tool in ['python3','git','tar','nohup']:
- if not shutil.which(tool): sys.exit(1)
-for path in ['/workspace','/tmp/.sandbox-sdk']:
- os.makedirs(path,exist_ok=True)
-for path,content in json.load(sys.stdin):
- os.makedirs(os.path.dirname(path),exist_ok=True)
- fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
- try:
-  with os.fdopen(fd,'w') as f: f.write(content)
-  os.replace(tmp,path)
- finally:
-  if os.path.exists(tmp): os.unlink(tmp)`),
-              stdin: Buffer.from(JSON.stringify([
-                [marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })],
-                [envFile, JSON.stringify(input.env ?? {})],
-                [supervisorPath, supervisor],
-              ])).toString("base64"),
-              linuxUser: "root",
-              timeoutMs: requestTimeoutMs,
-            });
-            if (setup.statusCode !== 0)
-              throw failure("Guest setup failed", setup.statusCode === null ? "timeout" : "provider", id);
-            if (input.signal?.aborted || operationSignal.getStore()?.aborted)
-              throw failure("Creation aborted", "aborted");
+            pending.set(id, [
+              [marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })],
+              [envFile, JSON.stringify(input.env ?? {})],
+              [supervisorPath, supervisor],
+            ]);
+            // Private create-time env must survive reconnects before first use.
+            if (Object.keys(input.env ?? {}).length || input.from !== undefined || options.snapshotId !== undefined) {
+              const setup = await run(value, "true", undefined, requestTimeoutMs);
+              if (setup.statusCode !== 0) throw failure("Guest setup failed", "provider", id);
+            }
             // Successful guest execution supersedes the allocation-time state.
-            return await info({ ...data, state: "running" }, true);
+            return await info({ ...data, createdAt: data.createdAt || new Date(createdAt).toISOString(), state: "running" }, true);
           } catch (error) {
             await operationSignal.exit(() => provider.destroy(id));
             throw error;
@@ -373,11 +389,19 @@ for path,content in json.load(sys.stdin):
     },
     connect: (id) =>
       safe(id, async () => {
-        const data = await (await api()).vms.get(id);
-        const stored = await readInfo(data);
+        const client = await api();
+        const data = await client.vms.get(id);
+        boxes.set(id, client.vms.ref(id));
+        let stored: Awaited<ReturnType<typeof readInfo>>;
+        try { stored = await readInfo(data); }
+        catch (error) {
+          if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code)) throw error;
+          stored = await readInfo(data, true);
+          pending.set(id, [[marker, JSON.stringify({ key: stored.info.key ?? null, labels: stored.info.labels, supervisorHash })], [envFile, "{}"], [supervisorPath, supervisor]]);
+        }
         // Current markers attest to the helper installed during create. Older
         // VMs retain the atomic upgrade path; no eager guest check for new VMs.
-        if (stored.supervisorHash !== supervisorHash && !verifiedSupervisors.has(id))
+        if (!pending.has(id) && stored.supervisorHash !== supervisorHash && !verifiedSupervisors.has(id))
           await installSupervisor(id);
         return stored.info;
       }),
@@ -389,6 +413,7 @@ for path,content in json.load(sys.stdin):
           if (freestyleError(error).code !== "not_found") throw error;
         }
         boxes.delete(id);
+        pending.delete(id);
         installations.delete(id);
         verifiedSupervisors.delete(id);
         for (const key of previews.keys()) if (key.startsWith(id + ":")) previews.delete(key);
@@ -398,6 +423,7 @@ for path,content in json.load(sys.stdin):
     },
     exec: async (id, input) => {
       try {
+        if (!boxes.has(id)) await provider.connect(id);
         const value = await vm(id);
         const g = await guest(id);
         return await execute(
@@ -413,13 +439,8 @@ for path,content in json.load(sys.stdin):
               safe(
                 id,
                 async () => {
-                  const run = () => value.exec({
-                    command,
-                    stdin: Buffer.from(stdin).toString("base64"),
-                    linuxUser: "root",
-                    timeoutMs,
-                  });
-                  let result = await run();
+                  const invoke = () => run(value, command, Buffer.from(stdin).toString("base64"), timeoutMs);
+                  let result = await invoke();
                   // Python has not opened the helper, so no user command ran.
                   // Never retry transport errors or ordinary command failures.
                   if (result.statusCode === 2 &&
@@ -427,7 +448,7 @@ for path,content in json.load(sys.stdin):
                     result.stderr.includes(supervisorPath) &&
                     result.stderr.includes("[Errno 2]")) {
                     await installSupervisor(id);
-                    result = await run();
+                    result = await invoke();
                   }
                   if (result.statusCode !== 0 || !result.stdout)
                     throw failure("Guest execution failed", "provider", id);

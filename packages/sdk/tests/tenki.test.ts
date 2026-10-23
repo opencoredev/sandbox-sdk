@@ -712,9 +712,10 @@ test.each(["connection reset", "GOAWAY", "service unavailable"])(
   },
 );
 
-test("workspace transfers use one native call each after create, without guest path probes", async () => {
+test("workspace transfers use one native call each after the first exec, without guest path probes", async () => {
   const provider = factory();
   const box = await createSandbox(provider);
+  await box.run("true");
   const run = vi.spyOn(MockSession.prototype, "run");
   const write = vi.spyOn(MockSession.prototype, "writeFile");
   const read = vi.spyOn(MockSession.prototype, "readFile");
@@ -1109,23 +1110,14 @@ test("create cleanup failure preserves the primary native error and admitted id"
   expect(error.cause.message).not.toMatch(/private|token/);
 });
 
-test("create setup failures identify the prepare stage and preserve native evidence", async () => {
-  vi.spyOn(MockSession.prototype, "run").mockImplementationOnce(() => {
-    throw Object.assign(new Error("private setup response"), {
-      name: "DataPlaneNotReadyError",
-      cause: Object.assign(new Error("private"), { code: 14 }),
-    });
-  });
-  const error = await factory()
-    .create({ labels: {} })
-    .catch((error) => error);
-  expect(error).toMatchObject({ code: "unavailable", sandboxId: expect.any(String) });
-  expect(JSON.parse(error.cause.message)).toMatchObject({
-    stage: "prepare",
-    state: "RUNNING",
-    providerCode: 14,
-  });
-  expect(tenkiState.boxes.size).toBe(0);
+test("plain create leaves guest preparation to the first operation", async () => {
+  const run = vi.spyOn(MockSession.prototype, "run");
+  const provider = factory();
+  const info = await provider.create({ labels: {} });
+  expect(run).not.toHaveBeenCalled();
+  await provider.files.list(info.id, "/workspace");
+  expect(run).toHaveBeenCalledTimes(1);
+  await provider.destroy(info.id);
 });
 
 test("create preserves an allowlisted native readiness name without a transport code", async () => {
@@ -1158,5 +1150,18 @@ test("command shells restore SIGPIPE and use the supplied PATH", async () => {
     await box.files.write("blocked-path/sh", "not executable");
     await box.run("chmod +x shell-path/sh");
     expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally { await box.destroy(); }
+});
+
+
+test("plain create has no guest call and first list prepares in one request", async () => {
+  const run = vi.spyOn(MockSession.prototype, "run");
+  const box = await createSandbox(factory());
+  try {
+    expect(run).not.toHaveBeenCalled();
+    expect(await box.files.list(".")).toEqual([]);
+    expect(run).toHaveBeenCalledTimes(1);
+    await box.run("rm /workspace", { cwd: "/" });
+    expect(await box.files.exists("/workspace")).toBe(false);
   } finally { await box.destroy(); }
 });

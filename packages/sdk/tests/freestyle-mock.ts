@@ -56,10 +56,18 @@ export class MockVm {
     readTextFile: async (path: string) => new TextDecoder().decode(await this.guest.read(path)),
   };
   async exec(options: ExecOptions) {
+    let input = options.stdin ? Buffer.from(options.stdin, "base64").toString() : "";
+    if (options.command.includes("for path,content in v")) {
+      const envelope: unknown = JSON.parse(input);
+      if (envelope && typeof envelope === "object" && "command" in envelope && typeof envelope.command === "string" && envelope.command.includes("sandbox-sdk-exec-v2.py") && "stdin" in envelope && typeof envelope.stdin === "string") {
+        envelope.stdin = Buffer.from(this.guest.rewrite(Buffer.from(envelope.stdin, "base64").toString())).toString("base64");
+        input = JSON.stringify(envelope);
+      }
+    }
     const result = options.stdin
-      ? await this.guest.buffered(options.command, Buffer.from(options.stdin, "base64").toString())
+      ? await this.guest.buffered(options.command, input)
       : { stdout: await this.guest.raw(options.command), stderr: "", statusCode: 0 };
-    if (options.command.includes("for path,content in json.load(sys.stdin)") && result.statusCode === 0) {
+    if ((options.command.includes("for path,content in json.load(sys.stdin)") || options.command.includes("for path,content in v")) && result.statusCode === 0) {
       // The guest runs under a temporary host root. Normalize encoded output
       // just as MockGuest.upload does for supervisors installed by file RPC.
       const path = this.guest.rewrite("/var/lib/sandbox-sdk-exec-v2.py");

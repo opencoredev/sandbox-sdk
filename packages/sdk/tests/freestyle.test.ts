@@ -192,7 +192,12 @@ describe("Freestyle official SDK contract", () => {
 });
 
 import { cloudRegressions } from "./cloud-regressions.js";
-cloudRegressions(factory, (id) => freestyleState.boxes.get(id)?.guest);
+cloudRegressions(() => {
+  const provider = factory();
+  const create = provider.create;
+  provider.create = async input => { const info = await create(input); await provider.files.list(info.id, "/workspace"); return info; };
+  return provider;
+}, (id) => freestyleState.boxes.get(id)?.guest);
 
 test("unconfirmed process cancellation reports uncertainty without deleting a VM", async () => {
   const box = await createSandbox(factory());
@@ -238,6 +243,7 @@ test("cancelled commands remove large output spools after killing the child grou
   const box = await createSandbox(factory());
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing VM");
+  await box.run("true");
   const existing = new Set(await fs.readdir(native.guest.rewrite("/tmp/.sandbox-sdk")));
   try {
     expect(await box.run("head -c 2000000 /dev/zero; sleep 5", { timeoutMs: 150 })).toMatchObject({
@@ -259,6 +265,7 @@ test("cancelled commands remove large output spools after killing the child grou
 
 test("run deadline can exceed the native request deadline", async () => {
   const box = await createSandbox(factory());
+  await box.run("true");
   const provider = freestyle({ apiKey: "mock-key", requestTimeoutMs: 100 });
   try {
     const chunks: string[] = [];
@@ -309,6 +316,7 @@ test.each(["missing", "outdated"])("legacy %s-version reconnects dedupe helper i
   const { promises: fs } = await import("node:fs");
   const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
   const box = await createSandbox(factory());
+  await box.run("true");
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   try {
@@ -480,7 +488,9 @@ describe("Freestyle resilient discovery", () => {
       const read = vi.spyOn(box.native.fs, "readTextFile").mockRejectedValue(Object.assign(new Error("missing marker"), { status: 404 }));
       const { listSandboxes, reapSandboxes } = await import("../src/index.js");
       expect((await listSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).map(v => v.id)).toEqual([box.id]);
-      await expect(connectSandbox(factory(), box.id)).rejects.toMatchObject({ code: "not_found" });
+      const connected = await connectSandbox(factory(), box.id);
+      expect(connected.id).toBe(box.id);
+      await connected.close();
       expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": "another-run" } })).toBe(0);
       expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).toBe(1);
       read.mockRestore();
@@ -520,6 +530,7 @@ test("a missing current supervisor is repaired lazily without replaying the user
   const { promises: fs } = await import("node:fs");
   const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
   const box = await createSandbox(factory());
+  await box.run("true");
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   try {
@@ -565,4 +576,44 @@ test("command shells restore SIGPIPE and use the supplied PATH", async () => {
     await box.run("chmod +x shell-path/sh");
     expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
   } finally { await box.destroy(); }
+});
+
+
+test("plain create has no guest call and first list prepares in one request", async () => {
+  const box = await createSandbox(factory());
+  const guest = freestyleState.boxes.get(box.id)?.guest;
+  if (!guest) throw new Error("Missing guest");
+  try {
+    expect(guest.commands).toHaveLength(0);
+    expect(await box.files.list(".")).toEqual([]);
+    expect(guest.commands).toHaveLength(1);
+    await box.run("rm -rf /workspace", { cwd: "/" });
+    expect(await box.files.exists("/workspace")).toBe(false);
+  } finally { await box.destroy(); }
+});
+
+test("fresh client prepares a sandbox closed before first use", async () => {
+  const box = await createSandbox(factory());
+  const id = box.id;
+  await box.close();
+  const connected = await connectSandbox(factory(), id);
+  try { expect(await connected.run("pwd")).toMatchObject({ stdout: "/workspace\n", exitCode: 0 }); }
+  finally { await connected.destroy(); }
+});
+
+
+test("configured snapshots replace inherited identity and environment before reconnect", async () => {
+  const source = await createSandbox(factory(), { key: "source", env: { SOURCE_ONLY: "source-value" } });
+  try {
+    const snapshot = await source.snapshot();
+    const provider = freestyle({ apiKey: "mock-key", snapshotId: snapshot.id });
+    const fresh = await createSandbox(provider, { labels: { identity: "fresh" } });
+    await fresh.close();
+    const connected = await connectSandbox(factory(), fresh.id);
+    try {
+      expect(connected.key).toBeUndefined();
+      expect(connected.labels).toMatchObject({ identity: "fresh" });
+      expect((await connected.run('printf %s "$SOURCE_ONLY"')).stdout).toBe("");
+    } finally { await connected.destroy(); }
+  } finally { await source.destroy(); }
 });

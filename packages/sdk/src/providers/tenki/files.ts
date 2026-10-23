@@ -2,9 +2,11 @@ import { posix } from "node:path";
 import type { Session } from "@tenkicloud/sandbox";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
+import { workspaceSetup } from "./ready.js";
 import { failure, tenkiError } from "./errors.js";
 import { deadline } from "./deadline.js";
 const script = `import os,sys,json,stat
+${workspaceSetup}
 op,p=sys.argv[1:3]
 def info(p):
  s=os.lstat(p)
