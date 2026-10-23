@@ -1,3 +1,4 @@
+import { guestProcess } from "../boxd/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
@@ -10,7 +11,8 @@ import { executeStream } from "./stream.js";
  */
 // Never send user output through native run(): Tenki 1.4.1 retains every chunk.
 // One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
-const supervisor = `import os,sys,json,base64,subprocess,tempfile,signal,selectors,time,pwd
+const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
+${guestProcess}
 v=json.load(sys.stdin)
 def processes():
  ids=set()
@@ -28,25 +30,33 @@ env={**os.environ,**v['env'],'PWD':v['cwd']}
 if os.geteuid()==0 and 'SUDO_UID' not in env:
  try: env['SUDO_UID']=str(pwd.getpwnam('tenki').pw_uid)
  except KeyError: pass
-with tempfile.TemporaryFile() as f, open(v['marker']+'.out','wb',buffering=0) as out:
- f.write(base64.b64decode(v['stdin'])); f.seek(0)
- p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
- with open(v['marker'],'w') as m: m.write(str(p.pid))
- sel=selectors.DefaultSelector()
- sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
- end=time.monotonic()+v['timeoutMs']/1000
- timed=False
- while sel.get_map() or p.poll() is None:
-  if not timed and time.monotonic()>=end:
-   timed=True
-   try: os.killpg(p.pid,signal.SIGKILL)
-   except ProcessLookupError: pass
-  for key,_ in sel.select(.01):
-   data=os.read(key.fd,16384)
-   if data: out.write((json.dumps([key.data,base64.b64encode(data).decode()])+'\\n').encode())
-   else: sel.unregister(key.fileobj); key.fileobj.close()
- code=p.wait()
- with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed,'workspaceStable':stable(),'workspaceRoot':os.path.realpath(v['workspace'])},m)
+try:
+ with stdin_file() as f, open(v['marker']+'.out','wb',buffering=0) as out:
+  f.write(base64.b64decode(v['stdin'])); f.seek(0)
+  p=Process(v,env,f,True)
+  with open(v['marker'],'w') as m: m.write(str(p.pid))
+  if v.get('activityPath'):
+   os.makedirs(os.path.dirname(v['activityPath']),exist_ok=True)
+   with open(v['activityPath'],'w') as a: a.write('1')
+  sel=selectors.DefaultSelector()
+  sel.register(p.stdout,selectors.EVENT_READ,'stdout'); sel.register(p.stderr,selectors.EVENT_READ,'stderr')
+  end=time.monotonic()+v['timeoutMs']/1000
+  timed=False
+  while sel.get_map() or p.poll() is None:
+   if not timed and time.monotonic()>=end:
+    timed=True
+    try: os.killpg(p.pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+   for key,_ in sel.select(.01):
+    data=os.read(key.fd,16384)
+    if data: out.write((json.dumps([key.data,base64.b64encode(data).decode()])+'\\n').encode())
+    else: sel.unregister(key.fileobj); key.fileobj.close()
+  code=p.wait()
+  with open(v['marker']+'.exit','w') as m: json.dump({'exitCode':None if timed else (code if code>=0 else 128-code),'timedOut':timed,'workspaceStable':stable(),'workspaceRoot':os.path.realpath(v['workspace'])},m)
+finally:
+ if v.get('activityPath'):
+  try: os.unlink(v['activityPath'])
+  except FileNotFoundError: pass
 `;
 const page = `import sys,json
 pos=int(sys.argv[2]); chunks=[]
@@ -98,6 +108,7 @@ export async function execute(
       stdin: Buffer.from(input.stdin ?? "").toString("base64"),
       timeoutMs: input.timeoutMs,
       marker,
+      activityPath: input.activityPath,
       workspace: "/workspace",
     }),
   );

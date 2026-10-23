@@ -1,22 +1,31 @@
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { python, quote } from "../boxd/guest.js";
+import { guestProcess, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // Installed once on create/connect. Each command sends its spec through native
 // stdin. Small results return in the same exec; large output stays on guest disk
 // and is fetched with native ranged reads, never buffered in an exec response.
-export const supervisor = `import os,sys,json,base64,subprocess,signal,selectors,time,tempfile,fcntl,shutil
+export const supervisor = `import os,sys,json,base64,signal,selectors,time,fcntl
+${guestProcess}
 root=sys.argv[1]
 v=json.load(sys.stdin)
 os.makedirs(root,mode=0o700,exist_ok=True)
 # Keep small completed responses until their request deadline has passed.
 # Sweep expired responses inline, so no ack RPC or background daemon is needed.
-for entry in os.scandir(os.path.dirname(root)):
- if not entry.name.startswith('run-') or entry.path==root: continue
- try:
-  with open(entry.path+'/expires') as f: expired=time.time()>float(f.read())
-  if expired: shutil.rmtree(entry.path,ignore_errors=True)
- except (FileNotFoundError,NotADirectoryError): pass
+with open(os.path.dirname(root)+'/.sweep','a') as sweep:
+ try: fcntl.flock(sweep,fcntl.LOCK_EX|fcntl.LOCK_NB)
+ except BlockingIOError: pass
+ else:
+  if time.time()-os.fstat(sweep.fileno()).st_mtime>30:
+   os.utime(sweep.fileno(),None)
+   for entry in os.scandir(os.path.dirname(root)):
+    if not entry.name.startswith('run-') or entry.path==root: continue
+    try:
+     with open(entry.path+'/expires') as f: expired=time.time()>float(f.read())
+     if expired:
+      import shutil
+      shutil.rmtree(entry.path,ignore_errors=True)
+    except (FileNotFoundError,NotADirectoryError): pass
 a=v.get('activityPath')
 timed=False
 code=127
@@ -25,13 +34,13 @@ try:
   os.makedirs(os.path.dirname(a),exist_ok=True)
   with open(a,'w') as f: f.write('1')
  with open('/var/lib/sandbox-sdk-env.json') as f: env={**os.environ,**json.load(f),**v['env']}
- with tempfile.TemporaryFile() as f, open(root+'/out','wb',buffering=0) as out:
+ with stdin_file() as f, open(root+'/out','wb',buffering=0) as out:
   f.write(v.get('stdin','').encode()); f.seek(0)
   with open(root+'/lock','w') as lock:
    fcntl.flock(lock,fcntl.LOCK_EX)
    if os.path.exists(root+'/cancelled'): timed=True; p=None
    else:
-    try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try: p=Process(v,env,f,True)
     except OSError as e:
      out.write((json.dumps(['stderr',base64.b64encode(str(e).encode()).decode()])+'\\n').encode()); p=None
    if p:
@@ -59,7 +68,9 @@ try:
   offset=f.tell()
  if offset==size and not timed:
   with open(root+'/expires','w') as f: f.write(str(time.time()+v['timeoutMs']/1000+5))
- if timed and not p: shutil.rmtree(root)
+ if timed and not p:
+  import shutil
+  shutil.rmtree(root)
  print(json.dumps(dict(result=result,chunks=chunks,offset=offset,size=size)))
 finally:
  if a:

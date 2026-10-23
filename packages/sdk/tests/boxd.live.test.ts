@@ -2,12 +2,18 @@ import { describe, expect, test } from "vitest";
 import { boxd } from "../src/providers/boxd/index.js";
 import { createSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+function liveProvider(options: Parameters<typeof boxd>[0] = {}) {
+  const provider = boxd(options);
+  const create = provider.create;
+  provider.create = (input) => create({ ...input, labels: { ...input.labels, "live-run": process.env.SANDBOX_TEST_RUN_ID ?? "boxd-conformance" } });
+  return provider;
+}
 describe.skipIf(process.env.SANDBOX_BOXD_LIVE !== "1" || !process.env.BOXD_API_KEY)(
   "boxd live",
   () => {
-    runConformance(() => boxd(), { live: true });
+    runConformance(() => liveProvider(), { live: true });
     test("coupled sizes and snapshot restore preserve captured files", async () => {
-      const provider = boxd({ requestTimeoutMs: 120000 });
+      const provider = liveProvider({ requestTimeoutMs: 120000 });
       await expect(provider.create({ labels: {}, size: { cpu: 4, memoryMb: 8192, diskGb: 100 } })).rejects.toMatchObject({ code: "unsupported" });
       const source = await createSandbox(provider, { size: { cpu: 4, memoryMb: 16384, diskGb: 100 } });
       const native = source.native.client;

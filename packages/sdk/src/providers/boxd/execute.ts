@@ -1,12 +1,13 @@
 import type { Boxd } from "@boxd-sh/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { python, quote } from "./guest.js";
+import { guestProcess, python, quote } from "./guest.js";
 import { failure } from "./errors.js";
 
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
 // the native process group, so cancelling the stream kills all descendants.
-const launcher = `import sys,json,os,subprocess,tempfile,fcntl,selectors,signal
+const launcher = `import sys,json,os,fcntl,selectors,signal
+${guestProcess}
 # Keep the output owner alive through native TERM grace. Caught handlers reset
 # to the default disposition when the user shell execs.
 signal.signal(signal.SIGTERM,lambda *_:None)
@@ -14,7 +15,7 @@ v=json.load(sys.stdin)
 a=v.get('activityPath')
 m=v['pidPath']
 try:
- with tempfile.TemporaryFile() as f:
+ with stdin_file() as f:
   f.write(v.get('stdin','').encode()); f.seek(0)
   with open(m+'.lock','a') as lock:
    fcntl.flock(lock,fcntl.LOCK_EX)
@@ -23,7 +24,7 @@ try:
    if a:
     os.makedirs(os.path.dirname(a),exist_ok=True)
     with open(a,'w') as activity: activity.write('1')
-   try: p=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env={**os.environ,**v['env']},stdin=f,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+   try: p=Process(v,{**os.environ,**v['env']},f)
    except OSError as e:
     print(str(e),file=sys.stderr); sys.exit(127)
   # Keep the supervisor and marker until inherited output pipes close, even

@@ -15,6 +15,10 @@ export async function waitReady(
 ): Promise<void> {
   const end = Date.now() + timeoutMs;
   const running = () => value.state === "RUNNING";
+  if (signal?.aborted) throw failure("Creation aborted", "aborted");
+  // Match native create(): a running allocation with route credentials needs
+  // no control-plane readiness stream before its first data-plane operation.
+  if (running() && typeof value.dataPlaneRPC === "function" && value.dataPlaneRPC()) return;
   try {
     await deadline(
       (signal) => value.waitReady(timeoutMs, signal),

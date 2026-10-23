@@ -31,6 +31,28 @@ afterAll(async () => {
   await Promise.all([...boxdState.boxes.values()].map((v) => v.guest.destroy()));
   boxdState.boxes.clear();
 });
+test.each([false, true])("pending allocation uses setup as its readiness probe (retry %s)", async (retry) => {
+  const provider = factory();
+  const first = await createSandbox(provider);
+  const client = first.native.client;
+  const create = client.machines.create.bind(client.machines);
+  const allocation = vi.spyOn(client.machines, "create").mockImplementationOnce(async (input) => ({ ...await create(input), status: "pending" }));
+  const wait = vi.spyOn(client.machines, "waitUntilReady");
+  const exec = vi.spyOn(client.machines, "exec");
+  if (retry) exec.mockRejectedValueOnce(Object.assign(new Error("not serving"), { grpcCode: 14 }));
+  const labels = { quoted: "'$(touch injected)\n雪" };
+  let second: typeof first | undefined;
+  try {
+    second = await createSandbox(provider, { labels });
+    expect(wait).toHaveBeenCalledTimes(retry ? 1 : 0);
+    expect(second.native.machine.status).toBe("running");
+    expect(await factory().connect(second.id)).toMatchObject({ labels });
+    expect(await second.files.exists("injected")).toBe(false);
+  } finally {
+    allocation.mockRestore(); wait.mockRestore(); exec.mockRestore();
+    await second?.destroy(); await first.destroy();
+  }
+});
 describe("boxd contract", () => {
   test("rejects every unenforceable option before allocating", async () => {
     const provider = factory();
@@ -457,4 +479,39 @@ test("empty snapshot names cannot silently allocate a fresh machine", async () =
   for (const from of ["", " "])
     await expect(provider.create({ labels: {}, from })).rejects.toMatchObject({ code: "invalid_argument" });
   expect(boxdState.creates.length).toBe(before);
+});
+
+
+test("command shells restore SIGPIPE and use the supplied PATH", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({ exitCode: 141, stdout: "" });
+    const pipe = await box.run("yes | head -n 1");
+    expect(pipe.stderr).toBe("");
+    await box.files.write("shell-path/sh", '#!/bin/sh\nprintf selected >&2\nexec /bin/sh "$@"\n');
+    await box.files.write("blocked-path/sh", "not executable");
+    await box.run("chmod +x shell-path/sh");
+    expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally { await box.destroy(); }
+});
+
+test.each(["missing", "unsupported", "restricted"])("guest launch retains the portable fallback (%s)", async (mode) => {
+  const box = await createSandbox(factory());
+  const machines = box.native.client.machines;
+  const stream = machines.streamExec.bind(machines);
+  const injection = mode === "missing"
+    ? 'import subprocess\nfor name in ["memfd_create","posix_spawn","waitstatus_to_exitcode"]:\n if hasattr(os,name): delattr(os,name)'
+    : mode === "unsupported"
+      ? 'def unavailable(*args,**kwargs): raise NotImplementedError()\nos.posix_spawn=unavailable'
+      : 'def unavailable(*args,**kwargs): raise OSError(38,"unavailable")\nos.memfd_create=unavailable\nos.posix_spawn=unavailable';
+  const spy = vi.spyOn(machines, "streamExec").mockImplementation((id, params) => {
+    if (typeof params.command !== "string") throw new Error("Expected shell command");
+    return stream(id, { ...params, command: params.command.replace("class Process:", injection + "\nclass Process:") });
+  });
+  try {
+    expect(await box.run("cat; kill -PIPE $$; echo survived", { stdin: "input" })).toMatchObject({ stdout: "input", exitCode: 141 });
+    expect(await box.run("(sleep .5; echo leaked > fallback-leak) & wait", { timeoutMs: 30 })).toMatchObject({ timedOut: true });
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(await box.files.exists("fallback-leak")).toBe(false);
+  } finally { spy.mockRestore(); await box.destroy(); }
 });
