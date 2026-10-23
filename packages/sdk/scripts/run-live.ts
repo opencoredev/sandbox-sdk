@@ -1,14 +1,31 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { Machine } from "smolmachines";
 import { providers } from "../src/metadata";
 
 const id = process.argv[2];
 const provider = providers.find((item) => item.id === id);
 if (!provider || id === "local" || id === "agentos")
-  throw new Error(`Unknown hosted live provider: ${id}`);
+  throw new Error(`Unknown live provider: ${id}`);
 
 const started = new Date();
+function hasCloudCredentials(): boolean {
+  if (process.env.SMOL_CLOUD_TOKEN) return true;
+  // The SDK also accepts a stored `smol auth login` session. The CLI is
+  // optional on Cloud-only hosts, where the environment token is sufficient.
+  try {
+    const status = Bun.spawnSync(["smol", "auth", "status", "--json"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    return status.exitCode === 0 && JSON.parse(new TextDecoder().decode(status.stdout)).loggedIn === true;
+  } catch {
+    return false;
+  }
+}
 const missingCredentials = (() => {
   switch (id) {
+    case "smol":
+      return !Machine.localAvailability().available && !(process.env.SMOL_TEST_CLOUD === "1" && hasCloudCredentials());
     case "e2b":
       return !process.env.E2B_API_KEY;
     case "daytona":

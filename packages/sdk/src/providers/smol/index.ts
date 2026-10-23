@@ -1,0 +1,477 @@
+import { dirname } from "node:path";
+import { Machine, type ConnectOptions, type ExecOptions, type MachineConfig } from "smolmachines";
+import { SandboxError } from "../../core/errors";
+import type { SandboxProvider } from "../../core/provider";
+import type {
+  CapabilityMap,
+  CommandInput,
+  ProcessOutputEvent,
+  SandboxProcess,
+} from "../../core/types";
+import {
+  commandString,
+  portResult,
+  toUint8Array,
+  unsupported,
+  unsupportedSnapshots,
+} from "../../internal/provider-utils";
+import { capabilityNames } from "../../core/types";
+import { smolCapabilities } from "../capabilities";
+
+/** Smol's local engine and hosted cloud share the same machine API. */
+export interface SmolOptions {
+  /** The target is explicit so ambient SMOL_CLOUD_TOKEN does not change where code runs. */
+  target?: "local" | "cloud";
+  /** Base OCI image, which must contain sh and standard Linux file utilities. */
+  image?: string;
+  /** CPU, memory, and network settings passed directly to Smol. */
+  resources?: MachineConfig["resources"];
+  /** Cloud token; otherwise smolmachines reads SMOL_CLOUD_TOKEN. */
+  apiKey?: string;
+  /** Custom cloud API endpoint. */
+  baseUrl?: string;
+  /** Maximum cloud lifetime, in seconds. */
+  ttlSeconds?: number;
+  /** Additional native machine settings for advanced workloads. */
+  machine?: Omit<MachineConfig, "image" | "resources" | "env" | "workdir" | "ttlSeconds">;
+  /** Additional native connection settings. */
+  connection?: Omit<ConnectOptions, "target" | "apiKey" | "baseUrl">;
+}
+
+export { smolCapabilities } from "../capabilities";
+
+const COMPLETE_CAPABILITIES = Object.fromEntries(
+  capabilityNames.map((name) => [name, smolCapabilities[name]]),
+) as CapabilityMap;
+
+const CLOUD_CAPABILITIES: CapabilityMap = {
+  ...COMPLETE_CAPABILITIES,
+  "process.background": false,
+  "process.stream": false,
+  "process.cancel": false,
+};
+
+/** Create an isolated Linux microVM, locally or in Smol's cloud. */
+export function smol(options: SmolOptions = {}): SandboxProvider<Machine> {
+  const target = options.target ?? "local";
+  const publishedPorts = options.machine?.ports ?? [];
+  const capabilities: CapabilityMap =
+    target === "cloud"
+      ? CLOUD_CAPABILITIES
+      : publishedPorts.length
+        ? { ...COMPLETE_CAPABILITIES, "ports.expose": "localhost" }
+        : COMPLETE_CAPABILITIES;
+  const connection: ConnectOptions = {
+    ...options.connection,
+    target,
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+    // The host embedding sandbox-sdk owns cleanup and signal handling.
+    ...(target === "local" && options.connection?.handleSignals === undefined
+      ? { handleSignals: false }
+      : {}),
+  };
+  return {
+    id: "smol",
+    capabilities,
+    async create(createOptions) {
+      createOptions.signal?.throwIfAborted();
+      const config: MachineConfig = {
+        ...options.machine,
+        ...(target === "local" &&
+        publishedPorts.length &&
+        options.machine?.waitForPorts === undefined
+          ? { waitForPorts: false }
+          : {}),
+        image: options.image ?? "node:22",
+        resources: options.resources,
+        ttlSeconds: options.ttlSeconds,
+        workdir: createOptions.cwd,
+        env: { ...createOptions.env },
+      };
+      const raw = await awaitMachine(
+        Machine.create(config, connection),
+        createOptions,
+        (machine, signal) =>
+          assertSuccess(
+            machine,
+            ["mkdir", "-p", "--", createOptions.cwd],
+            "sandbox.create.cwd",
+            signal,
+          ),
+      );
+      const processes = new Set<SandboxProcess>();
+      const runtimeEnv = { ...createOptions.env };
+      return {
+        id: raw.id,
+        raw,
+        capabilities,
+        files: {
+          async write(path, value) {
+            assertCloudFilePath(target, path);
+            await assertSuccess(raw, ["mkdir", "-p", "--", dirname(path)], "files.write.mkdir");
+            await raw.writeFile(path, await toUint8Array(value));
+          },
+          async read(path) {
+            assertCloudFilePath(target, path);
+            return new Uint8Array(await raw.readFile(path));
+          },
+          async list(path) {
+            // BusyBox find (Alpine) has -print0 but no GNU -printf. Keep the
+            // names separate from the line-oriented stat output so filenames
+            // containing newlines cannot change which metadata belongs to them.
+            const found = await raw.exec(
+              ["find", path, "-mindepth", "1", "-maxdepth", "1", "-print0"],
+              { output: "b64" },
+            );
+            if (found.exitCode !== 0) throw new Error(`files.list: ${found.stderr}`);
+            if (found.stdoutTruncated) throw new Error("files.list output was truncated");
+            const listing = new TextDecoder().decode(found.stdoutBytes);
+            if (listing && !listing.endsWith("\0"))
+              throw new Error("files.list: incomplete find output");
+            const paths = listing ? listing.slice(0, -1).split("\0") : [];
+            const prefix = `${path.replace(/\/+$/, "") || "/"}${path === "/" ? "" : "/"}`;
+            const entries = [];
+            for (let offset = 0; offset < paths.length; offset += 64) {
+              const batch = paths.slice(offset, offset + 64);
+              const metadata = await raw.exec(["stat", "-c", "%f %s", "--", ...batch]);
+              if (metadata.exitCode !== 0) throw new Error(`files.list: ${metadata.stderr}`);
+              if (metadata.stdoutTruncated) throw new Error("files.list metadata was truncated");
+              const lines = metadata.stdout.trimEnd().split("\n");
+              if (lines.length !== batch.length) throw new Error("files.list: incomplete metadata");
+              for (let index = 0; index < batch.length; index++) {
+                const fullPath = batch[index]!;
+                const match = /^([0-9a-fA-F]+) ([0-9]+)$/.exec(lines[index]!);
+                if (!fullPath.startsWith(prefix) || !match)
+                  throw new Error("files.list: invalid file metadata");
+                const name = fullPath.slice(prefix.length);
+                const mode = Number.parseInt(match[1]!, 16) & 0xf000;
+                const type =
+                  mode === 0x4000
+                    ? ("directory" as const)
+                    : mode === 0x8000
+                      ? ("file" as const)
+                      : mode === 0xa000
+                        ? ("symlink" as const)
+                        : ("unknown" as const);
+                entries.push({
+                  name,
+                  path: fullPath,
+                  type,
+                  size: type === "file" ? Number(match[2]) : undefined,
+                });
+              }
+            }
+            return entries;
+          },
+          async mkdir(path) {
+            await assertSuccess(raw, ["mkdir", "-p", "--", path], "files.mkdir");
+          },
+          async remove(path) {
+            await assertSuccess(raw, ["rm", "-rf", "--", path], "files.remove");
+          },
+          async exists(path) {
+            const result = await raw.exec(["test", "-e", path]);
+            if (result.exitCode === 0) return true;
+            if (result.exitCode === 1) return false;
+            throw new Error(`files.exists failed: ${result.stderr || result.stdout}`);
+          },
+        },
+        async run(command, runOptions) {
+          runOptions.signal?.throwIfAborted();
+          const started = performance.now();
+          const result = await runCommand(raw, command, {
+            ...runOptions,
+            env: { ...runtimeEnv, ...runOptions.env },
+          });
+          if (result.stdoutTruncated || result.stderrTruncated) {
+            throw new SandboxError({
+              code: "process_failed",
+              provider: "smol",
+              operation: "process.run",
+              message: "Command output was truncated",
+            });
+          }
+          return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            success: result.success,
+            durationMs: Math.round(performance.now() - started),
+          };
+        },
+        async start(command, runOptions) {
+          if (target === "cloud") unsupported("smol", "process.background");
+          runOptions.signal?.throwIfAborted();
+          const proc = startLocalProcess(raw, command, {
+            ...runOptions,
+            env: { ...runtimeEnv, ...runOptions.env },
+          });
+          processes.add(proc);
+          void proc.wait().then(
+            () => processes.delete(proc),
+            () => processes.delete(proc),
+          );
+          return proc;
+        },
+        async expose(port) {
+          if (target === "cloud" || !publishedPorts.some((published) => published.guest === port))
+            return unsupported("smol", "ports.expose");
+          const endpoint = raw.endpoint(port);
+          return portResult(port, endpoint.httpUrl, false, false, (path = "", init) => {
+            const next = raw.endpoint(port, path);
+            const headers = new Headers(init?.headers);
+            for (const [name, value] of Object.entries(next.headers)) headers.set(name, value);
+            return fetch(next.httpUrl, { ...init, headers });
+          });
+        },
+        snapshots: unsupportedSnapshots("smol"),
+        async stop() {
+          try {
+            await Promise.all([...processes].map((proc) => proc.kill()));
+          } finally {
+            await raw.delete();
+          }
+        },
+      };
+    },
+  };
+}
+
+function assertCloudFilePath(target: "local" | "cloud", path: string): void {
+  // Until the Cloud forwarding fix is deployed, the URL-based file route
+  // strips controls and interprets decoded #, ?, and % before reaching the node.
+  // Reject ambiguous paths rather than reading or writing a different file.
+  if (
+    target === "cloud" &&
+    Array.from(path).some(
+      (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || "#?%".includes(char),
+    )
+  )
+    throw new SandboxError({
+      code: "invalid_input",
+      provider: "smol",
+      operation: "files.path",
+      message: "Cloud file paths cannot contain URL control or reserved characters",
+    });
+}
+
+function argv(input: CommandInput): string[] {
+  return ["sh", "-lc", commandString(input)];
+}
+
+function execOptions(options: {
+  cwd?: string;
+  env?: Readonly<Record<string, string>>;
+  timeout?: number;
+  signal?: AbortSignal;
+}): ExecOptions {
+  return {
+    workdir: options.cwd,
+    env: options.env ? { ...options.env } : undefined,
+    timeout:
+      options.timeout === undefined ? undefined : Math.max(1, Math.ceil(options.timeout / 1000)),
+    signal: options.signal,
+  };
+}
+
+async function runCommand(
+  machine: Machine,
+  command: CommandInput,
+  options: {
+    cwd?: string;
+    env?: Readonly<Record<string, string>>;
+    timeout?: number;
+    signal?: AbortSignal;
+  },
+) {
+  if (options.timeout === undefined) return machine.exec(argv(command), execOptions(options));
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(options.signal?.reason ?? new Error("Command aborted"));
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+  const timeout = setTimeout(
+    () =>
+      controller.abort(
+        new SandboxError({
+          code: "timeout",
+          provider: "smol",
+          operation: "process.run",
+          message: `Command timed out after ${options.timeout}ms`,
+        }),
+      ),
+    options.timeout,
+  );
+  try {
+    return await machine.exec(argv(command), {
+      ...execOptions(options),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function assertSuccess(
+  machine: Machine,
+  args: string[],
+  operation: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await machine.exec(args, { signal });
+  signal?.throwIfAborted();
+  if (!result.success)
+    throw new Error(`${operation}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
+}
+
+async function awaitMachine(
+  pending: Promise<Machine>,
+  options: { signal?: AbortSignal; timeout?: number },
+  initialize: (machine: Machine, signal: AbortSignal) => Promise<void>,
+): Promise<Machine> {
+  const { signal, timeout } = options;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    const cancel = (reason: unknown) => {
+      controller.abort(reason);
+      reject(reason);
+    };
+    abort = () => cancel(signal?.reason ?? new Error("Sandbox creation aborted"));
+    signal?.addEventListener("abort", abort, { once: true });
+    if (timeout !== undefined)
+      timer = setTimeout(
+        () =>
+          cancel(
+            new SandboxError({
+              code: "timeout",
+              provider: "smol",
+              operation: "sandbox.create",
+              message: `Creation timed out after ${timeout}ms`,
+            }),
+          ),
+        timeout,
+      );
+    if (signal?.aborted) abort();
+  });
+  const creation = pending.then(async (machine) => {
+    try {
+      controller.signal.throwIfAborted();
+      await initialize(machine, controller.signal);
+      controller.signal.throwIfAborted();
+      return machine;
+    } catch (error) {
+      await machine.delete().catch(() => undefined);
+      throw error;
+    }
+  });
+  try {
+    return await Promise.race([creation, stopped]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && abort) signal.removeEventListener("abort", abort);
+    void creation.catch(() => undefined);
+  }
+}
+
+function startLocalProcess(
+  machine: Machine,
+  command: CommandInput,
+  options: {
+    cwd?: string;
+    env?: Readonly<Record<string, string>>;
+    timeout?: number;
+    signal?: AbortSignal;
+  },
+): SandboxProcess {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(options.signal?.reason ?? new Error("Process aborted"));
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+  const queue: ProcessOutputEvent[] = [];
+  const listeners = new Set<() => void>();
+  let firstIndex = 0;
+  let streamDone = false;
+  let streamError: unknown;
+  let state: "running" | "exited" | "killed" = "running";
+  let exitCode = -1;
+  const notify = () => {
+    for (const listener of listeners) listener();
+    listeners.clear();
+  };
+  const finished = (async () => {
+    try {
+      for await (const event of machine.execStream(argv(command), {
+        ...execOptions(options),
+        signal: controller.signal,
+      })) {
+        if (event.kind === "stdout" || event.kind === "stderr") {
+          queue.push({ stream: event.kind, data: event.data, timestamp: new Date() });
+          // Bound memory when callers never consume output from long-running agents.
+          if (queue.length > 1024) {
+            queue.shift();
+            firstIndex++;
+          }
+          notify();
+        } else if (event.kind === "exit") {
+          exitCode = event.exitCode;
+        } else {
+          throw new Error(event.message);
+        }
+      }
+      return { exitCode };
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        streamError = error;
+        throw error;
+      }
+      return { exitCode };
+    } finally {
+      state = controller.signal.aborted ? "killed" : "exited";
+      streamDone = true;
+      options.signal?.removeEventListener("abort", onAbort);
+      notify();
+    }
+  })();
+  return {
+    id: crypto.randomUUID(),
+    async status() {
+      return state;
+    },
+    async *output() {
+      let nextIndex = 0;
+      while (!streamDone || nextIndex < firstIndex + queue.length) {
+        if (nextIndex < firstIndex) {
+          throw new SandboxError({
+            code: "process_failed",
+            provider: "smol",
+            operation: "process.output",
+            message: "Process output exceeded the 1024-event buffer; earlier output was lost",
+          });
+        }
+        if (nextIndex < firstIndex + queue.length) {
+          yield queue[nextIndex - firstIndex]!;
+          nextIndex++;
+        } else {
+          await new Promise<void>((resolve) => listeners.add(resolve));
+        }
+      }
+      if (streamError) throw streamError;
+    },
+    async write() {
+      unsupported("smol", "process.stdin");
+    },
+    wait() {
+      return finished;
+    },
+    async kill() {
+      if (!streamDone) controller.abort(new Error("Process killed"));
+      await finished;
+    },
+  };
+}
