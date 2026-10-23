@@ -2,46 +2,41 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, Tenki, boxd, or Freestyle.
+One TypeScript API for running code in a sandbox. Write it once, then run it on E2B, Daytona, Vercel Sandbox, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, or Docker on your own machine.
+
+> 1.0 is in beta. Install it with `@next`; `latest` is still 0.2.
 
 ## Install
 
 ```bash
-bun add @opencoredev/sandbox-sdk
+npm install @opencoredev/sandbox-sdk@next e2b
 ```
 
-Node.js 22 or 24 is supported. Bun 1.3 or newer is also supported.
+Add the package for the provider you use. Node.js 22+ and Bun 1.3+ are supported.
 
 ## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-await using sandbox = await createSandbox({ provider: local() });
-console.log((await sandbox.run("node --version")).stdout);
+await using box = await createSandbox(e2b());
+const result = await box.run("python3 -c 'print(1 + 1)'");
+console.log(result.stdout);
 ```
 
-`await using` stops the sandbox automatically when its scope exits, including when an operation throws.
+`await using` deletes the sandbox when the scope ends. It runs natively on Node.js 24 and Bun; on Node.js 22, compile with TypeScript.
 
-Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript to ES2022 or use the callback-style `withSandbox()` helper.
+The [package README](./packages/sdk/README.md) covers every provider, the full API, and agent tools for AI SDK, Mastra, and OpenAI Agents.
 
-## Providers
+## Repository
 
-| Provider                                                        | Runtime                 | Best for                                |
-| --------------------------------------------------------------- | ----------------------- | --------------------------------------- |
-| [Local](https://sandbox-sdk.app/docs/providers/local)           | Docker or Rivet agentOS  | Development, CI, and self-hosting       |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)               | Hosted Linux sandbox    | Coding agents and isolated jobs         |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs            |
-| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Coding agents and persistent workspaces |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
-| [Boat](https://sandbox-sdk.app/docs/providers/boat) | Persistent cloud VM | Long-running agents and protected previews |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
-| [Freestyle](https://sandbox-sdk.app/docs/providers/freestyle) | Persistent Linux VM | Default-deny firewall, memory snapshots, and public previews |
-| [boxd](https://sandbox-sdk.app/docs/providers/boxd) | Persistent Linux VM | Isolated machines, memory pause, and HTTPS proxies |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
-
-Local defaults to Docker. For the Docker-free runtime, install `@rivet-dev/agentos-core@0.4.1` and import `agentos` from `@opencoredev/sandbox-sdk/agentos`. See the [Local guide](https://sandbox-sdk.app/docs/providers/local) for compatibility limits. Cloud providers use their official SDKs and credentials.
+- [`packages/sdk`](./packages/sdk): the `@opencoredev/sandbox-sdk` package.
+- [`apps/docs`](./apps/docs): the documentation site.
+- [`apps/web`](./apps/web): the landing page.
+- [`bench`](./bench): the provider benchmark harness.
+- [`examples`](./examples): runnable examples.
+- [`docs`](./docs): the 1.0 design spec and provider reference notes.
 
 ## Documentation
 
