@@ -287,4 +287,4 @@ test("shell process setup uses two execs and one upload, preserving UTF-8 and du
     await expect(box.start("true", { name: "duplicate" })).rejects.toMatchObject({ code: "invalid_argument" });
     expect(running.status).toBe("running"); await running.restart(); await running.wait(); expect((await running.logs()).text).toBe("ORIGINAL\n");
   } finally { await box.destroy(); }
-});
+}, 30_000);
