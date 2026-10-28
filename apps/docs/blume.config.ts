@@ -77,6 +77,7 @@ export default defineConfig({
             { label: "Upstash Box", root: "/providers/upstash", icon: "/integrations/upstash.svg" },
             { label: "Railway", root: "/providers/railway", icon: "/integrations/railway.svg" },
             { label: "Boat", root: "/providers/boat", icon: "/integrations/boat.svg" },
+            { label: "Sandboxer", root: "/providers/sandboxer" },
             { label: "Tenki", root: "/providers/tenki", icon: "/integrations/tenki.svg" },
             { label: "Superserve", root: "/providers/superserve" },
             { label: "boxd", root: "/providers/boxd", icon: "/integrations/boxd.svg" },

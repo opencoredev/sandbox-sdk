@@ -7,6 +7,7 @@ First preview of the 1.0 rewrite, published under the `next` tag. The SDK was re
 ### Unreleased
 
 - Provider options now use `baseUrl` instead of `boxd.baseURL`, `daytona.apiUrl`, and `boat.apiUrl`; `tenki.apiKey` replaces `authToken`, and `boat.machine` replaces `type`. Old names remain deprecated aliases until 1.0.0. When both are supplied, the new name wins.
+- Added the Sandboxer provider at `@opencoredev/sandbox-sdk/sandboxer`. It shares Boat's API transport, including deferred workspace setup, and adds pause and resume, named snapshots, cookie-authenticated previews, and a `region` option (`us-east` or `eu-central`, default `SANDBOXER_REGION`, else nearest).
 - Provider option hovers document defaults and environment variables. All provider subpaths export a named provider type. Missing-credential errors explain the next step; E2B checks its key on first use and reads environment values set after factory construction.
 
 ### Breaking changes since 0.2.0

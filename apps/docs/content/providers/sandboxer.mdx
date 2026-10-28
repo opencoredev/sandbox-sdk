@@ -1,0 +1,56 @@
+---
+title: Sandboxer
+description: Run Ubuntu microVMs on Sandboxer with size presets, pause and resume, named snapshots, and private previews.
+---
+
+`sandboxer()` runs Ubuntu 24.04 microVMs on [Sandboxer](https://sandboxer.com) in `us-east` (Ashburn, Virginia) or `eu-central` (Helsinki). Node.js 22, Python 3 and Git are preinstalled. The adapter uses the Boat-compatible API through `@boatdev/sdk`.
+
+## Installation
+
+```package-install
+npm i @opencoredev/sandbox-sdk @boatdev/sdk
+```
+
+## Basic usage
+
+Set `SANDBOXER_API_KEY` on your server. Keep the key out of browser bundles.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+console.log((await box.run("python3 --version")).stdout);
+```
+
+## Configuration
+
+`sandboxer({ apiKey, baseUrl, machine, region, requestTimeoutMs })` reads `SANDBOXER_API_KEY` when `apiKey` is unset and checks it on first use, so a missing key fails with `auth` on the first call. `baseUrl` defaults to `https://sandboxer.com/api/v1`. `requestTimeoutMs` defaults to 90,000 ms per control-plane request and lifecycle poll. `machine` selects `small`, `default`, `large`, or `xlarge`; a per-create `size` takes precedence. `region` picks `us-east` or `eu-central` (default: `SANDBOXER_REGION`, else the region nearest the caller). A sandbox restored from a snapshot must use the snapshot's region; naming another fails with `invalid_argument`. `box.native.region` and `box.native.regionSource` (`requested`, `nearest`, `default` or `source`) report the placement.
+
+| SDK size | Native type | vCPU | Memory | User disk |
+| --- | --- | --- | --- | --- |
+| `small` | `small` | 2 | 4096 MiB | 12 GB |
+| `medium` | `default` | 4 | 8192 MiB | 50 GB |
+| `large` | `large` | 8 | 16384 MiB | 125 GB |
+
+The default is 4 vCPU and 8 GiB. Trial accounts allow small and default sizes, two active sandboxes and 5/30/100 starts per minute/hour/day. Creates, resumes and forks count as starts. Account limits still apply.
+
+`createSandbox` makes two control-plane calls, the create and a metadata rename. Workspace setup runs inside the first command or file operation, so the first `run` is a single command request.
+
+## Pause and snapshots
+
+`box.pause()` stops the VM and waits for its stop operation to complete. `box.resume()` waits for readiness. Sandboxer normally restores memory and running processes; its documented cold-boot fallback can lose running processes when memory restore is unavailable.
+
+`box.snapshot()` saves a uniquely named disk snapshot and waits until it is ready. Pass its `id` as `from` to `createSandbox`. Named snapshots persist independently of the source and require native cleanup through `DELETE /named-snapshots/{name}`. The native handle's `createSnapshot(name)` lets callers choose a recovery name before submission. Keep that name if the request times out.
+
+## Previews and files
+
+`box.preview(port)` returns the preview URL without its `_token` query parameter and puts the token in a `Cookie: __sbx_auth=...` header, so no token exchange request runs. Pass both `preview.url` and `preview.headers` to `fetch`. Treat the header as a secret. If your dev server checks Host, allow its exact preview hostname (under `.box.sandboxer.com`).
+
+Reads from 1 MiB through 50 MiB stage a private copy under `/tmp` and download raw artifact bytes, then remove staging. Sandboxer limits artifacts to 50 MiB; larger reads fall back to bounded guest commands. Writes use the files API in bounded chunks. Ranged reads use bounded guest commands.
+
+## Limitations
+
+Keys are best-effort. The adapter stores keys and labels in the display name, with a 120-character encoded budget; do not rename SDK-created sandboxes. Creation uses `noEnv: true` to avoid inheriting saved account secrets. Custom sizes, network restrictions, SDK idle timers, hard lifetimes and terminals are unsupported. Sandboxer's default auto-stop still applies.
+
+`close()` detaches; `destroy()` deletes with Sandboxer's confirmation header. Usage seconds and dollars from `/sandboxes/{id}/usage` represent the provider's machine-time meter, excluding plan payments and credits.

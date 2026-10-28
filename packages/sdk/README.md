@@ -57,6 +57,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | Freestyle | `/freestyle` | `FREESTYLE_API_KEY` | `freestyle` | pause, snapshot, network-policy |
 | Superserve | `/superserve` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot |
 | [Boat (`baseUrl`, `machine`)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/boat.md) | `/boat` | `BOAT_API_KEY` | `@boatdev/sdk` | size |
+| [Sandboxer (`region`)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/sandboxer.md) | `/sandboxer` | `SANDBOXER_API_KEY` | `@boatdev/sdk` | pause, snapshot, size |
 | [Local (Docker)](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/local.md) | `/local` | none; needs a running Docker Engine | none | pause, snapshot, size, network-policy |
 | agentOS | `/agentos` | none | `@rivet-dev/agentos-core` | network-policy |
 | [Memory](https://github.com/opencoredev/sandbox-sdk/blob/main/docs/providers/memory.md) | `/memory` | none | none | network-policy |
