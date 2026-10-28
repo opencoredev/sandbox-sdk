@@ -398,6 +398,15 @@ test("missing Python fails on first use without running apt", async () => {
   } finally { state.bootstrapPath = ""; await provider.destroy(box.id); await rm(path, { recursive: true, force: true }); }
 });
 
+test("missing Python on a first run reports unsupported, not an unconfirmed cancellation", async () => {
+  const path = await mkdtemp(join(tmpdir(), "superserve-no-python-run-"));
+  state.bootstrapPath = path;
+  const box = await createSandbox(factory());
+  try {
+    await expect(box.run("echo ok")).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("explicitly set installPython: true") });
+  } finally { state.bootstrapPath = ""; await box.destroy(); await rm(path, { recursive: true, force: true }); }
+});
+
 test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
   const path = await mkdtemp(join(tmpdir(), "superserve-opt-in-"));
   const log = join(path, "apt.log");
