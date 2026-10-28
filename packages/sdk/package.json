@@ -102,6 +102,10 @@
       "types": "./dist/providers/boat/index.d.ts",
       "import": "./dist/providers/boat/index.js"
     },
+    "./sandboxer": {
+      "types": "./dist/providers/sandboxer/index.d.ts",
+      "import": "./dist/providers/sandboxer/index.js"
+    },
     "./tenki": {
       "types": "./dist/providers/tenki/index.d.ts",
       "import": "./dist/providers/tenki/index.js"

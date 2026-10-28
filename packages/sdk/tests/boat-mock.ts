@@ -39,9 +39,13 @@ type Box = {
   env: Record<string, string>;
   createdAt: string;
   state: string;
+  region?: string;
   commands: Map<number, Command>;
 };
-export async function boatMock() {
+export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
+  const snapshots = new Map<string, {name: string; sourceSandboxId: string; status: string}>();
+  const operations = new Map<string, string>();
+  const deletions = new Map<string, string>();
   let staleRename = false;
   const boxes = new Map<string, Box>();
   const creates: unknown[] = [];
@@ -67,6 +71,8 @@ export async function boatMock() {
     createdAt: box.createdAt,
     desktopAvailable: false,
     snapshotAvailable: false,
+    ...(provider === "sandboxer" ? {region: box.region ?? "us-east", regionSource: box.region ? "requested" : "nearest"} : {}),
+    ...(operations.has(box.id) ? {stop: {id: "stop-test", status: operations.get(box.id)}} : {}),
   });
   const rewrite = (box: Box, text: string) =>
     text
@@ -156,6 +162,7 @@ export async function boatMock() {
             env: body.env ?? {},
             createdAt: new Date().toISOString(),
             state: "idle",
+            ...(typeof body.region === "string" ? {region: body.region} : {}),
             commands: new Map(),
           };
           await fs.mkdir(join(box.root, "tmp"), { recursive: true });
@@ -190,6 +197,22 @@ export async function boatMock() {
         });
         return;
       }
+      if (provider === "sandboxer" && parts[0] === "named-snapshots") {
+        if (req.method === "POST") {
+          const name = z.string().parse(body.name), sourceSandboxId = z.string().parse(body.sandboxId);
+          const snapshot = {name, sourceSandboxId, status: "ready"}; snapshots.set(name, snapshot);
+          json(res, {ok: true, snapshot}, 202); return;
+        }
+        const name = parts[1];
+        if (!name) {json(res, {snapshots: [...snapshots.values()]}); return;}
+        const snapshot = snapshots.get(name);
+        if (!snapshot) {json(res, {ok: false}, 404); return;}
+        if (req.method === "DELETE") snapshots.delete(name);
+        json(res, {ok: true, snapshot}); return;
+      }
+      if (provider === "sandboxer" && parts[0] === "deletion-operations") {
+        json(res, {operation: {id: parts[1], targetId: deletions.get(parts[1] ?? ""), kind: "sandbox", status: "completed"}}); return;
+      }
       const id = parts[1];
       const box = id ? boxes.get(id) : undefined;
       if (!box) {
@@ -199,7 +222,7 @@ export async function boatMock() {
       if (parts.length === 2) {
         if (req.method === "PATCH") box.name = body.name ?? box.name;
         if (req.method === "DELETE") {
-          if (req.headers["x-ascii-confirm-delete"] !== box.id)
+          if (req.headers[provider === "sandboxer" ? "x-sandboxer-confirm-delete" : "x-ascii-confirm-delete"] !== box.id)
             throw new Error("Missing deletion confirmation");
           for (const entry of box.commands.values()) {
             try {
@@ -209,17 +232,18 @@ export async function boatMock() {
           await Promise.all([...box.commands.values()].map((entry) => entry.done));
           await fs.rm(box.root, { recursive: true, force: true });
           boxes.delete(box.id);
+          if (provider === "sandboxer") deletions.set(`delete-${box.id}`, box.id);
           json(
             res,
             {
               ok: true,
               type: "sandbox.deleting",
               operation: {
-                id: "delete",
+                id: provider === "sandboxer" ? `delete-${box.id}` : "delete",
                 kind: "sandbox",
                 targetId: box.id,
                 reason: "explicit",
-                status: "completed",
+                status: provider === "sandboxer" ? "processing" : "completed",
                 attemptCount: 1,
                 requestedAt: new Date().toISOString(),
                 completedAt: new Date().toISOString(),
@@ -232,6 +256,21 @@ export async function boatMock() {
         json(res, { ok: true, type: "sandbox.info", sandbox: { ...sandbox(box), ...(req.method === "PATCH" && staleRename ? { state: "provisioning" } : {}) } });
         return;
       }
+      if (provider === "sandboxer" && parts[2] === "stop") {
+        operations.set(box.id, "completed"); box.state = "archived";
+        json(res, {ok: true, sandbox: sandbox(box)}, 202); return;
+      }
+      if (provider === "sandboxer" && parts[2] === "resume") {
+        box.state = "ready"; json(res, {ok: true, sandbox: sandbox(box)}, 202); return;
+      }
+      if (provider === "sandboxer" && parts[2] === "artifacts") {
+        const path = url.searchParams.get("path") ?? "";
+        if (!path.startsWith("/tmp/")) throw new Error("Artifact path restriction");
+        if ((await fs.stat(join(box.root, path, ".."))).mode % 512 !== 0o700) throw new Error("Artifact staging is not private");
+        res.writeHead(200, {"content-type": "application/octet-stream"});
+        res.end(await fs.readFile(join(box.root, path))); return;
+      }
+      if (provider === "sandboxer" && parts[2] === "files" && parts.length > 3) {json(res, {ok: false}, 404); return;}
       if (parts[2] === "files" && parts[3] === "download-url" && req.method === "POST") {
         if (!body.path?.startsWith("/tmp/")) throw new Error("Signed download path restriction");
         const file = join(box.root, body.path);
@@ -277,11 +316,21 @@ export async function boatMock() {
         });
         return;
       }
+      if (provider === "sandboxer" && parts[2] === "preview") {
+        if (!req.headers.cookie?.includes("sandboxer_test_auth=test-token")) {
+          res.writeHead(302, {location: `/sandboxes/${id}/preview`, "set-cookie": "sandboxer_test_auth=test-token; HttpOnly; Path=/"}); res.end(); return;
+        }
+        try {
+          const remote = await fetch(`http://127.0.0.1:${box.port}`);
+          res.writeHead(remote.status); res.end(Buffer.from(await remote.arrayBuffer()));
+        } catch {res.writeHead(503); res.end();}
+        return;
+      }
       if (parts[2] === "host") {
         json(res, {
           ok: true,
           type: "sandbox.hosted",
-          url: `http://127.0.0.1:${box.port}/?_token=test-token`,
+          url: provider === "sandboxer" ? `http://${req.headers.host}/sandboxes/${id}/preview?_token=test-token` : `http://127.0.0.1:${box.port}/?_token=test-token`,
           port: body.port,
         });
         return;
