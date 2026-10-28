@@ -44,91 +44,93 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     },
     "./provider": {
       "types": "./dist/provider.d.ts",
-      "import": "./dist/provider.js"
+      "default": "./dist/provider.js"
     },
     "./memory": {
       "types": "./dist/memory.d.ts",
-      "import": "./dist/memory.js"
+      "default": "./dist/memory.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",
-      "import": "./dist/testing.js"
+      "default": "./dist/testing.js"
     },
     "./tools": {
       "types": "./dist/tools.d.ts",
-      "import": "./dist/tools.js"
+      "default": "./dist/tools.js"
     },
     "./ai": {
       "types": "./dist/ai.d.ts",
-      "import": "./dist/ai.js"
+      "default": "./dist/ai.js"
     },
     "./mastra": {
       "types": "./dist/mastra.d.ts",
-      "import": "./dist/mastra.js"
+      "default": "./dist/mastra.js"
     },
     "./openai": {
       "types": "./dist/openai.d.ts",
-      "import": "./dist/openai.js"
+      "default": "./dist/openai.js"
     },
     "./local": {
       "types": "./dist/providers/local/index.d.ts",
-      "import": "./dist/providers/local/index.js"
+      "default": "./dist/providers/local/index.js"
     },
     "./e2b": {
       "types": "./dist/providers/e2b/index.d.ts",
-      "import": "./dist/providers/e2b/index.js"
+      "default": "./dist/providers/e2b/index.js"
     },
     "./vercel": {
       "types": "./dist/providers/vercel/index.d.ts",
-      "import": "./dist/providers/vercel/index.js"
+      "default": "./dist/providers/vercel/index.js"
     },
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
-      "import": "./dist/providers/daytona/index.js"
+      "default": "./dist/providers/daytona/index.js"
     },
     "./upstash": {
       "types": "./dist/providers/upstash/index.d.ts",
-      "import": "./dist/providers/upstash/index.js"
+      "default": "./dist/providers/upstash/index.js"
     },
     "./railway": {
       "types": "./dist/providers/railway/index.d.ts",
-      "import": "./dist/providers/railway/index.js"
+      "default": "./dist/providers/railway/index.js"
     },
     "./boat": {
       "types": "./dist/providers/boat/index.d.ts",
-      "import": "./dist/providers/boat/index.js"
+      "default": "./dist/providers/boat/index.js"
     },
     "./tenki": {
       "types": "./dist/providers/tenki/index.d.ts",
-      "import": "./dist/providers/tenki/index.js"
+      "default": "./dist/providers/tenki/index.js"
     },
     "./agentos": {
       "types": "./dist/providers/agentos/index.d.ts",
-      "import": "./dist/providers/agentos/index.js"
+      "default": "./dist/providers/agentos/index.js"
     },
     "./boxd": {
       "types": "./dist/providers/boxd/index.d.ts",
-      "import": "./dist/providers/boxd/index.js"
+      "default": "./dist/providers/boxd/index.js"
     },
     "./freestyle": {
       "types": "./dist/providers/freestyle/index.d.ts",
-      "import": "./dist/providers/freestyle/index.js"
+      "default": "./dist/providers/freestyle/index.js"
     },
     "./superserve": {
       "types": "./dist/providers/superserve/index.d.ts",
-      "import": "./dist/providers/superserve/index.js"
-    }
+      "default": "./dist/providers/superserve/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src tests scripts",
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
-    "check:size": "bun scripts/size.ts"
+    "check:size": "bun scripts/size.ts",
+    "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts"
   },
   "devDependencies": {
     "@boatdev/sdk": "1.9.9",
