@@ -5,6 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from "freestyle";
+import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, freestyleError, requestEvidence, recordRequest, recordResponse } from "./errors.js";
@@ -63,7 +64,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.FREESTYLE_API_KEY;
       if (!apiKey?.trim()) throw failure("Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.", "auth");
-      const { Freestyle, FreestyleApiError, FreestyleClient } = await import("freestyle");
+      const { Freestyle, FreestyleApiError, FreestyleClient } = await loadPeer("freestyle", "freestyle", () => import("freestyle"));
       const transport = new FreestyleClient({ apiKey, baseUrl: options.baseUrl });
       return new Freestyle({
         apiKey,
@@ -258,8 +259,10 @@ with tempfile.TemporaryFile() as f:
           // outcome must be inspected before another create is attempted.
           let result: Awaited<ReturnType<Freestyle["vms"]["create"]>>;
           const createdAt = Date.now();
+          // Load the SDK first: a missing peer allocated nothing, so it is not an unknown outcome.
+          const client = await api();
           try {
-            result = await (await api()).vms.create(params);
+            result = await client.vms.create(params);
           } catch (error) {
             const mapped = freestyleError(error);
             if (mapped.code === "unavailable" || mapped.code === "timeout")

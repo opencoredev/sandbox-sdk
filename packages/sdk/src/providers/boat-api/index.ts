@@ -13,6 +13,7 @@ import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../..
 import { execute, quote, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative } from "../boat/index.js";
 import { errors } from "./errors.js";
+import { loadPeer } from "../../peer.js";
 export interface BoatApiSettings {
   name: string;
   label: string;
@@ -129,7 +130,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       const timeoutMs = options.requestTimeoutMs ?? 90_000;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-      const { BoatApi, Configuration } = await import("@boatdev/sdk");
+      const { BoatApi, Configuration } = await loadPeer("@boatdev/sdk", settings.name, () => import("@boatdev/sdk"));
       nativeClient = new BoatApi(
         new Configuration({
           basePath: options.baseUrl ?? options.apiUrl ?? (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ?? settings.baseUrl,

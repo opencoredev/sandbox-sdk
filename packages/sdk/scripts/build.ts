@@ -5,8 +5,8 @@ import pkg from "../package.json" with { type: "json" };
 await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 
 // Entry points come from package.json exports so each subpath only needs one entry there.
-const entrypoints = Object.values(pkg.exports).map((target) =>
-  target.import.replace("./dist/", "src/").replace(/\.js$/, ".ts"),
+const entrypoints = Object.values(pkg.exports).flatMap((target) =>
+  typeof target === "string" ? [] : [target.default.replace("./dist/", "src/").replace(/\.js$/, ".ts")],
 );
 
 // Optional peers (provider SDKs, agent frameworks) stay external, so adding a peer is the only step.

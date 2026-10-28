@@ -1,5 +1,6 @@
 import type { Sandbox } from "@vercel/sandbox";
 import type { Provider } from "../../provider.js";
+import { loadPeer } from "../../peer.js";
 import { createVercelProvider, type VercelOptions as NativeVercelOptions, type VercelCapability } from "./provider.js";
 export type { VercelCapability } from "./provider.js";
 
@@ -13,5 +14,5 @@ export interface VercelOptions extends NativeVercelOptions {
 }
 export type VercelProvider = Provider<Sandbox, VercelCapability>;
 export function vercel(options: VercelOptions = {}): VercelProvider {
-  return createVercelProvider(async () => { const { Sandbox } = await import("@vercel/sandbox"); return Sandbox; }, options);
+  return createVercelProvider(async () => { const { Sandbox } = await loadPeer("@vercel/sandbox", "vercel", () => import("@vercel/sandbox")); return Sandbox; }, options);
 }

@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import type { Sandbox as E2BSandbox, SandboxInfo as E2BInfo, EntryInfo, CommandHandle } from "e2b";
+import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, ExecInput, FileInfo, NativeProcess, CreateInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { e2bError } from "./errors.js";
@@ -29,7 +30,7 @@ export type E2BProvider = Provider<E2BSandbox, "pause" | "snapshot" | "network-p
  */
 export function e2b(options: E2BOptions = {}): E2BProvider {
   let module: Promise<typeof import("e2b")> | undefined;
-  const sdk = () => module ??= import("e2b");
+  const sdk = () => module ??= loadPeer("e2b", "e2b", () => import("e2b"));
   const api = () => {
     const apiKey = options.apiKey ?? process.env.E2B_API_KEY;
     if (!apiKey?.trim()) throw new SandboxError("E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.", { code: "auth", provider: "e2b" });
