@@ -1,6 +1,7 @@
 /** @superserve/sdk 0.11.4; https://docs.superserve.ai/sdk-reference/sandbox */
 import type { Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
 import type { Provider, SandboxInfo } from "../../provider.js";
+import { loadPeer } from "../../peer.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
@@ -46,7 +47,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
   let sdk: Promise<typeof import("@superserve/sdk")> | undefined;
   async function api() {
     connection();
-    return sdk ??= import("@superserve/sdk");
+    return sdk ??= loadPeer("@superserve/sdk", "superserve", () => import("@superserve/sdk"));
   }
   async function vm(id: string) {
     let value = boxes.get(id);
@@ -149,10 +150,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
         const createdAt = Date.now();
         let box: Sandbox;
+        // Load the SDK first: a missing peer allocated nothing, so it is not an unknown outcome.
+        const native = await api();
         try {
-          box = await (
-            await api()
-          ).Sandbox.create({
+          box = await native.Sandbox.create({
             ...connection(),
             name: `sbxsdk-${crypto.randomUUID()}`,
             metadata,

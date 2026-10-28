@@ -9,6 +9,7 @@
  */
 import { posix } from "node:path";
 import type { Sandbox, SandboxTemplate, CreateOptions } from "railway";
+import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, Labels, FileInfo, ExecInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { railwayError, unsupported } from "./errors.js";
@@ -54,7 +55,7 @@ function info(box: Sandbox, data: Metadata): SandboxInfo {
 export type RailwayProvider = Provider<Sandbox, "snapshot">;
 export function railway(options: RailwayOptions = {}): RailwayProvider {
   let module: Promise<typeof import("railway")> | undefined;
-  const sdk = () => module ??= import("railway");
+  const sdk = () => module ??= loadPeer("railway", "railway", () => import("railway"));
   const api = () => ({ token: options.token ?? process.env.RAILWAY_API_TOKEN, environmentId: options.environmentId ?? process.env.RAILWAY_ENVIRONMENT_ID, authType: options.authType });
   const clients = new Map<string, Sandbox>();
   async function call<T>(id: string | undefined, action: () => Promise<T>): Promise<T> { try { return await action(); } catch (cause) { throw railwayError(cause, id); } }

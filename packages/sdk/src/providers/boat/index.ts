@@ -9,6 +9,7 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
 import type { BoatApi, CreateSandboxRequest, Sandbox as BoatSandbox } from "@boatdev/sdk";
+import { loadPeer } from "../../peer.js";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
 import { boatError, failure } from "./errors.js";
 import { execute, quote, workspace } from "./exec.js";
@@ -131,7 +132,7 @@ export function boat(options: BoatOptions = {}): BoatProvider {
       const timeoutMs = options.requestTimeoutMs ?? 90_000;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-      const { BoatApi, Configuration } = await import("@boatdev/sdk");
+      const { BoatApi, Configuration } = await loadPeer("@boatdev/sdk", "boat", () => import("@boatdev/sdk"));
       nativeClient = new BoatApi(
         new Configuration({
           basePath: options.baseUrl ?? options.apiUrl ?? process.env.BOAT_API_BASE ?? "https://boat.dev/api/v1",

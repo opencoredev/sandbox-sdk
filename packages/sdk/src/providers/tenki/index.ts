@@ -6,6 +6,7 @@
  * https://www.npmjs.com/package/@tenkicloud/sandbox
  */
 import type { Session, CreateOptions } from "@tenkicloud/sandbox";
+import { loadPeer } from "../../peer.js";
 import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { waitReady } from "./ready.js";
@@ -160,7 +161,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
       if (!authToken)
         throw failure("Tenki API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.", "auth");
-      const { TenkiSandbox } = await import("@tenkicloud/sandbox");
+      const { TenkiSandbox } = await loadPeer("@tenkicloud/sandbox", "tenki", () => import("@tenkicloud/sandbox"));
       return new TenkiSandbox({
         authToken,
         baseUrl: options.baseUrl,

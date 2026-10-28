@@ -1,6 +1,7 @@
 /** Verified against @boxd-sh/sdk 0.2.17 and https://docs.boxd.sh/reference/typescript-sdk. */
 import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
+import { loadPeer } from "../../peer.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, quote, type Guest } from "./guest.js";
 import { execute } from "./execute.js";
@@ -49,7 +50,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
       const apiKey = options.apiKey ?? process.env.BOXD_API_KEY;
       if (!apiKey?.trim()) throw failure("boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey.", "auth");
-      const { Boxd } = await import("@boxd-sh/sdk");
+      const { Boxd } = await loadPeer("@boxd-sh/sdk", "boxd", () => import("@boxd-sh/sdk"));
       return (current = new Boxd({
         apiKey,
         baseURL: (options.baseUrl ?? options.baseURL),

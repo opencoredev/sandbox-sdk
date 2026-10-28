@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import type { Daytona, DaytonaConfig, Sandbox as DaytonaSandbox, CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams } from "@daytonaio/sdk";
 import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../../provider.js";
+import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
 import { daytonaError, unsupported } from "./errors.js";
 import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
@@ -76,7 +77,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         throw new SandboxError("snapshotTimeoutMs must be an integer from 1 to 900000.", { code: "invalid_argument", provider: "daytona" });
       const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.baseUrl ?? options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
       if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.", { code: "auth", provider: "daytona" });
-      const { Daytona } = await import("@daytonaio/sdk");
+      const { Daytona } = await loadPeer("@daytonaio/sdk", "daytona", () => import("@daytonaio/sdk"));
       return new Daytona(config);
     })();
   }

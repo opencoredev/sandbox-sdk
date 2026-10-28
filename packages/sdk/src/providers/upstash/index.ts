@@ -11,6 +11,7 @@
  */
 import { posix } from "node:path";
 import type { Box, BoxConfig, BoxData, BoxSize, EphemeralBoxConfig, FileStat, NetworkPolicy } from "@upstash/box";
+import { loadPeer } from "../../peer.js";
 import type {
   Provider,
   SandboxInfo,
@@ -169,7 +170,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
   };
   const sdk = async () => {
     const config = connection();
-    const { Box, EphemeralBox } = await (module ??= import("@upstash/box"));
+    const { Box, EphemeralBox } = await (module ??= loadPeer("@upstash/box", "upstash", () => import("@upstash/box")));
     return { Box, EphemeralBox, config };
   };
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = "request"): Promise<T> {
