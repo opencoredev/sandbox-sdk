@@ -133,8 +133,8 @@ export interface SandboxBase<N> {
   readonly files: Files;
   /** Git helpers that run inside the sandbox. Tokens never reach argv, env, or shell history. */
   readonly git: Git;
-  /** Start a named background process and optionally wait until it is ready. The name lets any client find it again with {@link process}. */
-  start(command: string, options: StartOptions): Promise<ProcessHandle>;
+  /** Start a named background process and optionally wait until it is ready. The name lets any client find it again with {@link process}; without one, the name is derived from the command and returned on the handle. */
+  start(command: string, options?: StartOptions): Promise<ProcessHandle>;
   /** Get a handle to a background process by name, including one started by another client. */
   process(name: string): ProcessHandle;
   /** List the background processes started through the SDK. */
@@ -150,27 +150,36 @@ export interface SandboxBase<N> {
   /** For `await using`: calls `close()` when the sandbox has a key, otherwise `destroy()`. */
   [Symbol.asyncDispose](): Promise<void>;
 }
-/**
- * A sandbox handle. `N` is the native client type; `C` is the provider's capability union.
- * `pause`/`resume`, `snapshot`, and `terminal` exist only when `C` includes them, so
- * calling one on a provider that lacks it is a type error. You rarely write this type:
- * `createSandbox(e2b())` infers it. The default `C = never` gives only {@link SandboxBase}.
- */
-export type Sandbox<N = unknown, C extends Capability = never> = SandboxBase<N>
-  & ("pause" extends C ? {
+/** The methods each optional capability adds to a sandbox. */
+export interface CapabilityMethods {
+  pause: {
     /** Pause the sandbox. Billing and the hard lifetime depend on the provider. */
     pause(): Promise<void>;
     /** Resume a paused sandbox. */
     resume(): Promise<void>;
-  } : {})
-  & ("snapshot" extends C ? {
+  };
+  snapshot: {
     /** Save the sandbox state. Pass the returned `id` as `createSandbox(provider, { from: id })`. */
     snapshot(): Promise<{ id: string }>;
-  } : {})
-  & ("terminal" extends C ? {
+  };
+  terminal: {
     /** Open an interactive PTY. */
     terminal(options: { cols: number; rows: number }): Promise<Terminal>;
-  } : {});
+  };
+}
+type MethodCapability = keyof CapabilityMethods;
+type UnionToIntersection<U> = (U extends unknown ? (value: U) => void : never) extends (value: infer I) => void ? I : never;
+/** The methods added by the capabilities in `C`. */
+export type MethodsFor<C extends Capability> = [Extract<C, MethodCapability>] extends [never] ? {} : UnionToIntersection<CapabilityMethods[Extract<C, MethodCapability>]>;
+/**
+ * A sandbox handle. `N` is the native client type; `C` is the provider's capability union.
+ * With a concrete provider, `pause`/`resume`, `snapshot`, and `terminal` exist only when
+ * `C` includes them, so calling one on a provider that lacks it is a type error. With a
+ * provider typed as plain `Provider` (any capability), the methods are optional: check
+ * them with {@link hasCapability} first. `createSandbox(e2b())` infers the precise type.
+ */
+export type Sandbox<N = unknown, C extends Capability = never> = SandboxBase<N>
+  & (Capability extends C ? Partial<MethodsFor<MethodCapability>> : MethodsFor<C>);
 /** The sandbox type a provider produces: `ProviderSandbox<ReturnType<typeof e2b>>`. */
 export type ProviderSandbox<P extends Provider> = P extends Provider<infer N, infer C> ? Sandbox<N, C> : never;
 export type { OutputChunk, Capability, SandboxInfo, FileInfo, Labels, Preview, Terminal };

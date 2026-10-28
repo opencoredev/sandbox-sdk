@@ -1,13 +1,20 @@
 import type { Provider, Capability, SandboxInfo } from "./provider.js";
-import type { ConnectOptions, CreateOptions, ListOptions, ReapOptions, Sandbox, SandboxBase } from "./types.js";
+import type { ConnectOptions, CreateOptions, ListOptions, MethodsFor, ReapOptions, Sandbox, SandboxBase } from "./types.js";
 import { SandboxError, Redactor, invalid } from "./errors.js";
 import { forgetKey, forgetSandbox, knownKey, rememberKey } from "./keys.js";
 export { SandboxError } from "./errors.js";
 export type { ErrorCode, ErrorOptions } from "./errors.js";
-export type { Sandbox, SandboxBase, ProviderSandbox, CreateOptions, ConnectOptions, ListOptions, ReapOptions, PreviewOptions, Usage, Locator, RunOptions, RunHandle, RunResult, OutputChunk, Capability, SandboxInfo, FileInfo, Labels, Preview, Terminal } from "./types.js";
+export type { Sandbox, SandboxBase, ProviderSandbox, CreateOptions, ConnectOptions, ListOptions, ReapOptions, PreviewOptions, Usage, Locator, RunOptions, RunHandle, RunResult, OutputChunk, Capability, CapabilityMethods, MethodsFor, SandboxInfo, FileInfo, Labels, Preview, Terminal } from "./types.js";
 export type { Files, FileDiff, FileEvent } from "./files.js";
 export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
 export type { Git } from "./git.js";
+/**
+ * Check a capability at runtime and narrow the sandbox type to include its methods.
+ * Use it when the provider is chosen at runtime: `if (hasCapability(box, "pause")) await box.pause();`
+ */
+export function hasCapability<B extends SandboxBase<unknown>, K extends Capability>(box: B, capability: K): box is B & MethodsFor<K> {
+  return box.capabilities.has(capability);
+}
 const sdkLabel = { "sandbox-sdk": "1" };
 // Serializes same-key callers in this JS realm, including locator read/create/write.
 // Cross-host exactness requires the provider's unique native key (see provider keyMode).

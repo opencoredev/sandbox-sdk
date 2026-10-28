@@ -3,8 +3,16 @@ import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
 import { SandboxError, invalid, type Redactor } from "./errors.js";
 import { defaults, pathOf, quote, chunkRedactor } from "./run.js";
+/** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
+export function defaultProcessName(command: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < command.length; index++) hash = Math.imul(hash ^ command.charCodeAt(index), 0x01000193) >>> 0;
+  const program = (command.trim().split(/\s+/)[0] ?? "").split("/").pop()?.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) || "process";
+  return `${program}-${hash.toString(16).padStart(8, "0")}`;
+}
 export type Readiness = { port: number } | { http: { port: number; path?: string } } | { log: RegExp };
-export interface StartOptions { name: string; cwd?: string; env?: Record<string, string>; ready?: Readiness; readyTimeoutMs?: number }
+/** `name` defaults to a stable name derived from the command, so the same command always maps to the same process. */
+export interface StartOptions { name?: string; cwd?: string; env?: Record<string, string>; ready?: Readiness; readyTimeoutMs?: number }
 export interface ProcessInfo { name: string; command: string; status: "starting" | "running" | "exited" | "failed"; pid: number; ports: number[]; startedAt: number; exitCode: number | null }
 export interface ProcessHandle {
   readonly name: string; readonly url?: string; readonly ready: boolean; readonly status: ProcessInfo["status"];
@@ -185,8 +193,9 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
     return handle;
   }
   const controllers = new Map<string, { state(status: ProcessInfo["status"]): void; access(url: string): void; ready(value: boolean): void; launch(fn: () => Promise<void>): void }>();
-  async function start(command: string, options: StartOptions): Promise<ProcessHandle> {
+  async function start(command: string, input: StartOptions = {}): Promise<ProcessHandle> {
     return safe(async () => {
+      const options = { ...input, name: input.name ?? defaultProcessName(command) };
       if (provider.processMode === "unsupported") throw new SandboxError("Background processes are unsupported. This runtime cannot run the SDK process-record shim. Use its native process API or another provider.", { code: "unsupported" });
       const dir = nameOf(options.name);
       if (provider.name === "memory" && provider.startProcess && await files.exists(`${dir}/spec.json`) && !(await files.exists(`${dir}/exit`))) invalid(`Process ${options.name} is already running`);
