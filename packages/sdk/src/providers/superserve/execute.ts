@@ -1,5 +1,6 @@
 import { guestSpec } from "../freestyle/wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
+import { SandboxError } from "../../errors.js";
 import { guestProcess, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
@@ -196,6 +197,9 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
           input.timeoutMs + 5000, signal,
         );
     } catch (error) {
+      // A rejected bootstrap (such as a template without Python) runs nothing,
+      // so there is no process to cancel and the actionable error must surface.
+      if (error instanceof SandboxError && error.code === "unsupported") throw error;
       try {
         await cancel();
       } catch {
