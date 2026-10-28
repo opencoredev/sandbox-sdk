@@ -142,6 +142,18 @@
         "e2b": "2.56.0",
       },
     },
+    "examples/getting-started": {
+      "name": "@sandbox-sdk/example-getting-started",
+      "version": "0.0.0",
+      "dependencies": {
+        "@opencoredev/sandbox-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^22.20.1",
+        "oxlint": "^1.74.0",
+        "typescript": "^6.0.3",
+      },
+    },
     "packages/sdk": {
       "name": "@opencoredev/sandbox-sdk",
       "version": "1.0.0-beta.0",
@@ -941,6 +953,8 @@
     "@sandbox-sdk/example-ai-app-builder": ["@sandbox-sdk/example-ai-app-builder@workspace:examples/ai-app-builder"],
 
     "@sandbox-sdk/example-coding-agent": ["@sandbox-sdk/example-coding-agent@workspace:examples/coding-agent"],
+
+    "@sandbox-sdk/example-getting-started": ["@sandbox-sdk/example-getting-started@workspace:examples/getting-started"],
 
     "@sandbox-sdk/web": ["@sandbox-sdk/web@workspace:apps/web"],
 
