@@ -25,7 +25,7 @@ Provider factories read credentials from their arguments or the provider's own e
 
 ## Secrets
 
-Values you pass as `secrets` to `createSandbox` become environment variables in the sandbox. The SDK redacts them from every command result, log page, tool result, and error message it returns. `connectSandbox` reads the secret names back from the sandbox and redacts them again.
+Values you pass as `secrets` to `createSandbox` become environment variables in the sandbox. The SDK redacts them from every command result, log page, tool result, and error message it returns. `connectSandbox` reads the secret names back from the sandbox before the first command or file call and redacts them again.
 
 Redaction has limits:
 
@@ -37,7 +37,9 @@ Use `env` for values that are safe to show and `secrets` for everything else.
 
 ## Errors don't leak credentials
 
-`SandboxError.cause` is a redacted string, never the provider's error object, because native errors can carry credentials in their fields. Still, treat `message` and `cause` as internal: log them, and show users the `code` and `hint`.
+`SandboxError.cause` is a redacted string, never the provider's error object, because native errors can carry credentials in their fields. Response text never appears. A failure the adapter doesn't recognize, such as a `TypeError` inside the provider's SDK, keeps its name and message, with URLs, auth headers, credential-looking values, the provider's API key, and your secrets replaced by `[REDACTED]`. See [Causes](/reference/errors#causes). Still, treat `message` and `cause` as internal: log them, and show users the `code` and `hint`.
+
+To write a file only its owner can read, pass `mode`: `box.files.write(".env", text, { mode: 0o600 })`. On providers without native modes the SDK runs `chmod` right after the write, so the file is briefly readable with default permissions. Put secret files in a directory only the sandbox user can enter, such as one made with `mkdir -m 700`.
 
 ## Network policy fails closed
 

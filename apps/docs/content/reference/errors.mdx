@@ -32,9 +32,20 @@ try {
 | `hint` | `string` | The next step on its own, for UIs |
 | `provider` | `string` | Provider name |
 | `sandboxId` | `string \| undefined` | The sandbox involved, when there is one |
-| `cause` | `unknown` | A redacted string from the underlying failure, when there is one. The provider's error object is never attached, because it can hold credentials. |
+| `cause` | `unknown` | A redacted string from the underlying failure, when there is one. See [Causes](#causes). |
 
 Secrets are redacted from `message`, `cause`, and logs.
+
+## Causes
+
+`cause` says where a failure came from without attaching the provider's error object, which can hold credentials.
+
+- A failure the adapter doesn't recognize and that has no HTTP status, such as a `TypeError` thrown inside the provider's SDK or a refused connection, keeps its name and message, plus up to two nested causes. The message repeats it, for example `Boat request failed: TypeError: m is not a constructor.` These failures are usually bugs or network trouble, and the text is the only clue.
+- A recognized error keeps its name, such as `RateLimitError`.
+- An HTTP or gRPC failure keeps its name and status, such as `Error HTTP 503`. Response text never appears, because it can echo the request.
+- Daytona, Freestyle, and Tenki use a JSON object of bounded request fields instead (status, request ID, operation), with a `native` field for an unrecognized failure.
+
+Kept text is scrubbed before it reaches you: URLs, `Authorization` headers, bearer tokens, `key=value` pairs that look like credentials, the provider's API key, and every secret registered with the sandbox become `[REDACTED]`.
 
 ## Codes
 

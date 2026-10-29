@@ -44,7 +44,20 @@ await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 
 
 ## `connectSandbox(provider, id, options?)`
 
-Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't exist. Pass `{ secrets }` to add values to redact. Secrets set at creation are redacted again automatically, because the SDK reads their names back from the sandbox environment.
+Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't exist. Connecting runs no command in the sandbox, so a handle that only cleans up works even when the sandbox can't run commands, for example a stopped Vercel sandbox:
+
+```ts
+import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const box = await connectSandbox(vercel(), id);
+await box.destroy();
+```
+
+Options:
+
+- `secrets?: Record<string, string>`: more values to redact.
+- `recoverSecrets?: boolean`: default `true`. Secrets set at creation stay in the environment and redacted, because the SDK reads their names back from the sandbox. That costs one command, run before the first `run`, `start`, `process`, `files`, or `terminal` call. `destroy`, `close`, `pause`, `resume`, `snapshot`, and `usage` never need it. If the command fails, that first call throws `provider` and the next call tries again. With `false`, the SDK skips it and no longer redacts the secrets set at creation.
 
 ## `listSandboxes(provider, options?)`
 
@@ -135,7 +148,7 @@ Present on the type only when the provider supports them. The [capability matrix
 | Method | Returns |
 | --- | --- |
 | `pause()`, `resume()` | `Promise<void>` |
-| `snapshot()` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. |
+| `snapshot({ expiresInMs? })` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. `expiresInMs` deletes the snapshot after that many milliseconds, and `0` keeps it until you delete it. A provider that can't honor it throws `unsupported` or `invalid_argument` rather than ignoring it. A negative or fractional value throws `invalid_argument`. |
 | `terminal({ cols, rows })` | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0. |
 
 ## Files
@@ -145,7 +158,7 @@ Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/fi
 | Method | Returns |
 | --- | --- |
 | `read(path, { as? })` | `string`, or `Uint8Array` with `as: "bytes"` |
-| `write(path, data)` or `write(record)` | `void`. Creates directories. |
+| `write(path, data, { mode? })` or `write(record, { mode? })` | `void`. Creates directories. `mode` sets the permission bits of every file written, such as `0o600`, and must be an integer from `0` to `0o7777`. A provider that can't set the mode natively gets one `chmod` after the write, so until it runs the files have default permissions. |
 | `edit(path, { find, replace })` | `void`. Throws `edit_not_found` or `edit_not_unique`. |
 | `list(path?, { recursive?, glob? })` | `{ path, type, size, modifiedAt }[]` |
 | `stat(path)` | `{ path, type, size, modifiedAt }` |
