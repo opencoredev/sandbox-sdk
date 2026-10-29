@@ -19,12 +19,20 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, type BuildOptions } from "esbuild";
+import { z } from "zod";
 import pkg from "../package.json" with { type: "json" };
+
+type ExportTarget = (typeof pkg.exports)[keyof typeof pkg.exports];
+
+/** Every export except `./package.json` maps conditions to files. */
+function isConditionalExport(target: ExportTarget): target is Exclude<ExportTarget, string> {
+  return typeof target !== "string";
+}
 
 const sdkDir = resolve(import.meta.dir, "..");
 
 // Fake credentials that get each adapter past its own checks to the native client. The network is blocked.
-const fakes: Record<string, string> = {
+const fakes = {
   boat: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   sandboxer: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   e2b: `{ apiKey: "smoke-key" }`,
@@ -39,13 +47,13 @@ const fakes: Record<string, string> = {
 };
 
 // Providers without an optional peer SDK, or whose peer never touches the network.
-const skipped: Record<string, string> = {
+const skipped = {
   local: "no optional peer; drives the Docker CLI",
   agentos: "embedded runtime with a native sidecar; no network call to observe",
 };
 
 const providers = Object.entries(pkg.exports).flatMap(([subpath, target]) =>
-  typeof target !== "string" && target.default.startsWith("./dist/providers/")
+  isConditionalExport(target) && target.default.startsWith("./dist/providers/")
     ? [subpath.slice(2)]
     : [],
 );
@@ -143,29 +151,32 @@ const formats: { label: string; options: BuildOptions; source: string; noBanner?
   },
 ];
 
-type Row = {
-  name: string;
-  attempts: number;
-  timedOut: boolean;
-  sandboxError: boolean;
-  code?: string;
-  text: string;
-};
+// A probe row needs a name; every other field falls back when a consumer omits or garbles it.
+const rowSchema = z.object({
+  name: z.string(),
+  attempts: z.number().catch(0),
+  timedOut: z.boolean().catch(false),
+  sandboxError: z.boolean().catch(false),
+  code: z.string().optional().catch(undefined),
+  text: z.string().catch(""),
+});
+
+type Row = z.infer<typeof rowSchema>;
+
+// Error-mapping rows are printed as text; a missing field reads as an empty string.
+const mappedText = z.unknown().transform((value) => (value === undefined ? "" : String(value)));
+
+const mappedRowSchema = z.object({
+  name: mappedText,
+  className: mappedText,
+  code: mappedText,
+  expected: mappedText,
+});
 
 function parseRow(line: string): Row | undefined {
-  const row: unknown = JSON.parse(line);
+  const row = rowSchema.safeParse(JSON.parse(line));
 
-  if (typeof row !== "object" || row === null || !("name" in row) || typeof row.name !== "string")
-    return undefined;
-
-  return {
-    name: row.name,
-    attempts: "attempts" in row && typeof row.attempts === "number" ? row.attempts : 0,
-    timedOut: "timedOut" in row && row.timedOut === true,
-    sandboxError: "sandboxError" in row && row.sandboxError === true,
-    code: "code" in row && typeof row.code === "string" ? row.code : undefined,
-    text: "text" in row && typeof row.text === "string" ? row.text : "",
-  };
+  return row.success ? row.data : undefined;
 }
 
 const bad =
@@ -301,20 +312,7 @@ const { loadPeer } = require("./src/peer.ts");
 
   const mappedRows = mapped.stdout
     .split("\n")
-    .filter((line) => line.startsWith("{"))
-    .map((line) => {
-      const row: unknown = JSON.parse(line);
-
-      const field = (key: string) =>
-        typeof row === "object" && row !== null && key in row ? String(Reflect.get(row, key)) : "";
-
-      return {
-        name: field("name"),
-        className: field("className"),
-        code: field("code"),
-        expected: field("expected"),
-      };
-    });
+    .flatMap((line) => (line.startsWith("{") ? [mappedRowSchema.parse(JSON.parse(line))] : []));
 
   for (const row of mappedRows)
     check(

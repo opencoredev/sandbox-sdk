@@ -157,10 +157,10 @@ function load(name: ProviderName) {
   return provider;
 }
 
-function message(error: unknown) {
-  if (error instanceof SandboxError) return `${error.code}: ${error.message}`;
+function message(cause: unknown) {
+  if (cause instanceof SandboxError) return `${cause.code}: ${cause.message}`;
 
-  return error instanceof Error ? error.message : String(error);
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 async function timed<T>(work: () => PromiseLike<T>) {
@@ -331,9 +331,9 @@ async function leakCheck(name: ProviderName): Promise<LeakResult> {
       ]);
 
       return new Set(
-        [...sdk, ...native]
-          .filter((info) => info.labels["smoke-run"] === runId)
-          .map((info) => info.id),
+        [...sdk, ...native].flatMap((info) =>
+          info.labels["smoke-run"] === runId ? [info.id] : [],
+        ),
       ).size;
     };
 
