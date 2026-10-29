@@ -1,4 +1,4 @@
-import type { Boxd } from "@boxd-sh/sdk";
+import type { BoxdClient } from "./provider.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { guestProcess, python } from "../../shared/guest.js";
 import { quote } from "../../shared/shell.js";
@@ -97,7 +97,7 @@ while time.monotonic()<end:
 sys.exit(1)`;
 
 export async function execute(
-  client: Boxd,
+  client: BoxdClient,
   id: string,
   input: ExecInput,
   setup = "",

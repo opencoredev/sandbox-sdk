@@ -4,11 +4,16 @@ import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { StreamExecParams, Machine, MachineCreateParams, ExecParams } from "@boxd-sh/sdk";
-import { vi } from "vitest";
+import {
+  ExecStream,
+  type StreamExecParams,
+  type Machine,
+  type MachineCreateParams,
+  type ExecParams,
+  type Proxy,
+} from "@boxd-sh/sdk";
 import { isString } from "../src/shared/narrow.js";
 
-const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
 const exec = promisify(execFile);
 
 export class MockGuest {
@@ -228,19 +233,7 @@ export class MockBoxd {
 
       return this.entry(id).guest.stream(params.command);
     },
-    exec: async (id: string, params: ExecParams) => {
-      if (boxdState.error)
-        throw Object.assign(new Error("secret-native-error"), { grpcCode: boxdState.error });
-
-      if (!isString(params.command)) throw new Error("Expected shell command");
-
-      const stdout =
-        params.encoding === "buffer"
-          ? await this.entry(id).guest.bytes(params.command)
-          : await this.entry(id).guest.raw(params.command);
-
-      return { stdout, stderr: "", exitCode: 0 };
-    },
+    exec: this.exec.bind(this),
     files: {
       upload: async (id: string, path: string, bytes: Uint8Array) => {
         // The real boxd guest is non-root and cannot upload directly into /var/lib.
@@ -253,18 +246,57 @@ export class MockBoxd {
       download: async (id: string, path: string) => this.entry(id).guest.read(path),
     },
     proxies: {
-      list: async () => [{ name: null, domain: "test.boxd.sh", port: 3000, isDefault: true }],
+      list: async (id: string): Promise<Proxy[]> => [
+        {
+          name: null,
+          machineId: id,
+          machineName: id,
+          domain: "test.boxd.sh",
+          port: 3000,
+          portMode: "locked",
+          isDefault: true,
+        },
+      ],
       setPort: async () => {},
       create: async () => ({ name: "sdk-3000", port: 3000 }),
     },
+    setEgressAllow: async (_id: string, entries: string[]) => entries,
     setBotProtection: async (_id: string, _mode: string) => {},
     pause: async (id: string) => {
       this.entry(id).machine.status = "suspended";
+
+      return { suspendUs: 0 };
     },
     resume: async (id: string) => {
       this.entry(id).machine.status = "running";
+
+      return { resumeUs: 0 };
     },
   };
+  private exec(
+    id: string,
+    params: ExecParams & { encoding: "buffer" },
+  ): Promise<{ stdout: Uint8Array; stderr: string; exitCode: number }>;
+  private exec(
+    id: string,
+    params: ExecParams,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  private async exec(
+    id: string,
+    params: ExecParams,
+  ): Promise<{ stdout: string | Uint8Array; stderr: string; exitCode: number }> {
+    if (boxdState.error)
+      throw Object.assign(new Error("secret-native-error"), { grpcCode: boxdState.error });
+
+    if (!isString(params.command)) throw new Error("Expected shell command");
+
+    const stdout =
+      params.encoding === "buffer"
+        ? await this.entry(id).guest.bytes(params.command)
+        : await this.entry(id).guest.raw(params.command);
+
+    return { stdout, stderr: "", exitCode: 0 };
+  }
   entry(id: string) {
     if (boxdState.error)
       throw Object.assign(new Error("secret-native-error"), { grpcCode: boxdState.error });
