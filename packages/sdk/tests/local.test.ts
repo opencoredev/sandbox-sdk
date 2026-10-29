@@ -194,10 +194,11 @@ describe("local native options (SBX-71)", () => {
   test("snapshot rejects expiresInMs because Docker images never expire", async () => {
     const docker = await fake();
     try {
-      const provider = local();
-      await expect(provider.snapshot("opts", { expiresInMs: 60_000 })).rejects.toMatchObject({ code: "unsupported" });
+      const snapshot = local().snapshot;
+      if (!snapshot) throw new Error("local() declares snapshot");
+      await expect(snapshot("opts", { expiresInMs: 60_000 })).rejects.toMatchObject({ code: "unsupported" });
       expect(docker.calls.some(([, p]) => p.startsWith("/commit"))).toBe(false);
-      expect(await provider.snapshot("opts", { expiresInMs: 0 })).toEqual({ id: "sha256:snap" });
+      expect(await snapshot("opts", { expiresInMs: 0 })).toEqual({ id: "sha256:snap" });
     } finally { docker.restore(); }
   });
 });
