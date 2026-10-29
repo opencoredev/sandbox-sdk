@@ -7,7 +7,7 @@ import type { Provider, FileInfo, WriteOptions } from "./provider.js";
 import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
-import { isObject, isString } from "./core/guards.js";
+import { isObject, isString } from "./shared/narrow.js";
 
 export interface FileEvent {
   type: "added" | "modified" | "removed";

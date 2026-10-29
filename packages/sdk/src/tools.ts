@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Sandbox, OutputChunk } from "./types.js";
 import { SandboxError, invalid } from "./errors.js";
 import { BufferCap } from "./run.js";
-import { isString } from "./core/guards.js";
+import { isString } from "./shared/narrow.js";
 import { redactToolText, toolOutputFilter } from "./tool-security.js";
 import type { JsonValue } from "./shared/json.js";
 

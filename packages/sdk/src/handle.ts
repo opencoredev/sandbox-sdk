@@ -4,7 +4,7 @@ import { Redactor, SandboxError, invalid } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
 import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
-import { isString } from "./core/guards.js";
+import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";

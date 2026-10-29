@@ -1,5 +1,5 @@
 import type { InspectOptionsStylized, inspect as nodeInspect } from "node:util";
-import { isString } from "./core/guards.js";
+import { isString } from "./shared/narrow.js";
 
 /**
  * Why a {@link SandboxError} was thrown. A non-zero exit, a command timeout, or an

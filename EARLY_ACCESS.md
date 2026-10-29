@@ -120,7 +120,7 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 ## Known limitations
 
 - No built-in provider supports `box.terminal()` yet.
-- `timeoutMs` (hard lifetime) works on E2B, Daytona, Tenki, Freestyle, Local, and Memory. `idleTimeoutMs` works on Daytona, Railway, Freestyle, Local, and Memory. Everything else rejects them with `unsupported`.
+- `timeoutMs` (hard lifetime) and `idleTimeoutMs` work only where the provider can enforce them; elsewhere `createSandbox` fails with `unsupported`. The [capability matrix](https://v2.sandbox-sdk.app/docs/reference/capabilities) lists which providers support each one.
 - Previews on Local, Vercel, and Railway need the port declared up front: `createSandbox(provider, { ports: [3000] })`. Always send `preview.headers` with requests; several providers put the access token there.
 - boxd routes one preview port at a time, the last one you requested.
 - agentOS has no preview URLs and no background processes (`start` fails with `unsupported`).

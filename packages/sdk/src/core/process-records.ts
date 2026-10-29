@@ -1,7 +1,8 @@
 /** Parsers for the JSON the process shim keeps in the guest and hands back to callers. */
 import { invalid } from "../errors.js";
 import type { StartOptions } from "../processes.js";
-import { hasNumber, hasString, isObject, isString } from "./guards.js";
+import { isObject, isString } from "../shared/narrow.js";
+import { hasNumber, hasString } from "./guards.js";
 
 /** The fields of spec.json the core reads back. */
 export interface ProcessRecord {

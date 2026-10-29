@@ -1,5 +1,6 @@
 import { SandboxError } from "./errors.js";
-import { hasFunction, isObject } from "./core/guards.js";
+import { hasFunction } from "./core/guards.js";
+import { isObject } from "./shared/narrow.js";
 
 /** Peers loaded through {@link loadPeer}, by package name. */
 const loaded = new Map<string, unknown>();

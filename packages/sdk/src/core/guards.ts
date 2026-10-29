@@ -1,11 +1,9 @@
 /** Field guards for parsing JSON and other untyped input at a boundary. Each one checks
  * exactly the shape its predicate claims, so a parser can read the field afterwards.
- * They read own properties only, which is all parsed JSON has. */
+ * `hasString` and `hasNumber` read own properties only, which is all parsed JSON has.
+ * Primitive guards live in `shared/narrow.ts`. */
 
-/** Whether the value is a non-null object (arrays included). */
-export function isObject(value: unknown): value is object {
-  return typeof value === "object" && value !== null;
-}
+import { isObject } from "../shared/narrow.js";
 
 /** Whether the value is an object whose own `key` holds a string. */
 export function hasString<K extends string>(value: unknown, key: K): value is { [P in K]: string } {
@@ -23,7 +21,8 @@ export function isFunction(value: unknown): value is (...args: never[]) => void 
 }
 
 /** Whether `value[key]` is callable, read the way property access reads it: inherited
- * properties and getters count, as in a bundler's module namespace. */
+ * properties and getters count, as in a bundler's module namespace. TypeScript cannot
+ * index `object` with a generic key, so this walks the prototype chain itself. */
 export function hasFunction<K extends string>(
   value: unknown,
   key: K,
@@ -36,9 +35,4 @@ export function hasFunction<K extends string>(
   }
 
   return false;
-}
-
-/** Whether the value is a string. */
-export function isString(value: unknown): value is string {
-  return typeof value === "string";
 }
