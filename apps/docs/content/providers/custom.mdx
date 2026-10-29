@@ -69,6 +69,9 @@ Every check runs unless you skip it. To skip a check your runtime can't pass, gi
 - `fileModes` skips the permission-bit check for `files.write`.
 
 ```ts title="provider.test.ts"
+import { runConformance } from "@opencoredev/sandbox-sdk/testing";
+import { myProvider } from "./my-provider";
+
 runConformance(() => myProvider(), {
   live: true,
   unsupported: { httpProbe: "Preview URLs are only reachable inside the VPC" },
