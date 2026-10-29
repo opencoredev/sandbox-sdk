@@ -269,12 +269,12 @@ const railway = require("railway");
 const daytona = require("@daytonaio/sdk");
 const { e2bError } = require("./src/providers/e2b/errors.ts");
 const { tenkiError } = require("./src/providers/tenki/errors.ts");
-const { railwayError } = require("./src/providers/railway/errors.ts");
-const { daytonaError } = require("./src/providers/daytona/errors.ts");
+const { railwayError, rememberRailwayErrors } = require("./src/providers/railway/errors.ts");
+const { daytonaError, rememberDaytonaErrors } = require("./src/providers/daytona/errors.ts");
 const { loadPeer } = require("./src/peer.ts");
 (async () => {
-  await loadPeer("railway", "railway", async () => railway);
-  await loadPeer("@daytonaio/sdk", "daytona", async () => daytona);
+  rememberRailwayErrors(await loadPeer("railway", "railway", async () => railway));
+  rememberDaytonaErrors(await loadPeer("@daytonaio/sdk", "daytona", async () => daytona));
   const cases = [
     ["e2b FileNotFoundError", FileNotFoundError, e2bError(new FileNotFoundError("missing.txt"), "box").code, "file_not_found"],
     ["e2b SandboxNotFoundError", SandboxNotFoundError, e2bError(new SandboxNotFoundError("gone"), "box").code, "not_found"],

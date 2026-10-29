@@ -27,7 +27,7 @@ import type {
 import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../../shared/guest.js";
-import { isObject, isString } from "../../shared/narrow.js";
+import { isObject } from "../../shared/narrow.js";
 import {
   failure,
   freestyleError,
@@ -37,6 +37,7 @@ import {
 } from "./errors.js";
 import { execute, supervisor } from "./execute.js";
 import { deadline, operationSignal } from "./deadline.js";
+import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
 
 export interface FreestyleOptions {
   /** Defaults to FREESTYLE_API_KEY; required on first use. */
@@ -121,20 +122,6 @@ function creationMetadata(input: CreateInput) {
 }
 
 const envFile = "/var/lib/sandbox-sdk-env.json";
-
-/** The marker JSON written at creation. Labels are checked one by one. */
-type StoredMetadata = { key: string | null; labels: object };
-
-function isStoredMetadata(value: unknown): value is StoredMetadata {
-  return (
-    isObject(value) &&
-    "key" in value &&
-    (value.key === null || isString(value.key)) &&
-    "labels" in value &&
-    isObject(value.labels) &&
-    !Array.isArray(value.labels)
-  );
-}
 
 function seconds(value: number | undefined, hard: boolean) {
   if (value === undefined) return undefined;
@@ -372,21 +359,15 @@ export function createFreestyleProvider<V extends FreestyleVm>(
 
       text = Buffer.from(encoded, "base64url").toString();
     } else text = await (await vm(data.id)).fs.readTextFile(marker);
-    let value: unknown;
 
-    try {
-      value = JSON.parse(text);
-    } catch {
-      throw failure("Invalid SDK metadata", "not_found", data.id);
-    }
+    const invalid: (part: MetadataPart) => never = (part) => {
+      throw failure(`Invalid SDK ${part}`, "not_found", data.id);
+    };
 
-    if (!isStoredMetadata(value)) throw failure("Invalid SDK metadata", "not_found", data.id);
-    const labels: Record<string, string> = {};
+    // The marker always stores its key, null for none.
+    const { key, labels } = parseMetadata(text, invalid);
 
-    for (const [k, v] of Object.entries(value.labels)) {
-      if (!isString(v)) throw failure("Invalid SDK label", "not_found", data.id);
-      Object.defineProperty(labels, k, { value: v, enumerable: true });
-    }
+    if (key === undefined) invalid("metadata");
 
     const createdAt = Date.parse(data.createdAt);
 
@@ -394,7 +375,7 @@ export function createFreestyleProvider<V extends FreestyleVm>(
 
     return {
       id: data.id,
-      key: value.key ?? undefined,
+      key: key ?? undefined,
       labels,
       createdAt,
       state:

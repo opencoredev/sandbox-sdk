@@ -1,4 +1,5 @@
 import { SandboxError, describeNative, reason, type ErrorCode } from "../../errors.js";
+import { decodeNative } from "../../shared/native-error.js";
 
 export function failure(
   message: string,
@@ -18,7 +19,7 @@ export function failure(
  * its text (see describeNative), scrubbed here; the core redacts registered secrets from it too. */
 export function agentosError(cause: unknown, sandboxId?: string, file = false): SandboxError {
   if (cause instanceof SandboxError) return cause;
-  const message = cause instanceof Error ? cause.message : "";
+  const { message } = decodeNative(cause);
 
   const code: ErrorCode = /ENOENT|not found|no such file/i.test(message)
     ? file

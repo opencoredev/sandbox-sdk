@@ -1,5 +1,5 @@
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
-import { isNumber, isObject } from "../../shared/narrow.js";
+import { decodeNative } from "../../shared/native-error.js";
 
 export function failure(
   message: string,
@@ -44,25 +44,25 @@ const names = new Map<string, ErrorCode>([
 
 export function superserveError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;
-  const status = isObject(cause) && "statusCode" in cause ? cause.statusCode : undefined;
+  const native = decodeNative(cause);
+  const status = native.statusCode;
 
-  const code = isNumber(status)
-    ? (codes.get(status) ?? "provider")
-    : cause instanceof Error
-      ? (names.get(cause.name) ?? "provider")
-      : "provider";
+  const code =
+    status === undefined
+      ? (names.get(native.name) ?? "provider")
+      : (codes.get(status) ?? "provider");
 
   // Response text can echo the request; see describeNative for what is kept.
-  const native = describeNative(cause, {
+  const kept = describeNative(cause, {
     code,
-    status: status === undefined ? undefined : `HTTP ${String(status)}`,
+    status: status === undefined ? undefined : `HTTP ${status}`,
     redact: redacting([process.env.SUPERSERVE_API_KEY]),
   });
 
   return failure(
-    `Superserve request failed: ${reason(code, native.detail)}`,
+    `Superserve request failed: ${reason(code, kept.detail)}`,
     code,
     sandboxId,
-    native.cause,
+    kept.cause,
   );
 }

@@ -16,10 +16,13 @@ import type {
 } from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
 import { quote } from "../../shared/shell.js";
+import { isString } from "../../shared/narrow.js";
 import { execute, fileChunkBytes, stage, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative } from "../boat/index.js";
 import { errors } from "./errors.js";
 import { loadPeer } from "../../peer.js";
+import { decodeLabels } from "../../shared/metadata.js";
+import type { JsonValue } from "../../shared/json.js";
 
 export interface BoatApiSettings {
   name: string;
@@ -54,10 +57,6 @@ const presets = { small: "small", medium: "default", large: "large" } satisfies 
   "small" | "default" | "large"
 >;
 
-function isPreset(size: NonNullable<CreateInput["size"]>): size is keyof typeof presets {
-  return typeof size === "string";
-}
-
 // Boat has no labels. Keep metadata in its display name so stopped VMs remain
 // discoverable. Never allow the API's silent 120-character truncation.
 function metadataName(
@@ -84,46 +83,24 @@ function metadataName(
 
 type Metadata = { key?: string; labels: Labels };
 
-/** The `[key, labels]` pair encoded in a sandbox name, before its labels are checked. */
-function isEncodedMetadata(value: unknown): value is [string | null, object] {
-  return (
-    Array.isArray(value) &&
-    value.length === 2 &&
-    (value[0] === null || typeof value[0] === "string") &&
-    typeof value[1] === "object" &&
-    value[1] !== null &&
-    !Array.isArray(value[1])
-  );
-}
-
-function isLabelValue(value: unknown): value is string {
-  return typeof value === "string";
-}
-
 function metadata(name: string): Metadata | undefined {
   if (!name.startsWith(prefix)) return;
 
   try {
-    const value: unknown = JSON.parse(
+    // The `[key, labels]` pair encoded in the name.
+    const value: JsonValue = JSON.parse(
       inflateRawSync(Buffer.from(name.slice(prefix.length), "base64url"), {
         maxOutputLength: 65_536,
       }).toString(),
     );
 
-    if (!isEncodedMetadata(value)) return;
+    if (!Array.isArray(value) || value.length !== 2) return;
     const [key, raw] = value;
-    const labels: Labels = {};
 
-    for (const [key, value] of Object.entries(raw)) {
-      if (!isLabelValue(value)) return;
-      // defineProperty, so a "__proto__" label stays an ordinary label.
-      Object.defineProperty(labels, key, {
-        value,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
+    if (key !== null && !isString(key)) return;
+    const labels = decodeLabels(raw);
+
+    if (labels === undefined) return;
 
     const result: Metadata = { labels: { ...labels, ...own } };
 
@@ -348,7 +325,7 @@ export function boatApi(
         if (input.network !== undefined && input.network !== "all")
           throw failure(`${label} network policy is unsupported by this adapter`, "unsupported");
 
-        if (input.size !== undefined && !isPreset(input.size))
+        if (input.size !== undefined && !isString(input.size))
           throw failure(
             `${label} supports small, medium and large presets; custom sizes are unavailable`,
             "unsupported",

@@ -40,6 +40,7 @@ import { bufferedExecute } from "./buffered.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { listDirectory, readFile, writeFile } from "./files.js";
+import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
 
 type CommonOptions = {
   /** Defaults to UPSTASH_BOX_API_KEY; required on first use. */
@@ -139,21 +140,6 @@ const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" 
 
 type Metadata = { version: 1; key?: string; labels: Labels };
 
-/** Metadata as stored, before each label is checked. */
-type StoredMetadata = { version: 1; key?: string; labels: object };
-
-function isStoredMetadata(value: unknown): value is StoredMetadata {
-  return (
-    isObject(value) &&
-    "version" in value &&
-    value.version === 1 &&
-    "labels" in value &&
-    isObject(value.labels) &&
-    !Array.isArray(value.labels) &&
-    (!("key" in value) || isString(value.key))
-  );
-}
-
 /** The account snapshot list; each entry is checked as it is read. */
 type SnapshotList = { snapshots: unknown[] | null };
 
@@ -166,30 +152,15 @@ function isSnapshotList(value: unknown): value is SnapshotList {
 }
 
 function metadata(text: string): Metadata {
-  let value: unknown;
+  const invalid: (part: MetadataPart) => never = (part) => {
+    throw new SandboxError(`Invalid SDK ${part}`, { code: "not_found", provider: "upstash" });
+  };
 
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" });
-  }
+  const { key, labels, version } = parseMetadata(text, invalid);
 
-  if (!isStoredMetadata(value))
-    throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" });
-  const labels: Labels = {};
+  if (version !== 1 || key === null) invalid("metadata");
 
-  for (const [key, item] of Object.entries(value.labels)) {
-    if (!isString(item))
-      throw new SandboxError("Invalid SDK label", { code: "not_found", provider: "upstash" });
-    Object.defineProperty(labels, key, {
-      value: item,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-
-  return value.key === undefined ? { version: 1, labels } : { version: 1, labels, key: value.key };
+  return key === undefined ? { version: 1, labels } : { version: 1, labels, key };
 }
 
 function info(data: Pick<BoxData, "id" | "status" | "created_at">, meta: Metadata): SandboxInfo {

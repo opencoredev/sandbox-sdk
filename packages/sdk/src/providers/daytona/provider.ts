@@ -16,7 +16,9 @@ import type {
 } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
-import { daytonaError, unsupported } from "./errors.js";
+import { daytonaError, rememberDaytonaErrors, unsupported } from "./errors.js";
+import { decodeNative } from "../../shared/native-error.js";
+import { isString } from "../../shared/narrow.js";
 import { download, upload } from "./transfer.js";
 import { quote } from "../../shared/shell.js";
 import { execute, sessionProcess, workspaceCommand } from "./exec.js";
@@ -75,13 +77,9 @@ const presets = {
 
 type Size = NonNullable<CreateInput["size"]>;
 
-function isPreset(size: Size): size is keyof typeof presets {
-  return typeof size === "string";
-}
-
 function resources(size: Size) {
   // A preset name from untyped callers may still be unknown, so value can be undefined.
-  const value = isPreset(size) ? presets[size] : size;
+  const value = isString(size) ? presets[size] : size;
   const diskGb = value?.diskGb ?? 10;
 
   if (
@@ -154,18 +152,10 @@ function info(box: DaytonaBox, fallbackCreatedAt?: number): SandboxInfo {
  * Since 0.227, a create that times out after Daytona made the sandbox names it on the error, and Daytona
  * leaves it running. Delete it, best effort and bounded, so the timeout still reaches the caller promptly.
  */
-function hasSandboxId(cause: unknown): cause is { sandboxId: string } {
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    "sandboxId" in cause &&
-    typeof cause.sandboxId === "string"
-  );
-}
-
 async function abandon(client: DaytonaClient<DaytonaBox>, cause: unknown) {
-  if (!hasSandboxId(cause)) return;
-  const id = cause.sandboxId;
+  const id = decodeNative(cause).sandboxId;
+
+  if (id === undefined) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const removal = (async () => {
@@ -267,7 +257,9 @@ export function createDaytonaProvider<B extends DaytonaBox>(
           { code: "auth", provider: "daytona" },
         );
 
-      const { Daytona } = await loadPeer("@daytonaio/sdk", "daytona", load);
+      const sdk = await loadPeer("@daytonaio/sdk", "daytona", load);
+      rememberDaytonaErrors(sdk);
+      const { Daytona } = sdk;
 
       return new Daytona(config);
     })());
