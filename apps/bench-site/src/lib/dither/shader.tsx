@@ -748,7 +748,6 @@ export const DitherShader = ({
       markFrame(false);
     };
     // `specs` is described by `specKey`; a new `cell` re-measures.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [field, specKey, cell, hasContext]);
 
   useEffect(() => {

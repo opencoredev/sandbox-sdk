@@ -309,8 +309,8 @@ export async function reapRun(
           );
       }
 
-    // oxlint-disable-next-line unicorn/no-useless-spread -- resolving removes reviews while iterating.
-    for (const item of [...reviews])
+    // Copy first: resolving removes reviews while iterating.
+    for (const item of Array.from(reviews))
       if (item.provider === p.name && item.kind === "sandbox") await resolveAbsent(item.id);
     let count = 0;
 

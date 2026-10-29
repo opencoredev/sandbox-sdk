@@ -52,7 +52,7 @@ export const DITHER_COLORS = {
  * Palette names win over the CSS keywords they share (`"red"` is the
  * dithercn red, not `#f00`).
  */
-// oxlint-disable-next-line typescript/ban-types -- `string & {}` keeps editor autocomplete for the names.
+// `string & {}` keeps editor autocomplete for the palette names.
 export type DitherColor = DitherColorName | (string & {});
 
 /** A cell size: CSS pixels, or any CSS length such as `var(--dither-cell)`. */

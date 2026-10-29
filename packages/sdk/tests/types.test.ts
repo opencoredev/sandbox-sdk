@@ -16,8 +16,8 @@ function runtimeCapability(): Capability {
 test("capability methods are absent from unsupported provider types", async () => {
   const box = await createSandbox(memory());
 
-  // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
-  if (false) {
+  // Compile-time negative API check. The function is type-checked but never called.
+  async function unsupportedCall() {
     // @ts-expect-error memory has no pause capability
     await box.pause();
     // @ts-expect-error memory has no snapshot capability
@@ -25,6 +25,8 @@ test("capability methods are absent from unsupported provider types", async () =
     // @ts-expect-error memory has no terminal capability
     await box.terminal({ cols: 80, rows: 24 });
   }
+
+  expect(unsupportedCall).toBeTypeOf("function");
 
   expect("pause" in box).toBe(false);
   await box.destroy();
@@ -74,11 +76,13 @@ test("a provider chosen at runtime exposes capability methods only after hasCapa
   const { hasCapability } = await import("../src/index.js");
   const box = await createSandbox(runtimeProvider());
 
-  // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
-  if (false) {
+  // Compile-time negative API check. The function is type-checked but never called.
+  async function unsupportedCall() {
     // @ts-expect-error pause may be missing on a runtime-chosen provider
     await box.pause();
   }
+
+  expect(unsupportedCall).toBeTypeOf("function");
 
   if (hasCapability(box, "pause")) await box.pause();
 
@@ -112,11 +116,13 @@ test("hasCapability with a union capability narrows nothing it did not check", a
   const capability = runtimeCapability();
 
   if (hasCapability(box, capability)) {
-    // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
-    if (false) {
+    // Compile-time negative API check. The function is type-checked but never called.
+    async function unsupportedCall() {
       // @ts-expect-error checking an unknown capability does not prove terminal exists
       await box.terminal({ cols: 80, rows: 24 });
     }
+
+    expect(unsupportedCall).toBeTypeOf("function");
   }
 
   await box.destroy();
@@ -128,11 +134,13 @@ test("a union of concrete providers keeps each provider's capabilities", async (
   const pick = (useLocal: boolean) => (useLocal ? local() : memory());
   const box = await createSandbox(pick(false));
 
-  // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
-  if (false) {
+  // Compile-time negative API check. The function is type-checked but never called.
+  async function unsupportedCall() {
     // @ts-expect-error memory in the union has no pause, so pause is not guaranteed
     await box.pause();
   }
+
+  expect(unsupportedCall).toBeTypeOf("function");
 
   if (hasCapability(box, "pause")) await box.pause();
   expect(box.provider).toBe("memory");

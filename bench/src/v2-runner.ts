@@ -402,8 +402,8 @@ export async function runV2(
   }
 
   async function reconcileReviews(p: ReadyProvider) {
-    // oxlint-disable-next-line unicorn/no-useless-spread -- resolveAbsent removes reviews while iterating.
-    for (const entry of [...(report.cleanupReview ?? [])])
+    // Copy first: resolveAbsent removes reviews while iterating.
+    for (const entry of Array.from(report.cleanupReview ?? []))
       if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
 
