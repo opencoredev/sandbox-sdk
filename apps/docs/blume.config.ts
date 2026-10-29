@@ -48,6 +48,9 @@ export default defineConfig({
   ],
   navigation: {
     cta: { href: "https://github.com/opencoredev/sandbox-sdk", label: "GitHub" },
+    // The repo link is the only thing in Blume's site footer, so hiding it drops
+    // the footer. GitHub stays one click away through the header CTA above.
+    repo: false,
     sidebar: {
       display: "group",
       items: [

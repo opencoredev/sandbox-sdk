@@ -43,6 +43,26 @@
   --blume-content-width: 44rem;
 }
 
+/* No rubber-band pull past the top or bottom, same as the landing page. */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+/*
+ * The sidebar, table of contents, search panes, code blocks, and wide tables
+ * scroll on their own. Reaching the end of one neither bounces nor hands the
+ * scroll to the page (or to the browser's swipe-to-go-back on a code block).
+ */
+[data-blume-nav-drawer],
+[data-blume-toc],
+[data-blume-search-results],
+[data-blume-search-preview],
+.prose :where(pre, pre > code, table),
+.prose :where(div:has(> table)) {
+  overscroll-behavior: none;
+}
+
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
