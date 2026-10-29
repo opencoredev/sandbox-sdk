@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { Readable } from "node:stream";
 import type { NetworkPolicy, Sandbox, SandboxMounts, SandboxRegion } from "@vercel/sandbox";
-import type { Provider, CreateInput, SandboxInfo, FileInfo, ExecInput } from "../../provider.js";
+import type {
+  Provider,
+  CreateInput,
+  SandboxInfo,
+  FileInfo,
+  ExecInput,
+  Labels,
+} from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../shared/shell.js";
 import { apiCode, unsupported, vercelError } from "./errors.js";
@@ -164,10 +171,8 @@ export function createVercelProvider<N extends NativeSandbox>(
     }
   };
 
-  const api = () => ({
-    ...credentials(),
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-  });
+  const api = () =>
+    options.fetch === undefined ? credentials() : { ...credentials(), fetch: options.fetch };
 
   function credentials() {
     const token = options.token ?? process.env.VERCEL_TOKEN;
@@ -267,7 +272,8 @@ export function createVercelProvider<N extends NativeSandbox>(
   function resources(size: CreateInput["size"]) {
     if (size === undefined) return undefined;
 
-    if (typeof size === "string") return { vcpus: { small: 1, medium: 2, large: 4 }[size] };
+    if (size === "small" || size === "medium" || size === "large")
+      return { vcpus: { small: 1, medium: 2, large: 4 }[size] };
 
     if (
       Number.isSafeInteger(size.cpu) &&
@@ -432,11 +438,9 @@ export function createVercelProvider<N extends NativeSandbox>(
         if (input.idleTimeoutMs !== undefined)
           unsupported("idleTimeoutMs is not exposed by the Vercel SDK");
 
-        const tags = {
-          ...input.labels,
-          "sandbox-sdk": "1",
-          ...(input.key === undefined ? {} : { [keyTag]: input.key }),
-        };
+        const tags: Labels = { ...input.labels, "sandbox-sdk": "1" };
+
+        if (input.key !== undefined) tags[keyTag] = input.key;
 
         if (Object.keys(tags).length > 5)
           unsupported(
@@ -449,14 +453,11 @@ export function createVercelProvider<N extends NativeSandbox>(
         if (input.network !== undefined && options.networkPolicy !== undefined)
           invalid("Pass network to createSandbox or networkPolicy to vercel(), not both.");
 
-        const networkPolicy =
-          input.network === "none"
-            ? "deny-all"
-            : typeof input.network === "object"
-              ? { allow: input.network.allow }
-              : input.network === "all"
-                ? "allow-all"
-                : (options.networkPolicy ?? "allow-all");
+        let networkPolicy: NetworkPolicy = options.networkPolicy ?? "allow-all";
+
+        if (input.network === "none") networkPolicy = "deny-all";
+        else if (input.network === "all") networkPolicy = "allow-all";
+        else if (input.network !== undefined) networkPolicy = { allow: input.network.allow };
 
         // Vercel's timeout bounds each session; every resume starts a full new one.
         const common = {
@@ -478,27 +479,23 @@ export function createVercelProvider<N extends NativeSandbox>(
           onResume: clean,
         } satisfies Parameters<typeof Sandbox.create>[0];
 
-        const pending = { ...common, tags: { ...tags, "sandbox-sdk": "pending" } };
+        let params: Parameters<VercelClient<N>["create"]>[0];
 
-        // A snapshot fixes the base file system, so image, runtime and source apply only to fresh sandboxes.
-        const base =
-          options.image !== undefined
-            ? { image: options.image }
-            : options.runtime !== undefined
-              ? { runtime: options.runtime }
-              : {};
+        if (input.from) {
+          // The pending tag hides a restore from list() until clean() has run.
+          const pending = { ...common, tags: { ...tags, "sandbox-sdk": "pending" } };
+          params = { ...pending, source: { type: "snapshot", snapshotId: input.from } };
+        } else {
+          // A snapshot fixes the base file system, so image, runtime and source apply only to fresh sandboxes.
+          params = { ...common };
 
-        const box = await (
-          await sdk()
-        ).create(
-          input.from
-            ? { ...pending, source: { type: "snapshot", snapshotId: input.from } }
-            : {
-                ...common,
-                ...base,
-                ...(options.source === undefined ? {} : { source: options.source }),
-              },
-        );
+          if (options.image !== undefined) params.image = options.image;
+          else if (options.runtime !== undefined) params.runtime = options.runtime;
+
+          if (options.source !== undefined) params.source = options.source;
+        }
+
+        const box = await (await sdk()).create(params);
 
         boxes.set(box.name, box);
 
