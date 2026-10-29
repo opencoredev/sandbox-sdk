@@ -37,7 +37,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     const result = await provider.exec(id, { command, cwd: "/workspace", env: defaults, timeoutMs: 120_000, onChunk() {} });
     if (result.exitCode !== 0) throw new SandboxError("File transfer failed. The remote archive command failed. Ensure tar is installed and paths are accessible.", { code: "provider" });
   }
-  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); await ready(); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
+  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); await ready().finally(guard); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   async function list(path = ".", options: { recursive?: boolean; glob?: string } = {}): Promise<FileInfo[]> {
     const root = pathOf(path); const result: FileInfo[] = [];
     async function visit(dir: string) {
@@ -212,6 +212,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       const poll = async () => {
         try {
           await ready();
+          if (stopped) return;
           const current = new Map((await list(path, options)).map(item => [item.path, `${item.size}:${item.modifiedAt}`]));
           if (previous) {
             for (const [path, value] of current) if (!previous.has(path) || previous.get(path) !== value) { if (!stopped) callback({ type: previous.has(path) ? "modified" : "added", path }); }
