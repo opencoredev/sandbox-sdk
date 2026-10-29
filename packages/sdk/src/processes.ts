@@ -109,6 +109,8 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
+  // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
+  const streams = provider.processMode === "stream";
 
   const safe = async <T>(action: () => Promise<T>): Promise<T> => {
     try {
@@ -141,6 +143,14 @@ export function makeProcesses(
         if (chunk.stream === "stdout") onStdout(chunk.text);
       },
     });
+
+  // Without a native range read, read the whole log and keep the requested window.
+  async function readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+    if (provider.files.readRange) return provider.files.readRange(id, path, { offset, length });
+    const bytes = await provider.files.read(id, path);
+
+    return bytes.subarray(offset, offset + length);
+  }
 
   async function exitCode(dir: string): Promise<number | null> {
     try {
@@ -287,15 +297,12 @@ export function makeProcesses(
 
       let base: number, start: number, size: number, bytes: Uint8Array;
 
-      if (provider.name === "memory" && provider.files.readRange) {
+      if (streams) {
         status = (await info(name)).status;
         base = Number(await files.read(`${dir}/base`));
         size = (await files.stat(`${dir}/out.log`)).size;
         start = Math.max(0, (requested ?? base) - base - lookaround);
-        bytes = await provider.files.readRange(id, `${dir}/out.log`, {
-          offset: start,
-          length: budget + lookaround * 2,
-        });
+        bytes = await readRange(`${dir}/out.log`, start, budget + lookaround * 2);
       } else {
         // Share the writer's lock so rotation cannot pair a new base with an old file.
         let wire = "";
@@ -566,7 +573,7 @@ export function makeProcesses(
       const dir = nameOf(options.name);
 
       if (
-        provider.name === "memory" &&
+        streams &&
         provider.startProcess &&
         (await files.exists(`${dir}/spec.json`)) &&
         !(await files.exists(`${dir}/exit`))
@@ -619,7 +626,7 @@ export function makeProcesses(
         // A native hook reports its exit from its own stream, so waiting on it costs no provider call.
         let hookExit: Promise<unknown> | undefined;
 
-        if (provider.name === "memory" && provider.startProcess) {
+        if (streams && provider.startProcess) {
           controller?.state("starting");
           controller?.ready(false);
           await files.write(`${dir}/spec.json`, spec);
@@ -683,7 +690,7 @@ export function makeProcesses(
 
         controller?.launch(launch);
 
-        if (launched && provider.startProcess && provider.name === "memory") {
+        if (launched && streams && provider.startProcess) {
           let writing: Promise<void> | undefined;
           let queued: string[] = [];
           let queuedBytes = 0;
@@ -863,10 +870,10 @@ export function makeProcesses(
             }
           } else if (port) {
             try {
-              // memory previews are intentionally offline; the native hook's fake URL denotes readiness.
+              // Placeholder previews are never served, so issuing the URL is the readiness signal.
               const access = await preview(
                 port,
-                provider.name === "memory"
+                provider.previewMode === "placeholder"
                   ? {}
                   : {
                       path: "http" in options.ready ? options.ready.http.path : undefined,

@@ -436,11 +436,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       safe(async () => {
         const root = resolve(source);
 
-        if (
-          provider.name !== "memory" &&
-          fs.transfer !== "files" &&
-          (await local.lstat(root)).isDirectory()
-        ) {
+        if (fs.transfer !== "files" && (await local.lstat(root)).isDirectory()) {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-upload-"));
           const archive = `/tmp/.sandbox-sdk/upload-${crypto.randomUUID()}.tar`;
 
@@ -492,11 +488,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       }),
     download: (source, target) =>
       safe(async () => {
-        if (
-          provider.name !== "memory" &&
-          fs.transfer !== "files" &&
-          (await fs.stat(id, pathOf(source))).type === "directory"
-        ) {
+        if (fs.transfer !== "files" && (await fs.stat(id, pathOf(source))).type === "directory") {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-download-"));
           const archive = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}.tar`;
 
@@ -617,7 +609,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     },
     mark: (name = `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`) =>
       safe(async () => {
-        if (provider.name === "memory")
+        if (fs.checkpoints === "files")
           await write(checkpoint(name), JSON.stringify(await snapshot()));
         else await tree(checkpoint(name));
 
@@ -625,7 +617,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       }),
     changes: (options = {}) =>
       safe(async () => {
-        if (provider.name !== "memory") {
+        if (fs.checkpoints !== "files") {
           const before = (await baseline(options.since)).trim(),
             after = await tree();
 

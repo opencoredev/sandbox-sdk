@@ -118,8 +118,7 @@ export async function makeHandle<N>(
     if (names.length || options.from !== undefined) {
       const record = JSON.stringify(names);
 
-      if (provider.files.writeCreatesParents || provider.name === "memory")
-        await files.write(namesPath, record);
+      if (provider.files.writeCreatesParents) await files.write(namesPath, record);
       else {
         // Names are validated identifiers, so mkdir and write fit in one quoted exec.
         const result = await provider.exec(info.id, {

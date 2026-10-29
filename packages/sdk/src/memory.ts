@@ -114,6 +114,9 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
   }
 
   const files: Provider["files"] = {
+    // No tar or git here: transfers and checkpoints use primitive file calls.
+    transfer: "files",
+    checkpoints: "files",
     writeCreatesParents: true,
     writeSupportsMode: true,
     async readRange(id, path, options) {
@@ -612,6 +615,8 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
   } = {
     name: "memory",
     inlineActivity: true,
+    processMode: "stream",
+    previewMode: "placeholder",
     keyMode: "exact",
     capabilities: new Set<"network-policy">(["network-policy"]),
     files,
