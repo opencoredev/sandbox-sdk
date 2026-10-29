@@ -68,12 +68,13 @@ void main() {
   outColor = vec4(col, 1.0);
 }`;
 
-export interface HalftoneStyle {
+export interface HalftoneDots {
   /** Pitch between cell centres, in CSS pixels. */
   cell: number;
   /** Largest dot as a share of its cell, 0..1. */
   fill: number;
-  shape: "square" | "round";
+  /** Outline of each dot. */
+  dot: "square" | "round";
   /** Soft light between the cells, 0 for crisp dots on black, 1 for a lit haze. */
   glow: number;
   /** Ground colour as linear 0..1 RGB. */
@@ -109,7 +110,7 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string) {
 }
 
 /** Returns null when WebGL2 is unavailable, so the caller can show the painted canvas instead. */
-export function createHalftone(canvas: HTMLCanvasElement, style: HalftoneStyle): Halftone | null {
+export function createHalftone(canvas: HTMLCanvasElement, dots: HalftoneDots): Halftone | null {
   const gl = canvas.getContext("webgl2", {
     antialias: false,
     alpha: false,
@@ -166,10 +167,10 @@ export function createHalftone(canvas: HTMLCanvasElement, style: HalftoneStyle):
     zoom: gl.getUniformLocation(program, "zoom"),
   };
 
-  gl.uniform1f(u.fill, style.fill);
-  gl.uniform1f(u.square, style.shape === "square" ? 1 : 0);
-  gl.uniform1f(u.glow, style.glow);
-  gl.uniform3f(u.ground, style.ground[0], style.ground[1], style.ground[2]);
+  gl.uniform1f(u.fill, dots.fill);
+  gl.uniform1f(u.square, dots.dot === "square" ? 1 : 0);
+  gl.uniform1f(u.glow, dots.glow);
+  gl.uniform3f(u.ground, dots.ground[0], dots.ground[1], dots.ground[2]);
 
   return {
     resize(width, height, dpr) {
@@ -179,7 +180,7 @@ export function createHalftone(canvas: HTMLCanvasElement, style: HalftoneStyle):
       gl.uniform2f(u.res, width, height);
       // finer cells on a phone, so a small frame still holds enough of them to read
       const narrow = width / dpr < 640 ? 0.68 : 1;
-      gl.uniform1f(u.cell, style.cell * narrow * dpr);
+      gl.uniform1f(u.cell, dots.cell * narrow * dpr);
     },
     render(source, scope, zoom) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
-import { createHalftone, type HalftoneStyle, type Scope } from "./halftone";
+import { createHalftone, type HalftoneDots, type Scope } from "./halftone";
 
 export interface Look {
   x: number;
@@ -31,7 +31,7 @@ export type ScopeSource = () => { x: number; y: number; r: number } | null;
 
 interface HalftoneCanvasProps {
   paint: Painter;
-  style: HalftoneStyle;
+  dots: HalftoneDots;
   fps?: number;
   /** The play time shown as a still to readers who prefer reduced motion. */
   stillAt?: number;
@@ -56,7 +56,7 @@ const subscribeMotion = (change: () => void) => {
 /** A painted scene drawn as an animated halftone. Pauses off screen and in hidden tabs. */
 export function HalftoneCanvas({
   paint,
-  style,
+  dots,
   fps = 30,
   stillAt = 0,
   parallax = false,
@@ -70,9 +70,11 @@ export function HalftoneCanvas({
   const paintRef = useRef(paint);
   const scopeRef = useRef(scope);
   const frameRef = useRef(onFrame);
-  paintRef.current = paint;
-  scopeRef.current = scope;
-  frameRef.current = onFrame;
+  useLayoutEffect(() => {
+    paintRef.current = paint;
+    scopeRef.current = scope;
+    frameRef.current = onFrame;
+  });
 
   // follows the setting live, so turning on reduced motion stops a canvas that is already playing
   const still = useSyncExternalStore(
@@ -81,7 +83,7 @@ export function HalftoneCanvas({
     () => false,
   );
 
-  const { cell, fill, shape, glow, ground } = style;
+  const { cell, fill, dot, glow, ground } = dots;
   useEffect(() => {
     const host = ref.current;
 
@@ -110,7 +112,7 @@ export function HalftoneCanvas({
 
     // a failed shader leaves a WebGL context behind, and a canvas can't switch to 2D, so swap in a fresh one
     const renderer = () => {
-      const made = createHalftone(canvas, { cell, fill, shape, glow, ground });
+      const made = createHalftone(canvas, { cell, fill, dot, glow, ground });
 
       if (!made && !canvas.getContext("2d")) {
         canvas.remove();
@@ -264,7 +266,7 @@ export function HalftoneCanvas({
       halftone?.dispose();
       detach();
     };
-  }, [cell, fill, shape, glow, ground, fps, stillAt, parallax, zoom, still]);
+  }, [cell, fill, dot, glow, ground, fps, stillAt, parallax, zoom, still]);
 
   return <div ref={ref} className={className} aria-hidden="true" />;
 }

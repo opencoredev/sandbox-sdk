@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { HalftoneCanvas } from "@/components/halftone/halftone-canvas";
-import type { HalftoneStyle } from "@/components/halftone/halftone";
+import type { HalftoneDots } from "@/components/halftone/halftone";
 import { providerArt } from "@/components/halftone/painters";
 
 import styles from "./landing.module.css";
@@ -18,18 +18,20 @@ const SLIDES = Array.from({ length: N * COPIES }, (_, i) => i);
 const DOT_PITCH = 28;
 
 interface Props {
-  style: HalftoneStyle;
+  dots: HalftoneDots;
   brackets: ReactNode;
   arrow: ReactNode;
 }
 
 /** The provider cards as an endless, scroll-snapped carousel. */
-export function ProvidersCarousel({ style, brackets, arrow }: Props) {
+export function ProvidersCarousel({ dots, brackets, arrow }: Props) {
   const track = useRef<HTMLDivElement>(null);
   const indicator = useRef<HTMLSpanElement>(null);
   const [current, setCurrent] = useState(N + 1);
   const currentRef = useRef(current);
-  currentRef.current = current;
+  useLayoutEffect(() => {
+    currentRef.current = current;
+  });
   const active = current % N;
 
   /** Card geometry, measured from the first two slides. */
@@ -184,7 +186,7 @@ export function ProvidersCarousel({ style, brackets, arrow }: Props) {
                 {Math.abs(i - current) <= 1 && (
                   <HalftoneCanvas
                     paint={p.paint}
-                    style={style}
+                    dots={dots}
                     fps={30}
                     stillAt={3}
                     className={styles.cardCanvas}
