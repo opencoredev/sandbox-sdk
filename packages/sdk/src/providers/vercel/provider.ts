@@ -100,16 +100,16 @@ function decodeStats(text: string): FileInfo[] {
   const result: FileInfo[] = [];
 
   for (let i = 0; i < fields.length; i += 2) {
-    const path = fields[i],
-      line = fields[i + 1];
+    const path = fields[i];
+    const line = fields[i + 1];
 
     const match = line?.match(/^([0-9a-f]+) ([0-9]+) (.+)$/);
 
     if (path === undefined || !match) throw new Error("Invalid Vercel stat response");
 
-    const mode = Number.parseInt(match[1] ?? "", 16),
-      size = Number(match[2]),
-      modifiedAt = Date.parse(match[3] ?? "");
+    const mode = Number.parseInt(match[1] ?? "", 16);
+    const size = Number(match[2]);
+    const modifiedAt = Date.parse(match[3] ?? "");
 
     if (![mode, size, modifiedAt].every(Number.isFinite))
       throw new Error("Invalid Vercel stat fields");
@@ -319,8 +319,8 @@ export function createVercelProvider<N extends NativeSandbox>(
       detached: true,
     });
 
-    let output = "",
-      stderr = "";
+    let output = "";
+    let stderr = "";
 
     const logs = (async () => {
       for await (const chunk of command.logs()) {

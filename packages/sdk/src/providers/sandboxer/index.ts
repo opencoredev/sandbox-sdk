@@ -248,8 +248,8 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     // Exchanging the token over HTTP fails until the port listens, and a
     // tokened URL adds a redirect to every request, so build the cookie here.
     preview: async (url) => {
-      const value = new URL(url),
-        token = value.searchParams.get("_token");
+      const value = new URL(url);
+      const token = value.searchParams.get("_token");
 
       if (token === null) return { url };
 

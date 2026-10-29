@@ -318,8 +318,8 @@ export function createAgentosProvider<V extends AgentosVm>(
       if (input.signal?.aborted) return { exitCode: null, timedOut: true };
 
       return safe(id, async (vm) => {
-        const stdout = new TextDecoder(),
-          stderr = new TextDecoder();
+        const stdout = new TextDecoder();
+        const stderr = new TextDecoder();
 
         // 0.4.1 shell exec does not close supplied stdin. A virtual file gives
         // every command finite input without exposing a host file or pipe.

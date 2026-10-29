@@ -260,8 +260,6 @@ export async function execute(
       throw failure("Boat stream ended without an exit result", "outcome_unknown", id);
     })();
 
-    // Observed now: a cancelled race never awaits completion's own failure.
-    void completion.catch(() => {});
     const result = await Promise.race([completion, cancellation]);
 
     if (result === "cancelled" || cancelled) {

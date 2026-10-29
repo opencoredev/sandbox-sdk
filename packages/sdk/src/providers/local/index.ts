@@ -400,8 +400,8 @@ export function local(options: LocalOptions = {}): LocalProvider {
       const { info: current, labels } = inspected(await inspect(id));
       const limit = (value: string | undefined) => (value ? Number(value) : Infinity);
 
-      const deadline = limit(labels[deadlineLabel]),
-        idle = limit(labels[idleLabel]);
+      const deadline = limit(labels[deadlineLabel]);
+      const idle = limit(labels[idleLabel]);
 
       if (Number.isFinite(deadline) || Number.isFinite(idle)) timers.add(current.id);
       let expired = Date.now() >= deadline;
@@ -523,8 +523,6 @@ export function local(options: LocalOptions = {}): LocalProvider {
         onChunk: input.onChunk,
       });
 
-      void execution.catch(() => {});
-
       try {
         await Promise.race([execution, cancellation]);
 
@@ -544,6 +542,7 @@ export function local(options: LocalOptions = {}): LocalProvider {
       } finally {
         clearTimeout(timer);
         input.signal?.removeEventListener("abort", cancel);
+        // A leftover PID file in /tmp is harmless; the command's outcome stands.
         await raw(id, ["rm", "-f", pidfile]).catch(() => {});
         const phases = timings.get(id);
 
