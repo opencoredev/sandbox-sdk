@@ -116,8 +116,29 @@ body {
   text-decoration-color: var(--sbx-accent);
 }
 
-/* inline code: a quiet chip, white text, no backticks */
-.prose :where(:not(pre) > code) {
+/*
+ * Blockquotes carry notes like the beta banner on the overview, so they read
+ * as plain text beside an amber rule: no italics, no curly quotes wrapped
+ * around inline code.
+ */
+.prose :where(blockquote) {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--sbx-body);
+  border-inline-start-color: var(--sbx-accent);
+}
+
+.prose :where(blockquote p)::before,
+.prose :where(blockquote p)::after {
+  content: none;
+}
+
+/*
+ * Inline code: a quiet chip, white text, no backticks. The selector matches
+ * the typography plugin's own, which is no more specific, so the weight here
+ * wins over its 500 and `.not-prose` regions stay untouched.
+ */
+.prose :not(pre) > code:not(:where(.not-prose *)) {
   color: var(--sbx-ink);
   background: var(--sbx-surface-2);
   border: 1px solid var(--sbx-line);
