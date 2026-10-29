@@ -9,6 +9,7 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
+import { createDeadline, sleep } from "../../http.js";
 import { createNativeApi, sdkCall, sdkConstruct, type NativeApi, type NativeSdkBinding } from "../../native.js";
 import { execute, fileChunkBytes, quote, stage, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative, BoatClientSdk, BoatSandboxSdk } from "../boat/index.js";
@@ -275,21 +276,25 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         };
         // A response may be lost after Boat accepts the VM. Retry only with the
         // same documented idempotency key and identical body, including on abort,
-        // so a late VM can be recovered and destroyed below.
+        // so a late VM can be recovered and destroyed below. One deadline covers
+        // every attempt, the backoff between them and the rename after.
+        const deadline = createDeadline(transport.timeoutMs);
+        const unknown = () =>
+          failure(
+            `${label} create outcome remains unknown; recover with idempotency key ${idempotencyKey} and the same request body within 24 hours`,
+            "outcome_unknown",
+          );
         let sandbox: BoatSandbox | undefined;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            sandbox = sandboxOf(await once.json({ method: "POST", path: "/sandboxes", body, idempotencyKey }));
+            sandbox = sandboxOf(await once.json({ method: "POST", path: "/sandboxes", body, idempotencyKey, deadline }));
             break;
           } catch (error) {
             const code = boatError(error).code;
             if (["auth", "invalid_argument", "quota", "not_found"].includes(code)) throw error;
-            if (attempt === 2)
-              throw failure(
-                `${label} create outcome remains unknown; recover with idempotency key ${idempotencyKey} and the same request body within 24 hours`,
-                "outcome_unknown",
-              );
-            await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+            const delay = 250 * (attempt + 1);
+            if (attempt === 2 || delay >= deadline.remaining()) throw unknown();
+            await sleep(delay, deadline, settings.name).catch(() => { throw unknown(); });
           }
         }
         if (!sandbox) throw failure(`${label} returned no sandbox after create`, "outcome_unknown");
@@ -299,7 +304,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           // Boat has no name at create. Preserve durable cross-client metadata;
           // its command API waits for provisioning when first use arrives early.
-          const updated = sandboxOf(await http.json({ method: "PATCH", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, body: { name } }));
+          const updated = sandboxOf(await http.json({ method: "PATCH", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, body: { name }, deadline }));
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           if (updated.name !== name) return await provider.connect(id);
           return { ...info(updated, failure, label, settings.pausedStates), state: "running" } satisfies SandboxInfo;

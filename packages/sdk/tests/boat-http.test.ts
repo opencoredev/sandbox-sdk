@@ -304,3 +304,28 @@ describe("native API", () => {
     expect(server.calls("DELETE /sandboxes/{id}")[0]?.headers).toMatchObject({ "x-sandboxer-confirm-delete": "sb_1", authorization: "Bearer k" });
   });
 });
+
+describe("create shares one deadline across its attempts (SBX-74 review)", () => {
+  test.each([
+    ["boat", () => boat({ apiKey: "boat-key-123456", apiUrl: server.url, requestTimeoutMs: 150 })],
+    ["sandboxer", () => sandboxer({ apiKey: "boat-key-123456", baseUrl: server.url, requestTimeoutMs: 150 })],
+  ] as const)("%s: immediate 503s stop at requestTimeoutMs, not after three fresh timeouts and the full backoff", async (_name, factory) => {
+    server.on("POST /sandboxes", { status: 503, json: { message: "busy" } });
+    const started = Date.now();
+    await expect(factory().create({ labels: {} })).rejects.toMatchObject({ code: "outcome_unknown" });
+    // Before the fix: three attempts and 250 + 500 ms of backoff, about 760 ms. The first backoff no longer fits.
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(server.calls("POST /sandboxes")).toHaveLength(1);
+  });
+
+  test("a slow create leaves the rename only what remains of the same deadline", async () => {
+    server.on("POST /sandboxes", { json: { sandbox: { id: "bx_1", name: "", state: "running", createdAt: new Date().toISOString() } }, delayMs: 400 });
+    server.on("PATCH /sandboxes/{id}", { hang: true });
+    server.on("DELETE /sandboxes/{id}", { status: 204 });
+    const started = Date.now();
+    await expect(boat({ apiKey: "boat-key-123456", apiUrl: server.url, requestTimeoutMs: 600 }).create({ labels: {} })).rejects.toMatchObject({ code: "outcome_unknown" });
+    // The PATCH gets about 200 ms, not a fresh 600 ms (1000 ms in all), and the half-made VM is destroyed.
+    expect(Date.now() - started).toBeLessThan(850);
+    expect(server.calls("DELETE /sandboxes/{id}").length).toBeGreaterThan(0);
+  });
+});
