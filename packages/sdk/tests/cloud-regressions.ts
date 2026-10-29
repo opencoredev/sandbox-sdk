@@ -12,8 +12,11 @@ export function cloudRegressions(
     test("invalid cwd fails normally without deleting the VM", async () => {
       const box = await createSandbox(factory());
       try {
-        const result = await box.run("true", { cwd: "/workspace/does-not-exist", timeoutMs: 300 });
-        expect(result).toMatchObject({ ok: false, timedOut: false, exitCode: 127 });
+        const result = await box.run("pwd", { cwd: "/workspace/does-not-exist", timeoutMs: 300 });
+        expect(result).toMatchObject({ ok: false, timedOut: false, exitCode: 2, stdout: "", stderr: expect.stringMatching(/cd.*does-not-exist/) });
+        const started = await box.start("sleep 30", { name: "bad-cwd", cwd: "/workspace/does-not-exist" });
+        await expect(started.wait()).resolves.toMatchObject({ exitCode: 2 });
+        expect((await started.logs()).text).toMatch(/cd.*does-not-exist/);
         expect(guest(box.id)).toBeDefined();
         expect((await box.run("echo alive")).stdout).toBe("alive\n");
       } finally {

@@ -546,3 +546,14 @@ test("snapshot rejects expiresInMs because Superserve keeps snapshots until dele
     expect(await provider.snapshot?.(box.id, { expiresInMs: 0 })).toEqual({ id: "snapshot-1" });
   } finally { await provider.destroy(box.id); }
 });
+
+test("a missing cwd is a failed run with the shell error on stderr, and start reports it in the log", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({ ok: false, exitCode: 2, stdout: "", stderr: expect.stringMatching(/cd.*nope/) });
+    const started = await box.start("sleep 30", { name: "bad-cwd", cwd: "nope" });
+    await expect(started.wait()).resolves.toMatchObject({ exitCode: 2 });
+    expect((await started.logs()).text).toMatch(/cd.*nope/);
+    expect((await box.run("echo alive")).stdout).toBe("alive\n");
+  } finally { await box.destroy(); }
+});

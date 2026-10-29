@@ -11,7 +11,6 @@ import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { waitReady } from "./ready.js";
 import { execute, raw } from "./exec.js";
-import { quote } from "../../run.js";
 import { files } from "./files.js";
 import {
   tenkiError,
@@ -373,10 +372,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         if (state.active > 1) state.overlap = true;
         let root: string | undefined;
         try {
-          // The guest supervisor fails before spawning when cwd is missing. Change
-          // directory in the same shell instead: a bad cwd is then a failed result, as elsewhere.
-          const command = `cd ${quote(input.cwd)} || exit\n${input.command}`;
-          return await execute(value, { ...input, cwd: "/", command }, (resolved, stable) => {
+          return await execute(value, input, (resolved, stable) => {
             if (!stable) state.untracked = true;
             root = resolved;
           });
