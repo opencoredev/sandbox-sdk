@@ -27,10 +27,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.90.0",
+    "@shadcn/lint": "0.2.3",
     "@types/node": "^22.20.1",
     "better-icons": "^1.0.4",
     "oxfmt": "^0.59.0",
-    "oxlint": "^1.74.0",
+    "oxlint": "1.90.0",
     "turbo": "^2.10.5",
     "typescript": "^6.0.3"
   },
