@@ -59,6 +59,7 @@ body {
 [data-blume-search-results],
 [data-blume-search-preview],
 .prose :where(pre, pre > code, table),
+[role="tablist"],
 .prose :where(div:has(> table)) {
   overscroll-behavior: none;
 }
