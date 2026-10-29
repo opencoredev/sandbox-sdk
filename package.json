@@ -17,6 +17,7 @@
     "test": "turbo run test",
     "test:live": "turbo run test:live",
     "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "check": "bun run format && bun run lint && bun run typecheck && bun run test",
     "bench": "bun run --cwd bench bench"
   },
