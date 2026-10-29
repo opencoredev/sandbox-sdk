@@ -297,9 +297,12 @@ export function runConformance(
       await box.files.download("upload", join(path, "download"));
       expect(await readFile(join(path, "download", "keep"), "utf8")).toBe("hello");
     });
-    test("file watch observes changes", async () => {
+    // Each poll is a write plus a watch scan, two round trips on a remote provider.
+    test("file watch observes changes", { timeout: Math.max(timeout ?? 0, 60_000) }, async () => {
       const { box } = await setup();
+      const began = Date.now();
       await box.files.write("watch/file", "a");
+      const writeMs = Date.now() - began;
       const events: string[] = [];
 
       const stop = box.files.watch("watch", (event) => events.push(event.type), {
@@ -317,7 +320,7 @@ export function runConformance(
 
               return events;
             },
-            { timeout: 10_000, interval: 50 },
+            { timeout: Math.max(10_000, 20 * writeMs), interval: 50 },
           )
           .toContain("modified");
       } finally {
