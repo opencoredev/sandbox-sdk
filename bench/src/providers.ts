@@ -65,35 +65,30 @@ const regionKeys = new Map([
   ["daytona", "DAYTONA_TARGET"],
 ]);
 
-function isFunction(value: unknown): value is (...args: never[]) => void {
-  return typeof value === "function";
-}
-
-const method = <T>() => z.custom<T>(isFunction);
-
-const providerSchema: z.ZodType<Provider> = z
+/** The members every adapter has. Methods are checked to be functions, not their signatures. */
+const providerSchema = z
   .object({
     name: z.string(),
     keyMode: z.enum(["exact", "best-effort"]),
-    capabilities: z.custom<Provider["capabilities"]>((value) => value instanceof Set),
-    create: method<Provider["create"]>(),
-    find: method<Provider["find"]>(),
-    connect: method<Provider["connect"]>(),
-    list: method<Provider["list"]>(),
-    destroy: method<Provider["destroy"]>(),
-    exec: method<Provider["exec"]>(),
+    capabilities: z.instanceof(Set),
+    create: z.function(),
+    find: z.function(),
+    connect: z.function(),
+    list: z.function(),
+    destroy: z.function(),
+    exec: z.function(),
     files: z
       .object({
-        read: method<Provider["files"]["read"]>(),
-        write: method<Provider["files"]["write"]>(),
-        list: method<Provider["files"]["list"]>(),
-        stat: method<Provider["files"]["stat"]>(),
-        remove: method<Provider["files"]["remove"]>(),
-        mkdir: method<Provider["files"]["mkdir"]>(),
+        read: z.function(),
+        write: z.function(),
+        list: z.function(),
+        stat: z.function(),
+        remove: z.function(),
+        mkdir: z.function(),
       })
       .passthrough(),
-    previewUrl: method<Provider["previewUrl"]>(),
-    native: method<Provider["native"]>(),
+    previewUrl: z.function(),
+    native: z.function(),
   })
   .passthrough();
 
@@ -102,12 +97,12 @@ function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
 }
 
-export type FactoryOptions = Record<string, string | boolean | undefined>;
+const factoryOptions = z.record(z.string(), z.union([z.string(), z.boolean()]).optional());
+
+export type FactoryOptions = z.infer<typeof factoryOptions>;
 
 /** A provider entry point's factory. Its result is checked by `assertProvider`. */
-type ProviderFactory = (options: FactoryOptions) => Provider | Promise<Provider>;
-
-const providerFactory = z.custom<ProviderFactory>(isFunction);
+const providerFactory = z.function({ input: [factoryOptions] });
 
 export function missingCredentials(name: string, env: NodeJS.ProcessEnv): string[] {
   if (name === "tenki" && env.TENKI_AUTH_TOKEN?.trim()) return [];
@@ -184,23 +179,41 @@ export function checkBudget(
   return planned;
 }
 
-type ProviderKey = keyof Provider;
+/** How a Proxy reads each provider member: methods stay bound to the original adapter. */
+const providerMembers = {
+  name: (target) => target.name,
+  keyMode: (target) => target.keyMode,
+  processMode: (target) => target.processMode,
+  previewMode: (target) => target.previewMode,
+  inlineActivity: (target) => target.inlineActivity,
+  commandShell: (target) => target.commandShell,
+  processRecordRoot: (target) => target.processRecordRoot,
+  capabilities: (target) => target.capabilities,
+  create: (target) => target.create.bind(target),
+  find: (target) => target.find.bind(target),
+  connect: (target) => target.connect.bind(target),
+  list: (target) => target.list.bind(target),
+  destroy: (target) => target.destroy.bind(target),
+  exec: (target) => target.exec.bind(target),
+  files: (target) => target.files,
+  previewUrl: (target) => target.previewUrl.bind(target),
+  native: (target) => target.native.bind(target),
+  close: (target) => target.close?.bind(target),
+  usage: (target) => target.usage?.bind(target),
+  pause: (target) => target.pause?.bind(target),
+  resume: (target) => target.resume?.bind(target),
+  snapshot: (target) => target.snapshot?.bind(target),
+  terminal: (target) => target.terminal?.bind(target),
+  startProcess: (target) => target.startProcess?.bind(target),
+} satisfies { readonly [K in keyof Provider]-?: (target: Provider) => Provider[K] };
 
-type ProviderMethod = Extract<Provider[ProviderKey], (...args: never[]) => void>;
-
-function isProviderKey(target: Provider, key: string | symbol): key is ProviderKey {
-  return key in target;
-}
-
-function isProviderMethod(value: Provider[ProviderKey]): value is ProviderMethod {
-  return typeof value === "function";
+function isProviderKey(key: string | symbol): key is keyof Provider {
+  return Object.hasOwn(providerMembers, key);
 }
 
 /** Read a provider member from a Proxy trap, keeping the provider as each method's receiver. */
 export function providerMember(target: Provider, key: string | symbol) {
-  if (!isProviderKey(target, key)) return undefined;
+  if (!isProviderKey(key)) return undefined;
 
-  const value = target[key];
-
-  return isProviderMethod(value) ? value.bind(target) : value;
+  return providerMembers[key](target);
 }
