@@ -245,13 +245,12 @@ exit "$c"; }`;
  * Commands for a supervisor that can run from a zygote. A client's first
  * command in a sandbox runs the plain supervisor: a zygote only pays off from
  * later commands, and its client and server add ~10 KB to the command, which
- * Superserve charges for per request (~2 ms per KB on a fresh sandbox). The
- * plain command still marks the sandbox as reused, so the next command's
- * one-shot starts the zygote.
+ * Superserve charges for per request (~2 ms per KB on a fresh sandbox). That
+ * command is the bare supervisor source, as before zygotes existed; it marks the
+ * sandbox as reused, so the next command's one-shot starts the zygote.
  */
 export function zygoteSupervisor(source: string) {
   const program = zygotePython(source);
-  const plain = cachedPython(source, undefined, "False");
   const seen = `${zygoteDir(program)}.seen`;
   // Sandboxes this client has sent a command; bounded, forgetting only costs a plain command.
   const used = new Set<string>();
@@ -266,7 +265,7 @@ export function zygoteSupervisor(source: string) {
       if (used.has(sandbox)) return spec === undefined ? zygoteCommand(program, root) : `${zygoteCommand(program, root)} <<'SDKSPEC'\n${spec}\nSDKSPEC`;
       if (used.size >= 10_000) used.clear();
       used.add(sandbox);
-      return `{ python3 -S -c ${quote(plain)} ${quote(root)}${spec === undefined ? "" : ` ${spec}`}; c=$?; : >${quote(seen)} 2>/dev/null; exit "$c"; }`;
+      return `{ python3 -S -c ${quote(source)} ${quote(root)}${spec === undefined ? "" : ` ${spec}`}; c=$?; : >${quote(seen)} 2>/dev/null; exit "$c"; }`;
     },
     zygote: (root: string) => zygoteCommand(program, root),
   };
