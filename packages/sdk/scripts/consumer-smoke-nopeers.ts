@@ -20,7 +20,7 @@ import pkg from "../package.json" with { type: "json" };
 import { externalPackages } from "./externals.ts";
 
 /** Provider subpaths that must work with no peer installed. Add a provider when its adapter stops loading its SDK. */
-const noPeerProviders: string[] = ["daytona", "e2b", "superserve"];
+const noPeerProviders: string[] = ["daytona", "e2b", "freestyle", "superserve"];
 
 const sdkDir = resolve(import.meta.dir, "..");
 const workDir = mkdtempSync(join(tmpdir(), "sandbox-sdk-nopeers-"));
@@ -148,9 +148,8 @@ ${noPeerProviders.map(subpath => `  assert.equal(typeof (await import("${pkg.nam
 }
 `;
 writeFileSync(join(consumerDir, "native.mjs"), app);
-const env = { ...process.env };
 function run(label: string, command: string, args: string[]) {
-  const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8", env });
+  const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8" });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   check(label, result.status === 0 && output.includes("native api ok"), output.split("\n").slice(-3).join(" | "));
 }
@@ -164,7 +163,7 @@ const { build } = await import("esbuild");
 const bundleDir = join(workDir, "bundle");
 await build({ entryPoints: [join(consumerDir, "native.mjs")], absWorkingDir: consumerDir, bundle: true, platform: "node", format: "esm", splitting: true, outdir: bundleDir, logLevel: "error", banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
 writeFileSync(join(bundleDir, "package.json"), '{ "type": "module" }');
-const bundled = spawnSync("node", ["native.js"], { cwd: bundleDir, timeout: 120_000, encoding: "utf8", env });
+const bundled = spawnSync("node", ["native.js"], { cwd: bundleDir, timeout: 120_000, encoding: "utf8" });
 check("an esbuild split-ESM bundle runs the consumer app", bundled.status === 0 && bundled.stdout.includes("native api ok"), `${bundled.stdout}${bundled.stderr}`.trim().split("\n").slice(-3).join(" | "));
 
 // Step 6: types, with positive and negative checks, in four configurations.

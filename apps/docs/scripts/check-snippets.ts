@@ -10,7 +10,8 @@
  * root). Other fences become snippet-N.ts. Stub modules for local helpers such as
  * "./kv" come from scripts/snippet-stubs/. Opt a fence out with check="skip".
  *
- * The SDK and its optional peers (ai, zod, @mastra/core, @openai/agents) resolve
+ * The SDK, its optional peers (ai, zod, @mastra/core, @openai/agents) and the provider SDKs
+ * in packages/sdk/scripts/externals.ts resolve
  * from packages/sdk, and hono from apps/docs, as they would from one deduplicated node_modules in an app.
  * Otherwise the workspace's second copy of `ai` gives snippets a different
  * `schemaSymbol` than the SDK's declarations, and valid tool maps fail to type-check.
