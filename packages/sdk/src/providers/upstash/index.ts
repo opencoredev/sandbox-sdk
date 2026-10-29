@@ -40,11 +40,17 @@ type CommonOptions = {
   requestTimeoutMs?: number;
   /** Public previews. Default: false (previews require a bearer token). */
   public?: boolean;
+  /** Headers the box's egress proxy adds to outbound HTTPS requests, keyed by host pattern such as `"api.stripe.com"` or `"*.example.com"`. Values never enter the box. */
+  attachHeaders?: BoxConfig["attachHeaders"];
 };
 /** Durable Box: pauses when idle and keeps its files until destroyed. */
 export type UpstashBoxOptions = CommonOptions & {
   /** Durable mode. Default: false. */
   ephemeral?: false;
+  /** Keep the box running instead of pausing it when idle. Default: false. */
+  keepAlive?: boolean;
+  /** Provision a headless Chromium, reachable through `box.native.browser`. Default: false. */
+  browser?: boolean;
 };
 /** Ephemeral Box: ready on create, cannot pause, and Upstash deletes it after its TTL. */
 export type UpstashEphemeralOptions = CommonOptions & {
@@ -247,6 +253,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         if (input.env && metadataEnv in input.env)
           throw new SandboxError(`${metadataEnv} is reserved for SDK discovery metadata. Choose another environment variable name.`, { code: "invalid_argument", provider: "upstash" });
         redactor.add(Object.values(input.env ?? {}));
+        redactor.add(Object.values(options.attachHeaders ?? {}).flatMap(headers => Object.values(headers)));
         const policy = network(input.network);
         const { Box, EphemeralBox, config } = await sdk();
         const meta: Metadata = { version: 1, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" } };
@@ -259,10 +266,13 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           labels: [marker],
           networkPolicy: policy,
           timeout: options.requestTimeoutMs,
+          ...(options.attachHeaders === undefined ? {} : { attachHeaders: options.attachHeaders }),
         } satisfies BoxConfig & EphemeralBoxConfig;
+        // Durable-only settings; the ephemeral option type has no such fields.
+        const durable = options.ephemeral ? {} : { ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }), ...(options.browser === undefined ? {} : { browser: options.browser }) } satisfies BoxConfig;
         const createdAt = Date.now();
         const created = ttl === undefined
-          ? input.from === undefined ? await Box.create({ ...params, initCommand }) : await Box.fromSnapshot(input.from, { ...params, initCommand })
+          ? input.from === undefined ? await Box.create({ ...params, ...durable, initCommand }) : await Box.fromSnapshot(input.from, { ...params, ...durable, initCommand })
           : input.from === undefined ? await EphemeralBox.create({ ...params, ttl }) : await EphemeralBox.fromSnapshot(input.from, { ...params, ttl });
         try {
           if (input.signal?.aborted)
@@ -464,9 +474,10 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           }, id, false, "resume"),
       }
       : {}),
-    snapshot: (id) =>
+    snapshot: (id, settings) =>
       safe(
         async () => {
+          if (settings?.expiresInMs) unsupported("Snapshot expiry is unavailable; Upstash keeps snapshots until you delete them. Omit expiresInMs, or pass 0");
           const value = await box(id);
           return { id: (await value.snapshot({ name: `sdk-v1-${value.size}-${crypto.randomUUID()}` })).id };
         },

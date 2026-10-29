@@ -17,7 +17,10 @@ try:
   with open(p,'rb') as f: print(base64.b64encode(f.read()).decode())
  elif op=='write':
   os.makedirs(os.path.dirname(p),exist_ok=True)
-  with open(p,'wb') as f: f.write(sys.stdin.buffer.read())
+  m=int(sys.argv[3],8) if sys.argv[3] else None
+  fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o666 if m is None else m)
+  if m is not None: os.fchmod(fd,m)
+  with os.fdopen(fd,'wb') as f: f.write(sys.stdin.buffer.read())
  elif op=='mkdir': os.makedirs(p,exist_ok=True)
  elif op=='stat': print(json.dumps(info(p)))
  elif op=='list': print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)]))
@@ -75,11 +78,12 @@ export function files(
   workspaceRoot: (box: Session) => string | undefined,
   invalidateWorkspace: (box: Session) => void,
 ): ProviderFiles {
-  const call = (id: string, op: string, path: string, data?: Uint8Array, recursive?: boolean) =>
+  // `extra` is the mode in octal for write and "true"/"false" for remove.
+  const call = (id: string, op: string, path: string, data?: Uint8Array, extra = "") =>
     safe(id, async () => {
       const result = await raw(
         await get(id),
-        ["python3", "-c", script, op, path, String(recursive)],
+        ["python3", "-c", script, op, path, extra],
         data,
       );
       if (result.trim() === "SDK_FILE_NOT_FOUND")
@@ -151,6 +155,7 @@ export function files(
     });
   return {
     writeCreatesParents: true,
+    writeSupportsMode: true,
     read: (id, path) =>
       safe(id, async () => {
         const resolved = nativePath(await get(id), path);
@@ -160,14 +165,20 @@ export function files(
           ? transfer("read", async () => (await get(id)).readFile(resolved), fallback)
           : fallback();
       }),
-    write: (id, path, data) =>
+    write: (id, path, data, options) =>
       safe(id, async () => {
         const resolved = nativePath(await get(id), path);
+        const mode = options?.mode;
         const fallback = async () => {
-          await call(id, "write", path, data);
+          await call(id, "write", path, data, mode === undefined ? "" : mode.toString(8));
         };
-        if (resolved)
-          await transfer("write", async () => (await get(id)).writeFile(resolved, data), fallback);
+        // writeFile has no mode; the streaming write sets it on the file it writes.
+        const native = async () => {
+          const box = await get(id);
+          if (mode === undefined) return box.writeFile(resolved ?? path, data);
+          await box.writeFileStream(resolved ?? path, new Blob([new Uint8Array(data)]).stream(), { mode, truncate: true });
+        };
+        if (resolved) await transfer("write", native, fallback);
         else await fallback();
       }),
     mkdir: async (id, path) => {
@@ -182,7 +193,7 @@ export function files(
       // Any removed symlink may be part of the workspace resolution chain.
       invalidateWorkspace(await get(id));
       try {
-        await call(id, "remove", path, undefined, options.recursive);
+        await call(id, "remove", path, undefined, String(options.recursive));
       } finally {
         invalidateWorkspace(await get(id));
       }

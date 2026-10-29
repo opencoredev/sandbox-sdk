@@ -35,6 +35,14 @@ export interface TenkiOptions {
   waitTimeoutMs?: number;
   /** Resume RPC deadline, separate from readiness. Default: 180 seconds; maximum: 15 minutes. */
   resumeTimeoutMs?: number;
+  /** How long Tenki keeps a paused sandbox before deleting it. Default: Tenki's retention. */
+  pauseRetentionMs?: number;
+  /** Tenki volumes to mount, such as `[{ volumeId: "vol_123", mountPath: "/data" }]`. */
+  volumes?: CreateOptions["volumes"];
+  /** Workspace for service credentials that span workspaces. Workspace API keys infer it. */
+  workspaceId?: string;
+  /** Lifetime of each preview URL. Default: Tenki's preview TTL. */
+  previewTtlMs?: number;
 }
 export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
 export type TenkiProvider = Provider<Session, TenkiCapability>;
@@ -238,6 +246,9 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           allowOutbound: input.network !== "none" && domains?.length !== 0,
           allowDomains: domains,
           ...(input.from ? { snapshotId: input.from } : { image: options.image }),
+          ...(options.pauseRetentionMs === undefined ? {} : { pauseRetentionMs: options.pauseRetentionMs }),
+          ...(options.volumes === undefined ? {} : { volumes: options.volumes }),
+          ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
           waitReady: false,
         };
         // Admit without waiting so every subsequent failure has an ID to clean up.
@@ -293,7 +304,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       }),
     list: (labels) =>
       safe("list", undefined, async () =>
-        (await request(async () => (await api()).list()))
+        (await request(async () => (await api()).list(options.workspaceId === undefined ? undefined : { workspaceId: options.workspaceId })))
           .filter(
             (value) =>
               value.state !== "TERMINATED" &&
@@ -384,7 +395,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     previewUrl: (id, port) =>
       safe("preview", id, async () => {
         const current = await box(id);
-        const value = await request(() => current.exposePort(port));
+        const value = await request(() => current.exposePort(port, options.previewTtlMs === undefined ? undefined : { ttlMs: options.previewTtlMs }));
         return { url: value.previewUrl, expiresAt: value.expiresAt?.getTime() };
       }),
     pause: (id) =>
@@ -402,10 +413,14 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         await wait((signal) => value.waitResumed(timeoutMs, signal), timeoutMs);
         await prepareBox(value);
       }),
-    snapshot: (id) =>
+    snapshot: (id, settings) =>
       safe("snapshot", id, async () => {
+        const expiresInMs = settings?.expiresInMs;
+        if (expiresInMs !== undefined && (!Number.isSafeInteger(expiresInMs) || expiresInMs < 0))
+          throw failure("expiresInMs must be a non-negative integer", "invalid_argument");
         const client = await api();
-        const snapshot = await request(() => client.createSnapshot(id, { async: true }));
+        // 0 keeps the snapshot: Tenki applies no expiry when expiresAt is absent.
+        const snapshot = await request(() => client.createSnapshot(id, { async: true, ...(expiresInMs ? { expiresAt: new Date(Date.now() + expiresInMs) } : {}) }));
         const timeoutMs = options.waitTimeoutMs ?? 300_000;
         const result = await deadline(
           (signal) => client.waitSnapshotReady(snapshot.id, timeoutMs, signal),

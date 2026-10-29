@@ -35,8 +35,8 @@ console.log(result.stdout);
 | Background processes | Yes | |
 | Preview URLs | Yes | Public `https://`; declare up to 10 ports |
 | Pause and resume | No | |
-| Snapshots | Yes | File system checkpoints |
-| Machine size | No | Railway can't set disk size |
+| Snapshots | Yes | File system checkpoints. `expiresInMs` fails with `unsupported` |
+| Machine size | No | Railway can't set disk size. Set CPU and memory with `resources` |
 | Network policy | No | Only `"all"` |
 | Hard lifetime (`timeoutMs`) | No | |
 | Idle timeout (`idleTimeoutMs`) | Yes | Whole minutes; destroys the VM |
@@ -72,7 +72,10 @@ await using box = await createSandbox(railway());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
 ```
+
+Railway's file API applies `{ mode }` right after the upload.
 
 ## Background processes and previews
 
@@ -108,17 +111,19 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(railway(), { from: id });
 ```
 
-Checkpoints stay in Railway after the source VM is gone. Manage them with Railway's SDK or CLI.
+Checkpoints stay in Railway after the source VM is gone. Manage them with Railway's SDK or CLI. They have no expiry, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted.
 
 ## Size, network, and lifetime
 
-Every `size`, presets included, fails with `unsupported`, because Railway can set CPU and memory but not disk. `network` other than `"all"` and `timeoutMs` fail too.
+Every `size`, presets included, fails with `unsupported`, because Railway can set CPU and memory but not disk. Set those two on the factory instead, in vCPUs and decimal GB. Railway caps both at your workspace's VM maximum without an error. `network` other than `"all"` and `timeoutMs` fail too.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { railway } from "@opencoredev/sandbox-sdk/railway";
 
-await using box = await createSandbox(railway(), { idleTimeoutMs: 15 * 60_000 });
+await using box = await createSandbox(railway({ resources: { cpu: 2, memoryGB: 4 } }), {
+  idleTimeoutMs: 15 * 60_000,
+});
 ```
 
 `idleTimeoutMs` rounds up to whole minutes and destroys the VM and its files when it fires. Save a checkpoint first if you need them. Railway defers idle teardown while a command runs.
@@ -134,6 +139,7 @@ await using box = await createSandbox(railway(), { idleTimeoutMs: 15 * 60_000 })
 | `networkIsolation` | `"ISOLATED" \| "PRIVATE"` | `"ISOLATED"`; `"PRIVATE"` with ports | |
 | `template` | `SandboxTemplate` | Railway's default image | |
 | `checkpoint` | `string` | | |
+| `resources` | `{ cpu?: number; memoryGB?: number }` | Railway's plan default | |
 
 Set `template` or `checkpoint`, not both. `from` overrides either. Both isolation modes keep outbound internet access; `"PRIVATE"` joins the environment's private network. A custom template needs `sh`, GNU `stat`, `rm`, `setsid`, and Git. `box.native` is the Railway SDK's `Sandbox` object.
 

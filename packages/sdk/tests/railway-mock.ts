@@ -7,7 +7,7 @@ import { StringDecoder } from "node:string_decoder";
 import { createServer } from "node:net";
 import { SandboxNotFoundError, SandboxFileNotFoundError, RailwayAuthError, RailwayConnectionError } from "railway";
 import type { CreateOptions, ExecOptions, ExecHandle, ExecResult, SandboxDomain, SandboxFileEntry } from "railway";
-export const state = { boxes: new Map<string, MockSandbox>(), creates: [] as CreateOptions[], execs: [] as ExecOptions[], snapshots: new Map<string, string>(), delayMs: 0, interrupt: false, pageSize: 2, cursors: [] as (string | null)[] };
+export const state = { boxes: new Map<string, MockSandbox>(), creates: [] as CreateOptions[], execs: [] as ExecOptions[], snapshots: new Map<string, string>(), writes: [] as { path: string; options?: { mode?: number } }[], delayMs: 0, interrupt: false, pageSize: 2, cursors: [] as (string | null)[] };
 const missing = (id: string) => new SandboxNotFoundError({ id, environmentId: "mock-env" });
 export class MockSandbox {
   readonly id = crypto.randomUUID();
@@ -51,7 +51,7 @@ export class MockSandbox {
       if (path.endsWith("/pid")) { const pid = Number(data.toString()); if (pid > 1) this.groups.add(pid); }
       return options.format === "bytes" ? new Uint8Array(data) : data.toString();
     },
-    write: async (path: string, data: string | Uint8Array) => { await fs.mkdir(posix.dirname(this.map(path)), { recursive: true }); await fs.writeFile(this.map(path), data); },
+    write: async (path: string, data: string | Uint8Array, options?: { mode?: number }) => { state.writes.push({ path, options }); await fs.mkdir(posix.dirname(this.map(path)), { recursive: true }); await fs.writeFile(this.map(path), data); if (options?.mode !== undefined) await fs.chmod(this.map(path), options.mode); },
     mkdir: async (path: string) => { await fs.mkdir(this.map(path), { recursive: true }); },
     list: async (path: string) => Promise.all((await fs.readdir(this.map(path))).map(name => this.entry(posix.join(path, name)))),
     stat: (path: string) => this.entry(path),

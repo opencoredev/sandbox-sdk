@@ -12,6 +12,16 @@ export interface E2BOptions {
   template?: string;
   /** Self-hosted domain. Defaults to E2B_DOMAIN, then e2b.app. */
   domain?: string;
+  /** Deadline for each E2B control-plane request. Default: 60 s (the E2B SDK default). */
+  requestTimeoutMs?: number;
+  /** Serve preview URLs without authentication. Default: true. With false, `preview()` returns the `e2b-traffic-access-token` header. */
+  public?: boolean;
+  /** Pause instead of kill when the sandbox timeout runs out. `timeoutMs` then sets the running time before the pause, not a hard lifetime. Default: false. */
+  autoPause?: boolean;
+  /** Wake an auto-paused sandbox when traffic reaches a preview URL. Requires `autoPause`. Default: false. */
+  autoResume?: boolean;
+  /** E2B volumes to mount, keyed by absolute mount path. Values are volume names or IDs. */
+  volumes?: Record<string, string>;
 }
 const keyTag = "sandbox-sdk-key";
 const workspaceMarker = "/tmp/.sandbox-sdk-workspace-ready";
@@ -34,7 +44,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   const api = () => {
     const apiKey = options.apiKey ?? process.env.E2B_API_KEY;
     if (!apiKey?.trim()) throw new SandboxError("E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.", { code: "auth", provider: "e2b" });
-    return { apiKey, domain: options.domain };
+    return { apiKey, domain: options.domain, requestTimeoutMs: options.requestTimeoutMs };
   };
   const clients = new Map<string, E2BSandbox>();
   const deadlines = new Map<string, number>();
@@ -133,26 +143,30 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   const provider: E2BProvider = {
     name: "e2b", keyMode: "best-effort", capabilities: new Set(["pause", "snapshot", "network-policy"]),
     create: input => call(undefined, async () => {
-      validate(input);
+      validate(input, options);
       const { Sandbox } = await sdk();
       const createdAt = Date.now();
-      const deadline = input.timeoutMs === undefined ? undefined : createdAt + input.timeoutMs;
+      // An auto-paused sandbox outlives its timeout, so no hard deadline is recorded.
+      const deadline = input.timeoutMs === undefined || options.autoPause ? undefined : createdAt + input.timeoutMs;
       const box = await Sandbox.create(input.from ?? options.template ?? "base", {
         ...api(), envs: input.env, metadata: { ...input.labels, "sandbox-sdk": "1", ...(input.key === undefined ? {} : { [keyTag]: input.key }), ...(deadline === undefined ? {} : { [deadlineTag]: String(deadline) }) },
-        timeoutMs: input.timeoutMs, lifecycle: { onTimeout: "kill", autoResume: false },
-        ...(input.network === "none" ? { allowInternetAccess: false } : typeof input.network === "object" ? { network: { denyOut: ["0.0.0.0/0"], allowOut: input.network.allow } } : { allowInternetAccess: true }),
+        timeoutMs: input.timeoutMs, lifecycle: options.autoPause ? { onTimeout: "pause", autoResume: options.autoResume ?? false } : { onTimeout: "kill", autoResume: false },
+        ...(input.network === "none" ? { allowInternetAccess: false } : typeof input.network === "object" ? {} : { allowInternetAccess: true }),
+        ...(typeof input.network === "object" || options.public === false ? { network: { ...(typeof input.network === "object" ? { denyOut: ["0.0.0.0/0"], allowOut: input.network.allow } : {}), ...(options.public === false ? { allowPublicTraffic: false } : {}) } } : {}),
+        ...(options.volumes === undefined ? {} : { volumeMounts: options.volumes }),
       });
       clients.set(box.sandboxId, box); if (deadline !== undefined) deadlines.set(box.sandboxId, deadline);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived during E2B creation. Retry with a fresh signal.", { code: "aborted", provider: "e2b" });
         // The native create object carries connection fields, not network policy.
-        const info = input.network === "none" || typeof input.network === "object" ? await box.getInfo() : undefined;
+        const info = input.network === "none" || typeof input.network === "object" || options.public === false ? await box.getInfo() : undefined;
         if (input.network === "none" && info?.allowInternetAccess !== false && !(info?.network?.denyOut?.includes("0.0.0.0/0") && !info?.network.allowOut?.length)) throw unsupported("E2B did not confirm that internet access is disabled");
         if (typeof input.network === "object") {
           const requested = input.network.allow;
           const allowed = info?.network?.allowOut ?? [];
           if (!info?.network?.denyOut?.includes("0.0.0.0/0") || requested.some(host => !allowed.includes(host)) || allowed.some(host => !requested.includes(host))) throw unsupported("E2B did not confirm the requested outbound allow list");
         }
+        if (options.public === false && (info?.network?.allowPublicTraffic !== false || !box.trafficAccessToken)) throw unsupported("E2B did not confirm that preview URLs require a traffic access token");
         workspaces.set(box.sandboxId, createdAt);
         if (input.from !== undefined) await reconcileWorkspace(box.sandboxId, box);
         if (input.signal?.aborted) throw new SandboxError("Creation aborted during E2B policy confirmation", { code: "aborted", provider: "e2b" });
@@ -230,10 +244,15 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
         await box.files.remove(path, { user: "root" });
       }, true),
     },
-    previewUrl: (id, port) => call(id, async () => ({ url: `https://${(await client(id)).getHost(port)}` })),
+    previewUrl: (id, port) => call(id, async () => {
+      const box = await client(id);
+      if (options.public !== false) return { url: `https://${box.getHost(port)}` };
+      if (!box.trafficAccessToken) throw new SandboxError("Preview access token is missing. E2B returned no traffic access token for this private sandbox. Reconnect, or create it with public previews.", { code: "unsupported", provider: "e2b", sandboxId: id });
+      return { url: `https://${box.getHost(port)}`, headers: { "e2b-traffic-access-token": box.trafficAccessToken } };
+    }),
     pause: id => call(id, async () => { detach(id); try { const { Sandbox } = await sdk(); await Sandbox.pause(id, api()); clients.delete(id); for (const handle of handles.get(id) ?? []) await handle.disconnect(); } catch (cause) { attached(id); throw cause; } }),
     resume: id => call(id, async () => { await attach(id); }),
-    snapshot: id => call(id, async () => { const box = await client(id); if (workspaces.has(id)) { await box.commands.run(prepareWorkspace, { user: "root", cwd: "/", stdin: false }); workspaces.delete(id); } return { id: (await box.createSnapshot()).snapshotId }; }),
+    snapshot: (id, settings) => call(id, async () => { if (settings?.expiresInMs) throw new SandboxError("Snapshot expiry is unavailable. E2B keeps snapshots until you delete them. Omit expiresInMs, or pass 0.", { code: "unsupported", provider: "e2b", sandboxId: id }); const box = await client(id); if (workspaces.has(id)) { await box.commands.run(prepareWorkspace, { user: "root", cwd: "/", stdin: false }); workspaces.delete(id); } return { id: (await box.createSnapshot()).snapshotId }; }),
     startProcess: (id, input) => call(id, async (): Promise<NativeProcess> => {
       const running = await launch(id, input);
       return { pid: running.pid, wait: () => call(id, async () => { try { return await running.result; } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { const value = await handle.wait(); return { exitCode: value.exitCode, signal: null }; } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return { exitCode: cause.exitCode, signal: null }; throw cause; } }), stop: options => call(id, async () => { await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }) };
@@ -241,7 +260,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   };
   return provider;
 }
-function validate(input: CreateInput) {
+function validate(input: CreateInput, options: E2BOptions) {
+  if (options.autoResume && !options.autoPause) throw new SandboxError("autoResume requires autoPause. E2B can only wake a sandbox it paused. Set autoPause: true or drop autoResume.", { code: "invalid_argument", provider: "e2b" });
   if (input.size !== undefined) throw unsupported("Machine size is fixed by the E2B template; small, medium, large and custom sizes are unavailable at creation");
   if (input.idleTimeoutMs !== undefined) throw unsupported("E2B timeouts measure elapsed time, not idle time; idleTimeoutMs is unavailable");
   if (input.labels[keyTag] !== undefined || input.labels[deadlineTag] !== undefined) throw new SandboxError("Reserved E2B metadata key. SDK lifecycle metadata must not be overwritten. Rename the label.", { code: "invalid_argument", provider: "e2b" });
