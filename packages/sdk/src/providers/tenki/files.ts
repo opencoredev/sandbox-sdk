@@ -5,6 +5,7 @@ import { raw } from "./exec.js";
 import { workspaceSetup } from "./ready.js";
 import { failure, tenkiError } from "./errors.js";
 import { deadline } from "./deadline.js";
+import { fileInfo, isFileInfo } from "../../shared/guest.js";
 
 // /workspace is the SDK's own link into durable disk. Report its target, a
 // directory, as the native path does, so stat never depends on cache state.
@@ -37,28 +38,6 @@ try:
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')
 except OSError: print('SDK_FILE_ERROR')
 `;
-
-function file(value: unknown): FileInfo {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !("path" in value) ||
-    typeof value.path !== "string" ||
-    !("type" in value) ||
-    !["file", "directory", "symlink"].includes(String(value.type)) ||
-    !("size" in value) ||
-    typeof value.size !== "number" ||
-    !("modifiedAt" in value) ||
-    typeof value.modifiedAt !== "number"
-  )
-    throw failure("Invalid file metadata");
-  const type = value.type;
-
-  if (type !== "file" && type !== "directory" && type !== "symlink")
-    throw failure("Invalid file type");
-
-  return { path: value.path, type, size: value.size, modifiedAt: value.modifiedAt };
-}
 
 type NativeFile = Awaited<ReturnType<Session["fs"]["stat"]>>;
 
@@ -235,7 +214,13 @@ export function files(
         id,
         path,
         async (box, resolved) => nativeInfo(path, await box.fs.stat(resolved)),
-        async () => file(JSON.parse(await call(id, "stat", path))),
+        async () => {
+          const value: unknown = JSON.parse(await call(id, "stat", path));
+
+          if (!isFileInfo(value)) throw failure("Invalid file metadata");
+
+          return fileInfo(value);
+        },
       ),
     list: (id, path) =>
       inspect(
@@ -250,7 +235,11 @@ export function files(
 
           if (!Array.isArray(value)) throw failure("Invalid file listing");
 
-          return value.map(file);
+          return value.map((item) => {
+            if (!isFileInfo(item)) throw failure("Invalid file metadata");
+
+            return fileInfo(item);
+          });
         },
       ),
   };

@@ -20,7 +20,7 @@ export async function waitReady(
 
   // Match native create(): a running allocation with route credentials needs
   // no control-plane readiness stream before its first data-plane operation.
-  if (running() && typeof value.dataPlaneRPC === "function" && value.dataPlaneRPC()) return;
+  if (running() && value.dataPlaneRPC !== undefined && value.dataPlaneRPC()) return;
 
   try {
     await deadline(

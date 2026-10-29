@@ -5,6 +5,8 @@ import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
 import { raw } from "./exec.js";
+import { isChunk, isRunResult } from "./records.js";
+import { isObject, isString } from "../../shared/narrow.js";
 import { workspaceSetup } from "./ready.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
@@ -99,27 +101,16 @@ export async function executeStream(
   function record(line: string) {
     const value: unknown = JSON.parse(line);
 
-    if (
-      Array.isArray(value) &&
-      value.length === 2 &&
-      (value[0] === "stdout" || value[0] === "stderr") &&
-      typeof value[1] === "string" &&
-      value[1].length <= 21848
-    ) {
-      const stream = value[0] === "stdout" ? "stdout" : "stderr";
-      const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
+    if (isChunk(value)) {
+      const [stream, hex] = value;
+      const text = decoders[stream].decode(Buffer.from(hex, "hex"), { stream: true });
 
       if (text) input.onChunk({ stream, text });
     } else if (
-      value &&
-      typeof value === "object" &&
-      "exitCode" in value &&
-      (value.exitCode === null ||
-        (typeof value.exitCode === "number" && Number.isInteger(value.exitCode))) &&
-      "timedOut" in value &&
-      typeof value.timedOut === "boolean"
+      isRunResult(value) &&
+      (value.exitCode === null || Number.isInteger(value.exitCode))
     ) {
-      if ("workspaceRootHex" in value && typeof value.workspaceRootHex === "string")
+      if ("workspaceRootHex" in value && isString(value.workspaceRootHex))
         workspaceRoot?.(
           Buffer.from(value.workspaceRootHex, "hex").toString(),
           "workspaceStable" in value && value.workspaceStable === true,
@@ -209,7 +200,7 @@ export async function executeStream(
         attemptTransport.abort();
 
         if (transport.signal.aborted) throw error;
-        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        const code = isObject(error) && "code" in error ? error.code : undefined;
         const message = error instanceof Error ? error.message : "";
         const auth = code === 16 || tenkiError(error).code === "auth";
 

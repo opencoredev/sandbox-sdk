@@ -5,6 +5,8 @@ import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 import { executeStream } from "./stream.js";
 import { workspaceSetup } from "./ready.js";
+import { isChunk, isRunResult } from "./records.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
@@ -105,7 +107,8 @@ export async function execute(
   input: ExecInput,
   workspaceRoot?: (root: string, stable: boolean) => void,
 ) {
-  if (typeof box.requireDataPlane === "function") return executeStream(box, input, workspaceRoot);
+  // A client without the data plane falls back to buffered Session.run() pages.
+  if (box.requireDataPlane !== undefined) return executeStream(box, input, workspaceRoot);
 
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
@@ -205,10 +208,9 @@ export async function execute(
       );
 
       if (
-        !value ||
-        typeof value !== "object" ||
+        !isObject(value) ||
         !("offset" in value) ||
-        typeof value.offset !== "number" ||
+        !isNumber(value.offset) ||
         !Number.isSafeInteger(value.offset) ||
         value.offset < offset ||
         !("chunks" in value) ||
@@ -220,16 +222,9 @@ export async function execute(
       offset = value.offset;
 
       for (const chunk of value.chunks) {
-        if (
-          !Array.isArray(chunk) ||
-          chunk.length !== 2 ||
-          (chunk[0] !== "stdout" && chunk[0] !== "stderr") ||
-          typeof chunk[1] !== "string" ||
-          chunk[1].length > 21848
-        )
-          throw failure("Invalid output chunk");
-        const stream = chunk[0] === "stdout" ? "stdout" : "stderr";
-        const text = decoders[stream].decode(Buffer.from(chunk[1], "base64"), { stream: true });
+        if (!isChunk(chunk)) throw failure("Invalid output chunk");
+        const [stream, base64] = chunk;
+        const text = decoders[stream].decode(Buffer.from(base64, "base64"), { stream: true });
 
         if (text && !outputTransport.signal.aborted) input.onChunk({ stream, text });
       }
@@ -257,17 +252,9 @@ export async function execute(
       await raw(box, ["cat", `${marker}.exit`], undefined, 30_000, outputTransport.signal),
     );
 
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("exitCode" in value) ||
-      !("timedOut" in value) ||
-      (value.exitCode !== null && typeof value.exitCode !== "number") ||
-      typeof value.timedOut !== "boolean"
-    )
-      throw failure("Invalid command result");
+    if (!isRunResult(value)) throw failure("Invalid command result");
 
-    if ("workspaceRoot" in value && typeof value.workspaceRoot === "string")
+    if ("workspaceRoot" in value && isString(value.workspaceRoot))
       workspaceRoot?.(
         value.workspaceRoot,
         "workspaceStable" in value && value.workspaceStable === true,
