@@ -159,6 +159,7 @@ export class Redactor {
         provider,
         sandboxId,
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
+        // Adapter evidence (see evidenceCause) keeps its fields as the JSON in its message.
         cause:
           cause.cause === undefined
             ? undefined
