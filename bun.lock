@@ -177,7 +177,6 @@
         "zod": "^4.6.7",
       },
       "peerDependencies": {
-        "@boatdev/sdk": "^1.9.9",
         "@boxd-sh/sdk": "^0.2.17",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
@@ -194,7 +193,6 @@
         "zod": "^4.6.7",
       },
       "optionalPeers": [
-        "@boatdev/sdk",
         "@boxd-sh/sdk",
         "@mastra/core",
         "@openai/agents",

@@ -20,7 +20,7 @@ import pkg from "../package.json" with { type: "json" };
 import { externalPackages } from "./externals.ts";
 
 /** Provider subpaths that must work with no peer installed. Add a provider when its adapter stops loading its SDK. */
-const noPeerProviders: string[] = ["daytona"];
+const noPeerProviders: string[] = ["daytona", "boat", "sandboxer"];
 
 const sdkDir = resolve(import.meta.dir, "..");
 const workDir = mkdtempSync(join(tmpdir(), "sandbox-sdk-nopeers-"));
