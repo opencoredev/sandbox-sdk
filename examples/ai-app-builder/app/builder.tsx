@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { z } from "zod";
 
 const examples = [
   "A pomodoro timer with a big start button",
@@ -17,28 +18,33 @@ function toolParts(message: UIMessage) {
 }
 
 /** sandboxTools results are `{ text }`; UI messages type tool output as unknown. */
-function outputText(output: unknown): string {
-  return typeof output === "object" &&
-    output !== null &&
-    "text" in output &&
-    typeof output.text === "string"
-    ? output.text
-    : "";
+const toolResult = z.object({ text: z.string() });
+
+function outputText(part: ToolPart): string {
+  const result = toolResult.safeParse(part.output);
+
+  return result.success ? result.data.text : "";
 }
 
+const argument = z.string().optional().catch(undefined);
+
+const toolArguments = z.object({
+  command: argument,
+  path: argument,
+  name: argument,
+  query: argument,
+});
+
 /** The one argument worth showing on the activity line. */
-function summary(input: unknown): string {
-  if (typeof input !== "object" || input === null) return "";
+function summary(part: ToolPart): string {
+  const input = toolArguments.safeParse(part.input);
 
-  for (const key of ["command", "path", "name", "query"] as const) {
-    if (key in input) {
-      const value: unknown = Reflect.get(input, key);
+  if (!input.success) return "";
 
-      if (typeof value === "string") return value.split("\n")[0] ?? "";
-    }
-  }
+  const { command, path, name, query } = input.data;
+  const value = command ?? path ?? name ?? query;
 
-  return "";
+  return value?.split("\n")[0] ?? "";
 }
 
 type Verdict =
@@ -50,7 +56,7 @@ function verdictOf(part: ToolPart): Verdict {
   switch (part.state) {
     case "output-available": {
       if (part.preliminary) return { kind: "running" };
-      const [line = ""] = outputText(part.output).split("\n");
+      const [line = ""] = outputText(part).split("\n");
 
       const detail = line
         .replace(/^(OK|FAILED)\s*/, "")
@@ -76,7 +82,7 @@ function ToolLine({ part }: { part: ToolPart }) {
     part.state === "output-error"
       ? part.errorText
       : part.state === "output-available"
-        ? outputText(part.output)
+        ? outputText(part)
         : "";
 
   return (
@@ -84,7 +90,7 @@ function ToolLine({ part }: { part: ToolPart }) {
       <summary>
         <span className="dot" aria-hidden />
         <span className="tool-name">{getToolName(part)}</span>
-        <span className="tool-arg">{summary(part.input)}</span>
+        <span className="tool-arg">{summary(part)}</span>
         <span className="tool-verdict">
           {verdict.kind === "running"
             ? "running"
@@ -130,7 +136,7 @@ function usePreview(messages: UIMessage[]) {
       if (part.state !== "output-available" || part.preliminary) continue;
       const name = getToolName(part);
 
-      if (name === "start_process" && outputText(part.output).includes("ready=true")) ready = true;
+      if (name === "start_process" && outputText(part).includes("ready=true")) ready = true;
 
       if (["start_process", "write_file", "edit_file"].includes(name)) revision++;
     }
