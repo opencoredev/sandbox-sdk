@@ -1,6 +1,6 @@
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string, cause?: string) {
-  return new SandboxError(code === "auth" ? message : `${message}. Check boxd configuration and retry.`, {
+  return new SandboxError(code === "auth" ? message : code === "file_not_found" ? `${message}. Check the path.` : `${message}. Check boxd configuration and retry.`, {
     code,
     provider: "boxd",
     sandboxId,
