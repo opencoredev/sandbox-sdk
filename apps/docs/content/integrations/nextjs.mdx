@@ -50,7 +50,10 @@ This page uses [Vercel Sandbox](/providers/vercel), which authenticates with OID
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@opencoredev/sandbox-sdk", "@vercel/sandbox"],
+  serverExternalPackages: [
+    "@opencoredev/sandbox-sdk",
+    "@vercel/sandbox",
+  ],
 };
 
 export default nextConfig;

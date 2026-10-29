@@ -32,24 +32,26 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 
 ## Feature matrix
 
-"Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit. The table scrolls sideways on narrow screens.
+"Partial" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit. The table scrolls sideways.
 
 |  | Local | agentOS | E2B | Vercel | Daytona | Upstash | Railway | Boat | Sandboxer | Tenki | Superserve | boxd | Freestyle | Memory |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
-| Pause and resume | Yes | No | Yes | Partly, processes end | No | Partly, processes end | No | No | Yes | Yes | Yes | Yes | Yes | No |
-| Snapshots | Yes | No | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes | Yes | Yes | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | No | Yes | Recorded only |
-| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | Empty only | Recorded only |
-| Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
-| Exact CPU, memory, disk | Partly, no disk | No | No | Partly, vCPUs only | Yes | No | No | No | No | Yes | No | Partly, fixed steps | No | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, minutes | No | Yes, destroys VM | No | Yes, pauses | No | No | Yes, seconds | Yes, seconds | Yes |
-| Hard lifetime | Partly, on reconnect or reap | No | Yes | Partly, per session | Yes, minutes | No | No | No | No | Yes | No | Yes, seconds | Yes, seconds | Yes |
-| Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No | No | No |
-| Preview URL | `127.0.0.1` only | No | Public `https://` | Public `https://` | Token header | Bearer header | Public `https://` | Cookie header | Cookie header | Public `https://` | Token header | Public `https://`, one port at a time | Public `https://` | Fake |
+| Key&nbsp;mode | exact | exact | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
+| Pause | Yes | No | Yes | Partial | No | Partial | No | No | Yes | Yes | Yes | Yes | Yes | No |
+| Snapshots | Yes | No | Yes | Yes | Yes | Yes | Files&nbsp;only | No | Yes | Yes | Yes | Yes | Yes | No |
+| Block&nbsp;network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | No | Yes | Recorded |
+| Allow&nbsp;list | No | Literal&nbsp;hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | Empty&nbsp;only | Recorded |
+| Size&nbsp;presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
+| Exact&nbsp;sizes | Partial | No | No | Partial | Yes | No | No | No | No | Yes | No | Partial | No | No |
+| Idle&nbsp;timeout | Partial | No | No | No | Yes | No | Yes | No | Yes | No | No | Yes | Yes | Yes |
+| Hard&nbsp;lifetime | Partial | No | Yes | Partial | Yes | No | No | No | No | Yes | No | Yes | Yes | Yes |
+| Declared&nbsp;ports | Yes | No | No | Up&nbsp;to&nbsp;15 | No | No | Up&nbsp;to&nbsp;10 | No | No | No | No | No | No | No |
+| Preview&nbsp;URL | Localhost | No | Public | Public | Token&nbsp;header | Bearer&nbsp;header | Public | Cookie&nbsp;header | Cookie&nbsp;header | Public | Token&nbsp;header | Public | Public | Fake |
 | Terminal | No | No | No | No | No | No | No | No | No | No | No | No | No | No |
 
-Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing. Daytona, Upstash Box, and Superserve can also make previews public with a factory option; see each provider page.
+Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
+
+Previews differ the most. Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. "Public" means an `https://` URL anyone can open; boxd gives one public route per machine, and previewing a new port moves it. A header entry means `preview.headers` must go with every request. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. Each provider page has the details.
 
 ## Key mode in one sentence
 

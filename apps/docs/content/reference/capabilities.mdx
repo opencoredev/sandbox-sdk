@@ -7,33 +7,35 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Matrix
 
-Each row is an option or method. "No network" is `network: "none"`, and "Allow list" is `network: { allow: [...] }`. The table scrolls sideways on narrow screens.
+Each row is an option or method. "No network" means `network: "none"`, and "Allow list" means a `network` policy with an `allow` array. "Partial" means a limit that matters, and the [notes](#notes) under the table explain each one. The table scrolls sideways.
 
 |  | Local | agentOS | E2B | Vercel | Daytona | Upstash | Railway | Boat | Sandboxer | Tenki | Superserve | boxd | Freestyle | Memory |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `pause()` | Yes | No | Yes | Yes, processes end; not with `persistent: false` | No | Yes, processes end; durable boxes only | No | No | Yes | Yes, with memory | Yes | Yes, with memory | Yes, with memory | No |
-| `snapshot()` | Yes | No | Yes | Yes | Yes | Yes | Yes, file system only | No | Yes, named disk snapshots | Yes | Yes | Yes | Yes | No |
+| `pause()` | Yes | No | Yes | Partial | No | Partial | No | No | Yes | Yes | Yes | Yes | Yes | No |
+| `snapshot()` | Yes | No | Yes | Yes | Yes | Yes | Files&nbsp;only | No | Yes | Yes | Yes | Yes | Yes | No |
 | `terminal()` | No | No | No | No | No | No | No | No | No | No | No | No | No | No |
-| No network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | No | Yes | Recorded, not enforced |
-| Allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | Empty list only | Recorded, not enforced |
-| Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
-| Exact size | Partial, `cpu` and `memoryMb`, no disk | No | No | Partial, whole vCPUs at 2 GiB each | Yes | No | No | No | No | Yes | No | Partial, 1/2/4/8 vCPU at 4 GiB each | No | No |
-| `idleTimeoutMs` | Yes, on reconnect or reap | No | No | No | Yes, whole minutes | No | Yes, destroys VM; whole minutes | No | Yes, pauses; whole minutes | No | No | Yes, whole seconds | Yes, whole seconds | Yes |
-| `timeoutMs` | Yes, on reconnect or reap | No | Yes | Yes, per session | Yes, whole minutes | No | No | No | No | Yes | No | Yes, whole seconds | Yes, whole seconds | Yes |
-| `ports` required | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No | No | No |
-| `labels` | Yes | Yes | Yes | Up to 4, or 3 with a `key` | Yes | Yes, in box metadata | Marker file | In the VM name, 120 characters with the key | In the VM name, 120 characters with the key | Yes | Yes, in sandbox metadata | Marker file | VM metadata, about 2.9 KB with the key | Yes |
-| Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
+| No&nbsp;network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | No | Yes | Recorded |
+| Allow&nbsp;list | No | Literal&nbsp;hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | Empty&nbsp;only | Recorded |
+| Size&nbsp;presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
+| Exact&nbsp;size | No&nbsp;disk | No | No | vCPUs&nbsp;only | Yes | No | No | No | No | Yes | No | Fixed&nbsp;steps | No | No |
+| `idleTimeoutMs` | Partial | No | No | No | Minutes | No | Minutes | No | Minutes | No | No | Seconds | Seconds | Yes |
+| `timeoutMs` | Partial | No | Yes | Per&nbsp;session | Minutes | No | No | No | No | Yes | No | Seconds | Seconds | Yes |
+| `ports` | Yes | No | No | Up&nbsp;to&nbsp;15 | No | No | Up&nbsp;to&nbsp;10 | No | No | No | No | No | No | No |
+| `labels` | Yes | Yes | Yes | Up&nbsp;to&nbsp;4 | Yes | Yes | Yes | 120&nbsp;chars | 120&nbsp;chars | Yes | Yes | Yes | About&nbsp;2.9&nbsp;KB | Yes |
+| Key&nbsp;mode | exact | exact | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
 
-`timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. A `ports` entry of Yes means a preview port must be listed in `ports` when the sandbox is created.
+`timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. "Minutes" and "Seconds" mean the provider enforces the limit in whole units of that size. In the `ports` row, an entry other than No means a preview port must be listed in `ports` when the sandbox is created.
 
 ## Notes
 
-- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B, Tenki, boxd, and Freestyle pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Upstash Box keep the disk and end running processes, which the SDK marks failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again. A Vercel sandbox created with `persistent: false`, or an Upstash Box created with `ephemeral: true`, has no `"pause"` capability. Daytona has no pause; its idle timeout stops the sandbox instead.
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B, Tenki, boxd, and Freestyle pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Upstash Box keep the disk and end running processes, which the SDK marks failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again. A Vercel sandbox created with `persistent: false`, or an Upstash Box created with `ephemeral: true`, has no `"pause"` capability. Sandboxer usually restores memory and processes too. Daytona has no pause; its idle timeout stops the sandbox instead.
+- **Snapshots.** Railway checkpoints the file system only. Sandboxer snapshots are named disk snapshots that never expire.
 - **Size.** Local takes presets or `{ cpu, memoryMb }`, because Docker can't enforce a disk size. Vercel Sandbox derives memory from the vCPU count, 2048 MiB each, and has no disk setting. boxd sizes come in fixed steps of 1, 2, 4, or 8 vCPU with 4 GiB per vCPU and a 100 GB disk. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
 - **Network.** Local and Freestyle enforce `"none"` but have no per-host filter, so a nonempty `{ allow }` fails there. boxd is the reverse: it takes allow lists but can't express `"none"`, because an empty boxd list means unrestricted. Tenki, Superserve, and boxd allow lists also take `*.` wildcards, and Superserve and boxd take IPv4 addresses and CIDRs. Memory records the policy and has no network to enforce it on.
-- **Timeouts.** Daytona works in minutes: `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Freestyle rounds the same way in seconds. boxd rounds both up to whole seconds. Vercel Sandbox applies `timeoutMs` to each session, and each resume starts a new one. Tenki supports a hard lifetime but rejects idle timeouts, which its current API no longer enforces. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
+- **Timeouts.** Railway's idle timeout destroys the VM. Sandboxer's pauses it. Daytona's stops it and keeps the disk. Daytona works in minutes: `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Freestyle rounds the same way in seconds. boxd rounds both up to whole seconds. Vercel Sandbox applies `timeoutMs` to each session, and each resume starts a new one. Tenki supports a hard lifetime but rejects idle timeouts, which its current API no longer enforces. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
 - **Provider timers.** Some providers reject `timeoutMs` but have a timer of their own on the factory. Boat and Sandboxer take `ttlSeconds`, an auto-stop that restarts while Boat's agent works, so it is not a hard lifetime. Upstash Box takes `ttlSeconds` with `ephemeral: true` as a leak backstop. Superserve takes `autoPauseMs` and `autoDeleteMs`. The provider pages explain each one.
-- **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded.
+- **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox, so you get four labels, or three with a `key`. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded. Railway and boxd keep them in a marker file inside each VM.
+- **Key mode.** agentOS keys are exact within one application process.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
 - **Upstash Box.** Listing SDK boxes reads metadata from inside each box and may wake idle boxes.
 - **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).
