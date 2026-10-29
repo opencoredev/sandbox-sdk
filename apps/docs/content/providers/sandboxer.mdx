@@ -11,34 +11,34 @@ description: Run Ubuntu microVMs on Sandboxer in two regions. Size presets, paus
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next @boatdev/sdk
+npm install @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next @boatdev/sdk
+pnpm add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next @boatdev/sdk
+yarn add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next @boatdev/sdk
+bun add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
 </Tabs>
 
-Sandboxer speaks a Boat-compatible API, so the adapter uses `@boatdev/sdk`. Set `SANDBOXER_API_KEY` on your server, and keep it out of browser bundles. `SANDBOXER_REGION` is optional.
+The adapter calls Sandboxer's HTTP API itself, so there is nothing else to install. Set `SANDBOXER_API_KEY` on your server, and keep it out of browser bundles. `SANDBOXER_REGION` is optional.
 
 ## Quickstart
 
@@ -138,7 +138,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(sandboxer(), { from: id });
 ```
 
-Snapshots outlive their source and never expire, so `snapshot({ expiresInMs })` fails with `unsupported` unless it is `0`. Delete them through `DELETE /named-snapshots/{name}`. A restore must run in the snapshot's region.
+Snapshots outlive their source and never expire, so `snapshot({ expiresInMs })` fails with `unsupported` unless it is `0`. Delete one with `sandboxer().api.request("DELETE", "/named-snapshots/{name}", { params: { name } })`. A restore must run in the snapshot's region.
 
 ## Size, network, and lifetime
 
@@ -182,7 +182,52 @@ await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitori
 | `org` | `string` | Your active wallet | |
 | `requestTimeoutMs` | `number` | `90_000` | |
 
-`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Sandboxer never captures the disk, so `pause()` erases it, and resume, snapshots, and idle pause stop working. `monitoring: false` means Sandboxer keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
+`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Sandboxer never captures the disk, so `pause()` erases it, and resume, snapshots, and idle pause stop working. `monitoring: false` means Sandboxer keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `box.native.region` and `box.native.regionSource` report where the VM landed.
+
+## Call the API directly
+
+`box.native` calls any endpoint in [Sandboxer's API](https://sandboxer.com/api/v1/openapi.yaml) with the adapter's base URL, key, retries, and error mapping. Paths are relative to `https://sandboxer.com/api/v1`, and `{sandboxId}` fills in from the sandbox. Sandboxer has one plane, `"api"`. See the [native API reference](/reference/native) for every option.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+console.log(box.native.region, box.native.regionSource);
+
+const stats = await box.native.request("GET", "/sandboxes/{sandboxId}/stats");
+console.log(stats);
+
+await box.run("echo report > /tmp/report.txt");
+const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", { query: { path: "/tmp/report.txt" } });
+console.log(await file.text());
+```
+
+`request` returns the JSON body and `fetch` the raw `Response`. A non-2xx status rejects with `SandboxError`. `box.native.createSnapshot(name)` takes a named snapshot and waits until it is ready.
+
+For account calls with no sandbox, use the provider's `api`:
+
+```ts
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+const { regions } = await sandboxer().api.request<{ regions: { id: string }[] }>("GET", "/regions");
+console.log(regions.map((region) => region.id));
+```
+
+Sandboxer's API derives from Boat's, so the official client is `@boatdev/sdk`. Install it and pass its import to `sdk`. You get a `BoatApi` client with Sandboxer's base URL and key, plus the sandbox's metadata; its deletes carry Sandboxer's confirmation header.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+const { client, sandbox } = await box.native.sdk(() => import("@boatdev/sdk"));
+console.log(sandbox.state);
+const { commands } = await client.commandHistory({ sandboxId: box.id });
+console.log(commands.length);
+```
+
+In earlier betas, `box.native` also had `sandbox` and `client`. They now come from `box.native.sdk(() => import("@boatdev/sdk"))`.
 
 ## Limitations
 
@@ -198,6 +243,7 @@ await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitori
 - stdin and file contents never travel in command text, which Sandboxer keeps in its history. Sandboxer's file API takes less than 5 MiB per write and only paths under `/home/user` or `/tmp`. A write of up to 4 MiB under those paths, without `mode`, goes straight to it. Anything else, and all stdin, is uploaded in 4 MiB parts to a new `0700` directory under `/tmp`. A guest command then copies the file into place, or the shell opens the stdin file and deletes it before your command starts.
 - Creates, resumes, and forks count as starts against your account's rate limits.
 - `destroy()` sends Sandboxer's delete confirmation header and waits for the deletion to finish.
+- Command output streams from the NDJSON attach endpoint. Sandboxer ends each connection after 10 minutes; the adapter reopens it from the last byte offsets, so no output is lost or repeated. A dropped connection or 60 seconds of silence is reopened the same way for up to 60 seconds.
 - Usage from `/sandboxes/{id}/usage` is machine time, not plan payments or credits.
 
 ## Next steps

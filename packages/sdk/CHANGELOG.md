@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Breaking for Daytona:** `daytona()` calls Daytona's HTTP API directly, and `@daytonaio/sdk` is no longer a peer dependency, so `npm i @opencoredev/sandbox-sdk@next` is the whole install. File transfers use Web `FormData` and a built-in multipart reader, so bundled apps no longer need `form-data` or `busboy`, and the `codeRun` transfer fallback is gone. `box.native` is now a `NativeApi` with `"api"` and `"toolbox"` planes instead of the SDK's `Sandbox`: call `box.native.request(...)`, or `await box.native.sdk(() => import("@daytonaio/sdk"))` to keep using the SDK. `daytona().api` makes account-level calls. A create that fails after Daytona made the sandbox now always deletes it, including one whose create request got no answer.
+- `boat()` and `sandboxer()` call their API over plain HTTP. `@boatdev/sdk` is no longer a peer: `npm i @opencoredev/sandbox-sdk@next` is the whole install. Breaking for beta users: `box.native` is now a native API (`request`, `fetch`, `sdk`) instead of `{ sandbox, client }`. Get the old pair with `await box.native.sdk(() => import("@boatdev/sdk"))` after installing `@boatdev/sdk` yourself, and the account client with `boat().api.sdk(...)`. Sandboxer keeps `box.native.region`, `regionSource` and `createSnapshot(name)`.
 
 ## 1.0.0-beta.1
 
