@@ -15,7 +15,7 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 | `network: "none"` | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Yes | Yes |
 | `network: { allow }` | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Empty only | Yes |
 | `size` presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
-| `size` with exact numbers | No | No | No | No | Yes | No | No | No | No | Yes | No | No | No | No |
+| `size` with exact numbers | No | No | No | No | Yes | No | No | No | No | Yes | No | Partial, 1/2/4/8 vCPU at 4 GiB each | No | No |
 | `idleTimeoutMs` | Yes, on reconnect or reap | No | No | No | Yes, whole minutes | No | Yes, destroys VM; whole minutes | No | No | No | No | No | Yes, whole seconds | Yes |
 | `timeoutMs` (hard lifetime) | Yes, on reconnect or reap | No | Yes | No | Yes, whole minutes | No | No | No | No | Yes | No | No | Yes, whole seconds | Yes |
 | `ports` must be declared | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No | No | No |
@@ -24,7 +24,7 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 ## Notes
 
-- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B and Tenki pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Daytona stop the machine and keep the disk, so running processes end. On Vercel, the SDK marks them failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again.
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B and Tenki pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox stops the machine and keeps the disk, so running processes end, and the SDK marks them failed with exit code 137 on resume. Daytona has no pause; its idle timeout stops the sandbox the same way. Call `box.process(name).restart()` to start them again.
 - **Size.** Local and Vercel Sandbox take presets only, because neither can set a disk size. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
 - **Network.** Local enforces `"none"` but has no per-host filter, so `{ allow }` fails there. Memory records the policy and has no network to enforce it on.
 - **Timeouts.** Tenki supports a native hard lifetime but rejects idle timeouts, which its current API no longer enforces. Daytona works in minutes. `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
@@ -35,7 +35,7 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 - **Boat.** Size presets only. No SDK pause, snapshots, terminals, network policy, idle timer, or hard lifetime. Boat's default auto-stop still applies. Keys and labels share a compressed 120-character display name; [Boat](/providers/boat) explains the limit.
 - **agentOS.** Supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local](/providers/local) for both runtime choices.
 
-- **boxd.** Memory pause and public HTTPS proxies. Sizes, egress restrictions, idle timers, hard lifetimes, and SDK snapshots are unsupported. An empty native egress allowlist is unrestricted. See [boxd](/providers/boxd).
+- **boxd.** Memory pause, snapshots, and public HTTPS proxies. Sizes come in fixed steps of 1, 2, 4, or 8 vCPU with 4 GiB per vCPU and a 100 GB disk, as presets or matching exact numbers. Egress restrictions, idle timers, and hard lifetimes are unsupported. A restored snapshot keeps the source's size, image, and env. An empty native egress allowlist is unrestricted. See [boxd](/providers/boxd).
 - **Freestyle.** Memory pause, snapshots, outbound deny-all, and native idle/TTL limits in seconds. Nonempty host allow lists and explicit sizes are unsupported. Platform ingress remains available under deny-all. See [Freestyle](/providers/freestyle).
 
 ## Capability names

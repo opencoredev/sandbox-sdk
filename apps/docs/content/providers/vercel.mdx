@@ -96,10 +96,11 @@ console.log(preview.url);
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-await using box = await createSandbox(vercel(), { key: "user:123" });
+await using box = await createSandbox(vercel(), { key: "user:123", ports: [5173] });
+const vite = await box.start("npx vite --host 0.0.0.0 --port 5173", { name: "vite", ready: { port: 5173 } });
 await box.pause();
 await box.resume();
-await box.process("vite").restart();
+await vite.restart();
 
 const { id } = await box.snapshot();
 await using copy = await createSandbox(vercel(), { from: id });

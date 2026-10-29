@@ -2,7 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Tenki, boxd, Freestyle, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -42,7 +42,7 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Yes | Yes |
 | Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Empty only | Yes |
 | Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
-| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | No | Yes | No | No | No | No |
+| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | No | Yes | No | Partial, 1/2/4/8 vCPU at 4 GiB each | No | No |
 | Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, in minutes | No | Yes, destroys VM | No | No | No | No | No | Yes, whole seconds | Yes |
 | Hard lifetime | Partly, on reconnect or reap | No | Yes | No | Yes, in minutes | No | No | No | No | Yes | No | No | Yes, whole seconds | Yes |
 | Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No | No | No |
