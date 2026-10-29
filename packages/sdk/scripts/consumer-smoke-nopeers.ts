@@ -140,8 +140,10 @@ try {
   assert.ok((await api.sdk(async () => ({ FakeClient }))) instanceof FakeClient);
   await assert.rejects(native.sdk(async () => ({ Other: FakeClient })), error => error instanceof SandboxError && error.code === "invalid_argument");
 
-  for (const subpath of JSON.parse(process.env.NO_PEER_PROVIDERS ?? "[]")) {
-    const module = await import("${pkg.name}/" + subpath);
+  // One literal import per provider, so the esbuild run below bundles each provider with no peer in reach.
+  const providers = { ${noPeerProviders.map(subpath => `${JSON.stringify(subpath)}: () => import(${JSON.stringify(`${pkg.name}/${subpath}`)})`).join(", ")} };
+  for (const [subpath, load] of Object.entries(providers)) {
+    const module = await load();
     assert.equal(typeof module[subpath], "function", subpath + " exports its factory");
   }
   console.log("native api ok on " + (globalThis.Bun ? "bun " + Bun.version : "node " + process.version));
@@ -150,9 +152,8 @@ try {
 }
 `;
 writeFileSync(join(consumerDir, "native.mjs"), app);
-const env = { ...process.env, NO_PEER_PROVIDERS: JSON.stringify(noPeerProviders) };
 function run(label: string, command: string, args: string[]) {
-  const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8", env });
+  const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8" });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   check(label, result.status === 0 && output.includes("native api ok"), output.split("\n").slice(-3).join(" | "));
 }
@@ -166,7 +167,7 @@ const { build } = await import("esbuild");
 const bundleDir = join(workDir, "bundle");
 await build({ entryPoints: [join(consumerDir, "native.mjs")], absWorkingDir: consumerDir, bundle: true, platform: "node", format: "esm", splitting: true, outdir: bundleDir, logLevel: "error", banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
 writeFileSync(join(bundleDir, "package.json"), '{ "type": "module" }');
-const bundled = spawnSync("node", ["native.js"], { cwd: bundleDir, timeout: 120_000, encoding: "utf8", env });
+const bundled = spawnSync("node", ["native.js"], { cwd: bundleDir, timeout: 120_000, encoding: "utf8" });
 check("an esbuild split-ESM bundle runs the consumer app", bundled.status === 0 && bundled.stdout.includes("native api ok"), `${bundled.stdout}${bundled.stderr}`.trim().split("\n").slice(-3).join(" | "));
 
 // Step 6: types, with positive and negative checks, in four configurations.
