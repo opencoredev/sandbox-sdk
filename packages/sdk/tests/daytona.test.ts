@@ -1,14 +1,16 @@
 import { Readable } from "node:stream";
 import { afterEach, describe, test, expect, vi } from "vitest";
-import { cleanupMock, mockState, MockDaytona, MockSandbox } from "./daytona-mock.js";
+import { cleanupMock, mockState, MockDaytona, MockSandbox, daytona } from "./daytona-mock.js";
 import { workspaceCommand } from "../src/providers/daytona/exec.js";
-import { daytona } from "../src/providers/daytona/index.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+import type { DownloadStreamOptions } from "@daytonaio/sdk";
 
-vi.mock("@daytonaio/sdk", async () => ({
-  Daytona: (await import("./daytona-mock.js")).MockDaytona,
-}));
+function isStreamOptions(
+  options: number | DownloadStreamOptions | undefined,
+): options is DownloadStreamOptions {
+  return typeof options === "object";
+}
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
@@ -639,7 +641,7 @@ test.each(["abort", "deadline"] as const)(
         timeout: expect.any(Number),
       });
 
-      if (!options || typeof options === "number")
+      if (!isStreamOptions(options))
         throw new Error("Expected cancellable native download options");
       expect(options.signal?.aborted).toBe(true);
       expect(options.timeout).toBeLessThanOrEqual(mode === "deadline" ? 1 : 2);

@@ -1,14 +1,7 @@
 import { vi, test, expect, afterAll } from "vitest";
 
-const mock = await vi.hoisted(async () => import("./e2b-sdk-mock.js"));
-
-vi.mock("e2b", async (importOriginal) => {
-  const real = await importOriginal<typeof import("e2b")>();
-
-  return { ...real, Sandbox: mock.MockSandbox };
-});
-
-import { e2b } from "../src/providers/e2b/index.js";
+import * as mock from "./e2b-sdk-mock.js";
+import { e2b } from "./e2b-sdk-mock.js";
 import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 
@@ -32,7 +25,7 @@ afterAll(async () => {
   vi.unstubAllGlobals();
 });
 
-// live:true enables the Linux/git/HTTP tests. vi.mock confines all E2B I/O to
+// live:true enables the Linux/git/HTTP tests. The fixture confines all E2B I/O to
 // the local fixture; this suite never contacts E2B, even if keys are present.
 runConformance(() => e2b({ apiKey: "mock" }), { live: true });
 
@@ -73,7 +66,7 @@ test("metadata lookup paginates, labels survive and native is the sandbox", asyn
 test("network rules are enforced at creation and sizes/idle fail closed", async () => {
   for (const network of ["none", { allow: ["registry.npmjs.org"] }] as const) {
     const box = await createSandbox(e2b({ apiKey: "mock" }), {
-      network: typeof network === "string" ? network : { allow: [...network.allow] },
+      network: network === "none" ? network : { allow: [...network.allow] },
     });
 
     expect(calls.at(-1)?.options).toMatchObject(

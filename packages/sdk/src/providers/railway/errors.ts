@@ -1,6 +1,15 @@
 import { isPeerError } from "../../peer.js";
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
+function hasStatus(cause: unknown): cause is { status: number } {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "status" in cause &&
+    typeof cause.status === "number"
+  );
+}
+
 /** Railway messages can include tokens and output. Only an unrecognized failure without a
  * status keeps its scrubbed text, with the token redacted, as `cause` (see describeNative). */
 export function railwayError(cause: unknown, sandboxId?: string): SandboxError {
@@ -10,8 +19,7 @@ export function railwayError(cause: unknown, sandboxId?: string): SandboxError {
   const name = cause instanceof Error ? cause.name : "";
   const is = (type: string) => isPeerError(cause, "railway", type) || name === type;
 
-  const status =
-    typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined;
+  const status = hasStatus(cause) ? cause.status : undefined;
 
   let code: ErrorCode = "provider";
 
@@ -22,7 +30,7 @@ export function railwayError(cause: unknown, sandboxId?: string): SandboxError {
   else if (is("ExecNotStartedError")) code = "unavailable";
   else if (is("ExecInterruptedError") || is("RailwayConnectionError")) code = "outcome_unknown";
   else if (status === 429 || status === 507) code = "quota";
-  else if (typeof status === "number" && status >= 500) code = "unavailable";
+  else if (status !== undefined && status >= 500) code = "unavailable";
   else if (is("SandboxTimeoutError")) code = "timeout";
   else if (name === "AbortError") code = "aborted";
   // fetch reports a network failure as TypeError("fetch failed"); the SDK's input validation also throws TypeError.
@@ -38,7 +46,7 @@ export function railwayError(cause: unknown, sandboxId?: string): SandboxError {
   const native = describeNative(cause, {
     code,
     known: cause instanceof TypeError ? false : undefined,
-    status: status === undefined ? undefined : `HTTP ${String(status)}`,
+    status: status === undefined ? undefined : `HTTP ${status}`,
     redact: redacting([process.env.RAILWAY_API_TOKEN]),
   });
 

@@ -1,8 +1,9 @@
 import type { Readable } from "node:stream";
-import type { Sandbox } from "@daytonaio/sdk";
+import type { DaytonaBox } from "./native.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { quote, workspaceCommand } from "./exec.js";
+import { quote } from "../../shared/shell.js";
+import { workspaceCommand } from "./exec.js";
 import { downloadStream as openDownload } from "./transfer.js";
 
 // A single native command returns at most 64 KiB of frames. Larger output is
@@ -75,7 +76,7 @@ for attempt in range(3):
 `;
 
 export async function bufferedExecute(
-  box: Sandbox,
+  box: DaytonaBox,
   input: ExecInput,
   prepare = workspaceCommand,
   prepared?: () => void,
@@ -243,7 +244,8 @@ export async function bufferedExecute(
     await cancellation;
 
     // Small successful commands already removed their directory in the guest.
-    // Spill files and cancellation markers require one cleanup request.
+    // Spill files and cancellation markers require one cleanup request, which is
+    // best effort: it must not replace the command's result.
     if (cancellation || cleanupNeeded) await box.fs.deleteFile(dir, true).catch(() => {});
 
     if (input.activityPath && cancellation)

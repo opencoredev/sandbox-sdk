@@ -1,5 +1,20 @@
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
+function hasName(cause: unknown): cause is { name: string } {
+  return (
+    typeof cause === "object" && cause !== null && "name" in cause && typeof cause.name === "string"
+  );
+}
+
+function hasStatus(cause: unknown): cause is { status: number } {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "status" in cause &&
+    typeof cause.status === "number"
+  );
+}
+
 /** Native messages can contain API keys and command output. Only an unrecognized failure without a
  * status keeps its scrubbed text, with the API key redacted, as `cause` (see describeNative). */
 export function e2bError(cause: unknown, sandboxId?: string, file = false): SandboxError {
@@ -7,13 +22,8 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
 
   // e2b assigns each error class a literal name. Bundlers rename the classes (FileNotFoundError2, or a
   // minified letter), so constructor.name stops matching; the name field does not change.
-  const name =
-    typeof cause === "object" && cause !== null && "name" in cause && typeof cause.name === "string"
-      ? cause.name
-      : "";
-
-  const status =
-    typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined;
+  const name = hasName(cause) ? cause.name : "";
+  const status = hasStatus(cause) ? cause.status : undefined;
 
   let code: ErrorCode = "provider";
 
@@ -29,7 +39,7 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
     code = "quota";
   else if (
     ["ServiceBusyError", "SandboxUnreachableError", "SandboxNotRunningError"].includes(name) ||
-    (typeof status === "number" && status >= 500)
+    (status !== undefined && status >= 500)
   )
     code = "unavailable";
   else if (name === "TimeoutError" || name === "TimeoutException") code = "timeout";
@@ -43,7 +53,7 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
 
   const native = describeNative(cause, {
     code,
-    status: status === undefined ? undefined : `HTTP ${String(status)}`,
+    status: status === undefined ? undefined : `HTTP ${status}`,
     redact: redacting([process.env.E2B_API_KEY]),
   });
 

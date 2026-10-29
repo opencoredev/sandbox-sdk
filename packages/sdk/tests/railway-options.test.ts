@@ -1,14 +1,9 @@
 import { stat } from "node:fs/promises";
 import { afterAll, expect, test, vi } from "vitest";
 
-const mock = await vi.hoisted(async () => import("./railway-mock.js"));
+import * as mock from "./railway-mock.js";
 
-vi.mock("railway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("railway")>()),
-  Sandbox: mock.MockSandbox,
-}));
-
-import { railway } from "../src/providers/railway/index.js";
+import { railway } from "./railway-mock.js";
 import { createSandbox } from "../src/index.js";
 
 const options = { token: "mock", environmentId: "mock-env" };

@@ -8,9 +8,15 @@
  */
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
-import type { BoatApi, InitOverrideFunction, Sandbox as BoatSandbox } from "@boatdev/sdk";
+import type {
+  BoatApi,
+  CreateSandboxRequest,
+  InitOverrideFunction,
+  Sandbox as BoatSandbox,
+} from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
-import { execute, fileChunkBytes, quote, stage, workspace } from "./exec.js";
+import { quote } from "../../shared/shell.js";
+import { execute, fileChunkBytes, stage, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative } from "../boat/index.js";
 import { errors } from "./errors.js";
 import { loadPeer } from "../../peer.js";
@@ -48,6 +54,10 @@ const presets = { small: "small", medium: "default", large: "large" } satisfies 
   "small" | "default" | "large"
 >;
 
+function isPreset(size: NonNullable<CreateInput["size"]>): size is keyof typeof presets {
+  return typeof size === "string";
+}
+
 // Boat has no labels. Keep metadata in its display name so stopped VMs remain
 // discoverable. Never allow the API's silent 120-character truncation.
 function metadataName(
@@ -72,7 +82,25 @@ function metadataName(
   return name;
 }
 
-function metadata(name: string): { key?: string; labels: Labels } | undefined {
+type Metadata = { key?: string; labels: Labels };
+
+/** The `[key, labels]` pair encoded in a sandbox name, before its labels are checked. */
+function isEncodedMetadata(value: unknown): value is [string | null, object] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    (value[0] === null || typeof value[0] === "string") &&
+    typeof value[1] === "object" &&
+    value[1] !== null &&
+    !Array.isArray(value[1])
+  );
+}
+
+function isLabelValue(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function metadata(name: string): Metadata | undefined {
   if (!name.startsWith(prefix)) return;
 
   try {
@@ -82,16 +110,13 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
       }).toString(),
     );
 
-    if (!Array.isArray(value) || value.length !== 2) return;
-    const [key, raw]: unknown[] = value;
-
-    if (key !== null && typeof key !== "string") return;
-
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+    if (!isEncodedMetadata(value)) return;
+    const [key, raw] = value;
     const labels: Labels = {};
 
     for (const [key, value] of Object.entries(raw)) {
-      if (typeof value !== "string") return;
+      if (!isLabelValue(value)) return;
+      // defineProperty, so a "__proto__" label stays an ordinary label.
       Object.defineProperty(labels, key, {
         value,
         enumerable: true,
@@ -100,10 +125,23 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
       });
     }
 
-    return { ...(key === null ? {} : { key }), labels: { ...labels, ...own } };
+    const result: Metadata = { labels: { ...labels, ...own } };
+
+    if (key !== null) result.key = key;
+
+    return result;
   } catch {
+    // A name this adapter did not encode is simply not an SDK sandbox.
     return;
   }
+}
+
+function sandboxState(state: string, pausedStates: readonly string[]): SandboxInfo["state"] {
+  if (pausedStates.includes(state)) return "paused";
+
+  if (["ready", "idle", "running"].includes(state)) return "running";
+
+  return "stopped";
 }
 
 function info(
@@ -129,31 +167,32 @@ function info(
     id: raw.id,
     ...data,
     createdAt,
-    state: pausedStates.includes(raw.state)
-      ? "paused"
-      : ["ready", "idle", "running"].includes(raw.state)
-        ? "running"
-        : "stopped",
+    state: sandboxState(raw.state, pausedStates),
   };
 }
 
+/** One entry of statScript's output, before its type is checked. */
+type StatEntry = { path: string; type: unknown; size: number; modifiedAt: number };
+
+function isStatEntry(value: unknown): value is StatEntry {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "path" in value &&
+    typeof value.path === "string" &&
+    "type" in value &&
+    "size" in value &&
+    typeof value.size === "number" &&
+    "modifiedAt" in value &&
+    typeof value.modifiedAt === "number"
+  );
+}
+
 function fileInfo(
-  value: unknown,
+  value: StatEntry,
   failure: ReturnType<typeof errors>["failure"],
   label: string,
 ): FileInfo {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("path" in value) ||
-    typeof value.path !== "string" ||
-    !("type" in value) ||
-    !("size" in value) ||
-    typeof value.size !== "number" ||
-    !("modifiedAt" in value) ||
-    typeof value.modifiedAt !== "number"
-  )
-    throw failure(`Invalid file metadata from ${label}`);
   const type = value.type;
 
   if (type !== "file" && type !== "directory" && type !== "symlink")
@@ -309,7 +348,7 @@ export function boatApi(
         if (input.network !== undefined && input.network !== "all")
           throw failure(`${label} network policy is unsupported by this adapter`, "unsupported");
 
-        if (input.size !== undefined && typeof input.size !== "string")
+        if (input.size !== undefined && !isPreset(input.size))
           throw failure(
             `${label} supports small, medium and large presets; custom sizes are unavailable`,
             "unsupported",
@@ -358,20 +397,23 @@ export function boatApi(
         if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
         const sdk = await api();
 
-        const request = {
-          idempotencyKey: crypto.randomUUID(),
-          createSandboxRequest: {
-            noEnv: true,
-            ...(input.from === undefined ? {} : { from: input.from }),
-            env: input.env,
-            type:
-              input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
-            ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-            ...(snapshots === undefined ? {} : { snapshots }),
-            ...(monitoring === undefined ? {} : { monitoring }),
-            ...(org === undefined ? {} : { org }),
-          },
+        const createSandboxRequest: CreateSandboxRequest = {
+          noEnv: true,
+          env: input.env,
+          type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
         };
+
+        if (input.from !== undefined) createSandboxRequest.from = input.from;
+
+        if (ttlSeconds !== undefined) createSandboxRequest.ttlSeconds = ttlSeconds;
+
+        if (snapshots !== undefined) createSandboxRequest.snapshots = snapshots;
+
+        if (monitoring !== undefined) createSandboxRequest.monitoring = monitoring;
+
+        if (org !== undefined) createSandboxRequest.org = org;
+
+        const request = { idempotencyKey: crypto.randomUUID(), createSandboxRequest };
 
         // @boatdev/sdk 1.9.9 drops fields its model lacks, so add them to the
         // serialized body. The same override applies to every retry.
@@ -581,6 +623,7 @@ export function boatApi(
 
             return bytes;
           } finally {
+            // Best effort: a leftover staging directory must not replace the read's outcome.
             await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
               dir,
             ]).catch(() => {});
@@ -652,6 +695,8 @@ export function boatApi(
           ),
         );
 
+        if (!isStatEntry(value)) throw failure(`Invalid file metadata from ${label}`);
+
         return fileInfo(value, failure, label);
       },
       list: async (id, path) => {
@@ -666,7 +711,9 @@ export function boatApi(
 
         if (!Array.isArray(value)) throw failure(`Invalid ${label} directory listing`);
 
-        return value.map((value) => fileInfo(value, failure, label));
+        if (!value.every(isStatEntry)) throw failure(`Invalid file metadata from ${label}`);
+
+        return value.map((entry) => fileInfo(entry, failure, label));
       },
       mkdir: async (id, path) => {
         await node(id, "require('fs').mkdirSync(process.argv[1],{recursive:true})", [path]);

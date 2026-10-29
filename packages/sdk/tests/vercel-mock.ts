@@ -7,13 +7,17 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { Readable } from "node:stream";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import type { Sandbox } from "@vercel/sandbox";
 import type {
   NativeSandbox,
   NativeCommand,
   VercelClient,
 } from "../src/providers/vercel/transport.js";
+
+function isAddressInfo(address: AddressInfo | string | null): address is AddressInfo {
+  return address !== null && typeof address !== "string";
+}
 
 type Params = NonNullable<Parameters<typeof Sandbox.create>[0]>;
 
@@ -74,7 +78,7 @@ export async function vercelMock() {
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
         const address = server.address();
 
-        if (!address || typeof address === "string") throw new Error("No port");
+        if (!isAddressInfo(address)) throw new Error("No port");
         this.serverPorts.set(port, address.port);
         await new Promise<void>((resolve) => server.close(() => resolve()));
         this.routes.push({ port, subdomain: `mock-${port}`, url: this.domain(port) });

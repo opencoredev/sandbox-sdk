@@ -26,7 +26,7 @@ export type NativeSandbox = Pick<
     readdir(path: string): Promise<string[]>;
     lstat(path: string): Promise<Stats>;
   };
-  stop(): Promise<unknown>;
+  stop(): Promise<Pick<Awaited<ReturnType<Sandbox["stop"]>>, "id">>;
   snapshot(opts?: {
     expiration?: number;
   }): Promise<Pick<Awaited<ReturnType<Sandbox["snapshot"]>>, "snapshotId">>;

@@ -1,14 +1,7 @@
-import { vi, test, expect, afterAll } from "vitest";
+import { test, expect, afterAll } from "vitest";
 
-const mock = await vi.hoisted(async () => import("./e2b-sdk-mock.js"));
-
-vi.mock("e2b", async (importOriginal) => {
-  const real = await importOriginal<typeof import("e2b")>();
-
-  return { ...real, Sandbox: mock.MockSandbox };
-});
-
-import { e2b } from "../src/providers/e2b/index.js";
+import * as mock from "./e2b-sdk-mock.js";
+import { e2b } from "./e2b-sdk-mock.js";
 import { createSandbox } from "../src/index.js";
 
 const { calls, cleanupMock, MockSandbox } = mock;

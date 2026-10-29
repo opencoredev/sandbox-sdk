@@ -1,10 +1,7 @@
 import { vi, test, expect } from "vitest";
 
-const mock = await vi.hoisted(async () => import("./agentos-mock.js"));
-
-vi.mock("@rivet-dev/agentos-core", () => ({ AgentOs: mock.MockAgentOs }));
-
-import { agentos } from "../src/providers/agentos/index.js";
+import * as mock from "./agentos-mock.js";
+import { agentos } from "./agentos-mock.js";
 import { local } from "../src/providers/local/index.js";
 import { createSandbox, connectSandbox, type CreateOptions } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -60,7 +57,7 @@ test("all factories share keyed VMs and parallel creation is exact within one pr
 test("network policies are explicit and unsupported options fail closed", async () => {
   for (const network of ["all", "none", { allow: ["registry.npmjs.org"] }] as const) {
     const box = await createSandbox(agentos(), {
-      network: typeof network === "string" ? network : { allow: [...network.allow] },
+      network: network === "all" || network === "none" ? network : { allow: [...network.allow] },
     });
 
     try {

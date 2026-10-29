@@ -2,10 +2,20 @@ import { spawn } from "node:child_process";
 import { chmodSync, lstatSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentOs, AgentOsOptions, CodeExecutionResult } from "@rivet-dev/agentos-core";
+import type {
+  AgentOs,
+  AgentOsOptions,
+  CodeExecutionResult,
+  SoftwarePackageSource,
+} from "@rivet-dev/agentos-core";
+import {
+  createAgentosProvider,
+  createRegistry,
+  type AgentosOptions,
+} from "../src/providers/agentos/provider.js";
 
 export const creates: AgentOsOptions[] = [];
-export const installs: unknown[] = [];
+export const installs: SoftwarePackageSource[] = [];
 
 export class MockAgentOs {
   private constructor(
@@ -28,8 +38,10 @@ export class MockAgentOs {
     );
   }
   readonly software = {
-    install: async (source: unknown) => {
+    install: async (source: SoftwarePackageSource) => {
       installs.push(source);
+
+      return { packageName: "git" };
     },
   };
   readonly filesystem = {
@@ -145,4 +157,12 @@ export class MockAgentOs {
   async dispose() {
     await fs.rm(this.root, { recursive: true, force: true });
   }
+}
+
+// Like the real module's registry, shared by every factory in this test process.
+const registry = createRegistry<MockAgentOs>();
+
+/** The agentOS adapter with this fixture in place of agentOS Core. */
+export function agentos(options: AgentosOptions = {}) {
+  return createAgentosProvider(options, async () => ({ AgentOs: MockAgentOs }), registry);
 }

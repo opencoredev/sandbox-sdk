@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
-import type { DownloadStreamOptions, Sandbox } from "@daytonaio/sdk";
+import type { DownloadStreamOptions } from "@daytonaio/sdk";
+import type { DaytonaBox } from "./native.js";
 import { SandboxError } from "../../errors.js";
 import { unloadedModule } from "./errors.js";
 
@@ -13,17 +14,17 @@ let native: Promise<boolean> | undefined;
 // response unread, holding a socket that keeps the process alive. So probe first, with nothing
 // sent: uploadFiles loads form-data (the same way as busboy) before building the request, and a
 // source path with a NUL byte then fails synchronously in fs.createReadStream.
-function nativeTransfers(box: Sandbox): Promise<boolean> {
+function nativeTransfers(box: DaytonaBox): Promise<boolean> {
   return (native ??= box.fs
     .uploadFiles([{ source: "\0", destination: "/tmp/.sandbox-sdk/probe" }])
     .then(
       () => true,
-      (error: unknown) => unloadedModule(error) === undefined,
+      (cause: unknown) => unloadedModule(cause) === undefined,
     ));
 }
 
 async function transfer<T>(
-  box: Sandbox,
+  box: DaytonaBox,
   nativeCall: () => Promise<T>,
   viaCode: () => Promise<T>,
 ): Promise<T> {
@@ -40,7 +41,7 @@ async function transfer<T>(
 }
 
 /** Writes `data` to the absolute `path`, creating parent directories. */
-export function upload(box: Sandbox, data: Uint8Array, path: string): Promise<void> {
+export function upload(box: DaytonaBox, data: Uint8Array, path: string): Promise<void> {
   return transfer(
     box,
     () => box.fs.uploadFile(Buffer.from(data), path),
@@ -65,7 +66,7 @@ with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(da
 }
 
 /** Reads the absolute `path`. A missing file is a `file_not_found` SandboxError on the fallback path. */
-export function download(box: Sandbox, path: string): Promise<Uint8Array> {
+export function download(box: DaytonaBox, path: string): Promise<Uint8Array> {
   return transfer(
     box,
     async () => new Uint8Array(await box.fs.downloadFile(path)),
@@ -104,7 +105,7 @@ else: print("SDK_FILE:"+base64.b64encode(d).decode())`,
 
 /** Streams the absolute `path`. The fallback reads the whole file, then streams it from memory. */
 export function downloadStream(
-  box: Sandbox,
+  box: DaytonaBox,
   path: string,
   options: DownloadStreamOptions,
 ): Promise<Readable> {

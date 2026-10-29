@@ -9,27 +9,49 @@ export const failure = (message: string, code: ErrorCode = "provider") =>
     { code, provider: "local" },
   );
 
-export function object(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw failure("Invalid Docker response");
+/** A JSON value, as the Docker Engine API sends and accepts it. `undefined` fields are left out of a body. */
+export type DockerJson =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | DockerJson[]
+  | { [key: string]: DockerJson };
+
+type DockerObject = { [key: string]: DockerJson };
+
+function isDockerObject(value: DockerJson): value is DockerObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isText(value: DockerJson): value is string {
+  return typeof value === "string";
+}
+
+function isNumber(value: DockerJson): value is number {
+  return typeof value === "number";
+}
+
+export function object(value: DockerJson): DockerObject {
+  if (!isDockerObject(value)) throw failure("Invalid Docker response");
 
   return Object.fromEntries(Object.entries(value));
 }
 
-export function string(value: unknown): string {
-  if (typeof value !== "string") throw failure("Expected a Docker string");
+export function string(value: DockerJson): string {
+  if (!isText(value)) throw failure("Expected a Docker string");
 
   return value;
 }
 
-export function number(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    throw failure("Expected a Docker number");
+export function number(value: DockerJson): number {
+  if (!isNumber(value) || !Number.isFinite(value)) throw failure("Expected a Docker number");
 
   return value;
 }
 
-export function array(value: unknown): unknown[] {
+export function array(value: DockerJson): DockerJson[] {
   if (!Array.isArray(value)) throw failure("Expected a Docker array");
 
   return value;
@@ -37,7 +59,7 @@ export function array(value: unknown): unknown[] {
 
 export const encode = encodeURIComponent;
 
-export function parse(text: string): unknown {
+export function parse(text: string): DockerJson {
   try {
     return JSON.parse(text);
   } catch {
@@ -93,7 +115,7 @@ export class Docker {
       );
     this.socketPath = host.slice(7);
   }
-  async call(method: string, path: string, body?: unknown): Promise<unknown> {
+  async call(method: string, path: string, body?: DockerJson): Promise<DockerJson> {
     const data = body === undefined ? undefined : JSON.stringify(body);
 
     const bytes = await new Promise<Buffer>((resolve, reject) => {
@@ -165,11 +187,12 @@ export class Docker {
       onChunk(chunk: OutputChunk): void;
     },
   ): Promise<number> {
+    // JSON.stringify leaves out an undefined User, so the image's user applies.
     const created = object(
       await this.call("POST", `/containers/${encode(id)}/exec`, {
         Cmd: command,
         WorkingDir: options.cwd ?? "/",
-        ...(options.user === undefined ? {} : { User: options.user }),
+        User: options.user,
         Env: Object.entries(options.env ?? {}).map(([k, v]) => `${k}=${v}`),
         AttachStdout: true,
         AttachStderr: true,

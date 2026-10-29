@@ -1,14 +1,9 @@
 import { afterAll, expect, test, vi } from "vitest";
 
-const mock = await vi.hoisted(async () => import("./railway-mock.js"));
-
-vi.mock("railway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("railway")>()),
-  Sandbox: mock.MockSandbox,
-}));
+import * as mock from "./railway-mock.js";
 
 import type { CreateOptions } from "../src/types.js";
-import { railway } from "../src/providers/railway/index.js";
+import { railway } from "./railway-mock.js";
 import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { railwayError } from "../src/providers/railway/errors.js";
 import { runConformance } from "../src/testing.js";

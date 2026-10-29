@@ -1,13 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
-import type { Sandbox } from "@daytonaio/sdk";
-import { cleanupMock } from "./daytona-mock.js";
-import { daytona } from "../src/providers/daytona/index.js";
+import { cleanupMock, daytona, type MockSandbox } from "./daytona-mock.js";
 import { resetTransfers } from "../src/providers/daytona/transfer.js";
 import { createSandbox } from "../src/index.js";
-
-vi.mock("@daytonaio/sdk", async () => ({
-  Daytona: (await import("./daytona-mock.js")).MockDaytona,
-}));
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -23,7 +17,7 @@ const unloadable = (module: string) =>
     `Uploading files is not supported:  Module "${module}" is not available in the "node" runtime: Cannot find module '${module}'`,
   );
 
-function bundled(box: Sandbox) {
+function bundled(box: MockSandbox) {
   return {
     probe: vi.spyOn(box.fs, "uploadFiles").mockRejectedValue(unloadable("form-data")),
     upload: vi.spyOn(box.fs, "uploadFile").mockRejectedValue(unloadable("form-data")),
