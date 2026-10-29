@@ -105,6 +105,12 @@ export interface HttpClientOptions<Plane extends string> {
    * Return `undefined` to keep the default. Never put `failure.body` text in errors.
    */
   mapError?: (failure: HttpFailure, request: FailedRequest) => ErrorCode | undefined;
+  /**
+   * Build the error's `cause` instead of the default `HTTP <status> (request <id>)` text, such as an Error with
+   * machine-readable evidence fields. Return `undefined` to keep the default. It is not redacted: copy only
+   * bounded, validated values, never `failure.body` text.
+   */
+  cause?: (failure: HttpFailure, request: FailedRequest) => Error | undefined;
 }
 
 /** One request. */
@@ -357,6 +363,12 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
   }
   /** Maps a failure with the provider hook first, then the shared rules. */
   function mapFailure(failed: HttpFailure, request: HttpRequest<string>, plane: string): SandboxError {
+    const error = mapDefault(failed, request, plane);
+    const cause = options.cause?.(failed, { method: request.method, plane, operation: operationOf(request), sandboxId: request.sandboxId });
+    if (cause === undefined) return error;
+    return new SandboxError(error.message, { code: error.code, provider, sandboxId: error.sandboxId, retryable: error.retryable, ...(error.hint === undefined ? {} : { hint: error.hint }), cause });
+  }
+  function mapDefault(failed: HttpFailure, request: HttpRequest<string>, plane: string): SandboxError {
     const unsafe = !idempotentMethods.has(request.method) && !request.readOnly;
     const hooked = options.mapError?.(failed, { method: request.method, plane, operation: operationOf(request), sandboxId: request.sandboxId });
     switch (failed.kind) {
