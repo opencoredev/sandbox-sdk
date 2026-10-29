@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { shellProvider } from "./shell-provider.js";
+import type { ProviderFiles } from "../src/provider.js";
 
 describe("real Linux primitive transport", () => {
   test("hidden git index yields applicable diffs, git helpers clone/commit/push", async () => {
@@ -130,19 +131,40 @@ describe("real Linux primitive transport", () => {
         return exec(id, input);
       };
 
-      for (const name of ["read", "write", "list", "stat", "mkdir", "remove"] as const) {
-        const original = provider.files[name].bind(provider.files) as (
-          ...args: unknown[]
-        ) => Promise<never>;
+      const original = { ...provider.files };
 
-        Object.assign(provider.files, {
-          [name]: (...args: unknown[]) => {
-            calls.push(name);
+      Object.assign(provider.files, {
+        read(id, path) {
+          calls.push("read");
 
-            return original(...args);
-          },
-        });
-      }
+          return original.read(id, path);
+        },
+        write(id, path, data, options) {
+          calls.push("write");
+
+          return original.write(id, path, data, options);
+        },
+        list(id, path) {
+          calls.push("list");
+
+          return original.list(id, path);
+        },
+        stat(id, path) {
+          calls.push("stat");
+
+          return original.stat(id, path);
+        },
+        mkdir(id, path) {
+          calls.push("mkdir");
+
+          return original.mkdir(id, path);
+        },
+        remove(id, path, options) {
+          calls.push("remove");
+
+          return original.remove(id, path, options);
+        },
+      } satisfies Partial<ProviderFiles>);
 
       const create = provider.create.bind(provider);
       provider.create = async (input) => {

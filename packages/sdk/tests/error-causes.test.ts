@@ -14,12 +14,13 @@ import { superserveError } from "../src/providers/superserve/errors.js";
 import { tenkiError } from "../src/providers/tenki/errors.js";
 import { upstashError } from "../src/providers/upstash/errors.js";
 import { vercelError } from "../src/providers/vercel/errors.js";
+import { rejection } from "./rejection.js";
 
 const causeText = (error: SandboxError) =>
   error.cause instanceof Error ? error.cause.message : String(error.cause);
 
 // Railway's SDK validates input with TypeError, so railway maps it to invalid_argument and keeps the text.
-const mappers: [string, (error: unknown) => SandboxError][] = [
+const mappers: [string, (cause: unknown) => SandboxError][] = [
   ["boat", (error) => boatErrors().boatError(error)],
   ["e2b", (error) => e2bError(error)],
   ["railway", (error) => railwayError(error)],
@@ -118,13 +119,13 @@ describe("provider error mappers keep a redacted cause", () => {
 });
 
 describe("the core keeps causes through redaction", () => {
-  const failing = (thrown: unknown): Provider => {
+  const failing = (cause: unknown): Provider => {
     const backing = memory();
 
     return {
       ...backing,
       exec: async () => {
-        throw thrown;
+        throw cause;
       },
     };
   };
@@ -136,15 +137,9 @@ describe("the core keeps causes through redaction", () => {
 
     const box = await createSandbox(provider, { secrets: { TOKEN: "secret-value" } });
 
-    const error = await box.run("true").then(
-      () => undefined,
-      (error: unknown) => error,
-    );
+    const error = await rejection(box.run("true"));
 
-    expect(error).toBeInstanceOf(SandboxError);
     expect(error).toMatchObject({ code: "provider", provider: "memory", sandboxId: box.id });
-
-    if (!(error instanceof SandboxError)) throw new Error("expected a SandboxError");
     expect(error.message).toContain("m is not a constructor for [REDACTED]");
     expect(error.cause).toBe(
       "TypeError: m is not a constructor for [REDACTED]; password=[REDACTED]",
@@ -160,10 +155,7 @@ describe("the core keeps causes through redaction", () => {
 
     const box = await createSandbox(provider, { secrets: { TOKEN: "secret-value" } });
 
-    const error = await box.run("true").then(
-      () => undefined,
-      (error: unknown) => error,
-    );
+    const error = await rejection(box.run("true"));
 
     expect(error).toMatchObject({
       code: "provider",

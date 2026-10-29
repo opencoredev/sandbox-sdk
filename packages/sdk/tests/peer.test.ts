@@ -1,17 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SandboxError } from "../src/index.js";
 import { loadPeer, peerModule } from "../src/peer.js";
+import { rejection } from "./rejection.js";
 
 describe("loadPeer", () => {
   it("names the package when an optional peer is not installed", async () => {
     // A computed specifier keeps Vite from resolving the missing package at transform time.
     const name = ["sandbox-sdk", "missing-peer"].join("-");
 
-    const failure = await loadPeer(name, "example", () => import(name)).catch(
-      (error: unknown) => error,
-    );
-
-    expect(failure).toBeInstanceOf(SandboxError);
+    const failure = await rejection(loadPeer(name, "example", () => import(name)));
     expect(failure).toMatchObject({ code: "unavailable", provider: "example" });
     expect(String(failure)).toContain(`Install ${name}`);
   });
@@ -28,7 +24,7 @@ describe("loadPeer", () => {
 
   it("returns the loaded module", async () => {
     const path = await loadPeer("node:path", "example", () => import("node:path"));
-    expect(typeof path.join).toBe("function");
+    expect(path.join).toBeTypeOf("function");
   });
 
   it("fills named exports from default when a bundle wraps a CommonJS peer", async () => {

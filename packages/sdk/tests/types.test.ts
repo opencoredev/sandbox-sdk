@@ -1,7 +1,17 @@
 import { test, expect } from "vitest";
 import { createSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
-import type { Provider } from "../src/provider.js";
+import type { Capability, Provider } from "../src/provider.js";
+
+/** A provider picked at runtime: the compiler knows only the Provider contract. */
+function runtimeProvider(): Provider {
+  return memory();
+}
+
+/** A capability picked at runtime, typed as the whole Capability union. */
+function runtimeCapability(): Capability {
+  return "network-policy";
+}
 
 test("capability methods are absent from unsupported provider types", async () => {
   const box = await createSandbox(memory());
@@ -62,8 +72,7 @@ test("Vercel native sandbox is fully typed and terminal remains absent", () => {
 
 test("a provider chosen at runtime exposes capability methods only after hasCapability", async () => {
   const { hasCapability } = await import("../src/index.js");
-  const providers: Record<string, () => Provider> = { memory };
-  const box = await createSandbox(providers.memory!());
+  const box = await createSandbox(runtimeProvider());
 
   // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
   if (false) {
@@ -99,8 +108,8 @@ test("start derives a stable process name when none is given", async () => {
 
 test("hasCapability with a union capability narrows nothing it did not check", async () => {
   const { hasCapability } = await import("../src/index.js");
-  const box = await createSandbox(memory() as Provider);
-  const capability = "network-policy" as import("../src/provider.js").Capability;
+  const box = await createSandbox(runtimeProvider());
+  const capability = runtimeCapability();
 
   if (hasCapability(box, capability)) {
     // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
