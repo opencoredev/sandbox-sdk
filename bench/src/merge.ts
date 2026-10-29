@@ -12,6 +12,7 @@ import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 
 import { costBillingSchema } from "./task-cost.js";
 import { failureOutcomeSchema } from "./failure.js";
+import { isMissingFile } from "./files.js";
 
 const finite = z.number().finite();
 
@@ -460,8 +461,7 @@ export async function readSource(directory: string) {
         JSON.parse(await readFile(join(directory, "billing.json"), "utf8")),
       );
     } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT"))
-        throw error;
+      if (!isMissingFile(error)) throw error;
     }
   }
 

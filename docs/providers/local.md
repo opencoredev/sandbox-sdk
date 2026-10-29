@@ -4,7 +4,7 @@ Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `crea
 
 The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
 
-Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom sizes are rejected because their required `diskGb` limit cannot be enforced portably. Local accepts idle and lifetime options with client/reaper enforcement, described below. Docker provides no native deadline timer.
+Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom `{ cpu, memoryMb }` sizes set the same limits; a `diskGb` fails with `unsupported`, because Docker cannot enforce disk limits portably. Local accepts idle and lifetime options with client/reaper enforcement, described below. Docker provides no native deadline timer.
 
 `network: "none"` uses Docker's isolated network namespace with loopback only. Domain allow-lists fail with `unsupported`. The default network is Docker bridge. Declare preview ports at creation; each maps to an ephemeral host port bound exclusively to `127.0.0.1`. Omitting `ports` declares port 3000. Previews are accessible on the Docker host. They are unavailable with network `none`.
 
@@ -20,4 +20,4 @@ For local startup diagnosis, `usage()` includes `createInspectMs` (including any
 
 ## Benchmark cleanup policy
 
-The benchmark requests creation lifetime only from memory, E2B, and Daytona. Local and Vercel runs omit creation lifetime and rely on tracked cleanup, including deletion of late arrivals. No benchmark requests idle timeout. Each report includes this cleanup policy in its notes. Vercel still rejects creation `timeoutMs` because its native timer resets with each resumed session.
+The default benchmark harness requests no creation lifetime or idle timeout from any provider. It relies on tracked cleanup, including deletion of late arrivals, and on its `ownership.json` journal for `bun bench reap`. The original harness (`bun bench --v1`) requests creation lifetime only from memory, E2B, and Daytona, and its reports include that policy in their notes. Vercel still rejects creation `timeoutMs` because its native timer resets with each resumed session.

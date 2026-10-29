@@ -24,14 +24,40 @@ const overrides = z
 
 export const trackSchema = z.enum(["default", "same-spec"]);
 
-export const sizeSchema = z.union([
-  z.enum(["small", "medium", "large"]),
-  z.object({
-    cpu: z.number().positive().finite(),
-    memoryMb: z.number().int().positive(),
-    diskGb: z.number().positive().finite().optional(),
-  }),
-]);
+const sizePresetSchema = z.enum(["small", "medium", "large"]);
+
+const customSizeSchema = z.object({
+  cpu: z.number().positive().finite(),
+  memoryMb: z.number().int().positive(),
+  diskGb: z.number().positive().finite().optional(),
+});
+
+export const sizeSchema = z.union([sizePresetSchema, customSizeSchema]);
+
+export type Size = z.infer<typeof sizeSchema>;
+
+type SizePreset = z.infer<typeof sizePresetSchema>;
+
+type CustomSize = z.infer<typeof customSizeSchema>;
+
+export function isSizePreset(size: Size): size is SizePreset {
+  return typeof size === "string";
+}
+
+/** `--size` takes a preset name or `cpu:memoryMb[:diskGb]`. */
+function sizeInput(raw: string) {
+  const parts = raw.split(":");
+
+  if (parts.length === 1) return raw;
+
+  if (parts.length > 3) return null;
+
+  const size: CustomSize = { cpu: Number(parts[0]), memoryMb: Number(parts[1]) };
+
+  if (parts[2] !== undefined) size.diskGb = Number(parts[2]);
+
+  return size;
+}
 
 const assignments = (value: string[]): Record<string, string> =>
   Object.fromEntries(
@@ -51,28 +77,18 @@ const sizes = z
     Object.fromEntries(
       Object.entries(assignments(value)).map(([name, raw]) => {
         if (!raw) throw new Error("Expected provider=size");
-        const parts = raw.split(":");
 
-        return [
-          name,
-          sizeSchema.parse(
-            parts.length === 1
-              ? raw
-              : parts.length <= 3
-                ? {
-                    cpu: Number(parts[0]),
-                    memoryMb: Number(parts[1]),
-                    ...(parts[2] === undefined ? {} : { diskGb: Number(parts[2]) }),
-                  }
-                : null,
-          ),
-        ];
+        return [name, sizeSchema.parse(sizeInput(raw))];
       }),
     ),
   );
 
 /** Native products a provider can run on, chosen with --product provider=name. */
-export const products: Record<string, readonly [string, ...string[]]> = {
+interface ProductTable {
+  readonly [provider: string]: readonly [string, ...string[]];
+}
+
+export const products: ProductTable = {
   upstash: ["box", "ephemeral"],
 };
 
@@ -143,14 +159,13 @@ const schema = z.object({
 
 export type ConfigV2 = z.infer<typeof schema>;
 
+const repeatable = new Set(["size", "template", "product"]);
+
 export function parseV2(args: string[]) {
   const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
     Object.keys(schema.shape).map((key) => [
       key,
-      {
-        type: "string",
-        ...(["size", "template", "product"].includes(key) ? { multiple: true } : {}),
-      },
+      repeatable.has(key) ? { type: "string", multiple: true } : { type: "string" },
     ]),
   );
 

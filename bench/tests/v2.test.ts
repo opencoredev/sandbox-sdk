@@ -4,6 +4,7 @@ import { distribution, wilson, shuffle } from "../src/v2-stats.js";
 import { estimateCost, priceAtSize, settledBudgetUSD } from "../src/pricing.js";
 import { parseFingerprint, resources } from "../src/fingerprint.js";
 import { parseV2 } from "../src/v2-config.js";
+import type { FactoryOptions } from "../src/providers.js";
 
 describe("v2 scheduling", () => {
   it("interleaves providers by iteration and respects both concurrency limits", async () => {
@@ -202,7 +203,7 @@ it("maps template flags to native factory options", async () => {
     ["superserve", "template"],
   ]) {
     if (!name || !key) throw new Error("Missing test mapping");
-    const seen: unknown[] = [];
+    const seen: FactoryOptions[] = [];
 
     const env = {
       E2B_API_KEY: "fixture",
@@ -216,7 +217,7 @@ it("maps template flags to native factory options", async () => {
       name,
       env,
       async () => ({
-        [name]: (options: unknown) => {
+        [name]: (options: FactoryOptions) => {
           seen.push(options);
 
           return memory();
@@ -241,12 +242,12 @@ it("maps --product to native factory options and rejects unknown products", asyn
     ["ephemeral", { ephemeral: true }],
     ["box", {}],
   ] as const) {
-    const seen: unknown[] = [];
+    const seen: FactoryOptions[] = [];
     await loadProvider(
       "upstash",
       { UPSTASH_BOX_API_KEY: "fixture" },
       async () => ({
-        upstash: (options: unknown) => {
+        upstash: (options: FactoryOptions) => {
           seen.push(options);
 
           return memory();

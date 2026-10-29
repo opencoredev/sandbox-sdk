@@ -1,6 +1,6 @@
 # Daytona provider
 
-Install `@daytonaio/sdk@^0.225.0` alongside this package, then import `daytona` from `@opencoredev/sandbox-sdk/daytona`. The adapter loads the optional SDK on its first operation. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
+Install `@daytonaio/sdk` (`>=0.225.0 <1.0.0`) alongside this package, then import `daytona` from `@opencoredev/sandbox-sdk/daytona`. The adapter loads the optional SDK on its first operation. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
 
 Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. The adapter does not declare `pause`; an idle timeout stops the sandbox, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a typed Daytona `Sandbox`. Terminal support is not exposed.
 

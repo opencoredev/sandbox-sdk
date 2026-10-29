@@ -1,12 +1,18 @@
 import type { Sample } from "./v2-model.js";
 import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
+import { isSizePreset } from "./v2-config.js";
 import { distribution } from "./v2-stats.js";
 
-const presets: Record<
-  string,
-  Record<"small" | "medium" | "large", { cpu: number; memoryGiB: number }>
-> = {
+/** Each provider's named size presets. */
+interface SizePresets {
+  readonly [provider: string]: Record<
+    "small" | "medium" | "large",
+    { cpu: number; memoryGiB: number }
+  >;
+}
+
+const presets: SizePresets = {
   upstash: {
     small: { cpu: 2, memoryGiB: 4 },
     medium: { cpu: 4, memoryGiB: 8 },
@@ -46,7 +52,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const requestedCompute =
     size === null
       ? provisioned && { cpu: provisioned.cpu, memoryGiB: provisioned.memoryGiB }
-      : typeof size === "string"
+      : isSizePreset(size)
         ? (presets[provider] ?? standardPresets)[size]
         : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
 

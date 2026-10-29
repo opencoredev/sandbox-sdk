@@ -17,6 +17,10 @@ import {
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
+import { isMissingFile } from "./files.js";
+
+/** results.json is rewritten with updated cleanup fields; everything else is kept as read. */
+const resultsSchema = z.record(z.string(), z.json());
 
 const resource = z.object({
   provider: z.string(),
@@ -44,7 +48,7 @@ export async function reapRun(
       .object({ runId: z.string(), resources: z.array(resource) })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+    if (!isMissingFile(error)) {
       if (!(error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
       process.stderr.write(
         "Ownership journal is corrupt; recovering only resources with this run's exact label and SDK marker. Snapshot IDs may require manual recovery.\n",
@@ -54,15 +58,14 @@ export async function reapRun(
 
   if (journal && journal.runId !== config.run)
     throw new Error("Ownership journal belongs to a different run; use its --out directory");
-  let results: Record<string, unknown> | null = null;
+  let results: z.infer<typeof resultsSchema> | null = null;
 
   try {
-    results = z
-      .record(z.string(), z.unknown())
-      .parse(JSON.parse(await readFile(join(config.out, "results.json"), "utf8")));
+    results = resultsSchema.parse(
+      JSON.parse(await readFile(join(config.out, "results.json"), "utf8")),
+    );
   } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT"))
-      throw error;
+    if (!isMissingFile(error)) throw error;
   }
 
   const reviews: CleanupReview[] = z.array(reviewSchema).parse(results?.cleanupReview ?? []);
@@ -138,12 +141,11 @@ export async function reapRun(
         reviews.splice(reviews.indexOf(item), 1);
     };
 
-    const candidates = new Set([
-      ...(journal?.resources ?? [])
-        .filter((r) => r.provider === p.name && r.kind === "sandbox")
-        .map((r) => r.id),
-      ...reviews.filter((r) => r.provider === p.name && r.kind === "sandbox").map((r) => r.id),
-    ]);
+    const candidates = new Set(
+      [...(journal?.resources ?? []), ...reviews].flatMap((r) =>
+        r.provider === p.name && r.kind === "sandbox" ? [r.id] : [],
+      ),
+    );
 
     try {
       for (const info of await deadline(config["timeout-ms"], () =>
@@ -357,10 +359,13 @@ export async function reapRun(
     process.stdout.write(`cleanupResolved: ${JSON.stringify(entry)}\n`);
 
   if (results || reviews.length || releases.length || resolutions.length) {
-    const record = results ?? { runId: config.run };
-    record.cleanupReview = reviews;
-    record.cleanupReleased = releases;
-    record.cleanupResolved = resolutions;
+    const record = {
+      ...(results ?? { runId: config.run }),
+      cleanupReview: reviews,
+      cleanupReleased: releases,
+      cleanupResolved: resolutions,
+    };
+
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
 

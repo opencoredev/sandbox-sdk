@@ -1,8 +1,8 @@
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import type { Sandbox } from "@opencoredev/sandbox-sdk";
+import type { CreateOptions, Sandbox } from "@opencoredev/sandbox-sdk";
 import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
 import type { Config } from "./config.js";
-import type { ReadyProvider } from "./providers.js";
+import { providerMember, type ReadyProvider } from "./providers.js";
 import {
   scenarios,
   type Metric,
@@ -16,8 +16,8 @@ import { cpuPerCall, overheadHooks, type OverheadFixture } from "./overhead.js";
 
 class SkippedScenario extends Error {}
 
-const note = (error: unknown) =>
-  error instanceof Error ? error.message : "Unknown benchmark failure";
+const note = (cause: unknown) =>
+  cause instanceof Error ? cause.message : "Unknown benchmark failure";
 
 const payloads = new Map(
   [1024, 10 * 1024 * 1024].map((size) => [
@@ -79,9 +79,8 @@ export async function measureProvider(
                 nativeIds.delete(id);
               })(),
             );
-        const member: unknown = Reflect.get(target, key, target);
 
-        return typeof member === "function" ? member.bind(target) : member;
+        return providerMember(target, key);
       },
     });
 
@@ -135,14 +134,12 @@ export async function measureProvider(
 
     try {
       await measure("cold", async (signal) => {
-        const created = await createSandbox(scopedProvider, {
-          ports: [3000],
-          signal,
-          ...(["memory", "e2b", "daytona"].includes(loaded.name)
-            ? { timeoutMs: Math.min(3_600_000, config["timeout-ms"] * 10) }
-            : {}),
-          labels: { "sandbox-bench": "1" },
-        });
+        const options: CreateOptions = { ports: [3000], signal, labels: { "sandbox-bench": "1" } };
+
+        if (["memory", "e2b", "daytona"].includes(loaded.name))
+          options.timeoutMs = Math.min(3_600_000, config["timeout-ms"] * 10);
+
+        const created = await createSandbox(scopedProvider, options);
 
         box = created;
 

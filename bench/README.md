@@ -15,7 +15,7 @@ bun bench --runs 2 --bursts 3 --concurrency 4 --provider-concurrency 1 \
 
 Output paths are relative to `bench/` through the root alias. Each output directory contains `results.json`, `results.md`, a self-contained `index.html`, `samples.ndjson`, and an `ownership.json` cleanup journal. Reports checkpoint after each sandbox; raw observations append after each scenario as a crash journal. At successful finalization, `samples.ndjson` is rewritten to exactly match `results.json.samples`, including fingerprint backfills, final cost corrections, and burst aggregate rows. Treat interim NDJSON as provisional. Do not reuse a run ID or output directory for a new collection. The harness never prints credentials. Run reports can contain public egress IPs, native sandbox IDs, and hardware identifiers; review before publication.
 
-Use the same SDK commit and harness commit for every provider in a published comparison. Merge SBX-44 before the real run. The pilot exercises the current SDK and is not publication evidence for the SDK after that merge.
+Use the same SDK commit and harness commit for every provider in a published comparison. A pilot is a harness check, not publication evidence.
 
 ## Merge collected results offline
 
@@ -78,7 +78,7 @@ The dollar guard reserves a conservative timeout-based estimate at admission. Es
 For publication, use 100 normal iterations and 30 workload iterations, serial within each provider. This gives useful p50/mean estimates; p99 from 100 samples is still unstable. Keep raw samples and CIs. Increase the global limit only after examining host-load counters.
 
 ```sh
-# Example only: do not run before SBX-44 is merged and pilot blockers are resolved.
+# Run a pilot first and resolve its blockers before a publication collection.
 bun bench --runs 100 --workload-runs 30 --bursts "" \
   --concurrency 4 --provider-concurrency 1 --seed 45 \
   --max-sandboxes 250 --max-dollars 10 --provider-max-dollars boat=2 \
@@ -159,7 +159,7 @@ bun run --cwd packages/sdk build
 
 Tests are offline. They exercise real memory-provider cleanup, scheduling limits, seeded order, percentile/bootstrap/Wilson arithmetic, cost conversion and rounding, and fingerprint boundary validation.
 
-See [the validation pilot](PILOT.md) for observed failures, cost projections, and verification limits.
+See [History](#history) for what the first validation pilot found.
 
 ## Publication fairness updates
 
@@ -211,16 +211,16 @@ The root `allocations[]` repeats this evidence per provider/track as `requested`
 
 Restores omit size overrides and inherit their snapshot's allocation. `restore-fingerprint.details.verification` records source and restored resources, `matches` (null if the source fingerprint is unavailable), and mismatched dimensions. CPU must match exactly; usable memory and disk allow 5%. A mismatch is a failed restore-fingerprint observation; its fingerprint and cleanup remain recorded.
 
-### SBX-53 collection windows
+### Collection windows
 
-The executable recommendations are in `src/collection-plan.sh` (also copied to `/tmp/swarm/core-commands.sh` for orchestration). Invoke the script by path from any working directory; it resolves the checkout root and writes absolute output paths under `bench/results`. Each run’s journal is `bench/results/RUN_ID/ownership.json`, including when invoked from the repository root. After all adapter merges, build and verify the SDK, then export `BENCH_COLLECTION_COMMIT` as that complete immutable commit. Every invocation refuses a different checkout or uncommitted collection code. Both tracks and all windows must use the same pinned commit.
+The executable recommendations are in `src/collection-plan.sh`. Invoke the script by path from any working directory; it resolves the checkout root and writes absolute output paths under `bench/results`. Each run’s journal is `bench/results/RUN_ID/ownership.json`, including when invoked from the repository root. After all adapter merges, build and verify the SDK, then export `BENCH_COLLECTION_COMMIT` as that complete immutable commit. Every invocation refuses a different checkout or uncommitted collection code. Both tracks and all windows must use the same pinned commit.
 
 ```sh
 # Preview exact commands without credentials, provider calls or waits:
 BENCH_PLAN_DRY_RUN=1 bash bench/src/collection-plan.sh default-nonboat
 BENCH_PLAN_DRY_RUN=1 bash bench/src/collection-plan.sh same-spec-nonboat
 # Generate documented capability/quota exclusions for the offline merge:
-bash bench/src/collection-plan.sh policy > /tmp/swarm/collection-policy.json
+bash bench/src/collection-plan.sh policy > bench/results/collection-policy.json
 ```
 
 `default-nonboat` covers E2B, Daytona, Upstash, boxd, Freestyle, Tenki and Superserve. It collects 100 lifecycle/probe iterations, workloads on the first 30, a separate 30-iteration snapshot/restore suite, and three cohorts each for K=10/K=25, subject to verified account caps. Cold, fingerprint and destroy always run. The main list explicitly includes command, both file sizes, reconnect, pause/resume, performance, git-clone, npm-install, dev-server, preview-first-byte, edit-loop, tool-replay and pip-install. Across the three suites this covers all 27 site metric IDs. Missing capabilities or capacity remain documented exceptions. No old source data should be pooled into this rerun.
@@ -292,10 +292,21 @@ for k in E2B_API_KEY DAYTONA_API_KEY UPSTASH_BOX_API_KEY BOXD_API_KEY BOXD_ORG F
 done
 timeout --signal=TERM --kill-after=90s 23m bun bench/scripts/sdk-overhead.ts \
   --providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve \
-  --sandboxes 5 --n 10 --out /tmp/overhead.json \
-  --sdk /path/to/worktree/packages/sdk > /tmp/overhead.md
+  --sandboxes 5 --n 10 --out bench/results/overhead.json > bench/results/overhead.md
 ```
 
-`--sdk` defaults to this checkout's `packages/sdk`. Build the selected SDK first with `bun run --cwd /path/to/worktree/packages/sdk build`. Both native modules and SDK modules resolve from that selected package. JSON records its Git commit, with `-dirty` for changes within `packages/sdk`, raw samples, both SDK operation timing series, medians, p90 and ranges. Delta is the difference of medians; cold/init metrics also retain paired-delta statistics. JSON checkpoints after each provider. A nonzero exit means an operation, provider or cleanup check failed.
+`--sdk <path>` selects another checkout's `packages/sdk`; it defaults to this checkout's. Build the selected SDK first with `bun run --cwd <path> build`. Both native modules and SDK modules resolve from that selected package. JSON records its Git commit, with `-dirty` for changes within `packages/sdk`, raw samples, both SDK operation timing series, medians, p90 and ranges. Delta is the difference of medians; cold/init metrics also retain paired-delta statistics. JSON checkpoints after each provider. A nonzero exit means an operation, provider or cleanup check failed.
 
 Defaults match the adapters: E2B `base`, Daytona's default snapshot in target `us` (or `DAYTONA_TARGET`), durable Upstash Box, boxd's default image with isolation and auto-suspend/destroy disabled, Freestyle `freestyle/ubuntu` with idle timeout disabled, and Tenki's default image with inbound/outbound access. Superserve uses `sandbox-bench-node22-py311-1x1-pinned` on both sides; override E2B or Superserve with `--template provider=name`. Raw creates omit SDK workspace preparation and metadata setup, including Upstash's resume init command. Those extra guarantees are part of measured adapter overhead. Raw boxd readiness can include a native exec probe; Tenki uses native readiness rather than the adapter's stream-timeout fallback. Native labels and exact IDs are tracked separately from SDK discovery labels. Cleanup checks cannot prove the absence of an allocation whose create failed before returning its ID; inspect the unique run label/name if a provider reports an unknown outcome.
+
+## History
+
+**2026-10-19, first v2 validation pilot** (run `sbx45-pilot-v2-fixed-20261019`). 566 observations: 530 measurements, 30 failures and 6 skips, across local, E2B, Daytona, Upstash, Boat, boxd, Freestyle and Tenki. Railway and Vercel were skipped without credentials. It was a harness check, not a ranking. It found:
+
+- Boat previews returned HTTP 403 because the adapter dropped the preview access token.
+- Upstash rejected 10 MiB file transfers with `invalid_argument`; boxd failed them, and its previews failed TLS verification.
+- Tenki resumes exceeded the adapter's 30-second deadline. The Tenki adapter was reworked afterward (SBX-46), so these failures predate it.
+- Daytona's snapshot wrapper lost the snapshot name when creation timed out. The harness now names Daytona snapshots before creating them and journals the source, so `reap` can find late snapshots.
+- Daytona can report the host's 64 CPUs through `nproc`. The harness sizes workers and costs with `min(nproc, cpu.max quota)`.
+
+SBX-44 later cut `run("true")` to one provider call. Measurements from before it are not comparable with later cold-start data.

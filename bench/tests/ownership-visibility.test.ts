@@ -148,7 +148,7 @@ it.each<{ view: View; owned: boolean; calls: (n: number) => boolean }>([
 
     const settled = proof.then(
       (value) => ({ value }),
-      (error: unknown) => ({ error }),
+      (cause: unknown) => ({ error: cause }),
     );
 
     await vi.advanceTimersByTimeAsync(31_000);

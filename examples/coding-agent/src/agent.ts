@@ -1,6 +1,7 @@
 import { isStepCount, streamText, type LanguageModel } from "ai";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+import { z } from "zod";
 
 export const repoDir = "/workspace/repo";
 
@@ -17,14 +18,7 @@ export type AgentEvent =
   | { kind: "error"; tool: string; error: unknown };
 
 /** sandboxTools results are `{ text }`; the stream types them as unknown. */
-function resultText(output: unknown): string {
-  return typeof output === "object" &&
-    output !== null &&
-    "text" in output &&
-    typeof output.text === "string"
-    ? output.text
-    : JSON.stringify(output);
-}
+const toolResult = z.object({ text: z.string() });
 
 /** Runs one task to completion. The CLI and its --dry-run mode both go through here. */
 export async function runAgent(options: {
@@ -52,8 +46,12 @@ export async function runAgent(options: {
         break;
       case "tool-result":
         // Preliminary results carry live command output; the final one is the compact verdict.
-        if (!part.preliminary)
-          options.onEvent({ kind: "result", tool: part.toolName, text: resultText(part.output) });
+        if (!part.preliminary) {
+          const result = toolResult.safeParse(part.output);
+          const text = result.success ? result.data.text : JSON.stringify(part.output);
+          options.onEvent({ kind: "result", tool: part.toolName, text });
+        }
+
         break;
       case "tool-error":
         options.onEvent({ kind: "error", tool: part.toolName, error: part.error });

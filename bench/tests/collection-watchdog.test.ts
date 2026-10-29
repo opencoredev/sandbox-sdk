@@ -1,11 +1,12 @@
 import { expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import type { Json } from "../src/json.js";
 import { unresolvedCleanupReviews } from "../src/ownership.js";
 
 const script = fileURLToPath(new URL("../src/collection-watchdog.py", import.meta.url));
 
-function reasons(report: unknown) {
+function reasons(report: Json) {
   const output = spawnSync("python3", [script], {
     input: JSON.stringify(report),
     encoding: "utf8",

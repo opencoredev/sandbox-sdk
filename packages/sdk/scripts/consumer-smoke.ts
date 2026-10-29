@@ -5,7 +5,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
+import { z } from "zod";
 import pkg from "../package.json" with { type: "json" };
+
+type ExportTarget = (typeof pkg.exports)[keyof typeof pkg.exports];
+
+/** Every export except `./package.json` maps conditions to files. */
+function isConditionalExport(target: ExportTarget): target is Exclude<ExportTarget, string> {
+  return typeof target !== "string";
+}
 
 const sdkDir = resolve(import.meta.dir, "..");
 const packDir = process.env.PACK_DIR ?? "/tmp/sandbox-sdk-pack";
@@ -52,22 +60,25 @@ rmSync(packDir, { recursive: true, force: true });
 
 mkdirSync(packDir, { recursive: true });
 
-const packed: unknown = JSON.parse(
-  must("npm", ["pack", "--json", "--pack-destination", packDir], {
-    cwd: sdkDir,
-    timeoutMs: 120_000,
-  }),
+const packOutput = z.tuple(
+  [z.object({ filename: z.string(), files: z.array(z.object({ path: z.string() })) })],
+  z.unknown(),
 );
 
-if (
-  !Array.isArray(packed) ||
-  typeof packed[0]?.filename !== "string" ||
-  !Array.isArray(packed[0]?.files)
-)
-  throw new Error("Unexpected npm pack --json output");
+const packed = packOutput.safeParse(
+  JSON.parse(
+    must("npm", ["pack", "--json", "--pack-destination", packDir], {
+      cwd: sdkDir,
+      timeoutMs: 120_000,
+    }),
+  ),
+);
 
-const tarball = join(packDir, packed[0].filename);
-const tarFiles = new Set<string>(packed[0].files.map((file: { path: string }) => file.path));
+if (!packed.success) throw new Error("Unexpected npm pack --json output");
+
+const [packEntry] = packed.data;
+const tarball = join(packDir, packEntry.filename);
+const tarFiles = new Set(packEntry.files.map((file) => file.path));
 
 console.log(`Tarball: ${tarball} (${tarFiles.size} files)`);
 
@@ -91,7 +102,7 @@ check(
 );
 
 const subpaths = Object.entries(pkg.exports).flatMap(([subpath, target]) =>
-  typeof target === "string" ? [] : [{ subpath, types: target.types, js: target.default }],
+  isConditionalExport(target) ? [{ subpath, types: target.types, js: target.default }] : [],
 );
 
 const missingTargets = subpaths

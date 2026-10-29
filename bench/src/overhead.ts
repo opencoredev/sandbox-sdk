@@ -16,7 +16,11 @@ export type OverheadHook = () => Promise<OverheadFixture>;
 
 const mockedNativeCall = async () => ({ exitCode: 0, timedOut: false });
 
-export const overheadHooks: Record<string, OverheadHook> = {
+interface OverheadHooks {
+  [provider: string]: OverheadHook;
+}
+
+export const overheadHooks: OverheadHooks = {
   async local() {
     const { local } = await import("@opencoredev/sandbox-sdk/local");
     const adapter = local({ dockerHost: "unix:///var/run/docker.sock" });

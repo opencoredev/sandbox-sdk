@@ -19,7 +19,12 @@ export class PhaseClock {
   }
 }
 
-export const perfMetrics: Record<string, string> = {
+/** The unit each guest performance metric is reported in. */
+interface MetricUnits {
+  readonly [metric: string]: string;
+}
+
+export const perfMetrics: MetricUnits = {
   "cpu-single": "iterations/s",
   "cpu-all": "iterations/s",
   "memory-mbps": "MB/s",

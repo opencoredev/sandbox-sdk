@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { z } from "zod";
+import { isMissingFile } from "../files.js";
 
 const sampleSchema = z.object({
   provider: z.string(),
@@ -102,8 +103,7 @@ async function exists(path: string) {
 
     return true;
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
-      return false;
+    if (isMissingFile(error)) return false;
     throw error;
   }
 }

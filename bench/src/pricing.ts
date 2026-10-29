@@ -41,7 +41,12 @@ const base = {
   offeredSizes: null,
 } satisfies Partial<Price>;
 
-export const pricing: Record<string, Price> = {
+/** Published prices, keyed by provider name. */
+export interface PriceTable {
+  readonly [provider: string]: Price;
+}
+
+export const pricing: PriceTable = {
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -179,7 +184,11 @@ export function priceAtSize(
 
 // Provisioned sizes of the templates actually benchmarked, not kernel-usable
 // RAM. Tenki does not document its default, so it stays measured.
-export const defaultCompute: Record<string, Pick<Resources, "cpu" | "memoryGiB">> = {
+interface ComputeTable {
+  readonly [provider: string]: Pick<Resources, "cpu" | "memoryGiB">;
+}
+
+export const defaultCompute: ComputeTable = {
   e2b: { cpu: 2, memoryGiB: 0.5 },
   daytona: { cpu: 1, memoryGiB: 1 },
   upstash: { cpu: 2, memoryGiB: 4 },

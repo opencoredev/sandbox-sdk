@@ -2,20 +2,20 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 
+const templateKeys = new Map([
+  ["e2b", "template"],
+  ["superserve", "template"],
+  ["daytona", "snapshot"],
+  ["freestyle", "snapshotId"],
+  ["tenki", "image"],
+  ["boxd", "image"],
+  ["local", "image"],
+]);
+
 export function templateOptions(name: string, template: string | undefined) {
   if (template === undefined) return {};
 
-  const keys: Record<string, string> = {
-    e2b: "template",
-    superserve: "template",
-    daytona: "snapshot",
-    freestyle: "snapshotId",
-    tenki: "image",
-    boxd: "image",
-    local: "image",
-  };
-
-  const key = keys[name];
+  const key = templateKeys.get(name);
 
   if (!key) throw new Error(`${name} has no template/image factory option`);
 
@@ -46,73 +46,84 @@ export interface SkippedProvider {
 
 export type LoadedProvider = ReadyProvider | SkippedProvider;
 
-const credentials: Record<string, string[]> = {
-  superserve: ["SUPERSERVE_API_KEY"],
-  e2b: ["E2B_API_KEY"],
-  railway: ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"],
-  vercel: ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"],
-  daytona: ["DAYTONA_API_KEY"],
-  upstash: ["UPSTASH_BOX_API_KEY"],
-  boat: ["BOAT_API_KEY"],
-  tenki: ["TENKI_API_KEY"],
-  boxd: ["BOXD_API_KEY"],
-  freestyle: ["FREESTYLE_API_KEY"],
-};
+const credentials = new Map([
+  ["superserve", ["SUPERSERVE_API_KEY"]],
+  ["e2b", ["E2B_API_KEY"]],
+  ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],
+  ["vercel", ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"]],
+  ["daytona", ["DAYTONA_API_KEY"]],
+  ["upstash", ["UPSTASH_BOX_API_KEY"]],
+  ["boat", ["BOAT_API_KEY"]],
+  ["tenki", ["TENKI_API_KEY"]],
+  ["boxd", ["BOXD_API_KEY"]],
+  ["freestyle", ["FREESTYLE_API_KEY"]],
+]);
 
-const regionKeys: Record<string, string> = {
-  e2b: "E2B_REGION",
-  vercel: "VERCEL_REGION",
-  daytona: "DAYTONA_TARGET",
-};
+const regionKeys = new Map([
+  ["e2b", "E2B_REGION"],
+  ["vercel", "VERCEL_REGION"],
+  ["daytona", "DAYTONA_TARGET"],
+]);
+
+function isFunction(value: unknown): value is (...args: never[]) => void {
+  return typeof value === "function";
+}
+
+const method = <T>() => z.custom<T>(isFunction);
 
 const providerSchema: z.ZodType<Provider> = z
   .object({
     name: z.string(),
     keyMode: z.enum(["exact", "best-effort"]),
     capabilities: z.custom<Provider["capabilities"]>((value) => value instanceof Set),
-    create: z.custom<Provider["create"]>((value) => typeof value === "function"),
-    find: z.custom<Provider["find"]>((value) => typeof value === "function"),
-    connect: z.custom<Provider["connect"]>((value) => typeof value === "function"),
-    list: z.custom<Provider["list"]>((value) => typeof value === "function"),
-    destroy: z.custom<Provider["destroy"]>((value) => typeof value === "function"),
-    exec: z.custom<Provider["exec"]>((value) => typeof value === "function"),
+    create: method<Provider["create"]>(),
+    find: method<Provider["find"]>(),
+    connect: method<Provider["connect"]>(),
+    list: method<Provider["list"]>(),
+    destroy: method<Provider["destroy"]>(),
+    exec: method<Provider["exec"]>(),
     files: z
       .object({
-        read: z.custom<Provider["files"]["read"]>((value) => typeof value === "function"),
-        write: z.custom<Provider["files"]["write"]>((value) => typeof value === "function"),
-        list: z.custom<Provider["files"]["list"]>((value) => typeof value === "function"),
-        stat: z.custom<Provider["files"]["stat"]>((value) => typeof value === "function"),
-        remove: z.custom<Provider["files"]["remove"]>((value) => typeof value === "function"),
-        mkdir: z.custom<Provider["files"]["mkdir"]>((value) => typeof value === "function"),
+        read: method<Provider["files"]["read"]>(),
+        write: method<Provider["files"]["write"]>(),
+        list: method<Provider["files"]["list"]>(),
+        stat: method<Provider["files"]["stat"]>(),
+        remove: method<Provider["files"]["remove"]>(),
+        mkdir: method<Provider["files"]["mkdir"]>(),
       })
       .passthrough(),
-    previewUrl: z.custom<Provider["previewUrl"]>((value) => typeof value === "function"),
-    native: z.custom<Provider["native"]>((value) => typeof value === "function"),
+    previewUrl: method<Provider["previewUrl"]>(),
+    native: method<Provider["native"]>(),
   })
   .passthrough();
 
-// Preserve class identity / method receivers after validating the adapter boundary.
-function parseProvider(value: unknown): Provider {
+// Validate in place: the parsed copy would lose the adapter's class identity and method receivers.
+function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
-
-  return value as Provider;
 }
+
+export type FactoryOptions = Record<string, string | boolean | undefined>;
+
+/** A provider entry point's factory. Its result is checked by `assertProvider`. */
+type ProviderFactory = (options: FactoryOptions) => Provider | Promise<Provider>;
+
+const providerFactory = z.custom<ProviderFactory>(isFunction);
 
 export function missingCredentials(name: string, env: NodeJS.ProcessEnv): string[] {
   if (name === "tenki" && env.TENKI_AUTH_TOKEN?.trim()) return [];
 
   if (name === "vercel" && env.VERCEL_OIDC_TOKEN?.trim() && !env.VERCEL_TOKEN) return [];
 
-  return (credentials[name] ?? []).filter((key) => !env[key]?.trim());
+  return (credentials.get(name) ?? []).filter((key) => !env[key]?.trim());
 }
 
 export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
-  importer: (specifier: string) => Promise<unknown> = (specifier) => import(specifier),
+  importer: (specifier: string) => Promise<object> = (specifier) => import(specifier),
   config?: Pick<ConfigV2, "template" | "product">,
 ): Promise<LoadedProvider> {
-  if (!(name in credentials) && name !== "local" && name !== "memory" && name !== "agentos")
+  if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
       kind: "skipped",
       name,
@@ -122,7 +133,7 @@ export async function loadProvider(
 
   if (missing.length)
     return { kind: "skipped", name, note: `Missing credentials: ${missing.join(", ")}` };
-  let module: unknown;
+  let module: object;
 
   try {
     module = await importer(`@opencoredev/sandbox-sdk/${name}`);
@@ -135,23 +146,25 @@ export async function loadProvider(
   }
 
   const exports = z.record(z.string(), z.unknown()).parse(module);
-  const factory = exports[name];
+  const factory = providerFactory.safeParse(exports[name]);
 
-  if (typeof factory !== "function")
+  if (!factory.success)
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
 
   // Factory failures are real configuration errors, not missing-provider skips.
-  const value: unknown = await factory({
+  const provider = await factory.data({
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
   });
 
+  assertProvider(provider);
+
   return {
     kind: "ready",
     name,
-    cloud: name in credentials,
-    region: env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys[name] ?? ""] ?? null,
-    provider: parseProvider(value),
+    cloud: credentials.has(name),
+    region: env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys.get(name) ?? ""] ?? null,
+    provider,
   };
 }
 
@@ -169,4 +182,25 @@ export function checkBudget(
     );
 
   return planned;
+}
+
+type ProviderKey = keyof Provider;
+
+type ProviderMethod = Extract<Provider[ProviderKey], (...args: never[]) => void>;
+
+function isProviderKey(target: Provider, key: string | symbol): key is ProviderKey {
+  return key in target;
+}
+
+function isProviderMethod(value: Provider[ProviderKey]): value is ProviderMethod {
+  return typeof value === "function";
+}
+
+/** Read a provider member from a Proxy trap, keeping the provider as each method's receiver. */
+export function providerMember(target: Provider, key: string | symbol) {
+  if (!isProviderKey(target, key)) return undefined;
+
+  const value = target[key];
+
+  return isProviderMethod(value) ? value.bind(target) : value;
 }

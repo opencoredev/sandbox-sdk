@@ -100,7 +100,7 @@ export async function collectBilling(options: {
     const scenarios = [
       ...new Set([
         ...rows.flatMap((r) => [...r.scenarios]),
-        ...unidentified.filter((r) => r.provider === provider).map((r) => r.scenario),
+        ...unidentified.flatMap((r) => (r.provider === provider ? [r.scenario] : [])),
       ]),
     ]
       .sort()

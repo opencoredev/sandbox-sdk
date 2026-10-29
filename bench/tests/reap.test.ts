@@ -19,12 +19,10 @@ vi.stubGlobal(
   }),
 );
 
-vi.mock("../src/providers.js", () => ({ loadProvider: vi.fn() }));
-
-import { loadProvider } from "../src/providers.js";
 import { freestyle } from "../../packages/sdk/src/providers/freestyle/index.js";
 import { createSandbox } from "../../packages/sdk/src/index.js";
 import { main } from "../src/cli.js";
+import type { LoadedProvider } from "../src/providers.js";
 
 afterAll(() => vi.unstubAllGlobals());
 
@@ -55,13 +53,15 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
   vi.spyOn(own.native.fs, "readTextFile").mockRejectedValue(
     Object.assign(new Error("setup never ran"), { status: 404 }),
   );
-  vi.mocked(loadProvider).mockResolvedValue({
+
+  const loaded: LoadedProvider = {
     kind: "ready",
     name: "freestyle",
     cloud: true,
     region: null,
     provider,
-  });
+  };
+
   const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
   try {
@@ -82,7 +82,7 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
       directory,
     ];
     process.exitCode = 0;
-    await main();
+    await main(async () => loaded);
     expect(process.exitCode).toBe(0);
     expect(stdout).toHaveBeenCalledWith("freestyle: 0 leftovers for reap-43\n");
     expect(freestyleState.boxes.has(own.id)).toBe(false);
@@ -98,13 +98,15 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
 
 test("bench reap fails on native listing auth errors", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  vi.mocked(loadProvider).mockResolvedValue({
+
+  const loaded: LoadedProvider = {
     kind: "ready",
     name: "freestyle",
     cloud: true,
     region: null,
     provider: freestyle({ apiKey: "offline" }),
-  });
+  };
+
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 
   try {
@@ -121,7 +123,7 @@ test("bench reap fails on native listing auth errors", async () => {
       directory,
     ];
     process.exitCode = 0;
-    await main();
+    await main(async () => loaded);
     expect(process.exitCode).toBe(1);
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Freestyle request failed"));
   } finally {
@@ -134,13 +136,15 @@ test("reap recovers exactly labelled resources even when the journal is truncate
   const provider = freestyle({ apiKey: "offline" });
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
   const other = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
-  vi.mocked(loadProvider).mockResolvedValue({
+
+  const loaded: LoadedProvider = {
     kind: "ready",
     name: "freestyle",
     cloud: true,
     region: null,
     provider,
-  });
+  };
+
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 
   try {
@@ -157,7 +161,7 @@ test("reap recovers exactly labelled resources even when the journal is truncate
       directory,
     ];
     process.exitCode = 0;
-    await main();
+    await main(async () => loaded);
     expect(process.exitCode).toBe(0);
     expect(freestyleState.boxes.has(own.id)).toBe(false);
     expect(freestyleState.boxes.has(other.id)).toBe(true);

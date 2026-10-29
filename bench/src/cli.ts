@@ -6,7 +6,8 @@ import { runV2, sanitize } from "./v2-runner.js";
 import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
 
-export async function main() {
+/** Run the bench CLI. Tests pass `load` to supply providers without importing adapters. */
+export async function main(load: typeof loadProvider = loadProvider) {
   const args = process.argv.slice(2);
 
   if (args[0] === "billing") {
@@ -59,7 +60,7 @@ export async function main() {
 
   for (const name of config.providers) {
     try {
-      providers.push(await loadProvider(name, process.env, undefined, config));
+      providers.push(await load(name, process.env, undefined, config));
     } catch (error) {
       providers.push({
         kind: "skipped" as const,

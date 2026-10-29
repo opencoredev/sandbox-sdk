@@ -1,5 +1,6 @@
 import { convertToModelMessages, validateUIMessages, type UIMessage } from "ai";
 import { cookies } from "next/headers";
+import { z } from "zod";
 import { buildApp } from "../../../lib/agent";
 import { resolveModel } from "../../../lib/model";
 import { sessionSandbox } from "../../../lib/sandbox";
@@ -8,11 +9,11 @@ import { newSessionId, parseSessionId, sessionCookie } from "../../../lib/sessio
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  const body: unknown = await request.json();
+  // validateUIMessages checks the messages themselves; this only finds them in the body.
+  const body = z.object({ messages: z.unknown() }).safeParse(await request.json());
 
   const messages = await validateUIMessages<UIMessage>({
-    messages:
-      typeof body === "object" && body !== null && "messages" in body ? body.messages : undefined,
+    messages: body.success ? body.data.messages : undefined,
   });
 
   const jar = await cookies();

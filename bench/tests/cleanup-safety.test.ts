@@ -10,6 +10,14 @@ import { writeV2 } from "../src/v2-report.js";
 import { reapRun } from "../src/recovery.js";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 
+/** The native cause a rejected create carries in these fixtures. */
+interface CreateCause {
+  sandboxId: string;
+  operation: string;
+  stage: string;
+  admittedByThisCall?: boolean;
+}
+
 it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", "sdk-notfound"])(
   "quarantines %s IDs and never destroys or journals them as owned",
   async (mode) => {
@@ -42,12 +50,13 @@ it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", 
             ? async () => []
             : backing.list,
       create: async () => {
-        const cause = {
+        const cause: CreateCause = {
           sandboxId: candidate.id,
           operation: "create",
           stage: "waitReady",
-          ...(mode !== "sdk-unmarked" ? { admittedByThisCall: true } : {}),
         };
+
+        if (mode !== "sdk-unmarked") cause.admittedByThisCall = true;
 
         if (mode === "generic-cause") throw new Error("No allocation admitted", { cause });
         throw new SandboxError("Create rejected", {
