@@ -2,7 +2,8 @@ import { Agent, request } from "node:http";
 import { StringDecoder } from "node:string_decoder";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 import type { OutputChunk } from "../../provider.js";
-import { isNumber, isObject, isString } from "../../shared/narrow.js";
+import { isJsonObject, type JsonObject, type JsonValue } from "../../shared/json.js";
+import { isNumber, isString } from "../../shared/narrow.js";
 
 export const failure = (message: string, code: ErrorCode = "provider") =>
   new SandboxError(
@@ -10,24 +11,11 @@ export const failure = (message: string, code: ErrorCode = "provider") =>
     { code, provider: "local" },
   );
 
-/** A JSON value, as the Docker Engine API sends and accepts it. `undefined` fields are left out of a body. */
-export type DockerJson =
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
-  | DockerJson[]
-  | { [key: string]: DockerJson };
+/** A JSON value, as the Docker Engine API sends and accepts it, or a missing field. `undefined` fields are left out of a body. */
+export type DockerJson = JsonValue | undefined;
 
-type DockerObject = { [key: string]: DockerJson };
-
-function isDockerObject(value: DockerJson): value is DockerObject {
-  return isObject(value) && !Array.isArray(value);
-}
-
-export function object(value: DockerJson): DockerObject {
-  if (!isDockerObject(value)) throw failure("Invalid Docker response");
+export function object(value: DockerJson): JsonObject {
+  if (!isJsonObject(value)) throw failure("Invalid Docker response");
 
   return Object.fromEntries(Object.entries(value));
 }
