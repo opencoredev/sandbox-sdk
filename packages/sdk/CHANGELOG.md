@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `e2b()` calls E2B's API and each sandbox's envd daemon over HTTP, so `e2b` is no longer a peer dependency: `npm i @opencoredev/sandbox-sdk@next` is the whole install. Options, defaults and behaviour are unchanged. Control-plane reads and the idempotent `connect`, `timeout` and `pause` calls retry on 429, 502, 503 and 504; a create whose response is lost is `outcome_unknown`. Every command start carries a tag, so a cancelled start, or one whose response was lost, is found and stopped. **Breaking for beta users:** `box.native` is now a `NativeApi` with the `"api"` and `"envd"` planes and the `{sandboxId}` placeholder, and `e2b().api` makes account calls. For the official SDK's `Sandbox`, install `e2b` and call `await box.native.sdk(() => import("e2b"))`.
+
 ## 1.0.0-beta.1
 
 Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
