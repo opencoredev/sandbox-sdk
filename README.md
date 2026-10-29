@@ -22,7 +22,7 @@ console.log((await box.run("cat hello.txt")).stdout);
 `memory()` needs no account. Swap it for `e2b()`, `local()`, or any other provider and the rest stays the same.
 
 - [Package README](./packages/sdk/README.md): install, providers and their capabilities, the full API, errors, and agent tools.
-- [Early access notes](./EARLY_ACCESS.md): installing the beta from a tarball, per-provider setup, and known limitations.
+- [Early access notes](./EARLY_ACCESS.md): installing the beta from the `next` tag, per-provider setup, and known limitations.
 - [Getting-started examples](./examples/getting-started): a keyless quickstart and a provider switch driven by `SANDBOX_PROVIDER`.
 - [Documentation site](https://sandbox-sdk.app/docs).
 
