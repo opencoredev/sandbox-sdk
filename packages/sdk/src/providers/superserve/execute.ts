@@ -5,8 +5,6 @@ import { pagedExecute, type PagedGuest } from "../../shared/paged-exec.js";
 import { quote } from "../../shared/shell.js";
 import { failure } from "./errors.js";
 
-export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
-
 // The one-shot launcher travels in the native exec request. Small results
 // return inline; large output uses bounded native ranged reads.
 export const supervisor = `import os,sys,marshal,_signal as signal,select,time,fcntl

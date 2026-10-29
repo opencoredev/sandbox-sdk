@@ -267,10 +267,7 @@ with tempfile.TemporaryFile() as f:
     };
   }
 
-  async function readInfo(
-    data: VmData,
-    nativeOwnership = false,
-  ): Promise<{ info: SandboxInfo; supervisorHash?: string }> {
+  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
     if (data.metadata["sandbox-sdk"] !== "1") throw failure("Not an SDK VM", "not_found", data.id);
     let text: string;
 
@@ -322,27 +319,17 @@ with tempfile.TemporaryFile() as f:
     if (!Number.isFinite(createdAt)) throw failure("Invalid VM creation time", "provider", data.id);
 
     return {
-      supervisorHash:
-        "supervisorHash" in value && typeof value.supervisorHash === "string"
-          ? value.supervisorHash
-          : undefined,
-      info: {
-        id: data.id,
-        key: value.key ?? undefined,
-        labels,
-        createdAt,
-        state:
-          data.state === "running"
-            ? "running"
-            : data.state === "paused" || data.state === "pausing"
-              ? "paused"
-              : "stopped",
-      },
+      id: data.id,
+      key: value.key ?? undefined,
+      labels,
+      createdAt,
+      state:
+        data.state === "running"
+          ? "running"
+          : data.state === "paused" || data.state === "pausing"
+            ? "paused"
+            : "stopped",
     };
-  }
-
-  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
-    return (await readInfo(data, nativeOwnership)).info;
   }
 
   const provider: FreestyleProvider = {
@@ -535,27 +522,27 @@ with tempfile.TemporaryFile() as f:
         const client = await api();
         const data = await client.vms.get(id);
         boxes.set(id, client.vms.ref(id));
-        let stored: Awaited<ReturnType<typeof readInfo>>;
+        let stored: SandboxInfo;
 
         try {
-          stored = await readInfo(data);
+          stored = await info(data);
         } catch (error) {
           if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code))
             throw error;
-          stored = await readInfo(data, true);
+          stored = await info(data, true);
           pending.set(id, [
             [
               marker,
               JSON.stringify({
-                key: stored.info.key ?? null,
-                labels: stored.info.labels,
+                key: stored.key ?? null,
+                labels: stored.labels,
                 supervisorHash,
               }),
             ],
           ]);
         }
 
-        return stored.info;
+        return stored;
       }),
     destroy: (id) =>
       safe(id, async () => {

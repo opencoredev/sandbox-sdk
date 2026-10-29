@@ -1,20 +1,16 @@
 import { python } from "../../shared/guest.js";
 import { failure } from "./errors.js";
-import { supervisor, supervisorPath } from "./execute.js";
 
 const initialize = python(`import os,json,shutil,sys,tempfile
 v=json.loads(os.environ.pop('SANDBOX_SDK_BOOTSTRAP'))
 if any(shutil.which(tool) is None for tool in ('git','tar','nohup')): sys.exit(79)
 os.makedirs('/workspace',exist_ok=True)
 os.makedirs('/tmp/.sandbox-sdk',exist_ok=True)
-os.makedirs(os.path.dirname('${supervisorPath}'),exist_ok=True)
+os.makedirs(os.path.dirname('/var/lib/sandbox-sdk-env.json'),exist_ok=True)
 if v.get('env') is not None:
  with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f:
   json.dump(v['env'],f)
- os.replace(f.name,'/var/lib/sandbox-sdk-env.json')
-if v.get('supervisor') is not None:
- with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f: f.write(v['supervisor'])
- os.replace(f.name,'${supervisorPath}')`);
+ os.replace(f.name,'/var/lib/sandbox-sdk-env.json')`);
 
 export function bootstrapCommand(options: {
   env?: Record<string, string>;
@@ -34,12 +30,7 @@ export function bootstrapCommand(options: {
 
   return {
     command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
-    env: {
-      SANDBOX_SDK_BOOTSTRAP: JSON.stringify({
-        env: options.env,
-        supervisor: options.execution ? supervisor : undefined,
-      }),
-    },
+    env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env }) },
   };
 }
 

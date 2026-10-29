@@ -7,10 +7,7 @@ import { quote } from "../../shared/shell.js";
 
 const bridge = `import os,select,_signal as signal,sys,time,fcntl
 ${guestProcess}
-command,directory,cwd,limit,activity=sys.argv[1:]
-if activity:
- os.makedirs(os.path.dirname(activity),exist_ok=True)
- os.mkdir(activity,mode=0o700)
+command,directory,cwd,limit=sys.argv[1:]
 os.makedirs(directory,mode=0o700,exist_ok=True)
 cancel=directory+"/cancel"
 with open(directory+"/lock","w") as lock:
@@ -54,9 +51,6 @@ except BaseException:
  p.wait()
  raise
 finally:
- if activity:
-  try: os.rmdir(activity)
-  except FileNotFoundError: pass
  if spill is not None: spill.close()
  else:
   for name in ('pid','lock','cancel'):
@@ -103,7 +97,7 @@ export async function bufferedExecute(
     .map(([key, value]) => quote(`${key}=${value}`))
     .join(" ");
 
-  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
+  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}`;
 
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
