@@ -45,13 +45,18 @@ export class MockSandbox {
   fs = {
     downloadFile: async (path: string) => { try { return await fs.readFile(this.mapped(path)); } catch { throw missing(); } },
     downloadFileStream: async (path: string, _options?: number | Parameters<Sandbox["fs"]["downloadFileStream"]>[1]) => createReadStream(this.mapped(path)),
+    // Like the SDK, a string source is a local path, read before anything is sent.
+    uploadFiles: async (files: { source: Buffer | string; destination: string }[]) => {
+      const payloads = await Promise.all(files.map(async file => typeof file.source === "string" ? fs.readFile(file.source) : file.source));
+      for (const [i, file] of files.entries()) { await fs.mkdir(posix.dirname(this.mapped(file.destination)), { recursive: true }); await fs.writeFile(this.mapped(file.destination), payloads[i] ?? Buffer.alloc(0)); }
+    },
     uploadFile: async (data: Buffer | string, path: string) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), typeof data === "string" ? await fs.readFile(data) : data); },
     createFolder: async (path: string, _mode: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
     setFilePermissions: async (path: string, permissions: { mode?: string }) => { mockState.permissions.push({ path, mode: permissions.mode }); if (permissions.mode) await fs.chmod(this.mapped(path), Number.parseInt(permissions.mode, 8)); },
     getFileDetails: (path: string) => this.file(path),
     listFiles: async (path: string) => { try { return await Promise.all((await fs.readdir(this.mapped(path))).map(name => this.file(posix.join(path, name)))); } catch { throw missing(); } },
     deleteFile: async (path: string, recursive = false) => { try { await fs.rm(this.mapped(path), { recursive }); } catch { throw missing(); } },
-  } satisfies Pick<Sandbox["fs"], "downloadFileStream" | "uploadFile" | "createFolder" | "setFilePermissions" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
+  } satisfies Pick<Sandbox["fs"], "downloadFileStream" | "uploadFile" | "uploadFiles" | "createFolder" | "setFilePermissions" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
   private run(command: string, cwd = "/", env: Record<string, string> = {}) {
     const chunks: OutputChunk[] = []; const listeners: ((chunk: OutputChunk) => void)[] = [];
     const child = spawn("sh", ["-c", this.rewrite(command)], { cwd: this.mapped(cwd), env: { ...process.env, ...this.params.envVars, ...Object.fromEntries(Object.entries(env).map(([key, value]) => [key, this.rewrite(value)])) }, stdio: ["ignore", "pipe", "pipe"] });
