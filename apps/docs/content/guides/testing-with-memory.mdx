@@ -98,7 +98,7 @@ If you write your own provider adapter, `runConformance` from `@opencoredev/sand
 import { runConformance } from "@opencoredev/sandbox-sdk/testing";
 import { myProvider } from "./my-provider";
 
-runConformance(() => myProvider(), { live: false });
+runConformance(() => myProvider(), { live: true });
 ```
 
-Set `live: true` to run the parts that need a real machine and network.
+`live: true` is required for every provider except `memory()` and `local()`; without it the suite refuses to run. [Custom providers](/providers/custom) covers timeouts and how to skip checks your runtime can't pass.

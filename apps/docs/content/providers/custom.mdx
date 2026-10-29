@@ -55,10 +55,25 @@ Paths are absolute POSIX paths and times are epoch milliseconds.
 import { runConformance } from "@opencoredev/sandbox-sdk/testing";
 import { myProvider } from "./my-provider";
 
-runConformance(() => myProvider(), { live: false });
+runConformance(() => myProvider(), { live: true });
 ```
 
-Set `live: true` to run the parts that need a real machine and network. Live runs give each case 120 seconds, since real providers boot machines and cross the network. Pass `timeoutMs` to change that.
+`live: true` is required for every provider except `memory()` and `local()`. With `live: false` the suite refuses any other provider, so a test run can't reach a cloud account by accident. Live runs give each case 120 seconds, since real providers boot machines and cross the network. Pass `timeoutMs` to change that.
+
+Every check runs unless you skip it. To skip a check your runtime can't pass, give the reason under `unsupported`:
+
+- `gitPush` skips the bare-repository clone, commit and push, for a runtime without git.
+- `httpProbe` skips the real HTTP request to a preview URL, for previews no HTTP client can reach.
+- `previews` expects `preview()` to reject with `unsupported`, and skips the HTTP probe too.
+- `processes` skips the background process checks.
+- `fileModes` skips the permission-bit check for `files.write`.
+
+```ts title="provider.test.ts"
+runConformance(() => myProvider(), {
+  live: true,
+  unsupported: { httpProbe: "Preview URLs are only reachable inside the VPC" },
+});
+```
 
 The built-in adapters in [`packages/sdk/src/providers`](https://github.com/opencoredev/sandbox-sdk/tree/main/packages/sdk/src/providers) are working examples to copy from.
 
