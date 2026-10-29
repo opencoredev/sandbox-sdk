@@ -81,11 +81,13 @@ function externals(entry: string, declaration: boolean) {
       check(`relative import stays inside dist (${entry})`, false, where);
       continue;
     }
-    const source = readFileSync(file, "utf8");
+    // JSDoc examples (`box.native.sdk(() => import("@daytonaio/sdk"))`) are not imports, so comments are dropped.
+    const source = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     // Type positions in declarations use import("x") too, and they always need x, so declarations have no lazy edges.
     const edges = [...[...source.matchAll(staticSpecifier)].map((match) => ({ spec: match[1], lazy: item.lazy })), ...[...source.matchAll(dynamicSpecifier)].map((match) => ({ spec: match[1], lazy: item.lazy || !declaration }))];
     for (const edge of edges) {
-      if (edge.spec === undefined || isBuiltin(edge.spec)) continue;
+      // Error messages quote `import("${pkg}")` in template literals; a placeholder is never a module.
+      if (edge.spec === undefined || edge.spec.includes("${") || isBuiltin(edge.spec)) continue;
       if (edge.spec.startsWith(".")) queue.push({ file: resolve(dirname(file), declaration ? edge.spec.replace(/\.js$/, ".d.ts") : edge.spec), lazy: edge.lazy });
       else (edge.lazy ? lazy : eager).add(packageName(edge.spec));
     }
