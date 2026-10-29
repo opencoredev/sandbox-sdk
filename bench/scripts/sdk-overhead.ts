@@ -327,7 +327,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       exists: async () => {
         const b = await client.get(box.id);
 
-        return b.state !== "deleted";
+        return b.state !== "destroyed";
       },
     };
   }
