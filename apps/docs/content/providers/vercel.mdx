@@ -1,55 +1,113 @@
 ---
 title: Vercel Sandbox
-description: Run sandboxes on Vercel Sandbox through @vercel/sandbox. Exact keys, OIDC auth inside Vercel, and ports declared when you create the sandbox.
+description: Run sandboxes on Vercel Sandbox microVMs. Exact keys, OIDC auth inside Vercel, size presets, network allow lists, and up to 15 declared preview ports.
 ---
 
-`vercel()` runs each sandbox on [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), Vercel's hosted Linux microVMs. Named sandboxes make get-or-create by key exact.
+`vercel()` runs each sandbox as a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) microVM through the official `@vercel/sandbox` SDK.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @vercel/sandbox
+npm i @opencoredev/sandbox-sdk@next @vercel/sandbox
 ```
 
-The adapter needs `@vercel/sandbox` 3.8 or later. Run this code on a server or in a Vercel Function. Tokens must never reach a browser bundle.
+The adapter needs `@vercel/sandbox` 3.8 or later. Inside a Vercel deployment it authenticates with OIDC and needs no configuration. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`, or run `vercel env pull` to get `VERCEL_OIDC_TOKEN`.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-await using box = await createSandbox(vercel(), { ports: [3000] });
+await using box = await createSandbox(vercel());
 const result = await box.run("node --version");
 console.log(result.stdout);
 ```
 
-Inside a Vercel deployment, this authenticates with the project's OIDC token and needs no configuration.
+`await using` deletes the sandbox when the block ends.
 
-## Configuration
+## What it supports
+
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Public `https://`; declare up to 15 ports |
+| Pause and resume | Partial | Files survive; running processes end |
+| Snapshots | Yes | |
+| Machine size | Partial | Presets only |
+| Network policy | Yes | `"none"` or a host allow list |
+| Hard lifetime (`timeoutMs`) | No | Vercel's timeout resets on resume |
+| Idle timeout (`idleTimeoutMs`) | No | |
+| Keys | Exact | Sandbox name is a hash of the key |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-const provider = vercel({
-  token: process.env.MY_VERCEL_TOKEN,
-  teamId: "team_123",
-  projectId: "prj_456",
-});
+await using box = await createSandbox(vercel());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
 
-await using box = await createSandbox(provider, { ports: [3000] });
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
 ```
 
-`token`, `teamId`, and `projectId` override `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`. A token needs both IDs, or creation fails with code `auth`. With no token at all, `@vercel/sandbox` uses OIDC: `VERCEL_OIDC_TOKEN`, which Vercel sets in deployments and `vercel env pull` writes locally.
+## Files
 
-## Keys
+Relative paths resolve against `/workspace`.
 
-Key mode is **exact**. The sandbox name is a SHA-256 hash of the key, and Vercel enforces unique names within a project, so concurrent calls with the same key share one sandbox.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-Your `labels` become Vercel tags. Vercel allows five tags per sandbox, and the SDK uses one, plus a second for a keyed sandbox. That leaves four labels, or three with a `key`. More fail with `unsupported`.
+await using box = await createSandbox(vercel());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
 
-## Size
+## Background processes and previews
+
+Vercel routes only to ports declared at creation, up to 15. Previewing another port fails with `invalid_argument`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { ports: [5173] });
+await box.start("npx vite --port 5173 --host", { name: "vite", ready: { port: 5173 } });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+## Pause, resume, and snapshots
+
+`pause()` stops the session. `resume()` starts a new one from the saved file system, so files survive but running processes don't. The SDK marks them failed with exit code 137; restart them by name.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), { key: "user:123" });
+await box.pause();
+await box.resume();
+await box.process("vite").restart();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(vercel(), { from: id });
+```
+
+Any SDK call on a stopped sandbox resumes it. `snapshot()` also stops the sandbox. Vercel deletes old snapshots on its own retention schedule.
+
+## Size, network, and lifetime
 
 | Preset | vCPUs | Memory |
 | --- | --- | --- |
@@ -57,75 +115,43 @@ Your `labels` become Vercel tags. Vercel allows five tags per sandbox, and the S
 | `medium` | 2 | 4096 MiB |
 | `large` | 4 | 8192 MiB |
 
-Vercel gives 2048 MiB of memory per vCPU and has no disk setting. Exact sizes such as `{ cpu, memoryMb, diskGb }` fail with `unsupported`.
-
-## Network
-
-`network: "none"` maps to Vercel's `deny-all` policy. An allow list maps to Vercel's domain rules, which deny everything else. `"all"` is the default.
-
-## Ports and previews
-
-Vercel can only route to ports declared when the sandbox is created, up to 15 of them. List every port you will preview:
-
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
-await using box = await createSandbox(vercel(), { ports: [3000, 5173] });
-
-const dev = await box.start("npx vite --port 5173 --host", { name: "vite", ready: { port: 5173 } });
-console.log(dev.url);
+await using box = await createSandbox(vercel(), {
+  size: "medium",
+  network: { allow: ["registry.npmjs.org"] },
+});
 ```
 
-`box.preview(port)` on a port you didn't declare fails with `invalid_argument`. Add it to `ports` and create the sandbox again.
+Vercel gives 2048 MiB per vCPU and has no disk setting, so exact sizes fail with `unsupported`. An allow list denies everything else. `timeoutMs` and `idleTimeoutMs` fail with `unsupported`; command timeouts in `box.run` still work.
 
-## Pause, resume, and snapshots
+## Configuration
 
-`box.pause()` stops the Vercel session. `box.resume()` starts a new session from the saved file system. Files survive, but running processes don't. The SDK marks every process that was still running as failed with exit code 137, so `box.process(name).restart()` starts it again:
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `token` | `string` | OIDC | `VERCEL_TOKEN`, else `VERCEL_OIDC_TOKEN` |
+| `teamId` | `string` | | `VERCEL_TEAM_ID` |
+| `projectId` | `string` | | `VERCEL_PROJECT_ID` |
 
-```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { vercel } from "@opencoredev/sandbox-sdk/vercel";
-
-await using box = await createSandbox(vercel(), { key: "project:42", ports: [3000] });
-
-await box.pause();
-await box.resume();
-
-await box.process("dev").restart();
-```
-
-Any SDK call on a stopped sandbox resumes it the same way. `box.snapshot()` also stops the sandbox, and its next command resumes it. Pass the snapshot ID as `from` to start a new sandbox from it. Vercel deletes old snapshots according to its own retention policy.
-
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `VERCEL_OIDC_TOKEN` | Set for you inside Vercel deployments and by `vercel env pull` |
-| `VERCEL_TOKEN` | An access token, for use outside Vercel |
-| `VERCEL_TEAM_ID` | The team that owns the sandboxes. Required with a token. |
-| `VERCEL_PROJECT_ID` | The project the sandboxes belong to. Required with a token. |
-
-## API reference
-
-### `vercel(options?)`
-
-- `token?: string`. Defaults to `VERCEL_TOKEN`.
-- `teamId?: string`. Defaults to `VERCEL_TEAM_ID`.
-- `projectId?: string`. Defaults to `VERCEL_PROJECT_ID`.
-
-Returns a provider. `box.native` is the `@vercel/sandbox` `Sandbox` object.
+A token needs both IDs, or creation fails with `auth`. `box.native` is the `@vercel/sandbox` `Sandbox` object.
 
 ## Limitations
 
-- Ports must be declared in `createSandbox(provider, { ports })`, 15 at most.
-- `timeoutMs` fails with `unsupported`. Vercel's session timeout resets on every resume, so it can't enforce a hard lifetime. Command timeouts in `box.run` still work.
-- `idleTimeoutMs` fails with `unsupported`.
+- Preview ports must be declared at creation, 15 at most.
+- No hard lifetime or idle timeout.
 - At most four labels, or three with a `key`.
-- Resume ends running processes. Restart them with `box.process(name).restart()`.
+- Pause and resume end running processes.
 - No terminals.
+
+## How it works
+
+- Vercel enforces unique sandbox names in a project, so concurrent calls with the same key share one sandbox.
+- Your `labels` become Vercel tags. Vercel allows five; the SDK uses one, and a second for a keyed sandbox.
+- Command timeouts use GNU `timeout` on a new process group, so the whole tree is killed.
 
 ## Next steps
 
-- [Build an AI app builder](/guides/build-an-ai-app-builder): a full example on Vercel.
+- [Build an AI app builder](/guides/build-an-ai-app-builder)
 - [Processes and previews](/concepts/processes-and-previews)

@@ -1,60 +1,19 @@
 ---
 title: Local
-description: Choose Docker for real Linux or Rivet agentOS for a small local runtime without Docker. Both run on your machine with no cloud account.
+description: Run sandboxes as Docker containers on your own machine. No account or key. Exact keys, pause, image snapshots, size presets, and loopback previews.
 ---
 
-Local sandboxes have two options. Neither needs an account or API key. Docker remains the default.
+`local()` runs each sandbox as a Docker container on the machine your code runs on, for development and CI. No Docker? [Rivet agentOS](/providers/agentos) runs command and file tasks locally without it.
 
-| | Docker | Rivet agentOS |
-| --- | --- | --- |
-| Factory | `local()` from `/local` | `agentos()` from `/agentos` |
-| Runtime | Real Linux container | Small runtime that starts quickly; Rust, V8 and WebAssembly |
-| Setup | Running Docker Engine | Install `@rivet-dev/agentos-core@0.4.1` |
-| Commands | Native Linux programs | Bundled shell tools, Node compatibility layer, npm, WebAssembly Git |
-| Best for | Development, CI, native dependencies, dev servers | Lightweight command and file tasks without Docker |
-| SDK background processes and previews | Yes | Unsupported; native process and HTTP APIs are available |
-| Survives your app restarting | Yes | No |
-
-## Without Docker
-
-Install agentOS alongside the SDK:
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @rivet-dev/agentos-core@0.4.1
+npm i @opencoredev/sandbox-sdk@next
 ```
 
-```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+No provider package and no credentials. Start Docker Engine (Docker Desktop, OrbStack, and Colima all work). `DOCKER_HOST` is optional.
 
-await using box = await createSandbox(agentos());
-await box.files.write("hello.cjs", "console.log(6 * 7)");
-console.log((await box.run("node hello.cjs")).stdout);
-```
-
-This prints `42`. Rivet publishes sidecars for Linux glibc and macOS on x64 and arm64; native Windows is not supported. agentOS starts a native Rust sidecar on your machine. JavaScript runs in V8 isolates; shell tools and Git run as WebAssembly against a virtual filesystem and process table. It does not boot Linux or run arbitrary Linux binaries. Pure JavaScript npm packages can work; packages that need native addons, system libraries, or unimplemented Node APIs may fail. Choose Docker for those workloads.
-
-The first sandbox downloads Rivet's pinned Git package (about 18 MB) for file checkpoints and Git operations. Rivet caches it by digest. Clone, commit, status, and checkpoints work; local Git push stalls in agentOS 0.4.1. Choose Docker for workflows that need push. To use a pre-downloaded package offline, pass `agentos({ gitPackagePath: "/absolute/path/git.aospkg" })`. The agentOS npm package loads dynamically only when creating a sandbox.
-
-Keys and reconnects work across provider factories in the same application process. Files and processes disappear when that process exits. `close()` detaches a handle; it does not dispose the VM. Use `destroy()` for cleanup. There are no SDK pause, snapshot, terminal, size, idle-timeout, or hard-lifetime options. Command timeouts and cancellation are supported.
-
-`network: "none"` denies guest egress; `network: { allow: ["registry.npmjs.org"] }` permits literal hostnames. The default, `"all"`, permits outbound networking within agentOS's own network restrictions. Guest listeners stay inside the VM. `box.preview()` and `box.start()` throw `unsupported`: embedded agentOS has no preview URLs, and the SDK process-record shim needs shell features this adapter does not support. Use `box.native.process.spawn()` and `box.native.network.httpRequest()` when you need those native APIs. See [agentOS](/providers/agentos) for the adapter reference.
-
-## With Docker
-
-`local()` runs each sandbox as a Docker container on the machine your code runs on. It is real Linux with real networking, so it behaves like the cloud providers, and it needs no account or key. Use it while you develop and in CI.
-
-Writing unit tests that shouldn't start containers? Use [Memory](/providers/memory).
-
-## Installation
-
-```package-install
-npm i @opencoredev/sandbox-sdk
-```
-
-`local()` needs no extra package, only a running Docker Engine. The adapter talks to the Docker API over a Unix socket. It doesn't need the Docker CLI, and it installs nothing inside the container.
-
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -65,32 +24,94 @@ const result = await box.run("cat /etc/os-release");
 console.log(result.stdout);
 ```
 
-The default image is `node:22-bookworm`. The first run pulls it, and later runs reuse it.
+The first run pulls `node:22-bookworm`. `await using` removes the container when the block ends.
 
-## Configuration
+## What it supports
+
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Partial | `http://127.0.0.1` on the Docker host; declare ports |
+| Pause and resume | Yes | Processes freeze and continue |
+| Snapshots | Yes | Commits a local image |
+| Machine size | Partial | Presets only |
+| Network policy | Partial | `"none"` only; no allow lists |
+| Hard lifetime (`timeoutMs`) | Partial | Enforced on reconnect or reap |
+| Idle timeout (`idleTimeoutMs`) | Partial | Enforced on reconnect or reap |
+| Keys | Exact | Container name is a hash of the key |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-const provider = local({
-  image: "node:24-bookworm",
-  dockerHost: "unix:///var/run/docker.sock",
-});
+await using box = await createSandbox(local());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
 
-await using box = await createSandbox(provider);
-const result = await box.run("node --version");
-console.log(result.stdout);
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
 ```
 
-- `image` picks the container image. The SDK pulls it if it's missing. It must contain `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, GNU `sed`, and the usual Linux utilities, because file operations and process records run through them. `createSandbox` checks for them and fails if one is missing. To add a language, build your own image `FROM node:22-bookworm`.
-- `dockerHost` is the Docker socket, as an absolute `unix://` URL. It defaults to `DOCKER_HOST`, then `unix:///var/run/docker.sock`. Docker Desktop, OrbStack, and Colima all work. If yours puts the socket elsewhere, point `DOCKER_HOST` at it. Remote `tcp://` engines are rejected, because preview URLs must reach the machine your code runs on.
+## Files
 
-## Keys
+Relative paths resolve against `/workspace`.
 
-Key mode is **exact**. The container name is a SHA-256 hash of the key, and Docker refuses duplicate names, so concurrent calls with the same key always share one container. Discovery only sees containers labeled `sandbox-sdk=1`.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
 
-## Size
+await using box = await createSandbox(local());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+Declare the ports you will preview. Each maps to a free port on `127.0.0.1`. Without `ports`, the SDK declares 3000.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { ports: [3000] });
+await box.start(
+  `node -e "require('http').createServer((req, res) => res.end('ok')).listen(3000)"`,
+  { name: "web", ready: { port: 3000 } },
+);
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+The URL works only on the Docker host. Previewing an undeclared port fails with `unsupported`, and so does any preview with `network: "none"`.
+
+## Pause, resume, and snapshots
+
+`pause()` uses `docker pause`, so processes freeze and continue on resume. `snapshot()` commits the container to a local image and returns its ID.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(local(), { from: id });
+```
+
+Snapshot images stay in Docker until you run `docker image rm`.
+
+## Size, network, and lifetime
 
 | Preset | CPUs | Memory |
 | --- | --- | --- |
@@ -98,57 +119,45 @@ Key mode is **exact**. The container name is a SHA-256 hash of the key, and Dock
 | `medium` | 2 | 4096 MiB |
 | `large` | 4 | 8192 MiB |
 
-Memory is a hard limit with swap disabled. Leave `size` out to get Docker's defaults, which means no limit. Exact sizes such as `{ cpu, memoryMb, diskGb }` fail with `unsupported`, because Docker can't limit disk size portably.
-
-## Network
-
-The default is Docker's bridge network. `network: "none"` gives the container a loopback interface and nothing else. An allow list, `network: { allow: [...] }`, fails with `unsupported`: Docker has no per-host egress filter.
-
-## Pause and snapshots
-
-`box.pause()` and `box.resume()` use `docker pause` and `docker unpause`. Processes freeze in place and continue on resume.
-
-`box.snapshot()` commits the container to a local image and returns its ID. Pass it as `from` to start a new sandbox from that image. Snapshot images stay in Docker until you remove them with `docker image rm`.
-
-## Previews
-
-Declare the ports you will preview when you create the sandbox. Each one maps to a free port on `127.0.0.1`, and `box.preview(port)` returns `http://127.0.0.1:<port>/`. If you leave `ports` out, the SDK declares port 3000.
-
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { local } from "@opencoredev/sandbox-sdk/local";
 
-await using box = await createSandbox(local(), { ports: [3000, 5173] });
-const preview = await box.preview(5173);
-console.log(preview.url);
+await using box = await createSandbox(local(), {
+  size: "medium",
+  network: "none",
+  idleTimeoutMs: 15 * 60_000,
+  timeoutMs: 60 * 60_000,
+});
 ```
 
-The URL works only on the machine that runs Docker. To reach it from another device, put a tunnel in front of it. Previewing a port you didn't declare fails with `unsupported`, and so does any preview with `network: "none"`.
+Memory is a hard limit with swap off. Without `size`, Docker sets no limit. Exact sizes and allow lists fail with `unsupported`. Docker has no timer, so both timeouts are checked when a client reconnects or [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Schedule a reaper if nothing reconnects.
 
-## Environment variables
+## Configuration
 
-| Variable | Purpose |
-| --- | --- |
-| `DOCKER_HOST` | The Docker socket, as `unix:///path/to/docker.sock`. Optional. |
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `image` | `string` | `"node:22-bookworm"` | |
+| `dockerHost` | `string` | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
 
-## API reference
-
-### `local(options?)`
-
-- `image?: string`. Defaults to `node:22-bookworm`.
-- `dockerHost?: string`. An absolute `unix://` socket URL. Defaults to `DOCKER_HOST`, then `unix:///var/run/docker.sock`.
-
-Returns a provider for `createSandbox`, `connectSandbox`, `listSandboxes`, and `reapSandboxes`. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
+The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
 ## Limitations
 
-- `idleTimeoutMs` and `timeoutMs` are stored on the container. Docker has no timer of its own, so the deadline is enforced when a client reconnects (an expired container is destroyed and you get `not_found`) or when [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Run the reaper on a schedule if nothing reconnects. Idle time counts from the last SDK command or file operation, and running background processes keep a sandbox from going idle.
-- Network allow lists fail with `unsupported`. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) when you need one.
-- Isolation is a container, not a VM. Don't run untrusted code from strangers on a machine that holds secrets.
+- Isolation is a container, not a VM. Don't run untrusted code on a machine that holds secrets.
+- No network allow lists. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) for one.
 - Preview URLs are reachable only on the Docker host.
-- `close()` leaves the container and its background processes running. They survive a restart of your app, so keys and `box.process(name)` keep working. They stop when Docker stops.
+- Timeouts need a reconnect or a reaper to take effect.
+- No terminals.
+
+## How it works
+
+- The adapter talks to the Docker API over a Unix socket. It needs no Docker CLI and installs nothing in the container.
+- Concurrent calls with the same key share one container, because Docker refuses duplicate names. Discovery only sees containers labeled `sandbox-sdk=1`.
+- Idle time counts from the last SDK command or file operation. Running background processes keep a sandbox from going idle.
+- `close()` leaves the container and its processes running across restarts of your app.
 
 ## Next steps
 
-- [Quickstart](/getting-started/quickstart): the full first run with `local()`.
+- [Quickstart](/getting-started/quickstart)
 - [Running commands](/concepts/running-commands)

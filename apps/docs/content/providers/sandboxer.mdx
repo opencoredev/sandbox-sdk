@@ -1,56 +1,157 @@
 ---
 title: Sandboxer
-description: Run Ubuntu microVMs on Sandboxer with size presets, pause and resume, named snapshots, and private previews.
+description: Run Ubuntu microVMs on Sandboxer in two regions. Size presets, pause and resume, named snapshots, and cookie-authenticated previews.
 ---
 
-`sandboxer()` runs Ubuntu 24.04 microVMs on [Sandboxer](https://sandboxer.com) in `us-east` (Ashburn, Virginia) or `eu-central` (Helsinki). Node.js 22, Python 3 and Git are preinstalled. The adapter uses the Boat-compatible API through `@boatdev/sdk`.
+`sandboxer()` runs each sandbox as an Ubuntu 24.04 microVM on [Sandboxer](https://sandboxer.com), with Node.js 22, Python 3, and Git installed.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @boatdev/sdk
+npm i @opencoredev/sandbox-sdk@next @boatdev/sdk
 ```
 
-## Basic usage
+Sandboxer speaks a Boat-compatible API, so the adapter uses `@boatdev/sdk`. Set `SANDBOXER_API_KEY` on your server, and keep it out of browser bundles. `SANDBOXER_REGION` is optional.
 
-Set `SANDBOXER_API_KEY` on your server. Keep the key out of browser bundles.
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
 
 await using box = await createSandbox(sandboxer());
-console.log((await box.run("python3 --version")).stdout);
+const result = await box.run("python3 --version");
+console.log(result.stdout);
 ```
 
-## Configuration
+`await using` deletes the VM when the block ends.
 
-`sandboxer({ apiKey, baseUrl, machine, region, requestTimeoutMs })` reads `SANDBOXER_API_KEY` when `apiKey` is unset and checks it on first use, so a missing key fails with `auth` on the first call. `baseUrl` defaults to `https://sandboxer.com/api/v1`. `requestTimeoutMs` defaults to 90,000 ms per control-plane request and lifecycle poll. `machine` selects `small`, `default`, `large`, or `xlarge`; a per-create `size` takes precedence. `region` picks `us-east` or `eu-central` (default: `SANDBOXER_REGION`, else the region nearest the caller). A sandbox restored from a snapshot must use the snapshot's region; naming another fails with `invalid_argument`. `box.native.region` and `box.native.regionSource` (`requested`, `nearest`, `default` or `source`) report the placement.
+## What it supports
 
-| SDK size | Native type | vCPU | Memory | User disk |
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Send the returned `Cookie` header |
+| Pause and resume | Yes | Usually restores memory and processes |
+| Snapshots | Yes | Named disk snapshots |
+| Machine size | Partial | Presets only |
+| Network policy | No | Only `"all"` |
+| Hard lifetime (`timeoutMs`) | No | Sandboxer's own auto-stop applies |
+| Idle timeout (`idleTimeoutMs`) | No | |
+| Keys | Best-effort | Stored in the VM's display name |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+No ports to declare. The preview needs the `Cookie: __sbx_auth=...` header in `preview.headers` on every request. Treat it as a secret.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+If your dev server checks the `Host` header, allow its preview host name under `.box.sandboxer.com`.
+
+## Pause, resume, and snapshots
+
+`pause()` stops the VM and waits for the stop to finish. Sandboxer normally restores memory and running processes on resume; its cold-boot fallback can lose them. `snapshot()` saves a named disk snapshot and returns its name.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(sandboxer(), { from: id });
+```
+
+Snapshots outlive their source. Delete them through `DELETE /named-snapshots/{name}`. A restore must run in the snapshot's region.
+
+## Size, network, and lifetime
+
+| Preset | Native type | vCPU | Memory | Disk |
 | --- | --- | --- | --- | --- |
 | `small` | `small` | 2 | 4096 MiB | 12 GB |
 | `medium` | `default` | 4 | 8192 MiB | 50 GB |
 | `large` | `large` | 8 | 16384 MiB | 125 GB |
 
-The default is 4 vCPU and 8 GiB. Trial accounts allow small and default sizes, two active sandboxes and 5/30/100 starts per minute/hour/day. Creates, resumes and forks count as starts. Account limits still apply.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
 
-`createSandbox` makes two control-plane calls, the create and a metadata rename. Workspace setup runs inside the first command or file operation, so the first `run` is a single command request.
+await using box = await createSandbox(sandboxer({ region: "eu-central" }), { size: "small" });
+```
 
-## Pause and snapshots
+Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported`. Trial accounts allow `small` and `default` sizes and two active sandboxes.
 
-`box.pause()` stops the VM and waits for its stop operation to complete. `box.resume()` waits for readiness. Sandboxer normally restores memory and running processes; its documented cold-boot fallback can lose running processes when memory restore is unavailable.
+## Configuration
 
-`box.snapshot()` saves a uniquely named disk snapshot and waits until it is ready. Pass its `id` as `from` to `createSandbox`. Named snapshots persist independently of the source and require native cleanup through `DELETE /named-snapshots/{name}`. The native handle's `createSnapshot(name)` lets callers choose a recovery name before submission. Keep that name if the request times out.
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `SANDBOXER_API_KEY` |
+| `baseUrl` | `string` | `https://sandboxer.com/api/v1` | |
+| `machine` | `"small" \| "default" \| "large" \| "xlarge"` | `"default"` | |
+| `region` | `"us-east" \| "eu-central"` | Nearest to the caller | `SANDBOXER_REGION` |
+| `requestTimeoutMs` | `number` | `90_000` | |
 
-## Previews and files
-
-`box.preview(port)` returns the preview URL without its `_token` query parameter and puts the token in a `Cookie: __sbx_auth=...` header, so no token exchange request runs. Pass both `preview.url` and `preview.headers` to `fetch`. Treat the header as a secret. If your dev server checks Host, allow its exact preview hostname (under `.box.sandboxer.com`).
-
-Reads from 1 MiB through 50 MiB stage a private copy under `/tmp` and download raw artifact bytes, then remove staging. Sandboxer limits artifacts to 50 MiB; larger reads fall back to bounded guest commands. Writes use the files API in bounded chunks. Ranged reads use bounded guest commands.
+`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
 
 ## Limitations
 
-Keys are best-effort. The adapter stores keys and labels in the display name, with a 120-character encoded budget; do not rename SDK-created sandboxes. Creation uses `noEnv: true` to avoid inheriting saved account secrets. Custom sizes, network restrictions, SDK idle timers, hard lifetimes and terminals are unsupported. Sandboxer's default auto-stop still applies.
+- Keys are best-effort, and the encoded key and labels must fit a 120-character name.
+- No custom sizes, network restrictions, idle timers, hard lifetimes, or terminals.
 
-`close()` detaches; `destroy()` deletes with Sandboxer's confirmation header. Usage seconds and dollars from `/sandboxes/{id}/usage` represent the provider's machine-time meter, excluding plan payments and credits.
+## How it works
+
+- `createSandbox` makes two control-plane calls: the create and a metadata rename. Workspace setup runs inside the first command or file operation.
+- Sandboxes are created with `noEnv: true`, so they get none of your account's saved secrets.
+- Creates, resumes, and forks count as starts against your account's rate limits.
+- `destroy()` sends Sandboxer's delete confirmation header and waits for the deletion to finish.
+- Usage from `/sandboxes/{id}/usage` is machine time, not plan payments or credits.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

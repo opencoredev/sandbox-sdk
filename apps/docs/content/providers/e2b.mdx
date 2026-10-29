@@ -1,19 +1,19 @@
 ---
 title: E2B
-description: Run sandboxes as E2B microVMs through the official e2b SDK. Pause with memory intact, snapshots, network allow lists, and a hard lifetime.
+description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots, network allow lists, and a hard lifetime a reconnect can't extend.
 ---
 
-`e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM. It runs commands through E2B's native command API, pauses with memory and files intact, and enforces a hard lifetime that a later reconnect can't extend.
+`e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM through the official `e2b` SDK.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk e2b
+npm i @opencoredev/sandbox-sdk@next e2b
 ```
 
-The adapter needs `e2b` 2.56 or later. Run this code on a server. The API key must never reach a browser bundle.
+The adapter needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server, and keep it out of browser bundles.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -24,61 +24,81 @@ const result = await box.run("python3 -c 'print(2 + 2)'");
 console.log(result.stdout);
 ```
 
-The provider reads `E2B_API_KEY` from the environment and starts the `base` template.
+This prints `4`. `await using` destroys the sandbox when the block ends.
 
-## Configuration
+## What it supports
+
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output through E2B's command API |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Public `https://` URL, no ports to declare |
+| Pause and resume | Yes | Memory and files survive |
+| Snapshots | Yes | |
+| Machine size | No | Fixed by the template |
+| Network policy | Yes | `"none"` or a host allow list |
+| Hard lifetime (`timeoutMs`) | Yes | Reconnect and resume never extend it |
+| Idle timeout (`idleTimeoutMs`) | No | E2B measures elapsed time only |
+| Keys | Best-effort | Found by metadata search |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-const provider = e2b({
-  apiKey: process.env.MY_E2B_KEY,
-  template: "my-node-template",
-});
+await using box = await createSandbox(e2b());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
 
-await using box = await createSandbox(provider, { timeoutMs: 30 * 60_000 });
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
 ```
 
-- `apiKey` overrides `E2B_API_KEY`.
-- `template` is the E2B template to boot. It defaults to `base`. Build your own with the E2B CLI to bake in dependencies, so sandboxes start ready. The template needs `sh`, `bash`, `setsid`, and `git`.
-- `domain` points the client at a different E2B domain, such as a self-hosted deployment.
+Commands run as root.
 
-## Keys
+## Files
 
-Key mode is **best-effort**. The key is stored in sandbox metadata and found by search, so two requests with the same key at the same moment can create two sandboxes. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+Relative paths resolve against `/workspace`.
 
-Your `labels` become E2B metadata. `sandbox-sdk-key` and `sandbox-sdk-deadline` are reserved.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-## Size
+await using box = await createSandbox(e2b());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
 
-E2B sets CPU, memory, and disk when you build a template, not when you create a sandbox. Any `size`, preset or exact, fails with `unsupported`. Build a template with the machine you need and pass it as `template`.
+## Background processes and previews
 
-## Network
+`box.preview(port)` returns `https://` plus E2B's host for that port.
 
-| `network` | E2B setting |
-| --- | --- |
-| `"all"` | Internet access on. The default. |
-| `"none"` | `allowInternetAccess: false` |
-| `{ allow: [...] }` | Deny all outbound traffic except the hosts in `allowOut` |
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-After creating the sandbox, the SDK reads the settings back from E2B. If they don't match what you asked for, it destroys the sandbox and throws `unsupported`. Host rules match on the HTTP `Host` header and TLS SNI, and DNS resolution stays allowed. See [E2B internet access](https://docs.e2b.dev/network/internet-access) for what that does and doesn't block.
+await using box = await createSandbox(e2b());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
 
-## Lifetime
+## Pause, resume, and snapshots
 
-`timeoutMs` sets E2B's timeout with kill on expiry. The SDK also stores the deadline in metadata, so connecting or resuming later never pushes it back. Without `timeoutMs`, E2B's default timeout applies.
-
-`idleTimeoutMs` fails with `unsupported`. E2B measures elapsed time, not idle time.
-
-## Pause and snapshots
+A paused sandbox keeps its memory and file system and stops using compute. `snapshot()` returns E2B's snapshot ID, which `from` accepts.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
 await using box = await createSandbox(e2b(), { key: "user:123" });
-await box.run("npm install", { cwd: "app" });
-
 await box.pause();
 await box.resume();
 
@@ -86,34 +106,44 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(e2b(), { from: id });
 ```
 
-A paused sandbox keeps its memory and file system and stops using compute. `snapshot()` returns E2B's snapshot ID, which `from` accepts.
+## Size, network, and lifetime
 
-## Previews
+The template fixes CPU, memory, and disk, so any `size` fails with `unsupported`. Build a template with the machine you need and pass it as `template`.
 
-`box.preview(port)` returns `https://` plus E2B's host for that port. You don't need to declare ports up front.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-## Environment variables
+await using box = await createSandbox(e2b({ template: "my-node-template" }), {
+  network: { allow: ["registry.npmjs.org"] },
+  timeoutMs: 30 * 60_000,
+});
+```
 
-| Variable | Purpose |
-| --- | --- |
-| `E2B_API_KEY` | Your E2B API key, from the E2B dashboard. `apiKey` overrides it. |
+Host rules match on the HTTP `Host` header and TLS SNI, and DNS stays allowed. See [E2B internet access](https://docs.e2b.dev/network/internet-access) for what that blocks.
 
-## API reference
+## Configuration
 
-### `e2b(options?)`
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `E2B_API_KEY` |
+| `template` | `string` | `"base"` | |
+| `domain` | `string` | `e2b.app` | `E2B_DOMAIN` |
 
-- `apiKey?: string`. Defaults to `E2B_API_KEY`.
-- `template?: string`. Defaults to `base`.
-- `domain?: string`. The E2B API domain.
-
-`box.native` is the E2B SDK's `Sandbox` object. Commands and file operations run as root, so `/workspace` and the SDK's process records are always writable.
+A custom template needs `sh`, `bash`, `setsid`, and `git`. `box.native` is the E2B SDK's `Sandbox` object.
 
 ## Limitations
 
-- Keys are best-effort. Use a `locator` for exact get-or-create.
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - `size` fails with `unsupported`. Pick the machine in the template.
 - `idleTimeoutMs` fails with `unsupported`. Use `timeoutMs`, or [Daytona](/providers/daytona) for idle auto-stop.
 - No terminals.
+
+## How it works
+
+- Your `labels` become E2B metadata. `sandbox-sdk-key` and `sandbox-sdk-deadline` are reserved.
+- The SDK stores the `timeoutMs` deadline in metadata and clamps E2B's timeout back to it on every connect and resume.
+- After creation the SDK reads the network settings back from E2B. If they don't match, it destroys the sandbox and throws `unsupported`.
 
 ## Next steps
 

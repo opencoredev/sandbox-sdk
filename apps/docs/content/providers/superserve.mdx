@@ -1,28 +1,156 @@
 ---
 title: Superserve
-description: Firecracker microVMs with pause, snapshots, and authenticated HTTPS previews.
+description: Run Firecracker microVMs on Superserve. Pause and resume, snapshots, and authenticated HTTPS previews.
 ---
 
-Install `@opencoredev/sandbox-sdk` and `@superserve/sdk`, then set `SUPERSERVE_API_KEY` on your server.
+`superserve()` runs each sandbox as a Firecracker microVM on [Superserve](https://docs.superserve.ai/sandbox/create) through the official `@superserve/sdk`.
+
+## Install
+
+```package-install
+npm i @opencoredev/sandbox-sdk@next @superserve/sdk
+```
+
+The adapter needs `@superserve/sdk` 0.11.4 or later. Set `SUPERSERVE_API_KEY` on your server, and keep it out of browser bundles.
+
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 
 await using box = await createSandbox(superserve({ installPython: true }));
-console.log((await box.run("node --version")).stdout);
+const result = await box.run("node --version");
+console.log(result.stdout);
 ```
 
-The adapter uses `@superserve/sdk` 0.11.4 or later. Options are `apiKey`, `baseUrl`, `template`, `installPython`, and `requestTimeoutMs` (90,000 by default). The default template is `superserve/node-22`: 1 vCPU, 1 GiB RAM, and 4 GiB disk when checked on October 21, 2026. It includes Node 22 but not Python, which the adapter needs for its command supervisor. The first guest operation that needs Python fails with a clear error when Python 3 is missing, unless you pass `installPython: true`. That option installs Python 3, pip, and venv on first use when Python is absent, which needs root and package-repository access and adds to first-use time. Workspace setup is folded into the first guest operation; the command supervisor and private environment file are installed when command execution first needs them. For fast starts, use a template that already has Python 3, Git, GNU tar, and `nohup`. The benchmark builds one with `bench/templates/superserve/build.ts`.
+The default template, `superserve/node-22`, has no Python, which the adapter needs. `installPython: true` installs it on first use. `await using` deletes the VM when the block ends.
 
-Resources come from the template. Explicit `size`, restricted `network`, `idleTimeoutMs`, and hard sandbox `timeoutMs` requests fail with `unsupported` before allocation. If the template sets a native auto-pause timeout, the adapter clears it, because it is a per-session active-time window, not the SDK's hard lifetime limit. Terminal support is unavailable.
+## What it supports
 
-Pause and resume preserve the VM state. Snapshots can be restored with `createSandbox(superserve(), { from: snapshot.id })`. Snapshots persist after sandbox destruction; delete them with native `Snapshot.deleteById(id)`. A snapshot failure reports an `outcome_unknown` recovery name. List snapshots of the reported source sandbox before retrying.
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Partial | Output arrives when the command finishes |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Private; send the returned header |
+| Pause and resume | Yes | VM state survives |
+| Snapshots | Yes | |
+| Machine size | No | Set by the template |
+| Network policy | No | Only `"all"` |
+| Hard lifetime (`timeoutMs`) | No | |
+| Idle timeout (`idleTimeoutMs`) | No | |
+| Keys | Best-effort | Found by metadata lookup |
+| Terminal | No | |
 
-Commands use a guest supervisor and process groups. Output stays on guest disk and is read in bounded pages after completion; it is not streamed live. Timeout, abort, and transport errors trigger a separate cancellation check. A failure to confirm termination returns `outcome_unknown`. Process records use the shared SDK shell shim.
+## Run commands
 
-Previews publish individual ports as private and return the required authentication header. Forward the returned headers when fetching a preview. Native preview ports must be between 1024 and 65535, excluding 49983.
+Await `box.run` for the result. Iterating works too, but output is read from guest disk after the command exits, so chunks arrive together at the end.
 
-Keys are best-effort metadata lookups. Listing uses native metadata without waking VMs; connecting to a paused VM resumes it, following the native SDK. Use a locator for exact get-or-create across clients.
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 
-Sources: [sandbox creation](https://docs.superserve.ai/sandbox/create), [SDK reference](https://docs.superserve.ai/sdk-reference/sandbox), [snapshots](https://docs.superserve.ai/sandbox/snapshots), and [pricing](https://www.superserve.ai/pricing).
+await using box = await createSandbox(superserve({ installPython: true }));
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("echo one; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }));
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+No ports to declare. `box.preview(port)` publishes the port as private and returns the auth header in `preview.headers`. Send it with every request. Ports must be between 1024 and 65535, except 49983.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }));
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+## Pause, resume, and snapshots
+
+Pause and resume keep the VM state. `snapshot()` returns an ID that `from` accepts.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(superserve(), { from: id });
+```
+
+Snapshots outlive their source; delete them with the native `Snapshot.deleteById(id)`.
+
+## Size, network, and lifetime
+
+Resources come from the template. `size`, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported` before a VM is allocated.
+
+```ts
+import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+try {
+  await createSandbox(superserve(), { size: "large" });
+} catch (error) {
+  if (error instanceof SandboxError && error.code === "unsupported") {
+    console.log("Pick a template with the machine you need.");
+  }
+}
+```
+
+## Configuration
+
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `SUPERSERVE_API_KEY` |
+| `baseUrl` | `string` | `https://api.superserve.ai` | `SUPERSERVE_BASE_URL` |
+| `template` | `string` | `"superserve/node-22"` | |
+| `installPython` | `boolean` | `false` | |
+| `requestTimeoutMs` | `number` | `90_000` | |
+
+A template needs Git, tar, and `nohup`, plus Python 3 unless `installPython` is on. Installing Python needs root and package-repository access and slows the first operation. For fast starts, build a template with Python 3 included; the repo's benchmark has one in `bench/templates/superserve/build.ts`. `box.native` is the SDK's `Sandbox` object.
+
+## Limitations
+
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+- No sizes, network restrictions, idle timeouts, hard lifetimes, or terminals.
+- Command output isn't live.
+- Connecting to a paused VM resumes it.
+
+## How it works
+
+- Commands run under a guest supervisor in their own process group. A timeout or abort triggers a separate cancellation check, and an unconfirmed kill returns `outcome_unknown`.
+- If the template sets a native auto-pause timeout, the adapter clears it, because it is an active-time window, not a hard lifetime.
+- Listing uses native metadata and doesn't wake VMs.
+- A failed snapshot reports `outcome_unknown` with the snapshot name. List the source's snapshots before retrying.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)

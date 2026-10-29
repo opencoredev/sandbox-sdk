@@ -1,19 +1,19 @@
 ---
 title: Upstash Box
-description: Run durable cloud containers on Upstash Box with filesystem snapshots, native network policies, and protected preview URLs.
+description: Run durable or ephemeral cloud containers on Upstash Box. Size presets, native network policies, filesystem snapshots, and bearer-protected previews.
 ---
 
-`upstash()` runs each sandbox on [Upstash Box](https://upstash.com/docs/box/overall/how-it-works). Boxes retain files between sessions and pause when idle, which suits workspaces that users return to later.
+`upstash()` runs each sandbox on [Upstash Box](https://upstash.com/docs/box/overall/how-it-works), a cloud container that keeps its files between sessions.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @upstash/box
+npm i @opencoredev/sandbox-sdk@next @upstash/box
 ```
 
-The adapter needs `@upstash/box` 0.7.9 or later within 0.7. Run this code on a server using Node.js 22 or Bun. Keep your API key out of browser bundles.
+The adapter needs `@upstash/box` 0.7.9 or later within 0.7, on Node.js 22 or Bun. Set `UPSTASH_BOX_API_KEY` on your server, and keep it out of browser bundles.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -24,45 +24,104 @@ const result = await box.run("uname -a");
 console.log(result.stdout);
 ```
 
-The provider reads `UPSTASH_BOX_API_KEY` and creates a small box using Upstash's default runtime. Commands and relative files use `/workspace`.
+This creates a small box with Upstash's default runtime. `await using` deletes it when the block ends.
 
-## Configuration
+## What it supports
 
-Creation makes `/workspace` writable by the guest user. The default runtime needs passwordless `sudo -n` for this one-time directory setup. Creation fails if the workspace remains unwritable.
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output when you iterate |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Bearer header by default, or public |
+| Pause and resume | Partial | Durable boxes only; running processes end |
+| Snapshots | Yes | Full file system |
+| Machine size | Partial | Presets only |
+| Network policy | Yes | `"none"` or a host allow list |
+| Hard lifetime (`timeoutMs`) | No | Ephemeral boxes have a TTL backstop |
+| Idle timeout (`idleTimeoutMs`) | No | Upstash pauses idle durable boxes itself |
+| Keys | Best-effort | Read from metadata inside each box |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-const provider = upstash({ runtime: "node", requestTimeoutMs: 60_000 });
-await using box = await createSandbox(provider, { size: "medium" });
+await using box = await createSandbox(upstash());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
 ```
 
-`apiKey` overrides the environment key. `baseUrl` selects the Box API endpoint and otherwise uses `UPSTASH_BOX_BASE_URL` when set. `runtime` selects an Upstash runtime, such as `node` or `python`. `requestTimeoutMs` configures native command request and live-session handshake deadlines. It does not bound provisioning or the box's lifetime. `enableTelemetry: false` disables the native SDK's telemetry headers.
+A command timeout kills the command's process tree.
 
-## Ephemeral boxes
+## Files
 
-Pass `ephemeral: true` to run on [Upstash Ephemeral Box](https://upstash.com/docs/box/overall/ephemeral-box) instead of a durable box. An ephemeral box is ready as soon as the create request returns, so creation skips the provisioning wait. It cannot pause, and Upstash deletes it after its time to live.
+Relative paths resolve against `/workspace`.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-const provider = upstash({ ephemeral: true, ttlSeconds: 1800 });
-await using box = await createSandbox(provider, { size: "medium", env: { MODE: "ci" } });
+await using box = await createSandbox(upstash());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
 ```
 
-`ttlSeconds` defaults to 3600 and accepts whole seconds up to 259200 (three days). Treat it as a backstop for leaked boxes rather than a deadline: Upstash removes expired boxes some time after `expiresAt`, and commands keep working until then. Destroy boxes explicitly when you are done.
+## Background processes and previews
 
-Everything else works as on a durable box: sizes, environment variables and secrets, network policies, keys and labels, discovery with `list` and `find`, snapshots, protected previews, and process records. The provider omits the `pause` capability, so the sandbox has no `pause()` or `resume()` methods. Snapshots of an ephemeral box restore into a new ephemeral box. Each mode lists, finds, and connects only its own product: an ephemeral provider never returns a durable box for a key, and `connect` fails with `unsupported` when the ID belongs to the other product. Ephemeral boxes take no native startup command, so the adapter marks process records restored from a snapshot as failed with exit code 137 during creation. `box.native` is still the Upstash SDK's `Box` object; its `pause()` is rejected by Upstash.
+No ports to declare. Previews need a bearer token by default, so send `preview.headers` with every request. Pass `upstash({ public: true })` for public previews.
 
-## Keys
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-Key mode is **best-effort**. The adapter stores keys and labels in `/tmp/.sandbox-sdk/upstash.json` inside the box. It uses one native `sandbox-sdk` label to discover initialized boxes, then reads their metadata. Arbitrary SDK labels are preserved without using Upstash's limited native label slots.
+await using box = await createSandbox(upstash());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
 
-Two concurrent calls with the same key can create two boxes. Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) when exact get-or-create matters. Discovery reads metadata from each SDK box and may wake paused boxes. SDK labels do not appear individually in the Upstash dashboard.
+Reuse one provider instance to keep preview credentials stable. Another instance, or a native `getPublicURL()` call, rotates them.
 
-## Size
+## Pause, resume, and snapshots
+
+On a durable box, `pause()` and `resume()` keep files but end running processes. The SDK marks them failed with exit code 137 on resume. `snapshot()` captures the full file system.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await using box = await createSandbox(upstash(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(upstash(), { from: id });
+```
+
+Snapshots outlive their source box; delete them through the native SDK.
+
+An ephemeral box is ready as soon as it's created, can't pause, and is deleted after its TTL. The provider drops the `pause` capability, so `pause()` isn't on its type.
+
+```ts
+import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await using box = await createSandbox(upstash({ ephemeral: true, ttlSeconds: 1800 }));
+if (hasCapability(box, "pause")) await box.pause();
+```
+
+## Size, network, and lifetime
 
 | Preset | vCPUs | Memory | Storage |
 | --- | --- | --- | --- |
@@ -70,73 +129,45 @@ Two concurrent calls with the same key can create two boxes. Use a [`locator`](/
 | `medium` | 4 | 8 GB | 10 GB |
 | `large` | 8 | 16 GB | 20 GB |
 
-Presets map directly to Upstash's native sizes. Exact `{ cpu, memoryMb, diskGb }` sizes fail with `unsupported`.
-
-## Network
-
-`network: "none"` uses Upstash's `deny-all` policy. An allow list uses a custom native policy with `allowedDomains`. Entries must be plain DNS hostnames without schemes, ports, or wildcards. An empty allow list blocks all outbound traffic.
-
-## Idle and lifetime limits
-
-Upstash controls automatic idle pause. Ephemeral boxes never pause; see [Ephemeral boxes](#ephemeral-boxes) for their time to live. The adapter cannot set a custom idle deadline or hard lifetime on durable boxes. Both `idleTimeoutMs` and `timeoutMs` fail with `unsupported` before creating a box. Command `timeoutMs` still works and kills the command's process tree.
-
-## Pause and snapshots
-
-`box.pause()` and `box.resume()` call Upstash's native lifecycle methods. Files persist. Running processes end on pause. The adapter installs a native startup command that marks unfinished SDK process records failed with exit code 137 on resume, including automatic resume. Restart processes when returning to a workspace.
-
-`box.snapshot()` captures the full filesystem and returns the native snapshot ID. Pass it as `from` to `createSandbox` to create an independent box. The adapter replaces the restored SDK metadata with the new box's key and labels. Snapshots remain in Upstash after you destroy their source box; delete them through the native SDK when no longer needed.
-
-## Previews
-
-Previews require a bearer token by default. Send the returned headers with requests:
-
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-await using box = await createSandbox(upstash(), { key: "project:42" });
-const preview = await box.preview(3000);
-const response = await fetch(preview.url, { headers: preview.headers });
-console.log(response.status);
+await using box = await createSandbox(upstash(), {
+  size: "medium",
+  network: { allow: ["registry.npmjs.org"] },
+});
 ```
 
-Proxy protected previews through your server when displaying them in an iframe. For a public preview, explicitly use `upstash({ public: true })`. Ports do not need to be declared at creation. Upstash does not report an expiry, so `expiresAt` is unset. Reuse one provider instance to keep preview credentials stable: repeated calls share a cached URL. A different provider instance or a direct native `getPublicURL()` call can replace the URL's credentials, invalidating earlier headers.
+Exact sizes fail with `unsupported`. Allow-list entries are plain DNS host names, and an empty list blocks all outbound traffic. `idleTimeoutMs` and `timeoutMs` fail with `unsupported`. An ephemeral box's `ttlSeconds` is a backstop for leaks, not a deadline: Upstash removes it some time after it expires.
 
-## Environment variables
+## Configuration
 
-| Variable | Purpose |
-| --- | --- |
-| `UPSTASH_BOX_API_KEY` | Your Box API key from the Upstash console. Required unless `apiKey` is set. |
-| `UPSTASH_BOX_BASE_URL` | Optional native SDK API endpoint override. |
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `UPSTASH_BOX_API_KEY` |
+| `baseUrl` | `string` | `https://us-east-1.box.upstash.com` | `UPSTASH_BOX_BASE_URL` |
+| `runtime` | `Runtime`, such as `"node"` | Upstash's default | |
+| `requestTimeoutMs` | `number` | `600_000` | |
+| `enableTelemetry` | `boolean` | `true` | `UPSTASH_DISABLE_TELEMETRY` |
+| `public` | `boolean` | `false` | |
+| `ephemeral` | `boolean` | `false` | |
+| `ttlSeconds` | `number` | `3600`, at most `259200` | |
 
-## API reference
-
-### `upstash(options?)`
-
-- `apiKey?: string`. Defaults to `UPSTASH_BOX_API_KEY`.
-- `baseUrl?: string`. Defaults to `UPSTASH_BOX_BASE_URL`, then `https://us-east-1.box.upstash.com`.
-- `runtime?: Runtime`. An Upstash runtime name.
-- `requestTimeoutMs?: number`. Uses the native SDK default when omitted.
-- `enableTelemetry?: boolean`. Uses the native SDK default when omitted.
-- `public?: boolean`. Defaults to `false`; previews require bearer authentication.
-- `ephemeral?: boolean`. Defaults to `false`. `true` creates Ephemeral Boxes and drops the `pause` capability. When the value is only known at runtime, the returned type does not promise `pause`.
-- `ttlSeconds?: number`. Ephemeral mode only. Defaults to `3600`; at most `259200`. Other values throw `invalid_argument` when the provider is created.
-
-Returns a provider. `box.native` is the Upstash SDK's `Box` object.
-
-## File transfer limits
-
-Native reads accept ranges up to 8 MiB. Native writes accept JSON request bodies up to 10 MiB (10,485,760 bytes), including base64 content and JSON overhead. A 10 MiB binary payload exceeds that limit. The adapter transfers binary data in 4 MiB chunks. Large writes stage chunks in a private guest directory, assemble them into a temporary destination file with Python, replace the destination after assembly succeeds, then remove the directory. If submission times out, the guest owns cleanup; an `outcome_unknown` error includes the staging path in case it must be inspected. Destroying the sandbox removes any retained staging. Large reads concatenate bounded byte ranges. Files must remain unchanged during a multi-call read.
-
-Small reads and existing-parent writes use one native file call. Missing parents require a mkdir and another write. Large transfers use additional calls and need guest `python3`; file contents never enter command arguments.
+`ttlSeconds` applies only with `ephemeral: true`. `requestTimeoutMs` bounds native requests, not the box's lifetime. The default runtime needs passwordless `sudo -n` to make `/workspace` writable. `box.native` is the Upstash SDK's `Box` object.
 
 ## Limitations
 
-- Keys are best-effort, and discovery may wake boxes.
-- No custom idle deadlines, hard lifetimes, or exact resource sizes.
-- No terminal capability through Sandbox SDK. The native SDK has live terminal sessions.
-- Process records and logs use the shared `/tmp/.sandbox-sdk/procs` layout.
-- Live sessions require Node-compatible WebSockets. Losing a foreground session connection terminates its command.
+- Keys are best-effort, and listing may wake paused boxes.
+- No custom idle deadlines, hard lifetimes, or exact sizes.
+- No terminal through Sandbox SDK. The native SDK has live sessions.
+- Losing a foreground session connection ends its command.
+
+## How it works
+
+- Keys and labels live in `/tmp/.sandbox-sdk/upstash.json` inside the box. One native `sandbox-sdk` label marks SDK boxes, so labels don't use Upstash's limited label slots.
+- A durable mode provider and an ephemeral one each see only their own boxes.
+- Binary files move in 4 MiB chunks because native writes cap at 10 MiB. Large writes are staged and swapped in once complete.
 
 ## Next steps
 
