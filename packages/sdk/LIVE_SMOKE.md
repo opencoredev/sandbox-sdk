@@ -11,28 +11,28 @@
 
 Each provider gets a 120 s budget, and at most 4 run at once. After every provider finishes, the script lists sandboxes carrying the run label through both `listSandboxes` and the adapter's native `provider.list`. If any remain, it calls `reapSandboxes`, polls until the list is empty, and exits non-zero when something is still left.
 
-## Results, 2026-10-28
+## Results, 2026-10-29
 
-Run `sbx69-mvss0ti7-c137fe1c` on branch `v1-polish` after the Sandboxer, packaging and docs merges, from ms-a2. Times are wall-clock from the client, so they include network latency and lazy imports on first use. ms-a2 had a load average above 100 during the run.
+Run `sbx69-mvttgi5t-ba82bffc` on the SBX-71 branch (1.0.0-beta.1), from ms-a2. The 2026-10-28 run (`sbx69-mvss0ti7-c137fe1c`) also passed, with Vercel skipped. Times are wall-clock from the client, so they include network latency and lazy imports on first use. ms-a2 had a load average around 30 during the run.
 
 | Provider | Result | Create ms | First run ms | Note |
 | --- | --- | ---: | ---: | --- |
-| memory | PASS | 170 | 3 | In-process. Preview URL is synthetic. |
-| local (Docker) | PASS | 642 | 88 | |
-| agentOS | PASS | 1298 | 945 | Embedded VM. Has no preview URLs, so the adapter reports `unsupported` as designed. |
-| E2B | PASS | 713 | 234 | |
-| Daytona | PASS | 1411 | 416 | |
-| Upstash Box | PASS | 4363 | 168 | |
-| Boat | PASS | 1193 | 364 | |
-| Tenki | PASS | 491 | 435 | |
-| boxd | PASS | 2132 | 263 | |
-| Freestyle | PASS | 494 | 243 | |
-| Superserve | PASS | 313 | 211 | Uses template `sandbox-bench-node22-py311-1x1-pinned`. The default `superserve/node-22` has no python3 and fails with `unsupported`. |
-| Sandboxer | PASS | 360 | 217 | Default region (nearest to the caller). |
-| Vercel | SKIP | - | - | The only token on the server (`VERCEL_OIDC_TOKEN`) expired on 2026-10-22. |
+| memory | PASS | 136 | 2 | In-process. Preview URL is synthetic. |
+| local (Docker) | PASS | 447 | 261 | |
+| agentOS | PASS | 1456 | 985 | Embedded VM. Has no preview URLs, so the adapter reports `unsupported` as designed. |
+| E2B | PASS | 585 | 230 | |
+| Daytona | PASS | 1655 | 270 | |
+| Upstash Box | PASS | 4357 | 142 | |
+| Boat | PASS | 1405 | 398 | |
+| Tenki | PASS | 728 | 365 | |
+| boxd | PASS | 2198 | 246 | |
+| Freestyle | PASS | 547 | 209 | |
+| Superserve | PASS | 240 | 272 | Uses template `sandbox-bench-node22-py311-1x1-pinned`. The default `superserve/node-22` has no python3 and fails with `unsupported`. |
+| Sandboxer | PASS | 159 | 354 | Default region (nearest to the caller). |
+| Vercel | PASS | 432 | 431 | OIDC token pulled fresh with `vercel env pull` from the `sandbox-sdk-v2` project. |
 | Railway | SKIP | - | - | No `RAILWAY_API_TOKEN` or `RAILWAY_ENVIRONMENT_ID` on the server. |
 
-Leak check: 0 sandboxes left on every provider. After the run, `listSandboxes` and the adapter's native `provider.list` both returned 0 for the run label on every provider, so nothing needed reaping. An earlier run the same day (`sbx69-mvsr6nqw-fb574ffa`, before the Sandboxer merge) also passed with 0 left. That run was confirmed separately by a sweep of each cloud account for `smoke-run=sbx69-*`, `not_found` on reconnect to every destroyed ID, and `docker ps -a`.
+Leak check: 0 sandboxes left on every provider, Vercel included. After the run, `listSandboxes` and the adapter's native `provider.list` both returned 0 for the run label on every provider, so nothing needed reaping. An earlier run the same day (`sbx69-mvsr6nqw-fb574ffa`, before the Sandboxer merge) also passed with 0 left. That run was confirmed separately by a sweep of each cloud account for `smoke-run=sbx69-*`, `not_found` on reconnect to every destroyed ID, and `docker ps -a`.
 
 ### Adapter bug found
 

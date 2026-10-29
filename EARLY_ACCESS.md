@@ -1,6 +1,6 @@
 # Sandbox SDK 1.0 beta: early access
 
-`@opencoredev/sandbox-sdk` 1.0.0-beta.0 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
+`@opencoredev/sandbox-sdk` 1.0.0-beta.1 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
 
 This is a beta. The API can still change before 1.0.0. If something breaks or reads wrong, tell us; the last section says what to include.
 
@@ -119,13 +119,13 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 - agentOS has no preview URLs and no background processes (`start` fails with `unsupported`).
 - Memory runs a small fake shell (`echo`, `cat`, `printf`, `sleep`, `ls`, `printenv`) with no git and fake preview URLs. Use it for tests, not real workloads.
 - Local pulls `node:22-bookworm` on first use and supports `network: "none"` but not allow-lists.
-- Live smoke on 2026-10-28 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Vercel and Railway were not run because we had no valid credentials for them; their adapters pass the unit and contract tests but have not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
+- Live smoke on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
 
 ## Report issues
 
 Open an issue at https://github.com/opencoredev/sandbox-sdk/issues, or message Leo directly. Include:
 
-- the SDK version (`1.0.0-beta.0`) and your runtime (Node.js or Bun version),
+- the SDK version (`1.0.0-beta.1`) and your runtime (Node.js or Bun version),
 - the provider and the factory options you passed,
 - for a `SandboxError`: `code`, `message`, `hint`, `provider`, and `sandboxId`,
 - the smallest snippet that reproduces it.

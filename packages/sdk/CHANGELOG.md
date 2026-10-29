@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0-beta.1
+
+Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
+
+### Fixed
+
+- Provider SDKs load inside bundles. CommonJS peers imported from an esbuild, webpack or Next.js bundle no longer fail with `X is not a constructor`, and error mapping no longer depends on class names that minifiers rename. boxd transfers and Daytona file operations work in bundles too. An ESM bundle without a `require` shim fails with an `unavailable` error that says how to fix it.
+- Errors keep a redacted `cause`, and messages say what went wrong instead of "The provider reported provider". URLs, auth headers and credential-like values are scrubbed from every message and cause.
+- `boat()` and `sandboxer()` no longer put stdin or file contents in command strings. Both travel through the file API into a private `0600` staging file.
+- `connectSandbox()` no longer runs secret recovery on connect. It runs before the first command, so connecting to a stopped sandbox to destroy it works. Pass `recoverSecrets: false` to skip it.
+- `start()` reports a command that exits at once, or a missing `cwd`, as `failed` instead of `running`. A missing `cwd` is a normal failed run (exit 2) on every provider.
+- Railway command timeouts kill only the command instead of deleting the sandbox. Railway `list()` includes owned sandboxes that aren't running yet.
+- Tenki reports `/workspace` as a directory on a fresh sandbox. boxd and Freestyle report missing files as `file_not_found`. e2b reports exit 143 after `stop()`.
+- A local Docker sandbox restored from a snapshot no longer inherits the source's deadlines.
+- A Daytona create that times out deletes the half-created sandbox (with `@daytonaio/sdk` 0.227 or later). The Daytona peer range now accepts any 0.x from 0.225.
+- A thrown `SandboxError` prints as `SandboxError [code]: message`. `box.run()` returns a real `Promise` with `catch` and `finally`.
+
+### Added
+
+- `files.write(path, data, { mode })` and `files.write(record, { mode })` set POSIX permissions. Providers apply the mode natively where they can; the rest run `chmod` right after the write.
+- `box.snapshot({ expiresInMs })`. Providers that can't expire snapshots reject a nonzero value with `unsupported`.
+- `vercel()`: `persistent`, `timeoutMs` (per session), `image`, `runtime`, `source` (git or tarball), exact vCPU sizes, `networkPolicy`, `region`, `failoverRegions`, `networkId`, `mounts`, `snapshotExpiresInMs`, `keepLastSnapshots`, `deleteOrphanSnapshots` and `fetch`.
+- Native options for the other providers, including e2b `public`, `autoPause`, `autoResume`, `volumes`; Daytona `public`, `autoArchiveMs`, `autoDeleteMs`, `volumes`, `createTimeoutMs`; Upstash `keepAlive`, `browser`, `attachHeaders`; Tenki `pauseRetentionMs`, `volumes`, `workspaceId`, `previewTtlMs`; Railway `resources`; Boat and Sandboxer `ttlSeconds`, `snapshots`, `monitoring`, `org`, and Sandboxer `idleTimeoutMs`; local `platform`, `user`, `runtime`, `networkMode`, `mounts`, `pidsLimit`, `shmSizeMb`, capabilities, `securityOpt` and custom sizes; Superserve network policies, `secretBindings`, `previewAccess`, `autoPauseMs`, `autoDeleteMs`; boxd allow lists, `volumes`, `timeoutMs`, `idleTimeoutMs`; Freestyle `autoDeleteMs` and snapshot expiry; agentOS `software`, `mounts`, `limits`. Each provider page lists them.
+
 ## 1.0.0-beta.0
 
 First preview of the 1.0 rewrite, published under the `next` tag. The SDK was rewritten from scratch; most of the 0.2 surface changed. The API may still change before 1.0.0. The [upgrade guide](https://github.com/opencoredev/sandbox-sdk/blob/main/apps/docs/content/upgrade-from-0-2.mdx) maps every 0.2 call to its 1.0 form.

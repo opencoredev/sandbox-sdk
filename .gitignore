@@ -53,3 +53,6 @@ coverage
 .cache
 tmp
 temp
+
+# Temp dirs from tests/vercel-mock.ts
+.vercel-mock-*/
