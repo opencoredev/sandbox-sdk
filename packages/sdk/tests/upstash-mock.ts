@@ -23,6 +23,10 @@ export const state = {
   snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
   envWrites: [] as { path: string; mode: number; directoryMode: number }[],
+  /** How the next durable create boots: status reads that report "creating", then its outcome. */
+  boot: { polls: 0, outcome: "running" },
+  statusReads: 0,
+  deletes: [] as string[],
 };
 export class MockBox {
   readonly id = crypto.randomUUID();
@@ -248,6 +252,13 @@ export class MockBox {
       command: string,
     ): Promise<{ exitCode: number; stdout: string; stderr: string; result: string }>;
   };
+  /** Status reads left that still report "creating", then the outcome a boot reaches. */
+  booting = { polls: 0, outcome: "running" };
+  async getStatus() {
+    state.statusReads++;
+    if (this.booting.polls > 0) { this.booting.polls--; return { status: "creating" }; }
+    return { status: this.booting.outcome };
+  }
   async getPublicURL(port: number, settings?: { bearerToken?: boolean }) {
     return {
       url: `http://127.0.0.1:${this.port}/?port=${port}`,
@@ -316,6 +327,56 @@ export class MockEphemeralBox {
     return value;
   }
 }
+/** The adapter sends Box.create's and Box.fromSnapshot's request itself, then attaches with Box.get. Serve
+ * those routes from MockBox, turning the wire body back into the BoxConfig the native SDK would receive,
+ * so `state.creates` still records what reached Upstash. Other requests pass through. */
+type Wire = { snapshot_id?: string; labels?: string[]; size?: BoxSize; keep_alive?: boolean; init_command?: string; runtime?: BoxConfig["runtime"]; browser?: boolean; env_vars?: Record<string, string>; attach_headers?: BoxConfig["attachHeaders"]; network_policy?: { mode: "allow-all" | "deny-all" | "custom"; allowed_domains?: string[]; allowed_cidrs?: string[]; denied_cidrs?: string[] } };
+function configOf(wire: Wire, apiKey: string | null): BoxConfig {
+  const policy = wire.network_policy;
+  return {
+    ...(apiKey === null ? {} : { apiKey }),
+    ...(wire.labels ? { labels: wire.labels } : {}),
+    ...(wire.size ? { size: wire.size } : {}),
+    ...(wire.keep_alive ? { keepAlive: true } : {}),
+    ...(wire.init_command === undefined ? {} : { initCommand: wire.init_command }),
+    ...(wire.runtime ? { runtime: wire.runtime } : {}),
+    ...(wire.browser ? { browser: true } : {}),
+    ...(wire.env_vars ? { env: wire.env_vars } : {}),
+    ...(wire.attach_headers ? { attachHeaders: wire.attach_headers } : {}),
+    ...(policy === undefined ? {} : {
+      networkPolicy: policy.mode === "custom"
+        ? { mode: "custom", ...(policy.allowed_domains ? { allowedDomains: policy.allowed_domains } : {}), ...(policy.allowed_cidrs ? { allowedCidrs: policy.allowed_cidrs } : {}), ...(policy.denied_cidrs ? { deniedCidrs: policy.denied_cidrs } : {}) }
+        : { mode: policy.mode },
+    }),
+  };
+}
+const upstream = globalThis.fetch;
+globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input instanceof Request ? input.url : String(input);
+  const method = init?.method ?? "GET";
+  const create = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box(\/from-snapshot)?$/.exec(url);
+  if (create && method === "POST") {
+    const wire: Wire = JSON.parse(String(init?.body));
+    const config = configOf(wire, new Headers(init?.headers).get("X-Box-Api-Key"));
+    let box: MockBox;
+    try { box = create[1] ? await MockBox.fromSnapshot(wire.snapshot_id ?? "", config) : await MockBox.create(config); }
+    catch (error) {
+      const status = error && typeof error === "object" && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
+      return Response.json({ error: error instanceof Error ? error.message : "failed" }, { status });
+    }
+    box.booting = { ...state.boot };
+    return Response.json({ ...box.data, status: box.booting.polls > 0 ? "creating" : box.booting.outcome });
+  }
+  const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(url)?.[1];
+  if (id !== undefined && method === "DELETE") {
+    state.deletes.push(decodeURIComponent(id));
+    const box = state.boxes.get(decodeURIComponent(id));
+    if (!box) return Response.json({ error: "not found" }, { status: 404 });
+    await box.delete();
+    return Response.json({});
+  }
+  return upstream(input, init);
+}, upstream);
 export async function cleanup() {
   for (const box of state.boxes.values()) await box.delete();
   for (const root of state.snapshots.values()) await fs.rm(root, { recursive: true, force: true });
@@ -325,4 +386,7 @@ export async function cleanup() {
   state.ephemeralCreates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
+  state.boot = { polls: 0, outcome: "running" };
+  state.statusReads = 0;
+  state.deletes.length = 0;
 }

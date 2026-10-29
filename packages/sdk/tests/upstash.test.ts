@@ -22,7 +22,7 @@ beforeEach(() => {
     if (String(input) === "https://us-east-1.box.upstash.com/v2/box/snapshots")
       return Promise.resolve(new Response(JSON.stringify({ snapshots: [...state.snapshotMetadata.values()] })));
     const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(String(input))?.[1];
-    if (id !== undefined) {
+    if (id !== undefined && (init?.method ?? "GET") === "GET") {
       const box = state.boxes.get(decodeURIComponent(id));
       return Promise.resolve(box ? new Response(JSON.stringify(box.data)) : new Response("{}", { status: 404 }));
     }

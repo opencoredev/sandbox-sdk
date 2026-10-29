@@ -140,6 +140,26 @@ function network(input: CreateInput["network"]): NetworkPolicy {
     unsupported("Network allow entries must be DNS hostnames");
   return { mode: "custom", allowedDomains: input.allow };
 }
+/** The wire form Box.create sends for a network policy. */
+function wirePolicy(policy: NetworkPolicy) {
+  return policy.mode === "custom"
+    ? { mode: policy.mode, allowed_domains: policy.allowedDomains, allowed_cidrs: policy.allowedCidrs, denied_cidrs: policy.deniedCidrs }
+    : { mode: policy.mode };
+}
+/** A failed response as the native SDK reports it: the body's `error`, and the status for upstashError. */
+async function httpError(response: Response) {
+  let message = `Request failed with status ${response.status}`;
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === "object" && "error" in body && typeof body.error === "string") message = body.error;
+  } catch {}
+  return Object.assign(new Error(message), { statusCode: response.status });
+}
+function createdBox(value: unknown): { id: string; status: string } {
+  if (!value || typeof value !== "object" || !("id" in value) || typeof value.id !== "string" || !value.id || !("status" in value) || typeof value.status !== "string")
+    throw new SandboxError("Upstash returned a created box without an ID or status. Inspect the account before retrying.", { code: "outcome_unknown", provider: "upstash" });
+  return { id: value.id, status: value.status };
+}
 
 export function upstash(options: UpstashEphemeralOptions): UpstashEphemeralProvider;
 export function upstash(options?: UpstashBoxOptions): UpstashProvider;
@@ -179,6 +199,55 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     const { Box, EphemeralBox } = await (module ??= loadPeer("@upstash/box", "upstash", () => import("@upstash/box")));
     return { Box, EphemeralBox, config };
   };
+  const baseUrlOf = (config: { baseUrl?: string }) => (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
+  /**
+   * Box.create and Box.fromSnapshot send this request, then poll every 2 s. A
+   * box is usually ready about 1 s after it, so poll its status at 200 ms. The
+   * handle comes from Box.get, with the native SDK's headers, while it boots.
+   */
+  async function createDurable(from: string | undefined, config: BoxConfig & { apiKey: string }, signal?: AbortSignal): Promise<Box> {
+    const { Box } = await sdk();
+    const baseUrl = baseUrlOf(config);
+    const headers = { "X-Box-Api-Key": config.apiKey };
+    const body = {
+      ...(from === undefined ? {} : { snapshot_id: from }),
+      ...(config.labels?.length ? { labels: config.labels } : {}),
+      ...(config.size ? { size: config.size } : {}),
+      ...(config.keepAlive ? { keep_alive: true } : {}),
+      ...(config.initCommand === undefined ? {} : { init_command: config.initCommand }),
+      ...(config.runtime ? { runtime: config.runtime } : {}),
+      // Box.fromSnapshot sends no browser flag.
+      ...(from === undefined && config.browser ? { browser: true } : {}),
+      ...(config.env ? { env_vars: config.env } : {}),
+      ...(config.attachHeaders ? { attach_headers: config.attachHeaders } : {}),
+      ...(config.networkPolicy ? { network_policy: wirePolicy(config.networkPolicy) } : {}),
+    };
+    // No caller signal: an aborted request could still allocate a box, and only the response names it.
+    const response = await fetch(`${baseUrl}/v2/box${from === undefined ? "" : "/from-snapshot"}`, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!response.ok) throw await httpError(response);
+    const created = createdBox(await response.json());
+    try {
+      const value = await Box.get(created.id, { apiKey: config.apiKey, baseUrl: config.baseUrl, enableTelemetry: config.enableTelemetry, timeout: config.timeout });
+      const end = Date.now() + 300_000;
+      let status = created.status;
+      while (status === "creating") {
+        if (signal?.aborted) throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", { code: "aborted", provider: "upstash" });
+        if (Date.now() >= end) throw new Error(from === undefined ? "Box creation timed out" : "Box creation from snapshot timed out");
+        await new Promise(resolve => setTimeout(resolve, 200));
+        // Like the native poll, ride out a failed status read, unless it can never succeed.
+        try { status = (await value.getStatus()).status; }
+        catch (error) { if (["auth", "not_found"].includes(upstashError(error, created.id).code)) throw error; }
+      }
+      if (status === "error") throw new Error(from === undefined ? "Box creation failed" : "Box creation from snapshot failed");
+      return value;
+    } catch (error) {
+      // Box.create would leave a box that never booted in place. This create holds its ID, so remove it.
+      await fetch(`${baseUrl}/v2/box/${encodeURIComponent(created.id)}`, { method: "DELETE", headers }).catch(() => {});
+      throw error;
+    }
+  }
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = "request"): Promise<T> {
     try {
       return await action();
@@ -205,7 +274,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
   };
   async function snapshotSize(id: string): Promise<BoxSize> {
     const config = connection();
-    const baseUrl = (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, "");
+    const baseUrl = baseUrlOf(config);
     // The native SDK only lists snapshots per source box. The account endpoint
     // also covers snapshots whose source has been deleted, preserving native IDs.
     const response = await fetch(`${baseUrl}/v2/box/snapshots`, {
@@ -272,7 +341,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
         const durable = options.ephemeral ? {} : { ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }), ...(options.browser === undefined ? {} : { browser: options.browser }) } satisfies BoxConfig;
         const createdAt = Date.now();
         const created = ttl === undefined
-          ? input.from === undefined ? await Box.create({ ...params, ...durable, initCommand }) : await Box.fromSnapshot(input.from, { ...params, ...durable, initCommand })
+          ? await createDurable(input.from, { ...params, ...durable, initCommand }, input.signal)
           : input.from === undefined ? await EphemeralBox.create({ ...params, ttl }) : await EphemeralBox.fromSnapshot(input.from, { ...params, ttl });
         try {
           if (input.signal?.aborted)
@@ -289,7 +358,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
               size: params.size ?? "small", labels: [marker],
               network_policy: { mode: policy.mode, ...("allowedDomains" in policy ? { allowed_domains: policy.allowedDomains } : {}) },
             }, {
-              baseUrl: (config.baseUrl ?? process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com").replace(/\/$/, ""),
+              baseUrl: baseUrlOf(config),
               headers: { "X-Box-Api-Key": config.apiKey }, timeout: options.requestTimeoutMs ?? 600_000, debug: false,
             }));
           }
