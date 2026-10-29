@@ -5,7 +5,9 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type * as Core from "@opencoredev/sandbox-sdk";
-import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import type { Boxd } from "../../packages/sdk/node_modules/@boxd-sh/sdk";
+import type { TenkiSandbox } from "../../packages/sdk/node_modules/@tenkicloud/sandbox";
 
 type Sdk = typeof Core;
 
@@ -13,7 +15,7 @@ type Sandbox = Awaited<ReturnType<Sdk["createSandbox"]>>;
 
 // write is absent when the native SDK cannot reach /workspace (Tenki confines writeFile to its workdir).
 interface Floor {
-  exec(command?: string): Promise<unknown>;
+  exec(command?: string): Promise<void>;
   write?(path: string, data: Uint8Array): Promise<void>;
 }
 
@@ -48,7 +50,7 @@ const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
 
-const nativePackages: Record<string, string> = {
+const nativePackages = {
   e2b: "e2b",
   daytona: "@daytonaio/sdk",
   upstash: "@upstash/box",
@@ -56,7 +58,14 @@ const nativePackages: Record<string, string> = {
   freestyle: "freestyle",
   tenki: "@tenkicloud/sandbox",
   superserve: "@superserve/sdk",
-};
+} as const;
+
+/** A provider this script can measure. */
+type ProviderName = keyof typeof nativePackages;
+
+function isProviderName(name: string): name is ProviderName {
+  return Object.hasOwn(nativePackages, name);
+}
 
 const sdk: Sdk = await import(moduleUrl("index.js"));
 const timeoutMs = 60_000;
@@ -74,7 +83,7 @@ const templates = new Map(
 );
 
 // Each entry types native() through the adapter module's own Provider<Native>.
-const providers: Record<string, () => Promise<Loaded>> = {
+const providers = {
   async e2b() {
     const m: typeof import("@opencoredev/sandbox-sdk/e2b") = await import(
       moduleUrl("providers/e2b/index.js")
@@ -243,24 +252,25 @@ const providers: Record<string, () => Promise<Loaded>> = {
       },
     };
   },
-};
+} satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
   id: string;
-  exec(): Promise<unknown>;
-  destroy(): Promise<unknown>;
+  exec(): Promise<void>;
+  destroy(): Promise<void>;
   exists(): Promise<boolean>;
 }
 
-const nativeClients: {
-  boxd?: InstanceType<(typeof import("../../packages/sdk/node_modules/@boxd-sh/sdk"))["Boxd"]>;
-  tenki?: InstanceType<
-    (typeof import("../../packages/sdk/node_modules/@tenkicloud/sandbox"))["TenkiSandbox"]
-  >;
-} = {};
+/** Native clients reused across raw creates, as the adapters reuse theirs. */
+interface NativeClients {
+  boxd?: Boxd;
+  tenki?: TenkiSandbox;
+}
+
+const nativeClients: NativeClients = {};
 
 // Modules resolve from the selected SDK build, not from the harness checkout.
-async function rawCreate(name: string, admit: (box: NativeBox) => void): Promise<NativeBox> {
+async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): Promise<NativeBox> {
   if (name === "e2b") {
     const m: typeof import("../../packages/sdk/node_modules/e2b") = await import(nativeUrl("e2b"));
 
@@ -275,7 +285,7 @@ async function rawCreate(name: string, admit: (box: NativeBox) => void): Promise
       exec: async () => {
         await box.commands.run("true", { user: "root" });
       },
-      destroy: () => box.kill(),
+      destroy: () => discard(box.kill()),
       exists: async () => {
         try {
           await box.getInfo();
@@ -480,10 +490,8 @@ async function rawCreate(name: string, admit: (box: NativeBox) => void): Promise
   throw new Error(`Unknown provider ${name}`);
 }
 
-async function initCost(name: string): Promise<OpResult> {
+async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];
-
-  if (!pkg) throw new Error(`Unknown provider ${name}`);
 
   const sample = async (ours: boolean) => {
     const code = ours
@@ -547,10 +555,16 @@ function stats(samples: readonly number[]): Stats | null {
 const delta = (a: Stats | null, b: Stats | null) =>
   a && b ? Math.round((a.median - b.median) * 10) / 10 : null;
 
-const message = (error: unknown) =>
-  (error instanceof Error ? error.message : String(error)).slice(0, 300);
+/** A caught failure as report text. */
+const message = (cause: unknown) =>
+  (cause instanceof Error ? cause.message : String(cause)).slice(0, 300);
 
-async function time(action: () => Promise<unknown>) {
+/** Waits for an operation whose result the timing does not use. */
+async function discard<T>(result: PromiseLike<T>): Promise<void> {
+  await result;
+}
+
+async function time(action: () => Promise<void>) {
   const start = performance.now();
   await action();
 
@@ -564,9 +578,12 @@ interface OpResult {
 }
 
 interface Pair {
-  sdk(): Promise<unknown>;
-  baseline(): Promise<unknown>;
+  sdk(): Promise<void>;
+  baseline(): Promise<void>;
 }
+
+/** The operations measured on the first SDK sandbox. */
+type OpName = "run" | "write" | "read" | "edit" | "list" | "grep";
 
 // One unrecorded warm-up pair, then N recorded pairs with the call order flipped every iteration.
 async function measurePair(pair: Pair): Promise<OpResult> {
@@ -632,15 +649,18 @@ async function adapterOps(box: Sandbox, provider: Provider) {
     return { find: from, replace: token };
   };
 
-  const ops: Record<string, Pair> = {
+  const ops = {
     run: { sdk: () => checked(box.run("true")), baseline: () => exec("true") },
     write: {
       sdk: () => box.files.write(path, text),
       baseline: () => provider.files.write(id, path, bytes),
     },
-    read: { sdk: () => box.files.read(path), baseline: () => provider.files.read(id, path) },
+    read: {
+      sdk: () => discard(box.files.read(path)),
+      baseline: () => discard(provider.files.read(id, path)),
+    },
     edit: {
-      sdk: () => box.files.edit(path, swap()),
+      sdk: () => discard(box.files.edit(path, swap())),
       baseline: async () => {
         const { find, replace } = swap();
         const current = new TextDecoder().decode(await provider.files.read(id, path));
@@ -654,14 +674,14 @@ async function adapterOps(box: Sandbox, provider: Provider) {
       },
     },
     list: {
-      sdk: () => box.files.list("/workspace"),
-      baseline: () => provider.files.list(id, "/workspace"),
+      sdk: () => discard(box.files.list("/workspace")),
+      baseline: () => discard(provider.files.list(id, "/workspace")),
     },
     grep: {
       sdk: () => checked(box.run(`grep hello ${path}`)),
       baseline: () => exec(`grep hello ${path}`),
     },
-  };
+  } satisfies Record<OpName, Pair>;
 
   const results: Record<string, OpResult> = {};
 
@@ -698,12 +718,15 @@ async function floorOps(box: Sandbox, floor: Floor) {
     return { find, replace: token };
   };
 
-  const pairs: Record<string, Pair> = {
+  const pairs = {
     run: { sdk: () => checked(box.run("true")), baseline: () => floor.exec() },
     write: { sdk: () => box.files.write(path, text), baseline: () => write(path, bytes) },
-    read: { sdk: () => box.files.read(path), baseline: () => floor.exec(`cat ${quote(path)}`) },
+    read: {
+      sdk: () => discard(box.files.read(path)),
+      baseline: () => floor.exec(`cat ${quote(path)}`),
+    },
     edit: {
-      sdk: () => box.files.edit(path, swap()),
+      sdk: () => discard(box.files.edit(path, swap())),
       baseline: () => {
         const { find, replace } = swap();
 
@@ -711,14 +734,14 @@ async function floorOps(box: Sandbox, floor: Floor) {
       },
     },
     list: {
-      sdk: () => box.files.list("/workspace"),
+      sdk: () => discard(box.files.list("/workspace")),
       baseline: () => floor.exec("ls -la /workspace"),
     },
     grep: {
       sdk: () => checked(box.run(`grep hello ${path}`)),
       baseline: () => floor.exec(`grep hello ${quote(path)}`),
     },
-  };
+  } satisfies Record<OpName, Pair>;
 
   for (const [name, pair] of Object.entries(pairs)) {
     if (name === "edit") {
@@ -791,9 +814,7 @@ async function measureProvider(name: string): Promise<ProviderReport> {
     leftover: null,
   };
 
-  const load = providers[name];
-
-  if (!load) {
+  if (!isProviderName(name)) {
     report.error = "Unknown provider";
 
     return report;
@@ -802,7 +823,7 @@ async function measureProvider(name: string): Promise<ProviderReport> {
   let loaded: Loaded;
 
   try {
-    loaded = await load();
+    loaded = await providers[name]();
   } catch (error) {
     report.error = `load: ${message(error)}`;
 
@@ -822,22 +843,20 @@ async function measureProvider(name: string): Promise<ProviderReport> {
   const nativeBoxes: NativeBox[] = [];
   let createMs = 0;
 
-  const tracked = new Proxy(provider, {
-    get(target, key) {
-      if (key === "create")
-        return async (input: CreateInput) => {
-          const start = performance.now();
+  // Adapters are plain objects whose methods close over their own state, so a copy
+  // with a timed create behaves like the provider itself.
+  const tracked: Provider = {
+    ...provider,
+    async create(input) {
+      const start = performance.now();
 
-          try {
-            return await target.create(input);
-          } finally {
-            createMs = performance.now() - start;
-          }
-        };
-
-      return Reflect.get(target, key, target);
+      try {
+        return await provider.create(input);
+      } finally {
+        createMs = performance.now() - start;
+      }
     },
-  });
+  };
 
   const adapter = report.samples.adapter;
   const floor = report.samples.floor;
@@ -1016,20 +1035,30 @@ async function destroyNative(box: NativeBox): Promise<void> {
   if (!(await waitAbsent(box))) throw new Error("Native cleanup unverified; stopping creates");
 }
 
+/** A native "not found": HTTP 404, gRPC NOT_FOUND (5), or a not_found code. */
+type GoneError =
+  | { status: 404 }
+  | { statusCode: 404 }
+  | { grpcCode: 5 }
+  | { code: "not_found" | 5 };
+
+function isGoneError(cause: unknown): cause is GoneError {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    (("status" in cause && cause.status === 404) ||
+      ("statusCode" in cause && cause.statusCode === 404) ||
+      ("grpcCode" in cause && cause.grpcCode === 5) ||
+      ("code" in cause && (cause.code === "not_found" || cause.code === 5)))
+  );
+}
+
 async function waitAbsent(box: NativeBox): Promise<boolean> {
   for (let attempt = 0; ; attempt++) {
     try {
       if (!(await box.exists())) return true;
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        (("status" in error && error.status === 404) ||
-          ("statusCode" in error && error.statusCode === 404) ||
-          ("grpcCode" in error && error.grpcCode === 5) ||
-          ("code" in error && (error.code === "not_found" || error.code === 5)))
-      )
-        return true;
+      if (isGoneError(error)) return true;
       throw error;
     }
 
@@ -1038,7 +1067,7 @@ async function waitAbsent(box: NativeBox): Promise<boolean> {
   }
 }
 
-const live = new Map<string, () => Promise<unknown>>();
+const live = new Map<string, () => Promise<void>>();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => {
