@@ -50,6 +50,7 @@ Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't e
 import { connectSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
+const id = "sbx_example"; // the ID you stored at creation
 const box = await connectSandbox(vercel(), id);
 await box.destroy();
 ```
