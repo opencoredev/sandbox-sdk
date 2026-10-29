@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Sandbox } from "@daytonaio/sdk";
+import type { DaytonaBox } from "./native.js";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
 import { daytonaError } from "./errors.js";
 import { bufferedExecute } from "./buffered.js";
@@ -37,7 +37,7 @@ export const workspaceCommand =
   'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace';
 
 export async function sessionProcess(
-  box: Sandbox,
+  box: DaytonaBox,
   input: Omit<ExecInput, "timeoutMs">,
   timeoutMs?: number,
   prepare = workspaceCommand,
@@ -82,6 +82,7 @@ export async function sessionProcess(
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);
 
+    // A leftover activity marker only delays idle detection; it must not fail the command.
     if (input.activityPath && !activityFinished)
       await box.fs.deleteFile(input.activityPath, true).catch(() => {});
 
@@ -293,7 +294,7 @@ export async function sessionProcess(
           if (logsError !== undefined && !cancelled) throw logsError;
 
           if (cancelled && pid) await signal("KILL");
-          let status: Awaited<ReturnType<Sandbox["process"]["getSessionCommand"]>>;
+          let status: Awaited<ReturnType<DaytonaBox["process"]["getSessionCommand"]>>;
 
           try {
             status = await box.process.getSessionCommand(session, id);
@@ -373,7 +374,7 @@ export async function sessionProcess(
 }
 
 export async function execute(
-  box: Sandbox,
+  box: DaytonaBox,
   input: ExecInput & { streaming?: boolean },
   prepare = workspaceCommand,
   prepared?: () => void,

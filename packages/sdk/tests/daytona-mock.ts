@@ -5,8 +5,9 @@
 import { createReadStream, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
+import type { Readable } from "node:stream";
 import type {
   DaytonaConfig,
   CreateSandboxFromImageParams,
@@ -14,6 +15,7 @@ import type {
   Sandbox,
 } from "@daytonaio/sdk";
 import type { OutputChunk } from "../src/provider.js";
+import { createDaytonaProvider, type DaytonaOptions } from "../src/providers/daytona/provider.js";
 
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 
@@ -27,13 +29,29 @@ type Command = {
   pid?: number;
 };
 
-export const mockState = {
-  configs: [] as DaytonaConfig[],
-  creates: [] as Params[],
-  createOptions: [] as ({ timeout?: number } | undefined)[],
-  permissions: [] as { path: string; mode?: string }[],
-  boxes: new Map<string, MockSandbox>(),
-  snapshots: new Map<string, string>(),
+interface MockState {
+  configs: DaytonaConfig[];
+  creates: Params[];
+  createOptions: ({ timeout?: number } | undefined)[];
+  permissions: { path: string; mode?: string }[];
+  boxes: Map<string, MockSandbox>;
+  snapshots: Map<string, string>;
+  launchDelayMs: number;
+  failStatus: boolean;
+  failLogs: boolean;
+}
+
+function isAddressInfo(address: AddressInfo | string | null): address is AddressInfo {
+  return address !== null && typeof address !== "string";
+}
+
+export const mockState: MockState = {
+  configs: [],
+  creates: [],
+  createOptions: [],
+  permissions: [],
+  boxes: new Map(),
+  snapshots: new Map(),
   launchDelayMs: 0,
   failStatus: false,
   failLogs: false,
@@ -61,7 +79,7 @@ export class MockSandbox {
     await new Promise<void>((resolve) => socket.listen(0, "127.0.0.1", resolve));
     const address = socket.address();
 
-    if (!address || typeof address === "string") throw new Error("No test port");
+    if (!isAddressInfo(address)) throw new Error("No test port");
     await new Promise<void>((resolve, reject) =>
       socket.close((error) => (error ? reject(error) : resolve())),
     );
@@ -129,12 +147,12 @@ export class MockSandbox {
     downloadFileStream: async (
       path: string,
       _options?: number | Parameters<Sandbox["fs"]["downloadFileStream"]>[1],
-    ) => createReadStream(this.mapped(path)),
+    ): Promise<Readable> => createReadStream(this.mapped(path)),
     // Like the SDK, a string source is a local path, read before anything is sent.
     uploadFiles: async (files: { source: Buffer | string; destination: string }[]) => {
       const payloads = await Promise.all(
         files.map(async (file) =>
-          typeof file.source === "string" ? fs.readFile(file.source) : file.source,
+          Buffer.isBuffer(file.source) ? file.source : fs.readFile(file.source),
         ),
       );
 
@@ -145,10 +163,7 @@ export class MockSandbox {
     },
     uploadFile: async (data: Buffer | string, path: string) => {
       await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true });
-      await fs.writeFile(
-        this.mapped(path),
-        typeof data === "string" ? await fs.readFile(data) : data,
-      );
+      await fs.writeFile(this.mapped(path), Buffer.isBuffer(data) ? data : await fs.readFile(data));
     },
     createFolder: async (path: string, _mode: string) => {
       await fs.mkdir(this.mapped(path), { recursive: true });
@@ -245,7 +260,7 @@ export class MockSandbox {
     executeSessionCommand: async (
       id: string,
       request: { command: string; runAsync?: boolean; suppressInputEcho?: boolean },
-    ) => {
+    ): Promise<{ cmdId: string }> => {
       if (mockState.launchDelayMs)
         await new Promise((resolve) => setTimeout(resolve, mockState.launchDelayMs));
       const commands = this.sessions.get(id);
@@ -384,4 +399,9 @@ export async function cleanupMock() {
   mockState.launchDelayMs = 0;
   mockState.failLogs = false;
   mockState.failStatus = false;
+}
+
+/** The Daytona adapter with `client` (by default this fixture) in place of the SDK's Daytona client. */
+export function daytona(options: DaytonaOptions = {}, client: typeof MockDaytona = MockDaytona) {
+  return createDaytonaProvider(options, async () => ({ Daytona: client }));
 }

@@ -1,30 +1,36 @@
-import { describe, expect, it, vi } from "vitest";
-import { daytona } from "../src/providers/daytona/index.js";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { cleanupMock, daytona as mockDaytona, MockDaytona, MockSandbox } from "./daytona-mock.js";
+import type { DaytonaOptions } from "../src/providers/daytona/provider.js";
+import { daytonaError } from "../src/providers/daytona/errors.js";
 
-const nativeFailure = vi.hoisted(() =>
-  Object.assign(new Error("private body"), {
-    statusCode: 400,
-    code: "QUOTA_EXCEEDED",
-    headers: { "x-request-id": "3e01af1641ce491a" },
-  }),
+const nativeFailure = Object.assign(new Error("private body"), {
+  statusCode: 400,
+  code: "QUOTA_EXCEEDED",
+  headers: { "x-request-id": "3e01af1641ce491a" },
+});
+
+// A sandbox whose snapshot fails natively and which has no process transport.
+const failing = await MockSandbox.create({});
+
+vi.spyOn(failing, "createSnapshot").mockRejectedValue(nativeFailure);
+
+vi.spyOn(failing.process, "executeCommand").mockRejectedValue(
+  new TypeError("No process transport"),
 );
 
-vi.mock("@daytonaio/sdk", () => ({
-  Daytona: class {
-    async create() {
-      throw nativeFailure;
-    }
-    async get() {
-      return {
-        async createSnapshot() {
-          throw nativeFailure;
-        },
-      };
-    }
-  },
-}));
+/** A Daytona client whose create fails natively and whose get returns the failing sandbox. */
+class FailingDaytona extends MockDaytona {
+  override async create(): Promise<MockSandbox> {
+    throw nativeFailure;
+  }
+  override async get() {
+    return failing;
+  }
+}
 
-import { daytonaError } from "../src/providers/daytona/errors.js";
+const daytona = (options: DaytonaOptions) => mockDaytona(options, FailingDaytona);
+
+afterAll(cleanupMock);
 
 describe("Daytona error evidence", () => {
   it("preserves bounded native attribution through serialization", () => {

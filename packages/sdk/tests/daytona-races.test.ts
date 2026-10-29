@@ -1,11 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createSandbox } from "../src/index.js";
-import { daytona } from "../src/providers/daytona/index.js";
-import { cleanupMock, MockDaytona, mockState } from "./daytona-mock.js";
-
-vi.mock("@daytonaio/sdk", async () => ({
-  Daytona: (await import("./daytona-mock.js")).MockDaytona,
-}));
+import { cleanupMock, MockDaytona, mockState, daytona } from "./daytona-mock.js";
 
 afterEach(async () => {
   vi.restoreAllMocks();

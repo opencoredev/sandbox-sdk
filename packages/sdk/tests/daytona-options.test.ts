@@ -1,13 +1,8 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, test, expect, vi } from "vitest";
-import { cleanupMock, mockState, MockSandbox } from "./daytona-mock.js";
-import { daytona } from "../src/providers/daytona/index.js";
+import { cleanupMock, mockState, MockSandbox, daytona } from "./daytona-mock.js";
 import { createSandbox } from "../src/index.js";
-
-vi.mock("@daytonaio/sdk", async () => ({
-  Daytona: (await import("./daytona-mock.js")).MockDaytona,
-}));
 
 vi.setConfig({ testTimeout: 30_000 });
 

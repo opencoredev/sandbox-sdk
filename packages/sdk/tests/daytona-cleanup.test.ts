@@ -1,11 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createSandbox, listSandboxes } from "../src/index.js";
-import { daytona } from "../src/providers/daytona/index.js";
-import { cleanupMock, MockDaytona, MockSandbox, mockState } from "./daytona-mock.js";
-
-vi.mock("@daytonaio/sdk", async () => ({
-  Daytona: (await import("./daytona-mock.js")).MockDaytona,
-}));
+import { cleanupMock, MockDaytona, MockSandbox, mockState, daytona } from "./daytona-mock.js";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -32,7 +27,7 @@ test("a create timeout deletes the sandbox Daytona names on the error and report
 
   const error = await createSandbox(daytona({ apiKey: "offline" }), {
     labels: { app: "timeout" },
-  }).catch((error: unknown) => error);
+  }).catch((cause: unknown) => cause);
 
   expect(error).toMatchObject({ code: "timeout", retryable: true });
   expect(started).toBeDefined();
@@ -58,7 +53,7 @@ test("cleanup that hangs or fails does not hold the timeout back", async () => {
   const provider = daytona({ apiKey: "offline" });
   await provider.list({}); // Load the client first, so only the cleanup bound is left on the clock.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const pending = provider.create({ labels: {} }).catch((error: unknown) => error);
+  const pending = provider.create({ labels: {} }).catch((cause: unknown) => cause);
   await vi.advanceTimersByTimeAsync(10_000);
   expect(await pending).toMatchObject({ code: "timeout" });
   expect(get).toHaveBeenCalledWith("stuck-id");
