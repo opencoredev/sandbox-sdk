@@ -15,13 +15,14 @@ export type RailwayErrorClasses = Pick<
   | "SandboxTimeoutError"
 >;
 
-/** The classes from the Railway SDK the adapter loaded; unset until it loads. The SDK sets name from
- * new.target.name, which a bundler renames along with the class, so the class objects are the stable match. */
-let loaded: RailwayErrorClasses | undefined;
+/** Every copy of the Railway SDK's error classes an adapter has loaded. The SDK sets name from
+ * new.target.name, which a bundler renames along with the class, so the class objects are the stable
+ * match. Each factory can load its own copy, and an error from any of them is a Railway error. */
+const loaded = new Set<RailwayErrorClasses>();
 
-/** Match errors against the classes of the Railway SDK the adapter just loaded. */
+/** Match errors against the classes of a Railway SDK copy an adapter loaded. */
 export function rememberRailwayErrors(classes: RailwayErrorClasses): void {
-  loaded = classes;
+  loaded.add(classes);
 }
 
 /** Railway messages can include tokens and output. Only an unrecognized failure without a
@@ -34,7 +35,7 @@ export function railwayError(cause: unknown, sandboxId?: string): SandboxError {
 
   // Match the classes the adapter loaded, most specific first; the name check covers callers that never loaded the peer.
   const is = (type: keyof RailwayErrorClasses) =>
-    (loaded !== undefined && cause instanceof loaded[type]) || name === type;
+    [...loaded].some((classes) => cause instanceof classes[type]) || name === type;
 
   let code: ErrorCode = "provider";
 

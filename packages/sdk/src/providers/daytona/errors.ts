@@ -30,13 +30,14 @@ export type DaytonaErrorClasses = Pick<
   | "DaytonaInvalidArgumentError"
 >;
 
-/** The classes from the Daytona SDK the adapter loaded; unset until it loads. The SDK names errors after
- * new.target.name, which bundlers rename with the class, so the class objects are the stable match. */
-let loaded: DaytonaErrorClasses | undefined;
+/** Every copy of the Daytona SDK's error classes an adapter has loaded. The SDK names errors after
+ * new.target.name, which bundlers rename with the class, so the class objects are the stable match.
+ * Each factory can load its own copy, and an error from any of them is a Daytona error. */
+const loaded = new Set<DaytonaErrorClasses>();
 
-/** Match errors against the classes of the Daytona SDK the adapter just loaded. */
+/** Match errors against the classes of a Daytona SDK copy an adapter loaded. */
 export function rememberDaytonaErrors(classes: DaytonaErrorClasses): void {
-  loaded = classes;
+  loaded.add(classes);
 }
 
 /** The module named by the Daytona SDK's own "Module "x" is not available" / "didn't pass import validation" error, if this is one. */
@@ -65,7 +66,7 @@ export function daytonaError(
   const name = native.name;
 
   const is = (type: keyof DaytonaErrorClasses) =>
-    loaded !== undefined && cause instanceof loaded[type];
+    [...loaded].some((classes) => cause instanceof classes[type]);
 
   const missingFile =
     file &&
