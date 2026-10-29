@@ -3,11 +3,38 @@ title: Sandbox API
 description: Every export of @opencoredev/sandbox-sdk and every member of a sandbox handle, with parameters, defaults, and return types.
 ---
 
-```package-install
-npm i @opencoredev/sandbox-sdk
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next
 ```
 
-The root entry exports `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types on this page. Providers live on subpaths: `/local`, `/e2b`, `/vercel`, `/daytona`, `/memory`. Agent tools live on `/ai`, `/mastra`, and `/openai`. The adapter contract is on `/provider` and the conformance suite on `/testing`.
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+</Tabs>
+
+The root entry exports `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types on this page. Providers live on subpaths: `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, and `/memory`. Agent tools live on `/ai`, `/mastra`, and `/openai`, and the framework-neutral tool schemas on `/tools`. The adapter contract is on `/provider` and the conformance suite on `/testing`.
 
 ## `createSandbox(provider, options?)`
 
@@ -103,11 +130,11 @@ Returns a `RunHandle`: await it for a `RunResult`, or iterate it for `{ stream, 
 
 A tagged template that shell-escapes every interpolated value and returns a `RunHandle`. Chain `.cwd(path)`, `.env(vars)`, and `.timeout(ms)`.
 
-### `start(command, options)`
+### `start(command, options?)`
 
 Starts a background process and resolves when it is ready. Guide: [Processes and previews](/concepts/processes-and-previews).
 
-- `name: string`: required, unique per sandbox.
+- `name?: string`: unique per sandbox. Defaults to a stable name derived from the command, such as `npm-1a2b3c4d`, so the same command always maps to the same process. The handle's `name` holds it.
 - `cwd?: string`
 - `env?: Record<string, string>`
 - `ready?: { port } | { http: { port, path? } } | { log: RegExp }`

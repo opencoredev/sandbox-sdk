@@ -7,9 +7,36 @@ Hono routes run on your server, so they can create sandboxes and hold provider k
 
 ## Install
 
-```package-install
-npm i @opencoredev/sandbox-sdk hono e2b
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next hono e2b
 ```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next hono e2b
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next hono e2b
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next hono e2b
+```
+
+  </Tab>
+</Tabs>
 
 This page uses [E2B](/providers/e2b), which reads `E2B_API_KEY`. Any provider works the same way. Run the app on Node 22+ or Bun 1.3+. Edge runtimes can't load the provider SDKs.
 
