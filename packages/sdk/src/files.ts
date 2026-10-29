@@ -69,7 +69,7 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
       for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value, options); written.push(dest); }
       // Providers without native modes get one chmod for the whole call, after every file exists.
       if (mode === undefined || fs.writeSupportsMode || !written.length) return;
-      const result = await provider.exec(id, { command: `chmod ${mode.toString(8)} ${written.map(quote).join(" ")}`, cwd: "/", env: defaults, timeoutMs: 30_000, onChunk() {} });
+      const result = await provider.exec(id, { command: `chmod ${mode.toString(8)} ${written.map(quote).join(" ")}`, cwd: "/workspace", env: defaults, timeoutMs: 30_000, onChunk() {} });
       if (result.timedOut || result.exitCode !== 0) throw new SandboxError(`File mode not applied. chmod ${result.timedOut ? "timed out" : `exited with ${result.exitCode}`}; the files were written with default permissions. Check that the paths are writable and retry.`, { code: "provider" });
     });
   }
