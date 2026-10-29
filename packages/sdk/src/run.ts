@@ -162,8 +162,11 @@ export function makeRun(provider: Provider, id: string, redactor: Redactor, base
       } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); if (!completed && !provider.inlineActivity) await Promise.resolve().then(() => provider.files.remove(id, activePath, { recursive: true })).catch(() => {}); finish(); bus.end(); }
     }
     const handle: RunHandle = {
-      // oxlint-disable-next-line unicorn/no-thenable -- RunHandle is explicitly PromiseLike in the public API.
+      [Symbol.toStringTag]: "RunHandle",
+      // oxlint-disable-next-line unicorn/no-thenable -- RunHandle is a lazy Promise in the public API.
       then(onfulfilled, onrejected) { return begin().then(onfulfilled, onrejected); },
+      catch(onrejected) { return begin().catch(onrejected); },
+      finally(onfinally) { return begin().finally(onfinally); },
       [Symbol.asyncIterator]() {
         const iterator = bus.stream();
         // Subscribe before synchronous provider chunks can arrive.

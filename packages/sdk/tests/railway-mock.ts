@@ -6,13 +6,13 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { createServer } from "node:net";
 import { SandboxNotFoundError, SandboxFileNotFoundError, RailwayAuthError, RailwayConnectionError } from "railway";
-import type { CreateOptions, ExecOptions, ExecHandle, ExecResult, SandboxDomain, SandboxFileEntry } from "railway";
-export const state = { boxes: new Map<string, MockSandbox>(), creates: [] as CreateOptions[], execs: [] as ExecOptions[], snapshots: new Map<string, string>(), writes: [] as { path: string; options?: { mode?: number } }[], delayMs: 0, interrupt: false, pageSize: 2, cursors: [] as (string | null)[] };
+import type { CreateOptions, ExecOptions, ExecHandle, ExecResult, SandboxDomain, SandboxFileEntry, SandboxStatus } from "railway";
+export const state = { boxes: new Map<string, MockSandbox>(), creates: [] as CreateOptions[], execs: [] as ExecOptions[], snapshots: new Map<string, string>(), writes: [] as { path: string; options?: { mode?: number } }[], delayMs: 0, interrupt: false, unconfirmed: false, pageSize: 2, cursors: [] as (string | null)[] };
 const missing = (id: string) => new SandboxNotFoundError({ id, environmentId: "mock-env" });
 export class MockSandbox {
   readonly id = crypto.randomUUID();
   readonly createdAt = new Date().toISOString();
-  readonly status = "RUNNING";
+  status: SandboxStatus = "RUNNING";
   readonly domains: SandboxDomain[] = [];
   private groups = new Set<number>();
   private children = new Set<ReturnType<typeof spawn>>();
@@ -45,6 +45,8 @@ export class MockSandbox {
   };
   files = {
     read: async (path: string, options: { format?: string; offset?: number; length?: number } = {}) => {
+      // A VM that is not RUNNING serves no guest files.
+      if (this.status !== "RUNNING") throw new RailwayConnectionError({ message: "secret-key-do-not-leak" });
       let data: Buffer;
       try { data = await fs.readFile(this.map(path)); } catch { throw new SandboxFileNotFoundError({ operation: "read", path, message: "secret-key-do-not-leak" }); }
       const offset = options.offset ?? 0; data = data.subarray(offset, options.length === undefined ? undefined : offset + options.length);
@@ -65,8 +67,11 @@ export class MockSandbox {
     const out = new StringDecoder("utf8"), err = new StringDecoder("utf8");
     child.stdout.on("data", data => { const text = out.write(data).split(this.root).join(""); stdout += text; options.onStdout?.(text); });
     child.stderr.on("data", data => { const text = err.write(data).split(this.root).join(""); stderr += text; options.onStderr?.(text); });
-    const kill = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } };
+    let lost = (_error: Error) => {};
+    // `unconfirmed` models a connection lost while stopping: the command keeps running.
+    const kill = () => { if (state.unconfirmed) { state.unconfirmed = false; lost(new RailwayConnectionError({ message: "secret-key-do-not-leak" })); return; } if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } };
     const done = new Promise<ExecResult>((resolve, reject) => {
+      lost = reject;
       child.on("error", reject);
       child.on("close", code => {
         this.children.delete(child); options.signal?.removeEventListener("abort", kill);

@@ -5,11 +5,13 @@ import { raw } from "./exec.js";
 import { workspaceSetup } from "./ready.js";
 import { failure, tenkiError } from "./errors.js";
 import { deadline } from "./deadline.js";
+// /workspace is the SDK's own link into durable disk. Report its target, a
+// directory, as the native path does, so stat never depends on cache state.
 const script = `import os,sys,json,stat
 ${workspaceSetup}
 op,p=sys.argv[1:3]
 def info(p):
- s=os.lstat(p)
+ s=os.stat(p) if os.path.normpath(p)==workspace else os.lstat(p)
  return dict(path=p,type='symlink' if stat.S_ISLNK(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'file',size=s.st_size,modifiedAt=s.st_mtime*1000)
 try:
  if op=='read':
