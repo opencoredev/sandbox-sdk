@@ -1,4 +1,4 @@
-import { afterAll, expect, test, vi } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,17 +7,25 @@ import type {
   NetworkConfig,
   PublishPreviewPortOptions,
   SandboxCreateOptions,
+  SandboxStatus,
   SandboxUpdateOptions,
   SnapshotCreateOptions,
 } from "@superserve/sdk";
 import { quote } from "../src/shared/shell.js";
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
+import {
+  createSuperserveProvider,
+  type SuperserveOptions,
+} from "../src/providers/superserve/provider.js";
+import { superserveError } from "../src/providers/superserve/errors.js";
+import { createSandbox, connectSandbox } from "../src/index.js";
+import { runConformance } from "../src/testing.js";
 
 type MockRecord = {
   guest: MockGuest;
   metadata: Record<string, string>;
   createdAt: Date;
-  status: string;
+  status: SandboxStatus;
   network?: NetworkConfig;
 };
 
@@ -38,248 +46,251 @@ type MockState = {
   previewAccess: PublishPreviewPortOptions[];
 };
 
-const state = vi.hoisted(
-  (): MockState => ({
-    boxes: new Map(),
-    creates: 0,
-    nativeTimeoutSeconds: 0,
-    bootstrapPath: "",
-    updates: [],
-    transportFailure: false,
-    stdinFailure: false,
-    closes: 0,
-    snapshotFailure: false,
-    dropNetwork: false,
-    previewAccess: [],
-  }),
-);
+const state: MockState = {
+  boxes: new Map(),
+  creates: 0,
+  nativeTimeoutSeconds: 0,
+  bootstrapPath: "",
+  updates: [],
+  transportFailure: false,
+  stdinFailure: false,
+  closes: 0,
+  snapshotFailure: false,
+  dropNetwork: false,
+  previewAccess: [],
+};
 
-vi.mock("@superserve/sdk", () => ({
-  Sandbox: class {
-    constructor(readonly id: string) {}
-    static async create(options: SandboxCreateOptions) {
-      const guest = await MockGuest.create();
-      state.creates++;
-      state.createOptions = options;
+/** The Superserve Sandbox surface the adapter uses, backed by isolated Linux directories. */
+class MockSandbox {
+  constructor(readonly id: string) {}
+  static async create(options: SandboxCreateOptions) {
+    const guest = await MockGuest.create();
+    state.creates++;
+    state.createOptions = options;
 
-      const record: MockRecord = {
-        guest,
-        metadata: options.metadata ?? {},
-        createdAt: new Date(),
-        status: "active",
-      };
+    const record: MockRecord = {
+      guest,
+      metadata: options.metadata ?? {},
+      createdAt: new Date(),
+      status: "active",
+    };
 
-      if (options.network && !state.dropNetwork) record.network = options.network;
-      state.boxes.set(guest.id, record);
+    if (options.network && !state.dropNetwork) record.network = options.network;
+    state.boxes.set(guest.id, record);
 
-      return new this(guest.id);
-    }
-    static async connect(id: string) {
-      if (!state.boxes.has(id)) throw Object.assign(new Error("private"), { statusCode: 404 });
+    return new this(guest.id);
+  }
+  static async connect(id: string) {
+    if (!state.boxes.has(id)) throw Object.assign(new Error("private"), { statusCode: 404 });
 
-      return new this(id);
-    }
-    static async list() {
-      return [...state.boxes.entries()].map(([id, v]) => ({ ...v, id }));
-    }
-    static async killById(id: string) {
-      await state.boxes.get(id)?.guest.destroy();
-      state.boxes.delete(id);
-    }
-    get value() {
-      const v = state.boxes.get(this.id);
+    return new this(id);
+  }
+  static async list() {
+    return [...state.boxes.entries()].map(([id, v]) => ({ ...v, id }));
+  }
+  static async killById(id: string) {
+    await state.boxes.get(id)?.guest.destroy();
+    state.boxes.delete(id);
+  }
+  get value() {
+    const v = state.boxes.get(this.id);
 
-      if (!v) throw Object.assign(new Error("private"), { statusCode: 404 });
+    if (!v) throw Object.assign(new Error("private"), { statusCode: 404 });
 
-      return v;
-    }
-    async getInfo() {
-      return state.nativeTimeoutSeconds > 0
-        ? { ...this.value, id: this.id, timeoutSeconds: state.nativeTimeoutSeconds }
-        : { ...this.value, id: this.id };
-    }
-    async update(options: SandboxUpdateOptions) {
-      state.updates.push(options);
-    }
-    async snapshot(options: SnapshotCreateOptions) {
-      state.snapshotOptions = options;
+    return v;
+  }
+  async getInfo() {
+    return state.nativeTimeoutSeconds > 0
+      ? { ...this.value, id: this.id, timeoutSeconds: state.nativeTimeoutSeconds }
+      : { ...this.value, id: this.id };
+  }
+  async update(options: SandboxUpdateOptions) {
+    state.updates.push(options);
+  }
+  async snapshot(options: SnapshotCreateOptions) {
+    state.snapshotOptions = options;
 
-      if (state.snapshotFailure) throw new Error("private-native-token");
+    if (state.snapshotFailure) throw new Error("private-native-token");
 
-      return { id: "snapshot-1" };
-    }
-    async pause() {
-      this.value.status = "paused";
-    }
-    async resume() {
-      this.value.status = "active";
-    }
-    get commands() {
-      const g = this.value.guest;
+    return { id: "snapshot-1" };
+  }
+  async pause() {
+    this.value.status = "paused";
+  }
+  async resume() {
+    this.value.status = "active";
+  }
+  get commands() {
+    const g = this.value.guest;
 
-      const launch = (command: string) => {
-        const mapping = `
+    const launch = (command: string) => {
+      const mapping = `
 def sdk_paths(value):
- if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(g.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(g.root + "/tmp/.sandbox-sdk").toString("hex")}").decode())
+ if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(g.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(g.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/tmp/"+"sdk-bare",bytes.fromhex("${Buffer.from(g.root + "/tmp/sdk-bare").toString("hex")}").decode())
  if isinstance(value,list): return [sdk_paths(x) for x in value]
  if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
  return value
 v=sdk_paths(v)`;
 
-        return command
-          .replace(
-            "else marshal.loads(bytes.fromhex(sys.stdin.read()))",
-            "else marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping,
-          )
-          .replace("data.hex()", `data.replace(${JSON.stringify(g.root)}.encode(),bytes()).hex()`);
-      };
+      return command
+        .replace(
+          "else marshal.loads(bytes.fromhex(sys.stdin.read()))",
+          "else marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping,
+        )
+        .replace("data.hex()", `data.replace(${JSON.stringify(g.root)}.encode(),bytes()).hex()`);
+    };
 
-      return {
-        run: async (command: string, options: { env?: Record<string, string> } = {}) => {
-          if (options.env?.SANDBOX_SDK_BOOTSTRAP) await state.bootstrap?.();
+    return {
+      run: async (command: string, options: { env?: Record<string, string> } = {}) => {
+        if (options.env?.SANDBOX_SDK_BOOTSTRAP) await state.bootstrap?.();
 
-          if (state.transportFailure) {
-            state.transportFailure = false;
-            void g.raw(command).catch(() => {});
-            throw new Error("private-native-token");
-          }
+        if (state.transportFailure) {
+          state.transportFailure = false;
+          void g.raw(command).catch(() => {});
+          throw new Error("private-native-token");
+        }
 
-          const env = { ...options.env };
+        const env = { ...options.env };
 
-          if (options.env?.SANDBOX_SDK_BOOTSTRAP && state.bootstrapPath)
-            env.PATH = state.bootstrapPath;
+        if (options.env?.SANDBOX_SDK_BOOTSTRAP && state.bootstrapPath)
+          env.PATH = state.bootstrapPath;
 
-          const prefix = Object.entries(env)
-            .map(([key, value]) => {
-              // Match MockGuest.upload's host-path normalization for encoded output.
-              const payload =
-                key === "SANDBOX_SDK_BOOTSTRAP"
-                  ? value.replace(
-                      "base64.b64encode(data)",
-                      `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
-                    )
-                  : value;
+        const prefix = Object.entries(env)
+          .map(([key, value]) => {
+            // Match MockGuest.upload's host-path normalization for encoded output.
+            const payload =
+              key === "SANDBOX_SDK_BOOTSTRAP"
+                ? value.replace(
+                    "base64.b64encode(data)",
+                    `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
+                  )
+                : value;
 
-              return `export ${key}=${quote(payload)};`;
-            })
-            .join(" ");
+            return `export ${key}=${quote(payload)};`;
+          })
+          .join(" ");
 
-          try {
-            return { stdout: await g.raw(`${prefix} ${launch(command)}`), stderr: "", exitCode: 0 };
-          } catch (error) {
-            if (isObject(error) && "code" in error && isNumber(error.code))
-              return {
-                stdout: "stdout" in error && isString(error.stdout) ? error.stdout : "",
-                stderr: "stderr" in error && isString(error.stderr) ? error.stderr : "",
-                exitCode: error.code,
-              };
-            throw error;
-          }
-        },
-        spawn: async (
-          command: string,
-          options: {
-            onStdout?: (s: string) => void;
-            onStderr?: (s: string) => void;
-            startupSignal?: AbortSignal;
-            env?: Record<string, string>;
-          },
-        ) => {
-          if (options.startupSignal?.aborted) throw new DOMException("aborted", "AbortError");
-
-          const prefix = Object.entries(options.env ?? {})
-            .map(
-              ([key, value]) =>
-                `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`))};`,
-            )
-            .join(" ");
-
-          const stream = g.stream(`${prefix} ${launch(command)}`);
-
-          let stdout = "",
-            stderr = "";
-
-          stream.stdout.push = (bytes) => {
-            const text = Buffer.from(bytes).toString();
-            stdout += text;
-            options.onStdout?.(text);
-          };
-
-          stream.stderr.push = (bytes) => {
-            const text = Buffer.from(bytes).toString();
-            stderr += text;
-            options.onStderr?.(text);
-          };
-
+        try {
           return {
-            stdin: {
-              write: (s: string) => {
-                if (state.stdinFailure) {
-                  state.stdinFailure = false;
-                  throw new Error("private-input-error");
-                }
+            stdout: await g.raw(`${prefix} ${launch(command)}`),
+            stderr: "",
+            exitCode: 0,
+            truncated: false,
+          };
+        } catch (error) {
+          if (isObject(error) && "code" in error && isNumber(error.code))
+            return {
+              stdout: "stdout" in error && isString(error.stdout) ? error.stdout : "",
+              stderr: "stderr" in error && isString(error.stderr) ? error.stderr : "",
+              exitCode: error.code,
+              truncated: false,
+            };
+          throw error;
+        }
+      },
+      spawn: async (
+        command: string,
+        options: {
+          onStdout?: (s: string) => void;
+          onStderr?: (s: string) => void;
+          startupSignal?: AbortSignal;
+          env?: Record<string, string>;
+        },
+      ) => {
+        if (options.startupSignal?.aborted) throw new DOMException("aborted", "AbortError");
 
-                stream.write(s);
-              },
-              close: () => stream.end(),
-            },
-            kill: () => stream.close(),
-            wait: async () => {
-              const pending = stream.wait();
+        const prefix = Object.entries(options.env ?? {})
+          .map(
+            ([key, value]) =>
+              `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`))};`,
+          )
+          .join(" ");
 
-              if (state.transportFailure) {
-                state.transportFailure = false;
-                pending.catch(() => {});
-                throw new Error("private-native-token");
+        const stream = g.stream(`${prefix} ${launch(command)}`);
+
+        let stdout = "",
+          stderr = "";
+
+        stream.stdout.push = (bytes) => {
+          const text = Buffer.from(bytes).toString();
+          stdout += text;
+          options.onStdout?.(text);
+        };
+
+        stream.stderr.push = (bytes) => {
+          const text = Buffer.from(bytes).toString();
+          stderr += text;
+          options.onStderr?.(text);
+        };
+
+        return {
+          stdin: {
+            write: (s: string) => {
+              if (state.stdinFailure) {
+                state.stdinFailure = false;
+                throw new Error("private-input-error");
               }
 
-              return { exitCode: await pending, stdout, stderr };
+              stream.write(s);
             },
-            close: async () => {
-              state.closes++;
-              stream.close();
-            },
-          };
-        },
-      };
-    }
-    get files() {
-      const g = this.value.guest;
+            close: () => stream.end(),
+          },
+          kill: () => stream.close(),
+          wait: async () => {
+            const pending = stream.wait();
 
-      return {
-        write: (p: string, b: Uint8Array) => g.upload(p, b),
-        read: async (p: string) => {
-          try {
-            return await g.read(p);
-          } catch {
-            throw Object.assign(new Error("private"), { statusCode: 404 });
-          }
-        },
-      };
-    }
-    async publishPreviewPort(_port: number, options: PublishPreviewPortOptions) {
-      state.previewAccess.push(options);
-    }
-    async getPreviewToken() {
-      return { header: "x-preview", token: "mock" };
-    }
-    getPreviewUrl(port: number) {
-      return `https://mock.invalid/${port}`;
-    }
-  },
-}));
+            if (state.transportFailure) {
+              state.transportFailure = false;
+              pending.catch(() => {});
+              throw new Error("private-native-token");
+            }
 
-import { superserve } from "../src/providers/superserve/index.js";
-import { superserveError } from "../src/providers/superserve/errors.js";
-import { createSandbox, connectSandbox } from "../src/index.js";
-import { runConformance } from "../src/testing.js";
+            return { exitCode: await pending, stdout, stderr };
+          },
+          close: async () => {
+            state.closes++;
+            stream.close();
+          },
+        };
+      },
+    };
+  }
+  get files() {
+    const g = this.value.guest;
+
+    return {
+      write: (p: string, b: Uint8Array) => g.upload(p, b),
+      read: async (p: string) => {
+        try {
+          return await g.read(p);
+        } catch {
+          throw Object.assign(new Error("private"), { statusCode: 404 });
+        }
+      },
+    };
+  }
+  async publishPreviewPort(port: number, options: PublishPreviewPortOptions) {
+    state.previewAccess.push(options);
+
+    return { port };
+  }
+  async getPreviewToken() {
+    return { header: "x-preview", token: "mock" };
+  }
+  getPreviewUrl(port: number) {
+    return `https://mock.invalid/${port}`;
+  }
+}
+
+function superserve(options: SuperserveOptions) {
+  return createSuperserveProvider(options, async () => ({ Sandbox: MockSandbox }));
+}
 
 const factory = () => superserve({ apiKey: "mock" });
 
 runConformance(factory, {
   live: true,
   unsupported: {
-    gitPush: "The mock guest shares the host /tmp/sdk-bare across runs",
     httpProbe: "Mock superserve preview URLs point at an unreachable host",
   },
 });
