@@ -14,21 +14,25 @@ import type { NativeSandbox, NativeCommand, VercelClient } from "../src/provider
 type Params = NonNullable<Parameters<typeof Sandbox.create>[0]>;
 type RunParams = Parameters<NativeSandbox["runCommand"]>[0];
 const missing = () => Object.assign(new Error("Sandbox not found"), { response: new Response(null, { status: 404 }) });
+const gone = () => Object.assign(new Error("Cannot resume sandbox: no snapshot available."), { response: new Response(null, { status: 410 }) });
 export async function vercelMock() {
   const root = await fs.mkdtemp(join(process.cwd(), ".vercel-mock-"));
   const machines = new Map<string, MockSandbox>(); const snapshots = new Map<string, string>();
   const creates: Params[] = []; const commands: RunParams[] = [];
+  const snapshotCalls: ({ expiration?: number } | undefined)[] = []; const deletes: (Parameters<Sandbox["delete"]>[0])[] = [];
+  const uploads: Parameters<Sandbox["writeFiles"]>[0] = [];
   class MockSandbox implements NativeSandbox {
     readonly cwd = "/vercel/sandbox";
     status: Sandbox["status"] = "running";
     readonly createdAt = new Date();
+    readonly persistent: boolean;
     tags: Sandbox["tags"];
     readonly routes: Sandbox["routes"] = [];
     readonly children = new Set<ReturnType<typeof spawn>>();
     readonly groups = new Set<number>();
     resumeHook?: (box: MockSandbox) => Promise<void>;
     private readonly serverPorts = new Map<number, number>();
-    constructor(readonly name: string, readonly directory: string, readonly params: Params) { this.tags = params.tags; }
+    constructor(readonly name: string, readonly directory: string, readonly params: Params) { this.tags = params.tags; this.persistent = params.persistent ?? true; }
     async initialize() {
       await fs.mkdir(this.map("/vercel/sandbox"), { recursive: true }); await fs.mkdir(this.map("/tmp"), { recursive: true });
       for (const port of this.params.ports ?? []) {
@@ -47,6 +51,8 @@ export async function vercelMock() {
     // Just like the SDK, auto-resume awaits the adapter's actual callback.
     async restore() {
       if (this.status === "running") return;
+      // Vercel cannot resume a non-persistent sandbox: it kept no file system.
+      if (!this.persistent) throw gone();
       this.status = "running";
       await this.resumeHook?.(this);
     }
@@ -57,8 +63,18 @@ export async function vercelMock() {
       readdir: async path => { await this.restore(); return fs.readdir(this.map(path)); },
       mkdir: async (path, options) => { await this.restore(); return fs.mkdir(this.map(path), options); },
       rm: async (path, options) => { await this.restore(); return fs.rm(this.map(path), options); },
+      chmod: async (path, mode) => { await this.restore(); await fs.chmod(this.map(path), mode); },
     };
     domain(port: number) { const local = this.serverPorts.get(port); if (!local) throw new Error("Undeclared port"); return `http://127.0.0.1:${local}/?port=${port}`; }
+    // Like Vercel's tar upload: parents are created and only permission bits survive.
+    async writeFiles(files: Parameters<Sandbox["writeFiles"]>[0]) {
+      await this.restore();
+      for (const file of files) {
+        uploads.push(file); const target = this.map(file.path);
+        await fs.mkdir(join(target, ".."), { recursive: true }); await fs.writeFile(target, file.content);
+        if (file.mode !== undefined) await fs.chmod(target, file.mode & 0o777);
+      }
+    }
     async update(params: Parameters<Sandbox["update"]>[0]) { if (params.tags) this.tags = params.tags; }
     async stop() { await this.terminate(); this.status = "stopped"; return { id: this.name, status: "stopped", createdAt: Date.now(), timeout: 300000, memory: 2048, vcpus: 1, region: "iad1", cwd: this.cwd, runtime: "node22" }; }
     async terminate() {
@@ -68,9 +84,9 @@ export async function vercelMock() {
         if (Number.isInteger(pid) && pid > 0) this.groups.add(pid);
       }
       for (const group of this.groups) { try { process.kill(-group, "SIGKILL"); } catch {} } this.groups.clear(); for (const child of this.children) if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } }
-    async delete() { await this.terminate(); machines.delete(this.name); await fs.rm(this.directory, { recursive: true, force: true }); }
-    async snapshot() {
-      await this.terminate(); this.status = "stopped"; const snapshotId = crypto.randomUUID();
+    async delete(options?: Parameters<Sandbox["delete"]>[0]) { deletes.push(options); await this.terminate(); machines.delete(this.name); await fs.rm(this.directory, { recursive: true, force: true }); }
+    async snapshot(options?: { expiration?: number }) {
+      snapshotCalls.push(options); await this.terminate(); this.status = "stopped"; const snapshotId = crypto.randomUUID();
       const directory = join(root, snapshotId); await fs.cp(this.directory, directory, { recursive: true, filter: async path => !(await fs.lstat(path)).isFIFO() }); snapshots.set(snapshotId, directory); return { snapshotId };
     }
     async runCommand(params: RunParams): Promise<NativeCommand> {
@@ -110,5 +126,5 @@ export async function vercelMock() {
     async get(params) { const box = machines.get(params.name); if (!box) throw missing(); box.resumeHook = params.onResume; if (params.resume) await box.restore(); return box; },
     async list() { return (async function* () { for (const box of machines.values()) if (box.tags?.["sandbox-sdk"] === "1") yield { name: box.name }; })(); },
   };
-  return { client, creates, commands, async dispose() { for (const box of machines.values()) await box.delete(); await fs.rm(root, { recursive: true, force: true }); } };
+  return { client, creates, commands, snapshotCalls, deletes, uploads, async dispose() { for (const box of machines.values()) await box.delete(); await fs.rm(root, { recursive: true, force: true }); } };
 }

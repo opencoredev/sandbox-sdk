@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "vitest";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { createVercelProvider } from "../src/providers/vercel/provider.js";
+import { vercel, type VercelNonPersistentProvider, type VercelOptions, type VercelProvider } from "../src/providers/vercel/index.js";
 import { vercelError } from "../src/providers/vercel/errors.js";
 import { runConformance } from "../src/testing.js";
 import { vercelMock } from "./vercel-mock.js";
@@ -20,9 +21,9 @@ describe("Vercel adapter", { timeout: 30_000 }, () => {
       const other = await createSandbox(provider(), { key: "user:123" }); expect(other.id).toBe(box.id); expect(other.created).toBe(false);
     } finally { await box.destroy(); }
   });
-  test("fails closed on hard lifetime, idle timeout, custom disk and tag overflow", async () => {
-    await expect(createSandbox(provider(), { timeoutMs: 60000 })).rejects.toMatchObject({ code: "unsupported" });
+  test("fails closed on idle timeout, custom disk, mismatched memory and tag overflow", async () => {
     await expect(createSandbox(provider(), { idleTimeoutMs: 1000 })).rejects.toMatchObject({ code: "unsupported" });
+    await expect(createSandbox(provider(), { size: { cpu: 2, memoryMb: 2048 } })).rejects.toMatchObject({ code: "unsupported" });
     await expect(createSandbox(provider(), { size: { cpu: 1, memoryMb: 2048, diskGb: 10 } })).rejects.toMatchObject({ code: "unsupported" });
     await expect(createSandbox(provider(), { labels: { a: "a", b: "b", c: "c", d: "d", e: "e" } })).rejects.toMatchObject({ code: "unsupported" });
   });
@@ -223,4 +224,160 @@ test("first Vercel timeout kills workspace setup while the setup lock is held", 
     await expect(fs.stat(box.native.map("/workspace"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(box.native.map("/tmp/should-not-run"))).rejects.toMatchObject({ code: "ENOENT" });
   } finally { if (lock.pid) { try { process.kill(-lock.pid, "SIGKILL"); } catch {} } await box.destroy(); }
+});
+
+describe("Vercel native options", { timeout: 30_000 }, () => {
+  const day = 86_400_000;
+  const configured = (options: VercelOptions) => createVercelProvider(async () => mock.client, { token: "mock-token", teamId: "team", projectId: "project", ...options });
+
+  test("fresh sandboxes receive persistence, lifetime, image, source, placement and snapshot policy", async () => {
+    const options = { persistent: false, image: "vercel/sandbox/node:24", source: { type: "git", url: "https://github.com/acme/app.git", depth: 1, revision: "main", username: "x-access-token", password: "pat" }, region: "fra1", failoverRegions: ["cdg1"], networkId: "net_1", mounts: { "/data": { drive: "drive_1", mode: "read-write" } }, snapshotExpiresInMs: 0, keepLastSnapshots: { count: 3, expiresInMs: 7 * day, deleteEvicted: false } } satisfies VercelOptions;
+    const box = await createSandbox(configured(options), { timeoutMs: 90_000.5 });
+    try {
+      expect(mock.creates.at(-1)).toMatchObject({ persistent: false, timeout: 90_001, image: "vercel/sandbox/node:24", source: options.source, region: "fra1", failoverRegions: ["cdg1"], networkId: "net_1", mounts: options.mounts, snapshotExpiration: 0, keepLastSnapshots: { count: 3, expiration: 7 * day, deleteEvicted: false } });
+      expect(mock.creates.at(-1)).not.toHaveProperty("runtime");
+    } finally { await box.destroy(); }
+  });
+
+  test("defaults stay persistent with Vercel's own timeout, image and region", async () => {
+    const box = await createSandbox(provider());
+    try {
+      const params = mock.creates.at(-1);
+      expect(params).toMatchObject({ persistent: true, networkPolicy: "allow-all" });
+      for (const field of ["timeout", "image", "runtime", "source", "region", "snapshotExpiration", "keepLastSnapshots"] as const) expect(params?.[field]).toBeUndefined();
+    } finally { await box.destroy(); }
+  });
+
+  test("legacy runtimes pass through; snapshots drop the base image and source", async () => {
+    const adapter = configured({ runtime: "node22", source: { type: "tarball", url: "https://example.com/app.tgz" }, region: "sfo1" });
+    const box = await createSandbox(adapter);
+    try {
+      expect(mock.creates.at(-1)).toMatchObject({ runtime: "node22", source: { type: "tarball", url: "https://example.com/app.tgz" } });
+      const { id } = await box.snapshot();
+      const copy = await createSandbox(adapter, { from: id, timeoutMs: 60_000 });
+      try {
+        const params = mock.creates.at(-1);
+        expect(params).toMatchObject({ source: { type: "snapshot", snapshotId: id }, region: "sfo1", timeout: 60_000 });
+        expect(params).not.toHaveProperty("runtime");
+      } finally { await copy.destroy(); }
+    } finally { await box.destroy(); }
+  });
+
+  test("exact sizes map to vCPUs at 2048 MiB each", async () => {
+    const box = await createSandbox(provider(), { size: { cpu: 8, memoryMb: 16_384 } });
+    try { expect(mock.creates.at(-1)).toMatchObject({ resources: { vcpus: 8 } }); } finally { await box.destroy(); }
+    await expect(createSandbox(provider(), { size: { cpu: 1.5, memoryMb: 3072 } })).rejects.toMatchObject({ code: "unsupported" });
+  });
+
+  test("native network policies pass through and conflict with network", async () => {
+    const networkPolicy = { allow: { "api.openai.com": [{ transform: [{ headers: { authorization: "Bearer injected" } }] }] }, subnets: { deny: ["10.0.0.0/8"] } } satisfies VercelOptions["networkPolicy"];
+    const box = await createSandbox(configured({ networkPolicy }));
+    try { expect(mock.creates.at(-1)?.networkPolicy).toEqual(networkPolicy); } finally { await box.destroy(); }
+    await expect(createSandbox(configured({ networkPolicy }), { network: "none" })).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(createSandbox(configured({ networkPolicy }), { network: "all" })).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  test("snapshot expiresInMs maps to native expiration in milliseconds", async () => {
+    for (const [settings, expected] of [[undefined, undefined], [{}, undefined], [{ expiresInMs: 0 }, { expiration: 0 }], [{ expiresInMs: day }, { expiration: day }]] as const) {
+      const box = await createSandbox(provider());
+      try { await box.snapshot(settings); expect(mock.snapshotCalls.at(-1)).toEqual(expected); } finally { await box.destroy(); }
+    }
+    const box = await createSandbox(provider());
+    try {
+      const calls = mock.snapshotCalls.length;
+      for (const expiresInMs of [60_000, -1, day + 0.5, Number.NaN]) await expect(box.snapshot({ expiresInMs })).rejects.toMatchObject({ code: "invalid_argument", provider: "vercel" });
+      expect(mock.snapshotCalls.length).toBe(calls);
+    } finally { await box.destroy(); }
+  });
+
+  test("snapshot policy options are validated when the provider is built", () => {
+    expect(() => configured({ snapshotExpiresInMs: 3_600_000 })).toThrow(expect.objectContaining({ code: "invalid_argument" }));
+    expect(() => configured({ keepLastSnapshots: { count: 11 } })).toThrow(expect.objectContaining({ code: "invalid_argument" }));
+    expect(() => configured({ keepLastSnapshots: { count: 2, expiresInMs: 1000 } })).toThrow(expect.objectContaining({ code: "invalid_argument" }));
+  });
+
+  test.each([false, true])("write applies mode natively (warm=%s)", async warm => {
+    const box = await createSandbox(provider());
+    try {
+      if (warm) await box.run("true");
+      const uploads = mock.uploads.length;
+      await box.files.write("secrets/token", "s3cret", { mode: 0o600 });
+      await box.files.write("bin/tool", "#!/bin/sh\n", { mode: 0o4755 });
+      expect((await box.run("stat -c %a secrets/token bin/tool")).stdout).toBe("600\n4755\n");
+      expect(await box.files.read("secrets/token")).toBe("s3cret");
+      expect(mock.uploads.slice(uploads).map(file => file.mode)).toEqual(warm ? [0o600, 0o755] : [0o755]);
+      await box.files.write("secrets/token", "rotated", { mode: 0o640 });
+      expect((await box.run("stat -c %a secrets/token; cat secrets/token")).stdout).toBe("640\nrotated");
+    } finally { await box.destroy(); }
+  });
+
+  test("non-persistent sandboxes drop pause and report stopped once they end", async () => {
+    const adapter = configured({ persistent: false });
+    expect(adapter.capabilities.has("pause")).toBe(false);
+    const box = await createSandbox(adapter);
+    try {
+      await box.files.write("kept", "no");
+      await box.snapshot();
+      expect((await adapter.connect(box.id)).state).toBe("stopped");
+      await expect(box.files.read("kept")).rejects.toMatchObject({ code: "not_found", provider: "vercel", message: expect.stringContaining("not persistent") });
+    } finally { await box.destroy(); }
+    expect(mock.deletes.at(-1)).toBeUndefined();
+  });
+
+  test("a stopped persistent sandbox reports paused", async () => {
+    const box = await createSandbox(provider());
+    try { await box.pause(); expect((await provider().connect(box.id)).state).toBe("paused"); } finally { await box.destroy(); }
+  });
+
+  test("a keyed non-persistent sandbox that ended is replaced on the next lookup", async () => {
+    const adapter = configured({ persistent: false }); const key = crypto.randomUUID();
+    const first = await createSandbox(adapter, { key });
+    await first.files.write("old", "1"); await first.snapshot();
+    const second = await createSandbox(configured({ persistent: false }), { key });
+    try {
+      expect(second.created).toBe(true); expect(second.id).toBe(first.id);
+      expect(await second.files.exists("old")).toBe(false);
+    } finally { await second.destroy(); }
+  });
+
+  test("a stopped non-persistent sandbox can still be connected and destroyed by ID", async () => {
+    const adapter = configured({ persistent: false });
+    const box = await createSandbox(adapter); await box.snapshot();
+    const fresh = configured({ persistent: false });
+    expect(await fresh.connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
+    await fresh.destroy(box.id);
+    await expect(provider().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  test("deleteOrphanSnapshots and fetch reach the native SDK", async () => {
+    const fetch: typeof globalThis.fetch = async () => new Response(null, { status: 599 });
+    const { vi } = await import("vitest");
+    const get = vi.spyOn(mock.client, "get"); const list = vi.spyOn(mock.client, "list");
+    const adapter = configured({ deleteOrphanSnapshots: true, fetch });
+    try {
+      const box = await createSandbox(adapter);
+      expect(mock.creates.at(-1)?.fetch).toBe(fetch);
+      await adapter.list({}); expect(list.mock.calls.at(-1)?.[0].fetch).toBe(fetch);
+      await configured({ fetch }).connect(box.id); expect(get.mock.calls.at(-1)?.[0]).toMatchObject({ fetch });
+      await box.destroy(); expect(mock.deletes.at(-1)).toEqual({ deleteOrphanSnapshots: true });
+    } finally { get.mockRestore(); list.mockRestore(); }
+  });
+});
+
+test("vercel() overloads drop pause only for non-persistent options", () => {
+  const persistent: VercelProvider = vercel({ persistent: true, image: "vercel/sandbox/node:24" });
+  const ephemeral: VercelNonPersistentProvider = vercel({ persistent: false, runtime: "node22" });
+  const unknown = vercel({ persistent: Math.random() > 2 });
+  // Type-only: these handles are never created.
+  async function types() {
+    const durable = await createSandbox(persistent); await durable.pause();
+    // @ts-expect-error a non-persistent Vercel sandbox has no pause
+    await (await createSandbox(ephemeral)).pause();
+    // @ts-expect-error persistence unknown at compile time does not promise pause
+    await (await createSandbox(unknown)).pause();
+    // @ts-expect-error image and runtime are mutually exclusive
+    vercel({ image: "vercel/sandbox/node:24", runtime: "node22" });
+  }
+  void types;
+  expect([[...persistent.capabilities], [...ephemeral.capabilities], [...unknown.capabilities]].map(caps => caps.includes("pause"))).toEqual([true, false, false]);
 });
