@@ -130,7 +130,7 @@ To follow output live, iterate `box.process("dev").lines()`. Each line has its o
 
 ## 4. Restart after a resume
 
-On Vercel Sandbox and Daytona, a paused or stopped sandbox comes back with its files but without its processes. Check the status and restart:
+A paused Vercel sandbox, or a Daytona sandbox stopped by its idle timeout, comes back with its files but without its processes. Check the status and restart:
 
 ```ts title="ensure-dev.ts"
 import { createSandbox } from "@opencoredev/sandbox-sdk";
