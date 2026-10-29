@@ -4,10 +4,11 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { z } from "zod";
 import type * as Core from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import type { Boxd } from "../../packages/sdk/node_modules/@boxd-sh/sdk";
-import type { TenkiSandbox } from "../../packages/sdk/node_modules/@tenkicloud/sandbox";
+import type { Boxd } from "@boxd-sh/sdk";
+import type { TenkiSandbox } from "@tenkicloud/sandbox";
 
 type Sdk = typeof Core;
 
@@ -272,7 +273,7 @@ const nativeClients: NativeClients = {};
 // Modules resolve from the selected SDK build, not from the harness checkout.
 async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): Promise<NativeBox> {
   if (name === "e2b") {
-    const m: typeof import("../../packages/sdk/node_modules/e2b") = await import(nativeUrl("e2b"));
+    const m: typeof import("e2b") = await import(nativeUrl("e2b"));
 
     const box = await m.Sandbox.create(templates.get(name) ?? "base", {
       metadata: label,
@@ -300,9 +301,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "daytona") {
-    const m: typeof import("../../packages/sdk/node_modules/@daytonaio/sdk") = await import(
-      nativeUrl("@daytonaio/sdk")
-    );
+    const m: typeof import("@daytonaio/sdk") = await import(nativeUrl("@daytonaio/sdk"));
 
     const client = new m.Daytona({
       apiKey: process.env.DAYTONA_API_KEY,
@@ -327,15 +326,13 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       exists: async () => {
         const b = await client.get(box.id);
 
-        return b.state !== "deleted";
+        return b.state !== "destroyed";
       },
     };
   }
 
   if (name === "upstash") {
-    const m: typeof import("../../packages/sdk/node_modules/@upstash/box") = await import(
-      nativeUrl("@upstash/box")
-    );
+    const m: typeof import("@upstash/box") = await import(nativeUrl("@upstash/box"));
 
     const box = await m.Box.create({
       apiKey: process.env.UPSTASH_BOX_API_KEY,
@@ -356,9 +353,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "boxd") {
-    const m: typeof import("../../packages/sdk/node_modules/@boxd-sh/sdk") = await import(
-      nativeUrl("@boxd-sh/sdk")
-    );
+    const m: typeof import("@boxd-sh/sdk") = await import(nativeUrl("@boxd-sh/sdk"));
 
     const client = (nativeClients.boxd ??= new m.Boxd({
       apiKey: process.env.BOXD_API_KEY,
@@ -395,9 +390,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "freestyle") {
-    const m: typeof import("../../packages/sdk/node_modules/freestyle") = await import(
-      nativeUrl("freestyle")
-    );
+    const m: typeof import("freestyle") = await import(nativeUrl("freestyle"));
 
     const client = new m.Freestyle({ apiKey: process.env.FREESTYLE_API_KEY });
 
@@ -427,9 +420,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "tenki") {
-    const m: typeof import("../../packages/sdk/node_modules/@tenkicloud/sandbox") = await import(
-      nativeUrl("@tenkicloud/sandbox")
-    );
+    const m: typeof import("@tenkicloud/sandbox") = await import(nativeUrl("@tenkicloud/sandbox"));
 
     const client = (nativeClients.tenki ??= new m.TenkiSandbox({
       authToken: process.env.TENKI_AUTH_TOKEN ?? process.env.TENKI_API_KEY,
@@ -462,9 +453,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "superserve") {
-    const m: typeof import("../../packages/sdk/node_modules/@superserve/sdk") = await import(
-      nativeUrl("@superserve/sdk")
-    );
+    const m: typeof import("@superserve/sdk") = await import(nativeUrl("@superserve/sdk"));
 
     const box = await m.Sandbox.create({
       apiKey: process.env.SUPERSERVE_API_KEY,
@@ -1036,29 +1025,19 @@ async function destroyNative(box: NativeBox): Promise<void> {
 }
 
 /** A native "not found": HTTP 404, gRPC NOT_FOUND (5), or a not_found code. */
-type GoneError =
-  | { status: 404 }
-  | { statusCode: 404 }
-  | { grpcCode: 5 }
-  | { code: "not_found" | 5 };
-
-function isGoneError(cause: unknown): cause is GoneError {
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    (("status" in cause && cause.status === 404) ||
-      ("statusCode" in cause && cause.statusCode === 404) ||
-      ("grpcCode" in cause && cause.grpcCode === 5) ||
-      ("code" in cause && (cause.code === "not_found" || cause.code === 5)))
-  );
-}
+const goneError = z.union([
+  z.object({ status: z.literal(404) }),
+  z.object({ statusCode: z.literal(404) }),
+  z.object({ grpcCode: z.literal(5) }),
+  z.object({ code: z.union([z.literal("not_found"), z.literal(5)]) }),
+]);
 
 async function waitAbsent(box: NativeBox): Promise<boolean> {
   for (let attempt = 0; ; attempt++) {
     try {
       if (!(await box.exists())) return true;
     } catch (error) {
-      if (isGoneError(error)) return true;
+      if (goneError.safeParse(error).success) return true;
       throw error;
     }
 

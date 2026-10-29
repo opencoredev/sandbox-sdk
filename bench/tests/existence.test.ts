@@ -1,21 +1,21 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { spawnSync } from "node:child_process";
-import { lookupError, lookupSandbox, nativeModules } from "../src/existence.js";
+import { lookupError, lookupSandbox } from "../src/existence.js";
+import { fakeNativeModules } from "./native-fakes.js";
 
 const native = vi.hoisted(() => ({ get: vi.fn(), status: vi.fn() }));
 
 beforeEach(() => {
-  vi.spyOn(nativeModules, "load").mockImplementation(async (name) => {
-    if (name === "@tenkicloud/sandbox")
-      return {
-        TenkiSandbox: class {
-          get = native.get;
-        },
-      };
-
-    if (name === "@upstash/box") return { Box: { get: native.get } };
-    throw new Error("Unexpected native SDK import");
+  fakeNativeModules({
+    "@tenkicloud/sandbox": {
+      TenkiSandbox: class {
+        get = native.get;
+        getSnapshot = vi.fn();
+        deleteSnapshot = vi.fn();
+      },
+    },
+    "@upstash/box": { Box: { get: native.get, deleteSnapshots: vi.fn() } },
   });
 });
 
@@ -170,20 +170,33 @@ it.each(["e2b", "daytona", "boxd", "freestyle", "boat"])(
           ? { data: { id: "target", state: "deleted" } }
           : { id: "target", state: "deleted" },
     );
-    vi.mocked(nativeModules.load).mockResolvedValue({
-      Sandbox: { getInfo: native.get },
-      Daytona: class {
-        sandboxApi = { getSandbox: native.get };
+    fakeNativeModules({
+      e2b: {
+        Sandbox: { getInfo: native.get, listSnapshots: vi.fn(), deleteSnapshot: vi.fn() },
+        SandboxNotFoundError: class extends Error {},
       },
-      Boxd: class {
-        machines = { get: native.get };
+      "@daytonaio/sdk": {
+        Daytona: class {
+          sandboxApi = { getSandbox: native.get };
+          snapshot = { get: vi.fn(), list: vi.fn(), delete: vi.fn() };
+        },
       },
-      Freestyle: class {
-        vms = { get: native.get };
+      "@boxd-sh/sdk": {
+        Boxd: class {
+          machines = { get: native.get };
+          snapshots = { get: vi.fn(), delete: vi.fn() };
+        },
       },
-      Configuration: class {},
-      BoatApi: class {
-        get = native.get;
+      freestyle: {
+        Freestyle: class {
+          vms = { get: native.get, snapshots: { get: vi.fn(), delete: vi.fn() } };
+        },
+      },
+      "@boatdev/sdk": {
+        Configuration: vi.fn(),
+        BoatApi: class {
+          get = native.get;
+        },
       },
     });
     expect((await lookupSandbox({ ...memory(), name }, "target", 100)).result).toBe("terminal");
@@ -196,9 +209,11 @@ it("accepts E2B's actual native SandboxNotFoundError type, never a name or messa
 
   class NativeNotFound extends Error {}
 
-  vi.mocked(nativeModules.load).mockResolvedValue({
-    Sandbox: { getInfo: native.get },
-    SandboxNotFoundError: NativeNotFound,
+  fakeNativeModules({
+    e2b: {
+      Sandbox: { getInfo: native.get, listSnapshots: vi.fn(), deleteSnapshot: vi.fn() },
+      SandboxNotFoundError: NativeNotFound,
+    },
   });
   native.get.mockRejectedValue(new NativeNotFound());
   expect((await lookupSandbox({ ...memory(), name: "e2b" }, "target", 100)).result).toBe(
