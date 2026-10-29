@@ -3,7 +3,8 @@ import type { Boxd, Machine } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { boxdError, failure } from "./errors.js";
-import { files, python, quote, type Guest } from "./guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
+import { quote } from "../../shared/shell.js";
 import { execute } from "./execute.js";
 import { FileTransfers } from "./transfers.js";
 

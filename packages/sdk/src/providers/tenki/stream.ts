@@ -1,5 +1,5 @@
-import { guestSpec } from "../freestyle/wire.js";
-import { guestProcess } from "../boxd/guest.js";
+import { guestSpec } from "../../shared/wire.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";

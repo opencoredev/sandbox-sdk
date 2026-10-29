@@ -2,7 +2,7 @@
 import type { NetworkConfig, Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
-import { files, python, type Guest } from "../boxd/guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
 import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
 import { bootstrapCommand, checkBootstrap } from "./bootstrap.js";

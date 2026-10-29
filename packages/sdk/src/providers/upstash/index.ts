@@ -29,7 +29,8 @@ import type {
   Preview,
 } from "../../provider.js";
 import { Redactor, SandboxError } from "../../errors.js";
-import { defaults, quote } from "../../run.js";
+import { defaults } from "../../run.js";
+import { quote } from "../../shared/shell.js";
 import { bufferedExecute } from "./buffered.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";

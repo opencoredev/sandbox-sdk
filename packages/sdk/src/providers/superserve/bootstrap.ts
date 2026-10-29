@@ -1,4 +1,4 @@
-import { python } from "../boxd/guest.js";
+import { python } from "../../shared/guest.js";
 import { failure } from "./errors.js";
 import { supervisor, supervisorPath } from "./execute.js";
 

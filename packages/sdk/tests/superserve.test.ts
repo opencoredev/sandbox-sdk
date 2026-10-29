@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockGuest } from "./cloud-guest-mock.js";
-import { quote } from "../src/providers/boxd/guest.js";
+import { quote } from "../src/shared/shell.js";
 
 const state = vi.hoisted(() => ({
   boxes: new Map<

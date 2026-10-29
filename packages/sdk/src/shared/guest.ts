@@ -1,7 +1,6 @@
-import type { FileInfo, ProviderFiles } from "../../provider.js";
-import { SandboxError, type ErrorCode } from "../../errors.js";
-
-export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+import type { FileInfo, ProviderFiles } from "../provider.js";
+import { SandboxError, type ErrorCode } from "../errors.js";
+import { quote } from "./shell.js";
 
 export const python = (code: string, ...args: string[]) =>
   `python3 -c ${quote(code)} ${args.map(quote).join(" ")}`;

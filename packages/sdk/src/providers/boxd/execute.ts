@@ -1,6 +1,7 @@
 import type { Boxd } from "@boxd-sh/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { guestProcess, python, quote } from "./guest.js";
+import { guestProcess, python } from "../../shared/guest.js";
+import { quote } from "../../shared/shell.js";
 import { failure } from "./errors.js";
 
 // env in the native boxd ExecParams is prefixed onto command text. Instead,

@@ -1,8 +1,9 @@
-import { guestProcess } from "../boxd/guest.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Box } from "@upstash/box";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { defaults, quote } from "../../run.js";
+import { defaults } from "../../run.js";
+import { quote } from "../../shared/shell.js";
 
 const bridge = `import os,select,_signal as signal,sys,time,fcntl
 ${guestProcess}

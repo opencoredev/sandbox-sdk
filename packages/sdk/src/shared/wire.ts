@@ -1,4 +1,4 @@
-import type { ExecInput } from "../../provider.js";
+import type { ExecInput } from "../provider.js";
 
 type Spec = Pick<ExecInput, "command" | "cwd" | "env" | "stdin" | "timeoutMs" | "activityPath"> & {
   marker?: string;

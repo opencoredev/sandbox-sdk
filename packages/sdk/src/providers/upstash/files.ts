@@ -2,10 +2,10 @@ import { posix } from "node:path";
 import type { Box } from "@upstash/box";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
+import { quote } from "../../shared/shell.js";
 
 // Base64 plus JSON must fit the native request body; read ranges cap at 8 MiB.
 const chunkSize = 4 * 1024 * 1024;
-const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 export async function readFile(box: Box, path: string, range?: { offset: number; length: number }) {
   if (!range) {

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from "freestyle";
 import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
-import { files, python, type Guest } from "../boxd/guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
 import {
   failure,
   freestyleError,

@@ -1,4 +1,4 @@
-import { guestProcess } from "../boxd/guest.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";

@@ -2,6 +2,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Box, ExecSessionHandle } from "@upstash/box";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
+import { quote } from "../../shared/shell.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 
 /** Session signals target the whole process tree; wait acknowledges termination. */
@@ -111,7 +112,6 @@ export async function startProcess(
   halt: (dir: string) => Promise<unknown>,
   prepare?: string,
 ) {
-  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;
   const envPath = `${dir}/env`;
   // command() has no env option, unlike session(). Keep values in a private
