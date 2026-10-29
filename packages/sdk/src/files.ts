@@ -45,6 +45,26 @@ export interface Files {
   changes(options?: { since?: string }): Promise<FileDiff>;
 }
 
+/** A unified diff hunk that replaces a whole file. undefined content means the file is absent. */
+function wholeFilePatch(path: string, before: string | undefined, after: string | undefined) {
+  const lines = (text: string | undefined) => (text ? text.replace(/\n$/, "").split("\n") : []);
+  const oldLines = lines(before);
+  const newLines = lines(after);
+
+  const noNewline = (text: string | undefined, count: number) =>
+    count && !text?.endsWith("\n") ? "\\ No newline at end of file\n" : "";
+
+  return [
+    `--- ${before === undefined ? "/dev/null" : `a/${path}`}\n`,
+    `+++ ${after === undefined ? "/dev/null" : `b/${path}`}\n`,
+    `@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n`,
+    ...oldLines.map((line) => `-${line}\n`),
+    noNewline(before, oldLines.length),
+    ...newLines.map((line) => `+${line}\n`),
+    noNewline(after, newLines.length),
+  ].join("");
+}
+
 export function globMatch(path: string, glob: string) {
   const pattern = glob
     .split(/(\*\*\/|\*\*|\*|\?)/)
@@ -663,15 +683,13 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         );
 
         const patch = [...added, ...modified, ...removed]
-          .map((path) => {
-            const beforeText = Buffer.from(before[path] ?? "", "base64").toString(),
-              afterText = Buffer.from(after[path] ?? "", "base64").toString();
-
-            const oldLines = beforeText ? beforeText.replace(/\n$/, "").split("\n") : [];
-            const newLines = afterText ? afterText.replace(/\n$/, "").split("\n") : [];
-
-            return `--- ${path in before ? "a/" + posix.relative("/workspace", path) : "/dev/null"}\n+++ ${path in after ? "b/" + posix.relative("/workspace", path) : "/dev/null"}\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n${oldLines.map((line) => "-" + line + "\n").join("")}${oldLines.length && !beforeText.endsWith("\n") ? "\\ No newline at end of file\n" : ""}${newLines.map((line) => "+" + line + "\n").join("")}${newLines.length && !afterText.endsWith("\n") ? "\\ No newline at end of file\n" : ""}`;
-          })
+          .map((path) =>
+            wholeFilePatch(
+              posix.relative("/workspace", path),
+              path in before ? Buffer.from(before[path] ?? "", "base64").toString() : undefined,
+              path in after ? Buffer.from(after[path] ?? "", "base64").toString() : undefined,
+            ),
+          )
           .join("");
 
         return { added, modified, removed, patch: redactor.text(patch) };

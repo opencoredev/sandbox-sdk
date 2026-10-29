@@ -346,71 +346,87 @@ export async function reapSandboxes(
   )
     invalid("olderThanMs must be non-negative");
   const isActive = options.idleOnly ? (await import("./run.js")).isRunActive : () => false;
+  const minAge = options.olderThanMs ?? 0;
   let count = 0;
 
   try {
-    for (const info of await listSandboxes(provider, options))
-      if (Date.now() - info.createdAt >= (options.olderThanMs ?? 0)) {
-        if (options.idleOnly) {
-          if (isActive(provider.name, info.id)) continue;
-          let box;
+    for (const info of await listSandboxes(provider, options)) {
+      if (Date.now() - info.createdAt < minAge) continue;
 
-          try {
-            const connected = await provider.connect(info.id);
-            const { makeHandle } = await import("./handle.js");
-            box = await makeHandle(provider, connected, false, {}, new Redactor(), false);
-          } catch (error) {
-            if (error instanceof SandboxError && error.code === "not_found") {
-              count++;
-              continue;
-            }
-
-            throw error;
-          }
-
-          try {
-            const [processes, runs] = await Promise.all([
-              box.processes(),
-              box.files.list("/tmp/.sandbox-sdk/runs").catch(async (error) => {
-                // Some adapters report a missing path as a generic provider error.
-                if (isNotFound(error)) return [];
-
-                if (
-                  error instanceof SandboxError &&
-                  error.code === "provider" &&
-                  !(await box.files.exists("/tmp/.sandbox-sdk/runs"))
-                )
-                  return [];
-                throw error;
-              }),
-            ]);
-
-            if (
-              processes.some(
-                (process) => process.status === "running" || process.status === "starting",
-              ) ||
-              runs.length > 0
-            )
-              continue;
-          } finally {
-            await box.close();
-          }
-        }
-
+      if (options.idleOnly) {
         if (isActive(provider.name, info.id)) continue;
-        forgetSandbox(provider, info.id);
+        const activity = await sandboxActivity(provider, info.id);
 
-        try {
-          await provider.destroy(info.id);
-        } catch (error) {
-          if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
+        // Already gone counts as reaped.
+        if (activity === "gone") {
+          count++;
+          continue;
         }
 
-        count++;
+        if (activity === "busy") continue;
       }
+
+      // A run from this realm may have started while the sandbox was inspected.
+      if (isActive(provider.name, info.id)) continue;
+      forgetSandbox(provider, info.id);
+
+      try {
+        await provider.destroy(info.id);
+      } catch (error) {
+        if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
+      }
+
+      count++;
+    }
 
     return count;
   } catch (error) {
     throw new Redactor().error(error, provider.name);
+  }
+}
+
+const runsDir = "/tmp/.sandbox-sdk/runs";
+
+/** Whether a sandbox is idle, still has a live process or run, or no longer exists. */
+async function sandboxActivity(provider: Provider, id: string): Promise<"idle" | "busy" | "gone"> {
+  let box: SandboxBase<unknown>;
+
+  try {
+    const info = await provider.connect(id);
+    const { makeHandle } = await import("./handle.js");
+    box = await makeHandle(provider, info, false, {}, new Redactor(), false);
+  } catch (error) {
+    if (error instanceof SandboxError && error.code === "not_found") return "gone";
+    throw error;
+  }
+
+  try {
+    const [processes, runs] = await Promise.all([box.processes(), runMarkers(box)]);
+
+    const live = processes.some(
+      (process) => process.status === "running" || process.status === "starting",
+    );
+
+    return live || runs.length > 0 ? "busy" : "idle";
+  } finally {
+    await box.close();
+  }
+}
+
+/** Activity markers of in-flight runs; none when the runs directory does not exist. */
+async function runMarkers(box: SandboxBase<unknown>) {
+  try {
+    return await box.files.list(runsDir);
+  } catch (error) {
+    if (isNotFound(error)) return [];
+
+    // Some adapters report a missing path as a generic provider error.
+    if (
+      error instanceof SandboxError &&
+      error.code === "provider" &&
+      !(await box.files.exists(runsDir))
+    )
+      return [];
+    throw error;
   }
 }

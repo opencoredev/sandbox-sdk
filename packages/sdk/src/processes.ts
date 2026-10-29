@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
@@ -924,14 +925,12 @@ export function makeProcesses(
         const result: ProcessInfo[] = [];
         const directories = entries.filter((entry) => entry.type === "directory");
 
-        for (let offset = 0; offset < directories.length; offset += 4)
-          result.push(
-            ...(await Promise.all(
-              directories
-                .slice(offset, offset + 4)
-                .map((dir) => info(dir.path.split("/").pop() ?? "")),
-            )),
-          );
+        // Four records at a time keeps provider calls bounded on sandboxes with many processes.
+        for (let offset = 0; offset < directories.length; offset += 4) {
+          const batch = directories.slice(offset, offset + 4);
+          const names = batch.map((entry) => posix.basename(entry.path));
+          result.push(...(await Promise.all(names.map((name) => info(name)))));
+        }
 
         return result;
       }),
