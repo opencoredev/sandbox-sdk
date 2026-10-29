@@ -12,6 +12,7 @@ import type { Sandbox, SandboxTemplate, CreateOptions } from "railway";
 import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, Labels, FileInfo, ExecInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
+import { quote } from "../../shared/shell.js";
 import { railwayError, unsupported } from "./errors.js";
 
 export type RailwayOptions = {
@@ -48,8 +49,6 @@ const execTag = "SANDBOX_SDK_EXEC_ID";
 // One grep reads every environ file (NUL-separated, so -z), then each match is killed.
 const reapCommand = (token: string) =>
   `for f in $(grep -lzx ${quote(`${execTag}=${token}`)} /proc/[0-9]*/environ 2>/dev/null); do p=\${f#/proc/}; kill -KILL "\${p%/environ}" 2>/dev/null; done; true`;
-
-const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
 
 type Metadata = { version: 1; key?: string; labels: Labels };
 

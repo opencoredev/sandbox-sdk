@@ -1,11 +1,11 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
 import { daytonaError } from "./errors.js";
 import { bufferedExecute } from "./buffered.js";
 import { download, upload } from "./transfer.js";
 import { SandboxError } from "../../errors.js";
-
-export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+import { quote } from "../../shared/shell.js";
 
 // Session logs are line-normalized by the native transport. Encode each pipe
 // chunk so terminal newlines and byte boundaries survive that normalization.
@@ -28,8 +28,6 @@ if a: shutil.rmtree(a,ignore_errors=True)
 print("X:",flush=True)
 sys.exit(code if code>=0 else 128-code)
 `;
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Each call has a new session and process group. Stdin comes from a private file
  * because session input has no documented EOF operation. Native process hooks

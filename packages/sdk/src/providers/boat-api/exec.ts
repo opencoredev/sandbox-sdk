@@ -1,11 +1,11 @@
 import type { BoatApi } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { defaults } from "../../run.js";
+import { quote } from "../../shared/shell.js";
 import { loadPeer } from "../../peer.js";
 import { errors } from "./errors.js";
 
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
-export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** Boat's file API accepts at most 5 MiB per write, after decoding, and only
  * under /home/user or /tmp. Keep a margin below that limit. */

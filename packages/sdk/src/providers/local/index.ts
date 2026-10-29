@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Provider, SandboxInfo, FileInfo, CreateInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
+import { quote } from "../../shared/shell.js";
 import { Docker, object, string, number, array, encode, failure, parse } from "./docker.js";
 
 /** One Docker mount. Anonymous volumes and tmpfs mounts are removed with the container; named volumes and bind sources are not. */
@@ -60,7 +61,6 @@ const userLabels = (labels: Record<string, string>) =>
   Object.fromEntries(Object.entries(labels).filter(([key]) => !internal.has(key)));
 
 const name = (key: string) => `sandbox-sdk-${createHash("sha256").update(key).digest("hex")}`;
-const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 
 const presets = {
   small: { cpu: 1, memoryMb: 1024 },

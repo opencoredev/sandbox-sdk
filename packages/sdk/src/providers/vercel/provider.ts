@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import type { NetworkPolicy, Sandbox, SandboxMounts, SandboxRegion } from "@vercel/sandbox";
 import type { Provider, CreateInput, SandboxInfo, FileInfo, ExecInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { quote } from "../../run.js";
+import { quote } from "../../shared/shell.js";
 import { apiCode, unsupported, vercelError } from "./errors.js";
 import type { NativeSandbox, VercelClient } from "./transport.js";
 

@@ -13,6 +13,7 @@ import type { Provider, SandboxInfo, FileInfo } from "../../provider.js";
 import { agentosError, failure } from "./errors.js";
 import { loadPeer } from "../../peer.js";
 import { nativeDetail } from "../../errors.js";
+import { quote } from "../../shared/shell.js";
 
 export interface AgentosOptions {
   /** Trusted local .aospkg file; otherwise install Rivet's pinned Git release. */
@@ -47,8 +48,6 @@ function entry(id: string): Entry {
 function info(value: SandboxInfo): SandboxInfo {
   return { ...value, labels: { ...value.labels } };
 }
-
-const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 
 function stat(path: string, value: VirtualStat): FileInfo {
   return {

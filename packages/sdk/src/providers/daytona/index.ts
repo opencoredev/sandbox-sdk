@@ -12,7 +12,8 @@ import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
 import { daytonaError, unsupported } from "./errors.js";
 import { download, upload } from "./transfer.js";
-import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
+import { quote } from "../../shared/shell.js";
+import { execute, sessionProcess, workspaceCommand } from "./exec.js";
 
 export interface DaytonaOptions {
   /** Defaults to DAYTONA_API_KEY; required on first use unless jwtToken is set. */
