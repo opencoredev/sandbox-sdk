@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "blume dev",
     "build": "blume build",
-    "check": "blume check --strict --isolated && blume validate --strict",
-    "typecheck": "blume check --strict --isolated && bun run snippets",
+    "check": "blume check --strict --isolated && blume validate --strict && bun run capabilities",
+    "typecheck": "blume check --strict --isolated && bun run snippets && bun run capabilities",
     "snippets": "bun scripts/check-snippets.ts",
+    "capabilities": "bun scripts/check-capabilities.ts",
     "lint": "oxlint ."
   },
   "dependencies": {
