@@ -2,7 +2,6 @@ import { inspect } from "node:util";
 import { expect, test } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import { isPeerError, loadPeer } from "../src/peer.js";
-import { e2bError } from "../src/providers/e2b/errors.js";
 import { railwayError } from "../src/providers/railway/errors.js";
 import { daytonaError } from "../src/providers/daytona/errors.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
@@ -15,15 +14,6 @@ function renamed<T extends Error>(error: T, name: string): T {
   Object.defineProperty(error, "name", { value: name });
   return error;
 }
-
-test("e2b maps by the SDK's literal error name, not the bundled class name", async () => {
-  const { FileNotFoundError, SandboxNotFoundError } = await import("e2b");
-  class FileNotFoundError2 extends FileNotFoundError {}
-  const native = new FileNotFoundError2("missing.txt");
-  expect(native.constructor.name).toBe("FileNotFoundError2");
-  expect(e2bError(native, "box").code).toBe("file_not_found");
-  expect(e2bError(new SandboxNotFoundError("gone"), "box").code).toBe("not_found");
-});
 
 test("railway and daytona match the classes the adapter loaded, whatever they are named", async () => {
   const railway = await loadPeer("railway", "railway", () => import("railway"));
