@@ -2,6 +2,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Box, ExecSessionHandle } from "@upstash/box";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
+import { quote } from "../../shared/shell.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 
 /** Session signals target the whole process tree; wait acknowledges termination. */
@@ -108,10 +109,9 @@ export async function execute(
 export async function startProcess(
   box: Box,
   input: Omit<ExecInput, "timeoutMs">,
-  halt: (dir: string) => Promise<unknown>,
+  halt: (dir: string) => Promise<void>,
   prepare?: string,
 ) {
-  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;
   const envPath = `${dir}/env`;
   // command() has no env option, unlike session(). Keep values in a private
@@ -156,6 +156,7 @@ export async function startProcess(
 
     if (pid === undefined) throw new Error("Durable process PID missing");
   } catch (error) {
+    // Best effort: halt() below stops the box if the env file stays behind.
     await box.files.remove(envPath).catch(() => {});
     // Without a confirmed PID, stopping the box is the only safe cleanup.
     await halt(dir);
@@ -192,6 +193,7 @@ export async function startProcess(
     }
   })();
 
+  // Callers observe wait() themselves; this only marks an unobserved failure handled.
   void wait.catch(() => {});
 
   const signal = async (kind: "TERM" | "KILL") => {

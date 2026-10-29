@@ -1,10 +1,12 @@
-import { guestProcess } from "../boxd/guest.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 import { executeStream } from "./stream.js";
 import { workspaceSetup } from "./ready.js";
+import { isChunk, isRunResult } from "./records.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
@@ -61,6 +63,7 @@ finally:
   except FileNotFoundError: pass
 `;
 
+// Prints up to three complete spool records from argv[1] after byte offset argv[2].
 const page = `import sys,json
 pos=int(sys.argv[2]); chunks=[]
 try:
@@ -73,6 +76,18 @@ try:
 except FileNotFoundError: pass
 print(json.dumps({'offset':pos,'chunks':chunks}))
 `;
+
+// Waits up to 30 s for the PID in argv[1], then kills its process group.
+const killProgram = `import os,sys,time,signal
+p=sys.argv[1]
+for _ in range(3000):
+ try:
+  with open(p) as f: pid=int(f.read())
+  break
+ except (FileNotFoundError,ValueError): time.sleep(.01)
+else: raise RuntimeError('PID unavailable')
+try: os.killpg(pid,signal.SIGKILL)
+except ProcessLookupError: pass`;
 
 export async function raw(
   box: Session,
@@ -105,7 +120,8 @@ export async function execute(
   input: ExecInput,
   workspaceRoot?: (root: string, stable: boolean) => void,
 ) {
-  if (typeof box.requireDataPlane === "function") return executeStream(box, input, workspaceRoot);
+  // A client without the data plane falls back to buffered Session.run() pages.
+  if (box.requireDataPlane !== undefined) return executeStream(box, input, workspaceRoot);
 
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
@@ -205,10 +221,9 @@ export async function execute(
       );
 
       if (
-        !value ||
-        typeof value !== "object" ||
+        !isObject(value) ||
         !("offset" in value) ||
-        typeof value.offset !== "number" ||
+        !isNumber(value.offset) ||
         !Number.isSafeInteger(value.offset) ||
         value.offset < offset ||
         !("chunks" in value) ||
@@ -220,16 +235,9 @@ export async function execute(
       offset = value.offset;
 
       for (const chunk of value.chunks) {
-        if (
-          !Array.isArray(chunk) ||
-          chunk.length !== 2 ||
-          (chunk[0] !== "stdout" && chunk[0] !== "stderr") ||
-          typeof chunk[1] !== "string" ||
-          chunk[1].length > 21848
-        )
-          throw failure("Invalid output chunk");
-        const stream = chunk[0] === "stdout" ? "stdout" : "stderr";
-        const text = decoders[stream].decode(Buffer.from(chunk[1], "base64"), { stream: true });
+        if (!isChunk(chunk)) throw failure("Invalid output chunk");
+        const [stream, base64] = chunk;
+        const text = decoders[stream].decode(Buffer.from(base64, "base64"), { stream: true });
 
         if (text && !outputTransport.signal.aborted) input.onChunk({ stream, text });
       }
@@ -257,17 +265,9 @@ export async function execute(
       await raw(box, ["cat", `${marker}.exit`], undefined, 30_000, outputTransport.signal),
     );
 
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("exitCode" in value) ||
-      !("timedOut" in value) ||
-      (value.exitCode !== null && typeof value.exitCode !== "number") ||
-      typeof value.timedOut !== "boolean"
-    )
-      throw failure("Invalid command result");
+    if (!isRunResult(value)) throw failure("Invalid command result");
 
-    if ("workspaceRoot" in value && typeof value.workspaceRoot === "string")
+    if ("workspaceRoot" in value && isString(value.workspaceRoot))
       workspaceRoot?.(
         value.workspaceRoot,
         "workspaceStable" in value && value.workspaceStable === true,
@@ -276,30 +276,12 @@ export async function execute(
     return { exitCode: value.exitCode, timedOut: value.timedOut };
   });
 
+  // Cancellation can abandon completion; its later failure is not the caller's error.
   void completion.catch(() => {});
 
   async function killGroup() {
     // Poll after launch: cancellation may arrive before the guest publishes its PID.
-    await raw(
-      box,
-      [
-        "python3",
-        "-c",
-        `import os,sys,time,signal
-p=sys.argv[1]
-for _ in range(3000):
- try:
-  with open(p) as f: pid=int(f.read())
-  break
- except (FileNotFoundError,ValueError): time.sleep(.01)
-else: raise RuntimeError('PID unavailable')
-try: os.killpg(pid,signal.SIGKILL)
-except ProcessLookupError: pass`,
-        marker,
-      ],
-      undefined,
-      1000,
-    );
+    await raw(box, ["python3", "-c", killProgram, marker], undefined, 1000);
   }
 
   try {
@@ -310,6 +292,7 @@ except ProcessLookupError: pass`,
       try {
         await killGroup();
       } catch {
+        // Best effort: the outcome_unknown error below already tells the caller.
         await deadline(() => box.close(), 1000).catch(() => {});
         throw failure(
           "Process cancellation could not be confirmed; VM termination was requested",
@@ -317,10 +300,9 @@ except ProcessLookupError: pass`,
         );
       }
 
+      // Let the supervisor record its exit; a cancelled run reports timedOut either way.
       await deadline(() => completion, 250).catch(() => {});
       transport.abort();
-
-      for (const reader of readers) void reader.cancel().catch(() => {});
 
       return { exitCode: null, timedOut: true };
     }
@@ -331,6 +313,7 @@ except ProcessLookupError: pass`,
     try {
       await killGroup();
     } catch {
+      // Best effort: the original error is the one the caller needs.
       await deadline(() => box.close(), 1000).catch(() => {});
     }
 
@@ -339,14 +322,12 @@ except ProcessLookupError: pass`,
     outputTransport.abort();
     transport.abort();
 
-    for (const reader of readers) {
-      try {
-        void reader.cancel().catch(() => {});
-      } catch {}
-    }
+    // A released reader rejects cancel(); the stream is finished either way.
+    for (const reader of readers) void reader.cancel().catch(() => {});
 
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
+    // Best-effort removal of this run's guest files.
     await raw(box, ["rm", "-f", marker, `${marker}.exit`, `${marker}.out`], undefined, 250).catch(
       () => {},
     );

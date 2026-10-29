@@ -1305,7 +1305,9 @@ test("/workspace stats as a directory on a fresh sandbox and stays that way, so 
     expect((await box.files.stat("/workspace")).type).toBe("directory");
     const tools = createSandboxTools(box);
 
-    const invoke = (name: string, input: unknown) => {
+    type ToolInput = Parameters<(typeof tools)[number]["execute"]>[0];
+
+    const invoke = (name: string, input: ToolInput) => {
       const tool = tools.find((tool) => tool.name === name);
 
       if (!tool) throw new Error(`Missing ${name}`);

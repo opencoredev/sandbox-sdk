@@ -29,7 +29,9 @@ import type {
   Preview,
 } from "../../provider.js";
 import { Redactor, SandboxError } from "../../errors.js";
-import { defaults, quote } from "../../run.js";
+import { defaults } from "../../run.js";
+import { isObject, isString } from "../../shared/narrow.js";
+import { quote } from "../../shared/shell.js";
 import { bufferedExecute } from "./buffered.js";
 import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
@@ -92,6 +94,32 @@ const initCommand = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" 
 
 type Metadata = { version: 1; key?: string; labels: Labels };
 
+/** Metadata as stored, before each label is checked. */
+type StoredMetadata = { version: 1; key?: string; labels: object };
+
+function isStoredMetadata(value: unknown): value is StoredMetadata {
+  return (
+    isObject(value) &&
+    "version" in value &&
+    value.version === 1 &&
+    "labels" in value &&
+    isObject(value.labels) &&
+    !Array.isArray(value.labels) &&
+    (!("key" in value) || isString(value.key))
+  );
+}
+
+/** The account snapshot list; each entry is checked as it is read. */
+type SnapshotList = { snapshots: unknown[] | null };
+
+function isSnapshotList(value: unknown): value is SnapshotList {
+  return (
+    isObject(value) &&
+    "snapshots" in value &&
+    (value.snapshots === null || Array.isArray(value.snapshots))
+  );
+}
+
 function metadata(text: string): Metadata {
   let value: unknown;
 
@@ -101,22 +129,12 @@ function metadata(text: string): Metadata {
     throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" });
   }
 
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !("version" in value) ||
-    value.version !== 1 ||
-    !("labels" in value) ||
-    !value.labels ||
-    typeof value.labels !== "object" ||
-    Array.isArray(value.labels) ||
-    ("key" in value && typeof value.key !== "string")
-  )
+  if (!isStoredMetadata(value))
     throw new SandboxError("Invalid SDK metadata", { code: "not_found", provider: "upstash" });
   const labels: Labels = {};
 
   for (const [key, item] of Object.entries(value.labels)) {
-    if (typeof item !== "string")
+    if (!isString(item))
       throw new SandboxError("Invalid SDK label", { code: "not_found", provider: "upstash" });
     Object.defineProperty(labels, key, {
       value: item,
@@ -126,11 +144,7 @@ function metadata(text: string): Metadata {
     });
   }
 
-  return {
-    version: 1,
-    labels,
-    ...("key" in value && typeof value.key === "string" ? { key: value.key } : {}),
-  };
+  return value.key === undefined ? { version: 1, labels } : { version: 1, labels, key: value.key };
 }
 
 function info(data: Pick<BoxData, "id" | "status" | "created_at">, meta: Metadata): SandboxInfo {
@@ -158,7 +172,7 @@ function fileInfo(path: string, file: FileStat): FileInfo {
 }
 
 function network(input: CreateInput["network"]): NetworkPolicy {
-  if (typeof input !== "object") return { mode: input === "none" ? "deny-all" : "allow-all" };
+  if (!isObject(input)) return { mode: input === "none" ? "deny-all" : "allow-all" };
 
   if (!input.allow.length) return { mode: "deny-all" };
 
@@ -305,12 +319,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
       });
     const data: unknown = await response.json();
 
-    if (
-      !data ||
-      typeof data !== "object" ||
-      !("snapshots" in data) ||
-      (data.snapshots !== null && !Array.isArray(data.snapshots))
-    )
+    if (!isSnapshotList(data))
       throw new SandboxError(
         "Invalid snapshot metadata response. Upstash did not return a snapshot list. Retry when the service is available.",
         { code: "provider", provider: "upstash" },
@@ -319,10 +328,9 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
     for (const item of data.snapshots ?? []) {
       const snapshot: unknown = item;
 
-      if (!snapshot || typeof snapshot !== "object" || !("id" in snapshot) || snapshot.id !== id)
-        continue;
+      if (!isObject(snapshot) || !("id" in snapshot) || snapshot.id !== id) continue;
 
-      if ("name" in snapshot && typeof snapshot.name === "string") {
+      if ("name" in snapshot && isString(snapshot.name)) {
         const size = /^sdk-v1-(small|medium|large)-/.exec(snapshot.name)?.[1];
 
         if (size === "small" || size === "medium" || size === "large") return size;
@@ -330,7 +338,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
 
       // Legacy/native snapshots have no SDK size tag. A surviving source box
       // supplies its actual size; never silently default a vanished source to Small.
-      if ("box_id" in snapshot && typeof snapshot.box_id === "string") {
+      if ("box_id" in snapshot && isString(snapshot.box_id)) {
         try {
           return (await box(snapshot.box_id)).size;
         } catch (error) {
@@ -365,7 +373,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
               "Custom idle deadlines and hard lifetimes are not available on durable boxes",
             );
 
-          if (input.size !== undefined && typeof input.size !== "string")
+          if (input.size !== undefined && !isString(input.size))
             unsupported(
               "Use small, medium, or large; exact CPU, memory, and disk sizes are unavailable",
             );
@@ -388,7 +396,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
             labels: { ...input.labels, "sandbox-sdk": "1" },
           };
 
-          const params = {
+          const params: BoxConfig & EphemeralBoxConfig = {
             ...config,
             runtime: options.runtime,
             size:
@@ -398,18 +406,17 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
             labels: [marker],
             networkPolicy: policy,
             timeout: options.requestTimeoutMs,
-            ...(options.attachHeaders === undefined
-              ? {}
-              : { attachHeaders: options.attachHeaders }),
-          } satisfies BoxConfig & EphemeralBoxConfig;
+          };
 
+          if (options.attachHeaders !== undefined) params.attachHeaders = options.attachHeaders;
           // Durable-only settings; the ephemeral option type has no such fields.
-          const durable = options.ephemeral
-            ? {}
-            : ({
-                ...(options.keepAlive === undefined ? {} : { keepAlive: options.keepAlive }),
-                ...(options.browser === undefined ? {} : { browser: options.browser }),
-              } satisfies BoxConfig);
+          const durable: Pick<BoxConfig, "keepAlive" | "browser"> = {};
+
+          if (!options.ephemeral && options.keepAlive !== undefined)
+            durable.keepAlive = options.keepAlive;
+
+          if (!options.ephemeral && options.browser !== undefined)
+            durable.browser = options.browser;
 
           const createdAt = Date.now();
 
@@ -444,12 +451,10 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
                       updated_at: createdAt / 1000,
                       size: params.size ?? "small",
                       labels: [marker],
-                      network_policy: {
-                        mode: policy.mode,
-                        ...("allowedDomains" in policy
-                          ? { allowed_domains: policy.allowedDomains }
-                          : {}),
-                      },
+                      network_policy:
+                        "allowedDomains" in policy
+                          ? { mode: policy.mode, allowed_domains: policy.allowedDomains }
+                          : { mode: policy.mode },
                     },
                     {
                       baseUrl: (
@@ -620,11 +625,14 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           // Ephemeral boxes cannot pause; kill the launcher's group, found by its private run path.
           const halt =
             ttl === undefined
-              ? () => value.pause()
-              : (dir: string) =>
-                  value.exec.command(
+              ? async () => {
+                  await value.pause();
+                }
+              : async (dir: string) => {
+                  await value.exec.command(
                     `for p in $(pgrep -f ${quote(`[${dir[1]}]${dir.slice(2)}/`)}); do kill -KILL -$p 2>/dev/null; done; true`,
                   );
+                };
 
           const hook = await startProcess(
             value,
@@ -642,6 +650,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           }
 
           active.add(hook.detach);
+          // Only forget the monitor here; the process handle reports any failure.
           void hook
             .wait()
             .finally(() => active.delete(hook.detach))
@@ -776,10 +785,9 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           if (!options.public && !link.token)
             throw new Error("Protected preview returned no bearer token");
 
-          return {
-            url: link.url,
-            ...(link.token ? { headers: { Authorization: `Bearer ${link.token}` } } : {}),
-          };
+          return link.token
+            ? { url: link.url, headers: { Authorization: `Bearer ${link.token}` } }
+            : { url: link.url };
         },
         id,
         false,
@@ -791,31 +799,6 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
 
       return pending;
     },
-    // Ephemeral boxes reject pause, so the methods are absent with the capability.
-    ...(ttl === undefined
-      ? {
-          pause: (id: string) =>
-            safe(
-              async () => {
-                detach(id);
-                await (await box(id)).pause();
-              },
-              id,
-              false,
-              "pause",
-            ),
-          resume: (id: string) =>
-            safe(
-              async () => {
-                const value = await box(id);
-                await value.resume();
-              },
-              id,
-              false,
-              "resume",
-            ),
-        }
-      : {}),
     snapshot: (id, settings) =>
       safe(
         async () => {
@@ -855,6 +838,30 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
       return value;
     },
   };
+
+  // Ephemeral boxes reject pause, so the methods are absent with the capability.
+  if (ttl === undefined) {
+    provider.pause = (id) =>
+      safe(
+        async () => {
+          detach(id);
+          await (await box(id)).pause();
+        },
+        id,
+        false,
+        "pause",
+      );
+    provider.resume = (id) =>
+      safe(
+        async () => {
+          const value = await box(id);
+          await value.resume();
+        },
+        id,
+        false,
+        "resume",
+      );
+  }
 
   return provider;
 }

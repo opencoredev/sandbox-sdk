@@ -20,7 +20,7 @@ export async function waitReady(
 
   // Match native create(): a running allocation with route credentials needs
   // no control-plane readiness stream before its first data-plane operation.
-  if (running() && typeof value.dataPlaneRPC === "function" && value.dataPlaneRPC()) return;
+  if (running() && value.dataPlaneRPC !== undefined && value.dataPlaneRPC()) return;
 
   try {
     await deadline(
@@ -81,6 +81,7 @@ export async function waitReady(
   });
 }
 
+// Links /workspace to durable disk once per sandbox, under a lock.
 export const workspaceSetup = `workspace=globals().get('v',{}).get('workspace','/workspace')
 home=os.path.join(os.path.dirname(workspace),'home','tenki')
 tmp=os.path.join(os.path.dirname(workspace),'tmp')

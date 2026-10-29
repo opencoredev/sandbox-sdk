@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from "freestyle";
 import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
-import { files, python, type Guest } from "../boxd/guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
+import { isObject, isString } from "../../shared/narrow.js";
 import {
   failure,
   freestyleError,
@@ -40,7 +41,7 @@ const supervisorHash = createHash("sha256").update(supervisor).digest("hex");
 // interrupted. Freestyle allows 64 entries with at most 63 characters each.
 const nativeInfo = "sandbox-sdk-info";
 
-function creationMetadata(input: CreateInput): Record<string, string> {
+function creationMetadata(input: CreateInput) {
   const encoded = Buffer.from(
     JSON.stringify({ key: input.key ?? null, labels: input.labels }),
   ).toString("base64url");
@@ -59,6 +60,20 @@ function creationMetadata(input: CreateInput): Record<string, string> {
 
 const envFile = "/var/lib/sandbox-sdk-env.json";
 
+/** The marker JSON written at creation. Labels are checked one by one. */
+type StoredMetadata = { key: string | null; labels: object };
+
+function isStoredMetadata(value: unknown): value is StoredMetadata {
+  return (
+    isObject(value) &&
+    "key" in value &&
+    (value.key === null || isString(value.key)) &&
+    "labels" in value &&
+    isObject(value.labels) &&
+    !Array.isArray(value.labels)
+  );
+}
+
 function seconds(value: number | undefined, hard: boolean) {
   if (value === undefined) return undefined;
 
@@ -72,17 +87,36 @@ function seconds(value: number | undefined, hard: boolean) {
 }
 
 function rules(input: CreateInput): InlineFirewallRule[] {
-  if (
-    input.network === "none" ||
-    (typeof input.network === "object" && input.network.allow.length === 0)
-  )
+  if (input.network === "none" || (isObject(input.network) && input.network.allow.length === 0))
     return [];
 
-  if (typeof input.network === "object")
+  if (isObject(input.network))
     throw failure("Host allow lists are not implemented; use all or none", "unsupported");
 
   return [{ action: "allow", source: {}, destination: { public: true } }];
 }
+
+// Writes the pending SDK files, then execs the command with its stdin.
+const prepareAndRun = `import os,sys,json,tempfile,base64
+v=json.load(sys.stdin)
+for path in ['/workspace','/tmp/.sandbox-sdk']:
+ os.makedirs(path,exist_ok=True)
+for path,content in v['files']:
+ os.makedirs(os.path.dirname(path),exist_ok=True)
+ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
+ try:
+  with os.fdopen(fd,'w') as f: f.write(content)
+  os.replace(tmp,path)
+ finally:
+  if os.path.exists(tmp): os.unlink(tmp)
+with tempfile.TemporaryFile() as f:
+ f.write(base64.b64decode(v.get('stdin') or '')); f.seek(0); os.dup2(f.fileno(),0)
+ print('SDK_PREPARED:',end='',flush=True)
+ os.execvp('sh',['sh','-c',v['command']])`;
+
+// Writes stdin to argv[1], creating its parent and applying octal mode argv[2] if set.
+const uploadFile =
+  "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)";
 
 export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
@@ -193,22 +227,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     if (!contents) return value.exec({ command, stdin, linuxUser: "root", timeoutMs });
 
     const result = await value.exec({
-      command: python(`import os,sys,json,tempfile,base64
-v=json.load(sys.stdin)
-for path in ['/workspace','/tmp/.sandbox-sdk']:
- os.makedirs(path,exist_ok=True)
-for path,content in v['files']:
- os.makedirs(os.path.dirname(path),exist_ok=True)
- fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
- try:
-  with os.fdopen(fd,'w') as f: f.write(content)
-  os.replace(tmp,path)
- finally:
-  if os.path.exists(tmp): os.unlink(tmp)
-with tempfile.TemporaryFile() as f:
- f.write(base64.b64decode(v.get('stdin') or '')); f.seek(0); os.dup2(f.fileno(),0)
- print('SDK_PREPARED:',end='',flush=True)
- os.execvp('sh',['sh','-c',v['command']])`),
+      command: python(prepareAndRun),
       stdin: Buffer.from(JSON.stringify({ files: contents, command, stdin })).toString("base64"),
       linuxUser: "root",
       timeoutMs,
@@ -246,31 +265,22 @@ with tempfile.TemporaryFile() as f:
           if (pending.has(id)) {
             const result = await run(
               value,
-              python(
-                "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)",
-                path,
-                mode === undefined ? "" : mode.toString(8),
-              ),
+              python(uploadFile, path, mode === undefined ? "" : mode.toString(8)),
               Buffer.from(bytes).toString("base64"),
               requestTimeoutMs,
             );
 
             if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
-          } else
-            await value.fs.writeFile(path, bytes, {
-              ...(mode === undefined ? {} : { mode }),
-              signal: operationSignal.getStore(),
-            });
+          } else if (mode === undefined)
+            await value.fs.writeFile(path, bytes, { signal: operationSignal.getStore() });
+          else await value.fs.writeFile(path, bytes, { mode, signal: operationSignal.getStore() });
         }),
       read: (path, range) =>
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
     };
   }
 
-  async function readInfo(
-    data: VmData,
-    nativeOwnership = false,
-  ): Promise<{ info: SandboxInfo; supervisorHash?: string }> {
+  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
     if (data.metadata["sandbox-sdk"] !== "1") throw failure("Not an SDK VM", "not_found", data.id);
     let text: string;
 
@@ -299,21 +309,11 @@ with tempfile.TemporaryFile() as f:
       throw failure("Invalid SDK metadata", "not_found", data.id);
     }
 
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("key" in value) ||
-      (value.key !== null && typeof value.key !== "string") ||
-      !("labels" in value) ||
-      !value.labels ||
-      typeof value.labels !== "object" ||
-      Array.isArray(value.labels)
-    )
-      throw failure("Invalid SDK metadata", "not_found", data.id);
+    if (!isStoredMetadata(value)) throw failure("Invalid SDK metadata", "not_found", data.id);
     const labels: Record<string, string> = {};
 
     for (const [k, v] of Object.entries(value.labels)) {
-      if (typeof v !== "string") throw failure("Invalid SDK label", "not_found", data.id);
+      if (!isString(v)) throw failure("Invalid SDK label", "not_found", data.id);
       Object.defineProperty(labels, k, { value: v, enumerable: true });
     }
 
@@ -322,27 +322,17 @@ with tempfile.TemporaryFile() as f:
     if (!Number.isFinite(createdAt)) throw failure("Invalid VM creation time", "provider", data.id);
 
     return {
-      supervisorHash:
-        "supervisorHash" in value && typeof value.supervisorHash === "string"
-          ? value.supervisorHash
-          : undefined,
-      info: {
-        id: data.id,
-        key: value.key ?? undefined,
-        labels,
-        createdAt,
-        state:
-          data.state === "running"
-            ? "running"
-            : data.state === "paused" || data.state === "pausing"
-              ? "paused"
-              : "stopped",
-      },
+      id: data.id,
+      key: value.key ?? undefined,
+      labels,
+      createdAt,
+      state:
+        data.state === "running"
+          ? "running"
+          : data.state === "paused" || data.state === "pausing"
+            ? "paused"
+            : "stopped",
     };
-  }
-
-  async function info(data: VmData, nativeOwnership = false): Promise<SandboxInfo> {
-    return (await readInfo(data, nativeOwnership)).info;
   }
 
   const provider: FreestyleProvider = {
@@ -378,8 +368,9 @@ with tempfile.TemporaryFile() as f:
             vpcs: [],
             idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
             ttlSeconds,
-            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
           };
+
+          if (autoDeleteSeconds !== undefined) params.autoDeleteSeconds = autoDeleteSeconds;
 
           // No retries: a transport failure may have allocated a VM. An unknown
           // outcome must be inspected before another create is attempted.
@@ -535,27 +526,27 @@ with tempfile.TemporaryFile() as f:
         const client = await api();
         const data = await client.vms.get(id);
         boxes.set(id, client.vms.ref(id));
-        let stored: Awaited<ReturnType<typeof readInfo>>;
+        let stored: SandboxInfo;
 
         try {
-          stored = await readInfo(data);
+          stored = await info(data);
         } catch (error) {
           if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code))
             throw error;
-          stored = await readInfo(data, true);
+          stored = await info(data, true);
           pending.set(id, [
             [
               marker,
               JSON.stringify({
-                key: stored.info.key ?? null,
-                labels: stored.info.labels,
+                key: stored.key ?? null,
+                labels: stored.labels,
                 supervisorHash,
               }),
             ],
           ]);
         }
 
-        return stored.info;
+        return stored;
       }),
     destroy: (id) =>
       safe(id, async () => {

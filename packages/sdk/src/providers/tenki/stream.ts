@@ -1,10 +1,12 @@
-import { guestSpec } from "../freestyle/wire.js";
-import { guestProcess } from "../boxd/guest.js";
+import { guestSpec } from "../../shared/wire.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
 import { raw } from "./exec.js";
+import { isChunk, isRunResult } from "./records.js";
+import { isObject, isString } from "../../shared/narrow.js";
 import { workspaceSetup } from "./ready.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
@@ -62,6 +64,17 @@ with stdin_file() as f:
     except FileNotFoundError: pass
 `;
 
+// Waits up to 1 s for the PID in argv[1], then kills its process group.
+const killProgram = `import os,sys,time,signal
+for _ in range(100):
+ try:
+  with open(sys.argv[1]) as f: pid=int(f.read())
+  os.killpg(pid,signal.SIGKILL)
+  break
+ except ProcessLookupError: break
+ except (FileNotFoundError,ValueError): time.sleep(.01)
+else: raise RuntimeError('PID unavailable')`;
+
 export async function executeStream(
   box: Session,
   input: ExecInput,
@@ -99,27 +112,16 @@ export async function executeStream(
   function record(line: string) {
     const value: unknown = JSON.parse(line);
 
-    if (
-      Array.isArray(value) &&
-      value.length === 2 &&
-      (value[0] === "stdout" || value[0] === "stderr") &&
-      typeof value[1] === "string" &&
-      value[1].length <= 21848
-    ) {
-      const stream = value[0] === "stdout" ? "stdout" : "stderr";
-      const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
+    if (isChunk(value)) {
+      const [stream, hex] = value;
+      const text = decoders[stream].decode(Buffer.from(hex, "hex"), { stream: true });
 
       if (text) input.onChunk({ stream, text });
     } else if (
-      value &&
-      typeof value === "object" &&
-      "exitCode" in value &&
-      (value.exitCode === null ||
-        (typeof value.exitCode === "number" && Number.isInteger(value.exitCode))) &&
-      "timedOut" in value &&
-      typeof value.timedOut === "boolean"
+      isRunResult(value) &&
+      (value.exitCode === null || Number.isInteger(value.exitCode))
     ) {
-      if ("workspaceRootHex" in value && typeof value.workspaceRootHex === "string")
+      if ("workspaceRootHex" in value && isString(value.workspaceRootHex))
         workspaceRoot?.(
           Buffer.from(value.workspaceRootHex, "hex").toString(),
           "workspaceStable" in value && value.workspaceStable === true,
@@ -209,7 +211,7 @@ export async function executeStream(
         attemptTransport.abort();
 
         if (transport.signal.aborted) throw error;
-        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        const code = isObject(error) && "code" in error ? error.code : undefined;
         const message = error instanceof Error ? error.message : "";
         const auth = code === 16 || tenkiError(error).code === "auth";
 
@@ -260,6 +262,7 @@ export async function executeStream(
     throw failure("Command recovery exhausted", "unavailable");
   })();
 
+  // The deadline below can abandon completion; its later failure is not the caller's error.
   void completion.catch(() => {});
 
   try {
@@ -268,25 +271,7 @@ export async function executeStream(
   } catch (error) {
     if (mayHaveLaunched && !exited) {
       try {
-        await raw(
-          box,
-          [
-            "python3",
-            "-c",
-            `import os,sys,time,signal
-for _ in range(100):
- try:
-  with open(sys.argv[1]) as f: pid=int(f.read())
-  os.killpg(pid,signal.SIGKILL)
-  break
- except ProcessLookupError: break
- except (FileNotFoundError,ValueError): time.sleep(.01)
-else: raise RuntimeError('PID unavailable')`,
-            marker,
-          ],
-          undefined,
-          1500,
-        );
+        await raw(box, ["python3", "-c", killProgram, marker], undefined, 1500);
       } catch {
         // A completed supervisor can remove its PID while cancellation is in flight.
         // Its valid exit record confirms completion even if the kill RPC found no PID.

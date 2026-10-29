@@ -6,8 +6,10 @@
  * https://www.npmjs.com/package/@tenkicloud/sandbox
  */
 import type { Session, CreateOptions } from "@tenkicloud/sandbox";
+import type { ErrorCode } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
-import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
+import { isObject, isString } from "../../shared/narrow.js";
+import type { Provider, CreateInput, Labels, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { waitReady } from "./ready.js";
 import { execute, raw } from "./exec.js";
@@ -63,7 +65,7 @@ const presets = {
 
 function size(input: CreateInput["size"]) {
   if (input === undefined) return {};
-  const value = typeof input === "string" ? presets[input] : input;
+  const value = isString(input) ? presets[input] : input;
   const diskGb = value?.diskGb ?? 5;
 
   if (
@@ -268,7 +270,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const allocation = size(input.size);
-        const domains = typeof input.network === "object" ? input.network.allow : undefined;
+        const domains = isObject(input.network) ? input.network.allow : undefined;
 
         if (
           domains?.some(
@@ -284,7 +286,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
             "unsupported",
           );
 
-        const metadata: Record<string, string> = {
+        const metadata: Labels = {
           ...input.labels,
           "sandbox-sdk": "1",
           [createdTag]: String(Date.now()),
@@ -303,14 +305,18 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           allowInbound: true,
           allowOutbound: input.network !== "none" && domains?.length !== 0,
           allowDomains: domains,
-          ...(input.from ? { snapshotId: input.from } : { image: options.image }),
-          ...(options.pauseRetentionMs === undefined
-            ? {}
-            : { pauseRetentionMs: options.pauseRetentionMs }),
-          ...(options.volumes === undefined ? {} : { volumes: options.volumes }),
-          ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
           waitReady: false,
         };
+
+        if (input.from) params.snapshotId = input.from;
+        else params.image = options.image;
+
+        if (options.pauseRetentionMs !== undefined)
+          params.pauseRetentionMs = options.pauseRetentionMs;
+
+        if (options.volumes !== undefined) params.volumes = options.volumes;
+
+        if (options.workspaceId !== undefined) params.workspaceId = options.workspaceId;
 
         // Admit without waiting so every subsequent failure has an ID to clean up.
         const client = await api();
@@ -322,6 +328,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         try {
           value = await request(() => pending, input.signal);
         } catch (error) {
+          // Best effort: close a session that arrives after the caller gave up.
           void pending.then((late) => request(() => late.close())).catch(() => {});
           throw error;
         }
@@ -356,19 +363,19 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           return info(value);
         } catch (error) {
           const context = { id: value.id, state: value.state, stage };
-          let cleanupError: unknown;
+          let cleanupCode: ErrorCode | undefined;
 
           try {
             await provider.destroy(value.id);
-          } catch (error) {
-            cleanupError = error;
+          } catch (cleanupError) {
+            cleanupCode = tenkiError(cleanupError).code;
           }
 
           throw createError(
             input.signal?.aborted ? failure("Creation aborted", "aborted") : error,
             context,
             [options.apiKey ?? options.authToken ?? ""],
-            cleanupError,
+            cleanupCode,
           );
         }
       }),
@@ -522,10 +529,12 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
 
         // 0 keeps the snapshot: Tenki applies no expiry when expiresAt is absent.
         const snapshot = await request(() =>
-          client.createSnapshot(id, {
-            async: true,
-            ...(expiresInMs ? { expiresAt: new Date(Date.now() + expiresInMs) } : {}),
-          }),
+          client.createSnapshot(
+            id,
+            expiresInMs
+              ? { async: true, expiresAt: new Date(Date.now() + expiresInMs) }
+              : { async: true },
+          ),
         );
 
         const timeoutMs = options.waitTimeoutMs ?? 300_000;

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StreamExecParams, Machine, MachineCreateParams, ExecParams } from "@boxd-sh/sdk";
 import { vi } from "vitest";
+import { isString } from "../src/shared/narrow.js";
 
 const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
 const exec = promisify(execFile);
@@ -161,9 +162,11 @@ export class MockGuest {
   }
 }
 
+const creates: MachineCreateParams[] = [];
+
 export const boxdState = {
   boxes: new Map<string, { machine: Machine; guest: MockGuest }>(),
-  creates: [] as MachineCreateParams[],
+  creates,
   error: 0,
 };
 
@@ -221,7 +224,7 @@ export class MockBoxd {
       }
     },
     streamExec: (id: string, params: StreamExecParams) => {
-      if (typeof params.command !== "string") throw new Error("Expected shell command");
+      if (!isString(params.command)) throw new Error("Expected shell command");
 
       return this.entry(id).guest.stream(params.command);
     },
@@ -229,7 +232,7 @@ export class MockBoxd {
       if (boxdState.error)
         throw Object.assign(new Error("secret-native-error"), { grpcCode: boxdState.error });
 
-      if (typeof params.command !== "string") throw new Error("Expected shell command");
+      if (!isString(params.command)) throw new Error("Expected shell command");
 
       const stdout =
         params.encoding === "buffer"

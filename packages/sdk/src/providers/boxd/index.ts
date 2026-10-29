@@ -1,11 +1,21 @@
 /** Verified against @boxd-sh/sdk 0.2.17 and https://docs.boxd.sh/reference/typescript-sdk. */
-import type { Boxd, Machine } from "@boxd-sh/sdk";
+import type { Boxd, Machine, MachineConfig, MachineCreateParams } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { boxdError, failure } from "./errors.js";
-import { files, python, quote, type Guest } from "./guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
+import { quote } from "../../shared/shell.js";
 import { execute } from "./execute.js";
 import { FileTransfers } from "./transfers.js";
+
+// Writes base64 stdin to argv[1], creating its parent directory.
+const uploadFile =
+  "import os,sys,base64; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(base64.b64decode(sys.stdin.buffer.read())); f.close()";
+
+// Writes argv[3] bytes of argv[1] from offset argv[2] to stdout.
+const readRange =
+  "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))";
 
 export interface BoxdOptions {
   /** Defaults to BOXD_API_KEY; required on first use. */
@@ -33,11 +43,27 @@ export type BoxdProvider = Provider<BoxdNative, "pause" | "size" | "snapshot" | 
 
 const marker = "/var/lib/sandbox-sdk/metadata.json";
 
+/** The marker JSON written at creation. Labels are checked one by one. */
+type StoredMetadata = { key: string | null; labels: object; createdAt: number };
+
+function isStoredMetadata(value: unknown): value is StoredMetadata {
+  return (
+    isObject(value) &&
+    "labels" in value &&
+    isObject(value.labels) &&
+    !Array.isArray(value.labels) &&
+    "createdAt" in value &&
+    isNumber(value.createdAt) &&
+    "key" in value &&
+    (value.key === null || isString(value.key))
+  );
+}
+
 // Each class has fixed 100 GB disk and 4 GiB memory per vCPU.
 function vcpuFor(size: CreateInput["size"]): number | undefined {
   if (size === undefined) return undefined;
 
-  if (typeof size === "string") return { small: 1, medium: 2, large: 4 }[size];
+  if (isString(size)) return { small: 1, medium: 2, large: 4 }[size];
 
   if (![1, 2, 4, 8].includes(size.cpu))
     throw failure(
@@ -183,10 +209,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             c,
             id,
             {
-              command: python(
-                "import os,sys,base64; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(base64.b64decode(sys.stdin.buffer.read())); f.close()",
-                path,
-              ),
+              command: python(uploadFile, path),
               cwd: "/",
               env: {},
               stdin: Buffer.from(bytes).toString("base64"),
@@ -211,12 +234,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         // Tail readers request a bounded range. Seek in the guest rather than
         // downloading a growing log in full for each page.
         const result = await c.machines.exec(id, {
-          command: python(
-            "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
-            path,
-            String(range.offset),
-            String(range.length),
-          ),
+          command: python(readRange, path, String(range.offset), String(range.length)),
           encoding: "buffer",
           timeout: options.requestTimeoutMs ?? 30000,
         });
@@ -261,25 +279,13 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       throw failure("Invalid SDK metadata", "not_found", m.id);
     }
 
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("labels" in value) ||
-      !value.labels ||
-      typeof value.labels !== "object" ||
-      Array.isArray(value.labels) ||
-      !("createdAt" in value) ||
-      typeof value.createdAt !== "number" ||
-      !("key" in value) ||
-      (value.key !== null && typeof value.key !== "string")
-    )
-      throw failure("Invalid SDK metadata", "not_found", m.id);
+    if (!isStoredMetadata(value)) throw failure("Invalid SDK metadata", "not_found", m.id);
 
     if (deferred && !pending.has(m.id)) pending.set(m.id, preparation(text));
     const labels: Record<string, string> = {};
 
     for (const [k, v] of Object.entries(value.labels)) {
-      if (typeof v !== "string") throw failure("Invalid SDK labels", "not_found", m.id);
+      if (!isString(v)) throw failure("Invalid SDK labels", "not_found", m.id);
       Object.defineProperty(labels, k, { value: v, enumerable: true });
     }
 
@@ -351,29 +357,20 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             ? `sbxsdk-v2-${input.labels["sandbox-sdk"] === "1" ? "1" : "0"}-${createdAt.toString(36)}-${crypto.randomUUID()}`
             : `sbxsdk-${crypto.randomUUID()}`;
 
-          m = await c.machines.create(
+          const config: MachineConfig =
             input.from !== undefined
-              ? {
-                  name,
-                  fromSnapshot: input.from,
-                  isolated: true,
-                  ...(deleteAfter === undefined ? {} : { deleteAfter }),
-                  config: { autoSuspendTimeout },
-                }
-              : {
-                  name,
-                  image: options.image,
-                  env: input.env,
-                  isolated: true,
-                  ...(deleteAfter === undefined ? {} : { deleteAfter }),
-                  config: {
-                    autoSuspendTimeout,
-                    autoDestroyTimeout: 0,
-                    vcpu,
-                    ...(options.volumes?.length ? { volumes: options.volumes } : {}),
-                  },
-                },
-          );
+              ? { autoSuspendTimeout }
+              : { autoSuspendTimeout, autoDestroyTimeout: 0, vcpu };
+
+          if (input.from === undefined && options.volumes?.length) config.volumes = options.volumes;
+
+          const params: MachineCreateParams =
+            input.from !== undefined
+              ? { name, fromSnapshot: input.from, isolated: true, config }
+              : { name, image: options.image, env: input.env, isolated: true, config };
+
+          if (deleteAfter !== undefined) params.deleteAfter = deleteAfter;
+          m = await c.machines.create(params);
         } catch (error) {
           const mapped = boxdError(error);
 

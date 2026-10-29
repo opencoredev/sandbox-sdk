@@ -3,7 +3,9 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Boxd, BoxdOptions } from "@boxd-sh/sdk/web";
+import type { SandboxError } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { boxdError, failure } from "./errors.js";
 
 type Transfer =
@@ -11,6 +13,13 @@ type Transfer =
   | { kind: "download"; machine: string; path: string };
 
 type Result = number | Uint8Array;
+
+/** A worker message names its request; its value or error is checked separately. */
+type Reply = { requestId: number };
+
+function isReply(value: unknown): value is Reply {
+  return isObject(value) && "requestId" in value && isNumber(value.requestId);
+}
 
 // SDK 0.2.17's clientStream has neither a deadline nor a cancel handle, and
 // close() is a no-op. Keep its fetches in an isolated realm we can terminate.
@@ -50,12 +59,12 @@ function webModuleURL(): string | undefined {
   const meta: { url?: unknown } = import.meta;
 
   for (const base of [meta.url, pathToFileURL(join(process.cwd(), "index.js")).href]) {
-    if (typeof base !== "string") continue;
+    if (!isString(base)) continue;
 
     try {
       const path: unknown = createRequire(base).resolve("@boxd-sh/sdk/web");
 
-      if (typeof path === "string" && isAbsolute(path)) return pathToFileURL(path).href;
+      if (isString(path) && isAbsolute(path)) return pathToFileURL(path).href;
     } catch {
       /* try the next base */
     }
@@ -75,7 +84,7 @@ export class FileTransfers {
       worker: Worker;
       machine: string;
       resolve(value: Result): void;
-      reject(error: unknown): void;
+      reject(cause: SandboxError): void;
       cleanup(): void;
     }
   >();
@@ -98,15 +107,12 @@ export class FileTransfers {
     });
 
     this.workers.add(worker);
-    worker.on("message", (reply: unknown) => {
+    worker.on("message", (data) => {
+      const reply: unknown = data;
+
       if (!this.workers.has(worker)) return;
 
-      if (
-        !reply ||
-        typeof reply !== "object" ||
-        !("requestId" in reply) ||
-        typeof reply.requestId !== "number"
-      ) {
+      if (!isReply(reply)) {
         void this.stop(worker, failure("Invalid file transfer response"));
 
         return;
@@ -118,12 +124,9 @@ export class FileTransfers {
       this.pending.delete(reply.requestId);
       pending.cleanup();
 
-      if (
-        "value" in reply &&
-        (typeof reply.value === "number" || reply.value instanceof Uint8Array)
-      ) {
+      if ("value" in reply && (isNumber(reply.value) || reply.value instanceof Uint8Array)) {
         pending.resolve(reply.value);
-      } else if ("error" in reply && reply.error && typeof reply.error === "object") {
+      } else if ("error" in reply && isObject(reply.error)) {
         const error = reply.error;
 
         const message =
@@ -136,11 +139,9 @@ export class FileTransfers {
         pending.reject(
           boxdError(
             Object.assign(new Error(message), {
-              name: "name" in error && typeof error.name === "string" ? error.name : "Error",
+              name: "name" in error && isString(error.name) ? error.name : "Error",
               grpcCode:
-                "grpcCode" in error && typeof error.grpcCode === "number"
-                  ? error.grpcCode
-                  : undefined,
+                "grpcCode" in error && isNumber(error.grpcCode) ? error.grpcCode : undefined,
             }),
             pending.machine,
           ),
@@ -162,7 +163,7 @@ export class FileTransfers {
     return worker;
   }
 
-  private stop(worker: Worker, error: unknown): Promise<void> {
+  private stop(worker: Worker, error: SandboxError): Promise<void> {
     const existing = this.stopping.get(worker);
 
     if (existing) return existing.promise;
@@ -281,22 +282,21 @@ export class FileTransfers {
 
     try {
       return await Promise.race([
-        native.catch((error: unknown) => {
-          throw boxdError(error, input.machine);
+        native.catch((cause: unknown) => {
+          throw boxdError(cause, input.machine);
         }),
         stopped,
       ]);
     } finally {
       clearTimeout(timer);
       this.signal?.removeEventListener("abort", abort);
-      native.catch(() => {});
     }
   }
 
   async upload(machine: string, path: string, bytes: Uint8Array): Promise<number> {
     const result = await this.transfer({ kind: "upload", machine, path, bytes });
 
-    if (typeof result !== "number") throw failure("Invalid upload response", "provider", machine);
+    if (!isNumber(result)) throw failure("Invalid upload response", "provider", machine);
 
     return result;
   }
@@ -309,11 +309,10 @@ export class FileTransfers {
     return result;
   }
   async closeMachine(machine: string) {
-    const workers = new Set(
-      [...this.pending.values()]
-        .filter((request) => request.machine === machine)
-        .map((request) => request.worker),
-    );
+    const workers = new Set<Worker>();
+
+    for (const request of this.pending.values())
+      if (request.machine === machine) workers.add(request.worker);
 
     await Promise.all(
       [...workers].map((worker) =>
@@ -321,9 +320,9 @@ export class FileTransfers {
       ),
     );
     await Promise.all(
-      [...this.stopping.values()]
-        .filter((request) => request.machine === machine)
-        .map((request) => request.promise),
+      [...this.stopping.values()].flatMap((request) =>
+        request.machine === machine ? [request.promise] : [],
+      ),
     );
   }
   async releaseIdle() {

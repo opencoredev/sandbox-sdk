@@ -1,7 +1,7 @@
-import type { FileInfo, ProviderFiles } from "../../provider.js";
-import { SandboxError, type ErrorCode } from "../../errors.js";
-
-export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+import type { FileInfo, ProviderFiles } from "../provider.js";
+import { SandboxError, type ErrorCode } from "../errors.js";
+import { isNumber, isObject, isString } from "./narrow.js";
+import { quote } from "./shell.js";
 
 export const python = (code: string, ...args: string[]) =>
   `python3 -c ${quote(code)} ${args.map(quote).join(" ")}`;
@@ -77,6 +77,7 @@ const fail = (g: Guest, text: string, code: ErrorCode = "provider") =>
     provider: g.name,
   });
 
+// Prints argv[1] metadata as JSON, or its entries when argv[2] is "list".
 const metadata = `import os,sys,json,stat
 p=sys.argv[1]
 def info(p):
@@ -85,22 +86,40 @@ def info(p):
 try: print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)] if sys.argv[2]=='list' else info(p)))
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
 
-function file(g: Guest, v: unknown): FileInfo {
-  if (
-    !v ||
-    typeof v !== "object" ||
-    !("path" in v) ||
-    typeof v.path !== "string" ||
-    !("type" in v) ||
-    (v.type !== "file" && v.type !== "directory" && v.type !== "symlink") ||
-    !("size" in v) ||
-    typeof v.size !== "number" ||
-    !("modifiedAt" in v) ||
-    typeof v.modifiedAt !== "number"
-  )
-    throw fail(g, "Invalid file metadata");
+// Creates the parent directory of argv[1].
+const makeParents = "import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)";
 
-  return { path: v.path, type: v.type, size: v.size, modifiedAt: v.modifiedAt };
+// Creates directory argv[1] and its parents.
+const makeDirectory = "import os,sys; os.makedirs(sys.argv[1],exist_ok=True)";
+
+// Removes argv[1]; a directory only when empty unless argv[2] is "true".
+const removePath = `import os,sys,shutil
+p=sys.argv[1]
+try:
+ if os.path.isdir(p) and not os.path.islink(p):
+  if sys.argv[2]=='true': shutil.rmtree(p)
+  else: os.rmdir(p)
+ else: os.unlink(p)
+except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
+
+/** A guest metadata record, as the metadata programs print it. */
+export function isFileInfo(value: unknown): value is FileInfo {
+  return (
+    isObject(value) &&
+    "path" in value &&
+    isString(value.path) &&
+    "type" in value &&
+    (value.type === "file" || value.type === "directory" || value.type === "symlink") &&
+    "size" in value &&
+    isNumber(value.size) &&
+    "modifiedAt" in value &&
+    isNumber(value.modifiedAt)
+  );
+}
+
+/** Copies only the FileInfo fields, so extra JSON keys never reach callers. */
+export function fileInfo(value: FileInfo): FileInfo {
+  return { path: value.path, type: value.type, size: value.size, modifiedAt: value.modifiedAt };
 }
 
 export function files(
@@ -134,9 +153,7 @@ export function files(
             !["not_found", "file_not_found"].includes(error.code)
           )
             throw error;
-          await g.raw(
-            python("import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)", path),
-          );
+          await g.raw(python(makeParents, path));
           await g.upload(path, data, options?.mode);
         }
       }),
@@ -144,7 +161,9 @@ export function files(
       safe(id, async () => {
         const { g, value } = await info(id, path, "stat");
 
-        return file(g, value);
+        if (!isFileInfo(value)) throw fail(g, "Invalid file metadata");
+
+        return fileInfo(value);
       }),
     list: (id, path) =>
       safe(id, async () => {
@@ -152,32 +171,21 @@ export function files(
 
         if (!Array.isArray(value)) throw fail(g, "Invalid directory listing");
 
-        return value.map((v) => file(g, v));
+        return value.map((item) => {
+          if (!isFileInfo(item)) throw fail(g, "Invalid file metadata");
+
+          return fileInfo(item);
+        });
       }),
     mkdir: (id, path) =>
       safe(id, async () => {
-        await (
-          await get(id)
-        ).raw(python("import os,sys; os.makedirs(sys.argv[1],exist_ok=True)", path));
+        await (await get(id)).raw(python(makeDirectory, path));
       }),
     remove: (id, path, options) =>
       safe(id, async () => {
         const g = await get(id);
 
-        const text = await g.raw(
-          python(
-            `import os,sys,shutil
-p=sys.argv[1]
-try:
- if os.path.isdir(p) and not os.path.islink(p):
-  if sys.argv[2]=='true': shutil.rmtree(p)
-  else: os.rmdir(p)
- else: os.unlink(p)
-except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`,
-            path,
-            String(options.recursive),
-          ),
-        );
+        const text = await g.raw(python(removePath, path, String(options.recursive)));
 
         // Like the other providers, removing a missing path is file_not_found.
         if (text.trim() === "SDK_FILE_NOT_FOUND")

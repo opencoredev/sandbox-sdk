@@ -6,13 +6,14 @@ import {
   reason,
   type ErrorCode,
 } from "../../errors.js";
+import { isNumber, isObject } from "../../shared/narrow.js";
 
 // Retain only scrubbed text, never native response/request objects (headers can hold keys).
-const detail = (error: unknown, redact: (text: string) => string) =>
-  nativeDetail(error, redact) ?? "Native request failed";
+const detail = (cause: unknown, redact: (text: string) => string) =>
+  nativeDetail(cause, redact) ?? "Native request failed";
 
 export function upstashError(
-  error: unknown,
+  cause: unknown,
   sandboxId?: string,
   file = false,
   operation = file ? "files" : "request",
@@ -23,10 +24,9 @@ export function upstashError(
     return redactor.text(text);
   },
 ): SandboxError {
-  if (error instanceof SandboxError) return error;
-
-  const status =
-    error && typeof error === "object" && "statusCode" in error ? error.statusCode : undefined;
+  if (cause instanceof SandboxError) return cause;
+  const status = isObject(cause) && "statusCode" in cause ? cause.statusCode : undefined;
+  const httpStatus = isNumber(status) ? status : undefined;
 
   let code: ErrorCode = "provider";
 
@@ -35,12 +35,12 @@ export function upstashError(
   else if (status === 410) code = "not_found";
   else if (status === 429 || status === 402) code = "quota";
   else if (status === 408 || status === 504) code = "timeout";
-  else if (typeof status === "number" && status >= 500) code = "unavailable";
+  else if (httpStatus !== undefined && httpStatus >= 500) code = "unavailable";
   else if (status === 400 || status === 422) code = "invalid_argument";
-  const evidence = `${operation}${typeof status === "number" ? ` HTTP ${status}` : ""}: ${detail(error, redact)}`;
+  const evidence = `${operation}${httpStatus === undefined ? "" : ` HTTP ${httpStatus}`}: ${detail(cause, redact)}`;
 
   return new SandboxError(
-    `Upstash Box ${operation} failed${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${reason(code, describeNative(error, { code, status: status === undefined ? undefined : String(status), redact }).detail)}. Check credentials, limits, and sandbox state.`,
+    `Upstash Box ${operation} failed${httpStatus === undefined ? "" : ` (HTTP ${httpStatus})`}: ${reason(code, describeNative(cause, { code, status: status === undefined ? undefined : String(status), redact }).detail)}. Check credentials, limits, and sandbox state.`,
     {
       code,
       provider: "upstash",

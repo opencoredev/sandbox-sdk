@@ -1,15 +1,14 @@
-import { guestProcess } from "../boxd/guest.js";
+import { guestProcess } from "../../shared/guest.js";
 import type { Box } from "@upstash/box";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { defaults, quote } from "../../run.js";
+import { defaults } from "../../run.js";
+import { quote } from "../../shared/shell.js";
 
+// Runs argv[1] in argv[3] with a deadline, printing hex output frames and an R: summary.
 const bridge = `import os,select,_signal as signal,sys,time,fcntl
 ${guestProcess}
-command,directory,cwd,limit,activity=sys.argv[1:]
-if activity:
- os.makedirs(os.path.dirname(activity),exist_ok=True)
- os.mkdir(activity,mode=0o700)
+command,directory,cwd,limit=sys.argv[1:]
 os.makedirs(directory,mode=0o700,exist_ok=True)
 cancel=directory+"/cancel"
 with open(directory+"/lock","w") as lock:
@@ -53,9 +52,6 @@ except BaseException:
  p.wait()
  raise
 finally:
- if activity:
-  try: os.rmdir(activity)
-  except FileNotFoundError: pass
  if spill is not None: spill.close()
  else:
   for name in ('pid','lock','cancel'):
@@ -64,6 +60,7 @@ finally:
   os.rmdir(directory)
 `;
 
+// Marks run directory argv[1] cancelled and kills its process group, waiting up to 2 s.
 const cancelBridge = `import os,signal,sys,fcntl,time
 p=sys.argv[1]
 pid=None
@@ -102,7 +99,7 @@ export async function bufferedExecute(
     .map(([key, value]) => quote(`${key}=${value}`))
     .join(" ");
 
-  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
+  const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))}`;
 
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
@@ -239,6 +236,7 @@ export async function bufferedExecute(
     await cancellation;
 
     if (confirmed && (cancellation || cleanupNeeded))
+      // Best effort: the result is already confirmed; a leftover directory is harmless.
       await box.files.remove(dir, { recursive: true }).catch(() => {});
   }
 }

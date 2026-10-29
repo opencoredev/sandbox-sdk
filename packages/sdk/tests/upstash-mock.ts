@@ -14,17 +14,24 @@ import type {
   ExecSessionOptions,
   FileStat,
 } from "@upstash/box";
+import { isString } from "../src/shared/narrow.js";
 
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 
+type EnvWrite = { path: string; mode: number; directoryMode: number };
+
+const creates: BoxConfig[] = [];
+const ephemeralCreates: EphemeralBoxConfig[] = [];
+const envWrites: EnvWrite[] = [];
+
 export const state = {
   boxes: new Map<string, MockBox>(),
-  creates: [] as BoxConfig[],
-  ephemeralCreates: [] as EphemeralBoxConfig[],
+  creates,
+  ephemeralCreates,
   snapshots: new Map<string, string>(),
   snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
-  envWrites: [] as { path: string; mode: number; directoryMode: number }[],
+  envWrites,
 };
 
 export class MockBox {
@@ -54,7 +61,7 @@ export class MockBox {
     await new Promise<void>((resolve) => socket.listen(0, "127.0.0.1", resolve));
     const address = socket.address();
 
-    if (!address || typeof address === "string") throw new Error("No port");
+    if (!address || isString(address)) throw new Error("No port");
     await new Promise<void>((resolve) => socket.close(() => resolve()));
     const box = new MockBox(await fs.mkdtemp(join(tmpdir(), "sdk-upstash-")), params, address.port);
     await fs.mkdir(box.map("/tmp"), { recursive: true });
@@ -70,9 +77,9 @@ export class MockBox {
     return value;
   }
   static async list(options: { label?: string } = {}) {
-    return [...state.boxes.values()]
-      .map((box) => box.data)
-      .filter((data) => !options.label || data.labels?.includes(options.label));
+    return [...state.boxes.values()].flatMap((box) =>
+      !options.label || box.data.labels?.includes(options.label) ? [box.data] : [],
+    );
   }
   static async fromSnapshot(id: string, params: BoxConfig) {
     const root = state.snapshots.get(id);
@@ -286,11 +293,9 @@ export class MockBox {
     ): Promise<{ exitCode: number; stdout: string; stderr: string; result: string }>;
   };
   async getPublicURL(port: number, settings?: { bearerToken?: boolean }) {
-    return {
-      url: `http://127.0.0.1:${this.port}/?port=${port}`,
-      port,
-      ...(settings?.bearerToken ? { token: "mock-preview" } : {}),
-    };
+    const url = `http://127.0.0.1:${this.port}/?port=${port}`;
+
+    return settings?.bearerToken ? { url, port, token: "mock-preview" } : { url, port };
   }
   async pause() {
     if (this.ephemeral)

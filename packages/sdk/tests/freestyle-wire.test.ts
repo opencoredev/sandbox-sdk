@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { expect, test } from "vitest";
-import { guestSpec } from "../src/providers/freestyle/wire.js";
+import { guestSpec } from "../src/shared/wire.js";
 
 test("a real Python interpreter decodes the one-shot request without loading JSON", () => {
   const spec = {

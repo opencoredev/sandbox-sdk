@@ -3,48 +3,74 @@ import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockGuest } from "./cloud-guest-mock.js";
-import { quote } from "../src/providers/boxd/guest.js";
+import type {
+  NetworkConfig,
+  PublishPreviewPortOptions,
+  SandboxCreateOptions,
+  SandboxUpdateOptions,
+  SnapshotCreateOptions,
+} from "@superserve/sdk";
+import { quote } from "../src/shared/shell.js";
+import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 
-const state = vi.hoisted(() => ({
-  boxes: new Map<
-    string,
-    {
-      guest: MockGuest;
-      metadata: Record<string, string>;
-      createdAt: Date;
-      status: string;
-      network?: unknown;
-    }
-  >(),
-  creates: 0,
-  nativeTimeoutSeconds: 0,
-  bootstrapPath: "",
-  updates: new Array<unknown>(),
-  createOptions: undefined as unknown,
-  transportFailure: false,
-  stdinFailure: false,
-  closes: 0,
-  bootstrap: undefined as undefined | (() => Promise<void>),
-  snapshotFailure: false,
-  snapshotOptions: undefined as unknown,
-  dropNetwork: false,
-  previewAccess: [] as unknown[],
-}));
+type MockRecord = {
+  guest: MockGuest;
+  metadata: Record<string, string>;
+  createdAt: Date;
+  status: string;
+  network?: NetworkConfig;
+};
+
+type MockState = {
+  boxes: Map<string, MockRecord>;
+  creates: number;
+  nativeTimeoutSeconds: number;
+  bootstrapPath: string;
+  updates: SandboxUpdateOptions[];
+  createOptions?: SandboxCreateOptions;
+  transportFailure: boolean;
+  stdinFailure: boolean;
+  closes: number;
+  bootstrap?: () => Promise<void>;
+  snapshotFailure: boolean;
+  snapshotOptions?: SnapshotCreateOptions;
+  dropNetwork: boolean;
+  previewAccess: PublishPreviewPortOptions[];
+};
+
+const state = vi.hoisted(
+  (): MockState => ({
+    boxes: new Map(),
+    creates: 0,
+    nativeTimeoutSeconds: 0,
+    bootstrapPath: "",
+    updates: [],
+    transportFailure: false,
+    stdinFailure: false,
+    closes: 0,
+    snapshotFailure: false,
+    dropNetwork: false,
+    previewAccess: [],
+  }),
+);
 
 vi.mock("@superserve/sdk", () => ({
   Sandbox: class {
     constructor(readonly id: string) {}
-    static async create(options: { metadata: Record<string, string>; network?: unknown }) {
+    static async create(options: SandboxCreateOptions) {
       const guest = await MockGuest.create();
       state.creates++;
       state.createOptions = options;
-      state.boxes.set(guest.id, {
+
+      const record: MockRecord = {
         guest,
-        metadata: options.metadata,
+        metadata: options.metadata ?? {},
         createdAt: new Date(),
         status: "active",
-        ...(options.network && !state.dropNetwork ? { network: options.network } : {}),
-      });
+      };
+
+      if (options.network && !state.dropNetwork) record.network = options.network;
+      state.boxes.set(guest.id, record);
 
       return new this(guest.id);
     }
@@ -68,16 +94,14 @@ vi.mock("@superserve/sdk", () => ({
       return v;
     }
     async getInfo() {
-      return {
-        ...this.value,
-        id: this.id,
-        ...(state.nativeTimeoutSeconds > 0 ? { timeoutSeconds: state.nativeTimeoutSeconds } : {}),
-      };
+      return state.nativeTimeoutSeconds > 0
+        ? { ...this.value, id: this.id, timeoutSeconds: state.nativeTimeoutSeconds }
+        : { ...this.value, id: this.id };
     }
-    async update(options: unknown) {
+    async update(options: SandboxUpdateOptions) {
       state.updates.push(options);
     }
-    async snapshot(options: unknown) {
+    async snapshot(options: SnapshotCreateOptions) {
       state.snapshotOptions = options;
 
       if (state.snapshotFailure) throw new Error("private-native-token");
@@ -143,15 +167,10 @@ v=sdk_paths(v)`;
           try {
             return { stdout: await g.raw(`${prefix} ${launch(command)}`), stderr: "", exitCode: 0 };
           } catch (error) {
-            if (
-              typeof error === "object" &&
-              error !== null &&
-              "code" in error &&
-              typeof error.code === "number"
-            )
+            if (isObject(error) && "code" in error && isNumber(error.code))
               return {
-                stdout: "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
-                stderr: "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+                stdout: "stdout" in error && isString(error.stdout) ? error.stdout : "",
+                stderr: "stderr" in error && isString(error.stderr) ? error.stderr : "",
                 exitCode: error.code,
               };
             throw error;
@@ -238,7 +257,7 @@ v=sdk_paths(v)`;
         },
       };
     }
-    async publishPreviewPort(_port: number, options: unknown) {
+    async publishPreviewPort(_port: number, options: PublishPreviewPortOptions) {
       state.previewAccess.push(options);
     }
     async getPreviewToken() {

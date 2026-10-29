@@ -1,8 +1,13 @@
 /** @superserve/sdk 0.11.4; https://docs.superserve.ai/sdk-reference/sandbox */
-import type { NetworkConfig, Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
-import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
+import type {
+  NetworkConfig,
+  Sandbox,
+  SandboxCreateOptions,
+  SandboxInfo as NativeInfo,
+} from "@superserve/sdk";
+import type { CreateInput, Preview, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
-import { files, python, type Guest } from "../boxd/guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
 import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
 import { bootstrapCommand, checkBootstrap } from "./bootstrap.js";
@@ -88,6 +93,10 @@ const wholeSeconds = (value: number | undefined, label: string, zero: boolean) =
 
   return Math.ceil(value / 1000);
 };
+
+// Prints argv[3] bytes of argv[1] from offset argv[2], base64-encoded.
+const readRange =
+  "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())";
 
 export function superserve(options: SuperserveOptions = {}): SuperserveProvider {
   const boxes = new Map<string, Sandbox>();
@@ -219,12 +228,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           if (range) {
             const r = await runGuest(
               id,
-              python(
-                "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
-                path,
-                String(range.offset),
-                String(range.length),
-              ),
+              python(readRange, path, String(range.offset), String(range.length)),
               { timeoutMs: timeout },
             );
 
@@ -266,10 +270,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
 
-        const metadata: Record<string, string> = {
-          "sandbox-sdk": "1",
-          ...(input.key !== undefined ? { "sdk-key": input.key } : {}),
-        };
+        const metadata: Record<string, string> = {};
+        metadata["sandbox-sdk"] = "1";
+
+        if (input.key !== undefined) metadata["sdk-key"] = input.key;
 
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
         const createdAt = Date.now();
@@ -277,24 +281,29 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         // Load the SDK first: a missing peer allocated nothing, so it is not an unknown outcome.
         const native = await api();
 
+        const params: SandboxCreateOptions = {
+          ...connection(),
+          name: `sbxsdk-${crypto.randomUUID()}`,
+          metadata,
+          envVars: input.env,
+          previewAccess,
+          signal: AbortSignal.timeout(timeout),
+        };
+
+        if (network) params.network = network;
+
+        if (autoPauseSeconds !== undefined) params.timeoutSeconds = autoPauseSeconds;
+
+        if (autoDeleteSeconds !== undefined) params.autoDeleteSeconds = autoDeleteSeconds;
+
+        if (options.secretBindings && Object.keys(options.secretBindings).length)
+          params.secrets = options.secretBindings;
+
+        if (input.from) params.fromSnapshot = input.from;
+        else params.fromTemplate = options.template ?? "superserve/node-22";
+
         try {
-          box = await native.Sandbox.create({
-            ...connection(),
-            name: `sbxsdk-${crypto.randomUUID()}`,
-            metadata,
-            envVars: input.env,
-            previewAccess,
-            ...(network ? { network } : {}),
-            ...(autoPauseSeconds === undefined ? {} : { timeoutSeconds: autoPauseSeconds }),
-            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
-            ...(options.secretBindings && Object.keys(options.secretBindings).length
-              ? { secrets: options.secretBindings }
-              : {}),
-            ...(input.from
-              ? { fromSnapshot: input.from }
-              : { fromTemplate: options.template ?? "superserve/node-22" }),
-            signal: AbortSignal.timeout(timeout),
-          });
+          box = await native.Sandbox.create(params);
         } catch (error) {
           const mapped = superserveError(error);
 
@@ -374,6 +383,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           workspacePrepared.delete(id);
         });
         deleting.set(id, pending);
+        // Only forget the request here; callers receive pending and its failure.
         pending.finally(() => deleting.delete(id)).catch(() => {});
       }
 
@@ -395,12 +405,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             raw: g.raw,
             read: async (path, range) => {
               const text = await g.raw(
-                python(
-                  "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
-                  path,
-                  String(range.offset),
-                  String(range.length),
-                ),
+                python(readRange, path, String(range.offset), String(range.length)),
               );
 
               return new Uint8Array(Buffer.from(text.trim(), "base64"));
@@ -482,11 +487,14 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         if (previewAccess === "public") return { url: box.getPreviewUrl(port) };
         const token = await box.getPreviewToken(port);
 
-        return {
+        const preview: Preview = {
           url: box.getPreviewUrl(port),
           headers: { [token.header]: token.token },
-          ...(token.expiresAt ? { expiresAt: token.expiresAt.getTime() } : {}),
         };
+
+        if (token.expiresAt) preview.expiresAt = token.expiresAt.getTime();
+
+        return preview;
       }),
     pause: (id) =>
       safe(id, async () => {

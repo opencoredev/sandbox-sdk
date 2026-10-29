@@ -10,6 +10,7 @@ import { freestyle } from "../src/providers/freestyle/index.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+import { isString } from "../src/shared/narrow.js";
 
 const factory = () => freestyle({ apiKey: "mock-key" });
 
@@ -37,7 +38,7 @@ afterAll(cleanupFreestyle);
 describe("Freestyle official SDK contract", () => {
   test("default-deny has no rules; all grants public outbound only", async () => {
     for (const network of ["none", "all", { allow: [] }] as const) {
-      const policy = typeof network === "string" ? network : { allow: [] };
+      const policy = isString(network) ? network : { allow: [] };
       const box = await createSandbox(factory(), { network: policy });
 
       try {
@@ -380,11 +381,11 @@ test.each(["missing", "outdated"])(
       const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
       await fs.writeFile(
         path,
-        JSON.stringify({
-          key: null,
-          labels: box.labels,
-          ...(version === "outdated" ? { supervisorHash: "old-version" } : {}),
-        }),
+        JSON.stringify(
+          version === "outdated"
+            ? { key: null, labels: box.labels, supervisorHash: "old-version" }
+            : { key: null, labels: box.labels },
+        ),
       );
       await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
       const provider = factory();
