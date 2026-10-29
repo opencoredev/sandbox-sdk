@@ -527,6 +527,14 @@ export function createRailwayProvider<B extends RailwayBox>(
       call(id, async () => {
         const { Sandbox } = await sdk();
         const box = await Sandbox.connect(id, api());
+
+        // Railway still returns destroyed VMs; reading from one fails as a lost connection.
+        if (box.status === "DESTROYED" || box.status === "DESTROYING")
+          throw new SandboxError(`Railway sandbox ${id} was not found. It has been destroyed.`, {
+            code: "not_found",
+            provider: "railway",
+            sandboxId: id,
+          });
         clients.set(id, box);
         const data = metadata(await box.files.read(marker));
         owned.set(id, data);

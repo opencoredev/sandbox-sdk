@@ -137,7 +137,7 @@ test("interrupted exec keeps the VM and returns a safe outcome_unknown error", a
         onChunk() {},
       }),
     ).rejects.toMatchObject({ code: "outcome_unknown" });
-    expect(mock.state.boxes.has(info.id)).toBe(true);
+    expect(mock.state.boxes.get(info.id)?.status).toBe("RUNNING");
   } finally {
     await provider.destroy(info.id);
   }
@@ -153,7 +153,7 @@ test("a command timeout kills only the command and keeps the sandbox", async () 
       exitCode: null,
     });
     expect(Date.now() - started).toBeLessThan(10_000);
-    expect(mock.state.boxes.has(box.id)).toBe(true);
+    expect(mock.state.boxes.get(box.id)?.status).toBe("RUNNING");
     expect((await box.run("echo alive")).stdout).toBe("alive\n");
   } finally {
     await box.destroy();
@@ -170,7 +170,7 @@ test("an unconfirmed timeout kills the command's tagged processes and keeps the 
       timedOut: true,
     });
     expect(mock.state.unconfirmed).toBe(false);
-    expect(mock.state.boxes.has(box.id)).toBe(true);
+    expect(mock.state.boxes.get(box.id)?.status).toBe("RUNNING");
     await new Promise((resolve) => setTimeout(resolve, 800));
     expect(await box.files.exists("late")).toBe(false);
     expect((await box.run("echo alive")).stdout).toBe("alive\n");
@@ -204,7 +204,7 @@ test("list and reap include SDK sandboxes that are not RUNNING when ownership is
       [],
     );
     expect(await reapSandboxes(provider, { labels: { app: "stopped-railway" } })).toBe(1);
-    expect(mock.state.boxes.has(failed.id)).toBe(false);
+    expect(mock.state.boxes.get(failed.id)?.status).toBe("DESTROYED");
   } finally {
     failedBox.status = "RUNNING";
     goneBox.status = "RUNNING";

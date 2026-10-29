@@ -266,7 +266,8 @@ export class MockSandbox {
         } catch {}
       }
 
-    state.boxes.delete(this.id);
+    // Real Railway keeps a destroyed VM: connect still returns it, with status DESTROYED.
+    this.status = "DESTROYED";
     await fs.rm(this.root, { recursive: true, force: true });
   }
 }
