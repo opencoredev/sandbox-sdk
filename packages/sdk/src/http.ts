@@ -24,7 +24,7 @@ type NoInfer<T> = [T][T extends unknown ? 0 : never];
 /** The subset of `fetch` the client calls. `globalThis.fetch` and test doubles both fit. */
 export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
-/** What a plane's base URL and credential callbacks get. */
+/** What a plane's base URL and credential callbacks get. One call passes the same object to every callback. */
 export interface PlaneContext {
   /** The sandbox the request is for, when there is one. */
   sandboxId?: string;
@@ -43,9 +43,16 @@ export interface HttpPlane {
   auth?: (context: PlaneContext) => Record<string, string> | Promise<Record<string, string>>;
   /**
    * Refresh the credentials `auth` returns. Called once after a 401 from this plane, shared between
-   * concurrent requests, and the request is sent again with fresh credentials.
+   * concurrent requests, and the request is sent again with fresh credentials. `context` is the first
+   * waiter's; a waiter whose signal fires stops waiting, so do not abort the shared work on `context.signal`.
    */
   refresh?: (context: PlaneContext) => Promise<void>;
+  /**
+   * Which failed responses besides a 401 mean stale credentials or a stale route, such as a 404 whose error
+   * code says the route moved. `true` refreshes and resends once, like a 401. `credentials` are the headers
+   * `auth` returned for that attempt. Default: only a 401.
+   */
+  stale?: (failure: { status: number; body: ErrorBody; credentials: Readonly<Record<string, string>> }, context: PlaneContext) => boolean;
   /** Headers for every request to this plane that are not credentials (`Accept`, API version pins). */
   headers?: Record<string, string>;
 }
@@ -206,10 +213,28 @@ export function sleep(ms: number, deadline: Deadline, provider: string): Promise
     if (deadline.signal.aborted) fire(); else deadline.signal.addEventListener("abort", fire, { once: true });
   });
 }
+/** `promise`, or a rejection as soon as `signal` fires. The promise itself is not cancelled. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const fire = () => reject(signal.reason);
+    signal.addEventListener("abort", fire, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", fire));
+  });
+}
 function stopped(deadline: Deadline, provider: string, sandboxId?: string): SandboxError {
   return deadline.parent?.aborted && !deadline.timeout.aborted
     ? new SandboxError("Request aborted. The signal was cancelled.", { code: "aborted", provider, sandboxId })
     : new SandboxError("Request timed out. The operation took too long.", { code: "timeout", provider, sandboxId, retryable: true });
+}
+
+const statuses = new WeakMap<SandboxError, { status: number; code?: string }>();
+/**
+ * The HTTP status and provider error code (when it is a safe token) behind a client error, or `undefined`
+ * for errors that are not a non-2xx response. For adapters that branch on a status, such as a 409 retry.
+ */
+export function httpStatus(error: unknown): { status: number; code?: string } | undefined {
+  return error instanceof SandboxError ? statuses.get(error) : undefined;
 }
 
 const errorBodyBytes = 64 * 1024;
@@ -380,7 +405,9 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
         const status = `HTTP ${failed.status}${apiCode}`;
         const message = request.detail === "message" && failed.body.message ? `: ${scrub(redact(failed.body.message)).slice(0, 300)}` : "";
         const cause = `${status}${id ? ` (request ${id})` : ""}${message}`;
-        return failure(code, request, ` (${status})${message}.${code === "outcome_unknown" ? " The request may or may not have taken effect; check before repeating it." : ""}`, cause, code === "unavailable" || code === "quota" || code === "timeout");
+        const error = failure(code, request, ` (${status})${message}.${code === "outcome_unknown" ? " The request may or may not have taken effect; check before repeating it." : ""}`, cause, code === "unavailable" || code === "quota" || code === "timeout");
+        statuses.set(error, { status: failed.status, ...(apiCode ? { code: apiCode.trim() } : {}) });
+        return error;
       }
       case "network": {
         const detail = nativeDetail(failed.error, redact);
@@ -466,15 +493,23 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
         else if (!replayable) throw failure("provider", request, ": the server redirected a streamed upload, which cannot be sent twice.", undefined, false);
       }
 
-      if (response && response.status === 401 && plane.refresh && !refreshed && replayable && request.auth !== false && url.origin === origin) {
-        await response.body?.cancel().catch(() => {});
+      const refreshable = response !== undefined && plane.refresh !== undefined && !refreshed && replayable && request.auth !== false && url.origin === origin;
+      // A `stale` hook needs the error body, so read it (bounded) once here and reuse it for the failure below.
+      let errorBody: ErrorBody | undefined;
+      if (refreshable && plane.stale && response && response.status >= 400 && response.status !== 401)
+        errorBody = parseErrorBody(utf8.decode(await readBody(response.body, errorBodyBytes, () => undefined).catch(() => new Uint8Array())));
+      if (refreshable && plane.refresh && response && (response.status === 401 || (errorBody !== undefined && plane.stale?.({ status: response.status, body: errorBody, credentials }, context)))) {
+        if (errorBody === undefined) await response.body?.cancel().catch(() => {});
         refreshed = true;
         const state = refreshes.get(refreshKey) ?? { generation: 0 };
         refreshes.set(refreshKey, state);
         if (state.generation === generation) {
           state.pending ??= plane.refresh(context).then(() => { state.generation++; }).finally(() => { state.pending = undefined; });
-          try { await state.pending; }
+          // Each waiter stops on its own signal; the shared refresh keeps going for the others.
+          try { await untilAborted(state.pending, signal); }
           catch (error) {
+            const halt = halted();
+            if (halt) throw mapFailure(halt, request, planeName);
             if (error instanceof SandboxError) throw error;
             throw failure("auth", request, `: refreshing ${label} credentials failed.`, nativeDetail(error, redact), false);
           }
@@ -486,8 +521,8 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
       let wait: number | undefined;
       if (response && response.status >= 200 && response.status < 300) return response;
       if (response) {
-        const text = utf8.decode(await readBody(response.body, errorBodyBytes, () => undefined).catch(() => new Uint8Array()));
-        failed = { kind: "status", status: response.status, headers: response.headers, body: parseErrorBody(text) };
+        const body = errorBody ?? parseErrorBody(utf8.decode(await readBody(response.body, errorBodyBytes, () => undefined).catch(() => new Uint8Array())));
+        failed = { kind: "status", status: response.status, headers: response.headers, body };
         if (retryStatuses.has(response.status)) {
           const after = retryAfter(response.headers);
           wait = after === undefined ? undefined : after <= maxRetryAfterMs ? after : Infinity;
