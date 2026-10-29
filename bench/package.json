@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "bench": "bun src/cli.ts",
-    "lint": "oxlint src tests",
+    "lint": "oxlint src tests scripts",
     "typecheck": "tsc --noEmit",
     "test": "timeout 120s vitest run --maxWorkers=2"
   },
