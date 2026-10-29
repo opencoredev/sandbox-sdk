@@ -33,9 +33,9 @@ console.log(result.stdout);
 | Commands and streaming | Yes | Live output when you iterate |
 | Files | Yes | |
 | Background processes | Yes | |
-| Preview URLs | Yes | Send the `X-Daytona-Preview-Token` header |
+| Preview URLs | Yes | Send the `X-Daytona-Preview-Token` header, or set `public: true` |
 | Pause and resume | No | |
-| Snapshots | Yes | File system only |
+| Snapshots | Yes | File system only. `expiresInMs` fails with `unsupported` |
 | Machine size | Yes | Presets or exact CPU, memory, and disk |
 | Network policy | Yes | `"none"` or a host allow list |
 | Hard lifetime (`timeoutMs`) | Yes | Whole minutes, at least one |
@@ -72,7 +72,10 @@ await using box = await createSandbox(daytona());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
 ```
+
+`{ mode }` sets the file's permissions through Daytona's file API right after the upload.
 
 ## Background processes and previews
 
@@ -89,7 +92,7 @@ const response = await fetch(preview.url, { headers: preview.headers });
 console.log(response.status);
 ```
 
-A browser can't add headers to an iframe or link. To show a preview to a user, proxy it through your server.
+A browser can't add headers to an iframe or link. To show a preview to a user, proxy it through your server, or create the sandbox with `daytona({ public: true })`. Then anyone with the URL can open it, and `preview.headers` is undefined.
 
 ## Pause, resume, and snapshots
 
@@ -106,7 +109,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(daytona(), { from: id });
 ```
 
-The adapter waits up to ten minutes for a snapshot. If it times out, the error includes the snapshot name; the snapshot may still finish. Destroying a sandbox does not delete its snapshots.
+The adapter waits up to ten minutes for a snapshot. If it times out, the error includes the snapshot name; the snapshot may still finish. Destroying a sandbox does not delete its snapshots. Daytona snapshots have no expiry, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted.
 
 ## Size, network, and lifetime
 
@@ -133,19 +136,42 @@ await using box = await createSandbox(daytona(), {
 - `idleTimeoutMs` rounds up to the next minute and stops the sandbox, keeping its disk.
 - `timeoutMs` rounds down to the minute, so the sandbox never outlives it. Under one minute fails with `unsupported`.
 
+A stopped sandbox keeps its disk until Daytona archives it, after 7 days by default, and stays archived until you delete it. Two factory options change that, both rounded up to whole minutes:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const provider = daytona({
+  autoArchiveMs: 24 * 60 * 60_000, // archive a day after it stops
+  autoDeleteMs: 0,                 // or delete it as soon as it stops
+});
+await using box = await createSandbox(provider, { idleTimeoutMs: 15 * 60_000 });
+```
+
+To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/docs/en/volumes) with `volumes: [{ volumeId: "my-volume", mountPath: "/data" }]`.
+
 ## Configuration
 
 | Option | Type | Default | Env var |
 | --- | --- | --- | --- |
 | `apiKey` | `string` | | `DAYTONA_API_KEY` |
+| `jwtToken` | `string` | | `DAYTONA_JWT_TOKEN` |
+| `organizationId` | `string` | | `DAYTONA_ORGANIZATION_ID` |
 | `baseUrl` | `string` | `https://app.daytona.io/api` | `DAYTONA_API_URL` |
 | `target` | `string` | `"us"` | `DAYTONA_TARGET` |
 | `image` | `string` | Daytona's default snapshot | |
 | `snapshot` | `string` | Daytona's default snapshot | |
 | `requestTimeoutMs` | `number` | `30_000` | |
 | `snapshotTimeoutMs` | `number` | `600_000`, at most `900_000` | |
+| `createTimeoutMs` | `number` | `60_000` | |
+| `public` | `boolean` | `false` | |
+| `autoArchiveMs` | `number` | Daytona's 7 days | |
+| `autoDeleteMs` | `number` | Never | |
+| `volumes` | `{ volumeId, mountPath }[]` | | |
+| `outboundProxyUrl` | `string` | | |
 
-Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, and passwordless `sudo -n`. `box.native` is the Daytona SDK's `Sandbox` object.
+Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. Use either `apiKey` or `jwtToken` with `organizationId`. `createTimeoutMs` covers the whole create call, including an image build. `outboundProxyUrl` routes the sandbox's HTTP(S) traffic through your proxy with `HTTP_PROXY` and `HTTPS_PROXY`. Daytona refuses it on tiers with restricted networking, and the create fails with `invalid_argument`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, and passwordless `sudo -n`. `box.native` is the Daytona SDK's `Sandbox` object.
 
 ## Limitations
 
