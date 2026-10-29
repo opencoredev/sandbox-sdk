@@ -493,7 +493,10 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           const archive = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}.tar`;
 
           try {
-            await remote(`tar -cf ${quote(archive)} -C ${quote(pathOf(source))} .`);
+            // The records directory may not exist yet on a fresh sandbox; make it in the same exec.
+            await remote(
+              `mkdir -p ${quote(posix.dirname(archive))} && tar -cf ${quote(archive)} -C ${quote(pathOf(source))} .`,
+            );
             const localArchive = resolve(temporary, "files.tar");
             await local.writeFile(localArchive, await fs.read(id, archive));
             await local.mkdir(resolve(target), { recursive: true });

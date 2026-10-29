@@ -1,4 +1,7 @@
 import { describe, test, expect } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { shellProvider } from "./shell-provider.js";
 
@@ -323,5 +326,22 @@ test("log pages use bounded remote reads without downloading out.log", async () 
     });
   } finally {
     await box.destroy();
+  }
+});
+
+test("directory download works before the SDK has made its /tmp records directory", async () => {
+  const box = await createSandbox(await shellProvider());
+  const target = await mkdtemp(join(tmpdir(), "sdk-download-"));
+
+  try {
+    // files.write only touches /workspace, so nothing has created /tmp/.sandbox-sdk yet.
+    await box.files.write("out/nested/file", "hi");
+    expect(await box.files.exists("/tmp/.sandbox-sdk")).toBe(false);
+    await box.files.download("out", join(target, "copy"));
+    expect(await readFile(join(target, "copy", "nested", "file"), "utf8")).toBe("hi");
+    expect(await box.files.list("/tmp/.sandbox-sdk")).toEqual([]);
+  } finally {
+    await box.destroy();
+    await rm(target, { recursive: true, force: true });
   }
 });
