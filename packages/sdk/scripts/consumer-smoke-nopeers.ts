@@ -20,7 +20,7 @@ import pkg from "../package.json" with { type: "json" };
 import { externalPackages } from "./externals.ts";
 
 /** Provider subpaths that must work with no peer installed. Add a provider when its adapter stops loading its SDK. */
-const noPeerProviders: string[] = [];
+const noPeerProviders: string[] = ["superserve"];
 
 const sdkDir = resolve(import.meta.dir, "..");
 const workDir = mkdtempSync(join(tmpdir(), "sandbox-sdk-nopeers-"));
@@ -140,10 +140,8 @@ try {
   assert.ok((await api.sdk(async () => ({ FakeClient }))) instanceof FakeClient);
   await assert.rejects(native.sdk(async () => ({ Other: FakeClient })), error => error instanceof SandboxError && error.code === "invalid_argument");
 
-  for (const subpath of JSON.parse(process.env.NO_PEER_PROVIDERS ?? "[]")) {
-    const module = await import("${pkg.name}/" + subpath);
-    assert.equal(typeof module[subpath], "function", subpath + " exports its factory");
-  }
+  // Literal specifiers, so the split-ESM bundle below can resolve them.
+  ${noPeerProviders.map(subpath => `assert.equal(typeof (await import("${pkg.name}/${subpath}")).${subpath}, "function", "${subpath} exports its factory");`).join("\n  ")}
   console.log("native api ok on " + (globalThis.Bun ? "bun " + Bun.version : "node " + process.version));
 } finally {
   server.close();
