@@ -2,11 +2,18 @@ import type { Provider } from "@/lib/data";
 import { providerColor, providerName } from "@/lib/providers";
 import { advertised } from "@/lib/sizes";
 
-const isolationName: Record<string, string> = {
+const ISOLATION_NAMES = {
   kvm: "Virtual machine",
   docker: "Container",
   unreported: "Not reported",
-};
+} as const;
+
+const isKnownIsolation = (isolation: string): isolation is keyof typeof ISOLATION_NAMES =>
+  Object.hasOwn(ISOLATION_NAMES, isolation);
+
+/** A reader-facing name for how the provider isolates a sandbox; unknown kinds print as reported. */
+const isolationName = (isolation: string) =>
+  isKnownIsolation(isolation) ? ISOLATION_NAMES[isolation] : isolation;
 
 const rowsOf = (providers: readonly Provider[]) =>
   providers.flatMap((p) =>
@@ -15,7 +22,7 @@ const rowsOf = (providers: readonly Provider[]) =>
           {
             p,
             cpu: p.hardware.cpuModels[0]?.value ?? `${p.hardware.vendor}, model hidden`,
-            runsAs: isolationName[p.hardware.isolation] ?? p.hardware.isolation,
+            runsAs: isolationName(p.hardware.isolation),
             ranIn: p.hardware.location[0]?.value ?? "Not reported",
             note: advertised[p.id].note,
           },
@@ -33,23 +40,26 @@ export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
 
   return (
     <>
-      <ul className="flex flex-col divide-y divide-[var(--line)] border-y border-[var(--line)] sm:hidden">
+      <ul className="flex flex-col divide-y divide-line border-y border-line sm:hidden">
         {rows.map(({ p, cpu, runsAs, ranIn, note }) => (
-          <li key={p.id} className="py-3 text-[13.5px] leading-snug">
-            <p className="font-medium" style={{ color: providerColor(p.id) }}>
+          <li key={p.id} className="py-3 text-label leading-snug">
+            <p
+              className="font-medium text-(--provider)"
+              style={{ "--provider": providerColor(p.id) }}
+            >
               {providerName(p.id)}
             </p>
             <p className="mt-1">{cpu}</p>
-            <p className="mt-0.5 text-[var(--muted)]">
+            <p className="mt-0.5 text-muted">
               {runsAs} · {ranIn}
             </p>
-            {note ? <p className="mt-1.5 text-[12.5px] text-[var(--muted)]">{note}</p> : null}
+            {note ? <p className="mt-1.5 text-note text-muted">{note}</p> : null}
           </li>
         ))}
       </ul>
-      <table className="hidden w-full border-collapse text-left text-[13px] sm:table">
+      <table className="hidden w-full border-collapse text-left text-control sm:table">
         <thead>
-          <tr className="border-b border-[var(--line)] text-[12px] text-[var(--muted)]">
+          <tr className="border-b border-line text-caption text-muted">
             {["Provider", "CPU", "Runs as", "Ran in"].map((h) => (
               <th key={h} scope="col" className="py-2.5 pr-5 font-normal">
                 {h}
@@ -59,20 +69,18 @@ export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
         </thead>
         <tbody>
           {rows.map(({ p, cpu, runsAs, ranIn, note }) => (
-            <tr key={p.id} className="border-b border-[var(--line)] align-top">
+            <tr key={p.id} className="border-b border-line align-top">
               <th
                 scope="row"
-                className="py-3 pr-5 font-medium"
-                style={{ color: providerColor(p.id) }}
+                className="py-3 pr-5 font-medium text-(--provider)"
+                style={{ "--provider": providerColor(p.id) }}
               >
                 {providerName(p.id)}
               </th>
               <td className="py-3 pr-5">
                 {cpu}
                 {note ? (
-                  <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">
-                    {note}
-                  </span>
+                  <span className="mt-1 block max-w-lede text-fine text-muted">{note}</span>
                 ) : null}
               </td>
               <td className="py-3 pr-5 whitespace-nowrap">{runsAs}</td>

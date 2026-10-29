@@ -51,8 +51,8 @@ export function MachineSizes({ providers }: { providers: readonly Provider[] }) 
 
         return (
           <div key={part.key}>
-            <h4 className="text-[14px] font-medium">{part.title}</h4>
-            <p className="mt-0.5 mb-2 text-[12px] text-[var(--muted)]">
+            <h4 className="text-body font-medium">{part.title}</h4>
+            <p className="mt-0.5 mb-2 text-caption text-muted">
               Default sandbox · Higher is better
             </p>
             <Columns columns={columns} label={`${part.title} by provider`} compact />

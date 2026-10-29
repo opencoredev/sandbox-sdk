@@ -87,9 +87,9 @@ export function SectionNav({
       <nav
         ref={scroller}
         aria-label="Sections"
-        className="scroll-fade hidden min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] lg:block"
+        className="scroll-fade hidden min-w-0 flex-1 overflow-x-auto scrollbar-none lg:block"
       >
-        <div className="mx-auto flex w-max gap-0.5 rounded-full border border-[var(--line)] bg-[var(--band)] p-1">
+        <div className="mx-auto flex w-max gap-0.5 rounded-full border border-line bg-band p-1">
           {sections.map(([id, label]) => {
             const active = id === current;
 
@@ -98,10 +98,10 @@ export function SectionNav({
                 key={id}
                 href={`#${id}`}
                 aria-current={active ? "location" : undefined}
-                className={`rounded-full px-3 py-1 text-[13px] whitespace-nowrap transition-colors duration-150 motion-reduce:transition-none ${
+                className={`rounded-full px-3 py-1 text-control whitespace-nowrap transition-colors duration-150 motion-reduce:transition-none ${
                   active
-                    ? "bg-[var(--foreground)] font-medium text-[var(--background)]"
-                    : "text-[var(--muted)] hover:bg-[var(--chip)] hover:text-[var(--foreground)]"
+                    ? "bg-foreground font-medium text-background"
+                    : "text-muted hover:bg-chip hover:text-foreground"
                 }`}
               >
                 {label}
@@ -118,12 +118,12 @@ export function SectionNav({
           aria-expanded={open}
           aria-controls={panel}
           onClick={() => setOpen((o) => !o)}
-          className="flex h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--band)] px-4 text-[13.5px] font-medium"
+          className="flex h-10 items-center gap-2 rounded-full border border-line bg-band px-4 text-label font-medium"
         >
-          <span className="max-w-[11rem] truncate">{currentLabel}</span>
+          <span className="max-w-44 truncate">{currentLabel}</span>
           <span
             aria-hidden
-            className={`text-[var(--muted)] transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+            className={`text-muted transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
           >
             ▾
           </span>
@@ -132,7 +132,7 @@ export function SectionNav({
         {open ? (
           <div
             id={panel}
-            className="absolute inset-x-0 top-full border-b border-[var(--line)] bg-[var(--background)] px-4 pt-2 pb-4 shadow-[0_16px_32px_rgb(0_0_0/0.6)] sm:px-6"
+            className="absolute inset-x-0 top-full border-b border-line bg-background px-4 pt-2 pb-4 shadow-menu sm:px-6"
           >
             <nav aria-label="Sections">
               <ul className="grid grid-cols-2 gap-1">
@@ -142,10 +142,8 @@ export function SectionNav({
                       href={`#${id}`}
                       onClick={() => setOpen(false)}
                       aria-current={id === current ? "location" : undefined}
-                      className={`flex h-11 items-center rounded-lg px-3 text-[14.5px] ${
-                        id === current
-                          ? "bg-[var(--chip)] font-medium"
-                          : "text-[var(--muted)] active:bg-[var(--band)]"
+                      className={`flex h-11 items-center rounded-lg px-3 text-menu ${
+                        id === current ? "bg-chip font-medium" : "text-muted active:bg-band"
                       }`}
                     >
                       {label}
@@ -157,7 +155,7 @@ export function SectionNav({
                     <a
                       href={extra.href}
                       onClick={() => setOpen(false)}
-                      className="flex h-11 items-center rounded-lg px-3 text-[14.5px] text-[var(--muted)] active:bg-[var(--band)]"
+                      className="flex h-11 items-center rounded-lg px-3 text-menu text-muted active:bg-band"
                     >
                       {extra.label}
                     </a>

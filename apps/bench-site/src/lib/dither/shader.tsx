@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ComponentProps, ReactNode, RefObject } from "react";
+import type { ComponentProps, ReactNode, Ref, RefCallback, RefObject } from "react";
 
 import { readDitherCell, resolveColor, subscribeToTheme } from "@/lib/dither/color";
 import { getThresholdMap } from "@/lib/dither/matrices";
@@ -91,8 +91,13 @@ interface UniformSpec {
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/;
 const GLSL_TYPES = { 1: "float", 2: "vec2", 3: "vec3", 4: "vec4" } as const;
 
+/** Whether a uniform is a single float rather than a vector. */
+function isScalar(value: ShaderUniformValue): value is number {
+  return typeof value === "number";
+}
+
 const uniformSize = (value: ShaderUniformValue): UniformSpec["size"] =>
-  typeof value === "number" ? 1 : value.length;
+  isScalar(value) ? 1 : value.length;
 
 const uniformSpecs = (uniforms: DitherUniforms): UniformSpec[] =>
   Object.keys(uniforms)
@@ -280,7 +285,7 @@ const createRenderer = (
           continue;
         }
 
-        if (typeof value === "number") {
+        if (isScalar(value)) {
           gl.uniform1f(spec.location, value);
         } else if (value.length === 2) {
           gl.uniform2f(spec.location, value[0], value[1]);
@@ -527,6 +532,11 @@ const clampLevels = (levels: number) => Math.min(256, Math.max(2, Math.round(lev
 const CANVAS_CLASS =
   "absolute top-0 left-0 block opacity-100 transition-opacity duration-700 ease-out [image-rendering:pixelated] group-data-[state=fallback]/dither:opacity-0 group-data-[state=fallback]/dither:duration-0 motion-reduce:transition-none";
 
+/** Whether a forwarded ref is a callback rather than a ref object. */
+function isRefCallback(ref: Ref<HTMLDivElement> | undefined): ref is RefCallback<HTMLDivElement> {
+  return typeof ref === "function";
+}
+
 /**
  * A dithered full-bleed canvas driven by a GLSL `field`. Renders one pixel
  * per dither cell, scaled up with crisp edges. Pauses offscreen and in
@@ -557,7 +567,7 @@ export const DitherShader = ({
   const setRoot = (node: HTMLDivElement | null) => {
     rootRef.current = node;
 
-    if (typeof ref === "function") {
+    if (isRefCallback(ref)) {
       return ref(node);
     }
 
@@ -777,7 +787,10 @@ export const DitherShader = ({
         className="absolute inset-0 opacity-0 transition-opacity delay-700 duration-0 group-data-[state=fallback]/dither:opacity-100 group-data-[state=fallback]/dither:delay-0"
       >
         {fallback ?? (
-          <div className="absolute inset-0" style={{ backgroundColor: cssColor(palette[0]) }} />
+          <div
+            className="absolute inset-0 bg-(--dither-fallback)"
+            style={{ "--dither-fallback": cssColor(palette[0]) }}
+          />
         )}
       </div>
     </div>

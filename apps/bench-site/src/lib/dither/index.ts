@@ -19,17 +19,23 @@ export {
   MOTION,
 } from "@/lib/dither/tokens";
 
-export type { DitherColor, DitherColorName, DitherPalette, Rgba } from "@/lib/dither/tokens";
+export type {
+  CellSize,
+  DitherColor,
+  DitherColorName,
+  DitherPalette,
+  Rgba,
+} from "@/lib/dither/tokens";
 
 export {
   BLOOM_LEVELS,
   BLOOMS,
   bloomFilter,
-  bloomLayerStyle,
+  bloomLayer,
   bloomStyle,
   ditherRamp,
   FILL_VARIANTS,
-  fillStyle,
+  fillPaint,
   fillTile,
   SERIES_COLORS,
   seriesColor,
@@ -38,6 +44,7 @@ export {
 export type {
   Bloom,
   FillEdge,
+  FillPaint,
   FillStyleOptions,
   FillTile,
   FillVariant,
@@ -70,9 +77,15 @@ export type {
   ShaderUniformValue,
 } from "@/lib/dither/shader";
 
-export { BloomBox, BloomGroup, FillPattern } from "@/lib/dither/fill";
+export { BloomBox, BloomGroup, DitherFill, FillPattern } from "@/lib/dither/fill";
 
-export type { BloomBoxProps, BloomGroupProps, FillPatternProps, FillRamp } from "@/lib/dither/fill";
+export type {
+  BloomBoxProps,
+  BloomGroupProps,
+  DitherFillProps,
+  FillPatternProps,
+  FillRamp,
+} from "@/lib/dither/fill";
 
 export { DitherPattern, ditherMask, ditherMaskStyle, ditherPath } from "@/lib/dither/pattern";
 

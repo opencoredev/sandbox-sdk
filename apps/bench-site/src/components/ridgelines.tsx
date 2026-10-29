@@ -93,21 +93,21 @@ function Plot({
   const height = TOP + ROW * (rows.length - 1) + 30;
 
   return (
-    <figure className="grid grid-cols-[6.75rem_1fr] gap-x-3 sm:grid-cols-[9.5rem_1fr] sm:gap-x-5">
+    <figure className="grid grid-cols-ridge gap-x-3 sm:grid-cols-ridge-wide sm:gap-x-5">
       <div className="relative">
         {rows.map((row, i) => (
           <div
             key={row.provider}
-            className="absolute right-0 left-0 flex -translate-y-full flex-col items-end pb-0.5 text-right leading-tight"
-            style={{ top: `${((TOP + i * ROW) / height) * 100}%` }}
+            className="absolute top-(--row) right-0 left-0 flex -translate-y-full flex-col items-end pb-0.5 text-right leading-tight"
+            style={{ "--row": `${((TOP + i * ROW) / height) * 100}%` }}
           >
             <span
-              className="text-[12px] font-medium sm:text-[14px]"
-              style={{ color: providerColor(row.provider) }}
+              className="text-caption font-medium text-(--provider) sm:text-body"
+              style={{ "--provider": providerColor(row.provider) }}
             >
               {providerName(row.provider)}
             </span>
-            <span className="font-mono text-[11px] whitespace-nowrap text-[var(--muted)] tabular-nums sm:text-[12px]">
+            <span className="font-mono text-tick whitespace-nowrap text-muted tabular-nums sm:text-caption">
               {formatValue(row.p50, "s")}
               {` · n = ${row.values.length}`}
             </span>
@@ -182,9 +182,9 @@ function Plot({
           over(row) > 0 ? (
             <span
               key={row.provider}
-              className="absolute right-0 -translate-y-[calc(100%+3px)] rounded-[3px] bg-[var(--surface)] px-1 font-mono text-[11px] whitespace-nowrap text-[var(--muted)] tabular-nums"
+              className="absolute top-(--row) right-0 -translate-y-lift rounded-tag bg-surface px-1 font-mono text-tick whitespace-nowrap text-muted tabular-nums"
               // The tick row below the plot is 1.25rem tall.
-              style={{ top: `calc((100% - 1.25rem) * ${(TOP + i * ROW) / height})` }}
+              style={{ "--row": `calc((100% - 1.25rem) * ${(TOP + i * ROW) / height})` }}
             >
               {over(row)} over {MAX_S} s →
             </span>
@@ -194,8 +194,8 @@ function Plot({
           {ticks.map((t) => (
             <span
               key={t}
-              className="absolute -translate-x-1/2 font-mono text-[11px] whitespace-nowrap text-[var(--muted)]"
-              style={{ left: `${(lx(t) / W) * 100}%` }}
+              className="absolute left-(--tick) -translate-x-1/2 font-mono text-tick whitespace-nowrap text-muted"
+              style={{ "--tick": `${(lx(t) / W) * 100}%` }}
             >
               {t}
               {t === ticks.at(-1) ? " s" : ""}
