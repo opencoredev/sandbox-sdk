@@ -133,7 +133,8 @@ export function local(options: LocalOptions = {}): LocalProvider {
       const bindings = Object.fromEntries(ports.map(port => [`${port}/tcp`, [{ HostIp: "127.0.0.1", HostPort: "" }]]));
       phase = performance.now();
       const createdAt = Date.now();
-      const labels = { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", ...(input.timeoutMs === undefined ? {} : { [deadlineLabel]: String(createdAt + input.timeoutMs) }), ...(input.idleTimeoutMs === undefined ? {} : { [idleLabel]: String(input.idleTimeoutMs) }) };
+      // Always set the timer labels: a snapshot image carries its source's, and Docker merges image labels into the container's.
+      const labels = { ...input.labels, "sandbox-sdk": "1", [keyLabel]: input.key ?? "", [deadlineLabel]: input.timeoutMs === undefined ? "" : String(createdAt + input.timeoutMs), [idleLabel]: input.idleTimeoutMs === undefined ? "" : String(input.idleTimeoutMs) };
       const created = object(await client.call("POST", `/containers/create?name=${encode(input.key ? name(input.key) : `sandbox-sdk-${randomUUID()}`)}${input.from === undefined ? platform : ""}`, {
         Image: source, WorkingDir: "/workspace", Cmd: ["sh", "-c", "exec sleep infinity"], ...(options.user === undefined ? {} : { User: options.user }),
         Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`), Labels: labels,
@@ -159,12 +160,13 @@ export function local(options: LocalOptions = {}): LocalProvider {
     async find(key) { try { const found = await provider.connect(name(key)); return found.key === key ? found : undefined; } catch (error) { if (error instanceof SandboxError && error.code === "not_found") return undefined; throw error; } },
     async connect(id) {
       const { info: current, labels } = inspected(await inspect(id));
-      const deadline = Number(labels[deadlineLabel] ?? Infinity), idle = Number(labels[idleLabel] ?? Infinity);
+      const limit = (value: string | undefined) => value ? Number(value) : Infinity;
+      const deadline = limit(labels[deadlineLabel]), idle = limit(labels[idleLabel]);
       if (Number.isFinite(deadline) || Number.isFinite(idle)) timers.add(current.id);
       let expired = Date.now() >= deadline;
       if (!expired && Number.isFinite(idle) && current.state === "running") {
         let last = "";
-        const code = await client.exec(current.id, ["node", "-e", `const f=require('fs'), p='/tmp/.sandbox-sdk';const busy=(f.existsSync(p+'/runs')&&f.readdirSync(p+'/runs').length)||(f.existsSync(p+'/procs')&&f.readdirSync(p+'/procs').some(n=>!f.existsSync(p+'/procs/'+n+'/exit')));process.stdout.write(String(busy?Date.now():f.existsSync('${activity}')?f.statSync('${activity}').mtimeMs:${current.createdAt}))`], { onChunk(chunk) { if (chunk.stream === "stdout") last += chunk.text; } });
+        const code = await client.exec(current.id, ["node", "-e", `const f=require('fs'), p='/tmp/.sandbox-sdk';const busy=(f.existsSync(p+'/runs')&&f.readdirSync(p+'/runs').length)||(f.existsSync(p+'/procs')&&f.readdirSync(p+'/procs').some(n=>!f.existsSync(p+'/procs/'+n+'/exit')));process.stdout.write(String(busy?Date.now():Math.max(${current.createdAt},f.existsSync('${activity}')?f.statSync('${activity}').mtimeMs:0)))`], { onChunk(chunk) { if (chunk.stream === "stdout") last += chunk.text; } });
         if (code !== 0 || !Number.isFinite(Number(last))) throw failure("Could not check local idle deadline", "provider");
         expired = Date.now() - Number(last) >= idle;
       }
