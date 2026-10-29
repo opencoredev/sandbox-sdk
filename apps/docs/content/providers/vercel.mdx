@@ -198,7 +198,7 @@ await box.run("ls", { cwd: "/vercel/sandbox" });
 | `deleteOrphanSnapshots` | `boolean` | `false` | |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | |
 
-A token needs both IDs, or creation fails with `auth`. Set `image` or `runtime`, not both. `snapshotExpiresInMs` also covers the automatic snapshots that persistence uses, so a paused sandbox loses its files once that snapshot expires. `keepLastSnapshots.count` runs from 1 to 10. `deleteOrphanSnapshots` makes `destroy()` delete snapshots no other sandbox uses, including ones you have not restored yet. `box.native` is the `@vercel/sandbox` `Sandbox` object.
+A token needs both IDs, or creation fails with `auth`. Set `image` or `runtime`, not both. `snapshotExpiresInMs` also covers the automatic snapshots that persistence uses, so a paused sandbox loses its files once that snapshot expires. `keepLastSnapshots.count` runs from 1 to 10. Destroying a sandbox keeps its snapshots until they expire, including the one a paused sandbox saved. `deleteOrphanSnapshots` makes `destroy()` delete every snapshot no other sandbox uses instead, including ones you have not restored yet. `box.native` is the `@vercel/sandbox` `Sandbox` object.
 
 ## Limitations
 

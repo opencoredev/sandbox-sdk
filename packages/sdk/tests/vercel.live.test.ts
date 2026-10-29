@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Snapshot } from "@vercel/sandbox";
+import { Sandbox, Snapshot } from "@vercel/sandbox";
 import { connectSandbox, createSandbox } from "../src/index.js";
 import { vercel } from "../src/providers/vercel/index.js";
 import { runConformance } from "../src/testing.js";
@@ -40,13 +40,19 @@ describe.skipIf(!credentials)("Vercel live options", { timeout: 180000 }, () => 
     } finally { await box.destroy(); }
   });
 
-  test("connectSandbox can destroy a stopped sandbox", async () => {
+  test("connectSandbox can destroy a stopped sandbox and its persistence snapshot", async () => {
     const box = await createSandbox(vercel(), { timeoutMs: 120_000 });
     try {
       await box.pause();
-      const attached = await connectSandbox(vercel(), box.id);
+      const snapshotId = (await Sandbox.get({ name: box.id })).currentSnapshotId;
+      if (!snapshotId) throw new Error("Pause did not record a persistence snapshot");
+      const attached = await connectSandbox(vercel({ deleteOrphanSnapshots: true }), box.id);
       await attached.destroy();
       await expect(vercel().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+      // Vercel deletes orphan snapshots asynchronously.
+      const deadline = Date.now() + 60_000; let status = "created";
+      while (status !== "deleted" && Date.now() < deadline) { status = (await Snapshot.get({ snapshotId })).status; if (status !== "deleted") await new Promise(resolve => setTimeout(resolve, 2000)); }
+      expect(status).toBe("deleted");
     } finally { await box.destroy().catch(() => {}); }
   });
 
