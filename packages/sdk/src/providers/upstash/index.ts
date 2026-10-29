@@ -643,6 +643,7 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
           }
 
           active.add(hook.detach);
+          // Only forget the monitor here; the process handle reports any failure.
           void hook
             .wait()
             .finally(() => active.delete(hook.detach))

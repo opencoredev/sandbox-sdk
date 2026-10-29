@@ -234,6 +234,7 @@ export async function bufferedExecute(
     await cancellation;
 
     if (confirmed && (cancellation || cleanupNeeded))
+      // Best effort: the result is already confirmed; a leftover directory is harmless.
       await box.files.remove(dir, { recursive: true }).catch(() => {});
   }
 }

@@ -289,7 +289,6 @@ export class FileTransfers {
     } finally {
       clearTimeout(timer);
       this.signal?.removeEventListener("abort", abort);
-      native.catch(() => {});
     }
   }
 

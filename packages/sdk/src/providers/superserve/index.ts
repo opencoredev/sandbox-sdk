@@ -374,6 +374,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           workspacePrepared.delete(id);
         });
         deleting.set(id, pending);
+        // Only forget the request here; callers receive pending and its failure.
         pending.finally(() => deleting.delete(id)).catch(() => {});
       }
 

@@ -156,6 +156,7 @@ export async function startProcess(
 
     if (pid === undefined) throw new Error("Durable process PID missing");
   } catch (error) {
+    // Best effort: halt() below stops the box if the env file stays behind.
     await box.files.remove(envPath).catch(() => {});
     // Without a confirmed PID, stopping the box is the only safe cleanup.
     await halt(dir);
@@ -192,6 +193,7 @@ export async function startProcess(
     }
   })();
 
+  // Callers observe wait() themselves; this only marks an unobserved failure handled.
   void wait.catch(() => {});
 
   const signal = async (kind: "TERM" | "KILL") => {

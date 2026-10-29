@@ -142,6 +142,7 @@ finally:
     }
 
     if (result.exitCode !== 0) {
+      // Best effort: the assembly failure below is the error to report.
       await box.files.remove(dir, { recursive: true }).catch(() => {});
       throw new SandboxError(
         "Large file assembly failed. Check guest Python and destination permissions.",

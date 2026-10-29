@@ -322,6 +322,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         try {
           value = await request(() => pending, input.signal);
         } catch (error) {
+          // Best effort: close a session that arrives after the caller gave up.
           void pending.then((late) => request(() => late.close())).catch(() => {});
           throw error;
         }

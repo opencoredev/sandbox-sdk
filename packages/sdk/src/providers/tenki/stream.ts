@@ -260,6 +260,7 @@ export async function executeStream(
     throw failure("Command recovery exhausted", "unavailable");
   })();
 
+  // The deadline below can abandon completion; its later failure is not the caller's error.
   void completion.catch(() => {});
 
   try {

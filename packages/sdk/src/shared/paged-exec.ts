@@ -202,6 +202,7 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
   } finally {
     clearTimeout(timer);
 
+    // Best effort: the result is already known; a leftover directory only holds its output.
     if (paged) await g.raw(`rm -rf -- ${quote(root)}`).catch(() => {});
   }
 }

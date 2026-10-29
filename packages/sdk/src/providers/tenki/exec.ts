@@ -276,6 +276,7 @@ export async function execute(
     return { exitCode: value.exitCode, timedOut: value.timedOut };
   });
 
+  // Cancellation can abandon completion; its later failure is not the caller's error.
   void completion.catch(() => {});
 
   async function killGroup() {
@@ -310,6 +311,7 @@ except ProcessLookupError: pass`,
       try {
         await killGroup();
       } catch {
+        // Best effort: the outcome_unknown error below already tells the caller.
         await deadline(() => box.close(), 1000).catch(() => {});
         throw failure(
           "Process cancellation could not be confirmed; VM termination was requested",
@@ -317,10 +319,9 @@ except ProcessLookupError: pass`,
         );
       }
 
+      // Let the supervisor record its exit; a cancelled run reports timedOut either way.
       await deadline(() => completion, 250).catch(() => {});
       transport.abort();
-
-      for (const reader of readers) void reader.cancel().catch(() => {});
 
       return { exitCode: null, timedOut: true };
     }
@@ -331,6 +332,7 @@ except ProcessLookupError: pass`,
     try {
       await killGroup();
     } catch {
+      // Best effort: the original error is the one the caller needs.
       await deadline(() => box.close(), 1000).catch(() => {});
     }
 
@@ -339,14 +341,12 @@ except ProcessLookupError: pass`,
     outputTransport.abort();
     transport.abort();
 
-    for (const reader of readers) {
-      try {
-        void reader.cancel().catch(() => {});
-      } catch {}
-    }
+    // A released reader rejects cancel(); the stream is finished either way.
+    for (const reader of readers) void reader.cancel().catch(() => {});
 
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
+    // Best-effort removal of this run's guest files.
     await raw(box, ["rm", "-f", marker, `${marker}.exit`, `${marker}.out`], undefined, 250).catch(
       () => {},
     );
