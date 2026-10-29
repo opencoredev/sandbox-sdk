@@ -1,4 +1,4 @@
-import type { Provider, SandboxInfo, Terminal } from "./provider.js";
+import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
@@ -69,7 +69,7 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
   };
   const { pause, resume, snapshot, terminal } = provider;
   if (provider.capabilities.has("pause") && pause && resume) Object.assign(box, { pause: () => safe(() => pause.call(provider, info.id)), resume: () => safe(() => resume.call(provider, info.id)) });
-  if (provider.capabilities.has("snapshot") && snapshot) Object.assign(box, { snapshot: () => safe(() => snapshot.call(provider, info.id)) });
+  if (provider.capabilities.has("snapshot") && snapshot) Object.assign(box, { snapshot: (options?: SnapshotOptions) => safe(() => snapshot.call(provider, info.id, options)) });
   if (provider.capabilities.has("terminal") && terminal) Object.assign(box, { terminal: (options: { cols: number; rows: number }) => safe(async () => {
     const raw = await terminal.call(provider, info.id, options); const cleanups = new Set<() => void>();
     const handle: Terminal = {

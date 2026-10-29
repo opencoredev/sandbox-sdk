@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
-import type { Provider, FileInfo } from "./provider.js";
+import type { Provider, FileInfo, WriteOptions } from "./provider.js";
 import { SandboxError, invalid, type Redactor } from "./errors.js";
 import { pathOf, quote, defaults } from "./run.js";
 export interface FileEvent { type: "added" | "modified" | "removed"; path: string }
@@ -11,8 +11,8 @@ export interface FileDiff { added: string[]; modified: string[]; removed: string
 export interface Files {
   read(path: string): Promise<string>;
   read(path: string, options: { as: "bytes" }): Promise<Uint8Array>;
-  write(path: string, data: string | Uint8Array): Promise<void>;
-  write(files: Record<string, string | Uint8Array>): Promise<void>;
+  write(path: string, data: string | Uint8Array, options?: WriteOptions): Promise<void>;
+  write(files: Record<string, string | Uint8Array>, options?: WriteOptions): Promise<void>;
   edit(path: string, edit: { find: string; replace: string }): Promise<void>;
   list(path?: string, options?: { recursive?: boolean; glob?: string }): Promise<FileInfo[]>;
   stat(path: string): Promise<FileInfo>;
@@ -54,13 +54,15 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
     // File reads are data, not output logs. Preserve exact contents (including binary).
     return options?.as === "bytes" ? bytes : new TextDecoder().decode(bytes);
   }
-  async function write(path: string, data: string | Uint8Array): Promise<void>;
-  async function write(files: Record<string, string | Uint8Array>): Promise<void>;
-  async function write(input: string | Record<string, string | Uint8Array>, data?: string | Uint8Array): Promise<void> {
-    const entries = typeof input === "string" ? [[input, data ?? ""] satisfies [string, string | Uint8Array]] : Object.entries(input);
+  async function write(path: string, data: string | Uint8Array, options?: WriteOptions): Promise<void>;
+  async function write(files: Record<string, string | Uint8Array>, options?: WriteOptions): Promise<void>;
+  async function write(input: string | Record<string, string | Uint8Array>, data?: string | Uint8Array | WriteOptions, maybeOptions?: WriteOptions): Promise<void> {
+    const entries = typeof input === "string" ? [[input, (data as string | Uint8Array | undefined) ?? ""] satisfies [string, string | Uint8Array]] : Object.entries(input);
+    const options = (typeof input === "string" ? maybeOptions : data as WriteOptions | undefined) ?? {};
+    // TODO(SBX-71 core): validate options.mode and chmod after the write when !fs.writeSupportsMode.
     // One mkdir per distinct parent within a call; later calls re-check, since commands may remove directories.
     const made = new Set<string>();
-    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value); } });
+    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value, options); } });
   }
   const gitDir = "/tmp/.sandbox-sdk/changes.git";
   async function git(command: string, stdin?: string): Promise<string> {

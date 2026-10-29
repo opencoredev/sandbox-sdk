@@ -43,16 +43,28 @@ export interface ExecInput {
 }
 export interface ExecResult { exitCode: number | null; timedOut: boolean }
 export interface FileInfo { path: string; type: "file" | "directory" | "symlink"; size: number; modifiedAt: number }
+/** Options for one file write. */
+export interface WriteOptions {
+  /** POSIX permission bits for the file, such as `0o600`. */
+  mode?: number;
+}
+/** Options for {@link Provider.snapshot}. */
+export interface SnapshotOptions {
+  /** Delete the snapshot after this many milliseconds. `0` keeps it until you delete it, where the provider allows that. */
+  expiresInMs?: number;
+}
 export interface ProviderFiles {
   /** Use primitive file transfers when guest tar is incompatible with GNU archives. */
   readonly transfer?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
+  /** Write applies `options.mode` itself. Without it, the core runs `chmod` after the write. */
+  readonly writeSupportsMode?: boolean;
   /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */
   readonly internal?: readonly string[];
   readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
-  write(id: string, path: string, data: Uint8Array): Promise<void>;
+  write(id: string, path: string, data: Uint8Array, options?: WriteOptions): Promise<void>;
   list(id: string, path: string): Promise<FileInfo[]>;
   stat(id: string, path: string): Promise<FileInfo>;
   remove(id: string, path: string, options: { recursive: boolean }): Promise<void>;
@@ -96,7 +108,7 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   usage?(id: string): Promise<Record<string, number>>;
   pause?(id: string): Promise<void>;
   resume?(id: string): Promise<void>;
-  snapshot?(id: string): Promise<{ id: string }>;
+  snapshot?(id: string, options?: SnapshotOptions): Promise<{ id: string }>;
   terminal?(id: string, options: { cols: number; rows: number }): Promise<Terminal>;
   startProcess?(id: string, input: Omit<ExecInput, "timeoutMs">): Promise<NativeProcess>;
 }

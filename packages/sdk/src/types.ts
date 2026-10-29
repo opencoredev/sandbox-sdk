@@ -1,4 +1,4 @@
-import type { Capability, CreateInput, FileInfo, Labels, OutputChunk, Provider, SandboxInfo, Terminal, Preview } from "./provider.js";
+import type { Capability, CreateInput, FileInfo, Labels, OutputChunk, Provider, SandboxInfo, Terminal, Preview, SnapshotOptions } from "./provider.js";
 import type { Files } from "./files.js";
 import type { Git } from "./git.js";
 import type { ProcessHandle, ProcessInfo, StartOptions } from "./processes.js";
@@ -160,7 +160,7 @@ export interface CapabilityMethods {
   };
   snapshot: {
     /** Save the sandbox state. Pass the returned `id` as `createSandbox(provider, { from: id })`. */
-    snapshot(): Promise<{ id: string }>;
+    snapshot(options?: SnapshotOptions): Promise<{ id: string }>;
   };
   terminal: {
     /** Open an interactive PTY. */
