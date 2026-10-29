@@ -94,7 +94,7 @@ export interface NativeSdkBinding {
   readonly package: string;
   /**
    * Build the SDK object for `sandboxId`, or the account client when it is undefined. `module` is untrusted:
-   * read its exports with {@link sdkExport}, which throws `invalid_argument` when one is missing.
+   * use it through {@link sdkConstruct} and {@link sdkCall}, which throw `invalid_argument` when an export or method is missing.
    */
   connect(module: object, sandboxId: string | undefined): unknown;
 }
