@@ -2,8 +2,16 @@ import { describe, test, expect } from "vitest";
 import { createSandbox, connectSandbox, reapSandboxes, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
+import type { Files } from "../src/files.js";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Activity markers left in the guest; none when nothing has made the runs directory yet. */
+async function activeRuns(box: { files: Files }) {
+  if (!(await box.files.exists("/tmp/.sandbox-sdk/runs"))) return [];
+
+  return box.files.list("/tmp/.sandbox-sdk/runs");
+}
 
 describe("core safety guarantees", () => {
   test("secrets stay redacted across chunks, streams, causes and reconnects", async () => {
@@ -593,9 +601,9 @@ describe("anonymous-pipe activity wrapper", () => {
 
       try {
         const redirect = stream === "stderr" ? ">&2" : "";
-        const running = Promise.resolve(box.run(`(sleep 0.2; printf LATE ${redirect}) & exit 7`));
-        await pause(30);
-        expect((await box.files.list("/tmp/.sandbox-sdk/runs")).length).toBe(1);
+        // The child outlives the poll below by far, so a slow shell cannot finish first.
+        const running = Promise.resolve(box.run(`(sleep 1; printf LATE ${redirect}) & exit 7`));
+        await expect.poll(async () => (await activeRuns(box)).length, { timeout: 900 }).toBe(1);
         // Different provider name bypasses this realm's run registry, like a second client.
         expect(
           await reapSandboxes({ ...provider, name: "independent-client" }, { idleOnly: true }),
@@ -627,7 +635,8 @@ describe("anonymous-pipe activity wrapper", () => {
         expect(await running).toMatchObject({ timedOut: true, exitCode: null });
         await pause(240);
         expect(await box.files.exists("escaped")).toBe(false);
-        expect(await box.files.list("/tmp/.sandbox-sdk/runs")).toEqual([]);
+        // A kill can land before the wrapper made the runs directory at all.
+        expect(await activeRuns(box)).toEqual([]);
       } finally {
         await box.destroy();
       }
