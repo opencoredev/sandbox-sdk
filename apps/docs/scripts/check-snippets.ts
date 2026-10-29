@@ -10,7 +10,8 @@
  * root). Other fences become snippet-N.ts. Stub modules for local helpers such as
  * "./kv" come from scripts/snippet-stubs/. Opt a fence out with check="skip".
  *
- * The SDK and its optional peers (ai, zod, @mastra/core, @openai/agents) resolve
+ * The SDK, its optional peers (ai, zod, @mastra/core, @openai/agents) and the provider SDKs
+ * in packages/sdk/scripts/externals.ts resolve
  * from packages/sdk, and hono from apps/docs, as they would from one deduplicated node_modules in an app.
  * Otherwise the workspace's second copy of `ai` gives snippets a different
  * `schemaSymbol` than the SDK's declarations, and valid tool maps fail to type-check.
@@ -28,6 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { externalPackages } from "../../../packages/sdk/scripts/externals.ts";
 
 const docsDir = resolve(import.meta.dirname, "..");
 const contentDir = join(docsDir, "content");
@@ -112,7 +114,9 @@ linkModule("@opencoredev/sandbox-sdk", sdkDir);
 const sdkManifest: { peerDependencies?: Record<string, string> } = JSON.parse(
   readFileSync(join(sdkDir, "package.json"), "utf8"),
 );
-for (const peer of Object.keys(sdkManifest.peerDependencies ?? {})) {
+// Provider SDKs that are no longer peers stay importable, as they are for a user who installs one for
+// `box.native.sdk(() => import(...))`.
+for (const peer of new Set([...Object.keys(sdkManifest.peerDependencies ?? {}), ...externalPackages])) {
   const installed = join(sdkDir, "node_modules", peer);
   if (existsSync(installed)) linkModule(peer, realpathSync(installed));
 }

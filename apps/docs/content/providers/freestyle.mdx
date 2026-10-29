@@ -226,7 +226,7 @@ console.log(snapshots.map((snapshot) => snapshot.id));
 
 To use the official SDK, install `freestyle` yourself and pass its import to `sdk`. `box.native.sdk` returns the SDK's `Vm` for this sandbox, and `provider.api.sdk` returns a `Freestyle` client. Both use the adapter's API key and base URL.
 
-```ts check="skip"
+```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 

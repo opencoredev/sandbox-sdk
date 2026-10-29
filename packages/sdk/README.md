@@ -95,7 +95,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [Railway](https://sandbox-sdk.app/docs/providers/railway) | `/railway` | `railway()` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | `railway` | snapshot | declare in `ports` (max 10) |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki) | `/tenki` | `tenki()` | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy | any port; URL may expire (`preview.expiresAt`) |
 | boxd | `/boxd` | `boxd()` | `BOXD_API_KEY` (optional `BOXD_BASE_URL`) | `@boxd-sh/sdk` | pause, snapshot, size | one port at a time; the URL follows the last port requested |
-| Freestyle | `/freestyle` | `freestyle()` | `FREESTYLE_API_KEY` | `freestyle` | pause, snapshot, network-policy | any port |
+| Freestyle | `/freestyle` | `freestyle()` | `FREESTYLE_API_KEY` | none | pause, snapshot, network-policy | any port |
 | Superserve | `/superserve` | `superserve()` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot | any port; token in `preview.headers` |
 | Boat | `/boat` | `boat()` | `BOAT_API_KEY` (optional `BOAT_API_BASE`) | `@boatdev/sdk` | size | any port; cookie in `preview.headers` |
 | Sandboxer | `/sandboxer` | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`) | `@boatdev/sdk` | pause, snapshot, size | any port; private URL, send `preview.headers` |
