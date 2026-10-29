@@ -36,17 +36,18 @@ describe("real Linux primitive transport", () => {
     const box = await createSandbox(await shellProvider());
 
     try {
-      const proc = await box.start("printf '%s\\n' \"$CUSTOM\"; sleep 2", {
+      // Generous deadlines: readiness resolves on the first matching line, so they cost nothing on a quiet host.
+      const proc = await box.start("printf '%s\\n' \"$CUSTOM\"; sleep 20", {
         name: "env",
         env: { CUSTOM: "ready" },
         ready: { log: /ready/ },
-        readyTimeoutMs: 1000,
+        readyTimeoutMs: 10_000,
       });
 
       expect(proc.ready).toBe(true);
       await proc.stop({ graceMs: 10 });
       await expect(
-        box.start("exit 3", { name: "exit", ready: { log: /never/ }, readyTimeoutMs: 1000 }),
+        box.start("exit 3", { name: "exit", ready: { log: /never/ }, readyTimeoutMs: 10_000 }),
       ).rejects.toMatchObject({ code: "process_exited" });
     } finally {
       await box.destroy();

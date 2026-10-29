@@ -775,7 +775,8 @@ test("shell process setup uses two execs and one upload, preserving UTF-8 and du
     await process.restart();
     await process.wait();
     expect((await process.logs({ after: cursor })).text).toBe("héllo😀\nlast-[REDACTED]");
-    const running = await box.start("echo ORIGINAL; sleep 0.2", { name: "duplicate" });
+    // It must still be running for the duplicate start below, even on a loaded host.
+    const running = await box.start("echo ORIGINAL; sleep 2", { name: "duplicate" });
     await expect(box.start("true", { name: "duplicate" })).rejects.toMatchObject({
       code: "invalid_argument",
     });
