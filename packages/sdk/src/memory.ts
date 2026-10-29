@@ -579,7 +579,7 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
               files.write(
                 id,
                 posix.resolve(cwd, path),
-                typeof data === "string" ? new TextEncoder().encode(data) : data,
+                data instanceof Uint8Array ? data : new TextEncoder().encode(data),
               ),
             list: (path) => files.list(id, posix.resolve(cwd, path)),
           },
@@ -680,11 +680,13 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
       return machine(id).info;
     },
     async list(labels) {
-      return [...machines.values()]
-        .map((m) => m.info)
-        .filter((info) =>
-          Object.entries(labels).every(([key, value]) => info.labels[key] === value),
-        );
+      const matches: SandboxInfo[] = [];
+
+      for (const { info } of machines.values())
+        if (Object.entries(labels).every(([key, value]) => info.labels[key] === value))
+          matches.push(info);
+
+      return matches;
     },
     async destroy(id) {
       const m = machines.get(id);

@@ -1,3 +1,6 @@
+import type { InspectOptionsStylized, inspect as nodeInspect } from "node:util";
+import { isString } from "./core/guards.js";
+
 /**
  * Why a {@link SandboxError} was thrown. A non-zero exit, a command timeout, or an
  * aborted `run` is never an error; those resolve with `ok: false`.
@@ -99,8 +102,8 @@ export class SandboxError extends Error {
   /** How Node prints the error (console.log, uncaught): `SandboxError [code]: message`, the stack, then the fields. */
   [Symbol.for("nodejs.util.inspect.custom")](
     _depth: number,
-    options: object,
-    inspect: (value: unknown, options: object) => string,
+    options: InspectOptionsStylized,
+    inspect: typeof nodeInspect,
   ): string {
     const stack = this.stack ?? "";
     const frames = stack.indexOf("\n    at ") >= 0 ? stack.slice(stack.indexOf("\n    at ")) : "";
@@ -145,21 +148,22 @@ export class Redactor {
   get maxLength() {
     return Math.max(1, ...[...this.values].map((value) => value.length));
   }
-  error(error: unknown, provider: string, sandboxId?: string): SandboxError {
-    if (error instanceof SandboxError) {
+  /** Map any thrown value to a scrubbed SandboxError. */
+  error(cause: unknown, provider: string, sandboxId?: string): SandboxError {
+    if (cause instanceof SandboxError) {
       // Adapters build these from native text, so scrub them too. Messages keep their lines and length: log tails live there.
-      return new SandboxError(scrubCredentials(this.text(error.message)), {
-        code: error.code,
-        retryable: error.retryable,
-        hint: scrubCredentials(this.text(error.hint)),
+      return new SandboxError(scrubCredentials(this.text(cause.message)), {
+        code: cause.code,
+        retryable: cause.retryable,
+        hint: scrubCredentials(this.text(cause.hint)),
         provider,
         sandboxId,
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
         cause:
-          error.cause === undefined
+          cause.cause === undefined
             ? undefined
             : scrub(
-                this.text(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+                this.text(cause.cause instanceof Error ? cause.cause.message : String(cause.cause)),
               ),
       });
     }
@@ -167,11 +171,7 @@ export class Redactor {
     // A raw failure reached the core, usually an SDK or adapter bug. Its scrubbed text is the only clue, so keep it in both places.
     const message = scrub(
       this.text(
-        error instanceof Error
-          ? error.message
-          : typeof error === "string"
-            ? error
-            : "Non-Error value thrown",
+        cause instanceof Error ? cause.message : isString(cause) ? cause : "Non-Error value thrown",
       ),
     );
 
@@ -182,7 +182,7 @@ export class Redactor {
         hint: hints.provider,
         provider,
         sandboxId,
-        cause: nativeDetail(error, (text) => this.text(text)),
+        cause: nativeDetail(cause, (text) => this.text(text)),
       },
     );
   }
@@ -221,13 +221,13 @@ export function scrub(text: string): string {
  * Undefined for thrown values that are not Errors, which carry no message to keep.
  */
 export function nativeDetail(
-  error: unknown,
+  cause: unknown,
   redact: (text: string) => string = (text) => text,
   depth = 0,
 ): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  const text = scrub(redact(error.message ? `${error.name}: ${error.message}` : error.name));
-  const nested = depth < 2 ? nativeDetail(error.cause, redact, depth + 1) : undefined;
+  if (!(cause instanceof Error)) return undefined;
+  const text = scrub(redact(cause.message ? `${cause.name}: ${cause.message}` : cause.name));
+  const nested = depth < 2 ? nativeDetail(cause.cause, redact, depth + 1) : undefined;
 
   return nested === undefined ? text : `${text}; caused by ${nested}`;
 }
@@ -250,6 +250,12 @@ const meanings: Record<ErrorCode, string> = {
   provider: "the provider returned an unexpected error",
 };
 
+/** @internal What {@link describeNative} keeps: text for the message, and the error's cause. */
+export interface NativeDescription {
+  detail?: string;
+  cause?: string;
+}
+
 /**
  * @internal What an adapter keeps from a native failure. Only a failure the adapter did not recognize
  * (`code` is `provider`, unless `known` says otherwise) and that carries no `status` keeps its text:
@@ -258,15 +264,15 @@ const meanings: Record<ErrorCode, string> = {
  * `cause` is the detail, or else the name and status.
  */
 export function describeNative(
-  error: unknown,
+  cause: unknown,
   options: { code: ErrorCode; known?: boolean; status?: string; redact?: (text: string) => string },
-): { detail?: string; cause?: string } {
+): NativeDescription {
   const known = options.known ?? options.code !== "provider";
 
   const detail =
-    !known && options.status === undefined ? nativeDetail(error, options.redact) : undefined;
+    !known && options.status === undefined ? nativeDetail(cause, options.redact) : undefined;
 
-  const label = [error instanceof Error ? error.name : undefined, options.status]
+  const label = [cause instanceof Error ? cause.name : undefined, options.status]
     .filter((part) => part !== undefined)
     .join(" ");
 

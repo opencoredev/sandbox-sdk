@@ -7,6 +7,7 @@ import type { Provider, FileInfo, WriteOptions } from "./provider.js";
 import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
+import { isObject, isString } from "./core/guards.js";
 
 export interface FileEvent {
   type: "added" | "modified" | "removed";
@@ -63,6 +64,13 @@ function wholeFilePatch(path: string, before: string | undefined, after: string 
     ...newLines.map((line) => `+${line}\n`),
     noNewline(after, newLines.length),
   ].join("");
+}
+
+/** Whether a write argument is file content rather than write options. */
+function isContent(
+  value: string | Uint8Array | WriteOptions | undefined,
+): value is string | Uint8Array {
+  return isString(value) || value instanceof Uint8Array;
 }
 
 export function globMatch(path: string, glob: string) {
@@ -170,18 +178,14 @@ export function makeFiles(
     data?: string | Uint8Array | WriteOptions,
     maybeOptions?: WriteOptions,
   ): Promise<void> {
-    const entries =
-      typeof input === "string"
-        ? [
-            [input, (data as string | Uint8Array | undefined) ?? ""] satisfies [
-              string,
-              string | Uint8Array,
-            ],
-          ]
-        : Object.entries(input);
+    // write(path, data, options) or write({ path: data }, options).
+    const single = isString(input);
 
-    const options =
-      (typeof input === "string" ? maybeOptions : (data as WriteOptions | undefined)) ?? {};
+    const entries: [string, string | Uint8Array][] = single
+      ? [[input, isContent(data) ? data : ""]]
+      : Object.entries(input);
+
+    const options = (single ? maybeOptions : isContent(data) ? undefined : data) ?? {};
 
     const { mode } = options;
     // One mkdir per distinct parent within a call; later calls re-check, since commands may remove directories.
@@ -203,7 +207,7 @@ export function makeFiles(
         await fs.write(
           id,
           dest,
-          typeof value === "string" ? new TextEncoder().encode(value) : value,
+          isString(value) ? new TextEncoder().encode(value) : value,
           options,
         );
         written.push(dest);
@@ -376,11 +380,11 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
   async function load(name: string): Promise<Record<string, string>> {
     const raw: unknown = JSON.parse(new TextDecoder().decode(await fs.read(id, checkpoint(name))));
 
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid("Invalid file checkpoint");
+    if (!isObject(raw) || Array.isArray(raw)) invalid("Invalid file checkpoint");
     const parsed: Record<string, string> = {};
 
     for (const [path, content] of Object.entries(raw)) {
-      if (typeof content !== "string") invalid("Invalid file checkpoint content");
+      if (!isString(content)) invalid("Invalid file checkpoint content");
       parsed[path] = content;
     }
 
