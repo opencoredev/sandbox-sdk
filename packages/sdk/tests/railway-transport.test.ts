@@ -6,20 +6,35 @@ import { railway } from "../src/providers/railway/index.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
+type FrameData =
+  | { exit_code: number }
+  | { version: number; stdin_chunk_bytes: number; stdin_chunks: number };
+
+function hasQuery(request: unknown): request is { query: string } {
+  return (
+    typeof request === "object" &&
+    request !== null &&
+    "query" in request &&
+    typeof request.query === "string"
+  );
+}
+
+function isTextFrame(data: string | ArrayBufferLike | ArrayBufferView): data is string {
+  return typeof data === "string";
+}
+
+function isControlFrame(frame: unknown): frame is { type: unknown } {
+  return typeof frame === "object" && frame !== null && "type" in frame;
+}
+
 test.each(["early", "blocked", "unconfirmed"] as const)(
   "real Railway transport: %s stdin outcome",
   async (mode) => {
     let destroyed = 0;
-    vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
       const request: unknown = JSON.parse(String(init?.body));
 
-      if (
-        typeof request !== "object" ||
-        request === null ||
-        !("query" in request) ||
-        typeof request.query !== "string"
-      )
-        throw new Error("Invalid GraphQL request");
+      if (!hasQuery(request)) throw new Error("Invalid GraphQL request");
       const query = request.query;
 
       if (query.includes("generateShellToken"))
@@ -57,11 +72,11 @@ test.each(["early", "blocked", "unconfirmed"] as const)(
       constructor() {
         queueMicrotask(() => this.onopen?.());
       }
-      frame(type: string, data: unknown) {
+      frame(type: string, data: FrameData) {
         this.onmessage?.({ data: JSON.stringify({ type, data }) });
       }
-      send(data: unknown) {
-        if (typeof data !== "string") {
+      send(data: string | ArrayBufferLike | ArrayBufferView) {
+        if (!isTextFrame(data)) {
           if (mode === "early")
             setTimeout(() => {
               this.onmessage?.({ data: new Uint8Array([1, 120]).buffer });
@@ -73,8 +88,7 @@ test.each(["early", "blocked", "unconfirmed"] as const)(
 
         const frame: unknown = JSON.parse(data);
 
-        if (typeof frame !== "object" || frame === null || !("type" in frame))
-          throw new Error("Invalid control frame");
+        if (!isControlFrame(frame)) throw new Error("Invalid control frame");
 
         if (frame.type === "exec_hello")
           queueMicrotask(() => {
