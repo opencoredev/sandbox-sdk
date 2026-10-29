@@ -1,4 +1,9 @@
 import { afterEach, expect, test, vi } from "vitest";
+import type { Boxd } from "@boxd-sh/sdk";
+import type { Daytona } from "@daytonaio/sdk";
+import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { BoatApi, Configuration } from "@boatdev/sdk";
+import type { Sandbox as E2BSandbox } from "e2b";
 import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
@@ -8,11 +13,26 @@ import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
 
-const state = vi.hoisted(() => ({ configs: [] as unknown[], creates: [] as unknown[] }));
+/** What each mocked SDK constructor or call received, in the SDKs' own types. */
+type NativeConfig =
+  | ConstructorParameters<typeof Boxd>[0]
+  | ConstructorParameters<typeof Daytona>[0]
+  | ConstructorParameters<typeof TenkiSandbox>[0]
+  | ConstructorParameters<typeof Configuration>[0]
+  | Parameters<typeof E2BSandbox.list>[0];
+
+type BoatCreate = Parameters<BoatApi["create"]>[0];
+
+const state = vi.hoisted(() => {
+  const configs: NativeConfig[] = [];
+  const creates: BoatCreate[] = [];
+
+  return { configs, creates };
+});
 
 vi.mock("@boxd-sh/sdk", () => ({
   Boxd: class {
-    constructor(config: unknown) {
+    constructor(config: ConstructorParameters<typeof Boxd>[0]) {
       state.configs.push(config);
     }
     machines = { list: async () => [] };
@@ -21,7 +41,7 @@ vi.mock("@boxd-sh/sdk", () => ({
 
 vi.mock("@daytonaio/sdk", () => ({
   Daytona: class {
-    constructor(config: unknown) {
+    constructor(config: ConstructorParameters<typeof Daytona>[0]) {
       state.configs.push(config);
     }
     async *list() {}
@@ -30,7 +50,7 @@ vi.mock("@daytonaio/sdk", () => ({
 
 vi.mock("@tenkicloud/sandbox", () => ({
   TenkiSandbox: class {
-    constructor(config: unknown) {
+    constructor(config: ConstructorParameters<typeof TenkiSandbox>[0]) {
       state.configs.push(config);
     }
     async list() {
@@ -41,7 +61,7 @@ vi.mock("@tenkicloud/sandbox", () => ({
 
 vi.mock("@boatdev/sdk", () => ({
   Configuration: class {
-    constructor(config: unknown) {
+    constructor(config: ConstructorParameters<typeof Configuration>[0]) {
       state.configs.push(config);
     }
   },
@@ -49,7 +69,7 @@ vi.mock("@boatdev/sdk", () => ({
     async sandboxes() {
       return { sandboxes: [] };
     }
-    async create(request: unknown) {
+    async create(request: BoatCreate) {
       state.creates.push(request);
       throw { response: new Response(null, { status: 400 }) };
     }
@@ -58,7 +78,7 @@ vi.mock("@boatdev/sdk", () => ({
 
 vi.mock("e2b", () => ({
   Sandbox: class {
-    static list(config: unknown) {
+    static list(config: Parameters<typeof E2BSandbox.list>[0]) {
       state.configs.push(config);
 
       return { hasNext: false };

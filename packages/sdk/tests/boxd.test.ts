@@ -49,7 +49,10 @@ const factory = () => boxd({ apiKey: "mock-key" });
 
 // The conformance guard admits local transports only when live:false. This is
 // a local Linux transport, not permission to contact the cloud.
-runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+runConformance(factory, {
+  live: true,
+  unsupported: { httpProbe: "Mock boxd preview URLs point at an unreachable host" },
+});
 
 afterAll(async () => {
   await Promise.all([...boxdState.boxes.values()].map((v) => v.guest.destroy()));

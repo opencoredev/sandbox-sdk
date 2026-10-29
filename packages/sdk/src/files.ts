@@ -4,8 +4,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
 import type { Provider, FileInfo, WriteOptions } from "./provider.js";
-import { SandboxError, invalid, type Redactor } from "./errors.js";
-import { pathOf, quote, defaults } from "./run.js";
+import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { pathOf, defaults } from "./run.js";
+import { quote } from "./shared/shell.js";
+import { isObject, isString } from "./core/guards.js";
 
 export interface FileEvent {
   type: "added" | "modified" | "removed";
@@ -42,6 +44,47 @@ export interface Files {
   ): () => void;
   mark(name?: string): Promise<string>;
   changes(options?: { since?: string }): Promise<FileDiff>;
+}
+
+/** A unified diff hunk that replaces a whole file. undefined content means the file is absent. */
+function wholeFilePatch(path: string, before: string | undefined, after: string | undefined) {
+  const lines = (text: string | undefined) => (text ? text.replace(/\n$/, "").split("\n") : []);
+  const oldLines = lines(before);
+  const newLines = lines(after);
+
+  const noNewline = (text: string | undefined, count: number) =>
+    count && !text?.endsWith("\n") ? "\\ No newline at end of file\n" : "";
+
+  return [
+    `--- ${before === undefined ? "/dev/null" : `a/${path}`}\n`,
+    `+++ ${after === undefined ? "/dev/null" : `b/${path}`}\n`,
+    `@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n`,
+    ...oldLines.map((line) => `-${line}\n`),
+    noNewline(before, oldLines.length),
+    ...newLines.map((line) => `+${line}\n`),
+    noNewline(after, newLines.length),
+  ].join("");
+}
+
+/** @internal Remove a file; one that is already gone is not an error. Some adapters report
+ * a missing path as a generic provider error, so a stat confirms that case. */
+export async function removeIfPresent(files: Pick<Files, "remove" | "exists">, path: string) {
+  try {
+    await files.remove(path);
+  } catch (error) {
+    if (isNotFound(error)) return;
+
+    if (error instanceof SandboxError && error.code === "provider" && !(await files.exists(path)))
+      return;
+    throw error;
+  }
+}
+
+/** Whether a write argument is file content rather than write options. */
+function isContent(
+  value: string | Uint8Array | WriteOptions | undefined,
+): value is string | Uint8Array {
+  return isString(value) || value instanceof Uint8Array;
 }
 
 export function globMatch(path: string, glob: string) {
@@ -149,18 +192,14 @@ export function makeFiles(
     data?: string | Uint8Array | WriteOptions,
     maybeOptions?: WriteOptions,
   ): Promise<void> {
-    const entries =
-      typeof input === "string"
-        ? [
-            [input, (data as string | Uint8Array | undefined) ?? ""] satisfies [
-              string,
-              string | Uint8Array,
-            ],
-          ]
-        : Object.entries(input);
+    // write(path, data, options) or write({ path: data }, options).
+    const single = isString(input);
 
-    const options =
-      (typeof input === "string" ? maybeOptions : (data as WriteOptions | undefined)) ?? {};
+    const entries: [string, string | Uint8Array][] = single
+      ? [[input, isContent(data) ? data : ""]]
+      : Object.entries(input);
+
+    const options = (single ? maybeOptions : isContent(data) ? undefined : data) ?? {};
 
     const { mode } = options;
     // One mkdir per distinct parent within a call; later calls re-check, since commands may remove directories.
@@ -182,7 +221,7 @@ export function makeFiles(
         await fs.write(
           id,
           dest,
-          typeof value === "string" ? new TextEncoder().encode(value) : value,
+          isString(value) ? new TextEncoder().encode(value) : value,
           options,
         );
         written.push(dest);
@@ -335,8 +374,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
       return true;
     } catch (error) {
-      if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code))
-        return false;
+      if (isNotFound(error)) return false;
       throw error;
     }
   }
@@ -356,11 +394,11 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
   async function load(name: string): Promise<Record<string, string>> {
     const raw: unknown = JSON.parse(new TextDecoder().decode(await fs.read(id, checkpoint(name))));
 
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid("Invalid file checkpoint");
+    if (!isObject(raw) || Array.isArray(raw)) invalid("Invalid file checkpoint");
     const parsed: Record<string, string> = {};
 
     for (const [path, content] of Object.entries(raw)) {
-      if (typeof content !== "string") invalid("Invalid file checkpoint content");
+      if (!isString(content)) invalid("Invalid file checkpoint content");
       parsed[path] = content;
     }
 
@@ -372,7 +410,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     try {
       return await action();
     } catch (error) {
-      // Confirm absence only on failure, so the success path stays one read.
+      // Confirm absence only on failure, so the success path stays one read. If the
+      // probe fails too, assume the mark exists and rethrow the original error.
       if (
         (since ?? "start") === "start" &&
         !(await filesExist(checkpoint("start")).catch(() => true))
@@ -403,8 +442,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
           return true;
         } catch (error) {
-          if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code))
-            return false;
+          if (isNotFound(error)) return false;
           throw error;
         }
       }),
@@ -436,11 +474,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       safe(async () => {
         const root = resolve(source);
 
-        if (
-          provider.name !== "memory" &&
-          fs.transfer !== "files" &&
-          (await local.lstat(root)).isDirectory()
-        ) {
+        if (fs.transfer !== "files" && (await local.lstat(root)).isDirectory()) {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-upload-"));
           const archive = `/tmp/.sandbox-sdk/upload-${crypto.randomUUID()}.tar`;
 
@@ -463,6 +497,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             await remote(`tar -xf ${quote(archive)} -C ${quote(pathOf(target))} --no-same-owner`);
           } finally {
             await local.rm(temporary, { recursive: true, force: true });
+            // The transfer's outcome stands; a leftover archive in the sandbox's /tmp is harmless.
             await fs.remove(id, archive, { recursive: false }).catch(() => {});
           }
 
@@ -492,16 +527,15 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       }),
     download: (source, target) =>
       safe(async () => {
-        if (
-          provider.name !== "memory" &&
-          fs.transfer !== "files" &&
-          (await fs.stat(id, pathOf(source))).type === "directory"
-        ) {
+        if (fs.transfer !== "files" && (await fs.stat(id, pathOf(source))).type === "directory") {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-download-"));
           const archive = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}.tar`;
 
           try {
-            await remote(`tar -cf ${quote(archive)} -C ${quote(pathOf(source))} .`);
+            // The records directory may not exist yet on a fresh sandbox; make it in the same exec.
+            await remote(
+              `mkdir -p ${quote(posix.dirname(archive))} && tar -cf ${quote(archive)} -C ${quote(pathOf(source))} .`,
+            );
             const localArchive = resolve(temporary, "files.tar");
             await local.writeFile(localArchive, await fs.read(id, archive));
             await local.mkdir(resolve(target), { recursive: true });
@@ -519,6 +553,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             );
           } finally {
             await local.rm(temporary, { recursive: true, force: true });
+            // The transfer's outcome stands; a leftover archive in the sandbox's /tmp is harmless.
             await fs.remove(id, archive, { recursive: false }).catch(() => {});
           }
 
@@ -617,7 +652,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     },
     mark: (name = `mark-${Date.now()}-${Math.random().toString(36).slice(2)}`) =>
       safe(async () => {
-        if (provider.name === "memory")
+        if (fs.checkpoints === "files")
           await write(checkpoint(name), JSON.stringify(await snapshot()));
         else await tree(checkpoint(name));
 
@@ -625,7 +660,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       }),
     changes: (options = {}) =>
       safe(async () => {
-        if (provider.name !== "memory") {
+        if (fs.checkpoints !== "files") {
           const before = (await baseline(options.since)).trim(),
             after = await tree();
 
@@ -666,15 +701,13 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         );
 
         const patch = [...added, ...modified, ...removed]
-          .map((path) => {
-            const beforeText = Buffer.from(before[path] ?? "", "base64").toString(),
-              afterText = Buffer.from(after[path] ?? "", "base64").toString();
-
-            const oldLines = beforeText ? beforeText.replace(/\n$/, "").split("\n") : [];
-            const newLines = afterText ? afterText.replace(/\n$/, "").split("\n") : [];
-
-            return `--- ${path in before ? "a/" + posix.relative("/workspace", path) : "/dev/null"}\n+++ ${path in after ? "b/" + posix.relative("/workspace", path) : "/dev/null"}\n@@ -${oldLines.length ? 1 : 0},${oldLines.length} +${newLines.length ? 1 : 0},${newLines.length} @@\n${oldLines.map((line) => "-" + line + "\n").join("")}${oldLines.length && !beforeText.endsWith("\n") ? "\\ No newline at end of file\n" : ""}${newLines.map((line) => "+" + line + "\n").join("")}${newLines.length && !afterText.endsWith("\n") ? "\\ No newline at end of file\n" : ""}`;
-          })
+          .map((path) =>
+            wholeFilePatch(
+              posix.relative("/workspace", path),
+              path in before ? Buffer.from(before[path] ?? "", "base64").toString() : undefined,
+              path in after ? Buffer.from(after[path] ?? "", "base64").toString() : undefined,
+            ),
+          )
           .join("");
 
         return { added, modified, removed, patch: redactor.text(patch) };

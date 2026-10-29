@@ -1,8 +1,18 @@
+import { posix } from "node:path";
 import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
-import { SandboxError, invalid, type Redactor } from "./errors.js";
-import { defaults, pathOf, quote, chunkRedactor } from "./run.js";
+import { parseLineCursor, parseProcessRecord, parseRestartRecord } from "./core/process-records.js";
+import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { defaults, pathOf, chunkRedactor } from "./run.js";
+import {
+  detachedLaunchScript,
+  logPageScript,
+  recordExit,
+  recordSetupScript,
+  redactionSedScript,
+  supervisorScript,
+} from "./shell/process-records.js";
 
 /** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
 export function defaultProcessName(command: string): string {
@@ -62,41 +72,6 @@ export interface ProcessHandle {
   wait(): Promise<{ exitCode: number | null; signal: string | null }>;
 }
 
-function linePosition(after?: string) {
-  const empty = { stdout: "", stderr: "" };
-
-  if (after === undefined || /^\d+$/.test(after)) return { offset: after, pending: empty };
-
-  if (Buffer.byteLength(after) > 1_048_576) invalid("Invalid line cursor");
-  let raw: unknown;
-
-  try {
-    raw = JSON.parse(after);
-  } catch {
-    invalid("Invalid line cursor");
-  }
-
-  if (
-    !raw ||
-    typeof raw !== "object" ||
-    !("v" in raw) ||
-    raw.v !== 1 ||
-    !("offset" in raw) ||
-    typeof raw.offset !== "string" ||
-    !/^\d+$/.test(raw.offset) ||
-    !Number.isSafeInteger(Number(raw.offset)) ||
-    !("stdout" in raw) ||
-    typeof raw.stdout !== "string" ||
-    !("stderr" in raw) ||
-    typeof raw.stderr !== "string" ||
-    Buffer.byteLength(raw.stdout) > 65_536 ||
-    Buffer.byteLength(raw.stderr) > 65_536
-  )
-    invalid("Invalid line cursor");
-
-  return { offset: raw.offset, pending: { stdout: raw.stdout, stderr: raw.stderr } };
-}
-
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function makeProcesses(
@@ -109,6 +84,8 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
+  // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
+  const streams = provider.processMode === "stream";
 
   const safe = async <T>(action: () => Promise<T>): Promise<T> => {
     try {
@@ -142,16 +119,26 @@ export function makeProcesses(
       },
     });
 
+  // Without a native range read, read the whole log and keep the requested window.
+  async function readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+    if (provider.files.readRange) return provider.files.readRange(id, path, { offset, length });
+    const bytes = await provider.files.read(id, path);
+
+    return bytes.subarray(offset, offset + length);
+  }
+
+  // Some adapters report a missing path as a generic provider error; a stat confirms it.
+  async function isAbsent(error: SandboxError, path: string): Promise<boolean> {
+    if (isNotFound(error)) return true;
+
+    return error.code === "provider" && !(await files.exists(path));
+  }
+
   async function exitCode(dir: string): Promise<number | null> {
     try {
       return Number(await files.read(`${dir}/exit`));
     } catch (error) {
-      if (
-        error instanceof SandboxError &&
-        (["file_not_found", "not_found"].includes(error.code) ||
-          (error.code === "provider" && !(await files.exists(`${dir}/exit`))))
-      )
-        return null;
+      if (error instanceof SandboxError && (await isAbsent(error, `${dir}/exit`))) return null;
       throw error;
     }
   }
@@ -165,25 +152,15 @@ export function makeProcesses(
       files.read(`${dir}/pid`),
     ]);
 
-    const raw: unknown = JSON.parse(record);
-
-    if (
-      !raw ||
-      typeof raw !== "object" ||
-      !("command" in raw) ||
-      typeof raw.command !== "string" ||
-      !("startedAt" in raw) ||
-      typeof raw.startedAt !== "number"
-    )
-      invalid("Invalid process record");
+    const spec = parseProcessRecord(record);
 
     return {
       name,
-      command: redactor.text(raw.command),
+      command: redactor.text(spec.command),
       status: exit === null ? "running" : exit === 0 ? "exited" : "failed",
       pid: Number(pid),
-      ports: "port" in raw && typeof raw.port === "number" ? [raw.port] : [],
-      startedAt: raw.startedAt,
+      ports: spec.port === undefined ? [] : [spec.port],
+      startedAt: spec.startedAt,
       exitCode: exit,
     };
   }
@@ -242,7 +219,9 @@ export function makeProcesses(
 
             if (Date.now() >= end) break;
           }
-        } catch {}
+        } catch {
+          // A refused or timed-out request means the port is not answering yet; poll again.
+        }
 
         if (Date.now() >= end) break;
         await delay(Math.min(50, Math.max(1, end - Date.now())));
@@ -268,7 +247,7 @@ export function makeProcesses(
     let launch: (() => Promise<void>) | undefined;
 
     async function readEvents(options: { after?: string; maxBytes?: number } = {}) {
-      const position = linePosition(options.after).offset;
+      const position = parseLineCursor(options.after).offset;
 
       const requested = position === undefined ? undefined : Number(position),
         max = options.maxBytes ?? 16384;
@@ -287,21 +266,22 @@ export function makeProcesses(
 
       let base: number, start: number, size: number, bytes: Uint8Array;
 
-      if (provider.name === "memory" && provider.files.readRange) {
+      if (streams) {
         status = (await info(name)).status;
         base = Number(await files.read(`${dir}/base`));
         size = (await files.stat(`${dir}/out.log`)).size;
         start = Math.max(0, (requested ?? base) - base - lookaround);
-        bytes = await provider.files.readRange(id, `${dir}/out.log`, {
-          offset: start,
-          length: budget + lookaround * 2,
-        });
+        bytes = await readRange(`${dir}/out.log`, start, budget + lookaround * 2);
       } else {
-        // Share the writer's lock so rotation cannot pair a new base with an old file.
         let wire = "";
 
         const result = await provider.exec(id, {
-          command: `[ -f ${quote(`${dir}/spec.json`)} ] || exit 66; cat ${quote(`${dir}/spec.json`)} || exit 1; printf '\\000'; while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep .01; done; trap 'rmdir ${quote(`${dir}/lock`)}' EXIT; b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); a=${requested ?? '"$b"'}; s=$((a-b-${lookaround})); [ "$s" -ge 0 ] || s=0; e=running; if [ -f ${quote(`${dir}/exit`)} ]; then e=$(cat ${quote(`${dir}/exit`)}); fi; printf '%s %s %s %s\\n' "$b" "$s" "$n" "$e"; dd if=${quote(`${dir}/out.log`)} bs=1 skip="$s" count=${budget + lookaround * 2} 2>/dev/null | base64`,
+          command: logPageScript({
+            dir,
+            after: requested,
+            lookbehind: lookaround,
+            length: budget + lookaround * 2,
+          }),
           cwd: "/workspace",
           env: { ...env, ...defaults },
           timeoutMs: 10_000,
@@ -316,7 +296,7 @@ export function makeProcesses(
           },
         });
 
-        if (result.exitCode === 66)
+        if (result.exitCode === recordExit.missing)
           throw new SandboxError(
             "Process record not found. This process has not been started. Check the process name.",
             { code: "file_not_found" },
@@ -329,17 +309,8 @@ export function makeProcesses(
         const separator = wire.indexOf("\0");
 
         if (separator < 0) invalid("Invalid process record");
-        const record: unknown = JSON.parse(wire.slice(0, separator));
-
-        if (
-          !record ||
-          typeof record !== "object" ||
-          !("command" in record) ||
-          typeof record.command !== "string" ||
-          !("startedAt" in record) ||
-          typeof record.startedAt !== "number"
-        )
-          invalid("Invalid process record");
+        // Validated only: a page from a corrupt record must fail like info() does.
+        parseProcessRecord(wire.slice(0, separator));
         const newline = wire.indexOf("\n", separator + 1);
         const header = wire.slice(separator + 1, newline).split(" ");
         base = Number(header[0]);
@@ -392,7 +363,7 @@ export function makeProcesses(
           };
         }),
       async *lines(options = {}) {
-        const position = linePosition(options.after);
+        const position = parseLineCursor(options.after);
         let cursor = position.offset;
         const pending = position.pending;
         const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
@@ -457,57 +428,8 @@ export function makeProcesses(
 
           if (!launch) {
             const current = await info(name);
-            const raw: unknown = JSON.parse(await files.read(`${dir}/restart.json`));
-
-            if (!raw || typeof raw !== "object") invalid("Invalid process restart record");
-            const options: StartOptions = { name };
-
-            if ("cwd" in raw && typeof raw.cwd === "string") options.cwd = raw.cwd;
-
-            if ("env" in raw && raw.env && typeof raw.env === "object") {
-              options.env = {};
-
-              for (const [key, value] of Object.entries(raw.env))
-                if (typeof value === "string") options.env[key] = value;
-            }
-
-            if ("readyTimeoutMs" in raw && typeof raw.readyTimeoutMs === "number")
-              options.readyTimeoutMs = raw.readyTimeoutMs;
-
-            if ("readiness" in raw && raw.readiness && typeof raw.readiness === "object") {
-              const ready = raw.readiness;
-
-              if ("log" in ready && typeof ready.log === "string")
-                options.ready = {
-                  log: new RegExp(
-                    ready.log,
-                    "flags" in ready && typeof ready.flags === "string" ? ready.flags : "",
-                  ),
-                };
-              else if ("port" in ready && typeof ready.port === "number")
-                options.ready = { port: ready.port };
-              else if (
-                "http" in ready &&
-                ready.http &&
-                typeof ready.http === "object" &&
-                "port" in ready.http &&
-                typeof ready.http.port === "number"
-              )
-                options.ready = {
-                  http: {
-                    port: ready.http.port,
-                    path:
-                      "path" in ready.http && typeof ready.http.path === "string"
-                        ? ready.http.path
-                        : undefined,
-                  },
-                };
-            }
-
-            await start(
-              "command" in raw && typeof raw.command === "string" ? raw.command : current.command,
-              options,
-            );
+            const record = parseRestartRecord(await files.read(`${dir}/restart.json`), name);
+            await start(record.command ?? current.command, record.options);
           } else await launch();
         }),
       wait: () =>
@@ -566,7 +488,7 @@ export function makeProcesses(
       const dir = nameOf(options.name);
 
       if (
-        provider.name === "memory" &&
+        streams &&
         provider.startProcess &&
         (await files.exists(`${dir}/spec.json`)) &&
         !(await files.exists(`${dir}/exit`))
@@ -619,7 +541,7 @@ export function makeProcesses(
         // A native hook reports its exit from its own stream, so waiting on it costs no provider call.
         let hookExit: Promise<unknown> | undefined;
 
-        if (provider.name === "memory" && provider.startProcess) {
+        if (streams && provider.startProcess) {
           controller?.state("starting");
           controller?.ready(false);
           await files.write(`${dir}/spec.json`, spec);
@@ -634,27 +556,8 @@ export function makeProcesses(
 
           if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
         } else {
-          const patterns = redactor.secrets.flatMap((secret) => secret.split("\n")).filter(Boolean);
-
-          const sed =
-            patterns
-              .flatMap((secret) => {
-                const escape = (text: string) => text.replace(/[\\[\].*^$|]/g, "\\$&");
-
-                return [
-                  `s|${escape(secret)}|[REDACTED]|g`,
-                  ...Array.from({ length: secret.length - 1 }, (_, index) => [
-                    `s|${escape(secret.slice(0, secret.length - 1 - index))}$|[REDACTED]|`,
-                    `s|^${escape(secret.slice(index + 1))}|[REDACTED]|`,
-                  ]).flat(),
-                ];
-              })
-              .join("\n") + "\n";
-
-          // Prepare records in one exec. Framed base64 on stdin preserves exact
-          // UTF-8 bytes even through transports that normalize input paths.
           const result = await exec(
-            `mkdir -p ${quote(dir)} || exit 1; if [ -f ${quote(`${dir}/spec.json`)} ] && [ ! -f ${quote(`${dir}/exit`)} ]; then exit 73; fi; b=0; if [ -f ${quote(`${dir}/base`)} ]; then b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); b=$((b+n)); fi; IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${quote(`${dir}/spec.json`)} && (umask 077; printf '%s' "$r" | base64 -d > ${quote(`${dir}/restart.json`)}) && : > ${quote(`${dir}/out.log`)} && printf '%s' "$b" > ${quote(`${dir}/base`)} && rm -f ${quote(`${dir}/exit`)} || exit 1; m=$(cd ${quote(pathOf(options.cwd))} 2>&1) && exit 0; c=$?; printf '%s\n' "$m" | sed 's/^/E/' > ${quote(`${dir}/out.log`)}; printf 0 > ${quote(`${dir}/pid`)}; printf '%s' "$c" > ${quote(`${dir}/exit`)}; exit 74`,
+            recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
             {},
             Buffer.from(spec).toString("base64") +
               "\n" +
@@ -662,10 +565,11 @@ export function makeProcesses(
               "\n",
           );
 
-          if (result.exitCode === 73) invalid(`Process ${options.name} is already running`);
+          if (result.exitCode === recordExit.running)
+            invalid(`Process ${options.name} is already running`);
 
-          // 74: the working directory is missing. Its cd error is already the process log.
-          if (result.exitCode === 74) {
+          // The working directory is missing. Its cd error is already the process log.
+          if (result.exitCode === recordExit.badCwd) {
             launched = false;
             controller?.state("failed");
             controller?.ready(false);
@@ -675,6 +579,7 @@ export function makeProcesses(
               { code: "provider" },
             );
           else {
+            const sed = redactionSedScript(redactor.secrets);
             await provider.files.write(id, sedPath, new TextEncoder().encode(sed));
             controller?.state("starting");
             controller?.ready(false);
@@ -683,7 +588,7 @@ export function makeProcesses(
 
         controller?.launch(launch);
 
-        if (launched && provider.startProcess && provider.name === "memory") {
+        if (launched && streams && provider.startProcess) {
           let writing: Promise<void> | undefined;
           let queued: string[] = [];
           let queuedBytes = 0;
@@ -732,6 +637,7 @@ export function makeProcesses(
               }
             }
 
+            // A log write failure has no caller to reach; the process reports it as failed.
             void drain().catch(() => controller?.state("failed"));
           });
 
@@ -745,6 +651,7 @@ export function makeProcesses(
           native.set(options.name, hook);
           await files.write(`${dir}/pid`, String(hook.pid));
           const exited = hook.wait();
+          // Only a race signal for start(); the chain below records a failed wait.
           hookExit = exited.then(
             (result) => {
               early = result.exitCode ?? 137;
@@ -759,19 +666,19 @@ export function makeProcesses(
               await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
               controller?.state(result.exitCode === 0 ? "exited" : "failed");
             })
-            .catch(async (error) => {
+            .catch(async () => {
+              // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
               await files.write(`${dir}/exit`, "1").catch(() => {});
               controller?.state("failed");
-              void error;
             });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
-          const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
-
-          const reader = (stream: string, fifo: string) =>
-            `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; need=0; for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1); do if [ "$byte" -ge 240 ]; then need=3; elif [ "$byte" -ge 224 ]; then need=2; elif [ "$byte" -ge 192 ]; then need=1; elif [ "$byte" -ge 128 ]; then [ "$need" -le 0 ] || need=$((need-1)); else need=0; fi; done; if [ "$need" -gt 0 ]; then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .); rest=\${rest%.}; chunk="$chunk$rest"; fi; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
-
-          const wrapper = `chmod 600 ${quote(sedPath)}; trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; { cd ${quote(pathOf(options.cwd))} && sh -c ${quote(command)}; } > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
+          const wrapper = supervisorScript({
+            dir,
+            cwd: pathOf(options.cwd),
+            command,
+            sedPath,
+          });
 
           if (provider.startProcess) {
             const hook = await provider.startProcess(id, {
@@ -790,6 +697,7 @@ export function makeProcesses(
               return result;
             });
 
+            // Only a race signal for start(); the chain below records a failed wait.
             hookExit = exited.catch(() => {});
             void exited
               .then(async (result) => {
@@ -797,18 +705,15 @@ export function makeProcesses(
                   await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
               })
               .catch(async () => {
+                // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
                 await files.write(`${dir}/exit`, "1").catch(() => {});
               });
           } else {
             // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
             let wire = "";
 
-            const check = options.ready
-              ? ""
-              : `; i=0; while [ "$i" -lt 10 ] && [ ! -f ${quote(`${dir}/exit`)} ]; do sleep 0.01; i=$((i+1)); done; cat ${quote(`${dir}/exit`)} 2>/dev/null; true`;
-
             await exec(
-              `nohup setsid sh -c ${quote(wrapper)} > /dev/null 2>&1 < /dev/null & echo $! > ${quote(`${dir}/pid`)}${check}`,
+              detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
               options.env,
               undefined,
               (text) => {
@@ -863,10 +768,10 @@ export function makeProcesses(
             }
           } else if (port) {
             try {
-              // memory previews are intentionally offline; the native hook's fake URL denotes readiness.
+              // Placeholder previews are never served, so issuing the URL is the readiness signal.
               const access = await preview(
                 port,
-                provider.name === "memory"
+                provider.previewMode === "placeholder"
                   ? {}
                   : {
                       path: "http" in options.ready ? options.ready.http.path : undefined,
@@ -911,26 +816,19 @@ export function makeProcesses(
         try {
           entries = await files.list(root);
         } catch (error) {
-          if (
-            error instanceof SandboxError &&
-            (["file_not_found", "not_found"].includes(error.code) ||
-              (error.code === "provider" && !(await files.exists(root))))
-          )
-            return [];
+          if (error instanceof SandboxError && (await isAbsent(error, root))) return [];
           throw error;
         }
 
         const result: ProcessInfo[] = [];
         const directories = entries.filter((entry) => entry.type === "directory");
 
-        for (let offset = 0; offset < directories.length; offset += 4)
-          result.push(
-            ...(await Promise.all(
-              directories
-                .slice(offset, offset + 4)
-                .map((dir) => info(dir.path.split("/").pop() ?? "")),
-            )),
-          );
+        // Four records at a time keeps provider calls bounded on sandboxes with many processes.
+        for (let offset = 0; offset < directories.length; offset += 4) {
+          const batch = directories.slice(offset, offset + 4);
+          const names = batch.map((entry) => posix.basename(entry.path));
+          result.push(...(await Promise.all(names.map((name) => info(name)))));
+        }
 
         return result;
       }),

@@ -24,7 +24,13 @@ vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 // Only Linux mock transports are used. The name admits the offline transport
 // through conformance's live:false cloud guard and skips real cloud HTTP/git.
-runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+runConformance(factory, {
+  live: true,
+  unsupported: {
+    gitPush: "The mock guest shares the host /tmp/sdk-bare across runs",
+    httpProbe: "Mock freestyle preview URLs point at an unreachable host",
+  },
+});
 
 afterAll(cleanupFreestyle);
 

@@ -1,7 +1,7 @@
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
-import type { Files } from "./files.js";
+import { removeIfPresent, type Files } from "./files.js";
 import type { Redactor } from "./errors.js";
-import { quote } from "./run.js";
+import { quote } from "./shared/shell.js";
 
 export interface Git {
   clone(
@@ -37,23 +37,32 @@ export function makeGit(
       { stdin: token },
     );
 
+    const removeCredentials = () =>
+      Promise.all([removeIfPresent(files, helper), removeIfPresent(files, helper + ".token")]);
+
+    let result: RunResult;
+
     try {
-      return await run(
+      result = await run(
         `git -c credential.helper= -c ${quote(`credential.helper=!sh ${quote(helper)}`)} ${command}`,
         { cwd },
       );
-    } finally {
-      await Promise.all([
-        files.remove(helper).catch(() => {}),
-        files.remove(helper + ".token").catch(() => {}),
-      ]);
+    } catch (error) {
+      // The command's own failure is the one to report.
+      await removeCredentials().catch(() => {});
+      throw error;
     }
+
+    // A token left on disk must not pass silently.
+    await removeCredentials();
+
+    return result;
   }
 
   return {
     clone: (url, options = {}) =>
       auth(
-        `clone ${options.branch ? `--branch ${quote(options.branch)} ` : ""}${options.depth ? `--depth ${quote(options.depth)} ` : ""}-- ${quote(url)} ${quote(options.dir ?? "app")}`,
+        `clone ${options.branch ? `--branch ${quote(options.branch)} ` : ""}${options.depth ? `--depth ${quote(String(options.depth))} ` : ""}-- ${quote(url)} ${quote(options.dir ?? "app")}`,
         options.token,
       ),
     status: (dir) => Promise.resolve(run("git status --porcelain", { cwd: dir })),

@@ -3,6 +3,7 @@ import { connectSandbox, createSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
 import { secretRecoveryCommand } from "../src/run.js";
+import { rejection } from "./rejection.js";
 
 /** A connected memory sandbox whose secret recovery exec waits until `release` is called. */
 async function slowRecovery() {
@@ -49,20 +50,9 @@ describe("operations started before close or destroy do not run after it", () =>
       const { box, release, commands, reads, cleanup } = await slowRecovery();
 
       try {
-        const run = box.run("echo after-close").then(
-          () => "ran",
-          (error: unknown) => error,
-        );
-
-        const read = box.files.read("notes.txt").then(
-          () => "read",
-          (error: unknown) => error,
-        );
-
-        const start = box.start("sleep 1", { name: "late" }).then(
-          () => "started",
-          (error: unknown) => error,
-        );
+        const run = rejection(box.run("echo after-close"));
+        const read = rejection(box.files.read("notes.txt"));
+        const start = rejection(box.start("sleep 1", { name: "late" }));
 
         await new Promise((resolve) => setTimeout(resolve, 10));
         await box[which]();

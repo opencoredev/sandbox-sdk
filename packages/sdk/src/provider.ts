@@ -75,8 +75,11 @@ export interface SnapshotOptions {
 }
 
 export interface ProviderFiles {
-  /** Use primitive file transfers when guest tar is incompatible with GNU archives. */
+  /** Use primitive file transfers when guest tar is missing or incompatible with GNU archives. */
   readonly transfer?: "files";
+  /** Record mark() and changes() checkpoints by reading every workspace file instead of
+   * running guest git. For runtimes without git; each call reads the whole workspace. */
+  readonly checkpoints?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
   /** Write applies `options.mode` itself. Without it, the core runs `chmod` after the write. */
@@ -119,8 +122,14 @@ export interface NativeProcess {
 export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly name: string;
   readonly keyMode: "exact" | "best-effort";
-  /** Omission uses native hooks or the portable shell process-record shim. */
-  readonly processMode?: "shell" | "unsupported";
+  /** Omission uses native hooks or the portable shell process-record shim. "stream" is for
+   * runtimes without a POSIX shell: startProcess runs the command itself and streams its
+   * output, and the core keeps the process records with file calls. Those logs stop when
+   * the client that started the process goes away. */
+  readonly processMode?: "shell" | "stream" | "unsupported";
+  /** "placeholder": preview URLs are never served. Port readiness holds once the URL is
+   * issued, without an HTTP probe. */
+  readonly previewMode?: "placeholder";
   /** Exec creates/removes input.activityPath without separate file RPCs. */
   readonly inlineActivity?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */

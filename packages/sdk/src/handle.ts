@@ -2,11 +2,21 @@ import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provide
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
-import { makeRun, quote, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
-import { makeFiles } from "./files.js";
+import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
+import { quote } from "./shared/shell.js";
+import { isString } from "./core/guards.js";
+import { makeFiles, removeIfPresent } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
 import { makeProcesses, type ProcessHandle } from "./processes.js";
+
+/** Whether a parsed secret-names record is a list of environment variable names. */
+function isNameList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((name) => isString(name) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  );
+}
 
 export async function makeHandle<N>(
   provider: Provider<N>,
@@ -32,7 +42,7 @@ export async function makeHandle<N>(
   // Recovery reads the record and environment in one exec. It is lazy, so a handle that only
   // destroys, closes, pauses or reads usage never runs a command, even on a stopped sandbox.
   // baseEnv is shared with run and processes, which read it per command; recovery fills it in place.
-  const baseEnv: Record<string, string> = { ...options.env, ...options.secrets };
+  const baseEnv = { ...options.env, ...options.secrets };
 
   let recovery: Promise<void> | undefined =
     created || !recoverSecrets ? Promise.resolve() : undefined;
@@ -78,11 +88,7 @@ export async function makeHandle<N>(
       );
     }
 
-    if (
-      !Array.isArray(names) ||
-      names.some((name) => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
-    )
-      invalid("Invalid secret names record");
+    if (!isNameList(names)) invalid("Invalid secret names record");
     const environment = new Map<string, string>();
 
     for (const entry of wire.slice(separator + 1).split("\0")) {
@@ -93,8 +99,7 @@ export async function makeHandle<N>(
 
     const recovered: Record<string, string> = {};
 
-    for (const name of names)
-      if (typeof name === "string") recovered[name] = environment.get(name) ?? "";
+    for (const name of names) recovered[name] = environment.get(name) ?? "";
     redactor.add(Object.values(recovered));
     Object.assign(baseEnv, recovered, options.env, options.secrets);
   }
@@ -106,20 +111,21 @@ export async function makeHandle<N>(
   };
 
   const files = makeFiles(provider, info.id, redactor, check, ready);
+
   const namesPath = "/tmp/.sandbox-sdk/secret-names.json";
 
   if (created) {
     if (options.trackChanges) await files.mark("start");
     // A restored snapshot may carry the source's records. Overwrite or drop them.
+    // A snapshot without a start mark is the usual case; any other failure would leave a stale one.
     else if (options.from !== undefined)
-      await files.remove("/tmp/.sandbox-sdk/marks/start.json").catch(() => {});
+      await removeIfPresent(files, "/tmp/.sandbox-sdk/marks/start.json");
     const names = Object.keys(options.secrets ?? {});
 
     if (names.length || options.from !== undefined) {
       const record = JSON.stringify(names);
 
-      if (provider.files.writeCreatesParents || provider.name === "memory")
-        await files.write(namesPath, record);
+      if (provider.files.writeCreatesParents) await files.write(namesPath, record);
       else {
         // Names are validated identifiers, so mkdir and write fit in one quoted exec.
         const result = await provider.exec(info.id, {
@@ -256,7 +262,7 @@ export async function makeHandle<N>(
       return run(
         strings.reduce(
           (command, part, index) =>
-            command + part + (index < values.length ? quote(values[index]) : ""),
+            command + part + (index < values.length ? quote(String(values[index])) : ""),
           "",
         ),
       );

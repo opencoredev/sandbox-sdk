@@ -257,7 +257,13 @@ import { runConformance } from "../src/testing.js";
 
 const factory = () => superserve({ apiKey: "mock" });
 
-runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+runConformance(factory, {
+  live: true,
+  unsupported: {
+    gitPush: "The mock guest shares the host /tmp/sdk-bare across runs",
+    httpProbe: "Mock superserve preview URLs point at an unreachable host",
+  },
+});
 
 afterAll(async () => {
   for (const v of state.boxes.values()) await v.guest.destroy();

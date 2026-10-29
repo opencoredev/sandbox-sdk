@@ -1,17 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SandboxError } from "../src/index.js";
-import { loadPeer, peerModule } from "../src/peer.js";
+import { isPeerError, loadPeer, peerModule } from "../src/peer.js";
+import { rejection } from "./rejection.js";
 
 describe("loadPeer", () => {
   it("names the package when an optional peer is not installed", async () => {
     // A computed specifier keeps Vite from resolving the missing package at transform time.
     const name = ["sandbox-sdk", "missing-peer"].join("-");
 
-    const failure = await loadPeer(name, "example", () => import(name)).catch(
-      (error: unknown) => error,
-    );
-
-    expect(failure).toBeInstanceOf(SandboxError);
+    const failure = await rejection(loadPeer(name, "example", () => import(name)));
     expect(failure).toMatchObject({ code: "unavailable", provider: "example" });
     expect(String(failure)).toContain(`Install ${name}`);
   });
@@ -26,9 +22,23 @@ describe("loadPeer", () => {
     await expect(loadPeer("e2b", "e2b", () => Promise.reject(thrown))).rejects.toBe(thrown);
   });
 
+  it("matches a peer error class exported through a getter, as bundled namespaces do", async () => {
+    class PeerFailure extends Error {}
+
+    // esbuild's __export defines each namespace export as an enumerable getter.
+    const namespace = Object.defineProperty({}, "PeerFailure", {
+      get: () => PeerFailure,
+      enumerable: true,
+    });
+
+    await loadPeer("getter-peer", "example", async () => namespace);
+    expect(isPeerError(new PeerFailure("x"), "getter-peer", "PeerFailure")).toBe(true);
+    expect(isPeerError(new Error("x"), "getter-peer", "PeerFailure")).toBe(false);
+  });
+
   it("returns the loaded module", async () => {
     const path = await loadPeer("node:path", "example", () => import("node:path"));
-    expect(typeof path.join).toBe("function");
+    expect(path.join).toBeTypeOf("function");
   });
 
   it("fills named exports from default when a bundle wraps a CommonJS peer", async () => {

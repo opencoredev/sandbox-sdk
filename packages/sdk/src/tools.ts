@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Sandbox, OutputChunk } from "./types.js";
 import { SandboxError, invalid } from "./errors.js";
 import { BufferCap } from "./run.js";
+import { isString } from "./core/guards.js";
 import { redactToolText, toolOutputFilter } from "./tool-security.js";
 
 const text = z.string();
@@ -144,7 +145,7 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
         "Command denied by beforeRun. Application policy refused execution. Choose an allowed command",
       );
 
-    return typeof decision === "string" ? decision : command;
+    return isString(decision) ? decision : command;
   }
 
   const clean = (text: string) => redactToolText(box, text);

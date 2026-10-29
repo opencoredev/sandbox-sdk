@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { SandboxError } from "../src/index.js";
+import { createSandbox, SandboxError } from "../src/index.js";
 import { Redactor } from "../src/errors.js";
+import { memory } from "../src/memory.js";
 
 const causeText = (error: SandboxError) => String(error.cause);
 
@@ -51,4 +52,29 @@ describe("Redactor.error scrubs a SandboxError like any other failure", () => {
     expect(causeText(error)).toBe("[REDACTED]");
     expect(error).toMatchObject({ code: "process_exited", provider: "stub", sandboxId: "box-1" });
   });
+});
+
+test("redacts secrets spanning stdout and stderr in output and subscriptions", async () => {
+  const provider = memory({
+    handlers: {
+      split({ stdout, stderr }) {
+        stdout("ab");
+        stderr("cd");
+
+        return 0;
+      },
+    },
+  });
+
+  const box = await createSandbox(provider, { secrets: { TOKEN: "abcd" } });
+
+  try {
+    expect((await box.run("split")).output).toBe("[REDACTED]");
+    const chunks = [];
+
+    for await (const chunk of box.run("split")) chunks.push(chunk.text);
+    expect(chunks.join("")).toBe("[REDACTED]");
+  } finally {
+    await box.destroy();
+  }
 });

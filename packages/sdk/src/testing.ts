@@ -10,17 +10,20 @@ import {
   reapSandboxes,
   SandboxError,
 } from "./index.js";
-import type { Provider } from "./provider.js";
+import type { Provider, SnapshotOptions } from "./provider.js";
 import type { SandboxBase } from "./types.js";
 
 /** Register a provider-independent Vitest suite. Call inside a test module.
- * live must be explicitly true to run a cloud provider. memory skips real git
- * and HTTP probes, since it never executes host programs or opens sockets.
+ * live must be explicitly true to run a cloud provider. Each case calls the factory
+ * for a fresh provider, and the reattach check connects through a second one, so a
+ * factory for in-process state must return a shared instance.
  * Live runs give each case 120 seconds by default, since real providers boot
  * machines and cross the network; pass timeoutMs to change it.
  * snapshotExpiry declares what `snapshot({ expiresInMs })` does: "honored" must
  * return a snapshot, "refused" must throw unsupported or invalid_argument.
  * Omit it to check only the core's input validation.
+ * unsupported skips checks the provider cannot run, with the reason: gitPush for a
+ * runtime without git, httpProbe for previews that no HTTP client can reach.
  */
 export function runConformance(
   factory: () => Provider | Promise<Provider>,
@@ -29,7 +32,13 @@ export function runConformance(
     ports?: number[];
     timeoutMs?: number;
     snapshotExpiry?: "honored" | "refused";
-    unsupported?: { processes?: string; previews?: string; gitPush?: string; fileModes?: string };
+    unsupported?: {
+      processes?: string;
+      previews?: string;
+      gitPush?: string;
+      httpProbe?: string;
+      fileModes?: string;
+    };
   },
 ) {
   const timeout = options.timeoutMs ?? (options.live ? 120_000 : undefined);
@@ -37,7 +46,8 @@ export function runConformance(
     const cleanup: SandboxBase<unknown>[] = [];
     const temp: string[] = [];
 
-    async function setup(extra: { trackChanges?: boolean } = {}) {
+    // memory and local never reach a cloud account, so they need no live opt-in.
+    async function fresh(): Promise<Provider> {
       const provider = await factory();
 
       if (!options.live && !["memory", "local"].includes(provider.name))
@@ -45,10 +55,16 @@ export function runConformance(
           "Live provider refused. live is false. Enable live explicitly with provider credentials.",
           { code: "invalid_argument" },
         );
-      const box = await createSandbox(provider, { ports: options.ports, ...extra });
+
+      return provider;
+    }
+
+    async function setup(extra: { trackChanges?: boolean } = {}, provider?: Provider) {
+      const target = provider ?? (await fresh());
+      const box = await createSandbox(target, { ports: options.ports, ...extra });
       cleanup.push(box);
 
-      return { provider, box };
+      return { provider: target, box };
     }
 
     afterEach(async () => {
@@ -56,10 +72,7 @@ export function runConformance(
       await Promise.all(temp.splice(0).map((path) => rm(path, { recursive: true, force: true })));
     });
     test("create, key lookup, connect and labels", async () => {
-      const provider = await factory();
-
-      if (!options.live && !["memory", "local"].includes(provider.name))
-        throw new Error("live must be enabled");
+      const provider = await fresh();
       const key = `conformance-${crypto.randomUUID()}`;
       const first = await createSandbox(provider, { key, labels: { suite: key } });
       cleanup.push(first);
@@ -95,6 +108,7 @@ export function runConformance(
     });
     test("timeout and abort kill work before following side effects", async () => {
       const { box } = await setup();
+      const started = Date.now();
       const result = await box.run("sleep 1; echo survived > survived", { timeoutMs: 20 });
       expect(result).toMatchObject({ timedOut: true, exitCode: null, ok: false });
       const controller = new AbortController();
@@ -102,6 +116,8 @@ export function runConformance(
       const pending = Promise.resolve(handle);
       setTimeout(() => controller.abort(), 20);
       expect(await pending).toMatchObject({ timedOut: true, exitCode: null });
+      // Both writes would land about a second after their commands started; look after that.
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, started + 1500 - Date.now())));
       expect(await box.files.exists("survived")).toBe(false);
       expect(await box.files.exists("aborted")).toBe(false);
     });
@@ -190,8 +206,10 @@ export function runConformance(
         });
       expect(await box.files.exists("modes/bad")).toBe(false);
     });
-    test("snapshot expiry is validated, then honored or refused as declared", async (context) => {
-      const { box } = await setup();
+    test("snapshot expiry is validated, passed to the provider, then returned or refused as declared", async (context) => {
+      const provider = await fresh();
+      const requests = recordSnapshotOptions(provider);
+      const { box } = await setup({}, provider);
 
       if (!hasCapability(box, "snapshot")) {
         context.skip();
@@ -203,14 +221,20 @@ export function runConformance(
         code: "invalid_argument",
       });
 
+      // The core rejects the invalid value before the provider sees it.
+      expect(requests).toEqual([]);
+
       // A day, so a provider that honors it cleans the snapshot up itself.
-      if (options.snapshotExpiry === "honored")
+      if (options.snapshotExpiry === "honored") {
         expect((await box.snapshot({ expiresInMs: 86_400_000 })).id).not.toBe("");
-      else if (options.snapshotExpiry === "refused")
+        expect(requests).toEqual([{ expiresInMs: 86_400_000 }]);
+      } else if (options.snapshotExpiry === "refused") {
         await expect(box.snapshot({ expiresInMs: 86_400_000 })).rejects.toMatchObject({
           name: "SandboxError",
           code: expect.stringMatching(/^(unsupported|invalid_argument)$/),
         });
+        expect(requests).toEqual([{ expiresInMs: 86_400_000 }]);
+      }
     });
     test("changes without since needs trackChanges or an explicit mark", async () => {
       const { box } = await setup();
@@ -270,7 +294,7 @@ export function runConformance(
         return;
       }
 
-      const { provider, box } = await setup();
+      const { box } = await setup();
 
       const process = await box.start("echo READY; sleep 5", {
         name: "dev",
@@ -282,7 +306,8 @@ export function runConformance(
       const page = await process.logs();
       expect(page.text).toContain("READY");
       expect((await process.logs({ after: page.nextCursor })).text).toBe("");
-      const client = await connectSandbox(provider, box.id);
+      // A new provider instance, so reattach cannot lean on the first client's memory.
+      const client = await connectSandbox(await fresh(), box.id);
       cleanup.push(client);
       expect((await client.processes()).map((process) => process.name)).toContain("dev");
       expect((await client.process("dev").logs()).text).toContain("READY");
@@ -360,14 +385,7 @@ export function runConformance(
         return;
       }
 
-      const { provider, box } = await setup();
-
-      if (provider.name === "memory") {
-        context.skip();
-
-        return;
-      }
-
+      const { box } = await setup();
       expect((await box.run("git init --bare /tmp/sdk-bare")).ok).toBe(true);
       expect((await box.git.clone("/tmp/sdk-bare", { dir: "repo" })).ok).toBe(true);
       await box.run("git config user.name Conformance; git config user.email test@example.com", {
@@ -379,19 +397,15 @@ export function runConformance(
       expect((await box.git.push("repo", { branch: "HEAD" })).ok).toBe(true);
     });
     test("real HTTP preview probe (live Linux providers only)", async (context) => {
-      if (options.unsupported?.previews) {
-        context.skip(options.unsupported.previews);
+      const skip = options.unsupported?.previews ?? options.unsupported?.httpProbe;
+
+      if (skip) {
+        context.skip(skip);
 
         return;
       }
 
-      const { provider, box } = await setup();
-
-      if (provider.name === "memory") {
-        context.skip();
-
-        return;
-      }
+      const { box } = await setup();
 
       const proc = await box.start(
         'node -e \'require("http").createServer((_,r)=>r.end("ok")).listen(3000,"0.0.0.0")\'',
@@ -403,4 +417,19 @@ export function runConformance(
       await proc.stop();
     });
   });
+}
+
+/** Record the options each snapshot call hands the provider, still calling through. */
+function recordSnapshotOptions(provider: Provider): (SnapshotOptions | undefined)[] {
+  const requests: (SnapshotOptions | undefined)[] = [];
+  const snapshot = provider.snapshot;
+
+  if (snapshot)
+    provider.snapshot = (id, options) => {
+      requests.push(options);
+
+      return snapshot.call(provider, id, options);
+    };
+
+  return requests;
 }

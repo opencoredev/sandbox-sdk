@@ -20,7 +20,13 @@ Run conformance from a provider test file:
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { runConformance } from "@opencoredev/sandbox-sdk/testing";
 
-runConformance(() => memory(), { live: false });
+// One instance: memory keeps its sandboxes in the provider, and the suite reattaches through a second factory call.
+const provider = memory();
+
+runConformance(() => provider, {
+  live: false,
+  unsupported: { gitPush: "memory runs no git", httpProbe: "memory preview URLs are placeholders" },
+});
 ```
 
 Use `timeout 120s vitest run --maxWorkers=4`. Cloud providers require `live: true`; the caller gates that flag on its credentials. `/testing` imports Vitest through an optional peer dependency. The core and memory entry points have no runtime package dependencies.

@@ -1,7 +1,11 @@
 import { posix } from "node:path";
 import type { OutputChunk, Provider } from "./provider.js";
-import { invalid, Redactor } from "./errors.js";
+import { invalid, Redactor, type SandboxError } from "./errors.js";
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
+import { quote } from "./shared/shell.js";
+
+// Providers built on run.ts helpers import quote from here.
+export { quote };
 
 export const defaults = {
   CI: "1",
@@ -13,7 +17,6 @@ export const defaults = {
 };
 
 export const pathOf = (path = ".") => posix.resolve("/workspace", path);
-export const quote = (value: unknown) => `'${String(value).replaceAll("'", "'\\''")}'`;
 export const secretRecoveryCommand = `if [ -f /tmp/.sandbox-sdk/secret-names.json ]; then cat /tmp/.sandbox-sdk/secret-names.json || exit 1; printf '\\000'; env -0; fi`;
 
 // Anonymous-pipe relays keep activity alive until inherited stdout/stderr close.
@@ -97,11 +100,11 @@ export class BufferCap {
 export class OutputBus {
   private listeners = new Set<(chunk?: OutputChunk) => void>();
   private ended = false;
-  private failure: unknown;
+  private failure: SandboxError | undefined;
   emit(chunk: OutputChunk) {
     for (const listener of this.listeners) listener(chunk);
   }
-  fail(error: unknown) {
+  fail(error: SandboxError) {
     this.failure = error;
     this.end();
   }
@@ -183,8 +186,7 @@ export function chunkRedactor(
       }
 
       const text = queue
-        .filter((chunk) => interleaved || chunk.stream === first.stream)
-        .map((chunk) => chunk.text)
+        .flatMap((chunk) => (interleaved || chunk.stream === first.stream ? [chunk.text] : []))
         .join("");
 
       const secret = secrets.find((secret) => text.startsWith(secret));
@@ -360,6 +362,7 @@ export function makeRun(
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
 
+        // Backup for the guest's own EXIT trap, which a kill can skip. The run's result stands.
         if (!completed && !provider.inlineActivity)
           await Promise.resolve()
             .then(() => provider.files.remove(id, activePath, { recursive: true }))
@@ -385,6 +388,7 @@ export function makeRun(
         const iterator = bus.stream();
         // Subscribe before synchronous provider chunks can arrive.
         const first = iterator.next();
+        // The bus rethrows the failure to the iterator.
         void begin(true).catch(() => {});
         let initial = true;
 

@@ -1,6 +1,10 @@
 import { describe, test, expect } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { shellProvider } from "./shell-provider.js";
+import type { ProviderFiles } from "../src/provider.js";
 
 describe("real Linux primitive transport", () => {
   test("hidden git index yields applicable diffs, git helpers clone/commit/push", async () => {
@@ -32,17 +36,18 @@ describe("real Linux primitive transport", () => {
     const box = await createSandbox(await shellProvider());
 
     try {
-      const proc = await box.start("printf '%s\\n' \"$CUSTOM\"; sleep 2", {
+      // Generous deadlines: readiness resolves on the first matching line, so they cost nothing on a quiet host.
+      const proc = await box.start("printf '%s\\n' \"$CUSTOM\"; sleep 20", {
         name: "env",
         env: { CUSTOM: "ready" },
         ready: { log: /ready/ },
-        readyTimeoutMs: 1000,
+        readyTimeoutMs: 10_000,
       });
 
       expect(proc.ready).toBe(true);
       await proc.stop({ graceMs: 10 });
       await expect(
-        box.start("exit 3", { name: "exit", ready: { log: /never/ }, readyTimeoutMs: 1000 }),
+        box.start("exit 3", { name: "exit", ready: { log: /never/ }, readyTimeoutMs: 10_000 }),
       ).rejects.toMatchObject({ code: "process_exited" });
     } finally {
       await box.destroy();
@@ -127,19 +132,40 @@ describe("real Linux primitive transport", () => {
         return exec(id, input);
       };
 
-      for (const name of ["read", "write", "list", "stat", "mkdir", "remove"] as const) {
-        const original = provider.files[name].bind(provider.files) as (
-          ...args: unknown[]
-        ) => Promise<never>;
+      const original = { ...provider.files };
 
-        Object.assign(provider.files, {
-          [name]: (...args: unknown[]) => {
-            calls.push(name);
+      Object.assign(provider.files, {
+        read(id, path) {
+          calls.push("read");
 
-            return original(...args);
-          },
-        });
-      }
+          return original.read(id, path);
+        },
+        write(id, path, data, options) {
+          calls.push("write");
+
+          return original.write(id, path, data, options);
+        },
+        list(id, path) {
+          calls.push("list");
+
+          return original.list(id, path);
+        },
+        stat(id, path) {
+          calls.push("stat");
+
+          return original.stat(id, path);
+        },
+        mkdir(id, path) {
+          calls.push("mkdir");
+
+          return original.mkdir(id, path);
+        },
+        remove(id, path, options) {
+          calls.push("remove");
+
+          return original.remove(id, path, options);
+        },
+      } satisfies Partial<ProviderFiles>);
 
       const create = provider.create.bind(provider);
       provider.create = async (input) => {
@@ -323,5 +349,22 @@ test("log pages use bounded remote reads without downloading out.log", async () 
     });
   } finally {
     await box.destroy();
+  }
+});
+
+test("directory download works before the SDK has made its /tmp records directory", async () => {
+  const box = await createSandbox(await shellProvider());
+  const target = await mkdtemp(join(tmpdir(), "sdk-download-"));
+
+  try {
+    // files.write only touches /workspace, so nothing has created /tmp/.sandbox-sdk yet.
+    await box.files.write("out/nested/file", "hi");
+    expect(await box.files.exists("/tmp/.sandbox-sdk")).toBe(false);
+    await box.files.download("out", join(target, "copy"));
+    expect(await readFile(join(target, "copy", "nested", "file"), "utf8")).toBe("hi");
+    expect(await box.files.list("/tmp/.sandbox-sdk")).toEqual([]);
+  } finally {
+    await box.destroy();
+    await rm(target, { recursive: true, force: true });
   }
 });

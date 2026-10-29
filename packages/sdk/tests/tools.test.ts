@@ -11,7 +11,22 @@ import { sandboxTools as openaiTools } from "../src/openai.js";
 
 const names = Object.keys(toolSchemas).filter((name): name is ToolName => name in toolSchemas);
 
-function invoke(tools: ReturnType<typeof createSandboxTools>, name: ToolName, input: unknown) {
+/** Tool arguments as a model would send them, valid or not. */
+type ModelInput =
+  | undefined
+  | string
+  | number
+  | boolean
+  | null
+  | ModelInput[]
+  | { [key: string]: ModelInput };
+
+/** Whether an AI SDK tool result streams preliminary outputs. */
+function isOutputStream(value: unknown): value is AsyncIterable<ToolResult> {
+  return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
+}
+
+function invoke(tools: ReturnType<typeof createSandboxTools>, name: ToolName, input: ModelInput) {
   const tool = tools.find((tool) => tool.name === name);
 
   if (!tool) throw new Error(`Missing ${name}`);
@@ -176,7 +191,7 @@ describe("sandbox agent tools", () => {
 
     const outputs: ToolResult[] = [];
 
-    if (typeof result === "object" && result !== null && Symbol.asyncIterator in result) {
+    if (isOutputStream(result)) {
       for await (const output of result) outputs.push(output);
     } else throw new Error("Expected preliminary iterator");
     expect(outputs.length).toBeGreaterThan(1);
@@ -462,8 +477,7 @@ describe("framework cancellation", () => {
       { toolCallId: "cancel", messages: [], context: {} },
     );
 
-    if (typeof stream !== "object" || stream === null || !(Symbol.asyncIterator in stream))
-      throw new Error("Missing stream");
+    if (!isOutputStream(stream)) throw new Error("Missing stream");
     const iterator = stream[Symbol.asyncIterator]();
     expect((await iterator.next()).done).toBe(false);
     await iterator.return?.();
