@@ -299,6 +299,23 @@ test("a 202 with only the request ID header polls the background-requests route"
   expect(paths).toEqual(["/v5/vms/vm-1/snapshot", "/v5/background-requests/bg%2F2"]);
 });
 
+test("a resultUrl on another origin is polled without the API key", async () => {
+  const requests: { url: string; authorization: string | null }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    requests.push({ url, authorization: headerOf(init, "authorization") });
+    if (requests.length === 1) return Response.json({ requestId: "bg-6", resultUrl: "https://results.elsewhere.test/bg-6" }, { status: 202 });
+    return Response.json({ snapshotId: "snap-6" });
+  }));
+  const saved = background.pollMs;
+  background.pollMs = 1;
+  try { expect(await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).snapshot?.("vm-1")).toEqual({ id: "snap-6" }); }
+  finally { background.pollMs = saved; }
+  expect(requests).toEqual([
+    { url: "http://offline.invalid/v5/vms/vm-1/snapshot", authorization: "Bearer mock" },
+    { url: "https://results.elsewhere.test/bg-6", authorization: null },
+  ]);
+});
+
 test("a 202 without any request ID is a protocol error, not a silent success", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: 202 })));
   await expect(freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).pause?.("vm-1")).rejects.toMatchObject({

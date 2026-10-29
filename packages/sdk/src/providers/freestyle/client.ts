@@ -120,7 +120,8 @@ export function freestyleClient(options: FreestyleClientOptions) {
     defaultPlane: "api",
     planes: { api: { baseUrl: options.baseUrl, auth: credentials } },
     timeoutMs: options.requestTimeoutMs,
-    secrets: () => [process.env.FREESTYLE_API_KEY],
+    // The bare key too: the client only remembers the whole `Bearer …` header value.
+    secrets: () => [process.env.FREESTYLE_API_KEY, key],
     authHint: "Set FREESTYLE_API_KEY to a valid Freestyle API key, or pass apiKey.",
     async fetch(input, init) {
       recordRequest(input, init.method, key);

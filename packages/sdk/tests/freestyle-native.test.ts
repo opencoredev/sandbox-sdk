@@ -78,6 +78,15 @@ test("fetch returns the raw Response for bytes; errors map like adapter calls an
   expect(`${unknown.message} ${String(unknown.cause)}`).not.toContain("fs-key-123456");
 });
 
+test("a provider message that echoes the API key keeps the message but not the key", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ code: "BAD_KEY", message: "key fs-key-123456 is revoked" }, { status: 403 })));
+  const provider = freestyle({ baseUrl: base, apiKey: "fs-key-123456" });
+  const error = await failure(provider.api.request("GET", "/v5/vms"));
+  expect(error.code).toBe("auth");
+  expect(error.message).toContain("is revoked");
+  expect(`${error.message} ${String(error.cause)}`).not.toContain("fs-key-123456");
+});
+
 test("unknown planes are invalid_argument and other origins get no credentials", async () => {
   const { native } = await connected();
   // @ts-expect-error Freestyle has one plane
