@@ -17,6 +17,7 @@ export const freestyleState = {
   widen: false,
   delay: 0,
   peak: 0,
+  snapshotOptions: [] as unknown[],
 };
 const error = (status: number) => Object.assign(new Error("secret-native-error"), { status });
 export class MockVm {
@@ -38,6 +39,7 @@ export class MockVm {
       updatedAt: new Date().toISOString(),
       idleTimeoutSeconds: params.idleTimeoutSeconds,
       ttlSeconds: params.ttlSeconds,
+      ...(params.autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds: params.autoDeleteSeconds }),
     };
   }
   async data() {
@@ -93,7 +95,8 @@ v=sdk_paths(v)`;
     this.record.state = "running";
     return this.record;
   }
-  async snapshot() {
+  async snapshot(options?: unknown) {
+    freestyleState.snapshotOptions.push(options);
     const snapshotId = crypto.randomUUID();
     const root = await fs.mkdtemp("/tmp/sdk-freestyle-snapshot-");
     await fs.cp(this.guest.root, root, { recursive: true });

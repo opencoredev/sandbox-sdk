@@ -56,7 +56,8 @@ class Process:
 export interface Guest {
   name: string;
   raw(command: string): Promise<string>;
-  upload(path: string, bytes: Uint8Array): Promise<void>;
+  /** Guests that apply `mode` themselves must also set `writeSupportsMode` on their files. */
+  upload(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   read(path: string, range?: { offset: number; length: number }): Promise<Uint8Array>;
 }
 const fail = (g: Guest, text: string, code: ErrorCode = "provider") =>
@@ -103,11 +104,11 @@ export function files(
     writeCreatesParents: true,
     readRange: (id, path, range) => safe(id, async () => (await get(id)).read(path, range)),
     read: (id, path) => safe(id, async () => (await get(id)).read(path)),
-    write: (id, path, data) =>
+    write: (id, path, data, options) =>
       safe(id, async () => {
         const g = await get(id);
         try {
-          await safe(id, () => g.upload(path, data));
+          await safe(id, () => g.upload(path, data, options?.mode));
         } catch (error) {
           if (
             !(error instanceof SandboxError) ||
@@ -117,7 +118,7 @@ export function files(
           await g.raw(
             python("import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)", path),
           );
-          await g.upload(path, data);
+          await g.upload(path, data, options?.mode);
         }
       }),
     stat: (id, path) =>
