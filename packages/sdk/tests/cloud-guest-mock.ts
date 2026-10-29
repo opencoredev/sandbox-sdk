@@ -4,15 +4,23 @@ import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as boxdSdk from "@boxd-sh/sdk";
 import {
   ExecStream,
+  type BoxdOptions as BoxdClientOptions,
   type StreamExecParams,
   type Machine,
   type MachineCreateParams,
   type ExecParams,
   type Proxy,
 } from "@boxd-sh/sdk";
-import type { BoxdClient } from "../src/providers/boxd/provider.js";
+import {
+  createBoxdProvider,
+  type BoxdClient,
+  type BoxdOptions,
+  type OpenTransfers,
+} from "../src/providers/boxd/provider.js";
+import { FileTransfers } from "../src/providers/boxd/transfers.js";
 import { isString } from "../src/shared/narrow.js";
 
 const exec = promisify(execFile);
@@ -318,4 +326,15 @@ export class MockBoxd {
 
     return v;
   }
+}
+
+/** The boxd adapter with `client` (by default MockBoxd) in place of the SDK's client.
+ * Whole-file transfers use the real worker client unless `transfers` replaces it.
+ */
+export function boxd(
+  options: BoxdOptions = {},
+  client: new (config: BoxdClientOptions) => MockBoxd = MockBoxd,
+  transfers: OpenTransfers = (config, signal) => new FileTransfers(config, signal),
+) {
+  return createBoxdProvider(options, async () => ({ ...boxdSdk, Boxd: client }), transfers);
 }

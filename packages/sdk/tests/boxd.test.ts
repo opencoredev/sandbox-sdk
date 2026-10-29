@@ -1,13 +1,8 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
-import * as boxdSdk from "@boxd-sh/sdk";
 import { ExecStream } from "@boxd-sh/sdk";
-import { boxdState, MockBoxd } from "./cloud-guest-mock.js";
+import { boxd as mockBoxd, boxdState, MockBoxd } from "./cloud-guest-mock.js";
 import { isString } from "../src/shared/narrow.js";
-import {
-  createBoxdProvider,
-  type BoxdClient,
-  type BoxdTransfers,
-} from "../src/providers/boxd/provider.js";
+import type { BoxdClient, BoxdOptions, BoxdTransfers } from "../src/providers/boxd/provider.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
 import { createSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -51,12 +46,8 @@ class TestTransfers implements BoxdTransfers {
   async releaseIdle() {}
 }
 
-function boxd(options: Parameters<typeof createBoxdProvider>[0]) {
-  return createBoxdProvider(
-    options,
-    async () => ({ ...boxdSdk, Boxd: TestBoxd }),
-    () => new TestTransfers(),
-  );
+function boxd(options: BoxdOptions) {
+  return mockBoxd(options, TestBoxd, () => new TestTransfers());
 }
 
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });

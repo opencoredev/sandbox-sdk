@@ -1,6 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { z } from "zod";
-import * as boxdSdk from "@boxd-sh/sdk";
 import type { BoxdOptions as BoxdClientOptions } from "@boxd-sh/sdk";
 import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
@@ -10,11 +9,9 @@ import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
-import { createBoxdProvider, type BoxdOptions } from "../src/providers/boxd/provider.js";
-import { FileTransfers } from "../src/providers/boxd/transfers.js";
 import { boatApi } from "../src/providers/boat-api/index.js";
 import type { BoatOptions } from "../src/providers/boat/index.js";
-import { MockBoxd } from "./cloud-guest-mock.js";
+import { boxd as mockBoxd, MockBoxd } from "./cloud-guest-mock.js";
 import { daytona as mockDaytona, mockState as daytonaState } from "./daytona-mock.js";
 import { tenki as mockTenki, tenkiState, cleanupTenki } from "./tenki-mock.js";
 import { e2b as mockE2B, MockSandbox as MockE2BSandbox, listQueries } from "./e2b-sdk-mock.js";
@@ -27,14 +24,6 @@ class RecordingBoxd extends MockBoxd {
     super();
     boxdConfigs.push(config);
   }
-}
-
-function recordingBoxd(options: BoxdOptions) {
-  return createBoxdProvider(
-    options,
-    async () => ({ ...boxdSdk, Boxd: RecordingBoxd }),
-    (config, signal) => new FileTransfers(config, signal),
-  );
 }
 
 const boatOrigins: string[] = [];
@@ -76,12 +65,11 @@ afterEach(async () => {
 });
 
 test("boxd endpoint alias works and baseUrl wins", async () => {
-  await recordingBoxd({ apiKey: "offline", baseURL: "https://old.test" }).list({});
-  await recordingBoxd({
-    apiKey: "offline",
-    baseURL: "https://old.test",
-    baseUrl: "https://new.test",
-  }).list({});
+  await mockBoxd({ apiKey: "offline", baseURL: "https://old.test" }, RecordingBoxd).list({});
+  await mockBoxd(
+    { apiKey: "offline", baseURL: "https://old.test", baseUrl: "https://new.test" },
+    RecordingBoxd,
+  ).list({});
   expect(boxdConfigs).toMatchObject([
     { baseURL: "https://old.test" },
     { baseURL: "https://new.test" },

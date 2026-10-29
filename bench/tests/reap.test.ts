@@ -2,15 +2,10 @@ import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  MockFreestyle,
   cleanupFreestyle,
+  freestyle,
   freestyleState,
 } from "../../packages/sdk/tests/freestyle-mock.js";
-
-vi.mock("../../packages/sdk/node_modules/freestyle", async () => ({
-  ...(await vi.importActual("../../packages/sdk/node_modules/freestyle")),
-  Freestyle: MockFreestyle,
-}));
 
 vi.stubGlobal(
   "fetch",
@@ -19,7 +14,6 @@ vi.stubGlobal(
   }),
 );
 
-import { freestyle } from "../../packages/sdk/src/providers/freestyle/index.js";
 import { createSandbox } from "../../packages/sdk/src/index.js";
 import { main } from "../src/cli.js";
 import type { LoadedProvider } from "../src/providers.js";

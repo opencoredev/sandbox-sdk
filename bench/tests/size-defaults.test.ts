@@ -1,13 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { boxdState, MockBoxd } from "../../packages/sdk/tests/cloud-guest-mock.js";
-import { cleanupMock, mockState, MockDaytona } from "../../packages/sdk/tests/daytona-mock.js";
-
-vi.mock("../../packages/sdk/node_modules/@boxd-sh/sdk", () => ({ Boxd: MockBoxd }));
-
-vi.mock("../../packages/sdk/node_modules/@daytonaio/sdk", () => ({ Daytona: MockDaytona }));
-
-import { boxd } from "../../packages/sdk/src/providers/boxd/index.js";
-import { daytona } from "../../packages/sdk/src/providers/daytona/index.js";
+import { boxd, boxdState } from "../../packages/sdk/tests/cloud-guest-mock.js";
+import { cleanupMock, daytona, mockState } from "../../packages/sdk/tests/daytona-mock.js";
 
 afterEach(async () => {
   await Promise.all([...boxdState.boxes.values()].map((v) => v.guest.destroy()));
