@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
 import type { Provider, FileInfo, WriteOptions } from "./provider.js";
-import { SandboxError, invalid, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
 
@@ -336,8 +336,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
       return true;
     } catch (error) {
-      if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code))
-        return false;
+      if (isNotFound(error)) return false;
       throw error;
     }
   }
@@ -373,7 +372,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     try {
       return await action();
     } catch (error) {
-      // Confirm absence only on failure, so the success path stays one read.
+      // Confirm absence only on failure, so the success path stays one read. If the
+      // probe fails too, assume the mark exists and rethrow the original error.
       if (
         (since ?? "start") === "start" &&
         !(await filesExist(checkpoint("start")).catch(() => true))
@@ -404,8 +404,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
           return true;
         } catch (error) {
-          if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code))
-            return false;
+          if (isNotFound(error)) return false;
           throw error;
         }
       }),
@@ -460,6 +459,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             await remote(`tar -xf ${quote(archive)} -C ${quote(pathOf(target))} --no-same-owner`);
           } finally {
             await local.rm(temporary, { recursive: true, force: true });
+            // The transfer's outcome stands; a leftover archive in the sandbox's /tmp is harmless.
             await fs.remove(id, archive, { recursive: false }).catch(() => {});
           }
 
@@ -515,6 +515,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             );
           } finally {
             await local.rm(temporary, { recursive: true, force: true });
+            // The transfer's outcome stands; a leftover archive in the sandbox's /tmp is harmless.
             await fs.remove(id, archive, { recursive: false }).catch(() => {});
           }
 

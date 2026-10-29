@@ -363,6 +363,7 @@ export function makeRun(
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", abort);
 
+        // Backup for the guest's own EXIT trap, which a kill can skip. The run's result stands.
         if (!completed && !provider.inlineActivity)
           await Promise.resolve()
             .then(() => provider.files.remove(id, activePath, { recursive: true }))
@@ -388,6 +389,7 @@ export function makeRun(
         const iterator = bus.stream();
         // Subscribe before synchronous provider chunks can arrive.
         const first = iterator.next();
+        // The bus rethrows the failure to the iterator.
         void begin(true).catch(() => {});
         let initial = true;
 

@@ -8,7 +8,7 @@ import type {
   ReapOptions,
   SandboxBase,
 } from "./types.js";
-import { SandboxError, Redactor, invalid } from "./errors.js";
+import { SandboxError, Redactor, invalid, isNotFound } from "./errors.js";
 import { forgetKey, forgetSandbox, knownKey, rememberKey } from "./keys.js";
 
 export { SandboxError } from "./errors.js";
@@ -254,6 +254,7 @@ export async function createSandbox(
     } catch (error) {
       if (owned) {
         forgetSandbox(provider, owned.id);
+        // Creation already failed; that error is the one to report.
         await provider.destroy(owned.id).catch(() => {});
       }
 
@@ -273,6 +274,7 @@ export async function createSandbox(
   const key = options.key;
   const locator = options.locator;
 
+  // The previous call's failure belongs to its own caller; this one only waits its turn.
   const task = previous
     .catch(() => {})
     .then(() =>
@@ -370,11 +372,13 @@ export async function reapSandboxes(
             const [processes, runs] = await Promise.all([
               box.processes(),
               box.files.list("/tmp/.sandbox-sdk/runs").catch(async (error) => {
+                // Some adapters report a missing path as a generic provider error.
+                if (isNotFound(error)) return [];
+
                 if (
                   error instanceof SandboxError &&
-                  (["file_not_found", "not_found"].includes(error.code) ||
-                    (error.code === "provider" &&
-                      !(await box.files.exists("/tmp/.sandbox-sdk/runs"))))
+                  error.code === "provider" &&
+                  !(await box.files.exists("/tmp/.sandbox-sdk/runs"))
                 )
                   return [];
                 throw error;

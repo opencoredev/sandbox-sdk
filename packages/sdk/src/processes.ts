@@ -1,7 +1,7 @@
 import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
-import { SandboxError, invalid, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
 import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
   detachedLaunchScript,
@@ -160,16 +160,18 @@ export function makeProcesses(
     return bytes.subarray(offset, offset + length);
   }
 
+  // Some adapters report a missing path as a generic provider error; a stat confirms it.
+  async function isAbsent(error: SandboxError, path: string): Promise<boolean> {
+    if (isNotFound(error)) return true;
+
+    return error.code === "provider" && !(await files.exists(path));
+  }
+
   async function exitCode(dir: string): Promise<number | null> {
     try {
       return Number(await files.read(`${dir}/exit`));
     } catch (error) {
-      if (
-        error instanceof SandboxError &&
-        (["file_not_found", "not_found"].includes(error.code) ||
-          (error.code === "provider" && !(await files.exists(`${dir}/exit`))))
-      )
-        return null;
+      if (error instanceof SandboxError && (await isAbsent(error, `${dir}/exit`))) return null;
       throw error;
     }
   }
@@ -260,7 +262,9 @@ export function makeProcesses(
 
             if (Date.now() >= end) break;
           }
-        } catch {}
+        } catch {
+          // A refused or timed-out request means the port is not answering yet; poll again.
+        }
 
         if (Date.now() >= end) break;
         await delay(Math.min(50, Math.max(1, end - Date.now())));
@@ -734,6 +738,7 @@ export function makeProcesses(
               }
             }
 
+            // A log write failure has no caller to reach; the process reports it as failed.
             void drain().catch(() => controller?.state("failed"));
           });
 
@@ -747,6 +752,7 @@ export function makeProcesses(
           native.set(options.name, hook);
           await files.write(`${dir}/pid`, String(hook.pid));
           const exited = hook.wait();
+          // Only a race signal for start(); the chain below records a failed wait.
           hookExit = exited.then(
             (result) => {
               early = result.exitCode ?? 137;
@@ -761,10 +767,10 @@ export function makeProcesses(
               await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
               controller?.state(result.exitCode === 0 ? "exited" : "failed");
             })
-            .catch(async (error) => {
+            .catch(async () => {
+              // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
               await files.write(`${dir}/exit`, "1").catch(() => {});
               controller?.state("failed");
-              void error;
             });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
@@ -792,6 +798,7 @@ export function makeProcesses(
               return result;
             });
 
+            // Only a race signal for start(); the chain below records a failed wait.
             hookExit = exited.catch(() => {});
             void exited
               .then(async (result) => {
@@ -799,6 +806,7 @@ export function makeProcesses(
                   await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
               })
               .catch(async () => {
+                // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
                 await files.write(`${dir}/exit`, "1").catch(() => {});
               });
           } else {
@@ -909,12 +917,7 @@ export function makeProcesses(
         try {
           entries = await files.list(root);
         } catch (error) {
-          if (
-            error instanceof SandboxError &&
-            (["file_not_found", "not_found"].includes(error.code) ||
-              (error.code === "provider" && !(await files.exists(root))))
-          )
-            return [];
+          if (error instanceof SandboxError && (await isAbsent(error, root))) return [];
           throw error;
         }
 

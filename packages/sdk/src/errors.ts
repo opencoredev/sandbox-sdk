@@ -118,6 +118,15 @@ export class SandboxError extends Error {
   }
 }
 
+/** @internal Whether an error says the path or the sandbox does not exist. */
+export function isNotFound(
+  error: unknown,
+): error is SandboxError & { code: "file_not_found" | "not_found" } {
+  return (
+    error instanceof SandboxError && (error.code === "file_not_found" || error.code === "not_found")
+  );
+}
+
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();

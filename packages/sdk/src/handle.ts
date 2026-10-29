@@ -1,6 +1,6 @@
 import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
-import { Redactor, SandboxError, invalid } from "./errors.js";
+import { Redactor, SandboxError, invalid, isNotFound } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
 import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
@@ -107,13 +107,21 @@ export async function makeHandle<N>(
   };
 
   const files = makeFiles(provider, info.id, redactor, check, ready);
+
+  // A snapshot without a start mark is the usual case. Any other failure leaves a stale mark.
+  async function dropStartMark() {
+    try {
+      await files.remove("/tmp/.sandbox-sdk/marks/start.json");
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
   const namesPath = "/tmp/.sandbox-sdk/secret-names.json";
 
   if (created) {
     if (options.trackChanges) await files.mark("start");
     // A restored snapshot may carry the source's records. Overwrite or drop them.
-    else if (options.from !== undefined)
-      await files.remove("/tmp/.sandbox-sdk/marks/start.json").catch(() => {});
+    else if (options.from !== undefined) await dropStartMark();
     const names = Object.keys(options.secrets ?? {});
 
     if (names.length || options.from !== undefined) {
