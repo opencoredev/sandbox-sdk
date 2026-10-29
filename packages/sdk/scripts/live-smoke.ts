@@ -36,6 +36,7 @@ const registry = {
   freestyle: { env: [["FREESTYLE_API_KEY"]], load: async () => (await import("../src/providers/freestyle/index.js")).freestyle() },
   // The default superserve/node-22 template has no python3; set SANDBOX_SUPERSERVE_TEMPLATE to one that does.
   superserve: { env: [["SUPERSERVE_API_KEY"]], load: async () => (await import("../src/providers/superserve/index.js")).superserve({ template: process.env.SANDBOX_SUPERSERVE_TEMPLATE }) },
+  sandboxer: { env: [["SANDBOXER_API_KEY"]], load: async () => (await import("../src/providers/sandboxer/index.js")).sandboxer() },
 } satisfies Record<string, ProviderSpec>;
 type ProviderName = keyof typeof registry;
 

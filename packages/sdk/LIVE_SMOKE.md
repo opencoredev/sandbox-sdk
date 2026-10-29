@@ -13,26 +13,26 @@ Each provider gets a 120 s budget, and at most 4 run at once. After every provid
 
 ## Results, 2026-10-28
 
-Run `sbx69-mvsr6nqw-fb574ffa`, commit `1a13dba` plus this script, from ms-a2. Times are wall-clock from the client, so they include network latency and lazy imports on first use.
+Run `sbx69-mvss0ti7-c137fe1c` on branch `v1-polish` after the Sandboxer, packaging and docs merges, from ms-a2. Times are wall-clock from the client, so they include network latency and lazy imports on first use. ms-a2 had a load average above 100 during the run.
 
 | Provider | Result | Create ms | First run ms | Note |
 | --- | --- | ---: | ---: | --- |
-| memory | PASS | 571 | 3 | In-process. Preview URL is synthetic. |
-| local (Docker) | PASS | 5936 | 162 | An earlier run created in 396 to 680 ms. This run shared the host with the agentOS boot. |
-| agentOS | PASS | 7859 | 3247 | Embedded VM. Has no preview URLs, so the adapter reports `unsupported` as designed. |
-| E2B | PASS | 5097 | 259 | The earlier run created in 666 ms. |
-| Daytona | PASS | 2547 | 291 | |
-| Upstash Box | PASS | 4562 | 176 | |
-| Boat | PASS | 1398 | 354 | |
-| Tenki | PASS | 748 | 579 | |
-| boxd | PASS | 2144 | 270 | |
-| Freestyle | PASS | 655 | 203 | |
-| Superserve | PASS | 165 | 188 | Uses template `sandbox-bench-node22-py311-1x1-pinned`. The default `superserve/node-22` has no python3 and fails with `unsupported`. |
+| memory | PASS | 170 | 3 | In-process. Preview URL is synthetic. |
+| local (Docker) | PASS | 642 | 88 | |
+| agentOS | PASS | 1298 | 945 | Embedded VM. Has no preview URLs, so the adapter reports `unsupported` as designed. |
+| E2B | PASS | 713 | 234 | |
+| Daytona | PASS | 1411 | 416 | |
+| Upstash Box | PASS | 4363 | 168 | |
+| Boat | PASS | 1193 | 364 | |
+| Tenki | PASS | 491 | 435 | |
+| boxd | PASS | 2132 | 263 | |
+| Freestyle | PASS | 494 | 243 | |
+| Superserve | PASS | 313 | 211 | Uses template `sandbox-bench-node22-py311-1x1-pinned`. The default `superserve/node-22` has no python3 and fails with `unsupported`. |
+| Sandboxer | PASS | 360 | 217 | Default region (nearest to the caller). |
 | Vercel | SKIP | - | - | The only token on the server (`VERCEL_OIDC_TOKEN`) expired on 2026-10-22. |
 | Railway | SKIP | - | - | No `RAILWAY_API_TOKEN` or `RAILWAY_ENVIRONMENT_ID` on the server. |
-| Sandboxer | not run | - | - | Adapter still in progress. Its key is already in `~/.config/sandbox-bench/SANDBOXER_API_KEY`. |
 
-Leak check: 0 sandboxes left on every provider. The script's own check listed 0 per provider, so nothing needed reaping. A separate sweep then listed every sandbox on each cloud account with a `smoke-run` label starting `sbx69-`, which covers every smoke run made that day, and found 0. Connecting to each destroyed sandbox ID returned `not_found`, and `docker ps -a` showed no containers with the label.
+Leak check: 0 sandboxes left on every provider. After the run, `listSandboxes` and the adapter's native `provider.list` both returned 0 for the run label on every provider, so nothing needed reaping. An earlier run the same day (`sbx69-mvsr6nqw-fb574ffa`, before the Sandboxer merge) also passed with 0 left. That run was confirmed separately by a sweep of each cloud account for `smoke-run=sbx69-*`, `not_found` on reconnect to every destroyed ID, and `docker ps -a`.
 
 ### Adapter bug found
 
@@ -43,7 +43,7 @@ On the first run, Superserve failed with `outcome_unknown: Process cancellation 
 From `packages/sdk`, load the keys into the environment without printing them, then run the script:
 
 ```sh
-for k in E2B_API_KEY DAYTONA_API_KEY UPSTASH_BOX_API_KEY BOXD_API_KEY BOXD_ORG FREESTYLE_API_KEY TENKI_API_KEY SUPERSERVE_API_KEY BOAT_API_KEY; do
+for k in E2B_API_KEY DAYTONA_API_KEY UPSTASH_BOX_API_KEY BOXD_API_KEY BOXD_ORG FREESTYLE_API_KEY TENKI_API_KEY SUPERSERVE_API_KEY BOAT_API_KEY SANDBOXER_API_KEY; do
   export "$k=$(cat ~/.config/sandbox-bench/$k)"
 done
 export SANDBOX_SUPERSERVE_TEMPLATE=sandbox-bench-node22-py311-1x1-pinned
@@ -54,10 +54,4 @@ Without `--providers`, the script runs every registered provider whose credentia
 
 ## Adding a provider
 
-Add one entry to `registry` in `scripts/live-smoke.ts`. Give it the environment variables it needs and a lazy import of its factory. For Sandboxer:
-
-```ts
-sandboxer: { env: [["SANDBOXER_API_KEY"]], load: async () => (await import("../src/providers/sandboxer/index.js")).sandboxer() },
-```
-
-Then add `SANDBOXER_API_KEY` to the `for k in ...` loop and rerun with `--providers sandboxer`, or with no flag to run everything. If the provider only previews ports declared at creation, as Vercel and Railway do, add `ports: [3000]`.
+Add one entry to `registry` in `scripts/live-smoke.ts`. Give it the environment variables it needs and a lazy import of its factory, like the existing `sandboxer` entry. Add its key to the `for k in ...` loop and rerun with `--providers <name>`. If the provider only previews ports declared at creation, as Vercel and Railway do, add `ports: [3000]`.
