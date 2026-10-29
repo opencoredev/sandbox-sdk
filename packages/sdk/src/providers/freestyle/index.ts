@@ -97,7 +97,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
       return await sdkCall(vms, "ref", [sandboxId], "freestyle");
     },
   };
-  const api = createNativeApi<FreestylePlane, FreestyleClientSdk>({ http: client.http, placeholder: "vmId", sdk: binding });
+  const api = createNativeApi<FreestylePlane, FreestyleClientSdk>({ http: client.http, placeholder: ["vmId", "vmIdOrSlug"], sdk: binding });
   async function safe<T>(
     id: string | undefined,
     action: () => Promise<T>,
@@ -462,7 +462,7 @@ with tempfile.TemporaryFile() as f:
       if (!known.has(id)) throw failure("Connect the VM first", "not_found", id);
       let value = natives.get(id);
       if (!value) {
-        value = createNativeApi<FreestylePlane, FreestyleVmSdk>({ http: client.http, placeholder: "vmId", sandboxId: id, sdk: binding });
+        value = createNativeApi<FreestylePlane, FreestyleVmSdk>({ http: client.http, placeholder: ["vmId", "vmIdOrSlug"], sandboxId: id, sdk: binding });
         natives.set(id, value);
       }
       return value;

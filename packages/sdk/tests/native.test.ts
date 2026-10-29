@@ -48,6 +48,8 @@ function acme() {
     /** The same binding without the module constraint, to hand it wrong modules at runtime as JavaScript callers can. */
     loose: (id: string) => createNativeApi<AcmePlane>({ http, placeholder: "sandboxId", sandboxId: id, sdk }),
     api: createNativeApi<AcmePlane, AcmeClientSdk>({ http, placeholder: "sandboxId", sdk }),
+    /** A provider whose docs name the sandbox two ways. */
+    vm: (id: string) => createNativeApi<AcmePlane>({ http, placeholder: ["vmId", "vmIdOrSlug"], sandboxId: id, sdk }),
   };
 }
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
@@ -78,6 +80,14 @@ describe("request and fetch", () => {
     expect(server.requests[0]?.url).toBe("/api/sandbox/sb-2/ports/3000");
     expect((await failure(box.request("GET", "/sandbox/{sandboxId}/ports/{port}"))).code).toBe("invalid_argument");
     expect(server.requests).toHaveLength(1);
+  });
+
+  test("a provider can fill several placeholder names from the sandbox ID", async () => {
+    server.on("GET /api/vms/{id}", { json: {} });
+    const box = acme().vm("vm-1");
+    await box.request("GET", "/vms/{vmId}");
+    await box.request("GET", "/vms/{vmIdOrSlug}");
+    expect(server.requests.map(request => request.url)).toEqual(["/api/vms/vm-1", "/api/vms/vm-1"]);
   });
 
   test("planes route to their own base URL and credentials", async () => {

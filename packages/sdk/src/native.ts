@@ -103,8 +103,8 @@ export interface NativeSdkBinding {
 export interface NativeApiOptions<Plane extends string> {
   /** The adapter's HTTP client. Its planes, credentials, retries, redaction and error hooks apply to native calls too. */
   http: HttpClient<Plane>;
-  /** The placeholder `box.native` fills from the sandbox ID, without braces: `"sandboxId"`. */
-  placeholder: string;
+  /** The placeholder(s) `box.native` fills from the sandbox ID, without braces: `"sandboxId"`, or several names when the provider's docs use more than one. */
+  placeholder: string | readonly string[];
   /** Bind to this sandbox (`box.native`). Leave it out for `provider.api`. */
   sandboxId?: string;
   /** How `sdk(load)` connects. Without it, `sdk()` rejects with `unsupported`. */
@@ -119,11 +119,12 @@ const methods: ReadonlySet<string> = new Set<HttpMethod>(["GET", "HEAD", "POST",
  */
 export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoader = AnyNativeSdk>(options: NativeApiOptions<Plane>): NativeApi<Plane, Sdk> {
   const { http, placeholder, sandboxId, sdk: binding } = options;
+  const names: readonly string[] = typeof placeholder === "string" ? [placeholder] : placeholder;
   function call(method: HttpMethod, path: string, request: NativeRequestOptions<Plane> = {}) {
     if (typeof method !== "string" || !methods.has(method)) invalid(`Unsupported HTTP method ${typeof method === "string" ? method.slice(0, 16) : typeof method}`);
     if (typeof path !== "string") invalid("The path must be a string");
-    const auto = sandboxId !== undefined && path.includes(`{${placeholder}}`) && request.params?.[placeholder] === undefined;
-    const params = auto ? { ...request.params, [placeholder]: sandboxId } : request.params;
+    let params = request.params;
+    if (sandboxId !== undefined) for (const name of names) if (path.includes(`{${name}}`) && params?.[name] === undefined) params = { ...params, [name]: sandboxId };
     return { method, path, plane: request.plane, sandboxId, params, query: request.query, body: request.body, headers: request.headers, signal: request.signal, timeoutMs: request.timeoutMs, detail: "message" as const };
   }
   async function connect(load: () => Promise<unknown>): Promise<unknown> {
@@ -159,7 +160,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
 }
 
 /**
-^ * `new module[name](...args)` for a module handed to `native.sdk()`. Throws `invalid_argument` naming
+ * `new module[name](...args)` for a module handed to `native.sdk()`. Throws `invalid_argument` naming
  * the package when the export is missing or is not a class.
  */
 export function sdkConstruct(module: object, name: string, args: unknown[], packageName: string): unknown {
