@@ -49,7 +49,8 @@ await using box = await createSandbox(e2b({ template: "base" }), {
 
 - **Get-or-create.** `createSandbox(provider, { key })` finds the sandbox by key or creates it.
   - Each provider adapter declares `keyMode: "exact" | "best-effort"`. Exact means the provider enforces unique names: Vercel named sandboxes, Docker container names, memory. Best-effort means lookup by tag or metadata (E2B, Daytona) and can race.
-  - For exact mode on best-effort providers, pass `locator: { get(key), set(key, id), delete?(key) }`. It is a two-function interface any KV store can back.
+  - Pass `locator: { get(key), set(key, id), delete?(key) }` to cache key-to-ID lookups in any KV store and recover from stale IDs. A two-function locator cannot enforce uniqueness across hosts, because `get` then `set` is not atomic.
+  - For exact mode on a best-effort provider, pass `keyMode: "exact"` and add `locator.withLock(key, action)`, backed by a distributed lock or transaction. Without `withLock`, `createSandbox` rejects exact mode with `unsupported`.
   - A stale stored ID gets recreated transparently.
 - **Lookup and cleanup.**
   - `connectSandbox(provider, id)` reattaches by native ID.
@@ -183,15 +184,24 @@ These run through `run`, with credentials passed through a temporary credential 
 
 ## 8. Providers
 
-| Factory         | Subpath    | keyMode     | Notes                                                                                                                                                           |
-| --------------- | ---------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `local()`       | `/local`   | exact       | Docker; real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.                                                                     |
-| `memory()`      | `/memory`  | exact       | In-process fake for tests. Supports files, a small shell subset via a command handler table, processes, and previews (fake URLs). It never touches the network. |
-| `e2b(opts)`     | `/e2b`     | best-effort | `e2b` SDK. Uses native commands and pause/snapshot.                                                                                                             |
-| `vercel(opts)`  | `/vercel`  | exact       | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                                                                   |
-| `daytona(opts)` | `/daytona` | best-effort | `@daytonaio/sdk`. Labels, preview token.                                                                                                                        |
+| Factory            | Subpath       | keyMode     | Native SDK (optional peer) and notes                                                                       |
+| ------------------ | ------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `local()`          | `/local`      | exact       | Docker CLI, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.   |
+| `memory()`         | `/memory`     | exact       | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network. |
+| `e2b(opts)`        | `/e2b`        | best-effort | `e2b`. Native commands and pause/snapshot.                                                                 |
+| `vercel(opts)`     | `/vercel`     | exact       | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                              |
+| `daytona(opts)`    | `/daytona`    | best-effort | `@daytonaio/sdk`. Labels, preview token.                                                                   |
+| `upstash(opts)`    | `/upstash`    | best-effort | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                           |
+| `railway(opts)`    | `/railway`    | best-effort | `railway`.                                                                                                 |
+| `boat(opts)`       | `/boat`       | best-effort | `@boatdev/sdk`.                                                                                            |
+| `sandboxer(opts)`  | `/sandboxer`  | best-effort | `@boatdev/sdk`, through the same API client as `boat`.                                                     |
+| `tenki(opts)`      | `/tenki`      | best-effort | `@tenkicloud/sandbox`.                                                                                     |
+| `boxd(opts)`       | `/boxd`       | best-effort | `@boxd-sh/sdk`.                                                                                            |
+| `freestyle(opts)`  | `/freestyle`  | best-effort | `freestyle`.                                                                                               |
+| `superserve(opts)` | `/superserve` | best-effort | `@superserve/sdk`.                                                                                         |
+| `agentos(opts)`    | `/agentos`    | exact       | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                         |
 
-**Adapter contract.** Internal, exported from `/provider` for third parties. Each adapter is about 200–400 lines:
+**Adapter contract.** Internal, exported from `/provider` for third parties. [adapters.md](./adapters.md) is the guide for writing one. Each adapter implements:
 
 - `create(input)`
 - `find(key)`
@@ -272,17 +282,17 @@ Each adapter is a subpath. `/ai` gives AI SDK tools, `/mastra` gives Mastra tool
 ## 11. Tests, conformance, benchmarks
 
 - **Conformance.** `/testing` exports `runConformance(providerFactory, { live })`, one suite every provider must pass. It covers create/find-by-key, run (exit codes, stdin, timeout kill, abort kill, truncation, interleaving, non-interactive env), `$` escaping, processes (start/ready/logs/cursor/reattach after a new client/stop/exit-before-ready), files (all ops, upload/download, edit errors, changes), git (clone and commit against a local bare repo), preview, close vs destroy, reap, and capability gating.
-- **Unit tests** run against `memory()` and provider mocks. Docker conformance runs locally and in CI. Cloud live tests are gated on env keys (`E2B_API_KEY`, `VERCEL_TOKEN` + team/project, `DAYTONA_API_KEY`).
-- **Benchmarks.** `bench/` holds a runnable harness, `bun bench --providers e2b,vercel,... --runs 50`. It measures:
+- **Unit tests** run against `memory()` and provider mocks. Docker conformance runs locally and in CI. Each cloud provider's live tests (`packages/sdk/tests/*.live.test.ts`) skip unless its credentials are set, for example `E2B_API_KEY`, or `VERCEL_TOKEN` with a team and project.
+- **Benchmarks.** `bench/` holds a runnable harness, `bun bench --providers e2b,vercel,... --runs 50`; [bench/README.md](../bench/README.md) documents its scenarios and flags. It measures, among others:
   - create to first command (cold);
   - command round trip;
   - file write and read (1 KB, 10 MB);
   - start a dev server until ready;
   - preview first byte;
   - destroy;
-  - SDK overhead against the raw provider SDK, as CPU time.
+  - SDK overhead against the raw provider SDK, as CPU time (the original harness, `bun bench --v1`).
 
-  It reports p50, p95, and p99 with the machine and region, writes JSON plus a Markdown table, and never runs cloud providers without keys.
+  It reports p50, p95, and p99 with the machine and region, writes JSON, a Markdown table and an HTML report, and never runs cloud providers without keys.
 
 - Test commands must use timeouts and at most 4 workers.
 

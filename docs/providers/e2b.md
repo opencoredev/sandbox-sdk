@@ -10,7 +10,7 @@ await using box = await createSandbox(e2b({ template: "base" }));
 console.log((await box.run("echo hello")).stdout);
 ```
 
-`e2b({ apiKey?, template?, domain? })` loads E2B on first provider operation. The root entry never imports E2B. `box.native` is typed as the official E2B `Sandbox`.
+`e2b({ apiKey?, template?, domain?, ... })` loads E2B on first provider operation. The `E2BOptions` type documents the rest, including `requestTimeoutMs`, `public`, `autoPause`, and `autoResume`. The root entry never imports E2B. `box.native` is typed as the official E2B `Sandbox`.
 
 - Keys use metadata lookup and can race across hosts (`keyMode: "best-effort"`). Labels become E2B metadata; listing paginates over SDK-owned running and paused sandboxes. `sandbox-sdk-key` and `sandbox-sdk-deadline` are reserved metadata keys.
 - Omitted `size` uses the template's CPU, RAM and disk. Every explicit preset (`small`, `medium`, `large`) and custom size fails with `unsupported`: E2B chooses resources when building the template, not when creating a sandbox.
