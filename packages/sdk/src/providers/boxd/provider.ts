@@ -20,10 +20,11 @@ import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { boxdError, failure } from "./errors.js";
 import { files, python, type Guest } from "../../shared/guest.js";
-import { isNumber, isObject, isString } from "../../shared/narrow.js";
+import { isString } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 import { execute } from "./execute.js";
 import type { FileTransfers } from "./transfers.js";
+import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
 
 // Writes base64 stdin to argv[1], creating its parent directory.
 const uploadFile =
@@ -104,22 +105,6 @@ export type BoxdTransfers = Pick<
 export type OpenTransfers = (options: BoxdClientOptions, signal?: AbortSignal) => BoxdTransfers;
 
 const marker = "/var/lib/sandbox-sdk/metadata.json";
-
-/** The marker JSON written at creation. Labels are checked one by one. */
-type StoredMetadata = { key: string | null; labels: object; createdAt: number };
-
-function isStoredMetadata(value: unknown): value is StoredMetadata {
-  return (
-    isObject(value) &&
-    "labels" in value &&
-    isObject(value.labels) &&
-    !Array.isArray(value.labels) &&
-    "createdAt" in value &&
-    isNumber(value.createdAt) &&
-    "key" in value &&
-    (value.key === null || isString(value.key))
-  );
-}
 
 // Each class has fixed 100 GB disk and 4 GiB memory per vCPU.
 function vcpuFor(size: CreateInput["size"]): number | undefined {
@@ -340,29 +325,23 @@ export function createBoxdProvider<C extends BoxdClient>(
       deferred = true;
     }
 
-    let value: unknown;
+    const invalid: (part: MetadataPart) => never = (part) => {
+      throw failure(`Invalid SDK ${part}`, "not_found", m.id);
+    };
 
-    try {
-      value = JSON.parse(text);
-    } catch {
-      throw failure("Invalid SDK metadata", "not_found", m.id);
-    }
+    const value = parseMetadata(text, invalid);
+    // The marker always stores its key (null for none) and creation time.
+    const createdAt = value.createdAt ?? invalid("metadata");
 
-    if (!isStoredMetadata(value)) throw failure("Invalid SDK metadata", "not_found", m.id);
+    if (value.key === undefined) invalid("metadata");
 
     if (deferred && !pending.has(m.id)) pending.set(m.id, preparation(text));
-    const labels: Record<string, string> = {};
-
-    for (const [k, v] of Object.entries(value.labels)) {
-      if (!isString(v)) throw failure("Invalid SDK labels", "not_found", m.id);
-      Object.defineProperty(labels, k, { value: v, enumerable: true });
-    }
 
     return {
       id: m.id,
       key: value.key ?? undefined,
-      labels,
-      createdAt: m.createdAt?.getTime() ?? value.createdAt,
+      labels: value.labels,
+      createdAt: m.createdAt?.getTime() ?? createdAt,
       state:
         m.status === "running"
           ? "running"

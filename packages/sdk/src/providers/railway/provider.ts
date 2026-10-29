@@ -29,6 +29,7 @@ import {
   unsupported,
   type RailwayErrorClasses,
 } from "./errors.js";
+import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
 
 export type RailwayOptions = {
   /** Defaults to RAILWAY_API_TOKEN; required for authentication. */
@@ -67,55 +68,19 @@ const reapCommand = (token: string) =>
 
 type Metadata = { version: 1; key?: string; labels: Labels };
 
-/** The marker before its labels are checked one by one. */
-function isMarker(data: unknown): data is { version: 1; key?: string; labels: object } {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "version" in data &&
-    data.version === 1 &&
-    "labels" in data &&
-    typeof data.labels === "object" &&
-    data.labels !== null &&
-    !Array.isArray(data.labels) &&
-    (!("key" in data) || data.key === undefined || typeof data.key === "string")
-  );
-}
-
-function isLabelValue(value: unknown): value is string {
-  return typeof value === "string";
-}
-
 function metadata(text: string): Metadata {
-  let data: unknown;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new SandboxError("Invalid Railway SDK metadata", {
+  const invalid: (part: MetadataPart) => never = (part) => {
+    throw new SandboxError(`Invalid Railway SDK ${part}`, {
       code: "not_found",
       provider: "railway",
     });
-  }
+  };
 
-  if (!isMarker(data))
-    throw new SandboxError("Invalid Railway SDK metadata", {
-      code: "not_found",
-      provider: "railway",
-    });
-  const labels: Labels = {};
+  const { key, labels, version } = parseMetadata(text, invalid);
 
-  for (const [key, value] of Object.entries(data.labels)) {
-    if (!isLabelValue(value))
-      throw new SandboxError("Invalid Railway SDK label", {
-        code: "not_found",
-        provider: "railway",
-      });
-    // defineProperty, so a "__proto__" label stays an ordinary label.
-    Object.defineProperty(labels, key, { value, enumerable: true });
-  }
+  if (version !== 1 || key === null) invalid("metadata");
 
-  return { version: 1, key: data.key, labels };
+  return { version: 1, key, labels };
 }
 
 /** The page of sandbox IDs in a RailwaySandboxes query response. */

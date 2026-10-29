@@ -4,6 +4,7 @@ import type { Provider } from "../../provider.js";
 import type { BoatCreateOptions, BoatNative } from "../boat/index.js";
 import { boatApi } from "../boat-api/index.js";
 import { errors } from "../boat-api/errors.js";
+import { isObject, isString } from "../../shared/narrow.js";
 
 /** `GET /regions` lists them: us-east (Ashburn, Virginia), eu-central (Helsinki). */
 export type SandboxerRegion = "us-east" | "eu-central" | (string & {});
@@ -40,12 +41,8 @@ type Json = string | number | boolean | null | Json[] | JsonObject;
 
 type JsonObject = { [key: string]: Json };
 
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isText(value: unknown): value is string {
-  return typeof value === "string";
+function isJsonObject(value: Json | undefined): value is JsonObject {
+  return isObject(value) && !Array.isArray(value);
 }
 
 const baseUrl = "https://sandboxer.com/api/v1";
@@ -64,8 +61,8 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   const placements = new Map<string, Pick<SandboxerNative, "region" | "regionSource">>();
 
   function place(value: JsonObject) {
-    if (!isText(value.id) || !("region" in value)) return;
-    const name = isText(value.region) ? value.region : null;
+    if (!isString(value.id) || !("region" in value)) return;
+    const name = isString(value.region) ? value.region : null;
 
     const source =
       "regionSource" in value
@@ -101,7 +98,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
 
       if (!response.ok) {
         // An unreadable error body only means there is no API code to report.
-        const envelope: unknown = await response.json().catch(() => undefined);
+        const envelope: Json | undefined = await response.json().catch(() => undefined);
         const apiCode = isJsonObject(envelope) ? envelope.code : undefined;
 
         throw { response, apiCode };
@@ -188,8 +185,8 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       let body = init?.body;
 
       if (region !== undefined && init?.method === "POST" && path.endsWith("/sandboxes")) {
-        if (!isText(body)) throw failure("Sandboxer create body is not JSON", "provider");
-        const request: unknown = JSON.parse(body);
+        if (!isString(body)) throw failure("Sandboxer create body is not JSON", "provider");
+        const request: Json = JSON.parse(body);
 
         if (!isJsonObject(request))
           throw failure("Sandboxer create body is not an object", "provider");
@@ -200,7 +197,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
 
       if (response.ok && init?.method !== "DELETE" && /\/sandboxes(\/[^/]+)?$/.test(path)) {
         // A body that is not JSON carries no placement; the response still goes to the SDK.
-        const value: unknown = await response
+        const value: Json | undefined = await response
           .clone()
           .json()
           .catch(() => undefined);

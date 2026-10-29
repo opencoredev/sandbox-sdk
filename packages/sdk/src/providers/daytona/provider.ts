@@ -18,6 +18,7 @@ import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
 import { daytonaError, rememberDaytonaErrors, unsupported } from "./errors.js";
 import { decodeNative } from "../../shared/native-error.js";
+import { isString } from "../../shared/narrow.js";
 import { download, upload } from "./transfer.js";
 import { quote } from "../../shared/shell.js";
 import { execute, sessionProcess, workspaceCommand } from "./exec.js";
@@ -76,13 +77,9 @@ const presets = {
 
 type Size = NonNullable<CreateInput["size"]>;
 
-function isPreset(size: Size): size is keyof typeof presets {
-  return typeof size === "string";
-}
-
 function resources(size: Size) {
   // A preset name from untyped callers may still be unknown, so value can be undefined.
-  const value = isPreset(size) ? presets[size] : size;
+  const value = isString(size) ? presets[size] : size;
   const diskGb = value?.diskGb ?? 10;
 
   if (

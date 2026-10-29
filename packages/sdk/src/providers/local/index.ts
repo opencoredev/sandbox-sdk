@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Provider, SandboxInfo, FileInfo, CreateInput, Labels } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../shared/shell.js";
+import { isString } from "../../shared/narrow.js";
 import {
   Docker,
   object,
@@ -78,22 +79,16 @@ const presets = {
   large: { cpu: 4, memoryMb: 8192 },
 };
 
-type Size = NonNullable<CreateInput["size"]>;
-
-function isPreset(size: Size): size is keyof typeof presets {
-  return typeof size === "string";
-}
-
 function limits(size: CreateInput["size"]) {
   if (!size) return {};
 
-  if (!isPreset(size) && size.diskGb !== undefined)
+  if (!isString(size) && size.diskGb !== undefined)
     throw failure(
       "Docker cannot enforce diskGb portably; pass only cpu and memoryMb, or use small, medium, or large",
       "unsupported",
     );
   // A preset name from untyped callers may still be unknown.
-  const value = isPreset(size) ? presets[size] : size;
+  const value = isString(size) ? presets[size] : size;
 
   if (!value) throw failure("Unknown size preset", "unsupported");
 

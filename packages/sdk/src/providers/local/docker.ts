@@ -2,6 +2,7 @@ import { Agent, request } from "node:http";
 import { StringDecoder } from "node:string_decoder";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 import type { OutputChunk } from "../../provider.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
 export const failure = (message: string, code: ErrorCode = "provider") =>
   new SandboxError(
@@ -22,15 +23,7 @@ export type DockerJson =
 type DockerObject = { [key: string]: DockerJson };
 
 function isDockerObject(value: DockerJson): value is DockerObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isText(value: DockerJson): value is string {
-  return typeof value === "string";
-}
-
-function isNumber(value: DockerJson): value is number {
-  return typeof value === "number";
+  return isObject(value) && !Array.isArray(value);
 }
 
 export function object(value: DockerJson): DockerObject {
@@ -40,7 +33,7 @@ export function object(value: DockerJson): DockerObject {
 }
 
 export function string(value: DockerJson): string {
-  if (!isText(value)) throw failure("Expected a Docker string");
+  if (!isString(value)) throw failure("Expected a Docker string");
 
   return value;
 }
