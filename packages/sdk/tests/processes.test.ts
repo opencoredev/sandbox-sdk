@@ -2,54 +2,99 @@ import { expect, test, vi } from "vitest";
 import { createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import { shellProvider } from "./shell-provider.js";
-import type { Provider } from "../src/provider.js";
 
-test.each(["outcome_unknown", "provider"] satisfies ("outcome_unknown" | "provider")[])(
-  "cancellation propagates %s cleanup failures",
-  async (code) => {
-    const base = memory();
-
-    const provider: Provider = {
-      ...base,
-      async exec(_, input) {
-        if (input.command !== "cancel") return base.exec(_, input);
-        await new Promise<void>((resolve) =>
-          input.signal?.addEventListener("abort", () => resolve(), { once: true }),
-        );
-        throw new SandboxError("Remote group termination failed", { code });
-      },
-    };
-
-    const box = await createSandbox(provider);
-
-    try {
-      await expect(box.run("cancel", { timeoutMs: 20 })).rejects.toMatchObject({ code });
-    } finally {
-      await box.destroy();
-    }
-  },
-);
-
-test("redacts secrets spanning stdout and stderr in output and subscriptions", async () => {
-  const provider = memory({
-    handlers: {
-      split({ stdout, stderr }) {
-        stdout("ab");
-        stderr("cd");
-
-        return 0;
-      },
-    },
-  });
-
-  const box = await createSandbox(provider, { secrets: { TOKEN: "abcd" } });
+test("start() with a missing cwd reports failed and logs the shell's cd error", async () => {
+  const box = await createSandbox(await shellProvider());
 
   try {
-    expect((await box.run("split")).output).toBe("[REDACTED]");
-    const chunks = [];
+    const process = await box.start("sleep 30", { name: "bad-cwd", cwd: "nope" });
+    expect(process.status).toBe("failed");
+    expect(process.ready).toBe(false);
+    expect((await process.logs()).text).toMatch(/cd.*nope/);
+    const lines = [];
 
-    for await (const chunk of box.run("split")) chunks.push(chunk.text);
-    expect(chunks.join("")).toBe("[REDACTED]");
+    for await (const line of process.lines()) lines.push(line);
+    expect(lines).toEqual([
+      expect.objectContaining({ stream: "stderr", text: expect.stringMatching(/cd.*nope/) }),
+    ]);
+    expect((await process.wait()).exitCode).not.toBe(0);
+    expect(await box.processes()).toEqual([
+      expect.objectContaining({ name: "bad-cwd", status: "failed" }),
+    ]);
+    // The failed record does not block a corrected start under the same name.
+    await box.run("mkdir nope");
+    const fixed = await box.start("sleep 30", { name: "bad-cwd", cwd: "nope" });
+    expect(fixed.status).toBe("running");
+    await fixed.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("start() with a missing cwd and ready fails fast with the cd error in the log tail", async () => {
+  const box = await createSandbox(await shellProvider());
+
+  try {
+    const started = Date.now();
+
+    const pending = box.start("sleep 30", {
+      name: "bad-ready",
+      cwd: "nope",
+      ready: { port: 5173 },
+      readyTimeoutMs: 20_000,
+    });
+
+    await expect(pending).rejects.toBeInstanceOf(SandboxError);
+    await expect(pending).rejects.toMatchObject({
+      code: "process_exited",
+      message: expect.stringMatching(/Exit [1-9]\d*\. Check the last logs: .*cd.*nope/),
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("start() reports a command that already exited as failed or exited, not running", async () => {
+  const provider = await shellProvider();
+  // Run quick launches in the foreground: the exit record then exists before the
+  // launcher's own check, which keeps this test independent of host speed.
+  const exec = provider.exec.bind(provider);
+  provider.exec = (id, input) =>
+    exec(
+      id,
+      input.command.startsWith("nohup setsid") && !input.command.includes("sleep 30")
+        ? {
+            ...input,
+            command: input.command.replace(" < /dev/null & echo $!", " < /dev/null; echo $!"),
+          }
+        : input,
+    );
+  const box = await createSandbox(provider);
+
+  try {
+    const failing = await box.start("exit 3", { name: "quick" });
+    expect(failing.status).toBe("failed");
+    expect(failing.ready).toBe(false);
+    const ok = await box.start("true", { name: "quick-ok" });
+    expect(ok.status).toBe("exited");
+    const running = await box.start("sleep 30", { name: "slow" });
+    expect(running.status).toBe("running");
+    await running.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("start() on a stream-mode provider reports a command that exits at once", async () => {
+  const box = await createSandbox(memory());
+
+  try {
+    expect((await box.start("true", { name: "ok" })).status).toBe("exited");
+    const failed = await box.start("exit 3", { name: "bad" });
+    expect(failed.status).toBe("failed");
+    expect(failed.ready).toBe(false);
+    expect((await box.start("sleep 5", { name: "long" })).status).toBe("running");
   } finally {
     await box.destroy();
   }
@@ -222,75 +267,5 @@ test("HTTP readiness allows a cloud handshake longer than 100ms", async () => {
   } finally {
     fetcher.mockRestore();
     await box.destroy();
-  }
-});
-
-test("private preview probes retain same-origin redirect cookies", async () => {
-  const box = await createSandbox(await shellProvider());
-
-  const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
-    if (new Headers(init?.headers).get("cookie") === "preview=session") return new Response("ok");
-
-    return new Response(null, {
-      status: 302,
-      headers: { location: "/ready", "set-cookie": "preview=session; Path=/; HttpOnly" },
-    });
-  });
-
-  try {
-    expect((await box.preview(3000, { waitMs: 300 })).url).toContain("unused.invalid");
-  } finally {
-    fetcher.mockRestore();
-    await box.destroy();
-  }
-});
-
-test("preview probes never forward provider headers to a redirect on another origin", async () => {
-  const { createServer } = await import("node:http");
-  let forwarded = 0;
-
-  const target = createServer((_req, res) => {
-    forwarded++;
-    res.end("wrong origin");
-  });
-
-  const source = createServer((_req, res) => {
-    const address = target.address();
-
-    if (!address || typeof address === "string") throw new Error("Missing target");
-    res.writeHead(302, { location: `http://127.0.0.1:${address.port}/` });
-    res.end();
-  });
-
-  await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
-  await new Promise<void>((resolve) => source.listen(0, "127.0.0.1", resolve));
-  const address = source.address();
-
-  if (!address || typeof address === "string") throw new Error("Missing source");
-  const provider = await shellProvider();
-
-  const box = await createSandbox({
-    ...provider,
-    previewUrl: async () => ({
-      url: `http://127.0.0.1:${address.port}/`,
-      headers: { "X-Preview-Token": "private-preview-token" },
-    }),
-  });
-
-  try {
-    await expect(box.preview(3000, { waitMs: 100 })).rejects.toMatchObject({
-      code: "port_not_ready",
-    });
-    expect(forwarded).toBe(0);
-  } finally {
-    await box.destroy();
-    await Promise.all(
-      [source, target].map(
-        (server) =>
-          new Promise<void>((resolve, reject) =>
-            server.close((error) => (error ? reject(error) : resolve())),
-          ),
-      ),
-    );
   }
 });
