@@ -201,8 +201,9 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
 subprocess.run(["sh","-c",${JSON.stringify(workspace)}],check=True)
 p=${JSON.stringify(path)}
 os.makedirs(os.path.dirname(p),exist_ok=True)
-with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))${mode === undefined ? "" : `
-os.chmod(p,${mode})`}`, undefined, 120);
+fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,${mode ?? 0o666})${mode === undefined ? "" : `
+os.fchmod(fd,${mode})`}
+with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))`, undefined, 120);
         if (result.exitCode !== 0) throw new SandboxError("File write failed. Workspace setup or the native code operation failed. Check guest permissions.", { code: "provider", provider: "daytona", sandboxId: id });
         unprepared.delete(id);
       }),
