@@ -2,7 +2,15 @@ import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
 import { SandboxError, invalid, type Redactor } from "./errors.js";
-import { defaults, pathOf, quote, chunkRedactor } from "./run.js";
+import { defaults, pathOf, chunkRedactor } from "./run.js";
+import {
+  detachedLaunchScript,
+  logPageScript,
+  recordExit,
+  recordSetupScript,
+  redactionSedScript,
+  supervisorScript,
+} from "./shell/process-records.js";
 
 /** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
 export function defaultProcessName(command: string): string {
@@ -304,11 +312,15 @@ export function makeProcesses(
         start = Math.max(0, (requested ?? base) - base - lookaround);
         bytes = await readRange(`${dir}/out.log`, start, budget + lookaround * 2);
       } else {
-        // Share the writer's lock so rotation cannot pair a new base with an old file.
         let wire = "";
 
         const result = await provider.exec(id, {
-          command: `[ -f ${quote(`${dir}/spec.json`)} ] || exit 66; cat ${quote(`${dir}/spec.json`)} || exit 1; printf '\\000'; while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep .01; done; trap 'rmdir ${quote(`${dir}/lock`)}' EXIT; b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); a=${requested ?? '"$b"'}; s=$((a-b-${lookaround})); [ "$s" -ge 0 ] || s=0; e=running; if [ -f ${quote(`${dir}/exit`)} ]; then e=$(cat ${quote(`${dir}/exit`)}); fi; printf '%s %s %s %s\\n' "$b" "$s" "$n" "$e"; dd if=${quote(`${dir}/out.log`)} bs=1 skip="$s" count=${budget + lookaround * 2} 2>/dev/null | base64`,
+          command: logPageScript({
+            dir,
+            after: requested,
+            lookbehind: lookaround,
+            length: budget + lookaround * 2,
+          }),
           cwd: "/workspace",
           env: { ...env, ...defaults },
           timeoutMs: 10_000,
@@ -323,7 +335,7 @@ export function makeProcesses(
           },
         });
 
-        if (result.exitCode === 66)
+        if (result.exitCode === recordExit.missing)
           throw new SandboxError(
             "Process record not found. This process has not been started. Check the process name.",
             { code: "file_not_found" },
@@ -641,27 +653,8 @@ export function makeProcesses(
 
           if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
         } else {
-          const patterns = redactor.secrets.flatMap((secret) => secret.split("\n")).filter(Boolean);
-
-          const sed =
-            patterns
-              .flatMap((secret) => {
-                const escape = (text: string) => text.replace(/[\\[\].*^$|]/g, "\\$&");
-
-                return [
-                  `s|${escape(secret)}|[REDACTED]|g`,
-                  ...Array.from({ length: secret.length - 1 }, (_, index) => [
-                    `s|${escape(secret.slice(0, secret.length - 1 - index))}$|[REDACTED]|`,
-                    `s|^${escape(secret.slice(index + 1))}|[REDACTED]|`,
-                  ]).flat(),
-                ];
-              })
-              .join("\n") + "\n";
-
-          // Prepare records in one exec. Framed base64 on stdin preserves exact
-          // UTF-8 bytes even through transports that normalize input paths.
           const result = await exec(
-            `mkdir -p ${quote(dir)} || exit 1; if [ -f ${quote(`${dir}/spec.json`)} ] && [ ! -f ${quote(`${dir}/exit`)} ]; then exit 73; fi; b=0; if [ -f ${quote(`${dir}/base`)} ]; then b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); b=$((b+n)); fi; IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${quote(`${dir}/spec.json`)} && (umask 077; printf '%s' "$r" | base64 -d > ${quote(`${dir}/restart.json`)}) && : > ${quote(`${dir}/out.log`)} && printf '%s' "$b" > ${quote(`${dir}/base`)} && rm -f ${quote(`${dir}/exit`)} || exit 1; m=$(cd ${quote(pathOf(options.cwd))} 2>&1) && exit 0; c=$?; printf '%s\n' "$m" | sed 's/^/E/' > ${quote(`${dir}/out.log`)}; printf 0 > ${quote(`${dir}/pid`)}; printf '%s' "$c" > ${quote(`${dir}/exit`)}; exit 74`,
+            recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
             {},
             Buffer.from(spec).toString("base64") +
               "\n" +
@@ -669,10 +662,11 @@ export function makeProcesses(
               "\n",
           );
 
-          if (result.exitCode === 73) invalid(`Process ${options.name} is already running`);
+          if (result.exitCode === recordExit.running)
+            invalid(`Process ${options.name} is already running`);
 
-          // 74: the working directory is missing. Its cd error is already the process log.
-          if (result.exitCode === 74) {
+          // The working directory is missing. Its cd error is already the process log.
+          if (result.exitCode === recordExit.badCwd) {
             launched = false;
             controller?.state("failed");
             controller?.ready(false);
@@ -682,6 +676,7 @@ export function makeProcesses(
               { code: "provider" },
             );
           else {
+            const sed = redactionSedScript(redactor.secrets);
             await provider.files.write(id, sedPath, new TextEncoder().encode(sed));
             controller?.state("starting");
             controller?.ready(false);
@@ -773,12 +768,12 @@ export function makeProcesses(
             });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
-          const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
-
-          const reader = (stream: string, fifo: string) =>
-            `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; need=0; for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1); do if [ "$byte" -ge 240 ]; then need=3; elif [ "$byte" -ge 224 ]; then need=2; elif [ "$byte" -ge 192 ]; then need=1; elif [ "$byte" -ge 128 ]; then [ "$need" -le 0 ] || need=$((need-1)); else need=0; fi; done; if [ "$need" -gt 0 ]; then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .); rest=\${rest%.}; chunk="$chunk$rest"; fi; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
-
-          const wrapper = `chmod 600 ${quote(sedPath)}; trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; { cd ${quote(pathOf(options.cwd))} && sh -c ${quote(command)}; } > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
+          const wrapper = supervisorScript({
+            dir,
+            cwd: pathOf(options.cwd),
+            command,
+            sedPath,
+          });
 
           if (provider.startProcess) {
             const hook = await provider.startProcess(id, {
@@ -810,12 +805,8 @@ export function makeProcesses(
             // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
             let wire = "";
 
-            const check = options.ready
-              ? ""
-              : `; i=0; while [ "$i" -lt 10 ] && [ ! -f ${quote(`${dir}/exit`)} ]; do sleep 0.01; i=$((i+1)); done; cat ${quote(`${dir}/exit`)} 2>/dev/null; true`;
-
             await exec(
-              `nohup setsid sh -c ${quote(wrapper)} > /dev/null 2>&1 < /dev/null & echo $! > ${quote(`${dir}/pid`)}${check}`,
+              detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
               options.env,
               undefined,
               (text) => {
