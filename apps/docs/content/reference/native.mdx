@@ -75,7 +75,7 @@ export async function previewUrl(native: NativeApi, port: number) {
 
 Gives you the official SDK's object for this sandbox, built from the module you import. The SDK is not a dependency of Sandbox SDK, so install it next to it first. Because you write the `import()`, your bundler sees it and the result is typed from the module you installed.
 
-```ts check="skip"
+```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
@@ -90,7 +90,7 @@ If the import fails because the package isn't installed, `sdk` rejects with `una
 
 The provider factory has an `api` property: a `NativeApi` bound to no sandbox, for account-level calls such as listing snapshots or templates. `provider.api.sdk(load)` returns the SDK's client instead of a sandbox.
 
-```ts check="skip"
+```ts
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
 const provider = daytona();

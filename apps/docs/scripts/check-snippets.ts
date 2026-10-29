@@ -109,10 +109,12 @@ const linkModule = (name: string, target: string) => {
   symlinkSync(target, path, "dir");
 };
 linkModule("@opencoredev/sandbox-sdk", sdkDir);
-const sdkManifest: { peerDependencies?: Record<string, string> } = JSON.parse(
+const sdkManifest: { peerDependencies?: Record<string, string>; devDependencies?: Record<string, string> } = JSON.parse(
   readFileSync(join(sdkDir, "package.json"), "utf8"),
 );
-for (const peer of Object.keys(sdkManifest.peerDependencies ?? {})) {
+// Dev dependencies too: a provider that calls its API directly drops its SDK from the peers, but pages still
+// show `box.native.sdk(() => import("<its sdk>"))`, which users install themselves.
+for (const peer of new Set([...Object.keys(sdkManifest.peerDependencies ?? {}), ...Object.keys(sdkManifest.devDependencies ?? {})])) {
   const installed = join(sdkDir, "node_modules", peer);
   if (existsSync(installed)) linkModule(peer, realpathSync(installed));
 }

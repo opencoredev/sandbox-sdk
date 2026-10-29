@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking for Daytona:** `daytona()` calls Daytona's HTTP API directly, and `@daytonaio/sdk` is no longer a peer dependency, so `npm i @opencoredev/sandbox-sdk@next` is the whole install. File transfers use Web `FormData` and a built-in multipart reader, so bundled apps no longer need `form-data` or `busboy`, and the `codeRun` transfer fallback is gone. `box.native` is now a `NativeApi` with `"api"` and `"toolbox"` planes instead of the SDK's `Sandbox`: call `box.native.request(...)`, or `await box.native.sdk(() => import("@daytonaio/sdk"))` to keep using the SDK. `daytona().api` makes account-level calls. A create that fails after Daytona made the sandbox now always deletes it, including one whose create request got no answer.
+
 ## 1.0.0-beta.1
 
 Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
