@@ -6,17 +6,13 @@ This is a beta. The API can still change before 1.0.0. If something breaks or re
 
 ## Install
 
-From the tarball we sent you:
-
-```sh
-npm install ./opencoredev-sandbox-sdk-1.0.0-beta.0.tgz
-```
-
-Once it is published, install from the `next` tag instead (`latest` is still 0.2):
+Install from the `next` tag (`latest` is still 0.2, so a plain install gives you the old API):
 
 ```sh
 npm install @opencoredev/sandbox-sdk@next
 ```
+
+The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
 Then install the peer package for each provider you plan to use. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
 
