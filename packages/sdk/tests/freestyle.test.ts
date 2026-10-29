@@ -348,7 +348,7 @@ test("cancellation recovers a bounded tail and applies public output caps", asyn
   try {
     const result = await box.run(
       "head -c 2000000 /dev/zero | tr '\\0' x; echo TAIL; echo ERROR >&2; sleep 5",
-      { timeoutMs: 300, maxOutputBytes: 128 },
+      { timeoutMs: 2000, maxOutputBytes: 128 },
     );
     expect(result).toMatchObject({ timedOut: true, truncated: true });
     expect(result.stdout).toContain("TAIL");
