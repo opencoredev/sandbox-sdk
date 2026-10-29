@@ -101,7 +101,8 @@ async function* chunks(body: ReadableStream<Uint8Array>, options: StreamOptions)
         finished = true;
         if (signal?.aborted) throw aborted(options);
         // The HTTP client already mapped it (timeout, aborted, lost connection); keep its code, mark the fault.
-        if (error instanceof SandboxError) { if (error.code === "unavailable") faults.set(error, "disconnected"); throw error; }
+        // A write's lost connection is `outcome_unknown` rather than `unavailable`, but the stream dropped all the same.
+        if (error instanceof SandboxError) { if (error.code === "unavailable" || error.code === "outcome_unknown") faults.set(error, "disconnected"); throw error; }
         throw fault("disconnected", "The connection dropped mid-stream", options, error);
       }
       if (signal?.aborted) { finished = true; throw aborted(options); }
@@ -118,6 +119,18 @@ function aborted(options: StreamOptions) {
   return new SandboxError("Stream aborted. The signal was cancelled.", { code: "aborted", provider: options.provider, sandboxId: options.sandboxId });
 }
 const utf8 = new TextDecoder();
+/** The UTF-8 length of `text` in bytes, without encoding it. A lone surrogate counts as U+FFFD (3 bytes). */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
 const defaultMax = 16 * 1024 * 1024;
 
 /**
@@ -188,7 +201,8 @@ export async function* sse(body: ReadableStream<Uint8Array>, options: StreamOpti
     const name = colon < 0 ? line : line.slice(0, colon);
     const value = colon < 0 ? "" : line.slice(colon + (line[colon + 1] === " " ? 2 : 1));
     if (name === "data") {
-      dataBytes += value.length + 1;
+      // The event's data is the lines joined with "\n": count its UTF-8 bytes, separators included.
+      dataBytes += utf8Length(value) + (data.length ? 1 : 0);
       if (dataBytes > max) throw fault("frame_too_large", `An event exceeds ${max} bytes`, options);
       data.push(value);
     } else if (name === "event") event = value;

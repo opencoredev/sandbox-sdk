@@ -306,16 +306,36 @@ describe("streams", () => {
     expect(frames).toEqual([{ out: "hé" }, { exit: 0 }]);
   });
 
-  test("a mid-stream disconnect is a disconnected fault, not an unknown outcome", async () => {
+  test("a mid-stream disconnect is a disconnected fault; a write's result is unconfirmed, a read's is retryable", async () => {
+    const read = async (request: { method: "POST" | "GET"; readOnly?: boolean }) => {
+      const response = await client().stream({ path: "/exec", ...request, ...(request.method === "POST" ? { body: {} } : {}) });
+      const frames: unknown[] = [];
+      let caught: unknown;
+      try { for await (const frame of ndjson(response.body!, { provider: "fake" })) frames.push(frame); } catch (error) { caught = error; }
+      expect(frames).toEqual([{ out: 1 }]);
+      expect(caught).toBeInstanceOf(SandboxError);
+      expect(streamFault(caught)).toBe("disconnected");
+      return caught as SandboxError;
+    };
     server.on("POST /v1/exec", { stream: ['{"out":1}\n', '{"out"'], cut: true });
-    const response = await client().stream({ method: "POST", path: "/exec", body: {} });
-    const frames: unknown[] = [];
-    let caught: unknown;
-    try { for await (const frame of ndjson(response.body!, { provider: "fake" })) frames.push(frame); } catch (error) { caught = error; }
-    expect(frames).toEqual([{ out: 1 }]);
-    expect(caught).toBeInstanceOf(SandboxError);
-    expect((caught as SandboxError).code).toBe("unavailable");
-    expect(streamFault(caught)).toBe("disconnected");
+    server.on("GET /v1/exec", { stream: ['{"out":1}\n', '{"out"'], cut: true });
+    // An exec whose headers arrived but whose result was cut off may or may not have finished.
+    expect(await read({ method: "POST" })).toMatchObject({ code: "outcome_unknown", retryable: false });
+    expect(await read({ method: "POST", readOnly: true })).toMatchObject({ code: "unavailable", retryable: true });
+    expect(await read({ method: "GET" })).toMatchObject({ code: "unavailable", retryable: true });
+  });
+
+  test("an idle timeout on a write stream is outcome_unknown; on a read it is a timeout", async () => {
+    server.on("POST /v1/exec", { stream: ["a"], hold: true });
+    server.on("GET /v1/logs", { stream: ["a"], hold: true });
+    const idle = async (request: { method: "POST" | "GET"; path: string }) => {
+      const response = await client().stream({ ...request, ...(request.method === "POST" ? { body: {} } : {}), idleTimeoutMs: 100 });
+      const reader = response.body!.getReader();
+      await reader.read();
+      return failure(reader.read());
+    };
+    expect(await idle({ method: "POST", path: "/exec" })).toMatchObject({ code: "outcome_unknown", retryable: false });
+    expect(await idle({ method: "GET", path: "/logs" })).toMatchObject({ code: "timeout", retryable: true });
   });
 
   test("the startup timeout covers time to headers", async () => {

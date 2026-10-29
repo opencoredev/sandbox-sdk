@@ -1,6 +1,6 @@
 // The HTTP core's hooks for providers whose data plane can go stale in more ways than a 401 (Superserve, SBX-74).
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createHttpClient, httpStatus } from "../src/http.js";
+import { createHttpClient, httpStatus, type StaleVerdict } from "../src/http.js";
 import { SandboxError } from "../src/errors.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
 
@@ -8,7 +8,7 @@ let server: FakeServer;
 beforeEach(async () => { server = await fakeServer(); });
 afterEach(async () => { await server.close(); });
 
-function client(options: { stale?: (status: number, code: string | undefined, credentials: Readonly<Record<string, string>>) => boolean; refresh?: () => Promise<void> } = {}) {
+function client(options: { stale?: (status: number, code: string | undefined, credentials: Readonly<Record<string, string>>) => StaleVerdict | undefined; refresh?: () => Promise<void> } = {}) {
   let token = "old-token-123456";
   let refreshes = 0;
   const http = createHttpClient({
@@ -28,7 +28,7 @@ function client(options: { stale?: (status: number, code: string | undefined, cr
 test("a stale hook turns a non-401 failure into one refresh and a resend, reusing the body it read", async () => {
   server.on("GET /files", { status: 404, json: { error: { code: "route_stale" } } }, { json: { ok: true } });
   const seen: unknown[] = [];
-  const { http, refreshes } = client({ stale: (status, code, credentials) => { seen.push([status, code, credentials["x-access-token"]]); return code === "route_stale"; } });
+  const { http, refreshes } = client({ stale: (status, code, credentials) => { seen.push([status, code, credentials["x-access-token"]]); return code === "route_stale" ? "refused" : undefined; } });
   expect(await http.json({ method: "GET", path: "/files" })).toEqual({ ok: true });
   expect(refreshes()).toBe(1);
   expect(seen).toEqual([[404, "route_stale", "old-token-123456"]]);
@@ -37,7 +37,7 @@ test("a stale hook turns a non-401 failure into one refresh and a resend, reusin
 
 test("a stale hook that says no keeps the shared mapping and the parsed body", async () => {
   server.on("GET /files", { status: 404, json: { error: { code: "file_missing", message: "nope" } } });
-  const { http, refreshes } = client({ stale: () => false });
+  const { http, refreshes } = client({ stale: () => undefined });
   const error = await http.json({ method: "GET", path: "/files" }).catch((e: unknown) => e);
   expect(error).toBeInstanceOf(SandboxError);
   expect(error).toMatchObject({ code: "not_found" });

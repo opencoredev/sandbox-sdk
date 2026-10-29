@@ -164,7 +164,8 @@ export function createEnvd(options: { http: HttpClient<E2BPlane>; connection: (s
     /** Sends the call and reads its first frame, which must be the start event. */
     const startup = async (): Promise<{ frames: AsyncGenerator<ConnectFrame, void, undefined>; pid: number }> => {
       const response = await http.stream({
-        method: "POST", plane: "envd", path: `/${method}`, sandboxId, body: connectEnvelope(message), signal: controller.signal, startupTimeoutMs: startupMs,
+        // Connect reattaches to a running process and changes nothing, so a broken stream is a lost read, not an unknown outcome.
+        method: "POST", plane: "envd", path: `/${method}`, sandboxId, body: connectEnvelope(message), signal: controller.signal, startupTimeoutMs: startupMs, readOnly: rpc === "Connect",
         headers: { "content-type": connectJson, "keepalive-ping-interval": "50", ...(options.timeoutMs > 0 ? { "connect-timeout-ms": String(options.timeoutMs) } : {}), ...options.headers },
       });
       if (!(response.headers.get("content-type") ?? "").startsWith(connectJson) || !response.body) {

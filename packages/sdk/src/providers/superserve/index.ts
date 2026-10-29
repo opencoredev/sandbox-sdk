@@ -192,10 +192,14 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           await routes.refresh(sandboxOf(context), sentWith.get(context));
         },
         // The SDK's isResumable: a moved route, or a 503 for a sandbox that is not running. With a routing hint,
-        // only a 503 `sandbox_unavailable` (or the legacy plain-text paused answer) means that.
-        stale: ({ status, body, credentials }) =>
-          (status === 404 && body.code === "sandbox_route_stale") ||
-          (status === 503 && (!credentials[routingHintHeader] || body.code === "sandbox_unavailable" || /^sandbox is (paused|stopped)$/.test(body.text.trim()))),
+        // only a 503 `sandbox_unavailable` (or the legacy plain-text paused answer) means that. Those refuse the
+        // request before it runs; a bare 503 without a hint might come after an exec started, so it is `unsure`.
+        stale: ({ status, body, credentials }) => {
+          if (status === 404 && body.code === "sandbox_route_stale") return "refused";
+          if (status !== 503) return undefined;
+          if (body.code === "sandbox_unavailable" || /^sandbox is (paused|stopped)$/.test(body.text.trim())) return "refused";
+          return credentials[routingHintHeader] ? undefined : "unsure";
+        },
       },
     },
   });

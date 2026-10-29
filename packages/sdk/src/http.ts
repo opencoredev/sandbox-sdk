@@ -3,7 +3,8 @@
  *
  * - Planes: each provider API surface (control plane, Daytona's toolbox, Superserve's data plane) has a base
  *   URL, possibly per sandbox, and its own credentials. Credentials attach only to that plane's origin; an
- *   absolute URL or redirect elsewhere (signed upload URLs, poll URLs) gets none.
+ *   absolute URL or redirect elsewhere (signed upload URLs, poll URLs) gets none. That holds for credential
+ *   headers a caller passes too (`authorization`, `cookie`, `*-token`, `*-key`, the plane's own auth headers).
  * - Retries: at most `retries` more attempts on 429, 502, 503, 504 and network errors, only for GET, HEAD, PUT
  *   and DELETE, or a POST/PATCH that carries a server-supported idempotency key. Never with a streamed body.
  *   `Retry-After` is honoured up to 20 s and never past the deadline.
@@ -11,7 +12,8 @@
  *   timeout, a 504) is `outcome_unknown`, not `unavailable`: the caller must check before repeating it.
  * - Deadlines: `timeoutMs` (or a shared {@link Deadline}) covers credentials, every attempt, backoff and the
  *   body. Streams have a startup timeout (until headers) and an idle timeout (between chunks) instead.
- * - Redaction: credential header values, `secrets()` and credential-shaped text never reach a SandboxError.
+ * - Redaction: credential header values (the adapter's and the caller's, with and without a `Bearer` scheme),
+ *   `secrets()` and credential-shaped text never reach a SandboxError.
  *   Response text is kept only for native calls (`detail: "message"`), scrubbed; adapter calls keep the
  *   status and the provider's error code.
  */
@@ -49,13 +51,21 @@ export interface HttpPlane {
   refresh?: (context: PlaneContext) => Promise<void>;
   /**
    * Which failed responses besides a 401 mean stale credentials or a stale route, such as a 404 whose error
-   * code says the route moved. `true` refreshes and resends once, like a 401. `credentials` are the headers
-   * `auth` returned for that attempt. Default: only a 401.
+   * code says the route moved. Either verdict refreshes once. `"refused"` resends any request, like a 401;
+   * `"unsure"` resends only a request that may be retried, and an unconfirmed write is `outcome_unknown`.
+   * `credentials` are the headers `auth` returned for that attempt. Default: only a 401.
    */
-  stale?: (failure: { status: number; body: ErrorBody; credentials: Readonly<Record<string, string>> }, context: PlaneContext) => boolean;
+  stale?: (failure: { status: number; body: ErrorBody; credentials: Readonly<Record<string, string>> }, context: PlaneContext) => StaleVerdict | undefined;
   /** Headers for every request to this plane that are not credentials (`Accept`, API version pins). */
   headers?: Record<string, string>;
 }
+
+/**
+ * Why a response means stale credentials or a stale route. `"refused"`: the server turned the request away
+ * before running anything (a moved route, a stopped sandbox), so any request may be sent again. `"unsure"`:
+ * the request may have run before the failure.
+ */
+export type StaleVerdict = "refused" | "unsure";
 
 /** What a provider error hook sees. `body` is bounded to 64 KB and must never be copied into messages. */
 export type HttpFailure =
@@ -247,6 +257,11 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const idempotentMethods = new Set<HttpMethod>(["GET", "HEAD", "PUT", "DELETE"]);
 // Failure codes (undici, Node and Bun) that mean the request never left this process: no server saw it.
 const unsentCodes = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "ConnectionRefused", "FailedToOpenSocket", "ERR_INVALID_URL", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT", "CERT_HAS_EXPIRED"]);
+// Header names that carry credentials, besides each plane's own auth headers. Never sent off the plane's origin.
+const credentialHeader = /^(?:authorization|proxy-authorization|cookie|x-api-key|api-key|apikey)$|[-_](?:token|key|secret|password)$/;
+const notCredential = /^(?:x-)?idempotency-key$/;
+// `Bearer <token>` and friends: the bare token is registered for redaction too, since errors may echo it alone.
+const authScheme = /^\s*(?:bearer|basic|token|bot|digest)\s+(\S.*?)\s*$/i;
 const placeholderPattern = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const safeCode = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 const safeRequestId = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -332,7 +347,20 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
     // Rotating tokens add a value per refresh; keep the newest 256.
     for (const old of sent) { if (sent.size <= 256) break; sent.delete(old); }
   };
+  /** Remembers a credential header value, and the bare token behind an auth scheme. */
+  const rememberCredential = (value: string) => {
+    if (!value) return;
+    remember(value);
+    const bare = authScheme.exec(value)?.[1];
+    if (bare) remember(bare);
+  };
   const redact = (text: string) => scrub(redacting([...sent, ...(options.secrets?.() ?? [])])(text));
+  // Header names each plane's `auth` returned, lowercase: credentials even when the shared pattern misses them.
+  const authNames = new Map<string, Set<string>>();
+  const isCredential = (plane: string, name: string) => {
+    const lower = name.toLowerCase();
+    return authNames.get(plane)?.has(lower) === true || (credentialHeader.test(lower) && !notCredential.test(lower));
+  };
   // Single-flight credential refresh per plane and sandbox. `generation` tells a request that got a 401 with
   // credentials older than the latest refresh to just resend, instead of refreshing again.
   const refreshes = new Map<string, { generation: number; pending?: Promise<void> }>();
@@ -387,19 +415,20 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
     return new SandboxError(redact(`${label} ${operationOf(request)} failed${what}`), { code, provider, sandboxId: request.sandboxId, retryable, ...(hint === undefined ? {} : { hint }), ...(cause === undefined ? {} : { cause: redact(cause) }) });
   }
   /** Maps a failure with the provider hook first, then the shared rules. */
-  function mapFailure(failed: HttpFailure, request: HttpRequest<string>, plane: string): SandboxError {
-    const error = mapDefault(failed, request, plane);
+  function mapFailure(failed: HttpFailure, request: HttpRequest<string>, plane: string, unconfirmed = false): SandboxError {
+    const error = mapDefault(failed, request, plane, unconfirmed);
     const cause = options.cause?.(failed, { method: request.method, plane, operation: operationOf(request), sandboxId: request.sandboxId });
     if (cause === undefined) return error;
     return new SandboxError(error.message, { code: error.code, provider, sandboxId: error.sandboxId, retryable: error.retryable, ...(error.hint === undefined ? {} : { hint: error.hint }), cause });
   }
-  function mapDefault(failed: HttpFailure, request: HttpRequest<string>, plane: string): SandboxError {
+  /** `unconfirmed`: a failed response that does not prove the request did nothing, so a write is `outcome_unknown`. */
+  function mapDefault(failed: HttpFailure, request: HttpRequest<string>, plane: string, unconfirmed: boolean): SandboxError {
     const unsafe = !idempotentMethods.has(request.method) && !request.readOnly;
     const hooked = options.mapError?.(failed, { method: request.method, plane, operation: operationOf(request), sandboxId: request.sandboxId });
     switch (failed.kind) {
       case "status": {
         let code = hooked ?? statusCode(failed.status);
-        if (code === "timeout" && unsafe) code = "outcome_unknown";
+        if (unsafe && (code === "timeout" || unconfirmed)) code = "outcome_unknown";
         const apiCode = failed.body.code !== undefined && safeCode.test(failed.body.code) ? ` ${failed.body.code}` : "";
         const id = ["x-request-id", "request-id", "x-amzn-requestid", "cf-ray"].map(name => failed.headers.get(name)).find(value => value !== null && safeRequestId.test(value));
         const status = `HTTP ${failed.status}${apiCode}`;
@@ -449,16 +478,22 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
       if (stop) throw mapFailure(stop, request, planeName);
       let base: string;
       let credentials: Record<string, string>;
+      const { baseUrl: resolveBase, auth } = plane;
       try {
-        base = typeof plane.baseUrl === "string" ? plane.baseUrl : await plane.baseUrl(context);
-        credentials = request.auth === false || !plane.auth ? {} : await plane.auth(context);
+        // Callbacks may never settle (a hung token endpoint); the deadline and the caller's signal still stop the call.
+        base = typeof resolveBase === "string" ? resolveBase : await untilAborted(Promise.resolve().then(() => resolveBase(context)), signal);
+        credentials = request.auth === false || !auth ? {} : await untilAborted(Promise.resolve().then(() => auth(context)), signal);
       } catch (error) {
         if (error instanceof SandboxError) throw error;
         const halt = halted();
         if (halt) throw mapFailure(halt, request, planeName);
         throw failure("auth", request, `: resolving ${label} credentials failed.`, nativeDetail(error, redact), false);
       }
-      for (const value of Object.values(credentials)) if (value) remember(value);
+      const halt = halted();
+      if (halt) throw mapFailure(halt, request, planeName);
+      let names = authNames.get(planeName);
+      if (!names) authNames.set(planeName, names = new Set());
+      for (const [name, value] of Object.entries(credentials)) { names.add(name.toLowerCase()); rememberCredential(value); }
       const generation = refreshes.get(refreshKey)?.generation ?? 0;
       let origin: string;
       try { origin = new URL(base).origin; } catch { throw failure("provider", request, `: the ${label} base URL is invalid.`, undefined, false); }
@@ -472,6 +507,10 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
         if (request.idempotencyKey !== undefined && options.idempotencyHeader) headers.set(options.idempotencyHeader, request.idempotencyKey);
         if (url.origin === origin) for (const [name, value] of Object.entries(credentials)) headers.set(name, value);
         for (const [name, value] of Object.entries(request.headers ?? {})) headers.set(name, value);
+        // Credentials stay on the plane's origin, whoever set them: a redirect or an absolute URL elsewhere gets none.
+        if (url.origin !== origin) for (const name of Array.from(headers.keys())) if (isCredential(planeName, name)) headers.delete(name);
+        // Register what is sent, so an error that echoes a caller's credential is redacted too.
+        for (const [name, value] of headers) if (isCredential(planeName, name)) rememberCredential(value);
         const init: RequestInit & { duplex?: "half" } = { method, headers, body: sendBody, signal, redirect: "manual" };
         if (sendBody instanceof ReadableStream) init.duplex = "half";
         try {
@@ -498,7 +537,10 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
       let errorBody: ErrorBody | undefined;
       if (refreshable && plane.stale && response && response.status >= 400 && response.status !== 401)
         errorBody = parseErrorBody(utf8.decode(await readBody(response.body, errorBodyBytes, () => undefined).catch(() => new Uint8Array())));
-      if (refreshable && plane.refresh && response && (response.status === 401 || (errorBody !== undefined && plane.stale?.({ status: response.status, body: errorBody, credentials }, context)))) {
+      const verdict: StaleVerdict | undefined = !refreshable || !response ? undefined
+        : response.status === 401 ? "refused"
+        : errorBody !== undefined ? plane.stale?.({ status: response.status, body: errorBody, credentials }, context) : undefined;
+      if (verdict !== undefined && plane.refresh && response) {
         if (errorBody === undefined) await response.body?.cancel().catch(() => {});
         refreshed = true;
         const state = refreshes.get(refreshKey) ?? { generation: 0 };
@@ -514,8 +556,9 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
             throw failure("auth", request, `: refreshing ${label} credentials failed.`, nativeDetail(error, redact), false);
           }
         }
-        attempt--;
-        continue;
+        // A request that may have run is sent again only when it may be retried; the next call gets the fresh credentials.
+        if (verdict === "refused" || canRetry) { attempt--; continue; }
+        throw mapFailure({ kind: "status", status: response.status, headers: response.headers, body: errorBody ?? parseErrorBody("") }, request, planeName, true);
       }
 
       let wait: number | undefined;
@@ -589,9 +632,12 @@ export function createHttpClient<Plane extends string>(options: HttpClientOption
           const failed: HttpFailure = overall.parent?.aborted && !overall.timeout.aborted ? { kind: "aborted" }
             : timedOut || overall.timeout.aborted ? { kind: "timeout", sent: true }
             : { kind: "network", sent: true, error };
-          // Headers arrived with a 2xx, so the request took effect: a broken body is a lost connection, not an unknown outcome.
-          const mapped = mapFailure(failed, { ...request, readOnly: true }, name);
-          output.error(timedOut ? failure("timeout", request, `: no data for ${request.idleTimeoutMs} ms.`, undefined, true) : mapped);
+          // Headers arrived with a 2xx, so a write started, but its result never fully arrived: a read may retry,
+          // a write (create, exec) is `outcome_unknown` unless the request is marked `readOnly`.
+          const unsafe = !idempotentMethods.has(request.method) && !request.readOnly;
+          output.error(timedOut && failed.kind === "timeout"
+            ? failure(unsafe ? "outcome_unknown" : "timeout", request, `: no data for ${request.idleTimeoutMs} ms${unsafe ? ", so its result is unconfirmed. Check before repeating it." : "."}`, undefined, !unsafe)
+            : mapFailure(failed, request, name));
         }
       },
       async cancel(reason) { finish(); await reader.cancel(reason).catch(() => {}); controller.abort(); },

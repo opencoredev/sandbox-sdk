@@ -102,6 +102,17 @@ describe("sse", () => {
     const { error } = await collect(sse(chunked(["data: aaaaaaaaaa\n".repeat(10), "\n"]), { ...options, maxFrameBytes: 64 }));
     expect(streamFault(error)).toBe("frame_too_large");
   });
+
+  test("the event limit counts UTF-8 bytes and separators, not characters", async () => {
+    // Four lines of three "é" (6 bytes each) join to 4 × 6 + 3 = 27 bytes, but only 15 characters.
+    const event = "data: ééé\n".repeat(4) + "\n";
+    expect(streamFault((await collect(sse(chunked([event]), { ...options, maxFrameBytes: 26 }))).error)).toBe("frame_too_large");
+    expect((await collect(sse(chunked([event]), { ...options, maxFrameBytes: 27 }))).frames.map(frame => frame.data)).toEqual(["ééé\nééé\nééé\nééé"]);
+    // A 4-byte character is two UTF-16 units: three lines join to 3 × 4 + 2 = 14 bytes, not 6 units.
+    const emoji = "data:😀\n".repeat(3) + "\n";
+    expect(streamFault((await collect(sse(chunked([emoji]), { ...options, maxFrameBytes: 13 }))).error)).toBe("frame_too_large");
+    expect((await collect(sse(chunked([emoji]), { ...options, maxFrameBytes: 14 }))).frames).toHaveLength(1);
+  });
 });
 
 describe("connect envelopes", () => {

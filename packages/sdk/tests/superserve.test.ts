@@ -422,6 +422,28 @@ describe("data-plane routes", () => {
     } finally { state.dataFaults = []; await provider.destroy(id); }
   });
 
+  test("without a routing hint a bare 503 reactivates; a read is resent, an exec that may have run is not", async () => {
+    state.noHints = true;
+    const { provider, id } = await created();
+    const execs = () => state.requests.filter(request => request.method === "POST" && request.url.origin === dataHost && request.url.pathname === "/exec");
+    try {
+      expect(dataRequests(id).at(-1)?.headers.get("x-superserve-routing-hint") ?? null).toBeNull();
+      state.dataFaults.push({ status: 503, body: { error: { code: "overloaded", message: "busy" } } });
+      expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
+      expect(activations(id)).toBe(1);
+      expect(dataRequests(id)).toHaveLength(2);
+      const box = await connectSandbox(provider, id);
+      const before = execs().length;
+      state.dataFaults.push({ status: 503, body: { error: { code: "overloaded", message: "busy" } } });
+      await expect(box.run("echo once >> ran.txt")).rejects.toMatchObject({ code: "outcome_unknown", provider: "superserve" });
+      // The refused launch went out once: a second copy could run the command twice. (A later /exec is the
+      // supervisor's own recovery check, a different command.) The route was still refreshed for the next call.
+      const launch = JSON.stringify(execs()[before]?.body);
+      expect(execs().slice(before).filter(request => JSON.stringify(request.body) === launch)).toHaveLength(1);
+      expect(activations(id)).toBe(2);
+    } finally { state.noHints = false; state.dataFaults = []; await provider.destroy(id); }
+  });
+
   test("a second refusal after reactivating fails instead of looping", async () => {
     const { provider, id } = await created();
     try {

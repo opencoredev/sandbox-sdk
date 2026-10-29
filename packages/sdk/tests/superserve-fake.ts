@@ -56,6 +56,8 @@ export const state = {
   previewAccess: [] as unknown[],
   /** Lifetime of the routing hints the fake hands out. */
   hintSeconds: 3600,
+  /** Hand out routes with no routing hint, as an older control plane does. */
+  noHints: false,
   /** Held activate or resume responses: the response leaves when the gate opens. Minted when the request arrives. */
   activateGate: undefined as Promise<void> | undefined,
   resumeGate: undefined as Promise<void> | undefined,
@@ -132,7 +134,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
     };
     state.boxes.set(guest.id, box);
     if (state.createGate) await state.createGate;
-    return json(201, info(guest.id, box, { access_token: box.token, routing_hint: box.hint }));
+    return json(201, info(guest.id, box, { access_token: box.token, ...(state.noHints ? {} : { routing_hint: box.hint }) }));
   }
   const box = state.boxes.get(id);
   if (method === "DELETE" && action === undefined) {
@@ -149,7 +151,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
     if (action === "resume") box.token = mint();
     box.status = "active";
     box.hint = routingHint(state.hintSeconds);
-    const answer = info(id, box, { access_token: box.token, routing_hint: box.hint });
+    const answer = info(id, box, { access_token: box.token, ...(state.noHints ? {} : { routing_hint: box.hint }) });
     const held = action === "activate" ? state.activateGate : state.resumeGate;
     if (held) await held;
     return json(200, answer);
