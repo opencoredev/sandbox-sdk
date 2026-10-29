@@ -22,6 +22,22 @@ export function isFunction(value: unknown): value is (...args: never[]) => void 
   return typeof value === "function";
 }
 
+/** Whether `value[key]` is callable, read the way property access reads it: inherited
+ * properties and getters count, as in a bundler's module namespace. */
+export function hasFunction<K extends string>(
+  value: unknown,
+  key: K,
+): value is { [P in K]: (...args: never[]) => void } {
+  for (let owner: unknown = value; isObject(owner); owner = Object.getPrototypeOf(owner)) {
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+
+    if (descriptor)
+      return isFunction(descriptor.get ? descriptor.get.call(value) : descriptor.value);
+  }
+
+  return false;
+}
+
 /** Whether the value is a string. */
 export function isString(value: unknown): value is string {
   return typeof value === "string";

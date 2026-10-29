@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadPeer, peerModule } from "../src/peer.js";
+import { isPeerError, loadPeer, peerModule } from "../src/peer.js";
 import { rejection } from "./rejection.js";
 
 describe("loadPeer", () => {
@@ -20,6 +20,20 @@ describe("loadPeer", () => {
     await expect(loadPeer("e2b", "e2b", () => Promise.reject(inner))).rejects.toBe(inner);
     const thrown = new Error("boom");
     await expect(loadPeer("e2b", "e2b", () => Promise.reject(thrown))).rejects.toBe(thrown);
+  });
+
+  it("matches a peer error class exported through a getter, as bundled namespaces do", async () => {
+    class PeerFailure extends Error {}
+
+    // esbuild's __export defines each namespace export as an enumerable getter.
+    const namespace = Object.defineProperty({}, "PeerFailure", {
+      get: () => PeerFailure,
+      enumerable: true,
+    });
+
+    await loadPeer("getter-peer", "example", async () => namespace);
+    expect(isPeerError(new PeerFailure("x"), "getter-peer", "PeerFailure")).toBe(true);
+    expect(isPeerError(new Error("x"), "getter-peer", "PeerFailure")).toBe(false);
   });
 
   it("returns the loaded module", async () => {
