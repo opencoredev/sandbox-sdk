@@ -2,6 +2,7 @@ import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
 import { daytonaError } from "./errors.js";
 import { bufferedExecute } from "./buffered.js";
+import { download, upload } from "./transfer.js";
 import { SandboxError } from "../../errors.js";
 
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
@@ -60,7 +61,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   try {
     if (input.stdin !== undefined) {
       await box.fs.createFolder(dir, "700");
-      await box.fs.uploadFile(Buffer.from(input.stdin), `${dir}/stdin`);
+      await upload(box, Buffer.from(input.stdin), `${dir}/stdin`);
     }
     if (cancelled) { await cleanup(); return { pid: 0, wait: async () => ({ exitCode: null, signal: "SIGKILL" }), stop: async () => {}, detach() {} }; }
     await box.process.createSession(session); created = true;
@@ -103,11 +104,11 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     const started = Date.now();
     while (pid === undefined) {
       try {
-        const value = Number((await box.fs.downloadFile(pidPath)).toString());
+        const value = Number(Buffer.from(await download(box, pidPath)).toString());
         if (!Number.isSafeInteger(value) || value <= 1) throw new SandboxError("Invalid process group ID. Remote launch was not confirmed. Destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
         pid = value;
       } catch (error) {
-        if (error instanceof SandboxError) throw error;
+        if (error instanceof SandboxError && error.code !== "file_not_found") throw error;
         const status = await box.process.getSessionCommand(session, commandId);
         if (status.exitCode !== undefined) { pid = 0; break; }
         if (Date.now() - started > 10_000) throw new SandboxError("Process launch was not confirmed. No PID arrived in ten seconds. Destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });

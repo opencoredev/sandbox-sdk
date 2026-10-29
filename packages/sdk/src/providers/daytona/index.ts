@@ -4,6 +4,7 @@ import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../..
 import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
 import { daytonaError, unsupported } from "./errors.js";
+import { download, upload } from "./transfer.js";
 import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
 
 export interface DaytonaOptions {
@@ -188,11 +189,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     async close(id) { for (const detach of monitors.get(id) ?? []) detach(); monitors.delete(id); },
     files: {
       writeCreatesParents: true, writeSupportsMode: true,
-      read: (id, path) => onFile(id, async value => new Uint8Array(await value.fs.downloadFile(path))),
+      read: (id, path) => onFile(id, async value => download(value, path)),
       write: (id, path, data, settings) => onFile(id, async value => {
         const mode = settings?.mode;
         if (!unprepared.has(id)) {
-          await value.fs.uploadFile(Buffer.from(data), path);
+          await upload(value, data, path);
           if (mode !== undefined) await value.fs.setFilePermissions(path, { mode: mode.toString(8) });
           return;
         }
