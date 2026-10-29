@@ -5,7 +5,7 @@ vi.mock("e2b", async importOriginal => {
   return { ...real, Sandbox: mock.MockSandbox };
 });
 import { e2b } from "../src/providers/e2b/index.js";
-import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
+import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 const { calls, cleanupMock, mockFetch, listQueries, delayCreation, MockSandbox, reconnects, delayCommandStart } = mock;
 const originalFetch = globalThis.fetch;
@@ -379,4 +379,38 @@ test("concurrent workspace initialization cannot recreate a directory removed by
     expect(first.ok).toBe(true); expect(second.ok).toBe(true);
     expect(await box.files.exists("/workspace")).toBe(false);
   } finally { spy.mockRestore(); await box.destroy(); }
+});
+
+test("paused SDK sandboxes are listed and reaped; E2B has no other stopped state", async () => {
+  const provider = e2b({ apiKey: "mock" });
+  const box = await createSandbox(provider, { labels: { app: "paused-e2b" } });
+  try {
+    await MockSandbox.pause(box.id);
+    expect(await listSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toEqual([expect.objectContaining({ id: box.id, state: "paused", labels: { app: "paused-e2b", "sandbox-sdk": "1" } })]);
+    expect(listQueries.at(-1)).toMatchObject({ query: { state: ["running", "paused"] } });
+    expect(await reapSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toBe(1);
+    expect(await listSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toEqual([]);
+  } finally { await box.destroy().catch(() => {}); }
+});
+test("native process exits match other providers: 143 after stop, null when killed otherwise", async () => {
+  const provider = e2b({ apiKey: "mock" });
+  const info = await provider.create({ labels: {} });
+  try {
+    const startProcess = provider.startProcess;
+    if (!startProcess) throw new Error("e2b has native processes");
+    const stopped = await startProcess.call(provider, info.id, { command: "sleep 30", cwd: "/workspace", env: {}, onChunk() {} });
+    await stopped.stop({ graceMs: 50 });
+    expect(await stopped.wait()).toEqual({ exitCode: 143, signal: null });
+    const killed = await startProcess.call(provider, info.id, { command: "sleep 30", cwd: "/workspace", env: {}, onChunk() {} });
+    // The mock's PID is a real local process; killing it is a signal death without stop().
+    process.kill(killed.pid, "SIGKILL");
+    expect(await killed.wait()).toEqual({ exitCode: null, signal: null });
+  } finally { await provider.destroy(info.id); }
+});
+test("a missing cwd is a failed run with the shell error on stderr, not a request error", async () => {
+  const box = await createSandbox(e2b({ apiKey: "mock" }));
+  try {
+    await box.run("true");
+    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({ ok: false, exitCode: expect.any(Number), stdout: "", stderr: expect.stringMatching(/nope/) });
+  } finally { await box.destroy(); }
 });

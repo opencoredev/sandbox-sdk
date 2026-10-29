@@ -106,10 +106,12 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     // /proc fields after the final ')' are state, parent PID, then group PID.
     // No user output is interpreted as transport metadata.
     const pending = workspaces.has(id);
-    const command = pending ? `${prepareWorkspace}; cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}` : input.command;
+    // envd rejects a missing cwd as an invalid request. Change directory in the
+    // shell instead, so a bad cwd is a non-zero exit with the error on stderr.
+    const command = `${pending ? `${prepareWorkspace}; ` : ""}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}`;
     const script = `set -- "$(</proc/$$/stat)" || exit 125; set -- \${1##*) }; [[ "$3" =~ ^[0-9]+$ ]] || exit 125; if [[ "$3" = "$$" ]]; then exec sh -c ${quote(command)}; else exec setsid -w sh -c ${quote(command)}; fi`;
     const handle = await box.commands.run(script, {
-      background: true, cwd: pending ? "/" : input.cwd, envs: input.env, user: "root", stdin: input.stdin !== undefined,
+      background: true, cwd: "/", envs: input.env, user: "root", stdin: input.stdin !== undefined,
       timeoutMs: 0,
       onStdout: text => input.onChunk({ stream: "stdout", text }),
       onStderr: text => input.onChunk({ stream: "stderr", text }),
@@ -255,7 +257,11 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     snapshot: (id, settings) => call(id, async () => { if (settings?.expiresInMs) throw new SandboxError("Snapshot expiry is unavailable. E2B keeps snapshots until you delete them. Omit expiresInMs, or pass 0.", { code: "unsupported", provider: "e2b", sandboxId: id }); const box = await client(id); if (workspaces.has(id)) { await box.commands.run(prepareWorkspace, { user: "root", cwd: "/", stdin: false }); workspaces.delete(id); } return { id: (await box.createSnapshot()).snapshotId }; }),
     startProcess: (id, input) => call(id, async (): Promise<NativeProcess> => {
       const running = await launch(id, input);
-      return { pid: running.pid, wait: () => call(id, async () => { try { return await running.result; } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { const value = await handle.wait(); return { exitCode: value.exitCode, signal: null }; } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return { exitCode: cause.exitCode, signal: null }; throw cause; } }), stop: options => call(id, async () => { await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }) };
+      // envd reports -1 for a signalled process. Report what the other providers do:
+      // 143 after stop() (it sends SIGTERM first), otherwise null, which core records as 137.
+      let stopped = false;
+      const exit = (exitCode: number) => ({ exitCode: exitCode >= 0 ? exitCode : stopped ? 143 : null, signal: null });
+      return { pid: running.pid, wait: () => call(id, async () => { try { return exit((await running.result).exitCode); } catch {} await detached.get(id)?.wait; const handle = await (await client(id)).commands.connect(running.handle.pid, { timeoutMs: 0 }); try { return exit((await handle.wait()).exitCode); } catch (cause) { const { CommandExitError } = await sdk(); if (cause instanceof CommandExitError) return exit(cause.exitCode); throw cause; } }), stop: options => call(id, async () => { stopped = true; await groupSignal(running.box, running.pid, "TERM"); await sleep(options.graceMs); await running.handle.kill(); await groupSignal(running.box, running.pid, "KILL"); }) };
     }),
   };
   return provider;

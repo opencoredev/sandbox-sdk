@@ -54,9 +54,11 @@ export class MockSandbox {
   static async getInfo(id: string) { return (await this.lookup(id)).getInfo(); }
   static async lookup(id: string) { const box = machines.get(id); if (!box) throw new SandboxNotFoundError("missing"); return box; }
   static async connect(id: string, options: { timeoutMs?: number } = {}) { const box = await this.lookup(id); box.info.state = "running"; if (options.timeoutMs) await box.setTimeout(options.timeoutMs); return box; }
-  static list(options: { query?: { metadata?: Record<string, string> } } = {}) {
+  static list(options: { query?: { metadata?: Record<string, string>; state?: string[] } } = {}) {
     listQueries.push(options);
-    const found = [...machines.values()].filter(box => Object.entries(options.query?.metadata ?? {}).every(([key, value]) => box.info.metadata[key] === value));
+    // Like the API, the state filter defaults to running and paused, the only states E2B has.
+    const states = options.query?.state ?? ["running", "paused"];
+    const found = [...machines.values()].filter(box => states.includes(box.info.state) && Object.entries(options.query?.metadata ?? {}).every(([key, value]) => box.info.metadata[key] === value));
     // Include an empty page followed by single-item pages to exercise pagination.
     let page = -1;
     return { get hasNext() { return page < found.length; }, async nextItems() { if (page++ === -1) return []; const box = found[page - 1]; return box ? [await box.getInfo()] : []; } };
@@ -124,7 +126,7 @@ class MockCommand {
       child.stdout?.on("data", data => { const text = data.toString().split(root).join(""); stdout += text; if (!this.disconnected) void options.onStdout?.(text); });
       child.stderr?.on("data", data => { const text = data.toString().split(root).join(""); stderr += text; if (!this.disconnected) void options.onStderr?.(text); });
       child.on("error", reject);
-      child.on("close", (code, signal) => { const result = { exitCode: code ?? (signal === "SIGTERM" ? 143 : 137), stdout, stderr }; this.completedCode = result.exitCode; if (result.exitCode) reject(new CommandExitError(result)); else resolve(result); });
+      child.on("close", (code, signal) => { const result = { exitCode: code ?? -1, stdout, stderr }; void signal; this.completedCode = result.exitCode; if (result.exitCode) reject(new CommandExitError(result)); else resolve(result); });
     });
     void this.result.catch(() => {});
     void this.disconnection.catch(() => {});
