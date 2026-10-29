@@ -45,23 +45,34 @@ export function failure(message: string, code: ErrorCode = "provider", sandboxId
     cause,
   });
 }
+/** A non-2xx Freestyle answer: its status and the error body's `code`, `message`. The message is classified, never kept. */
+export class FreestyleApiError extends Error {
+  override readonly name = "FreestyleApiError";
+  constructor(readonly status: number, readonly code: string | undefined, message: string | undefined, readonly path: string, readonly backgroundRequestId?: string) {
+    super(message || `Freestyle API error: ${code ?? status}`);
+  }
+}
+const codes: Record<number, ErrorCode> = {
+  400: "invalid_argument",
+  401: "auth",
+  403: "auth",
+  404: "not_found",
+  402: "quota",
+  408: "timeout",
+  429: "quota",
+  500: "unavailable",
+  502: "unavailable",
+  503: "unavailable",
+  504: "timeout",
+};
+/** The filesystem API answers a missing guest path with 404 NOT_FOUND too; only its message tells it from a missing VM. */
+export const missingPath = (status: number, message: string | undefined) => status === 404 && /no such file or directory|\bos error 2\b/i.test(message ?? "");
+/** The code for a Freestyle status, as adapter errors and native calls report it. */
+export const statusCode = (status: number, message?: string): ErrorCode => missingPath(status, message) ? "file_not_found" : codes[status] ?? "provider";
 export function freestyleError(error: unknown, sandboxId?: string): SandboxError {
   if (error instanceof SandboxError) return error;
   const status =
     typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
-  const codes: Record<number, ErrorCode> = {
-    400: "invalid_argument",
-    401: "auth",
-    403: "auth",
-    404: "not_found",
-    402: "quota",
-    408: "timeout",
-    429: "quota",
-    500: "unavailable",
-    502: "unavailable",
-    503: "unavailable",
-    504: "timeout",
-  };
   const context = requestEvidence.getStore();
   const evidence: RequestEvidence & { providerCode?: string; native?: string } = {};
   if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) evidence.status = status;
@@ -74,12 +85,9 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   }
   if (context?.operation) evidence.operation = context.operation;
   if (context?.status === status && context?.requestId) evidence.requestId = context.requestId;
-  // The filesystem API answers a missing guest path with 404 NOT_FOUND too. Its message (classified,
-  // never kept) tells it apart from a missing VM.
-  const missingFile = status === 404 && error instanceof Error && /no such file or directory|\bos error 2\b/i.test(error.message);
-  const code: ErrorCode = missingFile ? "file_not_found" :
+  const code: ErrorCode =
     typeof status === "number"
-      ? (codes[status] ?? "provider")
+      ? statusCode(status, error instanceof Error ? error.message : undefined)
       : error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
         ? error.name === "TimeoutError"
           ? "timeout"

@@ -172,7 +172,6 @@
     "@tenkicloud/sandbox": "^1.4.1",
     "@rivet-dev/agentos-core": "0.4.1",
     "@boxd-sh/sdk": "^0.2.17",
-    "freestyle": "^0.2.20",
     "@superserve/sdk": "^0.11.4"
   },
   "peerDependenciesMeta": {
@@ -216,9 +215,6 @@
       "optional": true
     },
     "@boxd-sh/sdk": {
-      "optional": true
-    },
-    "freestyle": {
       "optional": true
     },
     "@superserve/sdk": {

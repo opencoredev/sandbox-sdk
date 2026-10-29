@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking for Freestyle:** `freestyle()` calls Freestyle's API directly, so `npm i @opencoredev/sandbox-sdk@next` is the whole install and the `freestyle` package is no longer a peer. `box.native` is now a `NativeApi` (`request`, `fetch`, `sdk`) instead of the SDK's `Vm`. Replace `box.native.exec(...)` with `(await box.native.sdk(() => import("freestyle"))).exec(...)` after installing `freestyle` yourself, or call the endpoint with `box.native.request("POST", "/v5/vms/{vmId}/exec-await", { body })`. `freestyle().api` makes account-level calls. Background requests (HTTP 202 polling), ranged reads and chunked uploads over 8 MiB work as they did with the SDK. A create aborted by its signal no longer cuts the request, so a VM Freestyle allocates anyway is deleted instead of left running.
+
 ## 1.0.0-beta.1
 
 Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
