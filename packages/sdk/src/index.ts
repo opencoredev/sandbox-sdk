@@ -1,5 +1,5 @@
 import type { Provider, Capability, SandboxInfo } from "./provider.js";
-import type { ConnectOptions, CreateOptions, ListOptions, MethodsFor, ReapOptions, Sandbox, SandboxBase } from "./types.js";
+import type { ConnectOptions, CreateOptions, ListOptions, MethodsFor, ProviderSandbox, ReapOptions, SandboxBase } from "./types.js";
 import { SandboxError, Redactor, invalid } from "./errors.js";
 import { forgetKey, forgetSandbox, knownKey, rememberKey } from "./keys.js";
 export { SandboxError } from "./errors.js";
@@ -12,7 +12,7 @@ export type { Git } from "./git.js";
  * Check a capability at runtime and narrow the sandbox type to include its methods.
  * Use it when the provider is chosen at runtime: `if (hasCapability(box, "pause")) await box.pause();`
  */
-export function hasCapability<B extends SandboxBase<unknown>, K extends Capability>(box: B, capability: K): box is B & MethodsFor<K> {
+export function hasCapability<B extends SandboxBase<unknown>, K extends Capability>(box: B, capability: K): box is B & (K extends Capability ? MethodsFor<K> : never) {
   return box.capabilities.has(capability);
 }
 const sdkLabel = { "sandbox-sdk": "1" };
@@ -31,7 +31,7 @@ function validate(provider: Provider, options: CreateOptions) {
   for (const port of options.ports ?? []) if (!Number.isInteger(port) || port < 1 || port > 65535) invalid("Invalid port");
   for (const value of [options.timeoutMs, options.idleTimeoutMs]) if (value !== undefined && (!Number.isFinite(value) || value <= 0)) invalid("Timeouts must be positive milliseconds");
 }
-export function createSandbox<N, C extends Capability>(provider: Provider<N, C>, options?: CreateOptions): Promise<Sandbox<N, C>>;
+export function createSandbox<P extends Provider>(provider: P, options?: CreateOptions): Promise<ProviderSandbox<P>>;
 export async function createSandbox(provider: Provider, options: CreateOptions = {}): Promise<SandboxBase<unknown>> {
   const redactor = new Redactor(); redactor.add(Object.values(options.secrets ?? {}));
   async function acquire() {
@@ -84,7 +84,7 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
   const task = previous.catch(() => {}).then(() => options.keyMode === "exact" && provider.keyMode === "best-effort" && locator?.withLock ? locator.withLock(key, acquire) : acquire()); queue.set(options.key, task);
   try { return await task; } finally { if (queue.get(options.key) === task) queue.delete(options.key); }
 }
-export function connectSandbox<N, C extends Capability>(provider: Provider<N, C>, id: string, options?: ConnectOptions): Promise<Sandbox<N, C>>;
+export function connectSandbox<P extends Provider>(provider: P, id: string, options?: ConnectOptions): Promise<ProviderSandbox<P>>;
 export async function connectSandbox(provider: Provider, id: string, options: ConnectOptions = {}): Promise<SandboxBase<unknown>> {
   const redactor = new Redactor(); redactor.add(Object.values(options.secrets ?? {}));
   try { validate(provider, options); const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor); }

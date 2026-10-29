@@ -80,7 +80,7 @@ await using box = await createSandbox(await loadProvider(process.env.SANDBOX_PRO
 console.log(await greet(box));
 ```
 
-The dynamic `import()` per case means only the provider you pick needs its peer package installed. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
+The dynamic `import()` per case means only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
 
 ## Check capabilities before optional calls
 

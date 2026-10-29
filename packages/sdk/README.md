@@ -47,7 +47,7 @@ console.log(result.ok, result.stdout);
 
 ## Switch providers with one variable
 
-Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed.
+Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out.
 
 ```ts
 import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
