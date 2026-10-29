@@ -53,8 +53,19 @@ export async function makeHandle<N>(
       throw error;
     }));
 
-  async function recover() {
-    // Values stay private to this step, and only explicitly recorded names enter the redactor/env.
+  // The names record and the environment, or undefined when there is no record. Providers
+  // that offer the hook answer directly; otherwise one exec prints both.
+  async function readSecretEnvironment(): Promise<
+    { record: string; environment: ReadonlyMap<string, string> } | undefined
+  > {
+    if (provider.readSecretEnvironment) {
+      const found = await provider.readSecretEnvironment(info.id);
+
+      if (!found) return undefined;
+
+      return { record: found.record, environment: new Map(Object.entries(found.environment)) };
+    }
+
     let wire = "";
 
     const result = await provider.exec(info.id, {
@@ -73,22 +84,10 @@ export async function makeHandle<N>(
         { code: "provider", provider: provider.name, sandboxId: info.id },
       );
 
-    if (!wire) return;
+    if (!wire) return undefined;
     const separator = wire.indexOf("\0");
 
     if (separator < 0) invalid("Invalid secret recovery record");
-    let names: unknown;
-
-    try {
-      names = JSON.parse(wire.slice(0, separator));
-    } catch {
-      throw new SandboxError(
-        "Secret recovery failed. The secret names record is not valid JSON. Repair the record and reconnect.",
-        { code: "provider" },
-      );
-    }
-
-    if (!isNameList(names)) invalid("Invalid secret names record");
     const environment = new Map<string, string>();
 
     for (const entry of wire.slice(separator + 1).split("\0")) {
@@ -97,9 +96,29 @@ export async function makeHandle<N>(
       if (equal >= 0) environment.set(entry.slice(0, equal), entry.slice(equal + 1));
     }
 
+    return { record: wire.slice(0, separator), environment };
+  }
+
+  async function recover() {
+    // Values stay private to this step, and only explicitly recorded names enter the redactor/env.
+    const found = await readSecretEnvironment();
+
+    if (!found) return;
+    let names: unknown;
+
+    try {
+      names = JSON.parse(found.record);
+    } catch {
+      throw new SandboxError(
+        "Secret recovery failed. The secret names record is not valid JSON. Repair the record and reconnect.",
+        { code: "provider" },
+      );
+    }
+
+    if (!isNameList(names)) invalid("Invalid secret names record");
     const recovered: Record<string, string> = {};
 
-    for (const name of names) recovered[name] = environment.get(name) ?? "";
+    for (const name of names) recovered[name] = found.environment.get(name) ?? "";
     redactor.add(Object.values(recovered));
     Object.assign(baseEnv, recovered, options.env, options.secrets);
   }

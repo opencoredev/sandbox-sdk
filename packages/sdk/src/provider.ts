@@ -153,4 +153,11 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   snapshot?(id: string, options?: SnapshotOptions): Promise<{ id: string }>;
   terminal?(id: string, options: { cols: number; rows: number }): Promise<Terminal>;
   startProcess?(id: string, input: Omit<ExecInput, "timeoutMs">): Promise<NativeProcess>;
+  /** Secret recovery without a shell, for runtimes that cannot run the core's recovery
+   * command. Return the text of /tmp/.sandbox-sdk/secret-names.json and the environment a
+   * new command starts with, or undefined when that file does not exist. The core validates
+   * the record. Without this hook, the core reads both with one shell command. */
+  readSecretEnvironment?(
+    id: string,
+  ): Promise<{ record: string; environment: Record<string, string> } | undefined>;
 }
