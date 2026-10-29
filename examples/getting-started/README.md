@@ -19,4 +19,4 @@ SANDBOX_PROVIDER=local bun run multi-provider   # needs Docker; pulls node:22-bo
 SANDBOX_PROVIDER=e2b E2B_API_KEY=... bun run multi-provider
 ```
 
-Cloud providers need their peer package and credentials. The [package README](../../packages/sdk/README.md#providers) lists both for each provider.
+Cloud providers need credentials, and some also need a peer package. The [package README](../../packages/sdk/README.md#providers) lists both for each provider.

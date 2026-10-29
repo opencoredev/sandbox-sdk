@@ -1,15 +1,15 @@
 ---
 title: How it works
-description: What happens between your code and a sandbox. The core, provider adapters, provider SDKs, where state lives, and why options fail instead of being ignored.
+description: What happens between your code and a sandbox. The core, provider adapters, provider APIs and SDKs, where state lives, and why options fail instead of being ignored.
 ---
 
-Sandbox SDK is a library that runs in your server process. It has two layers: a core that gives you the API, and one small adapter per provider that talks to that provider's own SDK. There is no hosted service in between and no agent installed in the sandbox.
+Sandbox SDK is a library that runs in your server process. It has two layers: a core that gives you the API, and one small adapter per provider that talks to that provider's HTTP API or its own SDK. There is no hosted service in between and no agent installed in the sandbox.
 
 ```mermaid
 flowchart LR
   A[Your server code] --> B[Sandbox SDK core]
   B --> C[Provider adapter]
-  C --> D[Provider SDK]
+  C --> D[Provider API or SDK]
   D --> E[(Sandbox)]
 ```
 
@@ -18,7 +18,7 @@ flowchart LR
 1. **Your code** calls `createSandbox(provider, options)` and then methods on the handle: `run`, `files`, `start`, `preview`.
 2. **The core** turns each call into a few simple primitives. It owns timeouts, output caps, streaming, the `$` tag, background processes and their logs, `files.edit`, search, `changes`, git, secret redaction, and the error format.
 3. **The adapter** maps those primitives to one provider: create, find, connect, list, destroy, run one command, basic file operations, and a preview URL. It also declares which optional features the provider has.
-4. **The provider SDK** (`e2b`, `@vercel/sandbox`, `@daytonaio/sdk`, or the Docker API for Local) makes the actual network calls with your credentials.
+4. **The provider's API or SDK** makes the actual network calls with your credentials. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer adapters call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS adapters go through the provider's SDK (`@vercel/sandbox`, for example), and Local uses the Docker API.
 
 Because almost everything lives in the core, every provider behaves the same way for the things you use most. Adding a provider means writing only the adapter. See [Write a provider](/providers/custom).
 
