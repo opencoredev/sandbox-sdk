@@ -1,5 +1,10 @@
 import { SandboxError } from "./errors.js";
 
+/** Peers loaded through {@link loadPeer}, by package name. */
+const loaded = new Map<string, unknown>();
+
+const bundleHint = (name: string) => `Bundle with a createRequire banner (import { createRequire } from "node:module"; const require = createRequire(import.meta.url);) or mark @opencoredev/sandbox-sdk and ${name} as external.`;
+
 /** Loads an optional peer SDK on first use. A missing install becomes an
  * unavailable error naming the package, instead of the adapter's generic
  * provider failure. Callers pass a literal import() so bundlers keep it external.
@@ -11,10 +16,27 @@ export async function loadPeer<T>(name: string, provider: string, load: () => Pr
     module = await load();
   } catch (error) {
     const missing = error instanceof Error && "code" in error && error.code === "ERR_MODULE_NOT_FOUND" && error.message.includes(`'${name}'`);
-    if (!missing) throw error;
-    throw new SandboxError(`${name} is not installed. The ${provider} adapter loads it as an optional peer. Install ${name} next to @opencoredev/sandbox-sdk.`, { code: "unavailable", provider, cause: error });
+    if (missing) throw new SandboxError(`${name} is not installed. The ${provider} adapter loads it as an optional peer. Install ${name} next to @opencoredev/sandbox-sdk.`, { code: "unavailable", provider, cause: error });
+    // esbuild's ESM output has no require, so a bundled CommonJS dependency fails as soon as it loads.
+    const dynamic = error instanceof Error ? /Dynamic require of "[^"]{1,100}" is not supported/.exec(error.message)?.[0] : undefined;
+    if (dynamic === undefined) throw error;
+    throw new SandboxError(`${name} could not load in this bundle: ${dynamic}. ${bundleHint(name)}`, { code: "unavailable", provider, hint: bundleHint(name), cause: dynamic });
   }
-  return peerModule(module);
+  const normalized = peerModule(module);
+  loaded.set(name, normalized);
+  return normalized;
+}
+
+/**
+ * Whether `error` is an instance of the class `exportName` from the already loaded peer `name`.
+ * Bundlers rename classes (minifiers always, esbuild on a collision such as `FileNotFoundError2`),
+ * so `constructor.name`, and a `name` the SDK copies from `new.target.name`, are not stable. The
+ * class object the adapter loaded is. False when the peer was never loaded: it cannot have thrown.
+ */
+export function isPeerError(error: unknown, name: string, exportName: string): boolean {
+  const module = loaded.get(name);
+  const type: unknown = typeof module === "object" && module !== null && exportName in module ? Reflect.get(module, exportName) : undefined;
+  return typeof type === "function" && error instanceof type;
 }
 
 /** Normalizes a dynamically imported CommonJS peer. Bundlers that split chunks
