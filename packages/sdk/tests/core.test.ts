@@ -131,7 +131,7 @@ test("reaping tolerates deletion after listing and still surfaces auth failures"
 
 describe("core hot paths", () => {
   for (const transport of ["memory", "shell"]) {
-    test(`${transport} reconnect recovers many secrets in one exec and no file RPCs`, async () => {
+    test(`${transport} reconnect recovers many secrets lazily in one exec and no file RPCs`, async () => {
       const provider = transport === "memory" ? memory() : await (await import("./shell-provider.js")).shellProvider();
       const box = await createSandbox(provider, { secrets: { FIRST: "one=value\nsecond line\n", SECOND: "another-value", EMPTY: "" }, env: { PUBLIC: "public-value" } });
       const calls: string[] = []; const exec = provider.exec; const read = provider.files.read; const stat = provider.files.stat;
@@ -140,8 +140,9 @@ describe("core hot paths", () => {
       provider.files.stat = (id, path) => { calls.push("stat"); return stat(id, path); };
       try {
         const connected = await connectSandbox(provider, box.id);
-        expect(calls).toEqual(["exec"]);
+        expect(calls).toEqual([]);
         expect((await connected.run("printf '%s' \"$FIRST\"")).stdout).toBe("[REDACTED]");
+        expect(calls).toEqual(["exec", "exec"]);
         expect((await connected.run("printf '%s' \"$SECOND\"")).stdout).toBe("[REDACTED]");
         expect((await connected.run("printf '%s' \"$PUBLIC\"")).stdout).toBe("public-value");
         expect((await connected.run("printf '%s' \"$EMPTY\"")).stdout).toBe("");
@@ -152,7 +153,10 @@ describe("core hot paths", () => {
       const box = await createSandbox(provider); const calls: string[] = []; const exec = provider.exec; const read = provider.files.read;
       provider.exec = (id, input) => { calls.push("exec"); return exec(id, input); };
       provider.files.read = (id, path) => { calls.push("read"); return read(id, path); };
-      try { await connectSandbox(provider, box.id); expect(calls).toEqual(["exec"]); }
+      try {
+        const connected = await connectSandbox(provider, box.id); expect(calls).toEqual([]);
+        await connected.files.exists("anything"); await connected.run("true"); expect(calls).toEqual(["exec", "exec"]);
+      }
       finally { await box.destroy(); }
     });
   }
@@ -161,7 +165,8 @@ describe("core hot paths", () => {
     try {
       for (const record of ["invalid-secret-record", '["TOKEN; echo injected"]', '{}']) {
         await box.files.write("/tmp/.sandbox-sdk/secret-names.json", record);
-        await expect(connectSandbox(provider, box.id)).rejects.toMatchObject({ code: record === "invalid-secret-record" ? "provider" : "invalid_argument", message: expect.not.stringContaining(record) });
+        const connected = await connectSandbox(provider, box.id);
+        await expect(connected.run("true")).rejects.toMatchObject({ code: record === "invalid-secret-record" ? "provider" : "invalid_argument", message: expect.not.stringContaining(record) });
       }
     } finally { await box.destroy(); }
   });

@@ -8,11 +8,13 @@ export interface CommandContext {
   files: { read(path: string): Promise<Uint8Array>; write(path: string, data: string | Uint8Array): Promise<void>; list(path: string): Promise<FileInfo[]> };
 }
 export type CommandHandler = (context: CommandContext) => number | Promise<number>;
-interface Node { data: Uint8Array | null; modifiedAt: number }
+/** `mode` holds POSIX permission bits; `stat -c %a` and `chmod` read and set them. */
+interface Node { data: Uint8Array | null; modifiedAt: number; mode: number }
 interface Machine { info: SandboxInfo; nodes: Map<string, Node>; env: Record<string, string>; processes: Map<number, { controller: AbortController; result: Promise<ExecResult> }>; nextPid: number; active: Set<AbortController>; idleTimeoutMs?: number; idleTimer?: ReturnType<typeof setTimeout>; lifetimeTimer?: ReturnType<typeof setTimeout> }
 export interface MemoryOptions { handlers?: Record<string, CommandHandler> }
 export interface MemoryNative { readonly files: Map<string, Node> }
-/** Offline fake. No git, shell programs outside the handler table, PTYs, or real
+/** Offline fake. No git, shell programs outside the handler table (plus `cd`, `export`,
+ * `kill`, `chmod MODE PATH...` and `stat -c %a PATH...`), PTYs, or real
  * sockets. Preview URLs use memory.invalid and must never be fetched. Register
  * handlers with memory({handlers}) or provider.register(name, handler).
  */
@@ -26,15 +28,16 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
     const m = machine(id);
     for (let dir = posix.resolve("/", path); ; dir = posix.dirname(dir)) {
       const existing = m.nodes.get(dir); if (existing?.data) throw fail(`${dir} is not a directory`, "invalid_argument");
-      if (!existing) m.nodes.set(dir, { data: null, modifiedAt: now() });
+      if (!existing) m.nodes.set(dir, { data: null, modifiedAt: now(), mode: 0o755 });
       if (dir === "/") break;
     }
   }
   const files: Provider["files"] = {
     writeCreatesParents: true,
+    writeSupportsMode: true,
     async readRange(id, path, options) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(options.offset, options.offset + options.length); },
     async read(id, path) { const value = node(id, path); if (value.data === null) throw fail(`${path} is a directory`, "invalid_argument"); return value.data.slice(); },
-    async write(id, path, data) { const m = machine(id); mkdir(id, posix.dirname(path)); m.nodes.set(posix.resolve("/", path), { data: data.slice(), modifiedAt: Math.max(now(), (m.nodes.get(path)?.modifiedAt ?? 0) + 1) }); },
+    async write(id, path, data, options) { const m = machine(id); mkdir(id, posix.dirname(path)); const key = posix.resolve("/", path); const existing = m.nodes.get(key); m.nodes.set(key, { data: data.slice(), modifiedAt: Math.max(now(), (existing?.modifiedAt ?? 0) + 1), mode: options?.mode ?? existing?.mode ?? 0o644 }); },
     async stat(id, path) { const value = node(id, path); return { path: posix.resolve("/", path), type: value.data === null ? "directory" : "file", size: value.data?.length ?? 0, modifiedAt: value.modifiedAt }; },
     async list(id, path) { const root = posix.resolve("/", path); if (node(id, path).data !== null) throw fail(`${path} is not a directory`, "invalid_argument"); const result: FileInfo[] = []; for (const candidate of machine(id).nodes.keys()) if (candidate !== root && posix.dirname(candidate) === root) result.push(await files.stat(id, candidate)); return result.sort((a, b) => a.path.localeCompare(b.path)); },
     async remove(id, path, options) { const m = machine(id); const root = posix.resolve("/", path); node(id, root); const children = [...m.nodes.keys()].filter(candidate => candidate.startsWith(root + "/")); if (children.length && !options.recursive) throw fail(`${path} is not empty`, "invalid_argument"); for (const child of children) m.nodes.delete(child); m.nodes.delete(root); },
@@ -121,6 +124,8 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
         if (name === "export") { for (const entry of args) { const split = entry.indexOf("="); if (split >= 0) env[entry.slice(0, split)] = entry.slice(split + 1); } return; }
         if (name === "kill") { const pid = Math.abs(Number(args.find(arg => /^-?\d+$/.test(arg)))); m.processes.get(pid)?.controller.abort(); return; }
         if (name === "exit") exited = true;
+        if (name === "chmod") { const mode = Number.parseInt(args[0] ?? "", 8); if (!/^[0-7]{1,4}$/.test(args[0] ?? "") || args.length < 2) { input.onChunk({ stream: "stderr", text: "chmod: only octal modes are supported (memory provider)\n" }); exitCode = 1; return; } for (const path of args.slice(1)) node(id, posix.resolve(cwd, path)).mode = mode; exitCode = 0; return; }
+        if (name === "stat" && args[0] === "-c" && args[1] === "%a") { for (const path of args.slice(2)) input.onChunk({ stream: "stdout", text: `${node(id, posix.resolve(cwd, path)).mode.toString(8)}\n` }); exitCode = 0; return; }
         const handler = handlers.get(name);
         if (!handler) { input.onChunk({ stream: "stderr", text: `${name}: command not found (memory handler not registered)\n` }); exitCode = 127; return; }
         let output = "";

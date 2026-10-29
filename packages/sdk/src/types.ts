@@ -27,7 +27,15 @@ export interface CreateOptions extends Omit<CreateInput, "labels"> {
   trackChanges?: boolean;
 }
 /** Options for `connectSandbox`. */
-export type ConnectOptions = Pick<CreateOptions, "secrets">;
+export interface ConnectOptions extends Pick<CreateOptions, "secrets"> {
+  /**
+   * Read back the secrets recorded at creation so they stay in the environment and redacted. It costs one
+   * command, run before the first `run`, `start`, `process`, `files`, or `terminal` call, never on connect.
+   * `destroy`, `close`, `pause`, `resume`, `snapshot`, and `usage` never need it. Pass `false` to skip it,
+   * for example when the handle only inspects or cleans up a sandbox. Default: `true`.
+   */
+  recoverSecrets?: boolean;
+}
 /** Options for `listSandboxes`. */
 export interface ListOptions {
   /** Only return sandboxes that carry every one of these labels. */

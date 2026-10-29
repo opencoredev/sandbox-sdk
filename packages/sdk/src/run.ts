@@ -117,13 +117,14 @@ export function chunkRedactor(redactor: Redactor, emit: (chunk: OutputChunk) => 
   }
   return { push(chunk: OutputChunk) { if (!redactor.secrets.length) { emit(chunk); return; } queue.push({ ...chunk }); drain(); }, flush() { drain(true); } };
 }
-export function makeRun(provider: Provider, id: string, redactor: Redactor, baseEnv: Record<string, string>, count: (bytes: number) => void, guard: () => void = () => {}) {
+/** `guard` runs before each command: it throws when the handle is closed and waits for secret recovery. baseEnv is read per command. */
+export function makeRun(provider: Provider, id: string, redactor: Redactor, baseEnv: Record<string, string>, count: (bytes: number) => void, guard: () => void | Promise<void> = () => {}) {
   return (command: string, initial: RunOptions = {}): RunHandle => {
     let options = { ...initial }; let promise: Promise<RunResult> | undefined;
     const bus = new OutputBus();
     const begin = (streaming = false) => promise ??= execute(streaming).catch(error => { const mapped = redactor.error(error, provider.name, id); bus.fail(mapped); throw mapped; });
     async function execute(streaming: boolean): Promise<RunResult> {
-      guard();
+      await guard();
       const timeoutMs = options.timeoutMs ?? 120_000; const max = options.maxOutputBytes ?? 1_048_576;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(max) || max < 1) invalid("timeoutMs and maxOutputBytes must be positive");
       const cwd = pathOf(options.cwd); const started = Date.now();

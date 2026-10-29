@@ -29,14 +29,15 @@ export function globMatch(path: string, glob: string) {
   const pattern = glob.split(/(\*\*\/|\*\*|\*|\?)/).map(part => part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "." : part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")).join("");
   return new RegExp(`^${pattern}$`).test(path) || (!glob.includes("/") && new RegExp(`^${pattern}$`).test(posix.basename(path)));
 }
-export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}): Files & Disposable {
+/** `guard` throws synchronously when the handle is closed; `ready` resolves once the handle may touch the sandbox (secret recovery). */
+export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}, ready: () => Promise<void> = async () => {}): Files & Disposable {
   const fs = provider.files; const watchers = new Set<() => void>();
   const hostExec = promisify(execFile);
   async function remote(command: string) {
     const result = await provider.exec(id, { command, cwd: "/workspace", env: defaults, timeoutMs: 120_000, onChunk() {} });
     if (result.exitCode !== 0) throw new SandboxError("File transfer failed. The remote archive command failed. Ensure tar is installed and paths are accessible.", { code: "provider" });
   }
-  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
+  const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); await ready(); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   async function list(path = ".", options: { recursive?: boolean; glob?: string } = {}): Promise<FileInfo[]> {
     const root = pathOf(path); const result: FileInfo[] = [];
     async function visit(dir: string) {
@@ -59,10 +60,18 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   async function write(input: string | Record<string, string | Uint8Array>, data?: string | Uint8Array | WriteOptions, maybeOptions?: WriteOptions): Promise<void> {
     const entries = typeof input === "string" ? [[input, (data as string | Uint8Array | undefined) ?? ""] satisfies [string, string | Uint8Array]] : Object.entries(input);
     const options = (typeof input === "string" ? maybeOptions : data as WriteOptions | undefined) ?? {};
-    // TODO(SBX-71 core): validate options.mode and chmod after the write when !fs.writeSupportsMode.
+    const { mode } = options;
     // One mkdir per distinct parent within a call; later calls re-check, since commands may remove directories.
     const made = new Set<string>();
-    await safe(async () => { for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value, options); } });
+    await safe(async () => {
+      if (mode !== undefined && (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o7777)) invalid("mode must be an integer from 0 to 0o7777, such as 0o600");
+      const written: string[] = [];
+      for (const [path, value] of entries) { const dest = pathOf(path), parent = posix.dirname(dest); if (!fs.writeCreatesParents && !made.has(parent)) { await fs.mkdir(id, parent); made.add(parent); } await fs.write(id, dest, typeof value === "string" ? new TextEncoder().encode(value) : value, options); written.push(dest); }
+      // Providers without native modes get one chmod for the whole call, after every file exists.
+      if (mode === undefined || fs.writeSupportsMode || !written.length) return;
+      const result = await provider.exec(id, { command: `chmod ${mode.toString(8)} ${written.map(quote).join(" ")}`, cwd: "/", env: defaults, timeoutMs: 30_000, onChunk() {} });
+      if (result.timedOut || result.exitCode !== 0) throw new SandboxError(`File mode not applied. chmod ${result.timedOut ? "timed out" : `exited with ${result.exitCode}`}; the files were written with default permissions. Check that the paths are writable and retry.`, { code: "provider" });
+    });
   }
   const gitDir = "/tmp/.sandbox-sdk/changes.git";
   async function git(command: string, stdin?: string): Promise<string> {
@@ -202,6 +211,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       let stopped = false; let previous: Map<string, string> | undefined; let timer: ReturnType<typeof setTimeout>;
       const poll = async () => {
         try {
+          await ready();
           const current = new Map((await list(path, options)).map(item => [item.path, `${item.size}:${item.modifiedAt}`]));
           if (previous) {
             for (const [path, value] of current) if (!previous.has(path) || previous.get(path) !== value) { if (!stopped) callback({ type: previous.has(path) ? "modified" : "added", path }); }

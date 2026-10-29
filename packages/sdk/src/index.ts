@@ -88,7 +88,7 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
 export function connectSandbox<P extends Provider>(provider: P, id: string, options?: ConnectOptions): Promise<ProviderSandbox<P>>;
 export async function connectSandbox(provider: Provider, id: string, options: ConnectOptions = {}): Promise<SandboxBase<unknown>> {
   const redactor = new Redactor(); redactor.add(Object.values(options.secrets ?? {}));
-  try { validate(provider, options); const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor); }
+  try { validate(provider, options); const info = await provider.connect(id); const { makeHandle } = await import("./handle.js"); return await makeHandle(provider, info, false, { ...options, key: info.key }, redactor, options.recoverSecrets ?? true); }
   catch (error) { throw redactor.error(error, provider.name, id); }
 }
 export async function listSandboxes(provider: Provider, options: ListOptions = {}): Promise<SandboxInfo[]> {

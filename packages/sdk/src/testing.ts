@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSandbox, connectSandbox, listSandboxes, reapSandboxes, SandboxError } from "./index.js";
+import { createSandbox, connectSandbox, hasCapability, listSandboxes, reapSandboxes, SandboxError } from "./index.js";
 import type { Provider } from "./provider.js";
 import type { SandboxBase } from "./types.js";
 /** Register a provider-independent Vitest suite. Call inside a test module.
@@ -10,8 +10,11 @@ import type { SandboxBase } from "./types.js";
  * and HTTP probes, since it never executes host programs or opens sockets.
  * Live runs give each case 120 seconds by default, since real providers boot
  * machines and cross the network; pass timeoutMs to change it.
+ * snapshotExpiry declares what `snapshot({ expiresInMs })` does: "honored" must
+ * return a snapshot, "refused" must throw unsupported or invalid_argument.
+ * Omit it to check only the core's input validation.
  */
-export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[]; timeoutMs?: number; unsupported?: { processes?: string; previews?: string; gitPush?: string } }) {
+export function runConformance(factory: () => Provider | Promise<Provider>, options: { live: boolean; ports?: number[]; timeoutMs?: number; snapshotExpiry?: "honored" | "refused"; unsupported?: { processes?: string; previews?: string; gitPush?: string; fileModes?: string } }) {
   const timeout = options.timeoutMs ?? (options.live ? 120_000 : undefined);
   describe("Sandbox SDK conformance", { timeout }, () => {
     const cleanup: SandboxBase<unknown>[] = [];
@@ -80,6 +83,23 @@ export function runConformance(factory: () => Provider | Promise<Provider>, opti
       expect(await box.files.changes({ since: mark })).toMatchObject({ added: ["/workspace/app/new"], modified: ["/workspace/app/a.ts"], removed: ["/workspace/app/b.ts"] });
       expect((await box.files.changes()).added).toContain("/workspace/app/a.ts");
       await box.files.remove("app", { recursive: true }); expect(await box.files.exists("app")).toBe(false);
+    });
+    test("write mode sets permission bits and rejects invalid modes", async context => {
+      if (options.unsupported?.fileModes) { context.skip(options.unsupported.fileModes); return; }
+      const { box } = await setup();
+      await box.files.write("modes/secret", "x", { mode: 0o600 });
+      await box.files.write({ "modes/a": "a", "modes/b": "b" }, { mode: 0o640 });
+      expect((await box.run("stat -c %a modes/secret modes/a modes/b")).stdout).toBe("600\n640\n640\n");
+      for (const mode of [-1, 0o10000, 1.5, Number.NaN]) await expect(box.files.write("modes/bad", "x", { mode })).rejects.toMatchObject({ code: "invalid_argument" });
+      expect(await box.files.exists("modes/bad")).toBe(false);
+    });
+    test("snapshot expiry is validated, then honored or refused as declared", async context => {
+      const { box } = await setup();
+      if (!hasCapability(box, "snapshot")) { context.skip(); return; }
+      await expect(box.snapshot({ expiresInMs: -1 })).rejects.toMatchObject({ code: "invalid_argument" });
+      // A day, so a provider that honors it cleans the snapshot up itself.
+      if (options.snapshotExpiry === "honored") expect((await box.snapshot({ expiresInMs: 86_400_000 })).id).not.toBe("");
+      else if (options.snapshotExpiry === "refused") await expect(box.snapshot({ expiresInMs: 86_400_000 })).rejects.toMatchObject({ name: "SandboxError", code: expect.stringMatching(/^(unsupported|invalid_argument)$/) });
     });
     test("changes without since needs trackChanges or an explicit mark", async () => {
       const { box } = await setup();
