@@ -4,6 +4,30 @@ import { defaults } from "../../run.js";
 import { errors } from "./errors.js";
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+/** Boat's file API accepts at most 5 MiB per write, after decoding, and only
+ * under /home/user or /tmp. Keep a margin below that limit. */
+export const fileChunkBytes = 4 * 1024 * 1024;
+
+/** Upload bytes into a new private directory as `part-N` files. The directory
+ * is 0700 and every part exists as an empty 0600 file before its bytes arrive.
+ * Bytes travel only through the file API, never through command text. The
+ * caller owns `dir` and removes it, including after a failure. */
+export async function stage(api: BoatApi, id: string, dir: string, data: Uint8Array, failure: ReturnType<typeof errors>["failure"]): Promise<string[]> {
+  const parts = Array.from({ length: Math.max(1, Math.ceil(data.length / fileChunkBytes)) }, (_, index) => `${dir}/part-${index}`);
+  const prepared = await api.command({ sandboxId: id, commandRequest: {
+    command: `mkdir -p /tmp/.sandbox-sdk && mkdir -m 700 -- ${quote(dir)} && (umask 077 && touch -- ${parts.map(quote).join(" ")})`,
+    timeoutSeconds: 60,
+  } });
+  if (!("exitCode" in prepared) || prepared.exitCode !== 0)
+    throw failure("Boat could not prepare private staging", "provider", id);
+  for (const [index, path] of parts.entries())
+    await api.writeFile({ sandboxId: id, fileWriteRequest: {
+      path,
+      content: Buffer.from(data.subarray(index * fileChunkBytes, (index + 1) * fileChunkBytes)).toString("base64"),
+      encoding: "base64",
+    } });
+  return parts;
+}
 
 /** Detached commands have no 600-second limit. Boat's stopCommand kills the
  * command and all descendants. Aborting a stream alone does not stop remote work.
@@ -26,7 +50,9 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
   let processId: number | undefined;
   let finished = false;
   let launchAttempted = false;
-  let stdinPath: string | undefined;
+  let stdinDir: string | undefined;
+  // True once the command's shell removed stdin staging itself.
+  let stdinRemoved = false;
   let envDir: string | undefined;
   const setupError = `/tmp/.sandbox-sdk-setup-${crypto.randomUUID()}`;
   async function stop() {
@@ -92,31 +118,22 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
         }
       }
     }
-    // A finite pipe supplies stdin and EOF. Values never become shell syntax.
+    // stdin is a private file uploaded through the files API, never command
+    // text. The shell opens it, removes the staging directory, then runs the
+    // command, so the bytes leave the disk while the command reads them.
     const bytes = Buffer.from(input.stdin ?? "");
-    let source = `printf %s ${quote(bytes.toString("base64"))} | base64 -d | `;
-    let redirect = "";
-    if (bytes.length > 16_384) {
-      stdinPath = `/tmp/.sandbox-sdk/stdin-${crypto.randomUUID()}`;
-      for (let offset = 0; offset < bytes.length; offset += 32_768) {
-        if (cancelled) return { exitCode: null, timedOut: true };
-        const script =
-          "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.writeFileSync(process.argv[1],Buffer.from(process.argv[2],'base64'),{flag:process.argv[3],mode:0o600})";
-        const result = await api.command({
-          sandboxId: id,
-          commandRequest: {
-            command: `umask 077; node -e ${quote(script)} ${quote(stdinPath)} ${quote(bytes.subarray(offset, offset + 32_768).toString("base64"))} ${offset ? "a" : "w"}`,
-            timeoutSeconds: 60,
-          },
-        });
-        if (!("exitCode" in result) || result.exitCode !== 0)
-          throw failure("Boat could not prepare command stdin", "provider", id);
-      }
-      source = "";
-      redirect = ` < ${quote(stdinPath)}`;
+    let stdin = "/dev/null";
+    let unlink = "";
+    let concat = "";
+    if (bytes.length) {
+      stdinDir = `/tmp/.sandbox-sdk/stdin-${crypto.randomUUID()}`;
+      const parts = await stage(api, id, stdinDir, bytes, failure);
+      stdin = parts.length === 1 ? `${stdinDir}/part-0` : `${stdinDir}/stdin`;
+      if (parts.length > 1) concat = `(umask 077 && cat -- ${parts.map(quote).join(" ")} > ${quote(stdin)}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; `;
+      unlink = `/bin/rm -rf -- ${quote(stdinDir)}; `;
     }
     if (cancelled) return { exitCode: null, timedOut: true };
-    const command = `(${workspace}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; ${source}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)})${redirect}`;
+    const command = `(${workspace}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; ${concat}{ ${unlink}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}); } < ${quote(stdin)}`;
     launchAttempted = true;
     const started = await api.command({
       sandboxId: id,
@@ -142,6 +159,8 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
           if (typeof frame.exitCode !== "number" && frame.exitCode !== null)
             throw failure("Boat returned no command exit code", "outcome_unknown", id);
           finished = true;
+          // Exit 125 may be a setup failure before the shell removed staging.
+          stdinRemoved = frame.exitCode !== 125;
           return { exitCode: frame.exitCode, timedOut: frame.timedOut === true };
         } else if (frame.type === "error")
           throw failure("Boat command stream failed", "provider", id);
@@ -188,11 +207,11 @@ export async function execute(api: BoatApi, id: string, input: ExecInput, sandbo
           commandRequest: { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
         })
         .catch(() => {});
-    if (stdinPath)
+    if (stdinDir && !stdinRemoved)
       await api
         .command({
           sandboxId: id,
-          commandRequest: { command: `rm -f -- ${quote(stdinPath)}`, timeoutSeconds: 10 },
+          commandRequest: { command: `rm -rf -- ${quote(stdinDir)}`, timeoutSeconds: 10 },
         })
         .catch(() => {});
   }

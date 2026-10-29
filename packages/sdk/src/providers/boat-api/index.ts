@@ -8,9 +8,9 @@
  */
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
-import type { BoatApi, Sandbox as BoatSandbox } from "@boatdev/sdk";
+import type { BoatApi, InitOverrideFunction, Sandbox as BoatSandbox } from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
-import { execute, quote, workspace } from "./exec.js";
+import { execute, fileChunkBytes, quote, stage, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative } from "../boat/index.js";
 import { errors } from "./errors.js";
 import { loadPeer } from "../../peer.js";
@@ -21,6 +21,8 @@ export interface BoatApiSettings {
   baseUrl: string;
   baseEnv?: string;
   createFrom?: boolean;
+  /** Maps idleTimeoutMs to the native idleStopMinutes create field. */
+  idleStop?: boolean;
   pausedStates?: readonly string[];
   downloadMaxBytes?: number;
   destroy?: (api: BoatApi, id: string) => Promise<void>;
@@ -216,11 +218,24 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             `${label} supports small, medium and large presets; custom sizes are unavailable`,
             "unsupported",
           );
-        if (input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined)
+        if (input.timeoutMs !== undefined)
           throw failure(
-            `${label} auto-stop is resettable and is not an idle timer or hard lifetime; timeoutMs and idleTimeoutMs are unsupported`,
+            `${label} auto-stop archives the VM and restarts while its agent works, so it is not a hard lifetime; timeoutMs is unsupported. Set the provider's ttlSeconds option instead`,
             "unsupported",
           );
+        if (input.idleTimeoutMs !== undefined && !settings.idleStop)
+          throw failure(`${label} has no idle timer; idleTimeoutMs is unsupported`, "unsupported");
+        const { ttlSeconds, snapshots, monitoring, org } = options;
+        if (ttlSeconds !== undefined && ttlSeconds !== null && (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 2_592_000))
+          throw failure("ttlSeconds must be null or an integer from 1 to 2592000", "invalid_argument");
+        // Idle pause wakes on the next API call. It needs snapshots, and the
+        // API takes whole minutes up to a week.
+        let idleStopMinutes: number | undefined;
+        if (input.idleTimeoutMs !== undefined) {
+          idleStopMinutes = Math.ceil(input.idleTimeoutMs / 60_000);
+          if (idleStopMinutes > 10_080) throw failure(`${label} idle pause is at most 7 days`, "invalid_argument");
+          if (snapshots === false) throw failure(`${label} idle pause needs snapshots; drop idleTimeoutMs or snapshots: false`, "invalid_argument");
+        }
         if (input.from !== undefined && !settings.createFrom)
           throw failure(`${label} snapshots are not supported by this adapter`, "unsupported");
         const name = metadataName(input, failure, label);
@@ -233,15 +248,23 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             ...(input.from === undefined ? {} : { from: input.from }),
             env: input.env,
             type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
+            ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+            ...(snapshots === undefined ? {} : { snapshots }),
+            ...(monitoring === undefined ? {} : { monitoring }),
+            ...(org === undefined ? {} : { org }),
           },
         };
+        // @boatdev/sdk 1.9.9 drops fields its model lacks, so add them to the
+        // serialized body. The same override applies to every retry.
+        const body: InitOverrideFunction | undefined = idleStopMinutes === undefined ? undefined
+          : async ({ init }) => ({ body: { ...init.body, idleStopMinutes } });
         // A response may be lost after Boat accepts the VM. Retry only with the
         // same documented idempotency key and identical body, including on abort,
         // so a late VM can be recovered and destroyed below.
         let sandbox: BoatSandbox | undefined;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            sandbox = (await sdk.create(request)).sandbox;
+            sandbox = (await sdk.create(request, body)).sandbox;
             break;
           } catch (error) {
             const code = boatError(error).code;
@@ -325,6 +348,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     }, id),
     files: {
       writeCreatesParents: true,
+      writeSupportsMode: true,
       readRange: (id, path, range) => readRange(id, path, range.offset, range.length),
       read: async (id, path) => {
         // Open, measure and read small files in one guest operation. Following
@@ -373,13 +397,17 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           }
         }, id);
       },
-      write: (id, path, data) =>
+      write: (id, path, data, options = {}) =>
         safe(async () => {
+          const { mode } = options;
+          if (mode !== undefined && (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o7777))
+            throw failure("mode must be an integer from 0 to 0o7777", "invalid_argument", id);
           const sdk = await api();
           const normalized = posix.normalize(path);
           // The API creates parents, but canonical paths outside these roots
-          // are rejected. Preserve arbitrary paths and external symlinks below.
-          if (data.length <= 4 * 1024 * 1024 &&
+          // are rejected. It cannot set a mode, so a mode always takes the
+          // staged path below, which applies it before any bytes land.
+          if (mode === undefined && data.length <= fileChunkBytes &&
               (normalized.startsWith("/home/user/") || normalized.startsWith("/tmp/"))) {
             try {
               await sdk.writeFile({ sandboxId: id, fileWriteRequest: {
@@ -390,31 +418,19 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
               if (boatError(error).code !== "invalid_argument") throw error;
             }
           }
-          // Keep one private directory per write. Reusing a cached directory
-          // would trust permissions after guest commands can remove/change it.
-          // Copy and cleanup share a command; bytes never enter command text.
+          // Stage the bytes in a fresh private directory through the file API,
+          // then copy them into place. Writing through an opened descriptor
+          // follows symlinks and keeps the target inode. Bytes never enter
+          // command text. Copy and cleanup share a command.
           const dir = `/tmp/.sandbox-sdk/write-${crypto.randomUUID()}`;
-          const chunkPath = `${dir}/chunk`;
           let cleaned = false;
           try {
+            const parts = await stage(sdk, id, dir, data, failure);
             await node(id,
-              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700})",
-              [dir],
+              "const f=require('fs'),[d,dir,n,m]=process.argv.slice(1);try{f.mkdirSync(require('path').dirname(d),{recursive:true});const fd=f.openSync(d,'w',m?0o600:0o666);try{if(m)f.fchmodSync(fd,Number(m));for(let i=0;i<Number(n);i++)f.writeFileSync(fd,f.readFileSync(dir+'/part-'+i))}finally{f.closeSync(fd)}}finally{f.rmSync(dir,{recursive:true,force:true})}",
+              [path, dir, String(parts.length), mode === undefined ? "" : String(mode)],
             );
-            const chunkSize = 4 * 1024 * 1024;
-            for (let offset = 0; offset < Math.max(data.length, 1); offset += chunkSize) {
-              const last = offset + chunkSize >= data.length;
-              await sdk.writeFile({ sandboxId: id, fileWriteRequest: {
-                path: chunkPath,
-                content: Buffer.from(data.subarray(offset, offset + chunkSize)).toString("base64"),
-                encoding: "base64",
-              } });
-              await node(id,
-                "const f=require('fs');try{f.mkdirSync(require('path').dirname(process.argv[1]),{recursive:true});f.writeFileSync(process.argv[1],f.readFileSync(process.argv[2]+'/chunk'),{flag:process.argv[3]})}finally{if(process.argv[4]==='true')f.rmSync(process.argv[2],{recursive:true,force:true});else f.rmSync(process.argv[2]+'/chunk',{force:true})}",
-                [path, dir, offset ? "a" : "w", String(last)],
-              );
-              if (last) cleaned = true;
-            }
+            cleaned = true;
           } finally {
             // Includes unknown upload outcomes (response lost after remote write).
             if (!cleaned) await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [dir]).catch(() => {});
