@@ -395,6 +395,7 @@ with tempfile.TemporaryFile() as f:
         const contents = pending.get(id);
         const result = await execute(
           {
+            id,
             raw: g.raw,
             read: (path, range, signal) =>
               safe(

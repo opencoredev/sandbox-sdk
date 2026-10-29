@@ -462,6 +462,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         const g = await guest(id);
         return execute(
           {
+            id,
             raw: g.raw,
             read: async (path, range) => {
               const text = await g.raw(
