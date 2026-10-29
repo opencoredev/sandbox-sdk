@@ -21,12 +21,44 @@
   --ok: oklch(0.72 0.15 152);
   --warn: oklch(0.8 0.15 80);
   --bad: oklch(0.65 0.2 25);
+  /*
+   * The scatter's faster-and-cheaper quadrant, as OKLCH channels. Read through
+   * oklch(var()) so the CSS minifier passes the colour on as written instead of
+   * converting it to lab(), which renders a step off.
+   */
+  --quadrant-lch: 0.8 0.17 152;
+  /* Scatter plot insets: room for tick labels on the left and bottom. */
+  --plot-left: 56px;
+  --plot-right: 18px;
+  --plot-top: 14px;
+  --plot-bottom: 30px;
 }
 
 @theme inline {
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
   --font-pixel: var(--font-geist-pixel-square), var(--font-geist-mono), monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-surface: var(--surface);
+  --color-band: var(--band);
+  --color-chip: var(--chip);
+  --color-popover: var(--popover);
+  --color-chart-grid: var(--grid);
+  --color-chart-axis: var(--axis);
+  --color-brand: var(--brand);
+  /* The sticky header lets the page show through a little under its blur. */
+  --color-header: color-mix(in oklch, var(--background) 88%, transparent);
+  --color-quadrant: color-mix(in oklch, oklch(var(--quadrant-lch)) 13%, transparent);
+  --color-quadrant-edge: color-mix(in oklch, oklch(var(--quadrant-lch)) 40%, transparent);
+  --color-quadrant-key: color-mix(in oklch, oklch(var(--quadrant-lch)) 16%, transparent);
+  --color-quadrant-key-edge: color-mix(in oklch, oklch(var(--quadrant-lch)) 45%, transparent);
+  --spacing-plot-left: var(--plot-left);
+  --spacing-plot-right: var(--plot-right);
+  --spacing-plot-top: var(--plot-top);
+  --spacing-plot-bottom: var(--plot-bottom);
   --color-dither-ink: var(--dither-ink);
   --color-dither-paper: var(--dither-paper);
   --color-dither-blue: var(--dither-color-blue);
@@ -36,6 +68,44 @@
   --color-dither-orange: var(--dither-color-orange);
   --color-dither-red: var(--dither-color-red);
   --color-dither-grey: var(--dither-color-grey);
+}
+
+/* Type, measure and layout scale of the page. Font sizes set no line height of their own. */
+@theme {
+  --text-footnote: 9px;
+  --text-tick: 11px;
+  --text-fine: 11.5px;
+  --text-caption: 12px;
+  --text-note: 12.5px;
+  --text-control: 13px;
+  --text-label: 13.5px;
+  --text-body: 14px;
+  --text-menu: 14.5px;
+  --text-lockup: 15px;
+  --text-lede: 16px;
+  --text-chart-title: 17px;
+  --text-section: 21px;
+  --text-title: 28px;
+  --text-title-lg: 34px;
+  --text-display: 44px;
+  --text-display-lg: 72px;
+  --leading-display: 0.95;
+  --container-page: 1200px;
+  --container-lede: 52ch;
+  --container-intro: 72ch;
+  --container-footnote: 90ch;
+  --radius-tag: 3px;
+  --shadow-menu: 0 16px 32px rgb(0 0 0 / 0.6);
+  /* A column bar: 60px, or two thirds of its slot when that is narrower. */
+  --spacing-bar: min(60px, 66%);
+  /* Lifts a tag clear above the line it sits on. */
+  --spacing-lift: calc(100% + 3px);
+  /* Provider name, bar, value. */
+  --grid-template-columns-bar-row: 5.25rem 1fr auto;
+  --grid-template-columns-bar-row-compact: 4.75rem 1fr auto;
+  /* Provider label, ridgeline. */
+  --grid-template-columns-ridge: 6.75rem 1fr;
+  --grid-template-columns-ridge-wide: 9.5rem 1fr;
 }
 
 @layer base {
@@ -109,4 +179,25 @@ body {
   &[data-fade-end] {
     --fade-end: 36px;
   }
+}
+
+/*
+ * A dithered fill painted from custom properties: a background colour, and for
+ * every variant but solid a tiled mask. `<DitherFill>` sets the properties.
+ */
+@utility dither-fill {
+  background-color: var(--fill-color);
+  -webkit-mask-image: var(--fill-mask);
+  mask-image: var(--fill-mask);
+  -webkit-mask-position: var(--fill-mask-position);
+  mask-position: var(--fill-mask-position);
+  -webkit-mask-repeat: var(--fill-mask-repeat);
+  mask-repeat: var(--fill-mask-repeat);
+  -webkit-mask-size: var(--fill-mask-size);
+  mask-size: var(--fill-mask-size);
+}
+
+/* Pixel-aligned SVG edges, so dither cells stay square. */
+@utility crisp-edges {
+  shape-rendering: crispEdges;
 }

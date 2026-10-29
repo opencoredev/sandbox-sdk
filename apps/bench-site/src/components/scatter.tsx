@@ -13,9 +13,7 @@ export interface ScatterPoint {
   tag?: string;
 }
 
-// Plot insets in px: room for tick labels on the left and bottom.
-const INSET = { left: 56, right: 18, top: 14, bottom: 30 };
-const QUADRANT = "oklch(0.8 0.17 152)";
+// The plot insets and quadrant colours are tokens in globals.css (`--plot-*`, `--quadrant`).
 
 /** The x axis starts here instead of at the first tick when no point sits below it. */
 const X_FLOOR = 2.5;
@@ -30,8 +28,8 @@ const median = (xs: readonly number[]) => {
 /** CSS position of a 0 to 1 fraction along the plot area. */
 const along = (f: number, axis: "x" | "y") =>
   axis === "x"
-    ? `calc(${INSET.left}px + (100% - ${INSET.left + INSET.right}px) * ${f})`
-    : `calc(${INSET.top}px + (100% - ${INSET.top + INSET.bottom}px) * ${1 - f})`;
+    ? `calc(var(--plot-left) + (100% - (var(--plot-left) + var(--plot-right))) * ${f})`
+    : `calc(var(--plot-top) + (100% - (var(--plot-top) + var(--plot-bottom))) * ${1 - f})`;
 
 /**
  * Artificial Analysis-style scatter, built in HTML so text stays crisp at
@@ -73,15 +71,11 @@ export function Scatter({
 
   return (
     <figure aria-label={`${yTitle} against ${xTitle}. ${summary}.`}>
-      <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-[var(--muted)]">
+      <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-caption text-muted">
         <span className="flex items-center gap-2">
           <span
             aria-hidden
-            className="size-3 rounded-[2px] border"
-            style={{
-              backgroundColor: `color-mix(in oklch, ${QUADRANT} 16%, transparent)`,
-              borderColor: `color-mix(in oklch, ${QUADRANT} 45%, transparent)`,
-            }}
+            className="size-3 rounded-xs border border-quadrant-key-edge bg-quadrant-key"
           />
           Faster and cheaper than the median
         </span>
@@ -89,8 +83,8 @@ export function Scatter({
           <span key={p.provider} className="flex items-center gap-1.5">
             <span
               aria-hidden
-              className="size-2 rounded-full"
-              style={{ backgroundColor: providerColor(p.provider) }}
+              className="size-2 rounded-full bg-(--provider)"
+              style={{ "--provider": providerColor(p.provider) }}
             />
             {providerName(p.provider)}
           </span>
@@ -99,30 +93,25 @@ export function Scatter({
 
       <div className="flex">
         <div className="relative w-5 shrink-0">
-          <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 -rotate-90 text-[12px] whitespace-nowrap text-[var(--muted)]">
+          <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 -rotate-90 text-caption whitespace-nowrap text-muted">
             {yTitle}
           </span>
         </div>
-        <div className="relative h-[340px] min-w-0 flex-1 sm:h-[420px]" aria-hidden>
+        <div className="relative h-85 min-w-0 flex-1 sm:h-105" aria-hidden>
           <div
-            className="absolute"
+            className="absolute top-(--quadrant-top) bottom-plot-bottom left-plot-left w-(--quadrant-width) border-t border-r border-dashed border-quadrant-edge bg-quadrant"
             style={{
-              left: along(0, "x"),
-              width: `calc((100% - ${INSET.left + INSET.right}px) * ${mx})`,
-              top: along(my, "y"),
-              bottom: INSET.bottom,
-              backgroundColor: `color-mix(in oklch, ${QUADRANT} 13%, transparent)`,
-              borderTop: `1px dashed color-mix(in oklch, ${QUADRANT} 40%, transparent)`,
-              borderRight: `1px dashed color-mix(in oklch, ${QUADRANT} 40%, transparent)`,
+              "--quadrant-top": along(my, "y"),
+              "--quadrant-width": `calc((100% - (var(--plot-left) + var(--plot-right))) * ${mx})`,
             }}
           />
           {yTicks.map((t) => (
             <div
               key={`y${t}`}
-              className="absolute right-[18px] left-[56px] border-t border-dotted border-[var(--grid)]"
-              style={{ top: along(fy(t), "y") }}
+              className="absolute top-(--tick) right-plot-right left-plot-left border-t border-dotted border-chart-grid"
+              style={{ "--tick": along(fy(t), "y") }}
             >
-              <span className="absolute -left-2 -translate-x-full -translate-y-1/2 font-mono text-[11px] text-[var(--muted)] tabular-nums">
+              <span className="absolute -left-2 -translate-x-full -translate-y-1/2 font-mono text-tick text-muted tabular-nums">
                 ${t.toFixed(2)}
               </span>
             </div>
@@ -130,16 +119,16 @@ export function Scatter({
           {xs.map((t) => (
             <div
               key={`x${t}`}
-              className="absolute top-[14px] bottom-[30px] border-l border-dotted border-[var(--grid)]"
-              style={{ left: along(fx(t), "x") }}
+              className="absolute top-plot-top bottom-plot-bottom left-(--tick) border-l border-dotted border-chart-grid"
+              style={{ "--tick": along(fx(t), "x") }}
             >
-              <span className="absolute -bottom-6 -translate-x-1/2 font-mono whitespace-nowrap text-[11px] text-[var(--muted)] tabular-nums">
+              <span className="absolute -bottom-6 -translate-x-1/2 font-mono whitespace-nowrap text-tick text-muted tabular-nums">
                 {t} s
               </span>
             </div>
           ))}
-          <div className="absolute right-[18px] bottom-[30px] left-[56px] border-t border-[var(--axis)]" />
-          <div className="absolute top-[14px] bottom-[30px] left-[56px] border-l border-[var(--axis)]" />
+          <div className="absolute right-plot-right bottom-plot-bottom left-plot-left border-t border-chart-axis" />
+          <div className="absolute top-plot-top bottom-plot-bottom left-plot-left border-l border-chart-axis" />
           {points.map((p) => {
             const px = fx(p.x);
             // Labels point away from the right edge, and inside the quadrant toward the side
@@ -156,19 +145,20 @@ export function Scatter({
             return (
               <div
                 key={p.provider}
-                className="absolute"
-                style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}
+                className="absolute top-(--point-y) left-(--point-x)"
+                style={{
+                  "--point-x": along(px, "x"),
+                  "--point-y": along(fy(p.y), "y"),
+                  "--provider": providerColor(p.provider),
+                }}
               >
+                <span className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-(--provider) ring-3 ring-surface" />
                 <span
-                  className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-[3px] ring-[var(--surface)]"
-                  style={{ backgroundColor: providerColor(p.provider) }}
-                />
-                <span
-                  className={`absolute -translate-y-1/2 text-[12.5px] leading-none font-medium whitespace-nowrap ${flip ? "right-3" : "left-3"}`}
-                  style={{ color: providerColor(p.provider), top: nudge }}
+                  className={`absolute top-(--nudge) -translate-y-1/2 text-note leading-none font-medium whitespace-nowrap text-(--provider) ${flip ? "right-3" : "left-3"}`}
+                  style={{ "--nudge": `${nudge}px` }}
                 >
                   {providerName(p.provider)}
-                  <span className="ml-1.5 hidden font-mono text-[11px] font-normal text-[var(--muted)] sm:inline">
+                  <span className="ml-1.5 hidden font-mono text-tick font-normal text-muted sm:inline">
                     {p.tag ? `${p.tag} · ` : ""}
                     {formatValue(p.x, "s")} · {formatMoney(p.y, p.currency)}
                   </span>
@@ -178,7 +168,7 @@ export function Scatter({
           })}
         </div>
       </div>
-      <p className="mt-3 pl-5 text-center text-[12px] text-[var(--muted)]">{xTitle}</p>
+      <p className="mt-3 pl-5 text-center text-caption text-muted">{xTitle}</p>
     </figure>
   );
 }

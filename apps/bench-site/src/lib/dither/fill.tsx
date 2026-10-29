@@ -1,9 +1,9 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, CSSProperties, ReactNode } from "react";
 
 import type { DitherMatrix } from "@/lib/dither/matrices";
 import { DitherPattern } from "@/lib/dither/pattern";
-import { bloomFilter, bloomLayerStyle, ditherRamp, fillTile } from "@/lib/dither/style";
-import type { Bloom, FillEdge, FillVariant } from "@/lib/dither/style";
+import { bloomFilter, bloomLayer, ditherRamp, fillPaint, fillTile } from "@/lib/dither/style";
+import type { Bloom, FillEdge, FillStyleOptions, FillVariant } from "@/lib/dither/style";
 import { cssColor } from "@/lib/dither/tokens";
 import type { DitherColor } from "@/lib/dither/tokens";
 
@@ -58,12 +58,12 @@ export const FillPattern = ({
   matrix = "bayer4",
   ramp,
 }: FillPatternProps) => {
-  const ink = { fill: cssColor(color) };
+  const ink = cssColor(color);
 
   if (fill === "solid") {
     return (
       <pattern id={id} width={cell} height={cell} patternUnits="userSpaceOnUse">
-        <rect width={cell} height={cell} style={ink} />
+        <rect width={cell} height={cell} fill={ink} />
       </pattern>
     );
   }
@@ -77,9 +77,9 @@ export const FillPattern = ({
         width={size * cell}
         height={size * cell}
         patternUnits="userSpaceOnUse"
-        shapeRendering="crispEdges"
+        className="crisp-edges"
       >
-        <path d={path} transform={`scale(${cell})`} style={ink} />
+        <path d={path} transform={`scale(${cell})`} fill={ink} />
       </pattern>
     );
   }
@@ -115,9 +115,9 @@ export const FillPattern = ({
       width={width}
       height={height}
       patternUnits="userSpaceOnUse"
-      shapeRendering="crispEdges"
+      className="crisp-edges"
     >
-      <path d={tile.path} transform={`scale(${cell})`} style={ink} />
+      <path d={tile.path} transform={`scale(${cell})`} fill={ink} />
     </pattern>
   );
 };
@@ -130,11 +130,16 @@ export interface BloomGroupProps extends ComponentProps<"g"> {
  * An SVG group drawn as a glow: put solid copies of your shapes inside
  * and render it before (under) the real fills. Renders nothing when off.
  */
-export const BloomGroup = ({ bloom, style, ...props }: BloomGroupProps) => {
-  const layer = bloomLayerStyle(bloom);
+export const BloomGroup = ({ bloom, className, style, ...props }: BloomGroupProps) => {
+  const layer = bloomLayer(bloom);
 
   return layer === undefined ? null : (
-    <g aria-hidden="true" {...props} style={{ ...layer, ...style }} />
+    <g
+      aria-hidden="true"
+      {...props}
+      className={`filter-(--bloom-filter) opacity-(--bloom-opacity) ${className ?? ""}`}
+      style={{ "--bloom-filter": layer.blur, "--bloom-opacity": layer.opacity, ...style }}
+    />
   );
 };
 
@@ -148,6 +153,54 @@ export type BloomBoxProps = ComponentProps<"div"> & {
  * A wrapper that glows around whatever it holds, in `color`. A CSS
  * drop-shadow, so it follows dithered cells and transparent gaps.
  */
-export const BloomBox = ({ color = "ink", bloom, style, ...props }: BloomBoxProps) => (
-  <div {...props} style={{ filter: bloomFilter(color, bloom), ...style }} />
+export const BloomBox = ({ color = "ink", bloom, className, style, ...props }: BloomBoxProps) => (
+  <div
+    {...props}
+    className={`filter-(--bloom-filter) ${className ?? ""}`}
+    style={{ "--bloom-filter": bloomFilter(color, bloom) ?? "none", ...style }}
+  />
 );
+
+export type DitherFillProps = FillStyleOptions & {
+  variant: FillVariant;
+  /** The element to paint. Default `div`. */
+  as?: "div" | "span";
+  className?: string;
+  /** Custom properties for the classes in `className`, such as a height. */
+  style?: CSSProperties;
+  "aria-hidden"?: boolean;
+  children?: ReactNode;
+};
+
+/**
+ * An element painted with a fill variant through the `dither-fill` utility.
+ * It needs a size; children are masked too, so put content in a sibling.
+ */
+export const DitherFill = ({
+  variant,
+  as: Element = "div",
+  className,
+  style,
+  "aria-hidden": ariaHidden,
+  children,
+  ...options
+}: DitherFillProps) => {
+  const paint = fillPaint(variant, options);
+
+  return (
+    <Element
+      aria-hidden={ariaHidden}
+      className={`dither-fill ${className ?? ""}`}
+      style={{
+        ...style,
+        "--fill-color": paint.color,
+        "--fill-mask": paint.mask,
+        "--fill-mask-position": paint.position,
+        "--fill-mask-repeat": paint.repeat,
+        "--fill-mask-size": paint.size,
+      }}
+    >
+      {children}
+    </Element>
+  );
+};

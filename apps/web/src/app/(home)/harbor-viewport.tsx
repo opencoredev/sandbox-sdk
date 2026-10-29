@@ -4,7 +4,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 
 import { ProviderLogo } from "@/components/provider-logo";
 import { HalftoneCanvas, type FrameInfo } from "@/components/halftone/halftone-canvas";
-import type { HalftoneStyle } from "@/components/halftone/halftone";
+import type { HalftoneDots } from "@/components/halftone/halftone";
 import {
   HARBOR_PROVIDERS,
   harborCargo,
@@ -40,7 +40,7 @@ function place(el: HTMLElement, mark: CargoMark, width: number, gap: number) {
  * agent gets to work inside it (drawn in the scene). The carried container
  * wears a tag with its SDK call; each landed one keeps a logo chip.
  */
-export function HarborViewport({ style, brackets }: { style: HalftoneStyle; brackets: ReactNode }) {
+export function HarborViewport({ dots, brackets }: { dots: HalftoneDots; brackets: ReactNode }) {
   const tag = useRef<HTMLDivElement>(null);
   const chips = useRef<(HTMLDivElement | null)[]>([]);
   const [carried, setCarried] = useState<HarborProvider>(HARBOR_PROVIDERS[0]);
@@ -85,7 +85,7 @@ export function HarborViewport({ style, brackets }: { style: HalftoneStyle; brac
     <div className={styles.viewport} data-reveal aria-hidden="true">
       <HalftoneCanvas
         paint={paintHarbor}
-        style={style}
+        dots={dots}
         fps={30}
         stillAt={9.5}
         onFrame={follow}
@@ -98,12 +98,11 @@ export function HarborViewport({ style, brackets }: { style: HalftoneStyle; brac
             chips.current[i] = el;
           }}
           className={styles.cargoChip}
-          style={{ opacity: 0 }}
         >
           {landed[i] && <ProviderLogo id={landed[i].id} />}
         </div>
       ))}
-      <div ref={tag} className={styles.cargoTag} style={{ opacity: 0 }}>
+      <div ref={tag} className={styles.cargoTag}>
         <ProviderLogo id={carried.id} />
         <span>{carried.name}</span>
         <span>{FACTORY[carried.id]}</span>

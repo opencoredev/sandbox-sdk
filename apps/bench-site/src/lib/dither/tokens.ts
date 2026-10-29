@@ -55,6 +55,14 @@ export const DITHER_COLORS = {
 // oxlint-disable-next-line typescript/ban-types -- `string & {}` keeps editor autocomplete for the names.
 export type DitherColor = DitherColorName | (string & {});
 
+/** A cell size: CSS pixels, or any CSS length such as `var(--dither-cell)`. */
+export type CellSize = number | string;
+
+/** Whether a cell size is a plain number of CSS pixels rather than a CSS length. */
+export function isPixels(cell: CellSize): cell is number {
+  return typeof cell === "number";
+}
+
 /** Colours from tone 0 (paper) to tone 1 (ink). At least two. */
 export type DitherPalette = readonly [DitherColor, DitherColor, ...DitherColor[]];
 

@@ -20,7 +20,7 @@ import type { Provider } from "@/lib/data";
 import { formatGiB, formatMoney } from "@/lib/format";
 import { providerColor } from "@/lib/providers";
 import { advertised, sizeOf } from "@/lib/sizes";
-import { excluded, notRun } from "@/lib/agent-data";
+import { excluded, noteOf, notRun } from "@/lib/agent-data";
 import { commonPrice, commonSize, conversionNote, usdPrice } from "@/lib/fx";
 import type { PriceKey } from "@/lib/fx";
 import type { ProviderId } from "@/lib/providers";
@@ -83,14 +83,12 @@ function Section({
     <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-20 pt-16 sm:pt-24">
       <h2
         id={`${id}-title`}
-        className="flex items-center gap-3 font-pixel text-[28px] leading-none tracking-tight sm:text-[34px]"
+        className="flex items-center gap-3 font-pixel text-title leading-none tracking-tight sm:text-title-lg"
       >
-        <span aria-hidden className="size-3.5 shrink-0 bg-[var(--foreground)]" />
+        <span aria-hidden className="size-3.5 shrink-0 bg-foreground" />
         {title}
       </h2>
-      <p className="mt-3 mb-6 max-w-[72ch] text-[14px] leading-relaxed text-[var(--muted)]">
-        {lede}
-      </p>
+      <p className="mt-3 mb-6 max-w-intro text-body leading-relaxed text-muted">{lede}</p>
       {children}
     </section>
   );
@@ -305,24 +303,31 @@ function partialBursts(id: string): Notes {
   );
 }
 
+/** The square beside a headline chart's title, in a palette colour. */
+const MARKERS = {
+  blue: "bg-dither-blue",
+  orange: "bg-dither-orange",
+  green: "bg-dither-green",
+} as const;
+
 function Headline({
   marker,
   title,
   sub,
   children,
 }: {
-  marker: string;
+  marker: keyof typeof MARKERS;
   title: string;
   sub: string;
   children: ReactNode;
 }) {
   return (
-    <Card className="min-w-0 !p-5">
-      <h2 className="flex items-center gap-2.5 font-pixel text-[21px] leading-none tracking-tight">
-        <span aria-hidden className="size-3 shrink-0" style={{ backgroundColor: marker }} />
+    <Card padding="compact">
+      <h2 className="flex items-center gap-2.5 font-pixel text-section leading-none tracking-tight">
+        <span aria-hidden className={`size-3 shrink-0 ${MARKERS[marker]}`} />
         {title}
       </h2>
-      <p className="mt-2 mb-3 text-[12px] text-[var(--muted)]">{sub}</p>
+      <p className="mt-2 mb-3 text-caption text-muted">{sub}</p>
       {children}
     </Card>
   );
@@ -352,33 +357,33 @@ export default function Page() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 border-b border-[var(--line)] bg-[color-mix(in_oklch,var(--background)_88%,transparent)] backdrop-blur-md">
-        <div className="mx-auto flex max-w-[1200px] items-center gap-4 px-4 py-3 sm:px-6">
+      <header className="sticky top-0 z-30 border-b border-line bg-header backdrop-blur-md">
+        <div className="mx-auto flex max-w-page items-center gap-4 px-4 py-3 sm:px-6">
           <a href="#top" className="-my-2 shrink-0 py-2.5" aria-label="Sandbox bench, back to top">
             <Lockup />
           </a>
           <SectionNav sections={sections} extra={{ href: "llms.txt", label: "For agents ↗" }} />
           <a
             href="llms.txt"
-            className="hidden shrink-0 rounded-full border border-[var(--line)] px-3.5 py-1.5 text-[13px] text-[var(--muted)] transition-colors duration-150 hover:text-[var(--foreground)] motion-reduce:transition-none lg:block"
+            className="hidden shrink-0 rounded-full border border-line px-3.5 py-1.5 text-control text-muted transition-colors duration-150 hover:text-foreground motion-reduce:transition-none lg:block"
           >
             For agents ↗
           </a>
         </div>
       </header>
 
-      <main id="top" className="mx-auto max-w-[1200px] px-4 sm:px-6">
+      <main id="top" className="mx-auto max-w-page px-4 sm:px-6">
         <div className="pt-14 pb-10 sm:pt-20">
-          <h1 className="font-pixel text-[44px] leading-[0.95] tracking-tight sm:text-[72px]">
+          <h1 className="font-pixel text-display leading-display tracking-tight sm:text-display-lg">
             Cloud sandboxes,
             <br />
             measured
           </h1>
-          <p className="mt-5 max-w-[52ch] text-[16px] leading-snug">
+          <p className="mt-5 max-w-lede text-lede leading-snug">
             {providers.length} cloud sandbox providers for AI agents, timed on the same tests from
             one server.
           </p>
-          <p className="mt-4 flex flex-wrap gap-x-2 gap-y-1 font-mono text-[12px] text-[var(--muted)]">
+          <p className="mt-4 flex flex-wrap gap-x-2 gap-y-1 font-mono text-caption text-muted">
             {[day, "Florida, US", `${providers.length} providers`, "100 runs per test"].map(
               (fact, i, all) => (
                 // The separator rides at the end of each fact, so a wrapped line never starts with one.
@@ -397,21 +402,21 @@ export default function Page() {
 
         <div className="grid gap-4 md:grid-cols-3">
           <Headline
-            marker="var(--dither-color-blue)"
+            marker="blue"
             title="Cold start"
             sub={metricSubtitle(cold, "create() to first command")}
           >
             <MetricChart metric={cold} what="" compact />
           </Headline>
           <Headline
-            marker="var(--dither-color-orange)"
+            marker="orange"
             title="Agent work"
             sub={metricSubtitle(replay, "Tool replay, 100 calls")}
           >
             <MetricChart metric={replay} what="" compact />
           </Headline>
           <Headline
-            marker="var(--dither-color-green)"
+            marker="green"
             title="Price per hour"
             sub={`Same machine everywhere: ${commonSize.label} · US dollars · Lower is better`}
           >
@@ -515,7 +520,9 @@ export default function Page() {
                 id: "files-10mb",
                 tab: "10 MB file",
                 what: "Write a 10 MB file and read it back",
-                only: providers.flatMap((p) => (excluded["files-10mb"]?.[p.id] ? [] : [p.id])),
+                only: providers.flatMap((p) =>
+                  noteOf(excluded, "files-10mb", p.id) ? [] : [p.id],
+                ),
                 notes: {
                   boxd: `left out: ${excluded["files-10mb"]?.boxd ?? ""}`,
                   boat: "the read takes several calls: a size check, a copy, a signed URL, then the download.",
@@ -703,35 +710,37 @@ export default function Page() {
               },
             ]}
           />
-          <Card className="mt-4">
-            <ChartHead
-              title="Agent work vs cost per task"
-              sub="Median tool replay time against what 1,000 tool replays cost on the machine that ran them · Both lower is better"
-            />
-            <Scatter
-              points={replayPoints}
-              xTicks={[10, 20, 50, 100]}
-              yTicks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
-              xTitle="Median tool replay, seconds (log scale)"
-              yTitle="Cost of 1,000 tool replays (USD)"
-            />
-            <Footnotes
-              items={[
-                {
-                  text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on.",
-                },
-                {
-                  text: (
-                    <>
-                      <Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from our
-                      Florida server crosses the Atlantic. <Who id="upstash" /> bills only busy CPU;
-                      its cost and boxd's full-memory estimate are upper bounds.
-                    </>
-                  ),
-                },
-              ]}
-            />
-          </Card>
+          <div className="mt-4">
+            <Card>
+              <ChartHead
+                title="Agent work vs cost per task"
+                sub="Median tool replay time against what 1,000 tool replays cost on the machine that ran them · Both lower is better"
+              />
+              <Scatter
+                points={replayPoints}
+                xTicks={[10, 20, 50, 100]}
+                yTicks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
+                xTitle="Median tool replay, seconds (log scale)"
+                yTitle="Cost of 1,000 tool replays (USD)"
+              />
+              <Footnotes
+                items={[
+                  {
+                    text: "Cost is the hourly list price of each provider's default machine times its median time, so a bigger machine that finishes sooner can cost less per task. Labels show the vCPUs it ran on.",
+                  },
+                  {
+                    text: (
+                      <>
+                        <Who id="boat" /> and <Who id="boxd" /> run in Europe, so every call from
+                        our Florida server crosses the Atlantic. <Who id="upstash" /> bills only
+                        busy CPU; its cost and boxd's full-memory estimate are upper bounds.
+                      </>
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+          </div>
         </Section>
 
         <Section
@@ -740,11 +749,11 @@ export default function Page() {
           lede="How the numbers were made, and what could bias them."
         >
           <Card>
-            <dl className="grid gap-x-12 gap-y-5 text-[14px] leading-relaxed md:grid-cols-2">
+            <dl className="grid gap-x-12 gap-y-5 text-body leading-relaxed md:grid-cols-2">
               {methodRows.map(([term, text]) => (
                 <div key={term}>
                   <dt className="font-medium">{term}</dt>
-                  <dd className="mt-1 text-[var(--muted)]">{text}</dd>
+                  <dd className="mt-1 text-muted">{text}</dd>
                 </div>
               ))}
             </dl>
@@ -752,8 +761,8 @@ export default function Page() {
         </Section>
       </main>
 
-      <footer className="mx-auto mt-24 max-w-[1200px] px-4 sm:px-6">
-        <p className="flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--line)] py-8 text-[12px] text-[var(--muted)]">
+      <footer className="mx-auto mt-24 max-w-page px-4 sm:px-6">
+        <p className="flex flex-wrap gap-x-3 gap-y-1 border-t border-line py-8 text-caption text-muted">
           <span>Sandbox bench · {day}</span>
           <span aria-hidden>·</span>
           <span>
@@ -762,7 +771,7 @@ export default function Page() {
               <span key={f}>
                 {i > 0 ? " · " : ""}
                 <a
-                  className="-my-2 inline-block py-2 underline decoration-dotted underline-offset-4 hover:text-[var(--foreground)]"
+                  className="-my-2 inline-block py-2 underline decoration-dotted underline-offset-4 hover:text-foreground"
                   href={f}
                 >
                   {f}

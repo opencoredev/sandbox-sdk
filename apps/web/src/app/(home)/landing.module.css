@@ -378,6 +378,8 @@
   font-size: 12px;
   white-space: nowrap;
   pointer-events: none;
+  /* hidden until the scene's first frame places it */
+  opacity: 0;
   will-change: transform, opacity;
 }
 .cargoTag::after {
@@ -410,6 +412,7 @@
   color: var(--text);
   background: rgb(11 11 12 / 0.9);
   pointer-events: none;
+  opacity: 0;
   will-change: transform, opacity;
 }
 .cargoChip svg {

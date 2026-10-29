@@ -2,8 +2,8 @@ import type { CSSProperties } from "react";
 
 import { getThresholdMap } from "@/lib/dither/matrices";
 import type { DitherMatrix } from "@/lib/dither/matrices";
-import { cssColor } from "@/lib/dither/tokens";
-import type { DitherColor } from "@/lib/dither/tokens";
+import { cssColor, isPixels } from "@/lib/dither/tokens";
+import type { CellSize, DitherColor } from "@/lib/dither/tokens";
 
 /**
  * Static dithers without a canvas: an SVG `<pattern>` for chart fills and a
@@ -75,7 +75,7 @@ export interface DitherMaskStyleOptions {
   /** Threshold matrix. Default `"bayer4"`. */
   matrix?: DitherMatrix;
   /** Cell size: CSS pixels, or any CSS length. Default `var(--dither-cell)`. */
-  cell?: number | string;
+  cell?: CellSize;
 }
 
 /**
@@ -92,7 +92,7 @@ export const ditherMaskStyle = (
 ): CSSProperties => {
   const { size } = getThresholdMap(matrix);
   const image = ditherMask(level, { matrix });
-  const tile = typeof cell === "number" ? `${size * cell}px` : `calc(${cell} * ${size})`;
+  const tile = isPixels(cell) ? `${size * cell}px` : `calc(${cell} * ${size})`;
 
   return {
     WebkitMaskImage: image,
@@ -141,16 +141,12 @@ export const DitherPattern = ({
       width={tile}
       height={tile}
       patternUnits="userSpaceOnUse"
-      shapeRendering="crispEdges"
+      className="crisp-edges"
     >
       {background === undefined ? null : (
-        <rect width={tile} height={tile} style={{ fill: cssColor(background) }} />
+        <rect width={tile} height={tile} fill={cssColor(background)} />
       )}
-      <path
-        d={ditherPath(level, matrix)}
-        transform={`scale(${cell})`}
-        style={{ fill: cssColor(color) }}
-      />
+      <path d={ditherPath(level, matrix)} transform={`scale(${cell})`} fill={cssColor(color)} />
     </pattern>
   );
 };

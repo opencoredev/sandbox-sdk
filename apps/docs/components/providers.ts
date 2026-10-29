@@ -20,12 +20,25 @@ export const PROVIDERS = {
 
 export type ProviderKey = keyof typeof PROVIDERS;
 
-const NAMES: ReadonlyMap<unknown, string> = new Map(
-  Object.entries(PROVIDERS).map(([key, { name }]) => [key, name]),
-);
+/** MDX props arrive untyped; a `title` written in the page is a string literal. */
+function isTitle(value: unknown): value is string {
+  return typeof value === "string";
+}
 
-const providerLabel = (props: { readonly title?: unknown; readonly provider?: unknown }): string =>
-  typeof props.title === "string" ? props.title : (NAMES.get(props.provider) ?? "Provider");
+function isProviderKey(value: unknown): value is ProviderKey {
+  return typeof value === "string" && Object.hasOwn(PROVIDERS, value);
+}
+
+const providerLabel = (props: {
+  readonly title?: unknown;
+  readonly provider?: unknown;
+}): string => {
+  if (isTitle(props.title)) return props.title;
+
+  if (isProviderKey(props.provider)) return PROVIDERS[props.provider].name;
+
+  return "Provider";
+};
 
 /**
  * Markdown for agents (`<route>.md`, llms-full.txt): every tab becomes a

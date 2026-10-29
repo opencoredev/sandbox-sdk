@@ -14,8 +14,8 @@ export type Notes = Partial<Record<ProviderId, string>>;
 export function ChartHead({ title, sub }: { title: string; sub: ReactNode }) {
   return (
     <div className="mb-4">
-      <h3 className="text-[17px] font-medium tracking-tight">{title}</h3>
-      <p className="mt-1 text-[12.5px] text-[var(--muted)]">{sub}</p>
+      <h3 className="text-chart-title font-medium tracking-tight">{title}</h3>
+      <p className="mt-1 text-note text-muted">{sub}</p>
     </div>
   );
 }
@@ -24,13 +24,13 @@ export function Footnotes({ items }: { items: readonly { mark?: number; text: Re
   if (items.length === 0) return null;
 
   return (
-    <ul className="mt-5 flex flex-col gap-1.5 border-t border-[var(--line)] pt-4 text-[12px] leading-snug text-[var(--muted)]">
+    <ul className="mt-5 flex flex-col gap-1.5 border-t border-line pt-4 text-caption leading-snug text-muted">
       {items.map((item, i) => (
         <li key={i} className="flex gap-2">
           {item.mark === undefined ? null : (
             <span className="w-3 shrink-0 font-mono">{item.mark}</span>
           )}
-          <span className="max-w-[90ch]">{item.text}</span>
+          <span className="max-w-footnote">{item.text}</span>
         </li>
       ))}
     </ul>
@@ -174,7 +174,7 @@ export function MetricChart({
 }
 
 export const Who = ({ id }: { id: ProviderId }) => (
-  <span className="font-medium" style={{ color: providerColor(id) }}>
+  <span className="font-medium text-(--provider)" style={{ "--provider": providerColor(id) }}>
     {providerName(id)}
   </span>
 );

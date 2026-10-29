@@ -33,28 +33,43 @@ export const groups = [
 
 const round = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 1000);
 
+/** A note per provider on one test. */
+type ProviderNotes = Partial<Record<ProviderId, string>>;
+
+/** Notes keyed by test id. */
+interface TestNotes {
+  readonly [testId: string]: ProviderNotes;
+}
+
 // Tests we chose not to run, with the reason; the same reasons appear on the page's footnotes.
-export const notRun: Partial<Record<string, Partial<Record<ProviderId, string>>>> = {
+export const notRun = {
   "burst-25": {
     daytona:
       "not-run: our Daytona account's concurrency limit refused the creates, on both attempts",
     boat: "not-run: our Boat plan allows 12 starts a minute",
   },
-};
+} satisfies TestNotes;
 
 // Results we measured but leave out of rankings, with the reason; the page uses the same map.
-export const excluded: Partial<Record<string, Partial<Record<ProviderId, string>>>> = {
+export const excluded = {
   "files-10mb": {
     boxd: "boxd's download cut large files short, so our SDK reads them in 1 MB pieces and the time measures that workaround",
   },
-};
+} satisfies TestNotes;
+
+/** The note `notes` holds for one test and provider, if any. */
+export const noteOf = (
+  notes: TestNotes,
+  testId: string,
+  provider: ProviderId,
+): string | undefined => notes[testId]?.[provider];
 
 /** Why a result is blank, so an agent never has to guess. */
 function statusOf(id: string, provider: ProviderId, v: Metric["values"][number] | undefined) {
-  const left = excluded[id]?.[provider];
+  const left = noteOf(excluded, id, provider);
 
   if (left) return `excluded: ${left}`;
-  const skipped = notRun[id]?.[provider];
+  const skipped = noteOf(notRun, id, provider);
 
   if (skipped && (!v || v.n === 0)) return skipped;
 

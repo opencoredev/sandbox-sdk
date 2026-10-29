@@ -3,8 +3,8 @@ import type { CSSProperties } from "react";
 import { getThresholdMap } from "@/lib/dither/matrices";
 import type { DitherMatrix } from "@/lib/dither/matrices";
 import { ditherMask } from "@/lib/dither/pattern";
-import { cssColor } from "@/lib/dither/tokens";
-import type { DitherColor, DitherColorName } from "@/lib/dither/tokens";
+import { cssColor, isPixels } from "@/lib/dither/tokens";
+import type { CellSize, DitherColor, DitherColorName } from "@/lib/dither/tokens";
 
 /**
  * The style kit: fill variants, bloom and the default series palette.
@@ -185,7 +185,7 @@ export interface FillStyleOptions {
   /** Colour, a palette name or any CSS colour. Default `ink`. */
   color?: DitherColor;
   /** Cell size: CSS pixels or any CSS length. Default `var(--dither-cell)`. */
-  cell?: number | string;
+  cell?: CellSize;
   /** Gradient only: the dense side. Default `bottom`. */
   edge?: FillEdge;
   /** Gradient only: length of the fade in cells. Default 24. */
@@ -198,19 +198,32 @@ export interface FillStyleOptions {
   matrix?: DitherMatrix;
 }
 
-const times = (cell: number | string, count: number) =>
-  typeof cell === "number" ? `${cell * count}px` : `calc(${cell} * ${count})`;
+/** A run of `count` cells as a CSS length. */
+const times = (cell: CellSize, count: number) =>
+  isPixels(cell) ? `${cell * count}px` : `calc(${cell} * ${count})`;
 
 /**
- * Inline styles that paint an element with a fill variant: a background
- * colour and, for every variant but `solid`, a tiled CSS mask. The element
- * needs a size; children are masked too, so put content in a sibling.
+ * How to paint an element with a fill variant: a background colour and a
+ * tiled CSS mask. Each field is a CSS value; a solid fill has no mask, so its
+ * mask fields hold the initial values.
+ */
+export interface FillPaint {
+  color: string;
+  mask: string;
+  position: string;
+  repeat: string;
+  size: string;
+}
+
+/**
+ * The paint for a fill variant. `<DitherFill>` applies it; children are
+ * masked too, so put content in a sibling.
  *
  * ```tsx
- * <div className="absolute inset-0" style={fillStyle("gradient", { color: "green", edge: "left" })} />
+ * <DitherFill variant="gradient" color="green" edge="left" className="absolute inset-0" />
  * ```
  */
-export const fillStyle = (
+export const fillPaint = (
   variant: FillVariant,
   {
     color = "ink",
@@ -221,24 +234,22 @@ export const fillStyle = (
     to = 0.0625,
     matrix = "bayer4",
   }: FillStyleOptions = {},
-): CSSProperties => {
-  const backgroundColor = cssColor(color);
+): FillPaint => {
+  const background = cssColor(color);
 
   if (variant === "solid") {
-    return { backgroundColor };
+    return { color: background, mask: "none", position: "0% 0%", repeat: "repeat", size: "auto" };
   }
 
   if (variant === "dotted" || variant === "hatched") {
     const { size, path } = fillTile(variant);
-    const image = svgUrl(size, size, path);
-    const tile = times(cell, size);
 
     return {
-      WebkitMaskImage: image,
-      WebkitMaskSize: tile,
-      backgroundColor,
-      maskImage: image,
-      maskSize: tile,
+      color: background,
+      mask: svgUrl(size, size, path),
+      position: "0% 0%",
+      repeat: "repeat",
+      size: times(cell, size),
     };
   }
 
@@ -246,21 +257,13 @@ export const fillStyle = (
   // nest, so the union is exact where both are anchored to the same edge.
   const ramp = ditherRamp({ edge, from, length, matrix, to });
   const { size } = getThresholdMap(matrix);
-  const image = `${svgUrl(ramp.width, ramp.height, ramp.path)}, ${ditherMask(to, { matrix })}`;
-  const size2 = `${times(cell, ramp.width)} ${times(cell, ramp.height)}, ${times(cell, size)}`;
-  const repeat = `${edge === "top" || edge === "bottom" ? "repeat-x" : "repeat-y"}, repeat`;
-  const position = `${EDGE_POSITION[edge]}, ${EDGE_POSITION[edge]}`;
 
   return {
-    WebkitMaskImage: image,
-    WebkitMaskPosition: position,
-    WebkitMaskRepeat: repeat,
-    WebkitMaskSize: size2,
-    backgroundColor,
-    maskImage: image,
-    maskPosition: position,
-    maskRepeat: repeat,
-    maskSize: size2,
+    color: background,
+    mask: `${svgUrl(ramp.width, ramp.height, ramp.path)}, ${ditherMask(to, { matrix })}`,
+    position: `${EDGE_POSITION[edge]}, ${EDGE_POSITION[edge]}`,
+    repeat: `${edge === "top" || edge === "bottom" ? "repeat-x" : "repeat-y"}, repeat`,
+    size: `${times(cell, ramp.width)} ${times(cell, ramp.height)}, ${times(cell, size)}`,
   };
 };
 
@@ -271,11 +274,11 @@ export const BLOOM_LEVELS = {
 } as const satisfies Record<Exclude<Bloom, "off">, { blur: number; strength: number }>;
 
 /**
- * Styles for a bloom layer: a blurred, translucent copy of a fill drawn
- * behind it. `--dither-bloom` scales the strength per theme (1 in dark,
- * lower in light, where glows turn muddy). `undefined` when off.
+ * A bloom layer: a blurred, translucent copy of a fill drawn behind it, as
+ * CSS `filter` and `opacity` values. `--dither-bloom` scales the strength per
+ * theme (1 in dark, lower in light, where glows turn muddy). `undefined` when off.
  */
-export const bloomLayerStyle = (bloom: Bloom): CSSProperties | undefined => {
+export const bloomLayer = (bloom: Bloom): { blur: string; opacity: string } | undefined => {
   if (bloom === "off") {
     return undefined;
   }
@@ -283,7 +286,7 @@ export const bloomLayerStyle = (bloom: Bloom): CSSProperties | undefined => {
   const { blur, strength } = BLOOM_LEVELS[bloom];
 
   return {
-    filter: `blur(${blur}px)`,
+    blur: `blur(${blur}px)`,
     opacity: `calc(var(--dither-bloom, 1) * ${strength})`,
   };
 };

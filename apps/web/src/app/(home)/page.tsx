@@ -20,7 +20,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { HalftoneCanvas } from "@/components/halftone/halftone-canvas";
-import type { HalftoneStyle } from "@/components/halftone/halftone";
+import type { HalftoneDots } from "@/components/halftone/halftone";
 import { emberField } from "@/components/halftone/painters";
 
 import { Code } from "./code";
@@ -38,16 +38,16 @@ const DOCS = { quickstart: "/docs", providers: "/docs/providers" } as const;
 
 const INK: readonly [number, number, number] = [0.043, 0.043, 0.047];
 
-const HARBOR_DOTS: HalftoneStyle = {
+const HARBOR_DOTS: HalftoneDots = {
   cell: 4.2,
   fill: 0.82,
-  shape: "square",
+  dot: "square",
   glow: 0.08,
   ground: INK,
 };
 
-const CARD_DOTS: HalftoneStyle = { cell: 5, fill: 0.8, shape: "square", glow: 0.12, ground: INK };
-const EMBER_DOTS: HalftoneStyle = { cell: 13, fill: 0.62, shape: "square", glow: 0.4, ground: INK };
+const CARD_DOTS: HalftoneDots = { cell: 5, fill: 0.8, dot: "square", glow: 0.12, ground: INK };
+const EMBER_DOTS: HalftoneDots = { cell: 13, fill: 0.62, dot: "square", glow: 0.4, ground: INK };
 
 /** The scope mark: four corner brackets framing one lit cell. Source: public/brand. */
 function Mark({ className }: { className?: string }) {
@@ -173,7 +173,7 @@ function Hero() {
         </div>
       </div>
 
-      <HarborViewport style={HARBOR_DOTS} brackets={<Brackets />} />
+      <HarborViewport dots={HARBOR_DOTS} brackets={<Brackets />} />
 
       <div className={styles.steps}>
         {[
@@ -217,7 +217,7 @@ function Providers() {
           that never touches the network.
         </p>
       </div>
-      <ProvidersCarousel style={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
+      <ProvidersCarousel dots={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
     </section>
   );
 }
@@ -404,7 +404,7 @@ function Closing() {
     <section className={styles.closing} aria-labelledby="closing-title">
       <HalftoneCanvas
         paint={emberField}
-        style={EMBER_DOTS}
+        dots={EMBER_DOTS}
         fps={15}
         stillAt={2}
         className={styles.closingCanvas}
@@ -421,7 +421,7 @@ function Closing() {
 }
 
 /* 5 by 7 bitmap letters for the footer wordmark */
-const GLYPHS: Record<string, string[]> = {
+const GLYPHS = {
   S: [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
   A: [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
   N: ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
@@ -429,14 +429,25 @@ const GLYPHS: Record<string, string[]> = {
   B: ["####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."],
   O: [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
   X: ["#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"],
-};
+} as const satisfies Record<string, readonly string[]>;
+
+type GlyphLetter = keyof typeof GLYPHS;
+
+function isGlyphLetter(letter: string): letter is GlyphLetter {
+  return Object.hasOwn(GLYPHS, letter);
+}
+
+/** The rows of one letter, or none for a letter the wordmark has no glyph for. */
+function glyphRows(letter: string): readonly string[] {
+  return isGlyphLetter(letter) ? GLYPHS[letter] : [];
+}
 
 function Wordmark({ text }: { text: string }) {
   return (
     <div className={styles.wordmark} aria-hidden="true">
       {text.split("").map((ch, i) => (
         <div key={i} className={styles.glyph}>
-          {(GLYPHS[ch] ?? []).flatMap((row, y) =>
+          {glyphRows(ch).flatMap((row, y) =>
             row
               .split("")
               .map((c, x) => (

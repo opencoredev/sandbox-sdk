@@ -1,7 +1,5 @@
-import type { CSSProperties } from "react";
-
-import { fillStyle } from "@/lib/dither";
-import type { FillEdge, FillVariant } from "@/lib/dither";
+import { DitherFill } from "@/lib/dither";
+import type { FillEdge, FillStyleOptions, FillVariant } from "@/lib/dither";
 import { providerColor, providerName } from "@/lib/providers";
 import type { ProviderId } from "@/lib/providers";
 
@@ -67,10 +65,9 @@ function layout(column: Column, max: number): Bar {
   };
 }
 
-const segmentStyle = (s: Segment, edge: FillEdge, length: number): CSSProperties =>
-  s.variant === "gradient"
-    ? fillStyle("gradient", { color: s.color, edge, length, to: 0.2 })
-    : fillStyle(s.variant, { color: s.color });
+/** How a segment is filled: a gradient fades from `edge` over `length` cells; other variants tile evenly. */
+const segmentFill = (s: Segment, edge: FillEdge, length: number): FillStyleOptions =>
+  s.variant === "gradient" ? { color: s.color, edge, length, to: 0.2 } : { color: s.color };
 
 const describe = (column: Column, bar: Bar) =>
   `${providerName(column.provider)}: ${column.detail.join(", ")}${bar.broken === null ? "" : ". Bar shortened, not to scale"}`;
@@ -83,40 +80,52 @@ function Break({ color, along }: { color: string; along: "x" | "y" }) {
   return (
     <span
       aria-hidden
-      className={`absolute bg-[var(--surface)] ${
+      className={`absolute border-(--break) bg-surface ${
         along === "y"
-          ? "-inset-x-1.5 top-3 h-[11px] -skew-y-[14deg] border-y-2"
-          : "-inset-y-1 right-3 w-[10px] -skew-x-[20deg] border-x-2"
+          ? "-inset-x-1.5 top-3 h-2.75 -skew-y-14 border-y-2"
+          : "-inset-y-1 right-3 w-2.5 -skew-x-20 border-x-2"
       }`}
-      style={{ borderColor: color }}
+      style={{ "--break": color }}
     />
   );
 }
 
 const Mark = ({ column }: { column: Column }) =>
   column.mark === undefined ? null : (
-    <sup className="ml-px text-[9px] text-[var(--muted)]">{column.mark}</sup>
+    <sup className="ml-px text-footnote text-muted">{column.mark}</sup>
   );
 
-const Card = ({
+/** Where the detail card sits against its column or row. */
+const CARD_ANCHOR = {
+  start: "left-0",
+  end: "right-0",
+  center: "left-1/2 -translate-x-1/2",
+  below: "top-full right-0 mt-1",
+} as const;
+
+/** The hover and focus card. `bottom` is a CSS length that lifts it above the column's top. */
+const DetailCard = ({
   column,
-  className,
-  style,
+  anchor,
+  bottom,
 }: {
   column: Column;
-  className: string;
-  style?: CSSProperties;
+  anchor: keyof typeof CARD_ANCHOR;
+  bottom?: string;
 }) => (
   <div
     role="presentation"
-    style={style}
-    className={`pointer-events-none absolute z-10 w-max max-w-[220px] rounded-md border border-[var(--line)] bg-[var(--popover)] px-2.5 py-2 text-left text-[12px] leading-snug opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none ${className}`}
+    style={{ "--card-bottom": bottom }}
+    className={`pointer-events-none absolute z-10 w-max max-w-55 rounded-md border border-line bg-popover px-2.5 py-2 text-left text-caption leading-snug opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none ${CARD_ANCHOR[anchor]} ${bottom === undefined ? "" : "bottom-(--card-bottom)"}`}
   >
-    <span className="block font-medium" style={{ color: providerColor(column.provider) }}>
+    <span
+      className="block font-medium text-(--provider)"
+      style={{ "--provider": providerColor(column.provider) }}
+    >
       {providerName(column.provider)}
     </span>
     {column.detail.map((line) => (
-      <span key={line} className="block font-mono text-[11px] text-[var(--muted)] tabular-nums">
+      <span key={line} className="block font-mono text-tick text-muted tabular-nums">
         {line}
       </span>
     ))}
@@ -131,18 +140,13 @@ const Card = ({
 function Vertical({ columns, max }: { columns: readonly Column[]; max: number }) {
   return (
     <>
-      <div className="relative flex h-[260px] items-end border-b border-[var(--axis)] pt-6">
+      <div className="relative flex h-65 items-end border-b border-chart-axis pt-6">
         {columns.map((column, index) => {
           const bar = layout(column, max);
           const color = providerColor(column.provider);
 
           // Keep the hover card inside the chart: edge columns anchor it inward.
-          const anchor =
-            index < 2
-              ? "left-0"
-              : index >= columns.length - 2
-                ? "right-0"
-                : "left-1/2 -translate-x-1/2";
+          const anchor = index < 2 ? "start" : index >= columns.length - 2 ? "end" : "center";
 
           return (
             <div
@@ -151,43 +155,42 @@ function Vertical({ columns, max }: { columns: readonly Column[]; max: number })
               aria-label={describe(column, bar)}
               className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none"
             >
-              <span className="mb-1.5 shrink-0 font-mono text-[12px] whitespace-nowrap text-[var(--foreground)] tabular-nums">
+              <span className="mb-1.5 shrink-0 font-mono text-caption whitespace-nowrap text-foreground tabular-nums">
                 {column.label}
               </span>
               <div
-                className="relative flex w-[min(60px,66%)] shrink-0 flex-col-reverse"
-                style={{ height: `${bar.length * 100}%`, minHeight: 2 }}
+                className="relative flex h-(--bar) min-h-0.5 w-bar shrink-0 flex-col-reverse"
+                style={{ "--bar": `${bar.length * 100}%` }}
               >
                 {column.segments.map((s, i) => (
-                  <div
+                  <DitherFill
                     key={i}
+                    variant={s.variant}
+                    {...segmentFill(s, "top", 34)}
                     aria-hidden
-                    className="relative w-full"
-                    style={{
-                      height: `${((bar.shares[i] ?? 0) / bar.length) * 100}%`,
-                      ...segmentStyle(s, "top", 34),
-                    }}
+                    className="relative h-(--segment) w-full"
+                    style={{ "--segment": `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}
                   >
                     {bar.broken === i ? <Break color={s.color} along="y" /> : null}
-                  </div>
+                  </DitherFill>
                 ))}
                 {column.segments.length === 1 ? (
                   <div
                     aria-hidden
-                    className="absolute inset-x-0 top-0 h-[3px]"
-                    style={{ backgroundColor: color }}
+                    className="absolute inset-x-0 top-0 h-0.75 bg-(--provider)"
+                    style={{ "--provider": color }}
                   />
                 ) : null}
               </div>
-              <Card
+              <DetailCard
                 column={column}
-                className={anchor}
-                style={{ bottom: `calc(${bar.length * 100}% + 1.9rem)` }}
+                anchor={anchor}
+                bottom={`calc(${bar.length * 100}% + 1.9rem)`}
               />
               <span
                 aria-hidden
-                className="pointer-events-none absolute inset-x-1 -bottom-px h-px opacity-0 group-focus-visible:opacity-100"
-                style={{ backgroundColor: color }}
+                className="pointer-events-none absolute inset-x-1 -bottom-px h-px bg-(--provider) opacity-0 group-focus-visible:opacity-100"
+                style={{ "--provider": color }}
               />
             </div>
           );
@@ -197,8 +200,8 @@ function Vertical({ columns, max }: { columns: readonly Column[]; max: number })
         {columns.map((column) => (
           <span
             key={column.provider}
-            className="block min-w-0 flex-1 px-0.5 text-center text-[12px] leading-tight font-medium"
-            style={{ color: providerColor(column.provider) }}
+            className="block min-w-0 flex-1 px-0.5 text-center text-caption leading-tight font-medium text-(--provider)"
+            style={{ "--provider": providerColor(column.provider) }}
           >
             {providerName(column.provider)}
             <Mark column={column} />
@@ -228,36 +231,40 @@ function Horizontal({ columns, max }: { columns: readonly Column[]; max: number 
             key={column.provider}
             tabIndex={0}
             aria-label={describe(column, bar)}
-            className="group relative grid h-8 grid-cols-[5.25rem_1fr_auto] items-center gap-x-2.5 rounded-[3px] outline-none focus:bg-[var(--band)] sm:h-[22px] sm:grid-cols-[4.75rem_1fr_auto]"
+            className="group relative grid h-8 grid-cols-bar-row items-center gap-x-2.5 rounded-tag outline-none focus:bg-band sm:h-5.5 sm:grid-cols-bar-row-compact"
           >
             <span
               aria-hidden
-              className="truncate text-[13px] leading-none font-medium sm:text-[12px]"
-              style={{ color }}
+              className="truncate text-control leading-none font-medium text-(--provider) sm:text-caption"
+              style={{ "--provider": color }}
             >
               {providerName(column.provider)}
               <Mark column={column} />
             </span>
             <div
               aria-hidden
-              className="relative flex h-3.5 items-stretch border-l border-[var(--axis)] sm:h-3"
+              className="relative flex h-3.5 items-stretch border-l border-chart-axis sm:h-3"
             >
-              <div className="relative flex" style={{ width: `${bar.length * 100}%`, minWidth: 2 }}>
+              <div
+                className="relative flex w-(--bar) min-w-0.5"
+                style={{ "--bar": `${bar.length * 100}%` }}
+              >
                 {column.segments.map((s, i) => (
                   <div
                     key={i}
-                    className="relative h-full"
-                    style={{ width: `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}
+                    className="relative h-full w-(--segment)"
+                    style={{ "--segment": `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}
                   >
                     {/* Phones get a solid bar: at this size the dither fade reads as a dotted line. */}
-                    <div
+                    <DitherFill
+                      variant={s.variant}
+                      {...segmentFill(s, "right", 20)}
                       className={`absolute inset-0 ${s.variant === "gradient" ? "hidden sm:block" : ""}`}
-                      style={segmentStyle(s, "right", 20)}
                     />
                     {s.variant === "gradient" ? (
                       <div
-                        className="absolute inset-0 rounded-r-[2px] sm:hidden"
-                        style={{ backgroundColor: s.color }}
+                        className="absolute inset-0 rounded-r-xs bg-(--segment-color) sm:hidden"
+                        style={{ "--segment-color": s.color }}
                       />
                     ) : null}
                     {bar.broken === i ? <Break color={s.color} along="x" /> : null}
@@ -265,20 +272,20 @@ function Horizontal({ columns, max }: { columns: readonly Column[]; max: number 
                 ))}
                 {column.segments.length === 1 ? (
                   <div
-                    className="absolute inset-y-0 right-0 w-[3px]"
-                    style={{ backgroundColor: color }}
+                    className="absolute inset-y-0 right-0 w-0.75 bg-(--provider)"
+                    style={{ "--provider": color }}
                   />
                 ) : null}
               </div>
             </div>
             <span
               aria-hidden
-              className="text-right font-mono text-[12px] text-[var(--foreground)] tabular-nums sm:text-[11px]"
-              style={{ width: valueWidth }}
+              className="w-(--value-width) text-right font-mono text-caption text-foreground tabular-nums sm:text-tick"
+              style={{ "--value-width": valueWidth }}
             >
               {column.label}
             </span>
-            <Card column={column} className="top-full right-0 mt-1" />
+            <DetailCard column={column} anchor="below" />
           </div>
         );
       })}
