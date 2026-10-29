@@ -19,12 +19,14 @@ export interface BoxdOptions {
   requestTimeoutMs?: number;
   /** Cancels file transfers; default: no adapter-wide cancellation. */
   fileTransferSignal?: AbortSignal;
+  /** Persistent boxd disks to attach to new machines (not restores). Default: none. */
+  volumes?: { diskId: string; mountPath: string; readOnly?: boolean }[];
 }
 export interface BoxdNative {
   machine: Machine;
   client: Boxd;
 }
-export type BoxdProvider = Provider<BoxdNative, "pause" | "size" | "snapshot">;
+export type BoxdProvider = Provider<BoxdNative, "pause" | "size" | "snapshot" | "network-policy">;
 const marker = "/var/lib/sandbox-sdk/metadata.json";
 // Each class has fixed 100 GB disk and 4 GiB memory per vCPU.
 function vcpuFor(size: CreateInput["size"]): number | undefined {
@@ -35,6 +37,21 @@ function vcpuFor(size: CreateInput["size"]): number | undefined {
   if (size.memoryMb !== size.cpu * 4096 || (size.diskGb ?? 100) !== 100)
     throw failure(`boxd gives ${size.cpu} vCPU / ${size.cpu * 4} GiB memory / 100 GB disk; CPU and memory cannot be selected independently`, "unsupported");
   return size.cpu;
+}
+function seconds(value: number | undefined, label: string) {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value <= 0) throw failure(`${label} must be a positive integer of milliseconds`, "invalid_argument");
+  return Math.ceil(value / 1000);
+}
+/** boxd egress is an allow-list; an empty list means unrestricted, so "none" cannot be expressed. */
+function egress(network: CreateInput["network"]): string[] | undefined {
+  if (network === undefined || network === "all") return undefined;
+  if (network === "none" || !network.allow.length)
+    throw failure("boxd cannot block all egress (an empty allow-list means unrestricted); pass network: { allow: [...] } with at least one entry", "unsupported");
+  for (const entry of network.allow)
+    if (!/^(\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?|(\*\.)?(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)$/.test(entry))
+      throw failure("Network allow entries must be hostnames, *.wildcards, or public IPv4 addresses and CIDRs", "unsupported");
+  return [...new Set(network.allow)];
 }
 export function boxd(options: BoxdOptions = {}): BoxdProvider {
   let client: Promise<Boxd> | undefined;
@@ -179,22 +196,16 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
     name: "boxd",
     keyMode: "best-effort",
     inlineActivity: true,
-    capabilities: new Set(["pause", "size", "snapshot"]),
+    capabilities: new Set(["pause", "size", "snapshot", "network-policy"]),
     create: (input) =>
       safe(undefined, async () => {
-        if (
-          (input.network && input.network !== "all") ||
-          input.idleTimeoutMs !== undefined ||
-          input.timeoutMs !== undefined
-        )
-          throw failure(
-            "Network restrictions and idle/lifetime limits are not implemented",
-            "unsupported",
-          );
+        const allow = egress(input.network);
+        const deleteAfter = seconds(input.timeoutMs, "timeoutMs");
+        const autoSuspendTimeout = seconds(input.idleTimeoutMs, "idleTimeoutMs") ?? 0;
         if (input.from !== undefined && !input.from.trim())
           throw failure("Snapshot restore requires a nonempty snapshot ID or name", "invalid_argument");
-        if (input.from !== undefined && (input.size !== undefined || Object.keys(input.env ?? {}).length > 0 || options.image !== undefined))
-          throw failure("boxd snapshot restore inherits size, image and environment; overrides are not supported", "unsupported");
+        if (input.from !== undefined && (input.size !== undefined || Object.keys(input.env ?? {}).length > 0 || options.image !== undefined || options.volumes?.length))
+          throw failure("boxd snapshot restore inherits size, image, volumes and environment; overrides are not supported", "unsupported");
         const vcpu = vcpuFor(input.size);
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const c = await api();
@@ -210,13 +221,15 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             name,
             fromSnapshot: input.from,
             isolated: true,
-            config: { autoSuspendTimeout: 0 },
+            ...(deleteAfter === undefined ? {} : { deleteAfter }),
+            config: { autoSuspendTimeout },
           } : {
             name,
             image: options.image,
             env: input.env,
             isolated: true,
-            config: { autoSuspendTimeout: 0, autoDestroyTimeout: 0, vcpu },
+            ...(deleteAfter === undefined ? {} : { deleteAfter }),
+            config: { autoSuspendTimeout, autoDestroyTimeout: 0, vcpu, ...(options.volumes?.length ? { volumes: options.volumes } : {}) },
           });
         } catch (error) {
           const mapped = boxdError(error);
@@ -231,6 +244,12 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         try {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           if (m.status !== "running") m = await c.machines.waitUntilReady(m.id, { timeout: options.requestTimeoutMs ?? 90000 });
+          if (allow) {
+            // Applied before any SDK or user command runs; the platform confirms the list in effect.
+            const actual = await c.machines.setEgressAllow(m.id, allow);
+            if (actual.length !== allow.length || allow.some((entry) => !actual.includes(entry)))
+              throw failure("boxd did not confirm the requested egress allow-list", "unsupported", m.id);
+          }
           const value: SandboxInfo = { id: m.id, key: input.key, labels: input.labels, createdAt: m.createdAt?.getTime() ?? createdAt, state: "running" };
           pending.set(m.id, preparation(metadata));
           boxes.set(m.id, m);
@@ -318,7 +337,9 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
       safe(id, async () => {
         await (await api()).machines.resume(id);
       }),
-    snapshot: (id) => safe(id, async () => {
+    snapshot: (id, snapshotOptions) => safe(id, async () => {
+      if (snapshotOptions?.expiresInMs)
+        throw failure("boxd keeps snapshots until they are deleted; omit expiresInMs", "unsupported", id);
       const c = await api();
       const name = `sbxsdk-${crypto.randomUUID()}`;
       const deadline = Date.now() + (options.requestTimeoutMs ?? 90000);

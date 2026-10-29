@@ -17,6 +17,12 @@ import { nativeDetail } from "../../errors.js";
 export interface AgentosOptions {
   /** Trusted local .aospkg file; otherwise install Rivet's pinned Git release. */
   gitPackagePath?: string;
+  /** Extra agentOS software packages, installed with Core's default tools and Git. Default: none. */
+  software?: AgentOsOptions["software"];
+  /** Boot-time mounts, such as `hostDirMount("/data", "/srv/data")` from agentOS Core. Read-only unless the mount says otherwise. Default: none. */
+  mounts?: AgentOsOptions["mounts"];
+  /** Kernel resource limits (processes, open files, filesystem bytes, WASM memory and fuel). Default: Core's built-in limits. */
+  limits?: AgentOsOptions["limits"];
 }
 type AgentosCapability = "network-policy";
 type Entry = { vm: AgentOs; info: SandboxInfo };
@@ -47,6 +53,13 @@ async function fileStat(vm: AgentOs, path: string, symbolic?: boolean): Promise<
   return { path, type: "symlink", size: result.value.size, modifiedAt: result.value.modifiedAt };
 }
 
+// Guest chmod in 0.4.1 resolves paths against the wrong shadow root unless cwd is
+// /workspace, so apply modes through the VM's own Node fs instead.
+async function chmod(vm: AgentOs, path: string, mode: number) {
+  const result = await vm.javascript.evaluate(`(() => { require("node:fs").chmodSync(${JSON.stringify(path)}, ${mode}); return true; })()`);
+  if (result.outcome !== "succeeded" || result.value !== true) throw failure("agentOS could not set the file mode", "provider");
+}
+
 export type AgentosProvider = Provider<AgentOs, AgentosCapability>;
 /** Embedded, Docker-free V8/WebAssembly runtime. Docker remains local()'s default. */
 export function agentos(options: AgentosOptions = {}): AgentosProvider {
@@ -72,7 +85,13 @@ export function agentos(options: AgentosOptions = {}): AgentosProvider {
         let vm: AgentOs | undefined;
         try {
           const { AgentOs } = await sdk();
-          vm = await AgentOs.create({ permissions, ...(Object.keys(input.env ?? {}).length ? { environment: { PATH: "/opt/agentos/bin:/usr/local/bin:/usr/bin:/bin", HOME: "/home/agentos", ...input.env } } : {}) });
+          vm = await AgentOs.create({
+            permissions,
+            ...(Object.keys(input.env ?? {}).length ? { environment: { PATH: "/opt/agentos/bin:/usr/local/bin:/usr/bin:/bin", HOME: "/home/agentos", ...input.env } } : {}),
+            ...(options.software?.length ? { software: options.software } : {}),
+            ...(options.mounts?.length ? { mounts: options.mounts } : {}),
+            ...(options.limits ? { limits: options.limits } : {}),
+          });
           await vm.software.install(options.gitPackagePath ? { type: "path", path: options.gitPackagePath } : { type: "url", url: gitUrl, expectedDigest: gitDigest });
           await vm.filesystem.mkdir("/workspace", { recursive: true });
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
@@ -127,9 +146,13 @@ export function agentos(options: AgentosOptions = {}): AgentosProvider {
     },
     files: {
       writeCreatesParents: true,
+      writeSupportsMode: true,
       transfer: "files",
       read: (id, path) => safe(id, async vm => new Uint8Array(await vm.filesystem.readFile(path)), true),
-      write: (id, path, data) => safe(id, async vm => { await vm.filesystem.mkdir(posix.dirname(path), { recursive: true }); await vm.filesystem.writeFile(path, data); }, true),
+      write: (id, path, data, options) => safe(id, async vm => {
+        await vm.filesystem.mkdir(posix.dirname(path), { recursive: true }); await vm.filesystem.writeFile(path, data);
+        if (options?.mode !== undefined) await chmod(vm, path, options.mode);
+      }, true),
       stat: (id, path) => safe(id, async vm => fileStat(vm, path), true),
       list: (id, path) => safe(id, async vm => Promise.all((await vm.filesystem.readdirEntries(path)).map(item => fileStat(vm, posix.join(path, item.name), item.isSymbolicLink))), true),
       mkdir: (id, path) => safe(id, vm => vm.filesystem.mkdir(path, { recursive: true }), true),

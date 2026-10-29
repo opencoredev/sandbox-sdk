@@ -20,6 +20,8 @@ export interface FreestyleOptions {
   snapshotId?: string;
   /** Overall deadline for control/file operations, including background polls. Default 30 s. Commands use their run timeout. */
   requestTimeoutMs?: number;
+  /** Delete the VM once it has gone this long without running; `0` deletes it as soon as it stops. Rounded up to whole seconds. Default: never, or your plan's cap. */
+  autoDeleteMs?: number;
 }
 export type FreestyleProvider = Provider<Vm, "pause" | "snapshot" | "network-policy">;
 const marker = "/var/lib/sandbox-sdk.json";
@@ -58,6 +60,9 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   const pending = new Map<string, [string, string][]>();
   const previews = new Map<string, string>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30000;
+  if (options.autoDeleteMs !== undefined && (!Number.isSafeInteger(options.autoDeleteMs) || options.autoDeleteMs < 0))
+    throw failure("autoDeleteMs must be a non-negative integer of milliseconds", "invalid_argument");
+  const autoDeleteSeconds = options.autoDeleteMs === undefined ? undefined : Math.ceil(options.autoDeleteMs / 1000);
   async function api() {
     return (client ??= (async () => {
       if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
@@ -162,11 +167,12 @@ with tempfile.TemporaryFile() as f:
           );
         return r.stdout ?? "";
       },
-      upload: (path, bytes) => safe(id, async () => {
+      // Without a mode both paths keep an existing file's mode; new files get the guest default (0644 live).
+      upload: (path, bytes, mode) => safe(id, async () => {
         if (pending.has(id)) {
-          const result = await run(value, python("import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(sys.stdin.buffer.read()); f.close(); os.chmod(sys.argv[1],0o600)", path), Buffer.from(bytes).toString("base64"), requestTimeoutMs);
+          const result = await run(value, python("import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)", path, mode === undefined ? "" : mode.toString(8)), Buffer.from(bytes).toString("base64"), requestTimeoutMs);
           if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
-        } else await value.fs.writeFile(path, bytes, { mode: 0o600, signal: operationSignal.getStore() });
+        } else await value.fs.writeFile(path, bytes, { ...(mode === undefined ? {} : { mode }), signal: operationSignal.getStore() });
       }),
       read: (path, range) =>
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
@@ -254,6 +260,7 @@ with tempfile.TemporaryFile() as f:
             vpcs: [],
             idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
             ttlSeconds,
+            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
           };
           // No retries: a transport failure may have allocated a VM. An unknown
           // outcome must be inspected before another create is attempted.
@@ -282,7 +289,8 @@ with tempfile.TemporaryFile() as f:
             if (
               (idleTimeoutSeconds !== undefined &&
                 data.idleTimeoutSeconds !== idleTimeoutSeconds) ||
-              (ttlSeconds !== undefined && data.ttlSeconds !== ttlSeconds)
+              (ttlSeconds !== undefined && data.ttlSeconds !== ttlSeconds) ||
+              (autoDeleteSeconds !== undefined && data.autoDeleteSeconds !== autoDeleteSeconds)
             )
               throw failure("Freestyle did not confirm requested limits", "unsupported", id);
             // No VPCs or inherited network grants may widen a restricted VM.
@@ -421,7 +429,7 @@ with tempfile.TemporaryFile() as f:
         throw freestyleError(error, id);
       }
     },
-    files: files(guest, safe),
+    files: { ...files(guest, safe), writeSupportsMode: true },
     previewUrl: (id, port) =>
       safe(id, async () => {
         const key = `${id}:${port}`;
@@ -450,7 +458,13 @@ with tempfile.TemporaryFile() as f:
       safe(id, async () => {
         await (await vm(id)).start();
       }),
-    snapshot: (id) => safe(id, async () => ({ id: (await (await vm(id)).snapshot()).snapshotId })),
+    snapshot: (id, snapshotOptions) => safe(id, async () => {
+      const expiresInMs = snapshotOptions?.expiresInMs;
+      if (expiresInMs !== undefined && (!Number.isSafeInteger(expiresInMs) || expiresInMs < 0))
+        throw failure("expiresInMs must be a non-negative integer", "invalid_argument", id);
+      // 0 keeps the snapshot until deleted (or until the plan's cap).
+      return { id: (await (await vm(id)).snapshot(expiresInMs ? { ttlSeconds: Math.ceil(expiresInMs / 1000) } : undefined)).snapshotId };
+    }),
     native(id) {
       const value = boxes.get(id);
       if (!value) throw failure("Connect the VM first", "not_found", id);

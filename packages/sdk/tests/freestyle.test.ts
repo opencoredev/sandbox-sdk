@@ -626,3 +626,59 @@ test("first execution preserves the inherited umask", async () => {
     expect(first.stdout).toBe(second.stdout);
   } finally { await box.destroy(); }
 });
+
+describe("freestyle native options (SBX-71)", () => {
+  test("files.write passes mode to the native write and keeps the native default otherwise", async () => {
+    const provider = factory();
+    expect(provider.files.writeSupportsMode).toBe(true);
+    const box = await createSandbox(provider);
+    try {
+      await box.run("true");
+      const native = freestyleState.boxes.get(box.id);
+      if (!native) throw new Error("Missing mock VM");
+      const write = vi.spyOn(native.fs, "writeFile");
+      await box.files.write("secret", "x", { mode: 0o640 });
+      await box.files.write("plain", "x");
+      expect(write.mock.calls[0]?.[2]).toMatchObject({ mode: 0o640 });
+      expect(write.mock.calls[1]?.[2]).not.toHaveProperty("mode");
+      write.mockRestore();
+    } finally { await box.destroy(); }
+  });
+  test("the first-use write path applies mode in the guest", async () => {
+    const box = await createSandbox(factory());
+    try {
+      const native = freestyleState.boxes.get(box.id);
+      if (!native) throw new Error("Missing mock VM");
+      const write = vi.spyOn(native.fs, "writeFile");
+      await box.files.write("first", "x", { mode: 0o751 });
+      await box.files.write("second", "x");
+      expect(write).toHaveBeenCalledTimes(1);
+      write.mockRestore();
+      const { promises: fs } = await import("node:fs");
+      expect((await fs.stat(native.guest.rewrite("/workspace/first"))).mode & 0o777).toBe(0o751);
+    } finally { await box.destroy(); }
+  });
+  test("snapshot expiresInMs maps to ttlSeconds; 0 keeps the snapshot", async () => {
+    const provider = factory();
+    const box = await createSandbox(provider);
+    try {
+      freestyleState.snapshotOptions.length = 0;
+      await box.snapshot({ expiresInMs: 90_500 });
+      await box.snapshot({ expiresInMs: 0 });
+      await box.snapshot();
+      expect(freestyleState.snapshotOptions).toEqual([{ ttlSeconds: 91 }, undefined, undefined]);
+      await expect(box.snapshot({ expiresInMs: -1 })).rejects.toMatchObject({ code: "invalid_argument" });
+    } finally { await box.destroy(); }
+  });
+  test("autoDeleteMs reaches vms.create in seconds and is confirmed", async () => {
+    const provider = freestyle({ apiKey: "mock-key", autoDeleteMs: 0 });
+    const box = await provider.create({ labels: {} });
+    try { expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 0 }); }
+    finally { await provider.destroy(box.id); }
+    const later = freestyle({ apiKey: "mock-key", autoDeleteMs: 3_600_001 });
+    const second = await later.create({ labels: {} });
+    try { expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 3601 }); }
+    finally { await later.destroy(second.id); }
+    expect(() => freestyle({ autoDeleteMs: -1 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
+  });
+});

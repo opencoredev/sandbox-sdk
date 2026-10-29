@@ -31,12 +31,12 @@ The first run pulls `node:22-bookworm`. `await using` removes the container when
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Yes | Live output |
-| Files | Yes | |
+| Files | Yes | `mode` is set in the same write |
 | Background processes | Yes | |
 | Preview URLs | Partial | `http://127.0.0.1` on the Docker host; declare ports |
 | Pause and resume | Yes | Processes freeze and continue |
-| Snapshots | Yes | Commits a local image |
-| Machine size | Partial | Presets only |
+| Snapshots | Yes | Commits a local image; no `expiresInMs` |
+| Machine size | Partial | Presets or `{ cpu, memoryMb }`; no `diskGb` |
 | Network policy | Partial | `"none"` only; no allow lists |
 | Hard lifetime (`timeoutMs`) | Partial | Enforced on reconnect or reap |
 | Idle timeout (`idleTimeoutMs`) | Partial | Enforced on reconnect or reap |
@@ -70,9 +70,12 @@ import { local } from "@opencoredev/sandbox-sdk/local";
 
 await using box = await createSandbox(local());
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
+
+`mode` is applied exactly, ignoring the container's umask. Without it, new files get the umask default (usually `644`).
 
 ## Background processes and previews
 
@@ -109,7 +112,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(local(), { from: id });
 ```
 
-Snapshot images stay in Docker until you run `docker image rm`.
+Snapshot images stay in Docker until you run `docker image rm`. Images have no expiry, so `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
 
 ## Size, network, and lifetime
 
@@ -129,9 +132,10 @@ await using box = await createSandbox(local(), {
   idleTimeoutMs: 15 * 60_000,
   timeoutMs: 60 * 60_000,
 });
+await using custom = await createSandbox(local(), { size: { cpu: 1.5, memoryMb: 2048 } });
 ```
 
-Memory is a hard limit with swap off. Without `size`, Docker sets no limit. Exact sizes and allow lists fail with `unsupported`. Docker has no timer, so both timeouts are checked when a client reconnects or [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Schedule a reaper if nothing reconnects.
+A custom size sets Docker's CPU quota and memory directly; fractional CPUs work. Memory is a hard limit with swap off. Without `size`, Docker sets no limit. A size with `diskGb` and any allow list fail with `unsupported`. Docker has no timer, so both timeouts are checked when a client reconnects or [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Schedule a reaper if nothing reconnects.
 
 ## Configuration
 
@@ -139,12 +143,49 @@ Memory is a hard limit with swap off. Without `size`, Docker sets no limit. Exac
 | --- | --- | --- | --- |
 | `image` | `string` | `"node:22-bookworm"` | |
 | `dockerHost` | `string` | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
+| `platform` | `string` | Docker's platform | |
+| `user` | `string` | The image's user | |
+| `runtime` | `string` | Docker's default (`runc`) | |
+| `networkMode` | `string` | `"bridge"` | |
+| `mounts` | `LocalMount[]` | None | |
+| `pidsLimit` | `number` | No limit | |
+| `shmSizeMb` | `number` | 64 | |
+| `capAdd` | `string[]` | None | |
+| `capDrop` | `string[]` | None | |
+| `securityOpt` | `string[]` | None | |
 
 The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const provider = local({
+  platform: "linux/amd64",
+  user: "node",
+  runtime: "runsc",
+  pidsLimit: 256,
+  capDrop: ["NET_RAW"],
+  securityOpt: ["no-new-privileges"],
+  mounts: [
+    { type: "volume", source: "npm-cache", target: "/home/node/.npm" },
+    { type: "tmpfs", target: "/scratch" },
+    { type: "bind", source: "/srv/fixtures", target: "/fixtures", readOnly: true },
+  ],
+});
+await using box = await createSandbox(provider);
+```
+
+- `platform` is passed to the pull and the create. A cached image for another platform is pulled again.
+- `user` runs every command and file operation as that user (name, uid, or `uid:gid`). The SDK gives `/workspace` to that user at creation. Mount targets keep their owner, so a fresh named volume is owned by root and a non-root user can't write it until you change that.
+- `runtime` picks an OCI runtime the daemon has registered, such as `runsc` (gVisor) or `sysbox-runc`, for stronger isolation.
+- `networkMode` joins a user-defined network you created. `network: "none"` still wins. `host` and `container:` modes are rejected because they break loopback previews.
+- `mounts` takes `{ type: "bind" | "volume" | "tmpfs", source?, target, readOnly? }`. Bind sources must be absolute host paths. Named volumes and bind sources survive `destroy()`; anonymous volumes and tmpfs mounts are removed with the container.
+- `capAdd`, `capDrop`, and `securityOpt` pass through to Docker unchanged.
+
 ## Limitations
 
-- Isolation is a container, not a VM. Don't run untrusted code on a machine that holds secrets.
+- Isolation is a container, not a VM, unless you set a sandboxing `runtime` such as gVisor. Don't run untrusted code on a machine that holds secrets.
 - No network allow lists. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) for one.
 - Preview URLs are reachable only on the Docker host.
 - Timeouts need a reconnect or a reaper to take effect.

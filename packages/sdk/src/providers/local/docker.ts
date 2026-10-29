@@ -71,8 +71,8 @@ export class Docker {
     }
     return parse(bytes.toString());
   }
-  async exec(id: string, command: string[], options: { cwd?: string; env?: Record<string, string>; stdin?: string; onChunk(chunk: OutputChunk): void }): Promise<number> {
-    const created = object(await this.call("POST", `/containers/${encode(id)}/exec`, { Cmd: command, WorkingDir: options.cwd ?? "/", Env: Object.entries(options.env ?? {}).map(([k, v]) => `${k}=${v}`), AttachStdout: true, AttachStderr: true, AttachStdin: options.stdin !== undefined, Tty: false }));
+  async exec(id: string, command: string[], options: { cwd?: string; env?: Record<string, string>; stdin?: string; user?: string; onChunk(chunk: OutputChunk): void }): Promise<number> {
+    const created = object(await this.call("POST", `/containers/${encode(id)}/exec`, { Cmd: command, WorkingDir: options.cwd ?? "/", ...(options.user === undefined ? {} : { User: options.user }), Env: Object.entries(options.env ?? {}).map(([k, v]) => `${k}=${v}`), AttachStdout: true, AttachStderr: true, AttachStdin: options.stdin !== undefined, Tty: false }));
     const execId = string(created.Id);
     await new Promise<void>((resolve, reject) => {
       const demux = new Demux(options.onChunk);

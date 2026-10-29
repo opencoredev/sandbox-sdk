@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { lstatSync, promises as fs } from "node:fs";
+import { chmodSync, lstatSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentOs, AgentOsOptions, CodeExecutionResult } from "@rivet-dev/agentos-core";
@@ -29,7 +29,7 @@ export class MockAgentOs {
   readonly javascript = {
     evaluate: async (expression: string) => ({ outcome: "succeeded", value: new Function("require", `return ${expression}`)((name: string) => {
       if (name !== "node:fs") throw new Error("Unexpected mock module");
-      return { lstatSync: (path: string) => lstatSync(this.mapped(path)) };
+      return { lstatSync: (path: string) => lstatSync(this.mapped(path)), chmodSync: (path: string, mode: number) => chmodSync(this.mapped(path), mode) };
     }) }),
   };
   readonly process = {

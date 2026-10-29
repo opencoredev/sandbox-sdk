@@ -106,3 +106,29 @@ test("idle reaping sees public runs through a fresh adapter factory", async () =
     expect(await reapSandboxes(agentos(), { labels, olderThanMs: 0, idleOnly: true })).toBe(1);
   } finally { await run; await box.destroy(); }
 });
+
+test("native software, mounts and limits reach AgentOs.create unchanged (SBX-71)", async () => {
+  const mounts = [{ path: "/data", plugin: { id: "host_dir", config: { hostPath: "/srv/data", readOnly: true } }, readOnly: true }];
+  const options = { software: [{ packagePath: "/pkgs/python" }], mounts, limits: { resources: { maxProcesses: 32, maxFilesystemBytes: 1 << 20 } } } as const satisfies Omit<import("../src/providers/agentos/index.js").AgentosOptions, "gitPackagePath">;
+  const box = await createSandbox(agentos(options), { env: { A: "1" } });
+  try {
+    expect(mock.creates.at(-1)).toMatchObject({ ...options, environment: { HOME: "/home/agentos", A: "1" } });
+  } finally { await box.destroy(); }
+  const plain = await createSandbox(agentos());
+  try { for (const key of ["software", "mounts", "limits"]) expect(mock.creates.at(-1)).not.toHaveProperty(key); }
+  finally { await plain.destroy(); }
+});
+test("agentOS applies write modes through the VM's Node fs", async () => {
+  const provider = agentos();
+  expect(provider.files.writeSupportsMode).toBe(true);
+  const box = await createSandbox(provider);
+  try {
+    const evaluate = vi.spyOn(box.native.javascript, "evaluate");
+    await provider.files.write(box.id, "/workspace/secret", new TextEncoder().encode("x"), { mode: 0o600 });
+    await provider.files.write(box.id, "/workspace/plain", new TextEncoder().encode("x"));
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate.mock.calls[0]?.[0]).toContain(`chmodSync("/workspace/secret", ${0o600})`);
+    expect((await box.run("stat -c %a secret")).stdout.trim()).toBe("600");
+    evaluate.mockRestore();
+  } finally { await box.destroy(); }
+});
