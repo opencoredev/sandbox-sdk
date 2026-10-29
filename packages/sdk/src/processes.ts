@@ -38,7 +38,7 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
   const handles = new Map<string, ProcessHandle>();
   const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   const nameOf = (name: string) => { if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) invalid("Process name must contain 1–128 letters, numbers, hyphens or underscores"); return `${root}/${name}`; };
-  const exec = (command: string, processEnv: Record<string, string> = {}, stdin?: string) => provider.exec(id, { command, stdin, cwd: "/workspace", env: { ...env, ...processEnv, ...defaults }, timeoutMs: 10_000, onChunk() {} });
+  const exec = (command: string, processEnv: Record<string, string> = {}, stdin?: string, onStdout: (text: string) => void = () => {}) => provider.exec(id, { command, stdin, cwd: "/workspace", env: { ...env, ...processEnv, ...defaults }, timeoutMs: 10_000, onChunk(chunk) { if (chunk.stream === "stdout") onStdout(chunk.text); } });
   async function exitCode(dir: string): Promise<number | null> {
     try { return Number(await files.read(`${dir}/exit`)); }
     catch (error) {
@@ -205,6 +205,12 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
         const spec = JSON.stringify({ command: redactor.text(command), cwd: pathOf(options.cwd), env: Object.fromEntries(Object.entries(options.env ?? {}).map(([key, value]) => [key, redactor.text(value)])), startedAt: Date.now(), port, readiness: options.ready && ("log" in options.ready ? { log: options.ready.log.source, flags: options.ready.log.flags } : options.ready), readyTimeoutMs: options.readyTimeoutMs });
         const restart = JSON.stringify({ command, cwd: pathOf(options.cwd), env: options.env, readiness: options.ready && ("log" in options.ready ? { log: options.ready.log.source, flags: options.ready.log.flags } : options.ready), readyTimeoutMs: options.readyTimeoutMs });
         const sedPath = `${dir}/redact.sed`;
+        // false when setup found no working directory and recorded the failure itself.
+        let launched = true;
+        // An exit seen while launching, so start() does not report a finished command as running.
+        let early: number | undefined;
+        // A native hook reports its exit from its own stream, so waiting on it costs no provider call.
+        let hookExit: Promise<unknown> | undefined;
         if (provider.name === "memory" && provider.startProcess) {
           controller?.state("starting"); controller?.ready(false);
           await files.write(`${dir}/spec.json`, spec); await files.write(`${dir}/restart.json`, restart);
@@ -219,14 +225,15 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           }).join("\n") + "\n";
           // Prepare records in one exec. Framed base64 on stdin preserves exact
           // UTF-8 bytes even through transports that normalize input paths.
-          const result = await exec(`mkdir -p ${quote(dir)} || exit 1; if [ -f ${quote(`${dir}/spec.json`)} ] && [ ! -f ${quote(`${dir}/exit`)} ]; then exit 73; fi; b=0; if [ -f ${quote(`${dir}/base`)} ]; then b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); b=$((b+n)); fi; IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${quote(`${dir}/spec.json`)} && (umask 077; printf '%s' "$r" | base64 -d > ${quote(`${dir}/restart.json`)}) && : > ${quote(`${dir}/out.log`)} && printf '%s' "$b" > ${quote(`${dir}/base`)} && rm -f ${quote(`${dir}/exit`)}`, {}, Buffer.from(spec).toString("base64") + "\n" + Buffer.from(restart).toString("base64") + "\n");
+          const result = await exec(`mkdir -p ${quote(dir)} || exit 1; if [ -f ${quote(`${dir}/spec.json`)} ] && [ ! -f ${quote(`${dir}/exit`)} ]; then exit 73; fi; b=0; if [ -f ${quote(`${dir}/base`)} ]; then b=$(cat ${quote(`${dir}/base`)}); n=$(wc -c < ${quote(`${dir}/out.log`)}); b=$((b+n)); fi; IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${quote(`${dir}/spec.json`)} && (umask 077; printf '%s' "$r" | base64 -d > ${quote(`${dir}/restart.json`)}) && : > ${quote(`${dir}/out.log`)} && printf '%s' "$b" > ${quote(`${dir}/base`)} && rm -f ${quote(`${dir}/exit`)} || exit 1; m=$(cd ${quote(pathOf(options.cwd))} 2>&1) && exit 0; c=$?; printf '%s\n' "$m" | sed 's/^/E/' > ${quote(`${dir}/out.log`)}; printf 0 > ${quote(`${dir}/pid`)}; printf '%s' "$c" > ${quote(`${dir}/exit`)}; exit 74`, {}, Buffer.from(spec).toString("base64") + "\n" + Buffer.from(restart).toString("base64") + "\n");
           if (result.exitCode === 73) invalid(`Process ${options.name} is already running`);
-          if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Process setup failed. Could not prepare durable records. Check that /tmp is writable and retry.", { code: "provider" });
-          await provider.files.write(id, sedPath, new TextEncoder().encode(sed));
-          controller?.state("starting"); controller?.ready(false);
+          // 74: the working directory is missing. Its cd error is already the process log.
+          if (result.exitCode === 74) { launched = false; controller?.state("failed"); controller?.ready(false); }
+          else if (result.timedOut || result.exitCode !== 0) throw new SandboxError("Process setup failed. Could not prepare durable records. Check that /tmp is writable and retry.", { code: "provider" });
+          else { await provider.files.write(id, sedPath, new TextEncoder().encode(sed)); controller?.state("starting"); controller?.ready(false); }
         }
         controller?.launch(launch);
-        if (provider.startProcess && provider.name === "memory") {
+        if (launched && provider.startProcess && provider.name === "memory") {
           let writing: Promise<void> | undefined; let queued: string[] = []; let queuedBytes = 0; let discarded = 0;
           const drain = () => writing ??= (async () => {
             while (queued.length || discarded) {
@@ -249,20 +256,33 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           });
           const hook = await provider.startProcess(id, { command, cwd: pathOf(options.cwd), env: { ...env, ...options.env, ...defaults }, onChunk: chunk => filter.push(chunk) });
           native.set(options.name, hook); await files.write(`${dir}/pid`, String(hook.pid));
-          void hook.wait().then(async result => { filter.flush(); await drain(); await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); controller?.state(result.exitCode === 0 ? "exited" : "failed"); }).catch(async error => { await files.write(`${dir}/exit`, "1").catch(() => {}); controller?.state("failed"); void error; });
-        } else {
+          void hook.wait().then(async result => { early = result.exitCode ?? 137; filter.flush(); await drain(); await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); controller?.state(result.exitCode === 0 ? "exited" : "failed"); }).catch(async error => { await files.write(`${dir}/exit`, "1").catch(() => {}); controller?.state("failed"); void error; });
+        } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
           const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
           const reader = (stream: string, fifo: string) => `(nl=$(printf '\\nX'); nl=\${nl%X}; while :; do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .); chunk=\${chunk%.}; [ -n "$chunk" ] || break; need=0; for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1); do if [ "$byte" -ge 240 ]; then need=3; elif [ "$byte" -ge 224 ]; then need=2; elif [ "$byte" -ge 192 ]; then need=1; elif [ "$byte" -ge 128 ]; then [ "$need" -le 0 ] || need=$((need-1)); else need=0; fi; done; if [ "$need" -gt 0 ]; then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .); rest=\${rest%.}; chunk="$chunk$rest"; fi; chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(sedPath)}; printf .); chunk=\${chunk%.}; chunk=\${chunk%"$nl"}; while [ -n "$chunk" ]; do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}; append ${stream} "$line"; chunk=\${chunk#*"$nl"};; *) append ${stream.toLowerCase()} "$chunk"; chunk=;; esac; done; done < ${quote(fifo)}) &`;
-          const wrapper = `chmod 600 ${quote(sedPath)}; trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; cd ${quote(pathOf(options.cwd))} || exit 1; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; sh -c ${quote(command)} > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
+          const wrapper = `chmod 600 ${quote(sedPath)}; trap 'code=$?; printf "%s" "$code" > ${quote(`${dir}/exit`)}' EXIT; trap 'exit 143' TERM; ${append} rm -f ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; mkfifo ${quote(`${dir}/stdout`)} ${quote(`${dir}/stderr`)}; ${reader("O", `${dir}/stdout`)} out=$!; ${reader("E", `${dir}/stderr`)} err=$!; { cd ${quote(pathOf(options.cwd))} && sh -c ${quote(command)}; } > ${quote(`${dir}/stdout`)} 2> ${quote(`${dir}/stderr`)}; code=$?; wait "$out" "$err"; exit "$code"`;
           if (provider.startProcess) {
             const hook = await provider.startProcess(id, { command: wrapper, cwd: "/workspace", env: { ...env, ...options.env, ...defaults }, onChunk() {} });
             native.set(options.name, hook); await files.write(`${dir}/pid`, String(hook.pid));
-            void hook.wait().then(async result => { if (!(await files.exists(`${dir}/exit`))) await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); }).catch(async () => { await files.write(`${dir}/exit`, "1").catch(() => {}); });
-          } else await exec(`nohup setsid sh -c ${quote(wrapper)} > /dev/null 2>&1 < /dev/null & echo $! > ${quote(`${dir}/pid`)}`, options.env);
+            const exited = hook.wait().then(result => { early = result.exitCode ?? 137; return result; });
+            hookExit = exited.catch(() => {});
+            void exited.then(async result => { if (!(await files.exists(`${dir}/exit`))) await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); }).catch(async () => { await files.write(`${dir}/exit`, "1").catch(() => {}); });
+          } else {
+            // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
+            let wire = "";
+            const check = options.ready ? "" : `; i=0; while [ "$i" -lt 10 ] && [ ! -f ${quote(`${dir}/exit`)} ]; do sleep 0.01; i=$((i+1)); done; cat ${quote(`${dir}/exit`)} 2>/dev/null; true`;
+            await exec(`nohup setsid sh -c ${quote(wrapper)} > /dev/null 2>&1 < /dev/null & echo $! > ${quote(`${dir}/pid`)}${check}`, options.env, undefined, text => { wire += text; });
+            if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
+          }
         }
-        controller?.state("running");
-        if (!options.ready) { controller?.ready(true); return; }
+        if (!options.ready) {
+          // Native hooks get the same ~100 ms window the shell launcher checks in the guest.
+          if (early === undefined && hookExit) await Promise.race([hookExit, delay(100)]);
+          const code = launched ? early : 1;
+          controller?.state(code === undefined ? "running" : code === 0 ? "exited" : "failed"); controller?.ready(code === undefined || code === 0); return;
+        }
+        if (launched) controller?.state("running");
         const end = Date.now() + (options.readyTimeoutMs ?? 60_000);
         let readyCursor: string | undefined; let readyTail = ""; let exited = false;
         const lastLines = () => readyTail.replace(/\n$/, "").split("\n").slice(-50).join("\n");

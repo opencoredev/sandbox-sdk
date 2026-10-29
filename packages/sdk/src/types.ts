@@ -87,11 +87,11 @@ export interface RunResult {
   command: string;
 }
 /**
- * A lazy command. Nothing runs until you `await` it (for the {@link RunResult})
- * or iterate it with `for await` (for live {@link OutputChunk}s).
+ * A lazy command. Nothing runs until you `await` it, call `then`, `catch` or `finally`
+ * (for the {@link RunResult}), or iterate it with `for await` (for live {@link OutputChunk}s).
  * Chain `cwd`, `env`, or `timeout` before starting it.
  */
-export interface RunHandle extends PromiseLike<RunResult>, AsyncIterable<OutputChunk> {
+export interface RunHandle extends Promise<RunResult>, AsyncIterable<OutputChunk> {
   /** Run in this directory. */
   cwd(path: string): RunHandle;
   /** Add environment variables for this command. */
