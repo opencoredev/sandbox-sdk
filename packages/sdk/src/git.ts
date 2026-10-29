@@ -1,6 +1,6 @@
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
-import type { Files } from "./files.js";
-import { isNotFound, type Redactor } from "./errors.js";
+import { removeIfPresent, type Files } from "./files.js";
+import type { Redactor } from "./errors.js";
 import { quote } from "./shared/shell.js";
 
 export interface Git {
@@ -37,7 +37,9 @@ export function makeGit(
       { stdin: token },
     );
 
-    const removeCredentials = () => Promise.all([discard(helper), discard(helper + ".token")]);
+    const removeCredentials = () =>
+      Promise.all([removeIfPresent(files, helper), removeIfPresent(files, helper + ".token")]);
+
     let result: RunResult;
 
     try {
@@ -55,15 +57,6 @@ export function makeGit(
     await removeCredentials();
 
     return result;
-  }
-
-  // A file that is already gone is what removal wants.
-  async function discard(path: string) {
-    try {
-      await files.remove(path);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
   }
 
   return {

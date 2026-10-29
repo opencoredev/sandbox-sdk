@@ -66,6 +66,20 @@ function wholeFilePatch(path: string, before: string | undefined, after: string 
   ].join("");
 }
 
+/** @internal Remove a file; one that is already gone is not an error. Some adapters report
+ * a missing path as a generic provider error, so a stat confirms that case. */
+export async function removeIfPresent(files: Pick<Files, "remove" | "exists">, path: string) {
+  try {
+    await files.remove(path);
+  } catch (error) {
+    if (isNotFound(error)) return;
+
+    if (error instanceof SandboxError && error.code === "provider" && !(await files.exists(path)))
+      return;
+    throw error;
+  }
+}
+
 /** Whether a write argument is file content rather than write options. */
 function isContent(
   value: string | Uint8Array | WriteOptions | undefined,
