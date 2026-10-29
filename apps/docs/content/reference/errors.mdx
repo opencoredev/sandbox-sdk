@@ -34,7 +34,7 @@ try {
 | `sandboxId` | `string \| undefined` | The sandbox involved, when there is one |
 | `cause` | `unknown` | A redacted string from the underlying failure, when there is one. See [Causes](#causes). |
 
-Secrets are redacted from `message`, `cause`, and logs.
+Secrets are redacted from `message`, `cause`, and logs. The same scrub runs on the SDK's own messages, including the log tail in `process_exited` and readiness timeouts, so a URL in that tail shows as `[URL REDACTED]`.
 
 ## Causes
 

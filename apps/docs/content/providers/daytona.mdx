@@ -206,6 +206,7 @@ Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a depr
 - No pause, resume, or terminals.
 - Timeouts are whole minutes.
 - Previews need a header, so they can't go straight into an iframe.
+- When create times out, `@daytonaio/sdk` 0.227 and later report the new sandbox's ID, and the SDK deletes it. Older versions don't, so run [`reapSandboxes`](/reference/sandbox) after a create timeout. A create that fails with `build_failed` can also leave a sandbox behind; delete it from the dashboard.
 
 ## How it works
 
