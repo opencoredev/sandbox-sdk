@@ -2,7 +2,7 @@
  * commands, stdin, streaming, process groups and preview HTTP run on real Linux.
  */
 import { createServer, type ServerResponse } from "node:http";
-import { createServer as createSocket } from "node:net";
+import { createServer as createSocket, type AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,8 +21,29 @@ const bodySchema = z
     path: z.string().optional(),
     content: z.string().optional(),
     encoding: z.enum(["utf8", "base64"]).optional(),
+    region: z.string().optional(),
   })
   .passthrough();
+
+/** A JSON response body. Undefined fields are left out. */
+type Json = string | number | boolean | null | undefined | Json[] | { [key: string]: Json };
+
+/** A sandbox as the Boat API reports it, with Sandboxer's region fields. */
+type SandboxBody = {
+  id: string;
+  name: string;
+  state: string;
+  createdAt: string;
+  desktopAvailable: boolean;
+  snapshotAvailable: boolean;
+  region?: string;
+  regionSource?: string;
+  stop?: { id: string; status: string | undefined };
+};
+
+function isAddressInfo(address: AddressInfo | string | null): address is AddressInfo {
+  return address !== null && typeof address !== "string";
+}
 
 type Chunk = { type: "stdout" | "stderr"; data: string };
 
@@ -66,25 +87,30 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
   let loseWrite = false;
   const idempotent = new Map<string, Box>();
 
-  const json = (res: ServerResponse, data: unknown, statusCode = 200) => {
+  const json = (res: ServerResponse, data: Json, statusCode = 200) => {
     res.writeHead(statusCode, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   };
 
-  const sandbox = (box: Box) => ({
-    id: box.id,
-    name: box.name,
-    state: box.state,
-    createdAt: box.createdAt,
-    desktopAvailable: false,
-    snapshotAvailable: false,
-    ...(provider === "sandboxer"
-      ? { region: box.region ?? "us-east", regionSource: box.region ? "requested" : "nearest" }
-      : {}),
-    ...(operations.has(box.id)
-      ? { stop: { id: "stop-test", status: operations.get(box.id) } }
-      : {}),
-  });
+  const sandbox = (box: Box) => {
+    const info: SandboxBody = {
+      id: box.id,
+      name: box.name,
+      state: box.state,
+      createdAt: box.createdAt,
+      desktopAvailable: false,
+      snapshotAvailable: false,
+    };
+
+    if (provider === "sandboxer") {
+      info.region = box.region ?? "us-east";
+      info.regionSource = box.region ? "requested" : "nearest";
+    }
+
+    if (operations.has(box.id)) info.stop = { id: "stop-test", status: operations.get(box.id) };
+
+    return info;
+  };
 
   const rewrite = (box: Box, text: string) =>
     text
@@ -184,7 +210,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
           await new Promise<void>((resolve) => socket.listen(0, "127.0.0.1", resolve));
           const address = socket.address();
 
-          if (!address || typeof address === "string") throw new Error("No port");
+          if (!isAddressInfo(address)) throw new Error("No port");
           await new Promise<void>((resolve) => socket.close(() => resolve()));
 
           const box: Box = {
@@ -195,7 +221,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
             env: body.env ?? {},
             createdAt: new Date().toISOString(),
             state: "idle",
-            ...(typeof body.region === "string" ? { region: body.region } : {}),
+            region: body.region,
             commands: new Map(),
           };
 
@@ -341,10 +367,10 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
         json(res, {
           ok: true,
           type: "sandbox.info",
-          sandbox: {
-            ...sandbox(box),
-            ...(req.method === "PATCH" && staleRename ? { state: "provisioning" } : {}),
-          },
+          sandbox:
+            req.method === "PATCH" && staleRename
+              ? { ...sandbox(box), state: "provisioning" }
+              : sandbox(box),
         });
 
         return;
@@ -610,7 +636,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
 
-  if (!address || typeof address === "string") throw new Error("Missing test server port");
+  if (!isAddressInfo(address)) throw new Error("Missing test server port");
 
   return {
     apiUrl: `http://127.0.0.1:${address.port}`,

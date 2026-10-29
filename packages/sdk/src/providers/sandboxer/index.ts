@@ -34,6 +34,20 @@ export interface SandboxerNative extends BoatNative {
 }
 
 const { failure, boatError } = errors("sandboxer", "Sandboxer", "SANDBOXER_API_KEY", true);
+
+/** A JSON value from the Sandboxer API. */
+type Json = string | number | boolean | null | Json[] | JsonObject;
+
+type JsonObject = { [key: string]: Json };
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === "string";
+}
+
 const baseUrl = "https://sandboxer.com/api/v1";
 
 export type SandboxerProvider = Provider<SandboxerNative, "size" | "pause" | "snapshot">;
@@ -49,16 +63,9 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   // The Boat SDK's serializers drop region fields, so add and read them here.
   const placements = new Map<string, Pick<SandboxerNative, "region" | "regionSource">>();
 
-  function place(value: unknown) {
-    if (
-      typeof value !== "object" ||
-      value === null ||
-      !("id" in value) ||
-      typeof value.id !== "string" ||
-      !("region" in value)
-    )
-      return;
-    const name = typeof value.region === "string" ? value.region : null;
+  function place(value: JsonObject) {
+    if (!isText(value.id) || !("region" in value)) return;
+    const name = isText(value.region) ? value.region : null;
 
     const source =
       "regionSource" in value
@@ -71,9 +78,9 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   async function request(
     path: string,
     method = "GET",
-    body?: unknown,
+    body?: Json,
     timeoutMs = timeout,
-  ): Promise<unknown> {
+  ): Promise<Json> {
     const key = options.apiKey ?? process.env.SANDBOXER_API_KEY;
 
     if (!key)
@@ -83,20 +90,19 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       );
 
     try {
-      const response = await fetch(`${options.baseUrl ?? baseUrl}${path}`, {
+      const init: RequestInit = {
         method,
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(timeoutMs),
-      });
+      };
+
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const response = await fetch(`${options.baseUrl ?? baseUrl}${path}`, init);
 
       if (!response.ok) {
+        // An unreadable error body only means there is no API code to report.
         const envelope: unknown = await response.json().catch(() => undefined);
-
-        const apiCode =
-          typeof envelope === "object" && envelope !== null && "code" in envelope
-            ? envelope.code
-            : undefined;
+        const apiCode = isJsonObject(envelope) ? envelope.code : undefined;
 
         throw { response, apiCode };
       }
@@ -107,7 +113,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     }
   }
 
-  async function poll(path: string, ready: (value: unknown) => boolean) {
+  async function poll(path: string, ready: (value: Json) => boolean) {
     const end = performance.now() + timeout;
 
     while (performance.now() < end) {
@@ -132,17 +138,14 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     try {
       await request("/named-snapshots", "POST", { sandboxId: id, name });
       await poll(`/named-snapshots/${encodeURIComponent(name)}`, (value) => {
-        if (typeof value !== "object" || value === null || !("snapshot" in value))
+        if (!isJsonObject(value) || !("snapshot" in value))
           throw failure("Invalid snapshot response");
         const snapshot = value.snapshot;
 
         if (
-          typeof snapshot !== "object" ||
-          snapshot === null ||
+          !isJsonObject(snapshot) ||
           !("status" in snapshot) ||
-          !("name" in snapshot) ||
           snapshot.name !== name ||
-          !("sourceSandboxId" in snapshot) ||
           snapshot.sourceSandboxId !== id
         )
           throw failure("Invalid snapshot metadata");
@@ -174,8 +177,8 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     fetch: async (url, init) => {
       const headers = new Headers(init?.headers);
 
-      const path = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url)
-        .pathname;
+      const href = url instanceof URL ? url.href : url instanceof Request ? url.url : url;
+      const path = new URL(href).pathname;
 
       if (init?.method === "DELETE" && /\/sandboxes\/[^/]+$/.test(path))
         headers.set(
@@ -185,11 +188,10 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       let body = init?.body;
 
       if (region !== undefined && init?.method === "POST" && path.endsWith("/sandboxes")) {
-        if (typeof body !== "string")
-          throw failure("Sandboxer create body is not JSON", "provider");
+        if (!isText(body)) throw failure("Sandboxer create body is not JSON", "provider");
         const request: unknown = JSON.parse(body);
 
-        if (typeof request !== "object" || request === null)
+        if (!isJsonObject(request))
           throw failure("Sandboxer create body is not an object", "provider");
         body = JSON.stringify({ ...request, region });
       }
@@ -197,16 +199,17 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       const response = await fetch(url, { ...init, headers, body });
 
       if (response.ok && init?.method !== "DELETE" && /\/sandboxes(\/[^/]+)?$/.test(path)) {
+        // A body that is not JSON carries no placement; the response still goes to the SDK.
         const value: unknown = await response
           .clone()
           .json()
           .catch(() => undefined);
 
-        if (typeof value === "object" && value !== null) {
-          if ("sandbox" in value) place(value.sandbox);
+        if (isJsonObject(value)) {
+          if (isJsonObject(value.sandbox)) place(value.sandbox);
 
-          if ("sandboxes" in value && Array.isArray(value.sandboxes))
-            value.sandboxes.forEach(place);
+          if (Array.isArray(value.sandboxes))
+            for (const item of value.sandboxes) if (isJsonObject(item)) place(item);
         }
       }
 
@@ -228,17 +231,11 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       }
 
       await poll(`/deletion-operations/${encodeURIComponent(operationId)}`, (value) => {
-        if (typeof value !== "object" || value === null || !("operation" in value))
+        if (!isJsonObject(value) || !("operation" in value))
           throw failure("Invalid deletion response");
         const next = value.operation;
 
-        if (
-          typeof next !== "object" ||
-          next === null ||
-          !("targetId" in next) ||
-          next.targetId !== id ||
-          !("status" in next)
-        )
+        if (!isJsonObject(next) || next.targetId !== id || !("status" in next))
           throw failure("Invalid deletion metadata");
 
         return next.status === "completed";
@@ -269,21 +266,14 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     async pause(id) {
       await request(`/sandboxes/${encodeURIComponent(id)}/stop`, "POST");
       await poll(`/sandboxes/${encodeURIComponent(id)}`, (value) => {
-        if (typeof value !== "object" || value === null || !("sandbox" in value))
-          throw failure("Invalid stop response");
+        if (!isJsonObject(value) || !("sandbox" in value)) throw failure("Invalid stop response");
         const box = value.sandbox;
 
-        if (
-          typeof box !== "object" ||
-          box === null ||
-          !("id" in box) ||
-          box.id !== id ||
-          !("stop" in box)
-        )
+        if (!isJsonObject(box) || box.id !== id || !("stop" in box))
           throw failure("Invalid stop metadata");
         const stop = box.stop;
 
-        if (typeof stop !== "object" || stop === null || !("status" in stop)) return false;
+        if (!isJsonObject(stop) || !("status" in stop)) return false;
 
         return stop.status === "completed";
       });
@@ -291,17 +281,10 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     async resume(id) {
       await request(`/sandboxes/${encodeURIComponent(id)}/resume`, "POST");
       await poll(`/sandboxes/${encodeURIComponent(id)}`, (value) => {
-        if (typeof value !== "object" || value === null || !("sandbox" in value))
-          throw failure("Invalid resume response");
+        if (!isJsonObject(value) || !("sandbox" in value)) throw failure("Invalid resume response");
         const box = value.sandbox;
 
-        if (
-          typeof box !== "object" ||
-          box === null ||
-          !("id" in box) ||
-          box.id !== id ||
-          !("state" in box)
-        )
+        if (!isJsonObject(box) || box.id !== id || !("state" in box))
           throw failure("Invalid resume metadata");
 
         return box.state === "ready";
