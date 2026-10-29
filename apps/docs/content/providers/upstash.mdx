@@ -35,7 +35,7 @@ This creates a small box with Upstash's default runtime. `await using` deletes i
 | Background processes | Yes | |
 | Preview URLs | Yes | Bearer header by default, or public |
 | Pause and resume | Partial | Durable boxes only; running processes end |
-| Snapshots | Yes | Full file system |
+| Snapshots | Yes | Full file system. `expiresInMs` fails with `unsupported` |
 | Machine size | Partial | Presets only |
 | Network policy | Yes | `"none"` or a host allow list |
 | Hard lifetime (`timeoutMs`) | No | Ephemeral boxes have a TTL backstop |
@@ -74,7 +74,10 @@ await using box = await createSandbox(upstash());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
 ```
+
+Upstash's file API has no mode, so for `{ mode }` the SDK runs `chmod` right after the write.
 
 ## Background processes and previews
 
@@ -109,7 +112,9 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(upstash(), { from: id });
 ```
 
-Snapshots outlive their source box; delete them through the native SDK.
+Snapshots outlive their source box; delete them through the native SDK. They have no expiry, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted.
+
+A durable box pauses itself when idle. Pass `keepAlive: true` to keep it running instead.
 
 An ephemeral box is ready as soon as it's created, can't pause, and is deleted after its TTL. The provider drops the `pause` capability, so `pause()` isn't on its type.
 
@@ -139,6 +144,18 @@ await using box = await createSandbox(upstash(), {
 });
 ```
 
+To give the box credentials it can use but never read, set `attachHeaders`. Upstash's egress proxy adds the headers to matching outbound HTTPS requests, so the values stay out of the box's env and files. It works in both modes.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { upstash } from "@opencoredev/sandbox-sdk/upstash";
+
+await using box = await createSandbox(upstash({
+  attachHeaders: { "api.stripe.com": { Authorization: `Bearer ${process.env.STRIPE_KEY}` } },
+}));
+await box.run("curl -s https://api.stripe.com/v1/balance");
+```
+
 Exact sizes fail with `unsupported`. Allow-list entries are plain DNS host names, and an empty list blocks all outbound traffic. `idleTimeoutMs` and `timeoutMs` fail with `unsupported`. An ephemeral box's `ttlSeconds` is a backstop for leaks, not a deadline: Upstash removes it some time after it expires.
 
 ## Configuration
@@ -153,8 +170,11 @@ Exact sizes fail with `unsupported`. Allow-list entries are plain DNS host names
 | `public` | `boolean` | `false` | |
 | `ephemeral` | `boolean` | `false` | |
 | `ttlSeconds` | `number` | `3600`, at most `259200` | |
+| `keepAlive` | `boolean` | `false` | |
+| `browser` | `boolean` | `false` | |
+| `attachHeaders` | `Record<string, Record<string, string>>` | | |
 
-`ttlSeconds` applies only with `ephemeral: true`. `requestTimeoutMs` bounds native requests, not the box's lifetime. The default runtime needs passwordless `sudo -n` to make `/workspace` writable. `box.native` is the Upstash SDK's `Box` object.
+`ttlSeconds` applies only with `ephemeral: true`, and `keepAlive` and `browser` only without it. `browser: true` provisions a headless Chromium you reach through `box.native.browser`. `requestTimeoutMs` bounds native requests, not the box's lifetime. The default runtime needs passwordless `sudo -n` to make `/workspace` writable. `box.native` is the Upstash SDK's `Box` object.
 
 ## Limitations
 
