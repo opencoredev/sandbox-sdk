@@ -1,5 +1,5 @@
 import { guestSpec } from "../freestyle/wire.js";
-import { guestProcess, guestPump } from "../boxd/guest.js";
+import { cachedPython, guestProcess, guestPump } from "../boxd/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
@@ -51,6 +51,7 @@ with stdin_file() as f:
     try: os.unlink(path)
     except FileNotFoundError: pass
 `;
+const cachedSupervisor = cachedPython(supervisor);
 
 export async function executeStream(
   box: Session,
@@ -119,7 +120,7 @@ export async function executeStream(
               case: "start",
               value: {
                 sessionId: box.id,
-                cmd: ["python3", "-S", "-c", supervisor],
+                cmd: ["python3", "-S", "-c", cachedSupervisor],
                 privileged: true,
                 streamStdin: true,
               },

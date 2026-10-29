@@ -1,7 +1,7 @@
 import { guestSpec } from "../freestyle/wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { guestProcess, guestPump, python, quote } from "../boxd/guest.js";
+import { cachedPython, guestProcess, guestPump, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // The one-shot launcher travels in the native exec request. Small results
@@ -89,6 +89,7 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
+const cachedSupervisor = cachedPython(supervisor);
 export interface ExecutionGuest {
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   run?(command: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal): Promise<string>;
@@ -185,12 +186,12 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
         activityPath: input.activityPath,
       };
       const oneShot = guestSpec({ ...spec, envKeys: Object.keys(input.env) }).toString("hex");
-      const command = `python3 -S -c ${quote(supervisor)} ${quote(root)} ${quote(oneShot)}`;
+      const command = `python3 -S -c ${quote(cachedSupervisor)} ${quote(root)} ${quote(oneShot)}`;
       if (g.run && input.stdin === undefined && Buffer.byteLength(command) < 96 * 1024)
         text = await g.run(command, input.env, input.timeoutMs + 5000, signal);
       else
         text = await g.exec(
-          `python3 -S -c ${quote(supervisor)} ${quote(root)}`,
+          `python3 -S -c ${quote(cachedSupervisor)} ${quote(root)}`,
           guestSpec({ ...spec, env: input.env, stdin: input.stdin ?? "" }).toString("hex"),
           input.timeoutMs + 5000, signal,
         );

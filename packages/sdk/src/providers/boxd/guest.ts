@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -5,6 +6,40 @@ export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 // it is a third of interpreter startup on a small VM.
 export const python = (code: string, ...args: string[]) =>
   `python3 -S -c ${quote(code)} ${args.map(quote).join(" ")}`;
+/**
+ * Wraps a per-command supervisor so the guest compiles it once, not on every
+ * command: compiling ~5 KB of source costs 2-5 ms on a small VM. The source still
+ * travels with each command, so a missing, foreign or stale cache only means a
+ * compile. A cache entry is used only when this user owns it, nobody else can
+ * write it, and it was compiled from this exact source by this interpreter.
+ */
+export function cachedPython(source: string): string {
+  // The source travels as a raw triple-quoted literal.
+  if (source.includes("'''") || source.endsWith("\\")) throw new Error("Supervisor source cannot be embedded");
+  const name = createHash("sha256").update(source).digest("hex").slice(0, 16);
+  return `import os,sys,marshal
+s=r'''${source}'''
+p='/tmp/.sandbox-sdk/py-${name}.'+sys.implementation.cache_tag
+c=None
+try:
+ with open(p,'rb') as f:
+  t=os.fstat(f.fileno())
+  if t.st_uid==os.geteuid() and not t.st_mode&0o022:
+   k,c=marshal.load(f)
+   if k!=(sys.version,s): c=None
+except Exception: c=None
+if c is None:
+ c=compile(s,'<sandbox-sdk>','exec')
+ t=p+'.'+str(os.getpid())
+ try:
+  with open(os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as f: marshal.dump(((sys.version,s),c),f)
+  os.replace(t,p)
+ except OSError:
+  try: os.unlink(t)
+  except OSError: pass
+exec(c,{'__name__':'__main__','__builtins__':__builtins__})
+`;
+}
 // Linux guests can launch without importing subprocess/tempfile on every run.
 // posix_spawn establishes the session before returning its PID to cancellation.
 export const guestProcess = `def stdin_file():

@@ -1,6 +1,6 @@
 import { guestSpec } from "./wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { guestProcess, guestPump, python, quote } from "../boxd/guest.js";
+import { cachedPython, guestProcess, guestPump, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // The one-shot launcher travels in the exec request; nothing is installed.
@@ -85,6 +85,7 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
+const cachedSupervisor = cachedPython(supervisor);
 export interface ExecutionGuest {
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   raw(command: string): Promise<string>;
@@ -176,7 +177,7 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
     let text: string;
     try {
       text = await g.exec(
-        `python3 -S -c ${quote(supervisor)} ${quote(root)}`,
+        `python3 -S -c ${quote(cachedSupervisor)} ${quote(root)}`,
         guestSpec({
           files,
           command: input.command,
