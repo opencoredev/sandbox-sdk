@@ -170,6 +170,7 @@
         "@vercel/sandbox": "3.8.0",
         "ai": "^7.0.143",
         "e2b": "2.56.0",
+        "esbuild": "0.28.1",
         "freestyle": "0.2.20",
         "railway": "3.16.0",
         "vitest": "^3.2.4",

@@ -11,6 +11,8 @@ import { posix } from "node:path";
 import type { AgentOs, AgentOsOptions, VirtualStat } from "@rivet-dev/agentos-core";
 import type { Provider, SandboxInfo, FileInfo } from "../../provider.js";
 import { agentosError, failure } from "./errors.js";
+import { loadPeer } from "../../peer.js";
+import { nativeDetail } from "../../errors.js";
 
 export interface AgentosOptions {
   /** Trusted local .aospkg file; otherwise install Rivet's pinned Git release. */
@@ -49,7 +51,7 @@ export type AgentosProvider = Provider<AgentOs, AgentosCapability>;
 /** Embedded, Docker-free V8/WebAssembly runtime. Docker remains local()'s default. */
 export function agentos(options: AgentosOptions = {}): AgentosProvider {
   let module: Promise<typeof import("@rivet-dev/agentos-core")> | undefined;
-  const sdk = () => module ??= import("@rivet-dev/agentos-core").catch(() => { throw failure("Install @rivet-dev/agentos-core@0.4.1 and its platform sidecar package", "unavailable"); });
+  const sdk = () => module ??= loadPeer("@rivet-dev/agentos-core", "agentos", () => import("@rivet-dev/agentos-core")).catch((error: unknown) => { throw failure("Install @rivet-dev/agentos-core@0.4.1 and its platform sidecar package", "unavailable", undefined, nativeDetail(error)); });
   async function safe<T>(id: string, action: (vm: AgentOs) => Promise<T>, file = false): Promise<T> {
     try { return await action(entry(id).vm); } catch (error) { throw agentosError(error, id, file); }
   }

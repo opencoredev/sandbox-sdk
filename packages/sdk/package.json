@@ -134,7 +134,8 @@
     "lint": "oxlint src tests scripts",
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts",
-    "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts"
+    "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts",
+    "smoke:bundle": "timeout 600s bun scripts/bundle-smoke.ts"
   },
   "devDependencies": {
     "@boatdev/sdk": "1.9.9",
@@ -148,6 +149,7 @@
     "@vercel/sandbox": "3.8.0",
     "ai": "^7.0.143",
     "e2b": "2.56.0",
+    "esbuild": "0.28.1",
     "freestyle": "0.2.20",
     "railway": "3.16.0",
     "vitest": "^3.2.4",

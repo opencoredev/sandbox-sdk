@@ -1,6 +1,7 @@
 import type { BoatApi } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { defaults } from "../../run.js";
+import { loadPeer } from "../../peer.js";
 import { errors } from "./errors.js";
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
@@ -11,7 +12,7 @@ export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 export async function execute(api: BoatApi, id: string, input: ExecInput, sandboxEnv: Record<string, string> = {}, environmentFiles = new Map<string, Promise<string>>(), diagnostics = errors()): Promise<ExecResult> {
   const { boatError, failure } = diagnostics;
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
-  const { followCommand } = await import("@boatdev/sdk");
+  const { followCommand } = await loadPeer("@boatdev/sdk", "boat", () => import("@boatdev/sdk"));
   const stream = new AbortController();
   let cancelled = false;
   let cancel = () => {};
