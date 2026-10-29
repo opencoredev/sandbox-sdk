@@ -27,11 +27,14 @@ export class MockSandbox {
   private processes = new Map<number, MockCommand>();
   private root: string;
   readonly sandboxId = crypto.randomUUID();
+  readonly trafficAccessToken?: string;
+  static readonly snapshotCalls: unknown[] = [];
   private info: SandboxInfo;
   private timer?: ReturnType<typeof setTimeout>;
   private constructor(root: string, options: SandboxOpts, readonly port: number) {
     this.root = root;
-    this.info = { sandboxId: this.sandboxId, templateId: options.template ?? "base", metadata: options.metadata ?? {}, startedAt: new Date(), endAt: new Date(Date.now() + (options.timeoutMs ?? 300_000)), state: "running", cpuCount: 2, memoryMB: 512, envdVersion: "0.5.0", allowInternetAccess: options.allowInternetAccess, network: { denyOut: Array.isArray(options.network?.denyOut) ? options.network.denyOut : undefined, allowOut: Array.isArray(options.network?.allowOut) ? options.network.allowOut : undefined } };
+    this.info = { sandboxId: this.sandboxId, templateId: options.template ?? "base", metadata: options.metadata ?? {}, startedAt: new Date(), endAt: new Date(Date.now() + (options.timeoutMs ?? 300_000)), state: "running", cpuCount: 2, memoryMB: 512, envdVersion: "0.5.0", allowInternetAccess: options.allowInternetAccess, network: { denyOut: Array.isArray(options.network?.denyOut) ? options.network.denyOut : undefined, allowOut: Array.isArray(options.network?.allowOut) ? options.network.allowOut : undefined, allowPublicTraffic: options.network?.allowPublicTraffic } };
+    this.trafficAccessToken = options.network?.allowPublicTraffic === false ? `traffic-${this.sandboxId}` : undefined;
     this.environment = options.envs ?? {};
   }
   private environment: Record<string, string>;
@@ -70,7 +73,7 @@ export class MockSandbox {
   async getInfo() { return { ...this.info, metadata: { ...this.info.metadata } }; }
   async setTimeout(ms: number) { clearTimeout(this.timer); this.info.endAt = new Date(Date.now() + ms); this.timer = setTimeout(() => { void MockSandbox.kill(this.sandboxId); }, ms); this.timer.unref(); }
   getHost(port: number) { return `${port}-${this.sandboxId}.e2b.test`; }
-  async createSnapshot() { const id = crypto.randomUUID(); const path = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-snapshot-")); await fs.cp(this.root, path, { recursive: true }); snapshots.set(id, path); return { snapshotId: id, names: [] }; }
+  async createSnapshot(options?: unknown) { MockSandbox.snapshotCalls.push(options); const id = crypto.randomUUID(); const path = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-snapshot-")); await fs.cp(this.root, path, { recursive: true }); snapshots.set(id, path); return { snapshotId: id, names: [] }; }
   mapped = (path: string) => join(this.root, path);
   rewrite = (command: string) => command.replace(/\/workspace|\/tmp\/\.sandbox-sdk[^\s'";)]*|\/tmp\/sdk-bare/g, path => this.mapped(path)).replace(/\.listen\(3000,/g, `.listen(${this.port},`);
   files = {
