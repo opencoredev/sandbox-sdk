@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Partial | Output arrives when the command finishes |
-| Files | Yes | Native `mode` |
-| Background processes | Yes | |
-| Preview URLs | Yes | Public `https://` on `style.dev` |
-| Pause and resume | Yes | Memory survives |
-| Snapshots | Yes | Memory and disk; `expiresInMs` is native |
-| Machine size | No | Pick a base snapshot instead |
-| Network policy | Partial | `"all"` or `"none"`; no host allow lists |
-| Hard lifetime (`timeoutMs`) | Yes | Whole seconds |
-| Idle timeout (`idleTimeoutMs`) | Yes | Whole seconds of network inactivity |
-| Keys | Best-effort | Read from VM metadata, with a marker file as fallback |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                 |
+| ------------------------------ | ----------- | ----------------------------------------------------- |
+| Commands and streaming         | Partial     | Output arrives when the command finishes              |
+| Files                          | Yes         | Native `mode`                                         |
+| Background processes           | Yes         |                                                       |
+| Preview URLs                   | Yes         | Public `https://` on `style.dev`                      |
+| Pause and resume               | Yes         | Memory survives                                       |
+| Snapshots                      | Yes         | Memory and disk; `expiresInMs` is native              |
+| Machine size                   | No          | Pick a base snapshot instead                          |
+| Network policy                 | Partial     | `"all"` or `"none"`; no host allow lists              |
+| Hard lifetime (`timeoutMs`)    | Yes         | Whole seconds                                         |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Whole seconds of network inactivity                   |
+| Keys                           | Best-effort | Read from VM metadata, with a marker file as fallback |
+| Terminal                       | No          |                                                       |
 
 ## Run commands
 
@@ -115,7 +115,10 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
 await using box = await createSandbox(freestyle());
-await box.start("python3 -m http.server 3000 --bind 0.0.0.0", { name: "web", ready: { port: 3000 } });
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", {
+  name: "web",
+  ready: { port: 3000 },
+});
 const preview = await box.preview(3000);
 console.log(preview.url);
 ```
@@ -170,13 +173,13 @@ The adapter reads the rules and limits back after creation and deletes the VM if
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `FREESTYLE_API_KEY` |
-| `baseUrl` | `string` | `https://api.freestyle.sh` | |
-| `snapshotId` | `string` | `"freestyle/ubuntu"` | |
-| `requestTimeoutMs` | `number` | `30_000` | |
-| `autoDeleteMs` | `number` | Never, or your plan's cap | |
+| Option             | Type     | Default                    | Env var             |
+| ------------------ | -------- | -------------------------- | ------------------- |
+| `apiKey`           | `string` |                            | `FREESTYLE_API_KEY` |
+| `baseUrl`          | `string` | `https://api.freestyle.sh` |                     |
+| `snapshotId`       | `string` | `"freestyle/ubuntu"`       |                     |
+| `requestTimeoutMs` | `number` | `30_000`                   |                     |
+| `autoDeleteMs`     | `number` | Never, or your plan's cap  |                     |
 
 `requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. `box.native` is the SDK's typed `Vm` handle.
 

@@ -96,9 +96,13 @@ import { local } from "@opencoredev/sandbox-sdk/local";
 
 await using box = await createSandbox(local());
 
-const stop = box.files.watch("app", (event) => {
-  console.log(event.type, event.path);
-}, { recursive: true });
+const stop = box.files.watch(
+  "app",
+  (event) => {
+    console.log(event.type, event.path);
+  },
+  { recursive: true },
+);
 
 await box.run("touch app/new.ts");
 stop();
@@ -153,7 +157,12 @@ const token = process.env.GITHUB_TOKEN ?? "";
 
 await using box = await createSandbox(local());
 
-await box.git.clone("https://github.com/acme/web.git", { dir: "app", branch: "main", depth: 1, token });
+await box.git.clone("https://github.com/acme/web.git", {
+  dir: "app",
+  branch: "main",
+  depth: 1,
+  token,
+});
 await box.git.checkout("app", { branch: "agent/fix-login", create: true });
 
 await box.files.edit("app/src/login.ts", { find: "timeout: 10", replace: "timeout: 30" });

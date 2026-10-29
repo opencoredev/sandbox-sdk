@@ -4,53 +4,79 @@ import { cleanupTenki, MockSession, MockTenki, tenkiState } from "./tenki-mock.j
 import { tenki } from "../src/providers/tenki/index.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+
 vi.mock("@tenkicloud/sandbox", async () => ({
   TenkiSandbox: (await import("./tenki-mock.js")).MockTenki,
 }));
+
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 const factory = () => tenki({ authToken: "offline-test-key" });
+
 runConformance(factory, { live: true });
+
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await cleanupTenki();
 });
-test.each([false, true])("exec owns activity through inherited output pipes (streaming transport %s)", async (streaming) => {
-  tenkiState.streaming = streaming;
-  const provider = factory();
-  const box = await createSandbox(provider);
-  const activityPath = "/tmp/.sandbox-sdk/runs/direct";
-  let ready = () => {};
-  const started = new Promise<void>((resolve) => { ready = resolve; });
-  const pending = provider.exec(box.id, {
-    command: "(sleep .4; echo child) & echo ready",
-    cwd: "/workspace", env: {}, timeoutMs: 5000, activityPath,
-    onChunk(chunk) { if (chunk.text.includes("ready")) ready(); },
-  });
-  await started;
-  expect(await box.files.exists(activityPath)).toBe(true);
-  expect(await pending).toEqual({ exitCode: 0, timedOut: false });
-  expect(await box.files.exists(activityPath)).toBe(false);
-});
+
+test.each([false, true])(
+  "exec owns activity through inherited output pipes (streaming transport %s)",
+  async (streaming) => {
+    tenkiState.streaming = streaming;
+    const provider = factory();
+    const box = await createSandbox(provider);
+    const activityPath = "/tmp/.sandbox-sdk/runs/direct";
+    let ready = () => {};
+
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+
+    const pending = provider.exec(box.id, {
+      command: "(sleep .4; echo child) & echo ready",
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 5000,
+      activityPath,
+      onChunk(chunk) {
+        if (chunk.text.includes("ready")) ready();
+      },
+    });
+
+    await started;
+    expect(await box.files.exists(activityPath)).toBe(true);
+    expect(await pending).toEqual({ exitCode: 0, timedOut: false });
+    expect(await box.files.exists(activityPath)).toBe(false);
+  },
+);
+
 describe("Tenki mappings", () => {
   test("native stat and list match the guest transport, falling back on other errors", async () => {
     const box = await createSandbox(factory());
     await box.files.write("/home/tenki/meta/real.txt", "abc");
     const session = tenkiState.boxes.get(box.id);
+
     if (!session) throw new Error("Missing mock session");
     const entry = { size: 3n, mode: 134218239, isDir: false, modifiedUnixNs: 1792686899634601692n };
+
     const stat = vi.fn(async (path: string) => {
       if (path.endsWith("/missing"))
         throw Object.assign(new Error("gone"), { name: "FileNotFoundError" });
+
       if (path.endsWith("/real.txt"))
         throw Object.assign(new Error("path_escape"), { name: "PermissionDeniedError" });
+
       return { ...entry, path, isSymlink: true };
     });
+
     const list = vi.fn(async (_path: string, _options: { includeHidden?: boolean }) => [
       { ...entry, path: "link" },
       { ...entry, path: ".hidden", mode: 420 },
       { ...entry, path: "dir", mode: 2147484141, isDir: true },
     ]);
+
     Object.defineProperty(session, "fs", { value: { stat, list }, configurable: true });
     expect(await box.files.stat("/home/tenki/meta/link")).toEqual({
       path: "/home/tenki/meta/link",
@@ -58,7 +84,9 @@ describe("Tenki mappings", () => {
       size: 3,
       modifiedAt: 1792686899634.6016,
     });
-    expect((await box.files.list("/home/tenki/meta")).map(({ path, type }) => [path, type])).toEqual([
+    expect(
+      (await box.files.list("/home/tenki/meta")).map(({ path, type }) => [path, type]),
+    ).toEqual([
       ["/home/tenki/meta/link", "symlink"],
       ["/home/tenki/meta/.hidden", "file"],
       ["/home/tenki/meta/dir", "directory"],
@@ -81,9 +109,11 @@ describe("Tenki mappings", () => {
     const first = await createSandbox(provider);
     const second = await connectSandbox(provider, first.id);
     const current = tenkiState.boxes.get(first.id);
+
     if (!current) throw new Error("Missing mock session");
     const close = current.close.bind(current);
     let terminating = false;
+
     const terminate = vi.spyOn(current, "close").mockImplementation(async () => {
       if (terminating)
         throw Object.assign(new Error("already terminating"), { name: "InvalidStateError" });
@@ -91,15 +121,18 @@ describe("Tenki mappings", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       await close();
     });
+
     await Promise.all([first.destroy(), second.destroy(), provider.destroy(first.id)]);
     expect(terminate).toHaveBeenCalledOnce();
     await provider.destroy(first.id);
   });
   test("command output preserves leading BOM, CRLF and trailing newlines", async () => {
     const box = await createSandbox(factory());
+
     const result = await box.run(
       'python3 -c "import os; os.write(1, bytes([239,187,191,65,13,10,10])); os.write(2, bytes([239,187,191,66,13,10]))"',
     );
+
     expect(result.stdout).toBe("\uFEFFA\r\n\n");
     expect(result.stderr).toBe("\uFEFFB\r\n");
   });
@@ -110,13 +143,16 @@ describe("Tenki mappings", () => {
       image: "custom",
       requestTimeoutMs: 5000,
     });
+
     expect(tenkiState.configs).toHaveLength(0);
+
     const box = await createSandbox(provider, {
       key: "customer:42",
       size: "medium",
       timeoutMs: 150000,
       network: { allow: ["registry.npmjs.org"] },
     });
+
     expect(box.native.id).toBe(box.id);
     expect(tenkiState.configs[0]).toMatchObject({
       authToken: "key",
@@ -148,9 +184,11 @@ describe("Tenki mappings", () => {
     expect((await box.process("durable").wait()).exitCode).toBe(0);
     expect((await proc.logs()).text).toContain("complete");
     const snapshot = await box.snapshot();
+
     const copy = await createSandbox(tenki({ authToken: "key", image: "ignored" }), {
       from: snapshot.id,
     });
+
     expect(await copy.files.read("retained")).toBe("hello");
     expect(tenkiState.creates[1]?.image).toBeUndefined();
     await box.close();
@@ -192,6 +230,7 @@ describe("Tenki mappings", () => {
     expect(Date.now() - started).toBeLessThan(500);
     vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
       await new Promise((resolve) => setTimeout(resolve, 60));
+
       return MockSession.create(params ?? {});
     });
     await expect(
@@ -208,8 +247,10 @@ describe("Tenki mappings", () => {
       waitTimeoutMs: 20,
       resumeTimeoutMs: 100,
     });
+
     const box = await createSandbox(provider);
     const current = tenkiState.boxes.get(box.id);
+
     if (!current) throw new Error("Missing mock session");
     vi.spyOn(MockTenki.prototype, "list").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.list({})).rejects.toMatchObject({ code: "timeout" });
@@ -230,6 +271,7 @@ describe("Tenki mappings", () => {
     vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(
       function (this: MockSession) {
         this.state = "CREATING";
+
         return new Promise(() => {});
       },
     );
@@ -269,6 +311,7 @@ describe("Tenki mappings", () => {
     vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
       const value = await MockSession.create(params ?? {});
       value.outboundEnabled = true;
+
       return value;
     });
     await expect(createSandbox(factory(), { network: "none" })).rejects.toMatchObject({
@@ -278,6 +321,7 @@ describe("Tenki mappings", () => {
     vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
       const value = await MockSession.create(params ?? {});
       value.cpuCores = 99;
+
       return value;
     });
     await expect(createSandbox(factory(), { size: "small" })).rejects.toMatchObject({
@@ -289,11 +333,14 @@ describe("Tenki mappings", () => {
     const box = await createSandbox(factory());
     tenkiState.retainedPeakBytes = 0;
     const bytes = 2 * 1024 * 1024;
+
     const handle = box.run(
       `printf begin; sleep .05; head -c ${bytes} /dev/zero | tr '\\0' x; printf end; printf err >&2`,
       { maxOutputBytes: 1024 },
     );
+
     let streamed = 0;
+
     for await (const chunk of handle) streamed += Buffer.byteLength(chunk.text);
     const result = await handle;
     expect(result).toMatchObject({ exitCode: 0, truncated: true, stderr: "err" });
@@ -313,21 +360,25 @@ describe("Tenki mappings", () => {
     vi.spyOn(MockSession.prototype, "run").mockImplementation(
       function (this: MockSession, argv, options) {
         const handle = run.call(this, argv, options);
+
         if (argv[2]?.includes("PID unavailable")) {
           return Object.assign(
             Promise.resolve(handle).then((result) => {
               if (result.exitCode === 0) events.push("kill confirmed");
+
               return result;
             }),
             { ...handle },
           );
         }
+
         if (!argv[argv.indexOf("-c") + 1]?.includes("v=json.load(sys.stdin)")) return handle;
         transportSignal = options?.signal;
         transportSignal?.addEventListener("abort", () => events.push("transport aborted"), {
           once: true,
         });
         void Promise.resolve(handle).catch(() => {});
+
         return Object.assign(new Promise<ProcessRunResult>(() => {}), {
           ...handle,
           stdout: new ReadableStream<Uint8Array>({
@@ -344,6 +395,7 @@ describe("Tenki mappings", () => {
       },
     );
     const started = Date.now();
+
     // Exercise the adapter deadline: box.run's timer also includes activity-file
     // setup and may expire before the supervisor is ever launched.
     const pending = provider.exec(box.id, {
@@ -353,7 +405,9 @@ describe("Tenki mappings", () => {
       timeoutMs: 50,
       onChunk() {},
     });
+
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+
     try {
       const result = await Promise.race([
         pending,
@@ -361,6 +415,7 @@ describe("Tenki mappings", () => {
           watchdog = setTimeout(() => resolve("hung"), 1800);
         }),
       ]);
+
       expect(result).toMatchObject({ timedOut: true, exitCode: null });
       expect(Date.now() - started).toBeLessThan(1800);
       expect(transportSignal).toBeInstanceOf(AbortSignal);
@@ -393,6 +448,7 @@ describe("Tenki mappings", () => {
     vi.stubEnv("TENKI_API_KEY", "");
     vi.stubEnv("TENKI_AUTH_TOKEN", "");
     await expect(createSandbox(tenki())).rejects.toMatchObject({ code: "auth" });
+
     for (const [name, code] of [
       ["UnauthorizedError", "auth"],
       ["SessionNotFoundError", "not_found"],
@@ -403,9 +459,11 @@ describe("Tenki mappings", () => {
       vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(
         Object.assign(new Error("secret-key must not leak"), { name }),
       );
+
       const error = await factory()
         .connect("missing")
         .catch((error) => error);
+
       expect(error).toMatchObject({ code, provider: "tenki" });
       expect(String(error)).not.toContain("secret-key");
     }
@@ -419,10 +477,13 @@ test("resume RPC has its own bounded budget before readiness", async () => {
     waitTimeoutMs: 1000,
     resumeTimeoutMs: 400,
   });
+
   const box = await createSandbox(provider);
+
   const resume = vi.spyOn(box.native, "resume").mockImplementationOnce(async () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
   });
+
   await box.resume();
   expect(resume).toHaveBeenCalledTimes(1);
   expect((await box.run("echo usable")).stdout).toBe("usable\n");
@@ -438,6 +499,7 @@ test("pause RPC uses the lifecycle budget rather than the ordinary request deadl
   });
   await box.pause();
 });
+
 test("transition budgets reject unbounded values before allocation", async () => {
   for (const value of [0, Infinity, -1, 900001]) {
     await expect(
@@ -452,7 +514,9 @@ test("transition budgets reject unbounded values before allocation", async () =>
 test("Tenki listing skips SDK entries with missing creation metadata", async () => {
   const box = await createSandbox(factory());
   const native = tenkiState.boxes.get(box.id);
+
   if (!native) throw new Error("Missing mock session");
+
   for (const key of Object.keys(native.metadata))
     if (key !== "sandbox-sdk") delete native.metadata[key];
   expect(await factory().list({})).toEqual([]);
@@ -505,10 +569,12 @@ test("stalled native transfers retain the thirty-second deadline", async () => {
   const box = await createSandbox(provider);
   vi.spyOn(box.native, "readFile").mockImplementationOnce(() => new Promise(() => {}));
   vi.useFakeTimers();
+
   try {
     const read = expect(provider.files.read(box.id, "/home/tenki/value")).rejects.toMatchObject({
       code: "timeout",
     });
+
     await vi.advanceTimersByTimeAsync(30_001);
     await read;
   } finally {
@@ -523,11 +589,13 @@ test.each(["complete", "reject"])(
     const box = await createSandbox(provider);
     const events: string[] = [];
     let settle = () => {};
+
     vi.spyOn(box.native, "writeFile").mockImplementationOnce(
       () =>
         new Promise<void>((resolve, reject) => {
           settle = () => {
             events.push("native settled");
+
             if (outcome === "reject")
               reject(
                 Object.assign(new Error("late authorization failure"), {
@@ -546,6 +614,7 @@ test.each(["complete", "reject"])(
       () => events.push("caller succeeded"),
       () => events.push("caller failed"),
     );
+
     try {
       await vi.advanceTimersByTimeAsync(30_001);
       expect(events).toEqual([]);
@@ -587,6 +656,7 @@ test.each([16, 14, 12, 5])(
     ).toEqual({ exitCode: 0, timedOut: false });
     expect(tenkiState.streamAttempts).toBe(2);
     expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
+
     if (code === 5) expect(refresh).toHaveBeenCalledOnce();
     expect(close).not.toHaveBeenCalled();
     expect(await box.files.read("recovery-count")).toBe("once");
@@ -599,6 +669,7 @@ test("repeated pre-launch auth rejection returns auth after one renewal without 
   const close = vi.spyOn(box.native, "close");
   const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
   tenkiState.streamAttempts = 0;
+
   for (let i = 0; i < 2; i++)
     tenkiState.streamFailures.push({
       phase: "before-start",
@@ -719,11 +790,13 @@ test("workspace transfers use one native call each after the first exec, without
   const run = vi.spyOn(MockSession.prototype, "run");
   const write = vi.spyOn(MockSession.prototype, "writeFile");
   const read = vi.spyOn(MockSession.prototype, "readFile");
+
   for (let i = 0; i < 2; i++) {
     const bytes = new Uint8Array([i, 2, 3]);
     await provider.files.write(box.id, "/workspace/nested/value", bytes);
     expect(await provider.files.read(box.id, "/workspace/nested/value")).toEqual(bytes);
   }
+
   expect(write).toHaveBeenCalledTimes(2);
   expect(read).toHaveBeenCalledTimes(2);
   expect(run).not.toHaveBeenCalled();
@@ -766,8 +839,10 @@ test("removing the workspace alias invalidates the native root", async () => {
 test("native symlink-escape rejection falls back to the logical workspace path", async () => {
   const box = await createSandbox(factory());
   await box.run("mkdir -p /tmp/sdk-bare; ln -s /tmp/sdk-bare escape");
+
   const denied = () =>
     Object.assign(new Error("outside native root"), { name: "PermissionDeniedError" });
+
   const write = vi.spyOn(MockSession.prototype, "writeFile").mockRejectedValueOnce(denied());
   const read = vi.spyOn(MockSession.prototype, "readFile").mockRejectedValueOnce(denied());
   await box.files.write("escape/value", "escaped");
@@ -781,18 +856,23 @@ test("overlapping command responses cannot repopulate the root cache out of orde
   const provider = factory();
   const box = await createSandbox(provider);
   let ready = () => {};
+
   const waiting = new Promise<void>((resolve) => {
     ready = resolve;
   });
+
   let release = () => {};
+
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   tenkiState.streamExitWaits.push(async () => {
     ready();
     await gate;
   });
   const old = box.run("true").then((result) => result);
+
   try {
     await waiting;
     await box.run(
@@ -802,6 +882,7 @@ test("overlapping command responses cannot repopulate the root cache out of orde
   } finally {
     release();
   }
+
   await old;
   const native = vi.spyOn(MockSession.prototype, "writeFile");
   await box.files.write("after-overlap", "new root");
@@ -875,10 +956,12 @@ test("a delayed removal invalidates snapshots taken before it settles", async ()
           "import os,time\nopen('/home/tenki/removal-started','w').close()\nwhile not os.path.exists('/home/tenki/release-removal'): time.sleep(.01)\n" +
           argv[2];
       }
+
       return run.call(this, argv, options);
     },
   );
   const removing = provider.files.remove(box.id, "/home/tenki/removal-alias", { recursive: false });
+
   try {
     await vi.waitFor(
       async () => expect(await box.files.exists("/home/tenki/removal-started")).toBe(true),
@@ -888,6 +971,7 @@ test("a delayed removal invalidates snapshots taken before it settles", async ()
   } finally {
     await box.files.write("/home/tenki/release-removal", "go");
   }
+
   await removing;
   const read = vi.spyOn(MockSession.prototype, "readFile");
   await expect(box.files.read("value")).rejects.toMatchObject({ code: "file_not_found" });
@@ -944,10 +1028,12 @@ test("native failures retain safe evidence through public redaction", async () =
   const provider = tenki({ authToken: "secret-key" });
   const box = await createSandbox(provider);
   const native = box.native;
+
   const transport = Object.assign(new Error("Bearer secret-key response body private-command"), {
     code: 14,
     metadata: new Headers({ "x-request-id": "req-123", authorization: "Bearer secret-key" }),
   });
+
   vi.spyOn(native, "resume").mockRejectedValueOnce(
     Object.assign(new Error("private-body"), {
       name: "ResumeFailedError",
@@ -998,16 +1084,19 @@ test("repeated resumes refresh workspace roots and recover expired first-command
   const provider = factory();
   const box = await createSandbox(provider);
   const current = tenkiState.boxes.get(box.id);
+
   if (!current) throw new Error("Missing mock session");
   const resume = current.resume.bind(current);
   const renew = vi.spyOn(current, "reauthOnUnauthenticated").mockResolvedValue(true);
   const close = vi.spyOn(current, "close");
   const write = vi.spyOn(current, "writeFile");
   const read = vi.spyOn(current, "readFile");
+
   for (let cycle = 1; cycle <= 3; cycle++) {
     const root = `/home/tenki/resumed-${cycle}`;
     vi.spyOn(current, "resume").mockImplementationOnce(async () => {
       await resume();
+
       // Simulate a restored guest with a different workspace alias. This does
       // not pass through adapter exec invalidation, just like native restore.
       const result = await current.run([
@@ -1015,6 +1104,7 @@ test("repeated resumes refresh workspace roots and recover expired first-command
         "-c",
         `mkdir -p ${root}; rm /workspace; ln -s ${root} /workspace`,
       ]);
+
       expect(result.exitCode).toBe(0);
     });
     await provider.pause?.(box.id);
@@ -1031,6 +1121,7 @@ test("repeated resumes refresh workspace roots and recover expired first-command
     expect(result).toMatchObject({ stdout: "resumed", exitCode: 0 });
     expect(renew).toHaveBeenCalledTimes(cycle);
   }
+
   expect((await box.run("cat /home/tenki/resume-count")).stdout).toBe("onceonceonce");
   expect(close).not.toHaveBeenCalled();
 });
@@ -1039,11 +1130,13 @@ test.each(["create", "connect"])(
   "%s does not claim admission for an id from a rejected native call",
   async (operation) => {
     const id = "12345678-1234-1234-1234-123456789abc";
+
     const nativeError = Object.assign(new Error("private native response"), {
       name: "UnauthorizedError",
       sandboxId: id,
       cause: { operation: "create", admittedByThisCall: true, sandboxId: id, code: 16 },
     });
+
     const provider = factory();
     vi.spyOn(MockTenki.prototype, "create").mockRejectedValueOnce(nativeError);
     vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(nativeError);
@@ -1059,6 +1152,7 @@ test.each(["create", "connect"])(
 test("create timeout retains the admitted id, readiness state and native polling evidence publicly", async () => {
   vi.spyOn(MockSession.prototype, "waitReady").mockImplementationOnce(function (this: MockSession) {
     this.state = "CREATING";
+
     return new Promise(() => {});
   });
   vi.spyOn(MockSession.prototype, "refresh").mockRejectedValue(
@@ -1067,9 +1161,11 @@ test("create timeout retains the admitted id, readiness state and native polling
       metadata: new Headers({ "x-request-id": "poll-123", authorization: "secret" }),
     }),
   );
+
   const error = await createSandbox(tenki({ authToken: "secret", waitTimeoutMs: 200 })).catch(
     (error) => error,
   );
+
   expect(error).toMatchObject({ code: "timeout" });
   expect(JSON.parse(error.cause)).toMatchObject({
     operation: "create",
@@ -1094,9 +1190,11 @@ test("create cleanup failure preserves the primary native error and admitted id"
   vi.spyOn(MockSession.prototype, "close").mockRejectedValueOnce(
     Object.assign(new Error("private cleanup"), { name: "QuotaExceededError" }),
   );
+
   const error = await factory()
     .create({ labels: {} })
     .catch((error) => error);
+
   expect(error).toMatchObject({ code: "auth", sandboxId: expect.any(String) });
   expect(JSON.parse(error.cause.message)).toMatchObject({
     operation: "create",
@@ -1126,9 +1224,11 @@ test("create preserves an allowlisted native readiness name without a transport 
       name: "WaitReadyFailedError",
     }),
   );
+
   const error = await factory()
     .create({ labels: {} })
     .catch((error) => error);
+
   expect(error).toMatchObject({ code: "provider" });
   expect(JSON.parse(error.cause.message)).toMatchObject({
     operation: "create",
@@ -1139,52 +1239,80 @@ test("create preserves an allowlisted native readiness name without a transport 
   expect(error.cause.message).not.toContain("private");
 });
 
-
 test("command shells restore SIGPIPE and use the supplied PATH", async () => {
   const box = await createSandbox(factory());
+
   try {
-    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({ exitCode: 141, stdout: "" });
+    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({
+      exitCode: 141,
+      stdout: "",
+    });
     const pipe = await box.run("yes | head -n 1");
     expect(pipe.stderr).toBe("");
     await box.files.write("shell-path/sh", '#!/bin/sh\nprintf selected >&2\nexec /bin/sh "$@"\n');
     await box.files.write("blocked-path/sh", "not executable");
     await box.run("chmod +x shell-path/sh");
-    expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
-  } finally { await box.destroy(); }
+    expect(
+      await box.run("printf command", {
+        env: { PATH: "/workspace/blocked-path:/workspace/shell-path" },
+      }),
+    ).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally {
+    await box.destroy();
+  }
 });
-
 
 test("plain create has no guest call and first list prepares in one request", async () => {
   const run = vi.spyOn(MockSession.prototype, "run");
   const box = await createSandbox(factory());
+
   try {
     expect(run).not.toHaveBeenCalled();
     expect(await box.files.list(".")).toEqual([]);
     expect(run).toHaveBeenCalledTimes(1);
     await box.run("rm /workspace", { cwd: "/" });
     expect(await box.files.exists("/workspace")).toBe(false);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("concurrent first commands preserve an existing workspace during migration", async () => {
   const box = await createSandbox(factory());
+
   try {
-    await box.native.run(["sh", "-c", "mkdir -p /workspace; printf retained > /workspace/existing"], { privileged: true });
+    await box.native.run(
+      ["sh", "-c", "mkdir -p /workspace; printf retained > /workspace/existing"],
+      { privileged: true },
+    );
     const results = await Promise.all([box.run("cat existing"), box.run("cat existing")]);
-    expect(results.map(result => result.stdout)).toEqual(["retained", "retained"]);
-    expect((await box.run("test -L /workspace && test -f /home/tenki/workspace/existing")).ok).toBe(true);
+    expect(results.map((result) => result.stdout)).toEqual(["retained", "retained"]);
+    expect((await box.run("test -L /workspace && test -f /home/tenki/workspace/existing")).ok).toBe(
+      true,
+    );
     expect(await box.files.read("existing")).toBe("retained");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("/workspace stats as a directory on a fresh sandbox and stays that way, so agent tools accept paths", async () => {
   const { createSandboxTools } = await import("../src/tools.js");
   const box = await createSandbox(factory());
+
   try {
     // Fresh: no command has run, so the guest transport answers.
     expect((await box.files.stat("/workspace")).type).toBe("directory");
     const tools = createSandboxTools(box);
-    const invoke = (name: string, input: unknown) => { const tool = tools.find(tool => tool.name === name); if (!tool) throw new Error(`Missing ${name}`); return tool.execute(input); };
+
+    const invoke = (name: string, input: unknown) => {
+      const tool = tools.find((tool) => tool.name === name);
+
+      if (!tool) throw new Error(`Missing ${name}`);
+
+      return tool.execute(input);
+    };
+
     expect((await invoke("write_file", { path: "a.txt", content: "hello" })).text).toMatch(/^OK/);
     expect((await invoke("read_file", { path: "a.txt" })).text).toContain("1: hello");
     // A retained native handle disables the root cache: the guest path must agree.
@@ -1194,28 +1322,46 @@ test("/workspace stats as a directory on a fresh sandbox and stays that way, so 
     // Only the SDK alias is followed. Other links still report as links.
     await box.run("ln -s /workspace/a.txt /workspace/link");
     expect((await box.files.stat("/workspace/link")).type).toBe("symlink");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("labels hide SDK bookkeeping and Tenki's own metadata", async () => {
   const provider = factory();
   const box = await createSandbox(provider, { key: "labels-key", labels: { app: "tenki-labels" } });
+
   try {
     const native = tenkiState.boxes.get(box.id);
+
     if (!native) throw new Error("Missing mock session");
     native.metadata.enable_opencode = "true";
     expect(box.labels).toEqual({ app: "tenki-labels", "sandbox-sdk": "1" });
     const [listed] = await factory().list({ app: "tenki-labels" });
-    expect(listed).toMatchObject({ id: box.id, key: "labels-key", labels: { app: "tenki-labels", "sandbox-sdk": "1" } });
+    expect(listed).toMatchObject({
+      id: box.id,
+      key: "labels-key",
+      labels: { app: "tenki-labels", "sandbox-sdk": "1" },
+    });
     expect(Object.keys(listed?.labels ?? {}).sort()).toEqual(["app", "sandbox-sdk"]);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("a missing cwd is a failed run with the shell error on stderr, and a real cwd still applies", async () => {
   const box = await createSandbox(factory());
+
   try {
-    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({ ok: false, exitCode: expect.any(Number), stdout: "", stderr: expect.stringMatching(/cd.*nope/) });
+    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({
+      ok: false,
+      exitCode: expect.any(Number),
+      stdout: "",
+      stderr: expect.stringMatching(/cd.*nope/),
+    });
     await box.files.write("sub/file.txt", "x");
     expect(await box.run("cat file.txt", { cwd: "sub" })).toMatchObject({ ok: true, stdout: "x" });
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });

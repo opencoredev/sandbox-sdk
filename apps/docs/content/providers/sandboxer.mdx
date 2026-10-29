@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | `mode` is applied before the bytes land |
-| Background processes | Yes | |
-| Preview URLs | Yes | Send the returned `Cookie` header |
-| Pause and resume | Yes | Usually restores memory and processes |
-| Snapshots | Yes | Named disk snapshots, no expiry |
-| Machine size | Partial | Presets only |
-| Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | Set the `ttlSeconds` auto-stop instead |
-| Idle timeout (`idleTimeoutMs`) | Yes | Pauses the VM, in whole minutes |
-| Keys | Best-effort | Stored in the VM's display name |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                   |
+| ------------------------------ | ----------- | --------------------------------------- |
+| Commands and streaming         | Yes         | Live output                             |
+| Files                          | Yes         | `mode` is applied before the bytes land |
+| Background processes           | Yes         |                                         |
+| Preview URLs                   | Yes         | Send the returned `Cookie` header       |
+| Pause and resume               | Yes         | Usually restores memory and processes   |
+| Snapshots                      | Yes         | Named disk snapshots, no expiry         |
+| Machine size                   | Partial     | Presets only                            |
+| Network policy                 | No          | Only `"all"`                            |
+| Hard lifetime (`timeoutMs`)    | No          | Set the `ttlSeconds` auto-stop instead  |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the VM, in whole minutes         |
+| Keys                           | Best-effort | Stored in the VM's display name         |
+| Terminal                       | No          |                                         |
 
 ## Run commands
 
@@ -142,11 +142,11 @@ Snapshots outlive their source and never expire, so `snapshot({ expiresInMs })` 
 
 ## Size, network, and lifetime
 
-| Preset | Native type | vCPU | Memory | Disk |
-| --- | --- | --- | --- | --- |
-| `small` | `small` | 2 | 4096 MiB | 12 GB |
-| `medium` | `default` | 4 | 8192 MiB | 50 GB |
-| `large` | `large` | 8 | 16384 MiB | 125 GB |
+| Preset   | Native type | vCPU | Memory    | Disk   |
+| -------- | ----------- | ---- | --------- | ------ |
+| `small`  | `small`     | 2    | 4096 MiB  | 12 GB  |
+| `medium` | `default`   | 4    | 8192 MiB  | 50 GB  |
+| `large`  | `large`     | 8    | 16384 MiB | 125 GB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -165,22 +165,24 @@ Separately, Sandboxer stops a VM an hour after it starts. Set `ttlSeconds` to ch
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
 
-await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitoring: false }), { idleTimeoutMs: 10 * 60_000 });
+await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitoring: false }), {
+  idleTimeoutMs: 10 * 60_000,
+});
 ```
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `SANDBOXER_API_KEY` |
-| `baseUrl` | `string` | `https://sandboxer.com/api/v1` | |
-| `machine` | `"small" \| "default" \| "large" \| "xlarge"` | `"default"` | |
-| `region` | `"us-east" \| "eu-central"` | Nearest to the caller | `SANDBOXER_REGION` |
-| `ttlSeconds` | `number \| null` | `3600` | |
-| `snapshots` | `boolean` | `true` | |
-| `monitoring` | `boolean` | Account setting | |
-| `org` | `string` | Your active wallet | |
-| `requestTimeoutMs` | `number` | `90_000` | |
+| Option             | Type                                          | Default                        | Env var             |
+| ------------------ | --------------------------------------------- | ------------------------------ | ------------------- |
+| `apiKey`           | `string`                                      |                                | `SANDBOXER_API_KEY` |
+| `baseUrl`          | `string`                                      | `https://sandboxer.com/api/v1` |                     |
+| `machine`          | `"small" \| "default" \| "large" \| "xlarge"` | `"default"`                    |                     |
+| `region`           | `"us-east" \| "eu-central"`                   | Nearest to the caller          | `SANDBOXER_REGION`  |
+| `ttlSeconds`       | `number \| null`                              | `3600`                         |                     |
+| `snapshots`        | `boolean`                                     | `true`                         |                     |
+| `monitoring`       | `boolean`                                     | Account setting                |                     |
+| `org`              | `string`                                      | Your active wallet             |                     |
+| `requestTimeoutMs` | `number`                                      | `90_000`                       |                     |
 
 `us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Sandboxer never captures the disk, so `pause()` erases it, and resume, snapshots, and idle pause stop working. `monitoring: false` means Sandboxer keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
 

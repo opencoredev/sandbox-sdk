@@ -32,14 +32,18 @@ function parseCli(argv: string[]): Cli {
       help: { type: "boolean", short: "h", default: false },
     },
   });
+
   const dryRun = values["dry-run"];
+
   const task =
     positionals.join(" ").trim() ||
     (dryRun ? "Write AGENT_NOTES.md describing the repository layout." : "");
+
   if (values.help || !values.repo || !task) {
     console.error(usage);
     process.exit(values.help ? 0 : 2);
   }
+
   return { task, repo: values.repo, branch: values.branch, keep: values.keep, dryRun };
 }
 
@@ -82,10 +86,12 @@ function print(event: AgentEvent) {
     case "result": {
       const [verdict = "", ...rest] = event.text.split("\n");
       process.stdout.write(`  ${verdict.startsWith("OK") ? verdict : amber(verdict)}\n`);
+
       const body = rest
         .join("\n")
         .replace(/^output:\n?/, "")
         .trim();
+
       if (body)
         process.stdout.write(
           dim(
@@ -98,6 +104,7 @@ function print(event: AgentEvent) {
         );
       break;
     }
+
     case "error":
       process.stdout.write(`  ${amber("tool error")} ${String(event.error)}\n`);
       break;
@@ -111,32 +118,39 @@ function print(event: AgentEvent) {
 async function main() {
   const cli = parseCli(process.argv.slice(2));
   const providerName = parseProviderName(process.env.SANDBOX_PROVIDER);
+
   const model = cli.dryRun
     ? scriptedModel(dryRunScript(cli.task), "\nDone. Wrote AGENT_NOTES.md.")
     : resolveModel();
 
   console.log(dim(`sandbox: ${providerName}${cli.keep ? ` (key ${cli.keep})` : ""}`));
+
   // With a key, disposal detaches and leaves the sandbox running; without one it is destroyed.
   await using box = await createSandbox(await loadProvider(providerName), {
     key: cli.keep,
     labels: { example: "coding-agent" },
   });
+
   console.log(dim(`${box.created ? "created" : "reused"} ${box.id}`));
 
   if (!(await box.files.exists(`${repoDir}/.git`))) {
     console.log(dim(`cloning ${cli.repo}`));
+
     const clone = await box.git.clone(cli.repo, {
       dir: repoDir,
       branch: cli.branch,
       depth: 1,
       token: process.env.GITHUB_TOKEN,
     });
+
     if (!clone.ok) {
       console.error(clone.output);
       process.exitCode = 1;
+
       return;
     }
   }
+
   const checkpoint = await box.files.mark();
 
   await runAgent({ box, model, task: cli.task, onEvent: print });
@@ -146,6 +160,7 @@ async function main() {
     `\n\n${amber("changes")} added ${diff.added.length}, modified ${diff.modified.length}, removed ${diff.removed.length}`,
   );
   console.log(diff.patch || dim("(no changes)"));
+
   if (cli.keep) console.log(dim(`sandbox kept as "${cli.keep}" (${box.id})`));
 }
 

@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
+
 const integer = z.coerce.number().int().positive();
+
 const overrides = z
   .string()
   .default("")
@@ -11,41 +13,87 @@ const overrides = z
         .filter(Boolean)
         .map((entry) => {
           const [name, raw] = entry.split("=");
+
           if (!name || !raw || !/^[a-z][a-z0-9-]*$/.test(name))
             throw new Error("Expected provider=number");
+
           return [name, z.coerce.number().nonnegative().finite().parse(raw)];
         }),
     ),
   );
+
 export const trackSchema = z.enum(["default", "same-spec"]);
+
 export const sizeSchema = z.union([
   z.enum(["small", "medium", "large"]),
-  z.object({ cpu: z.number().positive().finite(), memoryMb: z.number().int().positive(), diskGb: z.number().positive().finite().optional() }),
+  z.object({
+    cpu: z.number().positive().finite(),
+    memoryMb: z.number().int().positive(),
+    diskGb: z.number().positive().finite().optional(),
+  }),
 ]);
-const assignments = (value: string[]): Record<string, string> => Object.fromEntries(value.map(entry => {
-  const match = /^([a-z][a-z0-9-]*)=(.+)$/.exec(entry);
-  if (!match) throw new Error("Expected provider=value");
-  return z.tuple([z.string(), z.string()]).parse([match[1], match[2]]);
-}));
-const sizes = z.array(z.string()).default([]).transform(value => Object.fromEntries(
-  Object.entries(assignments(value)).map(([name, raw]) => {
-    if (!raw) throw new Error("Expected provider=size");
-    const parts = raw.split(":");
-    return [name, sizeSchema.parse(parts.length === 1 ? raw : parts.length <= 3
-      ? { cpu: Number(parts[0]), memoryMb: Number(parts[1]), ...(parts[2] === undefined ? {} : { diskGb: Number(parts[2]) }) }
-      : null)];
-  }),
-));
+
+const assignments = (value: string[]): Record<string, string> =>
+  Object.fromEntries(
+    value.map((entry) => {
+      const match = /^([a-z][a-z0-9-]*)=(.+)$/.exec(entry);
+
+      if (!match) throw new Error("Expected provider=value");
+
+      return z.tuple([z.string(), z.string()]).parse([match[1], match[2]]);
+    }),
+  );
+
+const sizes = z
+  .array(z.string())
+  .default([])
+  .transform((value) =>
+    Object.fromEntries(
+      Object.entries(assignments(value)).map(([name, raw]) => {
+        if (!raw) throw new Error("Expected provider=size");
+        const parts = raw.split(":");
+
+        return [
+          name,
+          sizeSchema.parse(
+            parts.length === 1
+              ? raw
+              : parts.length <= 3
+                ? {
+                    cpu: Number(parts[0]),
+                    memoryMb: Number(parts[1]),
+                    ...(parts[2] === undefined ? {} : { diskGb: Number(parts[2]) }),
+                  }
+                : null,
+          ),
+        ];
+      }),
+    ),
+  );
+
 /** Native products a provider can run on, chosen with --product provider=name. */
-export const products: Record<string, readonly [string, ...string[]]> = { upstash: ["box", "ephemeral"] };
-const productAssignments = z.array(z.string()).default([]).transform(value => Object.fromEntries(
-  Object.entries(assignments(value)).map(([name, product]) => {
-    const allowed = products[name];
-    if (!allowed?.includes(product))
-      throw new Error(`${name} has no ${product} product${allowed ? `; choose ${allowed.join(" or ")}` : ""}`);
-    return [name, product];
-  }),
-));
+export const products: Record<string, readonly [string, ...string[]]> = {
+  upstash: ["box", "ephemeral"],
+};
+
+const productAssignments = z
+  .array(z.string())
+  .default([])
+  .transform((value) =>
+    Object.fromEntries(
+      Object.entries(assignments(value)).map(([name, product]) => {
+        const allowed = products[name];
+
+        if (!allowed?.includes(product))
+          throw new Error(
+            `${name} has no ${product} product${allowed ? `; choose ${allowed.join(" or ")}` : ""}`,
+          );
+
+        return [name, product];
+      }),
+    ),
+  );
+
 const schema = z.object({
   track: trackSchema.default("default"),
   size: sizes,
@@ -78,7 +126,10 @@ const schema = z.object({
     .string()
     .default("3")
     .transform((v) => (v ? v.split(",").map((n) => integer.max(50).parse(n)) : [])),
-  "omit-network-download": z.enum(["true", "false"]).default("false").transform(v => v === "true"),
+  "omit-network-download": z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   scenarios: z
     .string()
     .default("all")
@@ -89,13 +140,33 @@ const schema = z.object({
     .regex(/^[a-zA-Z0-9_-]{1,100}$/)
     .default(`sbx45-${Date.now()}`),
 });
+
 export type ConfigV2 = z.infer<typeof schema>;
+
 export function parseV2(args: string[]) {
   const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
-    Object.keys(schema.shape).map((key) => [key, { type: "string", ...(["size", "template", "product"].includes(key) ? { multiple: true } : {}) }]),
+    Object.keys(schema.shape).map((key) => [
+      key,
+      {
+        type: "string",
+        ...(["size", "template", "product"].includes(key) ? { multiple: true } : {}),
+      },
+    ]),
   );
+
   const config = schema.parse(parseArgs({ args, options, strict: true }).values);
-  if (config.scenarios.includes("cost") && config.scenarios.length !== 1) throw new Error("The cost suite must run alone (--scenarios cost)");
-  if (config.scenarios.includes("cost") && config.providers.includes("boat") && config["cost-runs"] > 10) throw new Error("Boat cost suite allows at most 10 tasks per quota window; split collections into scheduled windows");
+
+  if (config.scenarios.includes("cost") && config.scenarios.length !== 1)
+    throw new Error("The cost suite must run alone (--scenarios cost)");
+
+  if (
+    config.scenarios.includes("cost") &&
+    config.providers.includes("boat") &&
+    config["cost-runs"] > 10
+  )
+    throw new Error(
+      "Boat cost suite allows at most 10 tasks per quota window; split collections into scheduled windows",
+    );
+
   return config;
 }

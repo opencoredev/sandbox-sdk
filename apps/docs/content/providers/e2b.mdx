@@ -55,20 +55,20 @@ This prints `4`. `await using` destroys the sandbox when the block ends.
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output through E2B's command API |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Public `https://` URL by default, no ports to declare. `public: false` requires a token header |
-| Pause and resume | Yes | Memory and files survive |
-| Snapshots | Yes | Kept until you delete them. `expiresInMs` fails with `unsupported` |
-| Machine size | No | Fixed by the template |
-| Network policy | Yes | `"none"` or a host allow list |
-| Hard lifetime (`timeoutMs`) | Yes | Reconnect and resume never extend it. With `autoPause`, it is the running time before E2B pauses the sandbox |
-| Idle timeout (`idleTimeoutMs`) | No | E2B measures elapsed time only |
-| Keys | Best-effort | Found by metadata search |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                                                                        |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------ |
+| Commands and streaming         | Yes         | Live output through E2B's command API                                                                        |
+| Files                          | Yes         |                                                                                                              |
+| Background processes           | Yes         |                                                                                                              |
+| Preview URLs                   | Yes         | Public `https://` URL by default, no ports to declare. `public: false` requires a token header               |
+| Pause and resume               | Yes         | Memory and files survive                                                                                     |
+| Snapshots                      | Yes         | Kept until you delete them. `expiresInMs` fails with `unsupported`                                           |
+| Machine size                   | No          | Fixed by the template                                                                                        |
+| Network policy                 | Yes         | `"none"` or a host allow list                                                                                |
+| Hard lifetime (`timeoutMs`)    | Yes         | Reconnect and resume never extend it. With `autoPause`, it is the running time before E2B pauses the sandbox |
+| Idle timeout (`idleTimeoutMs`) | No          | E2B measures elapsed time only                                                                               |
+| Keys                           | Best-effort | Found by metadata search                                                                                     |
+| Terminal                       | No          |                                                                                                              |
 
 ## Run commands
 
@@ -181,16 +181,16 @@ Host rules match on the HTTP `Host` header and TLS SNI, and DNS stays allowed. S
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `E2B_API_KEY` |
-| `template` | `string` | `"base"` | |
-| `domain` | `string` | `e2b.app` | `E2B_DOMAIN` |
-| `requestTimeoutMs` | `number` | `60000` | |
-| `public` | `boolean` | `true` | |
-| `autoPause` | `boolean` | `false` | |
-| `autoResume` | `boolean` | `false`, needs `autoPause` | |
-| `volumes` | `Record<string, string>` | | |
+| Option             | Type                     | Default                    | Env var       |
+| ------------------ | ------------------------ | -------------------------- | ------------- |
+| `apiKey`           | `string`                 |                            | `E2B_API_KEY` |
+| `template`         | `string`                 | `"base"`                   |               |
+| `domain`           | `string`                 | `e2b.app`                  | `E2B_DOMAIN`  |
+| `requestTimeoutMs` | `number`                 | `60000`                    |               |
+| `public`           | `boolean`                | `true`                     |               |
+| `autoPause`        | `boolean`                | `false`                    |               |
+| `autoResume`       | `boolean`                | `false`, needs `autoPause` |               |
+| `volumes`          | `Record<string, string>` |                            |               |
 
 `requestTimeoutMs` bounds each E2B control-plane request. `volumes` maps absolute mount paths to [E2B volume](https://e2b.dev/docs/volumes) names or IDs, for example `{ "/data": "my-volume" }`. Volumes must be enabled on your E2B team.
 

@@ -9,6 +9,7 @@ import { waitReady, workspaceSetup } from "../src/providers/tenki/ready.js";
 // production dependencies just for this in-memory transport.
 const nativeRequire = createRequire(createRequire(import.meta.url).resolve("@tenkicloud/sandbox"));
 const { fromJson } = await import(nativeRequire.resolve("@bufbuild/protobuf"));
+
 type Transport = NonNullable<
   NonNullable<ConstructorParameters<typeof TenkiSandbox>[0]>["transport"]
 >;
@@ -16,9 +17,11 @@ type Transport = NonNullable<
 function nativeSession(runningFrame: boolean) {
   const queried = vi.fn();
   const cancelled = vi.fn();
+
   const transport: Transport = {
     async unary(method) {
       if (method.name === "GetSession") queried();
+
       return {
         stream: false,
         service: method.parent,
@@ -52,6 +55,7 @@ function nativeSession(runningFrame: boolean) {
       };
     },
   };
+
   return { client: new TenkiSandbox({ authToken: "tk_offline", transport }), queried, cancelled };
 }
 
@@ -94,9 +98,10 @@ test("an allocation with RUNNING state and a native data plane skips readiness",
   expect(queried).not.toHaveBeenCalled();
   const controller = new AbortController();
   controller.abort();
-  await expect(waitReady(session, 200, controller.signal)).rejects.toMatchObject({ code: "aborted" });
+  await expect(waitReady(session, 200, controller.signal)).rejects.toMatchObject({
+    code: "aborted",
+  });
 });
-
 
 test("guest initialization serializes concurrent migrations and preserves existing files", async () => {
   const script = `import os,tempfile,threading,json
@@ -126,6 +131,7 @@ with tempfile.TemporaryDirectory(prefix='sdk-tenki-lock-') as root:
  with open(workspace+'/existing') as f: content=f.read()
  print(json.dumps({'errors':errors,'symlink':os.path.islink(workspace),'content':content}))
 `;
+
   const result = await promisify(execFile)("python3", ["-c", script], { timeout: 5000 });
   expect(JSON.parse(result.stdout)).toEqual({ errors: [], symlink: true, content: "retained" });
 });

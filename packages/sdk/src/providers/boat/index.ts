@@ -1,6 +1,7 @@
 import { boatApi } from "../boat-api/index.js";
 import type { BoatApi, CreateSandboxRequest, Sandbox as BoatSandbox } from "@boatdev/sdk";
 import type { Provider } from "../../provider.js";
+
 /** Native create fields shared by Boat and Sandboxer. */
 export interface BoatCreateOptions {
   /** Seconds until the VM auto-stops; `null` turns auto-stop off. Default: 3600.
@@ -16,6 +17,7 @@ export interface BoatCreateOptions {
   /** Organization to bill, by id or name. Default: your active wallet. */
   org?: string;
 }
+
 export interface BoatOptions extends BoatCreateOptions {
   /** Defaults to BOAT_API_KEY; required on first use. */
   apiKey?: string;
@@ -30,10 +32,12 @@ export interface BoatOptions extends BoatCreateOptions {
   /** Deadline for each control-plane request. Default: 90 seconds. */
   requestTimeoutMs?: number;
 }
+
 export interface BoatNative {
   readonly sandbox: BoatSandbox;
   readonly client: BoatApi;
 }
+
 export type BoatProvider = Provider<BoatNative, "size">;
 
 /** Direct optional SDK with no installed remote agent or local daemon. */

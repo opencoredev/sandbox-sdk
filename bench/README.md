@@ -47,27 +47,27 @@ Run `bun bench attempts results/publication-final-v2` to print every required pr
 
 ## Collection and budgets
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--track` | `default` | `default` or `same-spec`; retained in provider metadata, samples and summaries |
-| `--size` | no override | Repeat `provider=small`, `provider=medium`, `provider=large`, or `provider=cpu:memoryMb[:diskGb]` |
-| `--template` | no override | Repeat `provider=name`; maps to the factory template, snapshot or image option |
-| `--providers` | `local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,railway,vercel` | Provider factories; missing credentials produce a skip note |
-| `--runs` | `2` | Sandbox iterations per provider for lifecycle, command, files and guest probes |
-| `--workload-runs` | same as runs | Number of iterations that include agent workloads |
-| `--scenarios` | `all` | Comma-separated scenario names below; cold, fingerprint and cleanup always run |
-| `--concurrency` | `4` | Global active normal sandbox iterations, maximum 32 |
-| `--provider-concurrency` | `1` | Active normal iterations per provider, maximum 32 |
-| `--bursts` | `3` | Isolated cohorts, e.g. `10,25`; empty string disables |
-| `--account-limits` | conservative defaults | Overrides such as `e2b=20,tenki=5,boxd=50`; boxd must never exceed 50 |
-| `--timeout-ms` | `180000` | Scenario deadline and bounded cleanup/drain grace |
-| `--seed` | `45` | Recorded PRNG seed for scenario-group order and bootstrap CIs |
-| `--max-sandboxes` | `100` | Attempted creations per provider, including restored sandboxes and bursts |
-| `--max-dollars` | `5` | Estimated budget per provider in USD; not an invoice-level cap |
-| `--provider-max-sandboxes` | no override | `boat=100,boxd=100` |
-| `--provider-max-dollars` | no override | `boat=2,boxd=5` |
-| `--run` | timestamped SBX-45 ID | Ownership label for every created sandbox |
-| `--out` | `results/v2` | Report and ownership journal directory |
+| Flag                       | Default                                                              | Meaning                                                                                           |
+| -------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `--track`                  | `default`                                                            | `default` or `same-spec`; retained in provider metadata, samples and summaries                    |
+| `--size`                   | no override                                                          | Repeat `provider=small`, `provider=medium`, `provider=large`, or `provider=cpu:memoryMb[:diskGb]` |
+| `--template`               | no override                                                          | Repeat `provider=name`; maps to the factory template, snapshot or image option                    |
+| `--providers`              | `local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,railway,vercel` | Provider factories; missing credentials produce a skip note                                       |
+| `--runs`                   | `2`                                                                  | Sandbox iterations per provider for lifecycle, command, files and guest probes                    |
+| `--workload-runs`          | same as runs                                                         | Number of iterations that include agent workloads                                                 |
+| `--scenarios`              | `all`                                                                | Comma-separated scenario names below; cold, fingerprint and cleanup always run                    |
+| `--concurrency`            | `4`                                                                  | Global active normal sandbox iterations, maximum 32                                               |
+| `--provider-concurrency`   | `1`                                                                  | Active normal iterations per provider, maximum 32                                                 |
+| `--bursts`                 | `3`                                                                  | Isolated cohorts, e.g. `10,25`; empty string disables                                             |
+| `--account-limits`         | conservative defaults                                                | Overrides such as `e2b=20,tenki=5,boxd=50`; boxd must never exceed 50                             |
+| `--timeout-ms`             | `180000`                                                             | Scenario deadline and bounded cleanup/drain grace                                                 |
+| `--seed`                   | `45`                                                                 | Recorded PRNG seed for scenario-group order and bootstrap CIs                                     |
+| `--max-sandboxes`          | `100`                                                                | Attempted creations per provider, including restored sandboxes and bursts                         |
+| `--max-dollars`            | `5`                                                                  | Estimated budget per provider in USD; not an invoice-level cap                                    |
+| `--provider-max-sandboxes` | no override                                                          | `boat=100,boxd=100`                                                                               |
+| `--provider-max-dollars`   | no override                                                          | `boat=2,boxd=5`                                                                                   |
+| `--run`                    | timestamped SBX-45 ID                                                | Ownership label for every created sandbox                                                         |
+| `--out`                    | `results/v2`                                                         | Report and ownership journal directory                                                            |
 
 Normal jobs enter a round-robin provider queue per iteration. Independent providers run concurrently within the global limit. A provider holds its slot through cleanup. Scenario groups are shuffled deterministically for each iteration, using the same order across providers. Dependencies remain ordered: fixture upload/install → dev server → preview → edit. Cold comes first, fingerprint follows, and destruction comes last. No warmup or outlier is discarded.
 
@@ -94,24 +94,24 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 
 ## Measurements
 
-| Scenario | Measurement |
-| --- | --- |
-| `cold` | Adapter create start through a successful bare adapter `true` in `/workspace`, before SDK handle initialization |
-| `command` | One successful `true` round trip |
-| `files-1kb`, `files-10mb` | Write + read with byte equality validation; 1,024 / 10,485,760 bytes |
-| `fingerprint` | One guest exec for the hardware script, including one-second CPU steal sample |
-| `perf` | Guest performance probe, with separate metric observations described below |
-| `reconnect` | Connect by native ID through first successful command; close the previous handle after sandbox destruction in `reconnect-cleanup` |
-| `pause-resume` | Pause, resume, first command, with pause and resume-ready phases; unsupported providers skip |
-| `snapshot`, `create-from-snapshot` | Native snapshot API and restored first-command readiness measured separately; setup, total, and teardown separately recorded |
-| `git-clone` | Depth-one clone and pinned fetch of `octocat/Hello-World`, commit `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`; checkout verified |
-| `npm-install` | After the separately recorded `npm-install-prepare` fixture upload: committed React 19.1.0 / Vite 6.3.5 fixture and npm lockfile, `npm ci --ignore-scripts --no-audit --no-fund` |
-| `dev-server` | Start fixture Vite server on port 3000 to listening log |
-| `preview-first-byte` | Provider preview URL and access headers through first non-empty HTTP response chunk |
-| `edit-loop` | Edit fixture HTML marker; poll public preview until the changed bytes are served, bypassing caches |
-| `tool-replay` | After any separately recorded `tool-replay-prepare` fixture upload: 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
-| `pip-install` | Pinned requests/numpy and transitive set into a workspace target; imports and versions verified; pinned pip wheel bootstrap with SHA-256 |
-| `destroy` | Deletion requests only, retries retained; ownership checks and journal writes appear separately as `ownershipVerifyMs`/`ownershipPersistMs`; final listing verifies eventual deletion |
+| Scenario                           | Measurement                                                                                                                                                                                     |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cold`                             | Adapter create start through a successful bare adapter `true` in `/workspace`, before SDK handle initialization                                                                                 |
+| `command`                          | One successful `true` round trip                                                                                                                                                                |
+| `files-1kb`, `files-10mb`          | Write + read with byte equality validation; 1,024 / 10,485,760 bytes                                                                                                                            |
+| `fingerprint`                      | One guest exec for the hardware script, including one-second CPU steal sample                                                                                                                   |
+| `perf`                             | Guest performance probe, with separate metric observations described below                                                                                                                      |
+| `reconnect`                        | Connect by native ID through first successful command; close the previous handle after sandbox destruction in `reconnect-cleanup`                                                               |
+| `pause-resume`                     | Pause, resume, first command, with pause and resume-ready phases; unsupported providers skip                                                                                                    |
+| `snapshot`, `create-from-snapshot` | Native snapshot API and restored first-command readiness measured separately; setup, total, and teardown separately recorded                                                                    |
+| `git-clone`                        | Depth-one clone and pinned fetch of `octocat/Hello-World`, commit `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`; checkout verified                                                                 |
+| `npm-install`                      | After the separately recorded `npm-install-prepare` fixture upload: committed React 19.1.0 / Vite 6.3.5 fixture and npm lockfile, `npm ci --ignore-scripts --no-audit --no-fund`                |
+| `dev-server`                       | Start fixture Vite server on port 3000 to listening log                                                                                                                                         |
+| `preview-first-byte`               | Provider preview URL and access headers through first non-empty HTTP response chunk                                                                                                             |
+| `edit-loop`                        | Edit fixture HTML marker; poll public preview until the changed bytes are served, bypassing caches                                                                                              |
+| `tool-replay`                      | After any separately recorded `tool-replay-prepare` fixture upload: 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
+| `pip-install`                      | Pinned requests/numpy and transitive set into a workspace target; imports and versions verified; pinned pip wheel bootstrap with SHA-256                                                        |
+| `destroy`                          | Deletion requests only, retries retained; ownership checks and journal writes appear separately as `ownershipVerifyMs`/`ownershipPersistMs`; final listing verifies eventual deletion           |
 
 The fingerprint records CPU model and flags, affinity-aware `nproc`, cgroup CPU quota and memory limit, host MemTotal, df/lsblk capacity/type, virtualization probes and readable DMI, kernel/distro, user/uid/sudo, installed tools, Python version, steal time, and optional no-key ipinfo egress IP/org/region. A failed IP lookup is null. A provider may expose host CPU/RAM/disk information beyond its allocation; prefer cgroup limits and inspect raw fields. Default Docker reference size is `medium` (2 vCPU / 4 GiB); its shared backing filesystem size is not a dedicated disk allocation.
 
@@ -181,7 +181,6 @@ Percentiles use nearest rank. p50 and mean intervals use 2,000 seeded bootstrap 
 
 These additions extend schema v2: `metadata`, `providers[].configuredRegion`, `samples[].headroom`, blocked outcomes, and `summaries[].blocked`. Consumers must handle the new outcome variant. Older v2 pilot reports lack these fields and are historical artifacts; v1 compatibility is unchanged. The earlier pilot predates these fairness fixes and has not been rerun on cloud accounts.
 
-
 ## Collect and publish separate tracks
 
 Use the same size/template mapping for every suite in a track. Templates map to `template` for E2B/Superserve, `snapshot` for Daytona, `snapshotId` for Freestyle, and `image` for Tenki/boxd/local. Boat and Upstash expose no template option and reject that flag. Omitted size means provider default; E2B and Freestyle allocations come from templates rather than a size argument. The SDK and harness accept omitted `diskGb` and pass no disk override. Each adapter uses its native default: boxd 100 GB, Daytona 10 GB, Tenki 5 GB. `requestedSize` retains the original request.
@@ -199,7 +198,6 @@ bun bench site-data --report results/merged --track same-spec --out results/site
 
 The export includes `track` and requested allocations. Each export filters metrics, raw cold samples, hardware, costs and failures to that track. Multiple allocations for the same provider within one track are rejected by site-data; merge those allocations separately. Attempt-policy rules may specify `track`; omission selects default only. Conservative account caps still apply to both tracks: K=25 can remain skipped until account capacity has been verified, and start-rate quotas can require separate collection windows.
 
-
 ### Allocation contract for site-data consumers
 
 Every `site-data --track ...` export contains `track` at the root and on every provider. Render `providers[].requestedAllocation` beside `providers[].measuredAllocations`:
@@ -212,7 +210,6 @@ Every `site-data --track ...` export contains `track` at the root and on every p
 The root `allocations[]` repeats this evidence per provider/track as `requested`, `measured`, `equalSpec`, and `verification`. Each provider's `hardware` view remains descriptive; do not use its first/mode observation to override these safeguards. A false `equalSpec` can still have a valid price for the actual allocation (for example, boxd 4/16).
 
 Restores omit size overrides and inherit their snapshot's allocation. `restore-fingerprint.details.verification` records source and restored resources, `matches` (null if the source fingerprint is unavailable), and mismatched dimensions. CPU must match exactly; usable memory and disk allow 5%. A mismatch is a failed restore-fingerprint observation; its fingerprint and cleanup remain recorded.
-
 
 ### SBX-53 collection windows
 
@@ -247,12 +244,9 @@ The collector streams `samples.ndjson` when present, otherwise the `samples` arr
 
 A task means one distinct sandbox lifetime. Whole-sandbox charges belong to its `sandbox-lifetime` scenario, including burst variants, or its sole scenario when only one exists. Shared commands, files and other operations have no separate bill and retain `null` costs. Failed attempts with an ID are included; samples without IDs are counted separately and cannot be priced. Journal-only IDs and shared sandboxes without a lifetime scenario remain unallocated. Snapshot storage, unrelated account activity and subscription minimums are not assigned to tasks. Recovering selected sandbox charges does not establish the full benchmark invoice.
 
-
 Boat's [machine documentation](https://docs.boat.dev/machines) lists 50 GB for the default machine as the maximum size of user files, excluding the operating system and pre-installed tools. The pilot measured a 68.58 GiB filesystem. Site exports keep those distinct: `requestedAllocation.provisioned.documentedDisk` carries the documented value, unit, scope and source, while `measuredAllocations[].diskGiB` carries the filesystem measurement. Boat disk differences do not affect allocation verification, restore eligibility or its fixed hourly price.
 
-
 Every collection-plan command passes `--omit-network-download true`, matching the original publication. The public CDN download is not collected because the host rate-limits; guest `urllib` connection resets there do not measure provider performance. CPU, memory, disk and TCP probes remain enabled.
-
 
 Daytona's `us` container account quota was raised to 250 vCPU, 500 GiB RAM and 2000 GiB disk on 2026-10-22. Daytona now runs every suite on both tracks, including same-spec snapshot/restore and K=10/K=25 bursts, through the shared plan commands with an account limit of 25. Earlier runs under the old 10 vCPU / 10 GiB / 30 GiB quota excluded those suites.
 

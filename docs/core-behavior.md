@@ -29,4 +29,3 @@ Durable process logs preserve UTF-8 code points across shell-reader blocks. The 
 Process log pages use bounded remote ranges under the rotation lock. `maxBytes` is an upper bound; a page may stop at 64 KiB even when a larger budget is requested. Follow `nextCursor` while `truncated` is true. Reads include bounded framing lookaround and never download the entire 10 MiB log. Memory providers may implement the optional `files.readRange` primitive.
 
 Readiness failures include the retained last 50 log lines, even when subsequent cursor pages are empty. The retained diagnostic tail is capped at 256 KiB for unusually long lines.
-

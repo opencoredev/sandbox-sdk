@@ -7,10 +7,10 @@ Guide: [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
 
 ## `sandboxTools(box, options?)`
 
-| Import | Returns |
-| --- | --- |
-| `@opencoredev/sandbox-sdk/ai` | AI SDK tool set |
-| `@opencoredev/sandbox-sdk/mastra` | Mastra tool map |
+| Import                            | Returns                      |
+| --------------------------------- | ---------------------------- |
+| `@opencoredev/sandbox-sdk/ai`     | AI SDK tool set              |
+| `@opencoredev/sandbox-sdk/mastra` | Mastra tool map              |
 | `@opencoredev/sandbox-sdk/openai` | OpenAI Agents SDK tool array |
 
 ```ts
@@ -36,12 +36,12 @@ Each adapter needs its framework and `zod` installed: AI SDK 7, Mastra 1.78, or 
 
 ### Limits
 
-| Field | Default | Applies to |
-| --- | --- | --- |
-| `timeoutMs` | `30_000` | Commands. A `timeoutMs` the model passes can't exceed it. |
-| `maxOutputBytes` | `16_384` | Every result. At least 256. |
-| `maxReadBytes` | `1_048_576` | `read_file` |
-| `maxMatches` | `100` | `search` |
+| Field            | Default     | Applies to                                                |
+| ---------------- | ----------- | --------------------------------------------------------- |
+| `timeoutMs`      | `30_000`    | Commands. A `timeoutMs` the model passes can't exceed it. |
+| `maxOutputBytes` | `16_384`    | Every result. At least 256.                               |
+| `maxReadBytes`   | `1_048_576` | `read_file`                                               |
+| `maxMatches`     | `100`       | `search`                                                  |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -60,26 +60,26 @@ const tools = sandboxTools(box, {
 
 ## Default tools
 
-| Tool | Parameters | Notes |
-| --- | --- | --- |
-| `run` | `command`, `cwd?`, `timeoutMs?` | Waits for exit. Use `start_process` for servers. |
-| `read_file` | `path`, `offset?`, `limit?` | Numbered lines and a SHA-256. `offset` is a zero-based line index. Binary files return metadata only. |
-| `write_file` | `path`, `content` | Whole-file write |
-| `edit_file` | `path`, `find`, `replace` | `find` must match exactly once |
-| `start_process` | `name`, `command`, `cwd?`, `port?` | With `port`, waits for it and returns the URL. Without, confirms the launch only. |
-| `process_logs` | `name`, `cursor?` | Returns text and the next cursor |
-| `stop_process` | `name` | |
+| Tool            | Parameters                         | Notes                                                                                                 |
+| --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `run`           | `command`, `cwd?`, `timeoutMs?`    | Waits for exit. Use `start_process` for servers.                                                      |
+| `read_file`     | `path`, `offset?`, `limit?`        | Numbered lines and a SHA-256. `offset` is a zero-based line index. Binary files return metadata only. |
+| `write_file`    | `path`, `content`                  | Whole-file write                                                                                      |
+| `edit_file`     | `path`, `find`, `replace`          | `find` must match exactly once                                                                        |
+| `start_process` | `name`, `command`, `cwd?`, `port?` | With `port`, waits for it and returns the URL. Without, confirms the launch only.                     |
+| `process_logs`  | `name`, `cursor?`                  | Returns text and the next cursor                                                                      |
+| `stop_process`  | `name`                             |                                                                                                       |
 
 ## Optional tools
 
 Turn these on with `allow`:
 
-| Tool | Parameters | Notes |
-| --- | --- | --- |
-| `search` | `query`, `path?`, `glob?` | Literal text, not a regular expression |
-| `list_files` | `path?`, `glob?` | Recursive |
-| `changes` | none | Files added, modified, or removed since the tools were created |
-| `preview` | `port`, `path?` | The URL only. Access headers stay on your server. |
+| Tool         | Parameters                | Notes                                                          |
+| ------------ | ------------------------- | -------------------------------------------------------------- |
+| `search`     | `query`, `path?`, `glob?` | Literal text, not a regular expression                         |
+| `list_files` | `path?`, `glob?`          | Recursive                                                      |
+| `changes`    | none                      | Files added, modified, or removed since the tools were created |
+| `preview`    | `port`, `path?`           | The URL only. Access headers stay on your server.              |
 
 ## Output format
 

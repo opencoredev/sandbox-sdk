@@ -2,12 +2,7 @@ import type { ComponentProps } from "react";
 
 import type { DitherMatrix } from "@/lib/dither/matrices";
 import { DitherPattern } from "@/lib/dither/pattern";
-import {
-  bloomFilter,
-  bloomLayerStyle,
-  ditherRamp,
-  fillTile,
-} from "@/lib/dither/style";
+import { bloomFilter, bloomLayerStyle, ditherRamp, fillTile } from "@/lib/dither/style";
 import type { Bloom, FillEdge, FillVariant } from "@/lib/dither/style";
 import { cssColor } from "@/lib/dither/tokens";
 import type { DitherColor } from "@/lib/dither/tokens";
@@ -64,6 +59,7 @@ export const FillPattern = ({
   ramp,
 }: FillPatternProps) => {
   const ink = { fill: cssColor(color) };
+
   if (fill === "solid") {
     return (
       <pattern id={id} width={cell} height={cell} patternUnits="userSpaceOnUse">
@@ -71,8 +67,10 @@ export const FillPattern = ({
       </pattern>
     );
   }
+
   if (fill === "dotted" || fill === "hatched") {
     const { size, path } = fillTile(fill);
+
     return (
       <pattern
         id={id}
@@ -85,17 +83,11 @@ export const FillPattern = ({
       </pattern>
     );
   }
+
   if (ramp === undefined) {
-    return (
-      <DitherPattern
-        id={id}
-        level={level}
-        matrix={matrix}
-        cell={cell}
-        color={color}
-      />
-    );
+    return <DitherPattern id={id} level={level} matrix={matrix} cell={cell} color={color} />;
   }
+
   const tile = ditherRamp({
     edge: ramp.edge,
     extent: (ramp.extent ?? ramp.length) / cell,
@@ -104,14 +96,17 @@ export const FillPattern = ({
     matrix,
     to: floor,
   });
+
   const width = tile.width * cell;
   const height = tile.height * cell;
+
   const origin = {
     bottom: { x: 0, y: ramp.at - height },
     left: { x: ramp.at, y: 0 },
     right: { x: ramp.at - width, y: 0 },
     top: { x: 0, y: ramp.at },
   }[ramp.edge];
+
   return (
     <pattern
       id={id}
@@ -137,6 +132,7 @@ export interface BloomGroupProps extends ComponentProps<"g"> {
  */
 export const BloomGroup = ({ bloom, style, ...props }: BloomGroupProps) => {
   const layer = bloomLayerStyle(bloom);
+
   return layer === undefined ? null : (
     <g aria-hidden="true" {...props} style={{ ...layer, ...style }} />
   );
@@ -152,11 +148,6 @@ export type BloomBoxProps = ComponentProps<"div"> & {
  * A wrapper that glows around whatever it holds, in `color`. A CSS
  * drop-shadow, so it follows dithered cells and transparent gaps.
  */
-export const BloomBox = ({
-  color = "ink",
-  bloom,
-  style,
-  ...props
-}: BloomBoxProps) => (
+export const BloomBox = ({ color = "ink", bloom, style, ...props }: BloomBoxProps) => (
   <div {...props} style={{ filter: bloomFilter(color, bloom), ...style }} />
 );

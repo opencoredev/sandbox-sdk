@@ -20,15 +20,20 @@ const pathCache = new Map<string, string>();
 export const ditherPath = (level: number, matrix: DitherMatrix = "bayer4") => {
   const key = `${matrix}:${level}`;
   const cached = pathCache.get(key);
+
   if (cached !== undefined) {
     return cached;
   }
+
   const { size, thresholds } = getThresholdMap(matrix);
   let path = "";
+
   for (let y = 0; y < size; y += 1) {
     let start = -1;
+
     for (let x = 0; x <= size; x += 1) {
       const inked = x < size && level > (thresholds[y * size + x] ?? 1);
+
       if (inked && start === -1) {
         start = x;
       } else if (!inked && start !== -1) {
@@ -37,7 +42,9 @@ export const ditherPath = (level: number, matrix: DitherMatrix = "bayer4") => {
       }
     }
   }
+
   pathCache.set(key, path);
+
   return path;
 };
 
@@ -56,14 +63,11 @@ export interface DitherMaskOptions {
  * A CSS `mask-image` value: one matrix tile with the cells below `level`
  * filled. Paint the element with the ink colour and mask it.
  */
-export const ditherMask = (
-  level: number,
-  { matrix = "bayer4", cell }: DitherMaskOptions = {}
-) => {
+export const ditherMask = (level: number, { matrix = "bayer4", cell }: DitherMaskOptions = {}) => {
   const { size } = getThresholdMap(matrix);
-  const dimensions =
-    cell === undefined ? "" : ` width="${size * cell}" height="${size * cell}"`;
+  const dimensions = cell === undefined ? "" : ` width="${size * cell}" height="${size * cell}"`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"${dimensions} shape-rendering="crispEdges"><path d="${ditherPath(level, matrix)}"/></svg>`;
+
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 };
 
@@ -84,15 +88,12 @@ export interface DitherMaskStyleOptions {
  */
 export const ditherMaskStyle = (
   level: number,
-  {
-    matrix = "bayer4",
-    cell = "var(--dither-cell)",
-  }: DitherMaskStyleOptions = {}
+  { matrix = "bayer4", cell = "var(--dither-cell)" }: DitherMaskStyleOptions = {},
 ): CSSProperties => {
   const { size } = getThresholdMap(matrix);
   const image = ditherMask(level, { matrix });
-  const tile =
-    typeof cell === "number" ? `${size * cell}px` : `calc(${cell} * ${size})`;
+  const tile = typeof cell === "number" ? `${size * cell}px` : `calc(${cell} * ${size})`;
+
   return {
     WebkitMaskImage: image,
     WebkitMaskRepeat: "repeat",
@@ -133,6 +134,7 @@ export const DitherPattern = ({
 }: DitherPatternProps) => {
   const { size } = getThresholdMap(matrix);
   const tile = size * cell;
+
   return (
     <pattern
       id={id}
@@ -142,11 +144,7 @@ export const DitherPattern = ({
       shapeRendering="crispEdges"
     >
       {background === undefined ? null : (
-        <rect
-          width={tile}
-          height={tile}
-          style={{ fill: cssColor(background) }}
-        />
+        <rect width={tile} height={tile} style={{ fill: cssColor(background) }} />
       )}
       <path
         d={ditherPath(level, matrix)}

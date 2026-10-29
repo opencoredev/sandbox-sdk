@@ -84,7 +84,8 @@ import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
 import { projectSandbox } from "@/lib/sandbox";
 
 export async function POST(request: Request) {
-  const { messages, projectId }: { messages: UIMessage[]; projectId: string } = await request.json();
+  const { messages, projectId }: { messages: UIMessage[]; projectId: string } =
+    await request.json();
 
   const box = await projectSandbox(projectId);
 
@@ -153,9 +154,7 @@ export default function Builder() {
     <main style={{ display: "grid", gridTemplateColumns: "1fr 1fr", height: "100dvh" }}>
       <section>
         {messages.map((m) => (
-          <p key={m.id}>
-            {m.parts.map((part) => (part.type === "text" ? part.text : null))}
-          </p>
+          <p key={m.id}>{m.parts.map((part) => (part.type === "text" ? part.text : null))}</p>
         ))}
         <form
           onSubmit={(event) => {
@@ -164,7 +163,11 @@ export default function Builder() {
             setInput("");
           }}
         >
-          <input value={input} onChange={(e) => setInput(e.target.value)} disabled={status !== "ready"} />
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={status !== "ready"}
+          />
         </form>
       </section>
       {url ? <iframe src={url} style={{ width: "100%", height: "100%", border: 0 }} /> : null}

@@ -33,7 +33,9 @@ const providerLabel = (props: { readonly title?: unknown; readonly provider?: un
  */
 export const providerTabsMarkdown: ComponentMarkdown = ({ childComponents, children }) => {
   const tabs = childComponents("ProviderTab");
+
   if (tabs.length === 0) return children;
+
   return tabs
     .map((tab) => [`### ${providerLabel(tab.props)}`, tab.children].filter(Boolean).join("\n\n"))
     .join("\n\n");

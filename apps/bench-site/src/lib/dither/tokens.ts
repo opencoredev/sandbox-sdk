@@ -56,17 +56,10 @@ export const DITHER_COLORS = {
 export type DitherColor = DitherColorName | (string & {});
 
 /** Colours from tone 0 (paper) to tone 1 (ink). At least two. */
-export type DitherPalette = readonly [
-  DitherColor,
-  DitherColor,
-  ...DitherColor[],
-];
+export type DitherPalette = readonly [DitherColor, DitherColor, ...DitherColor[]];
 
 /** Paper to ink, from the `dither-tokens` CSS variables. */
-export const DEFAULT_PALETTE = [
-  "--dither-paper",
-  "--dither-ink",
-] as const satisfies DitherPalette;
+export const DEFAULT_PALETTE = ["--dither-paper", "--dither-ink"] as const satisfies DitherPalette;
 
 const isColorName = (value: string): value is DitherColorName =>
   Object.hasOwn(DITHER_COLORS, value);
@@ -80,6 +73,7 @@ export const cssColor = (value: DitherColor): string => {
   if (isColorName(value)) {
     return `var(${DITHER_COLORS[value]}, ${FALLBACKS[value]})`;
   }
+
   return value.startsWith("--") ? `var(${value})` : value;
 };
 

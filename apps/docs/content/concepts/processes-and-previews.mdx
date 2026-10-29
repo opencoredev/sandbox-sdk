@@ -29,11 +29,11 @@ console.log(dev.status, dev.url);
 
 ## Readiness checks
 
-| `ready` | Passes when |
-| --- | --- |
-| `{ port: 3000 }` | Something accepts TCP connections on port 3000 |
-| `{ http: { port: 3000, path: "/health" } }` | An HTTP request to that path gets a response |
-| `{ log: /Local:/ }` | A line of output matches the regular expression |
+| `ready`                                     | Passes when                                     |
+| ------------------------------------------- | ----------------------------------------------- |
+| `{ port: 3000 }`                            | Something accepts TCP connections on port 3000  |
+| `{ http: { port: 3000, path: "/health" } }` | An HTTP request to that path gets a response    |
+| `{ log: /Local:/ }`                         | A line of output matches the regular expression |
 
 Without `ready`, `start` returns as soon as the process is running.
 

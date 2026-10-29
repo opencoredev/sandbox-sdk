@@ -99,30 +99,30 @@ Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `lab
 
 ### Properties
 
-| Member | Type |
-| --- | --- |
-| `id` | `string` |
-| `key` | `string \| undefined` |
-| `provider` | `string` |
-| `created` | `boolean` |
-| `labels` | `Record<string, string>` |
+| Member         | Type                                                                             |
+| -------------- | -------------------------------------------------------------------------------- |
+| `id`           | `string`                                                                         |
+| `key`          | `string \| undefined`                                                            |
+| `provider`     | `string`                                                                         |
+| `created`      | `boolean`                                                                        |
+| `labels`       | `Record<string, string>`                                                         |
 | `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">` |
-| `native` | The provider's own sandbox object |
-| `files` | [`Files`](#files) |
-| `git` | [`Git`](#git) |
+| `native`       | The provider's own sandbox object                                                |
+| `files`        | [`Files`](#files)                                                                |
+| `git`          | [`Git`](#git)                                                                    |
 
 ### `run(command, options?)`
 
 Returns a `RunHandle`: await it for a `RunResult`, or iterate it for `{ stream, text }` chunks. Guide: [Running commands](/concepts/running-commands).
 
-| Option | Default |
-| --- | --- |
-| `cwd?: string` | `/workspace` |
-| `env?: Record<string, string>` | none |
-| `timeoutMs?: number` | `120_000` |
-| `maxOutputBytes?: number` | `1_048_576` per stream. `output` holds up to twice this. |
-| `stdin?: string` | closed |
-| `signal?: AbortSignal` | none |
+| Option                         | Default                                                  |
+| ------------------------------ | -------------------------------------------------------- |
+| `cwd?: string`                 | `/workspace`                                             |
+| `env?: Record<string, string>` | none                                                     |
+| `timeoutMs?: number`           | `120_000`                                                |
+| `maxOutputBytes?: number`      | `1_048_576` per stream. `output` holds up to twice this. |
+| `stdin?: string`               | closed                                                   |
+| `signal?: AbortSignal`         | none                                                     |
 
 `RunResult` is `{ ok, exitCode, stdout, stderr, output, durationMs, truncated, timedOut, cwd, command }`. A non-zero exit, a timeout, and an abort all resolve. None of them throws.
 
@@ -144,14 +144,14 @@ Starts a background process and resolves when it is ready. Guide: [Processes and
 
 ### `ProcessHandle`
 
-| Member | What it does |
-| --- | --- |
-| `name`, `status`, `ready`, `url` | Current state. `url` is set when `ready` named a port. |
-| `lines({ after? })` | Async iterable of `{ text, stream, cursor }` |
-| `logs({ after?, maxBytes? })` | One page: `{ text, nextCursor, truncated }`. `maxBytes` defaults to 16 KB, at most 1 MB. |
-| `stop({ graceMs? })` | SIGTERM, then SIGKILL. Idempotent. |
-| `restart()` | Stops and starts the same command |
-| `wait()` | Resolves `{ exitCode, signal }` on exit |
+| Member                           | What it does                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------- |
+| `name`, `status`, `ready`, `url` | Current state. `url` is set when `ready` named a port.                                   |
+| `lines({ after? })`              | Async iterable of `{ text, stream, cursor }`                                             |
+| `logs({ after?, maxBytes? })`    | One page: `{ text, nextCursor, truncated }`. `maxBytes` defaults to 16 KB, at most 1 MB. |
+| `stop({ graceMs? })`             | SIGTERM, then SIGKILL. Idempotent.                                                       |
+| `restart()`                      | Stops and starts the same command                                                        |
+| `wait()`                         | Resolves `{ exitCode, signal }` on exit                                                  |
 
 ### `process(name)`, `processes()`
 
@@ -173,41 +173,41 @@ Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the 
 
 Present on the type only when the provider supports them. The [capability matrix](/reference/capabilities) lists which provider has which.
 
-| Method | Returns |
-| --- | --- |
-| `pause()`, `resume()` | `Promise<void>` |
+| Method                       | Returns                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pause()`, `resume()`        | `Promise<void>`                                                                                                                                                                                                                                                                                                                |
 | `snapshot({ expiresInMs? })` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. `expiresInMs` deletes the snapshot after that many milliseconds, and `0` keeps it until you delete it. A provider that can't honor it throws `unsupported` or `invalid_argument` rather than ignoring it. A negative or fractional value throws `invalid_argument`. |
-| `terminal({ cols, rows })` | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0. |
+| `terminal({ cols, rows })`   | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0.                                                                                                                                                                                                                                    |
 
 ## Files
 
 Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/files-and-git).
 
-| Method | Returns |
-| --- | --- |
-| `read(path, { as? })` | `string`, or `Uint8Array` with `as: "bytes"` |
-| `write(path, data, { mode? })` or `write(record, { mode? })` | `void`. Creates directories. `mode` sets the permission bits of every file written, such as `0o600`, and must be an integer from `0` to `0o7777`. A provider that can't set the mode natively gets one `chmod` after the write, so until it runs the files have default permissions. |
-| `edit(path, { find, replace })` | `void`. Throws `edit_not_found` or `edit_not_unique`. |
-| `list(path?, { recursive?, glob? })` | `{ path, type, size, modifiedAt }[]` |
-| `stat(path)` | `{ path, type, size, modifiedAt }` |
-| `exists(path)` | `boolean` |
-| `remove(path, { recursive? })` | `void` |
-| `upload(localDir, remoteDir, { ignore? })` | `void` |
-| `download(remoteDir, localDir)` | `void` |
-| `search(query, { path?, glob?, maxMatches? })` | `{ path, line, text }[]` |
-| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`. |
-| `mark(name?)` | The checkpoint name |
-| `changes({ since? })` | `{ added, modified, removed, patch }`. `since` defaults to `"start"`, which exists only if you created the sandbox with `trackChanges: true` or called `mark("start")`. Otherwise it throws `invalid_argument`. |
+| Method                                                         | Returns                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `read(path, { as? })`                                          | `string`, or `Uint8Array` with `as: "bytes"`                                                                                                                                                                                                                                         |
+| `write(path, data, { mode? })` or `write(record, { mode? })`   | `void`. Creates directories. `mode` sets the permission bits of every file written, such as `0o600`, and must be an integer from `0` to `0o7777`. A provider that can't set the mode natively gets one `chmod` after the write, so until it runs the files have default permissions. |
+| `edit(path, { find, replace })`                                | `void`. Throws `edit_not_found` or `edit_not_unique`.                                                                                                                                                                                                                                |
+| `list(path?, { recursive?, glob? })`                           | `{ path, type, size, modifiedAt }[]`                                                                                                                                                                                                                                                 |
+| `stat(path)`                                                   | `{ path, type, size, modifiedAt }`                                                                                                                                                                                                                                                   |
+| `exists(path)`                                                 | `boolean`                                                                                                                                                                                                                                                                            |
+| `remove(path, { recursive? })`                                 | `void`                                                                                                                                                                                                                                                                               |
+| `upload(localDir, remoteDir, { ignore? })`                     | `void`                                                                                                                                                                                                                                                                               |
+| `download(remoteDir, localDir)`                                | `void`                                                                                                                                                                                                                                                                               |
+| `search(query, { path?, glob?, maxMatches? })`                 | `{ path, line, text }[]`                                                                                                                                                                                                                                                             |
+| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`.                                                                                                                                                                |
+| `mark(name?)`                                                  | The checkpoint name                                                                                                                                                                                                                                                                  |
+| `changes({ since? })`                                          | `{ added, modified, removed, patch }`. `since` defaults to `"start"`, which exists only if you created the sandbox with `trackChanges: true` or called `mark("start")`. Otherwise it throws `invalid_argument`.                                                                      |
 
 ## Git
 
 Every method resolves with a `RunResult`. Tokens go through a temporary credential helper and never appear in argv, history, or output.
 
-| Method | Options |
-| --- | --- |
-| `clone(url, options?)` | `dir?` (defaults to `app`), `branch?`, `depth?`, `token?` |
-| `status(dir?)` | |
-| `diff(dir?)` | |
-| `commit(dir, options)` | `message`, `all?`, `author?` |
-| `push(dir, options?)` | `token?`, `remote?`, `branch?` |
-| `checkout(dir, options)` | `branch`, `create?` |
+| Method                   | Options                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `clone(url, options?)`   | `dir?` (defaults to `app`), `branch?`, `depth?`, `token?` |
+| `status(dir?)`           |                                                           |
+| `diff(dir?)`             |                                                           |
+| `commit(dir, options)`   | `message`, `all?`, `author?`                              |
+| `push(dir, options?)`    | `token?`, `remote?`, `branch?`                            |
+| `checkout(dir, options)` | `branch`, `create?`                                       |

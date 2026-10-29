@@ -1,6 +1,7 @@
 import type { Fingerprint } from "./fingerprint.js";
 import type { ConfigV2 } from "./v2-config.js";
 import type { distribution, wilson } from "./v2-stats.js";
+
 export interface HostSample {
   timestamp: string;
   load: number[];
@@ -8,11 +9,13 @@ export interface HostSample {
   network: string;
   cpuTicks: number[][];
 }
+
 export type Outcome =
   | { kind: "sample"; value: number }
   | import("./failure.js").FailureOutcome
   | { kind: "skipped"; note: string }
   | { kind: "blocked"; blocked_by: string; note: string };
+
 export interface AllocationMetadata {
   track?: ConfigV2["track"];
   requestedSize?: ConfigV2["size"][string] | null;
@@ -20,6 +23,7 @@ export interface AllocationMetadata {
   /** Native product, such as Upstash "ephemeral"; null is the provider default. */
   product?: string | null;
 }
+
 export interface Sample extends AllocationMetadata {
   provider: string;
   iteration: number;
@@ -38,6 +42,7 @@ export interface Sample extends AllocationMetadata {
   estimatedCost: number | null;
   details: unknown;
 }
+
 export interface Summary extends AllocationMetadata {
   provider: string;
   scenario: string;
@@ -51,6 +56,7 @@ export interface Summary extends AllocationMetadata {
   per1000: number | null;
   performancePerDollar: number | null;
 }
+
 export interface ReportV2 {
   schemaVersion: 2;
   runId: string;
@@ -61,12 +67,23 @@ export interface ReportV2 {
   host: { cpu: string; os: string; runtime: string };
   samples: Sample[];
   summaries: Summary[];
-  providers: (AllocationMetadata & { name: string; kind: "ready" | "skipped"; note: string; configuredRegion: string | null })[];
+  providers: (AllocationMetadata & {
+    name: string;
+    kind: "ready" | "skipped";
+    note: string;
+    configuredRegion: string | null;
+  })[];
   cleanupReview?: import("./ownership.js").CleanupReview[];
   cleanupReleased?: import("./ownership.js").CleanupRelease[];
   cleanupResolved?: import("./ownership.js").CleanupResolution[];
   cleanup: { provider: string; remaining: string[]; error: string | null }[];
-  admissionStopped?: { provider: string; scenario: string; iteration: number; track: ConfigV2["track"]; reason: string }[];
+  admissionStopped?: {
+    provider: string;
+    scenario: string;
+    iteration: number;
+    track: ConfigV2["track"];
+    reason: string;
+  }[];
   budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;
   methodology: string[];
 }

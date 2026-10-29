@@ -102,15 +102,15 @@ await box.$`git checkout ${branch}`;
 
 ## 4. files
 
-| 0.2 | 1.0 |
-| --- | --- |
-| `files.text(path)` | `files.read(path)` |
-| `files.read(path)` (bytes) | `files.read(path, { as: "bytes" })` |
+| 0.2                        | 1.0                                                       |
+| -------------------------- | --------------------------------------------------------- |
+| `files.text(path)`         | `files.read(path)`                                        |
+| `files.read(path)` (bytes) | `files.read(path, { as: "bytes" })`                       |
 | `files.write(path, value)` | `files.write(path, value)`, or `files.write({ ...many })` |
-| `files.list(path)` | `files.list(path, { recursive, glob })` |
-| `files.mkdir(path)` | Not needed. `write` creates directories. |
-| `files.remove(path)` | `files.remove(path, { recursive })` |
-| `files.exists(path)` | `files.exists(path)` |
+| `files.list(path)`         | `files.list(path, { recursive, glob })`                   |
+| `files.mkdir(path)`        | Not needed. `write` creates directories.                  |
+| `files.remove(path)`       | `files.remove(path, { recursive })`                       |
+| `files.exists(path)`       | `files.exists(path)`                                      |
 
 `write` accepts a string or a `Uint8Array`. `ArrayBuffer`, `Blob`, and streams are no longer accepted. List entries now carry `modifiedAt`, and `name` is gone (take it from `path`).
 
@@ -179,11 +179,11 @@ console.log(preview.url, preview.headers);
 
 ## 7. snapshots
 
-| 0.2 | 1.0 |
-| --- | --- |
-| `snapshots.create()` | `box.snapshot()` |
-| `snapshots.restore(id)` | `createSandbox(provider, { from: id })` |
-| `snapshots.delete(id)` | Use the provider's own SDK through `box.native` |
+| 0.2                     | 1.0                                             |
+| ----------------------- | ----------------------------------------------- |
+| `snapshots.create()`    | `box.snapshot()`                                |
+| `snapshots.restore(id)` | `createSandbox(provider, { from: id })`         |
+| `snapshots.delete(id)`  | Use the provider's own SDK through `box.native` |
 
 `snapshot()` exists only on providers that support it, so TypeScript reports a call on one that doesn't. In 0.2 that was a runtime error.
 

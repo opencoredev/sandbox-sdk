@@ -5,7 +5,9 @@
  * (redaction, edit, git, process records, readiness) belongs in an adapter.
  */
 export type Capability = "pause" | "snapshot" | "terminal" | "network-policy" | "size";
+
 export type Labels = Record<string, string>;
+
 export interface SandboxInfo {
   id: string;
   key?: string;
@@ -13,6 +15,7 @@ export interface SandboxInfo {
   state: "running" | "paused" | "stopped";
   createdAt: number;
 }
+
 export interface CreateInput {
   key?: string;
   size?: "small" | "medium" | "large" | { cpu: number; memoryMb: number; diskGb?: number };
@@ -25,7 +28,12 @@ export interface CreateInput {
   from?: string;
   signal?: AbortSignal;
 }
-export interface OutputChunk { stream: "stdout" | "stderr"; text: string }
+
+export interface OutputChunk {
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
 export interface ExecInput {
   command: string;
   cwd: string;
@@ -41,18 +49,31 @@ export interface ExecInput {
   streaming?: boolean;
   onChunk(chunk: OutputChunk): void;
 }
-export interface ExecResult { exitCode: number | null; timedOut: boolean }
-export interface FileInfo { path: string; type: "file" | "directory" | "symlink"; size: number; modifiedAt: number }
+
+export interface ExecResult {
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+export interface FileInfo {
+  path: string;
+  type: "file" | "directory" | "symlink";
+  size: number;
+  modifiedAt: number;
+}
+
 /** Options for one file write. */
 export interface WriteOptions {
   /** POSIX permission bits for the file, such as `0o600`. */
   mode?: number;
 }
+
 /** Options for {@link Provider.snapshot}. */
 export interface SnapshotOptions {
   /** Delete the snapshot after this many milliseconds. `0` keeps it until you delete it, where the provider allows that. */
   expiresInMs?: number;
 }
+
 export interface ProviderFiles {
   /** Use primitive file transfers when guest tar is incompatible with GNU archives. */
   readonly transfer?: "files";
@@ -62,7 +83,11 @@ export interface ProviderFiles {
   readonly writeSupportsMode?: boolean;
   /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */
   readonly internal?: readonly string[];
-  readRange?(id: string, path: string, options: { offset: number; length: number }): Promise<Uint8Array>;
+  readRange?(
+    id: string,
+    path: string,
+    options: { offset: number; length: number },
+  ): Promise<Uint8Array>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array, options?: WriteOptions): Promise<void>;
   list(id: string, path: string): Promise<FileInfo[]>;
@@ -70,19 +95,27 @@ export interface ProviderFiles {
   remove(id: string, path: string, options: { recursive: boolean }): Promise<void>;
   mkdir(id: string, path: string): Promise<void>;
 }
-export interface Preview { url: string; headers?: Record<string, string>; expiresAt?: number }
+
+export interface Preview {
+  url: string;
+  headers?: Record<string, string>;
+  expiresAt?: number;
+}
+
 export interface Terminal {
   write(data: string): void | Promise<void>;
   resize(cols: number, rows: number): void | Promise<void>;
   onData(callback: (data: string) => void): () => void;
   close(): void | Promise<void>;
 }
+
 /** Native hooks are optional optimizations. Persistent records remain core-owned. */
 export interface NativeProcess {
   pid: number;
   wait(): Promise<{ exitCode: number | null; signal: string | null }>;
   stop(options: { graceMs: number }): Promise<void>;
 }
+
 export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly name: string;
   readonly keyMode: "exact" | "best-effort";

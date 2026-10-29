@@ -16,21 +16,40 @@ if v.get('supervisor') is not None:
  with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname('/var/lib/sandbox-sdk-env.json'),delete=False) as f: f.write(v['supervisor'])
  os.replace(f.name,'${supervisorPath}')`);
 
-export function bootstrapCommand(options: { env?: Record<string, string>; installPython?: boolean; execution?: boolean }) {
-  const missingPython = options.installPython === true
-    ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
-    : "exit 78";
-  if (options.execution) return {
-    command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; command -v git tar nohup >/dev/null || exit 79; mkdir -p /workspace /tmp/.sandbox-sdk`,
-    env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env }) },
-  };
+export function bootstrapCommand(options: {
+  env?: Record<string, string>;
+  installPython?: boolean;
+  execution?: boolean;
+}) {
+  const missingPython =
+    options.installPython === true
+      ? "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip >/dev/null || exit 1"
+      : "exit 78";
+
+  if (options.execution)
+    return {
+      command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; command -v git tar nohup >/dev/null || exit 79; mkdir -p /workspace /tmp/.sandbox-sdk`,
+      env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env }) },
+    };
+
   return {
     command: `if ! command -v python3 >/dev/null 2>&1; then ${missingPython}; fi; ${initialize}`,
-    env: { SANDBOX_SDK_BOOTSTRAP: JSON.stringify({ env: options.env, supervisor: options.execution ? supervisor : undefined }) },
+    env: {
+      SANDBOX_SDK_BOOTSTRAP: JSON.stringify({
+        env: options.env,
+        supervisor: options.execution ? supervisor : undefined,
+      }),
+    },
   };
 }
 
 export function checkBootstrap(exitCode: number, id: string) {
-  if (exitCode === 78) throw failure("Template lacks python3; use a template with Python 3 or explicitly set installPython: true to allow apt installation", "unsupported", id);
+  if (exitCode === 78)
+    throw failure(
+      "Template lacks python3; use a template with Python 3 or explicitly set installPython: true to allow apt installation",
+      "unsupported",
+      id,
+    );
+
   if (exitCode === 79) throw failure("Template must include git, tar and nohup", "unsupported", id);
 }

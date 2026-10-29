@@ -26,14 +26,14 @@ Because almost everything lives in the core, every provider behaves the same way
 
 Nothing important is kept in your server's memory, which is why a sandbox survives a redeploy:
 
-| State | Where it lives |
-| --- | --- |
-| The sandbox's key | In the provider: a container or sandbox name, metadata, or labels |
-| Your labels and the `sandbox-sdk` label | In the provider |
-| Background process records and logs | Inside the sandbox, under `/tmp/.sandbox-sdk/` |
-| Log cursors | Plain strings you can store anywhere |
+| State                                                  | Where it lives                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| The sandbox's key                                      | In the provider: a container or sandbox name, metadata, or labels               |
+| Your labels and the `sandbox-sdk` label                | In the provider                                                                 |
+| Background process records and logs                    | Inside the sandbox, under `/tmp/.sandbox-sdk/`                                  |
+| Log cursors                                            | Plain strings you can store anywhere                                            |
 | `changes()` checkpoints, from `trackChanges` or `mark` | Inside the sandbox, in a hidden git index. Memory keeps copies in your process. |
-| Local idle and lifetime deadlines | On the Docker container |
+| Local idle and lifetime deadlines                      | On the Docker container                                                         |
 
 Any server process with the same provider credentials can find a sandbox by key, list its processes, and keep reading logs from a stored cursor.
 

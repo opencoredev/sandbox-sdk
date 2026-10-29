@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Output streams in bounded pages |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Public `https://`, with an expiry when Tenki reports one |
-| Pause and resume | Yes | Disk and memory survive |
-| Snapshots | Yes | Disk and memory, with optional expiry |
-| Machine size | Yes | Presets or exact CPU, memory, and disk |
-| Network policy | Yes | `"none"` or a host allow list, `*.` wildcards allowed |
-| Hard lifetime (`timeoutMs`) | Yes | |
-| Idle timeout (`idleTimeoutMs`) | No | Tenki removed idle auto-pause |
-| Keys | Best-effort | Stored in session metadata |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                    |
+| ------------------------------ | ----------- | -------------------------------------------------------- |
+| Commands and streaming         | Yes         | Output streams in bounded pages                          |
+| Files                          | Yes         |                                                          |
+| Background processes           | Yes         |                                                          |
+| Preview URLs                   | Yes         | Public `https://`, with an expiry when Tenki reports one |
+| Pause and resume               | Yes         | Disk and memory survive                                  |
+| Snapshots                      | Yes         | Disk and memory, with optional expiry                    |
+| Machine size                   | Yes         | Presets or exact CPU, memory, and disk                   |
+| Network policy                 | Yes         | `"none"` or a host allow list, `*.` wildcards allowed    |
+| Hard lifetime (`timeoutMs`)    | Yes         |                                                          |
+| Idle timeout (`idleTimeoutMs`) | No          | Tenki removed idle auto-pause                            |
+| Keys                           | Best-effort | Stored in session metadata                               |
+| Terminal                       | No          |                                                          |
 
 ## Run commands
 
@@ -152,11 +152,11 @@ const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Ten
 
 ## Size, network, and lifetime
 
-| Preset | CPUs | Memory | Disk |
-| --- | --- | --- | --- |
-| `small` | 1 | 1024 MiB | 10 GiB |
-| `medium` | 2 | 4096 MiB | 20 GiB |
-| `large` | 4 | 8192 MiB | 40 GiB |
+| Preset   | CPUs | Memory   | Disk   |
+| -------- | ---- | -------- | ------ |
+| `small`  | 1    | 1024 MiB | 10 GiB |
+| `medium` | 2    | 4096 MiB | 20 GiB |
+| `large`  | 4    | 8192 MiB | 40 GiB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -176,18 +176,18 @@ await using box = await createSandbox(tenki(), {
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY` |
-| `baseUrl` | `string` | `https://api.tenki.cloud` | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
-| `image` | `string` | Tenki's default image | |
-| `requestTimeoutMs` | `number` | `30_000` | |
-| `waitTimeoutMs` | `number` | `180_000`; snapshots `300_000` | |
-| `resumeTimeoutMs` | `number` | `180_000`, at most `900_000` | |
-| `pauseRetentionMs` | `number` | Tenki's retention | |
-| `previewTtlMs` | `number` | Tenki's preview TTL | |
-| `volumes` | `{ volumeId, mountPath, readOnly? }[]` | | |
-| `workspaceId` | `string` | Inferred from the API key | |
+| Option             | Type                                   | Default                        | Env var                                    |
+| ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------ |
+| `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`   |
+| `baseUrl`          | `string`                               | `https://api.tenki.cloud`      | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
+| `image`            | `string`                               | Tenki's default image          |                                            |
+| `requestTimeoutMs` | `number`                               | `30_000`                       |                                            |
+| `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                            |
+| `resumeTimeoutMs`  | `number`                               | `180_000`, at most `900_000`   |                                            |
+| `pauseRetentionMs` | `number`                               | Tenki's retention              |                                            |
+| `previewTtlMs`     | `number`                               | Tenki's preview TTL            |                                            |
+| `volumes`          | `{ volumeId, mountPath, readOnly? }[]` |                                |                                            |
+| `workspaceId`      | `string`                               | Inferred from the API key      |                                            |
 
 `authToken` is a deprecated alias for `apiKey`. `volumes` mounts [Tenki volumes](https://tenki.cloud/docs/sandbox/volumes) you created with the native SDK. `workspaceId` is only needed for service credentials that span workspaces; it scopes both creation and listing. A custom image needs Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`, and must allow privileged execution. `box.native` is a typed Tenki `Session`; its `close()` terminates the VM, so use `box.close()` to detach.
 

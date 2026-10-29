@@ -9,9 +9,12 @@ const TOKEN =
 function highlight(line: string): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
+
   for (const m of line.matchAll(TOKEN)) {
     const at = m.index ?? 0;
+
     if (at > last) out.push(line.slice(last, at));
+
     const cls = m[1]
       ? styles.tkComment
       : m[2]
@@ -19,6 +22,7 @@ function highlight(line: string): ReactNode[] {
         : m[3]
           ? styles.tkKeyword
           : styles.tkNumber;
+
     out.push(
       <span key={at} className={cls}>
         {m[0]}
@@ -26,7 +30,9 @@ function highlight(line: string): ReactNode[] {
     );
     last = at + m[0].length;
   }
+
   if (last < line.length) out.push(line.slice(last));
+
   return out;
 }
 
@@ -37,12 +43,15 @@ export function Code({ lines, muted = [] }: { lines: string[]; muted?: number[] 
       <code>
         {lines.map((line, i) => {
           if (line === "") return <span key={i} className={styles.codeGap} />;
+
           const diff = line.startsWith("+ ")
             ? styles.codeAdd
             : line.startsWith("- ")
               ? styles.codeDel
               : "";
+
           const body = diff ? line.slice(2) : line;
+
           return (
             <Fragment key={i}>
               <span

@@ -21,6 +21,7 @@ const notice = (message: string, status: number) =>
  */
 export async function GET(request: NextRequest, context: RouteContext<"/preview/[[...path]]">) {
   const session = parseSessionId((await cookies()).get(sessionCookie)?.value);
+
   if (!session) return notice("No sandbox yet. Send a prompt first.", 404);
 
   const box = await sessionSandbox(session);
@@ -30,6 +31,7 @@ export async function GET(request: NextRequest, context: RouteContext<"/preview/
   const target = new URL(path.map(encodeURIComponent).join("/") + request.nextUrl.search, base);
 
   let upstream: Response;
+
   try {
     upstream = await fetch(target, {
       headers: preview.headers,
@@ -39,8 +41,11 @@ export async function GET(request: NextRequest, context: RouteContext<"/preview/
   } catch {
     return notice(`Nothing is listening on port ${previewPort} yet.`, 502);
   }
+
   const headers = new Headers(upstream.headers);
+
   for (const name of dropped) headers.delete(name);
   headers.set("cache-control", "no-store");
+
   return new Response(upstream.body, { status: upstream.status, headers });
 }

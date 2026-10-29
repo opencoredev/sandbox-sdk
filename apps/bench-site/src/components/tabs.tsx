@@ -18,21 +18,26 @@ export function useScrollFade<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   useEffect(() => {
     const el = ref.current;
+
     if (!el) return;
+
     const update = () => {
       const end = el.scrollWidth - el.clientWidth;
       el.toggleAttribute("data-fade-start", el.scrollLeft > 1);
       el.toggleAttribute("data-fade-end", el.scrollLeft < end - 1);
     };
+
     update();
     el.addEventListener("scroll", update, { passive: true });
     const observer = new ResizeObserver(update);
     observer.observe(el);
+
     return () => {
       el.removeEventListener("scroll", update);
       observer.disconnect();
     };
   }, []);
+
   return ref;
 }
 
@@ -45,18 +50,25 @@ export function TabCard({ tabs, label }: { tabs: readonly Tab[]; label: string }
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const base = useId();
   const scroller = useScrollFade<HTMLDivElement>();
+
   const select = (index: number) => {
     const tab = tabs[(index + tabs.length) % tabs.length];
+
     if (!tab) return;
     setActive(tab.id);
     buttons.current[tabs.indexOf(tab)]?.focus();
   };
+
   const onKeyDown = (event: KeyboardEvent, index: number) => {
-    const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+    const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[
+      event.key
+    ];
+
     if (next === undefined) return;
     event.preventDefault();
     select(next);
   };
+
   return (
     <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)]">
       <div className="rounded-t-xl border-b border-[var(--line)] bg-[var(--band)]">
@@ -69,6 +81,7 @@ export function TabCard({ tabs, label }: { tabs: readonly Tab[]; label: string }
         >
           {tabs.map((tab, index) => {
             const selected = tab.id === active;
+
             return (
               <button
                 key={tab.id}
@@ -114,5 +127,9 @@ export function TabCard({ tabs, label }: { tabs: readonly Tab[]; label: string }
 
 /** The same card without tabs. */
 export const Card = ({ children, className = "" }: { children: ReactNode; className?: string }) => (
-  <div className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 sm:p-7 ${className}`}>{children}</div>
+  <div
+    className={`rounded-xl border border-[var(--line)] bg-[var(--surface)] p-5 sm:p-7 ${className}`}
+  >
+    {children}
+  </div>
 );

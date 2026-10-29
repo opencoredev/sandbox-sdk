@@ -66,28 +66,41 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
-export async function execute(client: Boxd, id: string, input: ExecInput, setup = "", onPrepared?: () => void): Promise<ExecResult> {
+
+export async function execute(
+  client: Boxd,
+  id: string,
+  input: ExecInput,
+  setup = "",
+  onPrepared?: () => void,
+): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const pidPath = `/tmp/sandbox-sdk-${crypto.randomUUID()}.pid`;
   const stream = client.machines.streamExec(id, { command: setup + python(launcher) });
   let cancelled = false;
   let interrupted = false;
+
   const completion = stream.wait().then(
     (exitCode) => ({ kind: "exit", exitCode }) as const,
     (error: unknown) => ({ kind: "error", error }) as const,
   );
+
   // The SDK pushes each wire frame synchronously into one of these public
   // queues. Consume at that boundary rather than scheduling two independent
   // iterators, which loses inter-stream ordering and buffers unbounded output.
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
   let prepared = !setup;
   let acknowledgment = "";
+
   for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
     stream[name].push = (bytes) => {
       let text = decoders[name].decode(bytes, { stream: true });
+
       if (name === "stdout" && !prepared) {
         acknowledgment += text;
+
         if ("SDK_PREPARED:".startsWith(acknowledgment) && acknowledgment.length < 13) return;
+
         if (acknowledgment.startsWith("SDK_PREPARED:")) {
           prepared = true;
           onPrepared?.();
@@ -95,21 +108,27 @@ export async function execute(client: Boxd, id: string, input: ExecInput, setup 
         } else text = acknowledgment;
         acknowledgment = "";
       }
+
       if (text) input.onChunk({ stream: name, text });
     };
   }
+
   let settleCancellation = () => {};
+
   const stopped = new Promise<void>((resolve) => {
     settleCancellation = resolve;
   });
+
   const cancel = () => {
     if (cancelled) return;
     cancelled = true;
     stream.close();
     settleCancellation();
   };
+
   const timer = setTimeout(cancel, input.timeoutMs);
   input.signal?.addEventListener("abort", cancel, { once: true });
+
   try {
     stream.write(
       JSON.stringify({
@@ -123,13 +142,16 @@ export async function execute(client: Boxd, id: string, input: ExecInput, setup 
       }),
     );
     stream.end();
+
     const outcome = await Promise.race([
       completion,
       stopped.then(() => ({ kind: "cancel" }) as const),
     ]);
+
     if (cancelled) {
       // close() only requests TERM/KILL. An RPC error is not an exit ack.
       let timer: ReturnType<typeof setTimeout> | undefined;
+
       const confirmed = await Promise.race([
         completion.then((value) =>
           value.kind === "exit" && value.exitCode >= 0 ? true : new Promise<boolean>(() => {}),
@@ -138,7 +160,9 @@ export async function execute(client: Boxd, id: string, input: ExecInput, setup 
           timer = setTimeout(() => resolve(false), 1000);
         }),
       ]);
+
       clearTimeout(timer);
+
       if (!confirmed) {
         // A transport cancellation error is not a process exit. Escalate only
         // the positively identified group, never delete an unrelated VM.
@@ -174,22 +198,27 @@ sys.exit(1)`,
           ),
           timeout: 5000,
         });
+
         if (result.exitCode !== 0 || result.stdout.trim() !== "confirmed")
           throw failure("Process termination could not be confirmed", "outcome_unknown", id);
       }
     } else if (outcome.kind === "error") {
       throw outcome.error;
     }
+
     for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
       const text = decoders[name].decode();
+
       if (text) input.onChunk({ stream: name, text });
     }
+
     return {
       exitCode: cancelled ? null : outcome.kind === "exit" ? outcome.exitCode : null,
       timedOut: cancelled,
     };
   } catch (error) {
     interrupted = true;
+
     if (cancelled)
       throw failure("Process termination could not be confirmed", "outcome_unknown", id);
     stream.close();
@@ -197,6 +226,7 @@ sys.exit(1)`,
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
+
     if ((cancelled || interrupted) && input.activityPath)
       await client.machines
         .exec(id, {

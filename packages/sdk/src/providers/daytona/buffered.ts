@@ -74,99 +74,179 @@ for attempt in range(3):
   if attempt==2: raise
 `;
 
-export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
+export async function bufferedExecute(
+  box: Sandbox,
+  input: ExecInput,
+  prepare = workspaceCommand,
+  prepared?: () => void,
+): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const deadline = Date.now() + input.timeoutMs;
   const transferController = new AbortController();
   let downloadStream: Readable | undefined;
   let cancelled = false;
   let wakeTransfer = () => {};
-  const transferCancelled = new Promise<void>(resolve => { wakeTransfer = resolve; });
+
+  const transferCancelled = new Promise<void>((resolve) => {
+    wakeTransfer = resolve;
+  });
+
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
   let cleanupNeeded = true;
   let confirmed = false;
   let cancellation: Promise<unknown> | undefined;
   let cancellationError: unknown;
+
   const abort = () => {
-    cancelled = true; wakeTransfer(); transferController.abort(); downloadStream?.destroy();
+    cancelled = true;
+    wakeTransfer();
+    transferController.abort();
+    downloadStream?.destroy();
+
     if (confirmed) return;
-    cancellation ??= box.process.executeCommand(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`, "/", undefined, 10)
-      .then(result => { if (result.exitCode !== 0) throw new Error("Cancellation failed"); })
-      .catch(error => { cancellationError = error; });
+    cancellation ??= box.process
+      .executeCommand(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`, "/", undefined, 10)
+      .then((result) => {
+        if (result.exitCode !== 0) throw new Error("Cancellation failed");
+      })
+      .catch((error) => {
+        cancellationError = error;
+      });
   };
-  const decoders = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
-  const malformed = () => new SandboxError("Buffered output is incomplete or malformed. Daytona did not confirm exact output and exit. Inspect or destroy the sandbox before retrying.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
+
+  const decoders = {
+    stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
+    stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
+  };
+
+  const malformed = () =>
+    new SandboxError(
+      "Buffered output is incomplete or malformed. Daytona did not confirm exact output and exit. Inspect or destroy the sandbox before retrying.",
+      { code: "outcome_unknown", provider: "daytona", sandboxId: box.id },
+    );
+
   const accept = (line: string) => {
     const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
-    if (!frame || line.length > 5466 || Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]) throw malformed();
+
+    if (
+      !frame ||
+      line.length > 5466 ||
+      Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]
+    )
+      throw malformed();
     const stream = frame[1] === "O" ? "stdout" : "stderr";
     const text = decoders[stream].decode(Buffer.from(frame[2] ?? "", "base64"), { stream: true });
+
     if (text) input.onChunk({ stream, text });
   };
+
   input.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
+
   try {
-    const result = await box.process.executeCommand(`${prepare ? `${prepare} && ` : ""}python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ${quote(input.activityPath ?? "")}`, "/", input.env, Math.ceil(input.timeoutMs / 1000) + 15);
+    const result = await box.process.executeCommand(
+      `${prepare ? `${prepare} && ` : ""}python3 -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ${quote(input.activityPath ?? "")}`,
+      "/",
+      input.env,
+      Math.ceil(input.timeoutMs / 1000) + 15,
+    );
+
     const lines = result.result.trimEnd().split("\n");
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
+
     if (result.exitCode !== 0 || !summary) throw malformed();
     confirmed = true;
     prepared?.();
     cleanupNeeded = summary[3] === "1";
+
     for (const line of lines) if (line) accept(line);
+
     if (summary[3] === "1") {
       const remainingMs = deadline - Date.now();
+
       if (remainingMs <= 0) abort();
+
       if (!cancelled) {
         const drain = async () => {
-          const stream = await openDownload(box, `${dir}/output`, { signal: transferController.signal, timeout: Math.max(1, Math.ceil(remainingMs / 1000)) });
+          const stream = await openDownload(box, `${dir}/output`, {
+            signal: transferController.signal,
+            timeout: Math.max(1, Math.ceil(remainingMs / 1000)),
+          });
+
           downloadStream = stream;
+
           // A pending native download can resolve after cancellation won the race.
-          if (cancelled) { stream.destroy(); return; }
+          if (cancelled) {
+            stream.destroy();
+
+            return;
+          }
+
           let pending = "";
+
           for await (const data of stream) {
             if (cancelled) return;
+
             if (!(data instanceof Uint8Array)) throw malformed();
             pending += Buffer.from(data).toString("ascii");
             let newline: number;
+
             while ((newline = pending.indexOf("\n")) >= 0) {
-              accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+              accept(pending.slice(0, newline));
+              pending = pending.slice(newline + 1);
             }
+
             if (pending.length > 5466) throw malformed();
           }
+
           if (pending) throw malformed();
         };
+
         await Promise.race([drain(), transferCancelled]);
       }
+
       if (cancelled) return { exitCode: null, timedOut: true };
     }
+
     for (const stream of ["stdout", "stderr"] as const) {
-      const text = decoders[stream].decode(); if (text) input.onChunk({ stream, text });
+      const text = decoders[stream].decode();
+
+      if (text) input.onChunk({ stream, text });
     }
+
     await cancellation;
+
     if (cancellationError !== undefined) throw malformed();
     const timedOut = summary[2] === "1" || cancelled;
+
     return { exitCode: timedOut ? null : Number(summary[1]), timedOut };
   } catch (error) {
     if (confirmed && cancelled) return { exitCode: null, timedOut: true };
+
     // A lost native response leaves launch/exit ambiguous. The private marker
     // prevents a late launch and the PID kills any already-started group.
     if (!confirmed) {
-      abort(); await cancellation;
+      abort();
+      await cancellation;
       // A transport failure cannot confirm when the cancellation marker was
       // observed. Stopping the sandbox confirms every descendant is dead.
       await box.stop();
     }
+
     await cancellation;
+
     if (cancellationError !== undefined) throw malformed();
     throw error;
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);
     await cancellation;
+
     // Small successful commands already removed their directory in the guest.
     // Spill files and cancellation markers require one cleanup request.
     if (cancellation || cleanupNeeded) await box.fs.deleteFile(dir, true).catch(() => {});
-    if (input.activityPath && cancellation) await box.fs.deleteFile(input.activityPath, true).catch(() => {});
+
+    if (input.activityPath && cancellation)
+      await box.fs.deleteFile(input.activityPath, true).catch(() => {});
   }
 }

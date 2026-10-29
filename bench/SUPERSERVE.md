@@ -91,15 +91,15 @@ Snapshots survive sandbox destruction. The harness journals the source before re
 
 Collection finished October 21, 2026. The attempt checker passed all 208 cells across eight providers, including inherited, documented not-run cells. Superserve had no not-run cells among the required targets.
 
-| Superserve test | Attempts | Successful | Failed |
-| --- | ---: | ---: | ---: |
-| Each main lifecycle/file test (7 tests) | 100 each | 100 each | 0 |
-| Each performance metric, including TCP (8 metrics) | 100 each | 0 | 100 each |
-| Each workload (7 workloads) | 30 each | 30 each | 0 |
-| Snapshot | 30 | 30 | 0 |
-| Create from snapshot | 30 | 30 | 0 |
-| K=10 burst cohorts | 3 | 3 | 0 |
-| K=25 burst cohorts | 3 | 3 | 0 |
+| Superserve test                                    | Attempts | Successful |   Failed |
+| -------------------------------------------------- | -------: | ---------: | -------: |
+| Each main lifecycle/file test (7 tests)            | 100 each |   100 each |        0 |
+| Each performance metric, including TCP (8 metrics) | 100 each |          0 | 100 each |
+| Each workload (7 workloads)                        |  30 each |    30 each |        0 |
+| Snapshot                                           |       30 |         30 |        0 |
+| Create from snapshot                               |       30 |         30 |        0 |
+| K=10 burst cohorts                                 |        3 |          3 |        0 |
+| K=25 burst cohorts                                 |        3 |          3 |        0 |
 
 Main lifecycle/file tests are cold, command, files-1kb, files-10mb, reconnect, pause-resume, and destroy. Every successful pause/resume row includes pause, resume-returned, and resume-ready phases. Performance metrics are cpu-single, cpu-all, memory-mbps, disk-write-mbps, disk-read-mbps, disk-4k-write-iops, disk-4k-read-iops, and tcp-ms. All 105 burst members created successfully. The performance failures are the shared-memory problem described above, retained as provider failures. The optional network-download test was omitted as in SBX-49.
 

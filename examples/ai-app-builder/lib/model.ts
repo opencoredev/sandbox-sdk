@@ -16,7 +16,9 @@ export function resolveModel(spec: string = modelSpec): ModelChoice {
   const separator = spec.indexOf(":");
   const provider = separator === -1 ? "" : spec.slice(0, separator);
   const id = spec.slice(separator + 1);
+
   if (!id) throw new Error(`AI_MODEL "${spec}" has no model id. Use <provider>:<model id>.`);
+
   switch (provider) {
     case "anthropic":
       return { kind: "live", model: anthropic(id) };

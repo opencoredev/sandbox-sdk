@@ -3,11 +3,13 @@ export interface Resources {
   memoryGiB: number;
   diskGiB: number;
 }
+
 export interface MachineTier {
   cpu: number;
   memoryGiB: number;
   hourly: number;
 }
+
 export interface Price {
   currency: "USD" | "EUR";
   cpuSecond: number;
@@ -25,6 +27,7 @@ export interface Price {
   tiers: MachineTier[] | null;
   offeredSizes: Pick<Resources, "cpu" | "memoryGiB">[] | null;
 }
+
 const base = {
   currency: "USD",
   minimumSeconds: 0,
@@ -37,6 +40,7 @@ const base = {
   tiers: null,
   offeredSizes: null,
 } satisfies Partial<Price>;
+
 export const pricing: Record<string, Price> = {
   superserve: {
     ...base,
@@ -73,9 +77,9 @@ export const pricing: Record<string, Price> = {
     // https://upstash.com/pricing/box: size table + engineer confirmation take
     // precedence over the contradictory FAQ example. These are per-box rates.
     tiers: [
-      { cpu: 2, memoryGiB: 4, hourly: 0.10 },
-      { cpu: 4, memoryGiB: 8, hourly: 0.20 },
-      { cpu: 8, memoryGiB: 16, hourly: 0.40 },
+      { cpu: 2, memoryGiB: 4, hourly: 0.1 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.2 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.4 },
     ],
     memoryGiBSecond: 0,
     diskGiBSecond: 0.1 / (30 * 86400),
@@ -96,7 +100,7 @@ export const pricing: Record<string, Price> = {
       { cpu: 2, memoryGiB: 4, hourly: 0.018 },
       { cpu: 4, memoryGiB: 8, hourly: 0.036 },
       { cpu: 8, memoryGiB: 16, hourly: 0.072 },
-      { cpu: 16, memoryGiB: 32, hourly: 0.200 },
+      { cpu: 16, memoryGiB: 32, hourly: 0.2 },
     ],
     notes:
       "Default VM $0.036/hour (4 vCPU, 8 GB, 50 GB). Flat rate for each size; Small, Large and Xlarge are also offered. $20 monthly minimum/packs excluded; billed per second.",
@@ -106,8 +110,10 @@ export const pricing: Record<string, Price> = {
     currency: "EUR",
     // https://docs.boxd.sh/guides/resources: naming either dimension picks a shape.
     offeredSizes: [
-      { cpu: 1, memoryGiB: 4 }, { cpu: 2, memoryGiB: 8 },
-      { cpu: 4, memoryGiB: 16 }, { cpu: 8, memoryGiB: 32 },
+      { cpu: 1, memoryGiB: 4 },
+      { cpu: 2, memoryGiB: 8 },
+      { cpu: 4, memoryGiB: 16 },
+      { cpu: 8, memoryGiB: 32 },
     ],
     cpuSecond: 0.039 / 3600,
     memoryGiBSecond: 0.012 / 3600,
@@ -145,19 +151,29 @@ export const pricing: Record<string, Price> = {
       "Reference baseline only: host hardware, power, network and administration cost excluded; zero marginal provider charge.",
   },
 };
+
 /** Compute only; measured RAM can be lower than a tier's provisioned RAM. */
 export function computeHourly(p: Price, r: Pick<Resources, "cpu" | "memoryGiB">): number | null {
-  if (p.tiers) return p.tiers.find((t) => t.cpu === r.cpu && r.memoryGiB <= t.memoryGiB)?.hourly ?? null;
+  if (p.tiers)
+    return p.tiers.find((t) => t.cpu === r.cpu && r.memoryGiB <= t.memoryGiB)?.hourly ?? null;
+
   if (p.fixed) return p.fixedHour;
+
   return (r.cpu * p.cpuSecond + r.memoryGiB * p.memoryGiBSecond) * 3600;
 }
 
 /** Exact offered allocation for a like-for-like comparison, without disk. */
-export function priceAtSize(provider: string, r: Pick<Resources, "cpu" | "memoryGiB">): number | null {
+export function priceAtSize(
+  provider: string,
+  r: Pick<Resources, "cpu" | "memoryGiB">,
+): number | null {
   const p = pricing[provider];
+
   if (!p) return null;
   const offered = p.tiers ?? p.offeredSizes ?? (p.fixed ? [p.fixed] : null);
+
   if (offered && !offered.some((t) => t.cpu === r.cpu && t.memoryGiB === r.memoryGiB)) return null;
+
   return computeHourly(p, r);
 }
 
@@ -179,20 +195,32 @@ export function estimateCost(
   resources: Resources | null,
 ): number | null {
   const p = pricing[provider];
+
   if (!p) return null;
+
   if (provider === "local") return 0;
   const r = p.fixed ?? resources;
+
   if (!r) return null;
+
   const seconds = Math.max(
     p.minimumSeconds,
     Math.ceil(durationMs / 1000 / p.incrementSeconds) * p.incrementSeconds,
   );
+
   const compute = computeHourly(p, r);
+
   if (compute === null) return null;
-  return seconds * (compute / 3600 + Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) + p.perSandbox;
+
+  return (
+    seconds * (compute / 3600 + Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) +
+    p.perSandbox
+  );
 }
+
 // Conservative allocation for iterations without a fingerprint (e.g. a failed create).
 export const fallbackResources: Resources = { cpu: 8, memoryGiB: 16, diskGiB: 100 };
+
 /** Budget charge for one finished iteration: measured duration at observed, previously observed, or conservative resources. */
 export function settledBudgetUSD(
   provider: string,
@@ -201,8 +229,10 @@ export function settledBudgetUSD(
   previous: Resources | null,
 ): number | null {
   const cost = estimateCost(provider, durationMs, observed ?? previous ?? fallbackResources);
+
   return cost === null ? null : budgetUSD(provider, cost);
 }
+
 export function budgetUSD(provider: string, cost: number) {
   return cost * (pricing[provider]?.currency === "EUR" ? 2 : 1);
 }

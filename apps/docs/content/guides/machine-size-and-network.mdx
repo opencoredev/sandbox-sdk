@@ -19,11 +19,11 @@ await using custom = await createSandbox(daytona(), {
 
 `size` takes a preset (`"small"`, `"medium"`, or `"large"`) or exact numbers. Each provider maps the presets to its own machine settings:
 
-| Preset | Local | Vercel | Daytona |
-| --- | --- | --- | --- |
-| `small` | 1 CPU, 1024 MiB | 1 vCPU, 2048 MiB | 1 CPU, 1024 MiB, 10 GiB disk |
+| Preset   | Local            | Vercel            | Daytona                       |
+| -------- | ---------------- | ----------------- | ----------------------------- |
+| `small`  | 1 CPU, 1024 MiB  | 1 vCPU, 2048 MiB  | 1 CPU, 1024 MiB, 10 GiB disk  |
 | `medium` | 2 CPUs, 4096 MiB | 2 vCPUs, 4096 MiB | 2 CPUs, 4096 MiB, 10 GiB disk |
-| `large` | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 10 GiB disk |
+| `large`  | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 10 GiB disk |
 
 Daytona and Tenki accept exact CPU, memory, and disk. Local accepts `{ cpu, memoryMb }` without `diskGb`. Vercel accepts a whole number of vCPUs with 2048 MiB each and no disk, and boxd accepts 1, 2, 4, or 8 vCPU with 4 GiB each. Upstash Box, Boat, and Sandboxer take presets only. E2B, Railway, Superserve, and Freestyle take no `size` at all: the machine comes from the template or the provider's own settings.
 
@@ -48,11 +48,11 @@ Leave `size` out to get the provider's default machine.
 
 ## Network
 
-| `network` | The sandbox can reach |
-| --- | --- |
-| `"all"` | Any host. This is the default. |
-| `"none"` | Nothing. No outbound connections at all. |
-| `{ allow: [...] }` | Only the hosts in the list |
+| `network`          | The sandbox can reach                    |
+| ------------------ | ---------------------------------------- |
+| `"all"`            | Any host. This is the default.           |
+| `"none"`           | Nothing. No outbound connections at all. |
+| `{ allow: [...] }` | Only the hosts in the list               |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";

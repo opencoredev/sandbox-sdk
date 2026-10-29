@@ -23,56 +23,76 @@ const esc = (value: unknown) =>
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+
 const fmt = (value: number | null | undefined, digits = 2) =>
   value == null ? "—" : value.toLocaleString("en-US", { maximumFractionDigits: digits });
+
 const money = (value: number | null | undefined, currency: string) =>
   value == null ? "unknown" : `${currency} ${value.toFixed(5)}`;
+
 const pct = (value: number | undefined) =>
   value === undefined ? "—" : `${(value * 100).toFixed(2)}%`;
+
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
 const providers = (r: PublicationReport) => [
   ...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name))),
 ];
+
 const summary = (r: PublicationReport, provider: string, scenario: string, suite: Suite = "main") =>
   r.summaries.find((s) => s.suite === suite && s.provider === provider && s.scenario === scenario);
+
 const latency = (s: PublicationSummary | undefined, tail = false) =>
   s?.stats.p50 == null
     ? "—"
     : `${fmt(s.stats.p50 / 1000)}${tail ? ` / ${fmt((s.stats.p95 ?? 0) / 1000)}` : ""}`;
+
 function table(headers: string[], rows: string[][], caption: string) {
   return `<table><caption>${esc(caption)}</caption><thead><tr>${headers.map((h) => `<th scope="col">${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell, i) => `<td data-label="${esc(headers[i])}">${esc(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
+
 function mdTable(headers: string[], rows: string[][]) {
   const safe = (cell: string) => cell.replaceAll("|", "\\|").replaceAll("\n", " ");
+
   return [
     `| ${headers.map(safe).join(" | ")} |`,
     `| ${headers.map(() => "---").join(" | ")} |`,
     ...rows.map((row) => `| ${row.map(safe).join(" | ")} |`),
   ].join("\n");
 }
+
 function costs(r: PublicationReport) {
-  return r.sources.flatMap(source => source.lifetimeCosts);
+  return r.sources.flatMap((source) => source.lifetimeCosts);
 }
 
 export function hourly(r: PublicationReport, provider: string) {
   const price = pricing[provider];
+
   if (!price) return null;
   const allocation = allocationEvidence(r.samples, provider).pricingAllocation;
+
   return allocation ? computeHourly(price, allocation) : null;
 }
+
 /** Summaries are looked up by provider, so one provider and track must carry one native product. */
 function assertSingleProduct(r: PublicationReport) {
   const seen = new Map<string, string | null>();
+
   for (const s of r.samples) {
     const key = `${s.provider}/${s.track ?? "default"}`;
     const product = s.product ?? null;
+
     if (seen.has(key) && seen.get(key) !== product)
-      throw new Error(`${s.provider}: samples from more than one native product in the ${s.track ?? "default"} track; exclude one product's runs before publishing`);
+      throw new Error(
+        `${s.provider}: samples from more than one native product in the ${s.track ?? "default"} track; exclude one product's runs before publishing`,
+      );
     seen.set(key, product);
   }
 }
+
 export function headline(r: PublicationReport) {
   assertSingleProduct(r);
+
   const headers = [
     "Provider",
     "Cold p50 / p95 (s)",
@@ -87,9 +107,11 @@ export function headline(r: PublicationReport) {
     "Raw / adjusted success",
     "Est. sandbox-hour",
   ];
+
   const rows = providers(r).map((p) => {
     const rel = reliability(r.samples.filter((s) => s.provider === p));
     const allocation = allocationEvidence(r.samples, p);
+
     return [
       p,
       latency(summary(r, p, "cold"), true),
@@ -102,13 +124,18 @@ export function headline(r: PublicationReport) {
       latency(summary(r, p, "tool-replay")),
       latency(summary(r, p, "burst-25/all-ready", "burst")),
       `${pct(rel.raw?.rate)} / ${pct(rel.excludingLimitsAndClient?.rate)}`,
-      allocation.mismatches.length ? `Allocation mismatch: ${allocation.mismatches.join("; ")}` : money(hourly(r, p), pricing[p]?.currency ?? "unknown"),
+      allocation.mismatches.length
+        ? `Allocation mismatch: ${allocation.mismatches.join("; ")}`
+        : money(hourly(r, p), pricing[p]?.currency ?? "unknown"),
     ];
   });
+
   return { headers, rows };
 }
+
 function failureRows(r: PublicationReport) {
   const groups = new Map<string, { sample: MergedSample; count: number; sources: Set<string> }>();
+
   for (const s of r.samples) {
     if (s.outcome.kind !== "failure") continue;
     const key = JSON.stringify([s.provider, s.scenario, s.failureClass, s.outcome.note]);
@@ -117,6 +144,7 @@ function failureRows(r: PublicationReport) {
     entry.sources.add(s.sourceRunId);
     groups.set(key, entry);
   }
+
   return [...groups.values()].map(({ sample: s, count, sources }) => [
     s.provider,
     s.scenario,
@@ -126,11 +154,14 @@ function failureRows(r: PublicationReport) {
     [...sources].join(", "),
   ]);
 }
+
 function reliabilityRows(r: PublicationReport) {
   return providers(r).map((p) => {
     const rel = reliability(r.samples.filter((s) => s.provider === p));
+
     const interval = (v: typeof rel.raw) =>
       v ? `${pct(v.rate)} [${pct(v.low)}, ${pct(v.high)}]; n=${v.total}` : "—";
+
     return [
       p,
       interval(rel.raw),
@@ -143,14 +174,18 @@ function reliabilityRows(r: PublicationReport) {
     ];
   });
 }
+
 function hardwareRows(r: PublicationReport) {
   return providers(r).map((p) => {
     const fps = r.samples
       .filter((s) => s.provider === p && /(^|\/)fingerprint$/.test(s.scenario))
       .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));
+
     const unique = (xs: string[]) => [...new Set(xs)].join("; ") || "unknown";
+
     const range = (ns: number[]) =>
       ns.length ? `${fmt(Math.min(...ns))}–${fmt(Math.max(...ns))}` : "unknown";
+
     return [
       p,
       String(fps.length),
@@ -182,6 +217,7 @@ function hardwareRows(r: PublicationReport) {
     ];
   });
 }
+
 const hardwareHeaders = [
   "Provider",
   "Fingerprints",
@@ -193,6 +229,7 @@ const hardwareHeaders = [
   "Kernel",
   "Observed egress / ASN",
 ];
+
 const reliabilityHeaders = [
   "Provider",
   "Raw success [Wilson 95% CI]",
@@ -203,14 +240,17 @@ const reliabilityHeaders = [
   "Blocked",
   "Skipped",
 ];
+
 function costTables(r: PublicationReport) {
   const rows = costs(r);
+
   const totals = providers(r).map((p) => {
     const selected = rows.filter((c) => c.provider === p);
     const currency = selected[0]?.currency ?? "unknown";
     const missing = sum(selected.map((c) => c.missing));
     const hour = hourly(r, p);
     const command = summary(r, p, "command")?.stats.p50;
+
     return [
       p,
       money(sum(selected.map((c) => c.known)), currency),
@@ -220,6 +260,7 @@ function costTables(r: PublicationReport) {
       currency,
     ];
   });
+
   return {
     perRun: rows.map((c) => [
       c.provider,
@@ -231,6 +272,7 @@ function costTables(r: PublicationReport) {
     totals,
   };
 }
+
 const costHeaders = [
   "Provider",
   "Known lifetime estimate total",
@@ -239,6 +281,7 @@ const costHeaders = [
   "Command operations / native currency",
   "Currency",
 ];
+
 const perRunCostHeaders = [
   "Provider",
   "Source run",
@@ -246,6 +289,7 @@ const perRunCostHeaders = [
   "Lifetimes",
   "Unpriced lifetimes",
 ];
+
 function burstRows(r: PublicationReport) {
   return r.sources
     .filter((s) => s.suite === "burst")
@@ -258,15 +302,18 @@ function burstRows(r: PublicationReport) {
               s.provider === p.name &&
               s.scenario === `burst-${k}/cold`,
           );
+
           const cohorts = r.samples.filter(
             (s) =>
               s.sourceRunId === source.runId &&
               s.provider === p.name &&
               s.scenario === `burst-${k}/all-ready`,
           );
+
           const values = distribution(
             cohorts.flatMap((s) => (s.outcome.kind === "sample" ? [s.outcome.value] : [])),
           );
+
           return [
             p.name,
             source.runId,
@@ -283,6 +330,7 @@ function burstRows(r: PublicationReport) {
       ),
     );
 }
+
 const burstHeaders = [
   "Provider",
   "Run",
@@ -295,6 +343,7 @@ const burstHeaders = [
   "All-ready p50 (s)",
   "Provider / admission note",
 ];
+
 function sourceRows(r: PublicationReport) {
   return r.sources.map((s) => [
     s.runId,
@@ -310,6 +359,7 @@ function sourceRows(r: PublicationReport) {
       .join("; "),
   ]);
 }
+
 const sourceHeaders = [
   "Source",
   "Suite",
@@ -321,12 +371,15 @@ const sourceHeaders = [
   "Seed",
   "Configured regions",
 ];
+
 function hostRows(r: PublicationReport) {
   return providers(r).map((p) => {
     const rows = r.samples.filter((s) => s.provider === p);
+
     const cpu = rows.flatMap((s) =>
       s.headroom.hostCpuBusy === null ? [] : [s.headroom.hostCpuBusy],
     );
+
     return [
       p,
       String(rows.length),
@@ -336,6 +389,7 @@ function hostRows(r: PublicationReport) {
     ];
   });
 }
+
 const hostHeaders = [
   "Provider",
   "Host samples",
@@ -343,14 +397,19 @@ const hostHeaders = [
   "Max load1 / logical CPUs",
   "Mean sampled host CPU busy",
 ];
+
 export function disclosures(r: PublicationReport) {
   const notes = [
-    ...(r.attemptPolicy ? [
-      "Attempt selection: exclude provider-account-limit and client-third-party failures, retain provider-operation failures. Keep the first N attempted rows per (provider, suite, test) in startedAt order, with sourceRunId and sourceSampleIndex as stable tie-breakers. N=100 main, 30 workloads/snapshots, 3 burst cohorts. Skipped/blocked rows are not attempts. Local Docker is unchanged.",
-      "Pause/resume rows use only the explicitly selected fresh sources; phases record pauseMs, resumeReturnedMs and resumeReadyMs, while the value remains total elapsed time. Failed transitions can retain only phases reached before failure.",
-      ...r.attemptPolicy.notRun.map(n => `${n.provider} ${n.suite}/${n.scenario}: not run: ${n.reason}`),
-      `Selection audit: ${JSON.stringify(r.selectionRemoved)}. All original source files remain intact. Collection cost totals use every original source lifetime, including excluded or trimmed attempts.`,
-    ] : []),
+    ...(r.attemptPolicy
+      ? [
+          "Attempt selection: exclude provider-account-limit and client-third-party failures, retain provider-operation failures. Keep the first N attempted rows per (provider, suite, test) in startedAt order, with sourceRunId and sourceSampleIndex as stable tie-breakers. N=100 main, 30 workloads/snapshots, 3 burst cohorts. Skipped/blocked rows are not attempts. Local Docker is unchanged.",
+          "Pause/resume rows use only the explicitly selected fresh sources; phases record pauseMs, resumeReturnedMs and resumeReadyMs, while the value remains total elapsed time. Failed transitions can retain only phases reached before failure.",
+          ...r.attemptPolicy.notRun.map(
+            (n) => `${n.provider} ${n.suite}/${n.scenario}: not run: ${n.reason}`,
+          ),
+          `Selection audit: ${JSON.stringify(r.selectionRemoved)}. All original source files remain intact. Collection cost totals use every original source lifetime, including excluded or trimmed attempts.`,
+        ]
+      : []),
     "Local is a Docker reference baseline. Host hardware, electricity, networking and administration are excluded from its cost. Default provider images and sizes differ; this is not a resource-matched comparison. No combined overall ranking is calculated.",
     "Main lifecycle runs target 100 iterations per provider and workloads on the first 30. Snapshot scenarios were excluded from publication-002 and collected separately for 30 iterations with a 600-second timeout. Main and snapshot cold creates stay in separate summaries.",
     "The original harness budget bug stopped Tenki at 46, Daytona at 59 and Upstash at 87 main iterations. Top-ups add 54, 41 and 13 respectively using seed 46 and harness commit 49639a2. Each top-up restarted iteration numbering at 0; this merge assigns unique provider iteration identities and retains sourceRunId, sourceSampleIndex, sourceIteration and namespace. The main run used seed 45.",
@@ -371,11 +430,14 @@ export function disclosures(r: PublicationReport) {
     `${discardedRun.runId}: ${discardedRun.reason}`,
     `Sample conservation: ${r.samples.length} merged observations = ${r.inputSampleCount} included input observations across ${r.sources.length} runs. Every source results.json was compared with its samples.ndjson before merging. No cloud calls were made by the merge.`,
   ];
+
   const isFullPublication = publicationRuns.every((id) =>
     r.sources.some((source) => source.runId === id),
   );
+
   return notes.filter((_, i) => isFullPublication || i < 1 || i > 6);
 }
+
 function metricRows(r: PublicationReport) {
   return r.summaries.map((s) => [
     s.suite,
@@ -396,6 +458,7 @@ function metricRows(r: PublicationReport) {
     s.comparable ? "yes" : "not comparable",
   ]);
 }
+
 const metricHeaders = [
   "Suite",
   "Provider",
@@ -414,47 +477,63 @@ const metricHeaders = [
   "Skipped",
   "Comparable",
 ];
+
 function chart(r: PublicationReport, suite: Suite, scenario: string, unit: string) {
   const groups = r.summaries.filter(
     (s) => s.suite === suite && s.scenario === scenario && s.unit === unit,
   );
+
   const order = providers(r);
   groups.sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
+
   const samples = r.samples.filter(
     (s) => s.suite === suite && s.scenario === scenario && s.unit === unit,
   );
+
   const values = samples.flatMap((s) => (s.outcome.kind === "sample" ? [s.outcome.value] : []));
+
   const min = Math.min(...values),
     max = Math.max(...values);
+
   const log = min > 0 && max / min > 20;
   const transform = (v: number) => (log ? Math.log10(v) : v);
   const lo = values.length ? (log ? transform(min) : 0) : 0;
   const hi = values.length ? transform(max) : 1;
   const position = (v: number) => 6 + (608 * (transform(v) - lo)) / (hi - lo || 1);
+
   const lines = groups
     .map((s) => {
       const rows = samples.filter((row) => row.provider === s.provider);
+
       const dots = rows
         .flatMap((row) => (row.outcome.kind === "sample" ? [row] : []))
         .map((row, i) => {
           const v = row.outcome.kind === "sample" ? row.outcome.value : 0;
+
           return `<circle cx="${position(v)}" cy="${13 + (((i * 7) % 13) - 6)}" r="2" fill="#596778" opacity=".7"><title>${esc(`${row.provider}: ${fmt(v)} ${unit}; ${row.sourceRunId} iteration ${row.sourceIteration}`)}</title></circle>`;
         })
         .join("");
+
       const ci = s.stats.p50CI;
       const median = s.stats.p50;
+
       return `<div class="strip"><div class="strip-label"><strong>${esc(s.provider)}</strong><span>${fmt(median)} ${esc(unit)} · n=${s.stats.count} · ${s.reliability.failures} fail</span></div><svg viewBox="0 0 620 26" preserveAspectRatio="none" role="img" aria-label="${esc(`${s.provider}: median ${fmt(median)} ${unit}, 95% CI ${fmt(ci?.low)} to ${fmt(ci?.high)}, ${s.stats.count} successful measurements`)}"><line x1="6" x2="614" y1="13" y2="13" stroke="#dfe3e8"/>${dots}${ci ? `<line x1="${position(ci.low)}" x2="${position(ci.high)}" y1="13" y2="13" stroke="#171a20" stroke-width="3"/>` : ""}${median !== null ? `<line x1="${position(median)}" x2="${position(median)}" y1="4" y2="22" stroke="#171a20" stroke-width="3"/>` : ""}</svg></div>`;
     })
     .join("");
+
   const ticks = Array.from({ length: 5 }, (_, i) => {
     const t = lo + ((hi - lo) * i) / 4;
+
     return `<span>${fmt(log ? 10 ** t : t)} </span>`;
   }).join("");
+
   return `<details class="chart" ${["cold", "cpu-single"].includes(scenario) && suite === "main" ? "open" : ""}><summary>${esc(scenario)} <span>${esc(suite)} · ${esc(unit)} · ${log ? "logarithmic" : "linear"} scale</span></summary><div class="chart-body"><p class="chart-note">${unit === "ms" ? "Lower is faster." : "Higher is faster."} Dots: successful observations. Marker: p50. Line: bootstrap 95% CI. Failures remain in the reliability table.</p>${lines}<div class="axis">${ticks}</div></div></details>`;
 }
+
 export function publicationMarkdown(r: PublicationReport) {
   const head = headline(r),
     cost = costTables(r);
+
   return [
     `# Sandbox provider publication report (${r.samples[0]?.track ?? "default"} track)`,
     "",
@@ -525,9 +604,11 @@ export function publicationMarkdown(r: PublicationReport) {
     "",
   ].join("\n");
 }
+
 export function publicationHtml(r: PublicationReport) {
   const head = headline(r),
     cost = costTables(r);
+
   const scenarioGroups = [
     ...new Map(
       r.summaries
@@ -535,6 +616,7 @@ export function publicationHtml(r: PublicationReport) {
         .map((s) => [JSON.stringify([s.suite, s.scenario, s.unit]), s]),
     ).values(),
   ];
+
   const perf = new Set([
     "cpu-single",
     "cpu-all",
@@ -544,11 +626,13 @@ export function publicationHtml(r: PublicationReport) {
     "disk-4k-write-iops",
     "disk-4k-read-iops",
   ]);
+
   const charts = (guest: boolean) =>
     scenarioGroups
       .filter((s) => perf.has(s.scenario) === guest)
       .map((s) => chart(r, s.suite, s.scenario, s.unit))
       .join("");
+
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'"><title>Sandbox provider benchmark | Publication report</title><style>
 :root{color-scheme:light;--ink:#171a20;--muted:#526170;--paper:#fff;--line:#dfe3e8;--link:#174ea6}*{box-sizing:border-box}html{background:var(--paper);color:var(--ink);font:16px/1.55 system-ui,sans-serif;-webkit-font-smoothing:antialiased}body{margin:0}main{max-width:1600px;margin:auto;padding:40px 32px 80px}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;margin:8px 0 12px;letter-spacing:-.025em}header p{max-width:none}#headline td:first-child,#headline th:first-child{min-width:90px;overflow-wrap:normal}h2{font-size:26px;margin:48px 0 16px}h3{font-size:19px}p{max-width:78ch}p,li{text-wrap:pretty}a{overflow-wrap:anywhere;color:var(--link);text-underline-offset:3px}nav{display:flex;gap:8px 24px;flex-wrap:wrap;margin:24px 0}nav a{padding-block:8px}.eyebrow,.muted,.chart-note{color:var(--muted)}.eyebrow{font:13px ui-monospace,monospace;letter-spacing:.05em}.note{padding:16px 20px;background:#f4f6f8;max-width:none}.table-wrap:before{content:"Table scrolls horizontally when wider than the page.";display:block;color:var(--muted);font-size:12px;margin-bottom:8px}.table-wrap{max-width:100%;overflow-x:auto;margin-block:20px}.table-hint{color:var(--muted);font-size:13px}table{width:100%;min-width:1200px;table-layout:fixed;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;text-align:start}caption{text-align:start;font-weight:600;padding-bottom:12px;font-size:15px}th,td{text-align:start;vertical-align:top;padding:10px 9px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th:first-child{width:100px}#hardware table{min-width:1500px}#hardware th:nth-child(2){width:85px}#hardware th:nth-child(3){width:230px}#hardware th:nth-child(8){width:260px}#hardware th:nth-child(9){width:220px}th{font-weight:600;background:#f4f6f8}td:first-child{font-weight:600}#headline th,#headline td{padding:12px 7px}details{margin-block:12px;border:1px solid var(--line)}summary{padding:14px 16px;cursor:pointer;font-weight:600;min-height:44px}summary span{font-weight:400;color:var(--muted);font-size:13px;margin-inline-start:12px}.chart-body{padding:0 20px 18px}.chart-note{font-size:13px;margin:0 0 20px}.strip{margin:14px 0}.strip-label{display:flex;justify-content:space-between;gap:12px;font-size:13px;flex-wrap:wrap}.strip-label span{color:var(--muted);font-variant-numeric:tabular-nums}.strip svg{display:block;width:100%;height:30px}.axis{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.axis span{min-width:0;overflow-wrap:anywhere}.axis span:last-child{text-align:end}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;padding:16px;background:#f4f6f8;margin:0}code{font:13px ui-monospace,monospace}section{scroll-margin-top:20px}.columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.columns>details{align-self:start;min-width:0}.disclosures li{margin-block:16px;max-width:90ch}.downloads{font-size:14px}.skip{position:absolute;inset-block-start:-100px}.skip:focus{inset-block-start:0;background:white;padding:12px;z-index:1}:focus-visible{outline:2px solid var(--link);outline-offset:3px}footer{border-top:1px solid var(--line);margin-top:40px;padding-top:20px;font-size:13px;color:var(--muted)}@media(max-width:65rem){.columns{grid-template-columns:minmax(0,1fr)}}@media(max-width:45rem){main{padding:24px 16px 56px}h2{font-size:23px}summary span{display:block;margin:4px 0 0 20px}.chart-body{padding-inline:12px}table{min-width:0!important;table-layout:auto}table,tbody,tr,td{display:block;width:100%}thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}tr{padding-block:12px;border-bottom:1px solid var(--line)}td{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:7px 0!important;border:0;font-size:13px}td:before{content:attr(data-label);color:var(--muted);font-weight:400}td:first-child{font-size:15px}caption{display:block;width:100%}.table-wrap{overflow:visible}.table-wrap:before{display:none}.table-hint{display:none}.note{padding:14px}.axis{font-size:11px}.disclosures{padding-inline-start:20px}nav{gap:4px 20px}}
 </style></head><body><a class="skip" href="#headline">Skip to summary</a><main><header><div class="eyebrow">SANDBOX SDK · PUBLICATION DATASET · ${esc(r.timestamp?.slice(0, 7) ?? "COLLECTION")}</div><h1>Sandbox provider benchmark (${esc(r.samples[0]?.track ?? "default")} track)</h1><p class="muted">${esc(r.timestamp)} to ${esc(r.finishedAt)} · ${r.samples.length.toLocaleString()} observations · ${r.sources.length} source runs · ${providers(r).length} providers</p></header>

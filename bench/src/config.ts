@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 
 const positive = z.coerce.number().int().min(1).max(1_000_000);
+
 const schema = z.object({
   providers: z
     .string()
@@ -16,7 +17,9 @@ const schema = z.object({
   yes: z.boolean().default(false),
   out: z.string().min(1).default("results"),
 });
+
 export type Config = z.infer<typeof schema>;
+
 export function parseConfig(args: string[]): Config {
   const { values } = parseArgs({
     args,
@@ -33,5 +36,6 @@ export function parseConfig(args: string[]): Config {
     strict: true,
     allowPositionals: false,
   });
+
   return schema.parse(values);
 }

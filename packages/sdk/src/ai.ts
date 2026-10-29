@@ -8,6 +8,7 @@ import {
   type ToolParameters,
 } from "./tools.js";
 import { OutputBus } from "./run.js";
+
 export type { SandboxToolsOptions } from "./tools.js";
 
 export function sandboxTools(
@@ -22,23 +23,29 @@ export function sandboxTools(
         inputSchema: definition.inputSchema,
         async *execute(input, execution): AsyncGenerator<ToolResult> {
           const controller = new AbortController();
+
           const signal = execution.abortSignal
             ? AbortSignal.any([controller.signal, execution.abortSignal])
             : controller.signal;
+
           const bus = new OutputBus();
           const stream = bus.stream();
           // Subscribe before starting execution so synchronous producers cannot lose events.
           let next = stream.next();
+
           const final = definition
             .execute(input, (event) => bus.emit({ stream: event.stream, text: event.text }), signal)
             .finally(() => bus.end());
+
           try {
             while (true) {
               const event = await next;
+
               if (event.done) break;
               yield { text: event.value.text };
               next = stream.next();
             }
+
             yield await final;
           } finally {
             controller.abort();

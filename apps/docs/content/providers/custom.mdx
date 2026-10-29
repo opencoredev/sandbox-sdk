@@ -20,22 +20,22 @@ You don't implement any of these. The core builds them from your primitives:
 
 Import the types from `@opencoredev/sandbox-sdk/provider`. A `Provider` has:
 
-| Member | What it does |
-| --- | --- |
-| `name` | The provider name, shown in `box.provider` and errors |
-| `keyMode` | `"exact"` if the service enforces unique names, otherwise `"best-effort"` |
-| `capabilities` | The optional features you implement |
-| `create(input)` | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot |
-| `find(key)` | Find a sandbox by key, or `undefined` |
-| `connect(id)` | Attach to a sandbox by ID. Throw `not_found` if it's gone. |
-| `list(labels)` | List sandboxes matching labels |
-| `destroy(id)` | Delete a sandbox |
-| `exec(id, input)` | Run one command and stream its output |
-| `files` | `read`, `write`, `list`, `stat`, `remove`, `mkdir`, and optionally `readRange` |
-| `previewUrl(id, port)` | Return `{ url, headers?, expiresAt? }` for a port |
-| `native(id)` | The service's own sandbox object, exposed as `box.native` |
-| `pause`, `resume`, `snapshot`, `terminal` | Optional. Must match `capabilities`. |
-| `close`, `usage`, `startProcess` | Optional hooks |
+| Member                                    | What it does                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `name`                                    | The provider name, shown in `box.provider` and errors                                       |
+| `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                   |
+| `capabilities`                            | The optional features you implement                                                         |
+| `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot |
+| `find(key)`                               | Find a sandbox by key, or `undefined`                                                       |
+| `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                  |
+| `list(labels)`                            | List sandboxes matching labels                                                              |
+| `destroy(id)`                             | Delete a sandbox                                                                            |
+| `exec(id, input)`                         | Run one command and stream its output                                                       |
+| `files`                                   | `read`, `write`, `list`, `stat`, `remove`, `mkdir`, and optionally `readRange`              |
+| `previewUrl(id, port)`                    | Return `{ url, headers?, expiresAt? }` for a port                                           |
+| `native(id)`                              | The service's own sandbox object, exposed as `box.native`                                   |
+| `pause`, `resume`, `snapshot`, `terminal` | Optional. Must match `capabilities`.                                                        |
+| `close`, `usage`, `startProcess`          | Optional hooks                                                                              |
 
 Paths are absolute POSIX paths and times are epoch milliseconds.
 

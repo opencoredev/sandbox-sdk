@@ -6,14 +6,21 @@ describe("loadPeer", () => {
   it("names the package when an optional peer is not installed", async () => {
     // A computed specifier keeps Vite from resolving the missing package at transform time.
     const name = ["sandbox-sdk", "missing-peer"].join("-");
-    const failure = await loadPeer(name, "example", () => import(name)).catch((error: unknown) => error);
+
+    const failure = await loadPeer(name, "example", () => import(name)).catch(
+      (error: unknown) => error,
+    );
+
     expect(failure).toBeInstanceOf(SandboxError);
     expect(failure).toMatchObject({ code: "unavailable", provider: "example" });
     expect(String(failure)).toContain(`Install ${name}`);
   });
 
   it("passes through failures that are not the peer itself going missing", async () => {
-    const inner = Object.assign(new Error("Cannot find package 'some-transitive-dep'"), { code: "ERR_MODULE_NOT_FOUND" });
+    const inner = Object.assign(new Error("Cannot find package 'some-transitive-dep'"), {
+      code: "ERR_MODULE_NOT_FOUND",
+    });
+
     await expect(loadPeer("e2b", "e2b", () => Promise.reject(inner))).rejects.toBe(inner);
     const thrown = new Error("boom");
     await expect(loadPeer("e2b", "e2b", () => Promise.reject(thrown))).rejects.toBe(thrown);
@@ -27,6 +34,7 @@ describe("loadPeer", () => {
   it("fills named exports from default when a bundle wraps a CommonJS peer", async () => {
     // esbuild with splitting turns import() of a CommonJS package into this namespace shape.
     class BoatApi {}
+
     const wrapped = { default: { BoatApi, Configuration: class {} } };
     const loaded = await loadPeer("@boatdev/sdk", "boat", () => Promise.resolve(wrapped));
     expect(loaded).toMatchObject({ BoatApi, default: wrapped.default });

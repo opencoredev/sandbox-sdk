@@ -94,13 +94,17 @@ export interface Halftone {
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string) {
   const shader = gl.createShader(type);
+
   if (!shader) return null;
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
+
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     gl.deleteShader(shader);
+
     return null;
   }
+
   return shader;
 }
 
@@ -111,22 +115,29 @@ export function createHalftone(canvas: HTMLCanvasElement, style: HalftoneStyle):
     alpha: false,
     premultipliedAlpha: false,
   });
+
   if (!gl) return null;
   const vs = compile(gl, gl.VERTEX_SHADER, VERT);
   const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
   const program = gl.createProgram();
+
   // on any setup failure, release what was made and the context itself
   const fail = () => {
     if (vs) gl.deleteShader(vs);
+
     if (fs) gl.deleteShader(fs);
+
     if (program) gl.deleteProgram(program);
     gl.getExtension("WEBGL_lose_context")?.loseContext();
+
     return null;
   };
+
   if (!vs || !fs || !program) return fail();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
+
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return fail();
   gl.useProgram(program);
 
@@ -154,6 +165,7 @@ export function createHalftone(canvas: HTMLCanvasElement, style: HalftoneStyle):
     scope: gl.getUniformLocation(program, "scope"),
     zoom: gl.getUniformLocation(program, "zoom"),
   };
+
   gl.uniform1f(u.fill, style.fill);
   gl.uniform1f(u.square, style.shape === "square" ? 1 : 0);
   gl.uniform1f(u.glow, style.glow);

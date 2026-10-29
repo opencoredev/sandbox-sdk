@@ -15,6 +15,7 @@ export default function config(phase) {
       reactStrictMode: true,
       async rewrites() {
         if (!docsOrigin) return [];
+
         return [
           { source: "/docs", destination: `${docsOrigin}/docs` },
           { source: "/docs/:path*", destination: `${docsOrigin}/docs/:path*` },
@@ -22,5 +23,6 @@ export default function config(phase) {
       },
     };
   }
+
   return { output: "export", reactStrictMode: true };
 }

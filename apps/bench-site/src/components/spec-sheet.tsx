@@ -30,6 +30,7 @@ const rowsOf = (providers: readonly Provider[]) =>
  */
 export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
   const rows = rowsOf(providers);
+
   return (
     <>
       <ul className="flex flex-col divide-y divide-[var(--line)] border-y border-[var(--line)] sm:hidden">
@@ -59,12 +60,20 @@ export function SpecSheet({ providers }: { providers: readonly Provider[] }) {
         <tbody>
           {rows.map(({ p, cpu, runsAs, ranIn, note }) => (
             <tr key={p.id} className="border-b border-[var(--line)] align-top">
-              <th scope="row" className="py-3 pr-5 font-medium" style={{ color: providerColor(p.id) }}>
+              <th
+                scope="row"
+                className="py-3 pr-5 font-medium"
+                style={{ color: providerColor(p.id) }}
+              >
                 {providerName(p.id)}
               </th>
               <td className="py-3 pr-5">
                 {cpu}
-                {note ? <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">{note}</span> : null}
+                {note ? (
+                  <span className="mt-1 block max-w-[52ch] text-[11.5px] text-[var(--muted)]">
+                    {note}
+                  </span>
+                ) : null}
               </td>
               <td className="py-3 pr-5 whitespace-nowrap">{runsAs}</td>
               <td className="py-3 pr-5 whitespace-nowrap">{ranIn}</td>

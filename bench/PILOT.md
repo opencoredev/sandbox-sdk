@@ -6,16 +6,16 @@ The report is `bench/results/pilot-v2-fixed/index.html`; raw JSON, Markdown and 
 
 ## Observed behavior
 
-| Provider | Successful observations | Failures | Skips | Result |
-|---|---:|---:|---:|---|
-| local | 73 | 0 | 0 | All scenarios passed; Docker reference baseline. |
-| e2b | 73 | 0 | 0 | All scenarios passed. |
-| daytona | 64 | 6 | 0 | Snapshot timeout, subsequent busy-state operations, CDN reset; first pip sample used the superseded numpy pin. |
-| upstash | 71 | 2 | 0 | 10 MiB file round trips rejected with invalid_argument. |
-| boat | 57 | 6 | 4 | Preview URLs require an access token; transient unavailable errors in replay and file transfer. |
-| boxd | 59 | 6 | 2 | Preview certificate verification failures; 10 MiB file transfer failures. |
-| freestyle | 73 | 0 | 0 | All scenarios passed. |
-| tenki | 60 | 10 | 0 | Both resumes exceeded the adapter deadline; first-iteration failures cascaded after resume. |
+| Provider  | Successful observations | Failures | Skips | Result                                                                                                         |
+| --------- | ----------------------: | -------: | ----: | -------------------------------------------------------------------------------------------------------------- |
+| local     |                      73 |        0 |     0 | All scenarios passed; Docker reference baseline.                                                               |
+| e2b       |                      73 |        0 |     0 | All scenarios passed.                                                                                          |
+| daytona   |                      64 |        6 |     0 | Snapshot timeout, subsequent busy-state operations, CDN reset; first pip sample used the superseded numpy pin. |
+| upstash   |                      71 |        2 |     0 | 10 MiB file round trips rejected with invalid_argument.                                                        |
+| boat      |                      57 |        6 |     4 | Preview URLs require an access token; transient unavailable errors in replay and file transfer.                |
+| boxd      |                      59 |        6 |     2 | Preview certificate verification failures; 10 MiB file transfer failures.                                      |
+| freestyle |                      73 |        0 |     0 | All scenarios passed.                                                                                          |
+| tenki     |                      60 |       10 |     0 | Both resumes exceeded the adapter deadline; first-iteration failures cascaded after resume.                    |
 
 All eight providers completed K=3 with three successful cold samples. Railway and Vercel skipped because credentials are absent. Every provider completed the hardware and CPU/disk/memory probes; Daytona CDN downloads reset. Pip now pins numpy 2.3.5, which has Python 3.14 wheels: the second Daytona sample passed. The final local snapshot check passed snapshot, restore, restored hardware fingerprint and deletion. The same check reproduced Daytona’s 60-second native snapshot timeout.
 
@@ -33,16 +33,16 @@ No SDK source files were changed. These observations distinguish confirmed adapt
 
 The following marginal estimates extrapolate pilot durations, including failures. Normal means 100 iterations of lifecycle/command/files/fingerprint/performance; workloads means 30 runs of each of the seven workload scenarios. Bursts are one cohort each. Restored hardware timing absent in the early pilot is estimated from source fingerprint duration for planning only. Unsupported operations are excluded. Account caps may skip the larger cohorts.
 
-| Provider | Currency | Normal 100 | Each workload 30 | K=10 | K=25 | Total |
-|---|---|---:|---:|---:|---:|---:|
-| local | USD | 0.00000 | 0.00000 | 0.00000 | 0.00000 | 0.00000 |
-| e2b | USD | 0.18655 | 0.05504 | 0.00183 | 0.00457 | 0.24800 |
-| daytona | USD | 0.19149 | 0.05328 | 0.00231 | 0.00575 | 0.25284 |
-| upstash | USD | 0.94371 | 0.15219 | 0.02670 | 0.06679 | 1.18939 |
-| boat | USD | 0.18900 | 0.05550 | 0.00153 | 0.00383 | 0.24986 |
-| boxd | EUR | 0.23888 | 0.07017 | 0.00289 | 0.00712 | 0.31905 |
-| freestyle | USD | 0.49802 | 0.07700 | 0.00499 | 0.01239 | 0.59240 |
-| tenki | USD | 0.40113 | 0.07710 | 0.00316 | 0.00784 | 0.48922 |
+| Provider  | Currency | Normal 100 | Each workload 30 |    K=10 |    K=25 |   Total |
+| --------- | -------- | ---------: | ---------------: | ------: | ------: | ------: |
+| local     | USD      |    0.00000 |          0.00000 | 0.00000 | 0.00000 | 0.00000 |
+| e2b       | USD      |    0.18655 |          0.05504 | 0.00183 | 0.00457 | 0.24800 |
+| daytona   | USD      |    0.19149 |          0.05328 | 0.00231 | 0.00575 | 0.25284 |
+| upstash   | USD      |    0.94371 |          0.15219 | 0.02670 | 0.06679 | 1.18939 |
+| boat      | USD      |    0.18900 |          0.05550 | 0.00153 | 0.00383 | 0.24986 |
+| boxd      | EUR      |    0.23888 |          0.07017 | 0.00289 | 0.00712 | 0.31905 |
+| freestyle | USD      |    0.49802 |          0.07700 | 0.00499 | 0.01239 | 0.59240 |
+| tenki     | USD      |    0.40113 |          0.07710 | 0.00316 | 0.00784 | 0.48922 |
 
 These are estimates, not quotes or invoices. They exclude fixed subscriptions, minimum monthly commitments (including Boat), credits, transfer and retained snapshot storage. Upstash active-CPU billing and boxd used-memory/written-disk billing make allocation-based estimates upper bounds. Local excludes host ownership and operating costs. Larger bursts can encounter limits and take longer. Allow at least 2× the projected total as a usage budget; the README commands deliberately retain higher conservative admission limits.
 

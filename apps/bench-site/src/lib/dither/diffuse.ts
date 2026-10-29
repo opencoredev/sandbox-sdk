@@ -8,7 +8,9 @@ import type { Rgba } from "@/lib/dither/tokens";
  */
 
 export type OrderedMethod = "bayer4" | "bayer8" | "blue-noise";
+
 export type DiffusionMethod = "floyd-steinberg" | "atkinson" | "sierra-lite";
+
 export type DitherMethod = OrderedMethod | DiffusionMethod;
 
 export const DITHER_METHODS = [
@@ -24,11 +26,7 @@ export const DITHER_METHODS = [
 export type PaletteColor = readonly [number, number, number] | Rgba;
 
 /** At least two colours. Pixels map to the nearest one. */
-export type ImagePalette = readonly [
-  PaletteColor,
-  PaletteColor,
-  ...PaletteColor[],
-];
+export type ImagePalette = readonly [PaletteColor, PaletteColor, ...PaletteColor[]];
 
 /** Anything shaped like `ImageData`: RGBA bytes, row by row. */
 export interface PixelBuffer {
@@ -94,30 +92,30 @@ const KERNELS = {
 const nearest = (palette: ImagePalette, r: number, g: number, b: number) => {
   let best = 0;
   let bestDistance = Infinity;
+
   for (let index = 0; index < palette.length; index += 1) {
     const color = palette[index];
+
     if (!color) {
       continue;
     }
+
     const dr = r - color[0];
     const dg = g - color[1];
     const db = b - color[2];
     // Weighted towards green, as the eye is.
     const distance = 0.3 * dr * dr + 0.59 * dg * dg + 0.11 * db * db;
+
     if (distance < bestDistance) {
       bestDistance = distance;
       best = index;
     }
   }
+
   return best;
 };
 
-const write = (
-  out: Uint8ClampedArray,
-  offset: number,
-  color: PaletteColor,
-  alpha: number
-) => {
+const write = (out: Uint8ClampedArray, offset: number, color: PaletteColor, alpha: number) => {
   out[offset] = color[0] * 255;
   out[offset + 1] = color[1] * 255;
   out[offset + 2] = color[2] * 255;
@@ -128,18 +126,18 @@ const ditherOrdered = (
   image: PixelBuffer,
   method: OrderedMethod,
   palette: ImagePalette,
-  bias: number
+  bias: number,
 ): Uint8ClampedArray<ArrayBuffer> => {
   const { data, width, height } = image;
   const out = new Uint8ClampedArray(data.length);
   const map = getThresholdMap(method);
   // Spread the threshold over one step between palette colours.
   const spread = 1 / (palette.length - 1);
+
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const offset = (y * width + x) * 4;
-      const threshold =
-        map.thresholds[(y % map.size) * map.size + (x % map.size)] ?? 0.5;
+      const threshold = map.thresholds[(y % map.size) * map.size + (x % map.size)] ?? 0.5;
       const shift = (0.5 - threshold) * spread + bias;
       const r = (data[offset] ?? 0) / 255 + shift;
       const g = (data[offset + 1] ?? 0) / 255 + shift;
@@ -148,6 +146,7 @@ const ditherOrdered = (
       write(out, offset, color, data[offset + 3] ?? 255);
     }
   }
+
   return out;
 };
 
@@ -174,13 +173,15 @@ const spreadError = ({
   for (const [dx, dy, weight] of kernel) {
     const nx = reverse ? x - dx : x + dx;
     const ny = y + dy;
+
     if (nx < 0 || nx >= width || ny >= height) {
       continue;
     }
+
     const target = (ny * width + nx) * 3;
+
     for (let channel = 0; channel < 3; channel += 1) {
-      work[target + channel] =
-        (work[target + channel] ?? 0) + error[channel] * weight;
+      work[target + channel] = (work[target + channel] ?? 0) + error[channel] * weight;
     }
   }
 };
@@ -190,11 +191,12 @@ const ditherDiffusion = (
   kernel: Kernel,
   palette: ImagePalette,
   bias: number,
-  serpentine: boolean
+  serpentine: boolean,
 ): Uint8ClampedArray<ArrayBuffer> => {
   const { data, width, height } = image;
   const out = new Uint8ClampedArray(data.length);
   const work = new Float32Array(width * height * 3);
+
   for (let index = 0; index < width * height; index += 1) {
     for (let channel = 0; channel < 3; channel += 1) {
       work[index * 3 + channel] = (data[index * 4 + channel] ?? 0) / 255 + bias;
@@ -203,6 +205,7 @@ const ditherDiffusion = (
 
   for (let y = 0; y < height; y += 1) {
     const reverse = serpentine && y % 2 === 1;
+
     for (let step = 0; step < width; step += 1) {
       const x = reverse ? width - 1 - step : step;
       const index = y * width + x;
@@ -224,6 +227,7 @@ const ditherDiffusion = (
       });
     }
   }
+
   return out;
 };
 
@@ -235,11 +239,12 @@ const DEFAULT_OPTIONS: DiffuseOptions = { method: "floyd-steinberg" };
  */
 export const ditherImage = (
   image: PixelBuffer,
-  options: DiffuseOptions = DEFAULT_OPTIONS
+  options: DiffuseOptions = DEFAULT_OPTIONS,
 ): ImageData => {
   const palette = options.palette ?? BLACK_AND_WHITE;
   const bias = 0.5 - (options.threshold ?? 0.5);
   let data: Uint8ClampedArray<ArrayBuffer>;
+
   switch (options.method) {
     case "bayer4":
     case "bayer8":
@@ -247,6 +252,7 @@ export const ditherImage = (
       data = ditherOrdered(image, options.method, palette, bias);
       break;
     }
+
     case "floyd-steinberg":
     case "atkinson":
     case "sierra-lite": {
@@ -255,14 +261,17 @@ export const ditherImage = (
         KERNELS[options.method],
         palette,
         bias,
-        options.serpentine ?? true
+        options.serpentine ?? true,
       );
       break;
     }
+
     default: {
       const exhaustive: never = options;
+
       return exhaustive;
     }
   }
+
   return new ImageData(data, image.width, image.height);
 };

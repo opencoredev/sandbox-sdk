@@ -4,12 +4,15 @@ import { distribution, wilson, shuffle } from "../src/v2-stats.js";
 import { estimateCost, priceAtSize, settledBudgetUSD } from "../src/pricing.js";
 import { parseFingerprint, resources } from "../src/fingerprint.js";
 import { parseV2 } from "../src/v2-config.js";
+
 describe("v2 scheduling", () => {
   it("interleaves providers by iteration and respects both concurrency limits", async () => {
     const jobs = roundRobin(["a", "b"], 3);
     expect(jobs.map((j) => j.provider)).toEqual(["a", "b", "a", "b", "a", "b"]);
+
     let global = 0,
       peak = 0;
+
     const counts = new Map<string, number>();
     await schedule(jobs, { global: 2, perProvider: 1 }, async (j) => {
       global++;
@@ -32,12 +35,17 @@ describe("v2 scheduling", () => {
     expect(() => parseV2(["--max-dollars", "-1"])).toThrow();
   });
 });
+
 describe("v2 statistics and cost", () => {
   it("prices an unfingerprinted iteration by duration instead of leaving it unknown", () => {
     const observed = { cpu: 2, memoryGiB: 4, diskGiB: 20 };
     expect(settledBudgetUSD("tenki", 30_000, null, null)).toBeGreaterThan(0);
-    expect(settledBudgetUSD("tenki", 30_000, null, observed)).toBe(settledBudgetUSD("tenki", 30_000, observed, null));
-    expect(settledBudgetUSD("tenki", 30_000, null, null)!).toBeGreaterThan(settledBudgetUSD("tenki", 30_000, observed, null)!);
+    expect(settledBudgetUSD("tenki", 30_000, null, observed)).toBe(
+      settledBudgetUSD("tenki", 30_000, observed, null),
+    );
+    expect(settledBudgetUSD("tenki", 30_000, null, null)!).toBeGreaterThan(
+      settledBudgetUSD("tenki", 30_000, observed, null)!,
+    );
     expect(settledBudgetUSD("not-a-provider", 30_000, null, null)).toBeNull();
   });
   it("retains tails and computes population stddev and deterministic CIs", () => {
@@ -69,6 +77,7 @@ describe("v2 statistics and cost", () => {
     expect(estimateCost("unknown", 1000, null)).toBeNull();
   });
 });
+
 describe("fingerprint boundary", () => {
   const sample = {
     cpuModel: "Test CPU",
@@ -95,6 +104,7 @@ describe("fingerprint boundary", () => {
     tools: { python3: "/usr/bin/python3" },
     runtime: "Python 3.12",
   };
+
   it("distinguishes visible host resources from cgroup allocation", () => {
     expect(resources(parseFingerprint(JSON.stringify(sample)))).toEqual({
       cpu: 2,
@@ -108,12 +118,16 @@ describe("fingerprint boundary", () => {
 
 describe("Upstash Box PAYG size pricing", () => {
   it.each([
-    [2, 4, 0.10], [4, 8, 0.20], [8, 16, 0.40],
+    [2, 4, 0.1],
+    [4, 8, 0.2],
+    [8, 16, 0.4],
   ])("prices %i vCPU / %i GiB as one box, not per vCPU", (cpu, memoryGiB, hourly) => {
     expect(estimateCost("upstash", 3600000, { cpu, memoryGiB, diskGiB: 0 })).toBeCloseTo(hourly);
   });
   it("accepts kernel-visible memory below the tier allocation", () => {
-    expect(estimateCost("upstash", 3600000, { cpu: 2, memoryGiB: 3.8, diskGiB: 0 })).toBeCloseTo(0.10);
+    expect(estimateCost("upstash", 3600000, { cpu: 2, memoryGiB: 3.8, diskGiB: 0 })).toBeCloseTo(
+      0.1,
+    );
   });
   it("does not invent a price for an unknown size", () => {
     expect(estimateCost("upstash", 3600000, { cpu: 3, memoryGiB: 6, diskGiB: 0 })).toBeNull();
@@ -122,8 +136,13 @@ describe("Upstash Box PAYG size pricing", () => {
 
 describe("published compute-only size comparisons", () => {
   it.each([
-    ["e2b", 0.3312], ["daytona", 0.3312], ["upstash", 0.20],
-    ["boat", 0.036], ["freestyle", 0.26448], ["tenki", 0.3312], ["superserve", 0.3312],
+    ["e2b", 0.3312],
+    ["daytona", 0.3312],
+    ["upstash", 0.2],
+    ["boat", 0.036],
+    ["freestyle", 0.26448],
+    ["tenki", 0.3312],
+    ["superserve", 0.3312],
   ])("prices an offered 4 vCPU / 8 GiB %s machine without storage", (provider, hourly) => {
     expect(priceAtSize(provider, { cpu: 4, memoryGiB: 8 })).toBeCloseTo(hourly);
   });
@@ -139,9 +158,33 @@ describe("published compute-only size comparisons", () => {
 
 it("parses repeatable allocation flags and rejects malformed requests", async () => {
   const { parseV2 } = await import("../src/v2-config.js");
-  const config = parseV2(["--track", "same-spec", "--size", "upstash=medium", "--size", "boxd=4:16384", "--size", "tenki=4:8192:5", "--template", "e2b=id", "--template", "daytona=daytona-large"]);
-  expect(config).toMatchObject({track: "same-spec", size: {upstash: "medium", boxd: {cpu: 4, memoryMb: 16384}, tenki: {cpu: 4, memoryMb: 8192, diskGb: 5}}, template: {e2b: "id", daytona: "daytona-large"}});
+
+  const config = parseV2([
+    "--track",
+    "same-spec",
+    "--size",
+    "upstash=medium",
+    "--size",
+    "boxd=4:16384",
+    "--size",
+    "tenki=4:8192:5",
+    "--template",
+    "e2b=id",
+    "--template",
+    "daytona=daytona-large",
+  ]);
+
+  expect(config).toMatchObject({
+    track: "same-spec",
+    size: {
+      upstash: "medium",
+      boxd: { cpu: 4, memoryMb: 16384 },
+      tenki: { cpu: 4, memoryMb: 8192, diskGb: 5 },
+    },
+    template: { e2b: "id", daytona: "daytona-large" },
+  });
   expect(parseV2([]).track).toBe("default");
+
   for (const value of ["x=4:0", "x=4:8192:0", "x=4:8192:5:6", "x=huge", "x=4:", "=medium"])
     expect(() => parseV2(["--size", value])).toThrow();
   expect(() => parseV2(["--track", "mixed"])).toThrow();
@@ -150,25 +193,67 @@ it("parses repeatable allocation flags and rejects malformed requests", async ()
 it("maps template flags to native factory options", async () => {
   const { loadProvider } = await import("../src/providers.js");
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
-  for (const [name, key] of [["e2b", "template"], ["daytona", "snapshot"], ["freestyle", "snapshotId"], ["tenki", "image"], ["superserve", "template"]]) {
+
+  for (const [name, key] of [
+    ["e2b", "template"],
+    ["daytona", "snapshot"],
+    ["freestyle", "snapshotId"],
+    ["tenki", "image"],
+    ["superserve", "template"],
+  ]) {
     if (!name || !key) throw new Error("Missing test mapping");
     const seen: unknown[] = [];
-    const env = {E2B_API_KEY: "fixture", DAYTONA_API_KEY: "fixture", FREESTYLE_API_KEY: "fixture", TENKI_API_KEY: "fixture", SUPERSERVE_API_KEY: "fixture"};
-    await loadProvider(name, env, async () => ({[name]: (options: unknown) => {seen.push(options); return memory();}}), {template: {[name]: "requested"}, product: {}});
-    expect(seen).toEqual([{[key]: "requested"}]);
+
+    const env = {
+      E2B_API_KEY: "fixture",
+      DAYTONA_API_KEY: "fixture",
+      FREESTYLE_API_KEY: "fixture",
+      TENKI_API_KEY: "fixture",
+      SUPERSERVE_API_KEY: "fixture",
+    };
+
+    await loadProvider(
+      name,
+      env,
+      async () => ({
+        [name]: (options: unknown) => {
+          seen.push(options);
+
+          return memory();
+        },
+      }),
+      { template: { [name]: "requested" }, product: {} },
+    );
+    expect(seen).toEqual([{ [key]: "requested" }]);
   }
 });
+
 it("maps --product to native factory options and rejects unknown products", async () => {
   const { loadProvider } = await import("../src/providers.js");
   const { parseV2 } = await import("../src/v2-config.js");
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
-  expect(parseV2(["--product", "upstash=ephemeral"]).product).toEqual({upstash: "ephemeral"});
+  expect(parseV2(["--product", "upstash=ephemeral"]).product).toEqual({ upstash: "ephemeral" });
   expect(parseV2([]).product).toEqual({});
   expect(() => parseV2(["--product", "upstash=lambda"])).toThrow(/upstash has no lambda product/);
   expect(() => parseV2(["--product", "e2b=ephemeral"])).toThrow(/e2b has no ephemeral product/);
-  for (const [product, expected] of [["ephemeral", {ephemeral: true}], ["box", {}]] as const) {
+
+  for (const [product, expected] of [
+    ["ephemeral", { ephemeral: true }],
+    ["box", {}],
+  ] as const) {
     const seen: unknown[] = [];
-    await loadProvider("upstash", {UPSTASH_BOX_API_KEY: "fixture"}, async () => ({upstash: (options: unknown) => {seen.push(options); return memory();}}), {template: {}, product: {upstash: product}});
+    await loadProvider(
+      "upstash",
+      { UPSTASH_BOX_API_KEY: "fixture" },
+      async () => ({
+        upstash: (options: unknown) => {
+          seen.push(options);
+
+          return memory();
+        },
+      }),
+      { template: {}, product: { upstash: product } },
+    );
     expect(seen).toEqual([expected]);
   }
 });

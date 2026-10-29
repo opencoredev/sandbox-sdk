@@ -13,6 +13,7 @@ const ready = (): ReadyProvider => ({
   region: null,
   provider: memory(),
 });
+
 describe("nearest-rank statistics", () => {
   it("matches a hand-worked distribution, without sorting the input", () => {
     const samples = [5, 1, 4, 2, 3];
@@ -52,13 +53,16 @@ describe("nearest-rank statistics", () => {
     expect(() => statistics([NaN])).toThrow("finite");
   });
 });
+
 describe("provider skip policy", () => {
   it("never imports cloud SDKs when required credentials are absent", async () => {
     let imports = 0;
+
     const importer = async () => {
       imports++;
       throw new Error("Should not import");
     };
+
     for (const name of ["e2b", "vercel", "daytona"])
       expect(await loadProvider(name, {}, importer)).toMatchObject({
         kind: "skipped",
@@ -104,6 +108,7 @@ describe("provider skip policy", () => {
     ).toMatchObject({ kind: "skipped", note: expect.stringContaining("credential policy") });
   });
 });
+
 describe("safety", () => {
   it("counts all cloud creations including warmups before running", () => {
     const providers = [{ ...ready(), name: "e2b", cloud: true }, ready()];
@@ -125,6 +130,7 @@ describe("safety", () => {
   it("bounds active workers and aborts timed-out actions", async () => {
     let active = 0,
       peak = 0;
+
     await pool(7, 2, async () => {
       active++;
       peak = Math.max(peak, active);
@@ -156,10 +162,12 @@ describe("safety", () => {
   });
   it("excludes warmups and skips fake HTTP without counting failures", async () => {
     const loaded = ready();
+
     const report = await measureProvider(
       loaded,
       parseConfig(["--runs", "2", "--warmup", "1", "--concurrency", "2"]),
     );
+
     expect(report.metrics.find((metric) => metric.scenario === "cold")?.stats.count).toBe(2);
     expect(
       report.metrics.find((metric) => metric.scenario === "preview-first-byte")?.skipped,
@@ -172,10 +180,12 @@ describe("safety", () => {
     const original = loaded.provider.exec;
     loaded.provider.exec = (id, input) =>
       input.command === "true" ? new Promise(() => {}) : original(id, input);
+
     const report = await measureProvider(
       loaded,
       parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "100"]),
     );
+
     expect(report.metrics.find((metric) => metric.scenario === "cold")?.failures[0]).toContain(
       "timed out",
     );
@@ -190,6 +200,7 @@ describe("safety", () => {
       if (++attempts === 1) throw new Error("Temporary delete failure");
       await original(id);
     };
+
     const report = await measureProvider(loaded, parseConfig(["--runs", "1", "--warmup", "0"]));
     expect(attempts).toBe(2);
     expect(report.metrics.find((metric) => metric.scenario === "destroy")?.failures).toHaveLength(
@@ -210,15 +221,19 @@ describe("late resources", () => {
       await new Promise((resolve) => setTimeout(resolve, 120));
       const info = await originalCreate({ ...input, signal: undefined });
       id = info.id;
+
       return info;
     };
+
     loaded.provider.destroy = async () => {
       throw new Error("Delete unavailable");
     };
+
     const report = await measureProvider(
       loaded,
       parseConfig(["--runs", "2", "--warmup", "0", "--timeout-ms", "50"]),
     );
+
     expect(id).not.toBe("");
     expect(report.cleanupFailures.join(" ")).toContain(id);
     expect((await loaded.provider.list({})).map((info) => info.id)).toEqual([id]);
@@ -227,12 +242,15 @@ describe("late resources", () => {
   it("drains timed-out writes before releasing a concurrency slot or measuring CPU", async () => {
     const loaded = ready();
     const original = loaded.provider.files.write;
+
     let active = 0,
       peak = 0;
+
     loaded.provider.files.write = async (id, path, bytes) => {
       if (!path.endsWith("bench-1024.bin")) return original(id, path, bytes);
       active++;
       peak = Math.max(active, peak);
+
       try {
         await new Promise((resolve) => setTimeout(resolve, 120));
         await original(id, path, bytes);
@@ -240,10 +258,12 @@ describe("late resources", () => {
         active--;
       }
     };
+
     const report = await measureProvider(
       loaded,
       parseConfig(["--runs", "3", "--warmup", "0", "--timeout-ms", "50"]),
     );
+
     expect(peak).toBe(1);
     expect(active).toBe(0);
     expect(report.metrics.find((metric) => metric.scenario === "files-1kb")?.failures).toHaveLength(
@@ -255,11 +275,14 @@ describe("late resources", () => {
   it("disposes a CPU fixture that arrives after its setup deadline", async () => {
     const { overheadHooks } = await import("../src/overhead.js");
     const original = overheadHooks.memory;
+
     let acquired = false,
       disposed = false;
+
     overheadHooks.memory = async () => {
       await new Promise((resolve) => setTimeout(resolve, 120));
       acquired = true;
+
       return {
         sdkCall: async () => {},
         rawCall: async () => {},
@@ -268,11 +291,13 @@ describe("late resources", () => {
         },
       };
     };
+
     try {
       const report = await measureProvider(
         ready(),
         parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "50"]),
       );
+
       expect(acquired).toBe(true);
       expect(disposed).toBe(true);
       expect(report.metrics.find((metric) => metric.scenario === "sdk-cpu")?.failures).toHaveLength(
@@ -288,28 +313,67 @@ describe("late resources", () => {
 
 it("omits unsupported lifetime options from Vercel benchmark creation", async () => {
   const base = memory();
-  const loaded: ReadyProvider = { ...ready(), name: "vercel", provider: { ...base, async create(input) {
-    if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) throw new Error("Unsupported lifetime");
-    return base.create(input);
-  } } };
-  const report = await measureProvider(loaded, parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "1000"]));
-  expect(report.metrics.find(metric => metric.scenario === "cold")?.stats.count).toBe(1);
+
+  const loaded: ReadyProvider = {
+    ...ready(),
+    name: "vercel",
+    provider: {
+      ...base,
+      async create(input) {
+        if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined)
+          throw new Error("Unsupported lifetime");
+
+        return base.create(input);
+      },
+    },
+  };
+
+  const report = await measureProvider(
+    loaded,
+    parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "1000"]),
+  );
+
+  expect(report.metrics.find((metric) => metric.scenario === "cold")?.stats.count).toBe(1);
 });
 
 it("local benchmarks include mocked native CPU measurements", async () => {
   const loaded: ReadyProvider = { ...ready(), name: "local" };
-  const report = await measureProvider(loaded, parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "2000"]));
+
+  const report = await measureProvider(
+    loaded,
+    parseConfig(["--runs", "1", "--warmup", "0", "--timeout-ms", "2000"]),
+  );
+
   for (const scenario of ["raw-cpu", "sdk-cpu", "overhead-cpu"]) {
-    expect(report.metrics.find(metric => metric.scenario === scenario)?.stats.count).toBe(1);
+    expect(report.metrics.find((metric) => metric.scenario === scenario)?.stats.count).toBe(1);
   }
 });
 
 it("accepts Vercel OIDC without requiring token, team, or project", async () => {
   let imports = 0;
-  const result = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: "oidc-test" }, async () => { imports++; return { vercel: memory }; });
-  expect(result.kind).toBe("ready"); expect(imports).toBe(1);
-  const tokenFirst = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: "oidc-test", VERCEL_TOKEN: "token-test" });
-  expect(tokenFirst).toMatchObject({ kind: "skipped", note: expect.stringContaining("VERCEL_TEAM_ID") });
-  const blank = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: " " }, async () => { throw new Error("Must not import"); });
+
+  const result = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: "oidc-test" }, async () => {
+    imports++;
+
+    return { vercel: memory };
+  });
+
+  expect(result.kind).toBe("ready");
+  expect(imports).toBe(1);
+
+  const tokenFirst = await loadProvider("vercel", {
+    VERCEL_OIDC_TOKEN: "oidc-test",
+    VERCEL_TOKEN: "token-test",
+  });
+
+  expect(tokenFirst).toMatchObject({
+    kind: "skipped",
+    note: expect.stringContaining("VERCEL_TEAM_ID"),
+  });
+
+  const blank = await loadProvider("vercel", { VERCEL_OIDC_TOKEN: " " }, async () => {
+    throw new Error("Must not import");
+  });
+
   expect(blank).toMatchObject({ kind: "skipped", note: expect.stringContaining("VERCEL_TOKEN") });
 });

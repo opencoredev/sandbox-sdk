@@ -1,8 +1,11 @@
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { SandboxError, type ErrorCode } from "../../errors.js";
+
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+
 export const python = (code: string, ...args: string[]) =>
   `python3 -c ${quote(code)} ${args.map(quote).join(" ")}`;
+
 // Linux guests can launch without importing subprocess/tempfile on every run.
 // posix_spawn establishes the session before returning its PID to cancellation.
 export const guestProcess = `def stdin_file():
@@ -59,6 +62,7 @@ class Process:
   if self.code is None: self.code=os.waitstatus_to_exitcode(os.waitpid(self.pid,0)[1])
   return self.code
 `;
+
 export interface Guest {
   name: string;
   raw(command: string): Promise<string>;
@@ -66,11 +70,13 @@ export interface Guest {
   upload(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   read(path: string, range?: { offset: number; length: number }): Promise<Uint8Array>;
 }
+
 const fail = (g: Guest, text: string, code: ErrorCode = "provider") =>
   new SandboxError(`${text}. Check the ${g.name} sandbox before retrying.`, {
     code,
     provider: g.name,
   });
+
 const metadata = `import os,sys,json,stat
 p=sys.argv[1]
 def info(p):
@@ -78,6 +84,7 @@ def info(p):
  return dict(path=p,type='symlink' if stat.S_ISLNK(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'file',size=s.st_size,modifiedAt=s.st_mtime*1000)
 try: print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)] if sys.argv[2]=='list' else info(p)))
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
+
 function file(g: Guest, v: unknown): FileInfo {
   if (
     !v ||
@@ -92,8 +99,10 @@ function file(g: Guest, v: unknown): FileInfo {
     typeof v.modifiedAt !== "number"
   )
     throw fail(g, "Invalid file metadata");
+
   return { path: v.path, type: v.type, size: v.size, modifiedAt: v.modifiedAt };
 }
+
 export function files(
   get: (id: string) => Promise<Guest>,
   safe: <T>(id: string, action: () => Promise<T>) => Promise<T>,
@@ -101,11 +110,14 @@ export function files(
   const info = async (id: string, path: string, op: string) => {
     const g = await get(id);
     const text = await g.raw(python(metadata, path, op));
+
     if (text.trim() === "SDK_FILE_NOT_FOUND")
       throw fail(g, "File does not exist", "file_not_found");
     const value: unknown = JSON.parse(text);
+
     return { g, value };
   };
+
   return {
     writeCreatesParents: true,
     readRange: (id, path, range) => safe(id, async () => (await get(id)).read(path, range)),
@@ -113,6 +125,7 @@ export function files(
     write: (id, path, data, options) =>
       safe(id, async () => {
         const g = await get(id);
+
         try {
           await safe(id, () => g.upload(path, data, options?.mode));
         } catch (error) {
@@ -130,12 +143,15 @@ export function files(
     stat: (id, path) =>
       safe(id, async () => {
         const { g, value } = await info(id, path, "stat");
+
         return file(g, value);
       }),
     list: (id, path) =>
       safe(id, async () => {
         const { g, value } = await info(id, path, "list");
+
         if (!Array.isArray(value)) throw fail(g, "Invalid directory listing");
+
         return value.map((v) => file(g, v));
       }),
     mkdir: (id, path) =>
@@ -147,6 +163,7 @@ export function files(
     remove: (id, path, options) =>
       safe(id, async () => {
         const g = await get(id);
+
         const text = await g.raw(
           python(
             `import os,sys,shutil
@@ -161,8 +178,10 @@ except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`,
             String(options.recursive),
           ),
         );
+
         // Like the other providers, removing a missing path is file_not_found.
-        if (text.trim() === "SDK_FILE_NOT_FOUND") throw fail(g, "File does not exist", "file_not_found");
+        if (text.trim() === "SDK_FILE_NOT_FOUND")
+          throw fail(g, "File does not exist", "file_not_found");
       }),
   };
 }

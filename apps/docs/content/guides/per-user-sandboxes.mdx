@@ -59,7 +59,11 @@ export async function devUrl(userId: string) {
 
   const running = (await box.processes()).find((p) => p.name === "dev" && p.status === "running");
   if (!running) {
-    await box.start("npm run dev -- --port 3000", { name: "dev", cwd: "app", ready: { port: 3000 } });
+    await box.start("npm run dev -- --port 3000", {
+      name: "dev",
+      cwd: "app",
+      ready: { port: 3000 },
+    });
   }
 
   const preview = await box.preview(3000, { waitMs: 10_000 });

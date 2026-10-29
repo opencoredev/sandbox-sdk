@@ -26,6 +26,7 @@ const usage = {
  */
 export function scriptedModel(steps: readonly ScriptedStep[], summary: string): LanguageModel {
   let call = 0;
+
   return new MockLanguageModelV4({
     provider: "scripted",
     modelId: "dry-run",
@@ -33,6 +34,7 @@ export function scriptedModel(steps: readonly ScriptedStep[], summary: string): 
       const step = steps[call];
       const id = `step-${call++}`;
       const narration = step?.say ?? (step ? undefined : summary);
+
       const chunks = [
         { type: "stream-start" as const, warnings: [] },
         ...(narration
@@ -56,6 +58,7 @@ export function scriptedModel(steps: readonly ScriptedStep[], summary: string): 
             : { unified: "stop" as const, raw: undefined },
         },
       ];
+
       return { stream: simulateReadableStream({ chunks, chunkDelayInMs: 20 }) };
     },
   });

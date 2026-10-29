@@ -3,11 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
 
-import {
-  readDitherCell,
-  resolveColor,
-  subscribeToTheme,
-} from "@/lib/dither/color";
+import { readDitherCell, resolveColor, subscribeToTheme } from "@/lib/dither/color";
 import { getThresholdMap } from "@/lib/dither/matrices";
 import type { DitherMatrix, ThresholdMap } from "@/lib/dither/matrices";
 import { useFrameLoop, usePrefersReducedMotion } from "@/lib/dither/motion";
@@ -103,16 +99,20 @@ const uniformSpecs = (uniforms: DitherUniforms): UniformSpec[] =>
     .toSorted()
     .flatMap((name) => {
       const value = uniforms[name];
+
       if (value === undefined) {
         return [];
       }
+
       if (!IDENTIFIER.test(name) || name.startsWith("u_")) {
         // Reserved or invalid names would break the shader; say which.
         console.error(
-          `[dither-core] uniform "${name}" skipped: names must be GLSL identifiers and not start with "u_"`
+          `[dither-core] uniform "${name}" skipped: names must be GLSL identifiers and not start with "u_"`,
         );
+
         return [];
       }
+
       return [{ name, size: uniformSize(value) }];
     });
 
@@ -173,22 +173,25 @@ interface Renderer {
 
 const compile = (gl: WebGLRenderingContext, type: GLenum, source: string) => {
   const shader = gl.createShader(type);
+
   if (!shader) {
     return null;
   }
+
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
+
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     if (!gl.isContextLost()) {
       // A broken `field` is a bug in the calling component; say why.
-      console.error(
-        "[dither-core] shader failed to compile",
-        gl.getShaderInfoLog(shader)
-      );
+      console.error("[dither-core] shader failed to compile", gl.getShaderInfoLog(shader));
     }
+
     gl.deleteShader(shader);
+
     return null;
   }
+
   return shader;
 };
 
@@ -199,43 +202,41 @@ const createTexture = (gl: WebGLRenderingContext) => {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
   return texture;
 };
 
 const createRenderer = (
   gl: WebGLRenderingContext,
   field: string,
-  specs: readonly UniformSpec[]
+  specs: readonly UniformSpec[],
 ): Renderer | null => {
   const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
-  const fragment = compile(
-    gl,
-    gl.FRAGMENT_SHADER,
-    fragmentShader(field, specs)
-  );
+  const fragment = compile(gl, gl.FRAGMENT_SHADER, fragmentShader(field, specs));
   const program = gl.createProgram();
+
   if (!vertex || !fragment || !program) {
     return null;
   }
+
   gl.attachShader(program, vertex);
   gl.attachShader(program, fragment);
   gl.linkProgram(program);
   gl.deleteShader(vertex);
   gl.deleteShader(fragment);
+
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     gl.deleteProgram(program);
+
     return null;
   }
+
   gl.useProgram(program);
 
   // One triangle that covers the viewport.
   const buffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(
-    gl.ARRAY_BUFFER,
-    new Float32Array([-1, -1, 3, -1, -1, 3]),
-    gl.STATIC_DRAW
-  );
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const position = gl.getAttribLocation(program, "a_position");
   gl.enableVertexAttribArray(position);
   gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
@@ -249,6 +250,7 @@ const createRenderer = (
   const uPaletteSize = location("u_paletteSize");
   gl.uniform1i(location("u_thresholds"), 0);
   gl.uniform1i(location("u_palette"), 1);
+
   const custom = specs.map((spec) => ({
     ...spec,
     location: location(spec.name),
@@ -270,11 +272,14 @@ const createRenderer = (
       gl.uniform2f(uResolution, columns, rows);
       gl.uniform1f(uTime, time);
       gl.uniform1f(uLevels, levels);
+
       for (const spec of custom) {
         const value = uniforms[spec.name];
+
         if (value === undefined) {
           continue;
         }
+
         if (typeof value === "number") {
           gl.uniform1f(spec.location, value);
         } else if (value.length === 2) {
@@ -285,6 +290,7 @@ const createRenderer = (
           gl.uniform4f(spec.location, value[0], value[1], value[2], value[3]);
         }
       }
+
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
     setMatrix: (map) => {
@@ -301,19 +307,21 @@ const createRenderer = (
         0,
         gl.LUMINANCE,
         gl.UNSIGNED_BYTE,
-        bytes
+        bytes,
       );
       gl.uniform1f(uMatrixSize, map.size);
       gl.uniform1f(uRankStep, rankStep);
     },
     setPalette: (colors) => {
       const bytes = new Uint8Array(colors.length * 4);
+
       for (const [index, color] of colors.entries()) {
         bytes.set(
           color.map((channel) => Math.round(channel * 255)),
-          index * 4
+          index * 4,
         );
       }
+
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, palette);
       gl.texImage2D(
@@ -325,7 +333,7 @@ const createRenderer = (
         0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        bytes
+        bytes,
       );
       gl.uniform1f(uPaletteSize, colors.length);
     },
@@ -360,11 +368,13 @@ const activate = (slot: ContextSlot, active: boolean) => {
 
 const leastRecent = (candidates: Iterable<ContextSlot>) => {
   let oldest: ContextSlot | null = null;
+
   for (const slot of candidates) {
     if (!oldest || slot.lastSeen < oldest.lastSeen) {
       oldest = slot;
     }
   }
+
   return oldest;
 };
 
@@ -372,15 +382,20 @@ const requestContext = (slot: ContextSlot) => {
   if (slot.active) {
     return;
   }
+
   const live = [...slots].filter((other) => other.active);
+
   if (live.length >= MAX_LIVE_CONTEXTS) {
     const offscreen = live.filter((other) => !other.onScreen);
     const victim = slot.onScreen ? leastRecent(offscreen) : null;
+
     if (!victim) {
       return;
     }
+
     activate(victim, false);
   }
+
   activate(slot, true);
 };
 
@@ -388,11 +403,13 @@ const releaseContext = (slot: ContextSlot) => {
   if (!slot.active) {
     return;
   }
+
   activate(slot, false);
   // A freed context goes to the shader that waited longest, on screen first.
   const waiting = [...slots].filter((other) => other.near && !other.active);
   const onScreen = waiting.filter((other) => other.onScreen);
   const next = leastRecent(onScreen.length > 0 ? onScreen : waiting);
+
   if (next) {
     activate(next, true);
   }
@@ -407,9 +424,11 @@ const useContextSlot = (ref: RefObject<Element | null>): boolean => {
 
   useEffect(() => {
     const el = ref.current;
+
     if (!el) {
       return;
     }
+
     const slot: ContextSlot = {
       active: false,
       lastSeen: 0,
@@ -417,10 +436,13 @@ const useContextSlot = (ref: RefObject<Element | null>): boolean => {
       onScreen: false,
       setActive,
     };
+
     slots.add(slot);
+
     const nearObserver = new IntersectionObserver(
       ([entry]) => {
         slot.near = entry?.isIntersecting ?? false;
+
         if (slot.near) {
           slot.lastSeen = performance.now();
           requestContext(slot);
@@ -428,12 +450,14 @@ const useContextSlot = (ref: RefObject<Element | null>): boolean => {
           releaseContext(slot);
         }
       },
-      { rootMargin: "200px" }
+      { rootMargin: "200px" },
     );
+
     // Coming on screen can take a context from one that is only nearby, and
     // leaving the screen hands it to an on-screen shader that is waiting.
     const screenObserver = new IntersectionObserver(([entry]) => {
       slot.onScreen = entry?.isIntersecting ?? false;
+
       if (slot.onScreen && slot.near) {
         slot.lastSeen = performance.now();
         requestContext(slot);
@@ -441,8 +465,10 @@ const useContextSlot = (ref: RefObject<Element | null>): boolean => {
         releaseContext(slot);
       }
     });
+
     nearObserver.observe(el);
     screenObserver.observe(el);
+
     return () => {
       nearObserver.disconnect();
       screenObserver.disconnect();
@@ -455,10 +481,7 @@ const useContextSlot = (ref: RefObject<Element | null>): boolean => {
   return active;
 };
 
-export interface DitherShaderProps extends Omit<
-  ComponentProps<"div">,
-  "children"
-> {
+export interface DitherShaderProps extends Omit<ComponentProps<"div">, "children"> {
   /**
    * GLSL that defines `float field(vec2 uv, vec2 res, float t)`, returning
    * the tone in [0, 1] for one cell: 0 is paper, 1 is ink. `uv` is the
@@ -499,8 +522,7 @@ export interface DitherShaderProps extends Omit<
 
 const NO_UNIFORMS: DitherUniforms = {};
 
-const clampLevels = (levels: number) =>
-  Math.min(256, Math.max(2, Math.round(levels)));
+const clampLevels = (levels: number) => Math.min(256, Math.max(2, Math.round(levels)));
 
 const CANVAS_CLASS =
   "absolute top-0 left-0 block opacity-100 transition-opacity duration-700 ease-out [image-rendering:pixelated] group-data-[state=fallback]/dither:opacity-0 group-data-[state=fallback]/dither:duration-0 motion-reduce:transition-none";
@@ -530,16 +552,20 @@ export const DitherShader = ({
   ...props
 }: DitherShaderProps) => {
   const rootRef = useRef<HTMLDivElement>(null);
+
   // The root is ours and the caller's: keep both refs pointing at it.
   const setRoot = (node: HTMLDivElement | null) => {
     rootRef.current = node;
+
     if (typeof ref === "function") {
       return ref(node);
     }
+
     if (ref) {
       ref.current = node;
     }
   };
+
   const rendererRef = useRef<Renderer | null>(null);
   const sizeRef = useRef({ columns: 0, rows: 0 });
   const timeRef = useRef(stillTime);
@@ -568,15 +594,18 @@ export const DitherShader = ({
     speed,
     uniforms,
   });
+
   const drawRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     live.current = { levels: resolvedLevels, map, paletteKey, speed, uniforms };
     drawRef.current = () => {
       const renderer = rendererRef.current;
       const { columns, rows } = sizeRef.current;
+
       if (!renderer || columns === 0 || rows === 0) {
         return;
       }
+
       renderer.draw({
         columns,
         levels: live.current.levels,
@@ -606,20 +635,24 @@ export const DitherShader = ({
       } else if (reducedMotion || !hasRunRef.current) {
         timeRef.current = time;
       }
+
       drawRef.current?.();
     },
-    { enabled: animate, fps, stillTime, target: rootRef }
+    { enabled: animate, fps, stillTime, target: rootRef },
   );
 
   // Context, program, size and theme. A fresh canvas per context, so a
   // released context never has to be restored.
   useEffect(() => {
     const root = rootRef.current;
+
     if (!root || !hasContext) {
       return;
     }
+
     const canvas = document.createElement("canvas");
     canvas.className = CANVAS_CLASS;
+
     const gl = canvas.getContext("webgl", {
       alpha: true,
       antialias: false,
@@ -628,15 +661,15 @@ export const DitherShader = ({
       premultipliedAlpha: true,
       stencil: false,
     });
+
     if (!gl) {
       return;
     }
+
     root.append(canvas);
 
     const resolvePalette = () =>
-      live.current.paletteKey
-        .split("|")
-        .map((color) => resolveColor(color, root));
+      live.current.paletteKey.split("|").map((color) => resolveColor(color, root));
 
     const build = () => {
       rendererRef.current?.dispose();
@@ -673,11 +706,13 @@ export const DitherShader = ({
       rendererRef.current?.setPalette(resolvePalette());
       drawRef.current?.();
     };
+
     const onContextLost = (event: Event) => {
       event.preventDefault();
       rendererRef.current = null;
       markFrame(false);
     };
+
     const onContextRestored = () => {
       build();
       drawRef.current?.();
@@ -712,9 +747,10 @@ export const DitherShader = ({
 
   useEffect(() => {
     const root = rootRef.current;
+
     if (root) {
       rendererRef.current?.setPalette(
-        paletteKey.split("|").map((color) => resolveColor(color, root))
+        paletteKey.split("|").map((color) => resolveColor(color, root)),
       );
     }
   }, [paletteKey]);
@@ -733,10 +769,7 @@ export const DitherShader = ({
       ref={setRoot}
       aria-hidden={ariaHidden}
       data-state={state}
-      className={cn(
-        "group/dither pointer-events-none relative overflow-hidden",
-        className
-      )}
+      className={cn("group/dither pointer-events-none relative overflow-hidden", className)}
       {...props}
     >
       <div
@@ -744,10 +777,7 @@ export const DitherShader = ({
         className="absolute inset-0 opacity-0 transition-opacity delay-700 duration-0 group-data-[state=fallback]/dither:opacity-100 group-data-[state=fallback]/dither:delay-0"
       >
         {fallback ?? (
-          <div
-            className="absolute inset-0"
-            style={{ backgroundColor: cssColor(palette[0]) }}
-          />
+          <div className="absolute inset-0" style={{ backgroundColor: cssColor(palette[0]) }} />
         )}
       </div>
     </div>

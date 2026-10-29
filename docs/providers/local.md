@@ -1,6 +1,5 @@
 # Local (Docker) provider
 
-
 Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `createSandbox`. Docker Engine must be running and accessible at `unix:///var/run/docker.sock`. Set `DOCKER_HOST` or `local({ dockerHost })` to another absolute `unix://` socket. Remote TCP engines are unsupported because preview URLs must reach this machine.
 
 The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
@@ -14,7 +13,6 @@ Keys map to SHA-256 container names for Docker-enforced uniqueness. Discovery is
 Exec streams Docker's framed stdout/stderr, closes stdin after the supplied input, and kills the command's process group on timeout or abort. Files transfer through Node exec with base64 encoding, preserving binary bytes; core directory upload/download uses tar. Usage combines core command/output counters with container creation time. No Docker CLI, dockerode dependency, or container-side SDK daemon is required.
 
 Run live verification with `timeout 1200s env SANDBOX_LOCAL_LIVE=1 bunx vitest run packages/sdk/tests/local.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000`. The suite creates labeled containers and removes its containers and snapshot images.
-
 
 Local creation stores the absolute lifetime deadline and idle interval in container labels. A fresh `connectSandbox` (including keyed lookup) checks these settings and destroys an expired container before returning `not_found`. Idle time runs from the last SDK command or file operation; active SDK runs and background process records prevent idle expiry. `reapSandboxes` destroys containers selected by its normal age/label/idle filters. Schedule it to enforce cleanup when no client reconnects. These timers are client/reaper enforced: Docker does not stop an unattended container at its deadline, and an existing handle does not check the deadline before every operation. Paused containers defer idle checking until running again; absolute lifetime still applies. Use a scheduled reaper when you need cleanup after disconnecting.
 

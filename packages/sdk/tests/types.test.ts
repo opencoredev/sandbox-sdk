@@ -2,8 +2,10 @@ import { test, expect } from "vitest";
 import { createSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
+
 test("capability methods are absent from unsupported provider types", async () => {
   const box = await createSandbox(memory());
+
   // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
   if (false) {
     // @ts-expect-error memory has no pause capability
@@ -13,19 +15,48 @@ test("capability methods are absent from unsupported provider types", async () =
     // @ts-expect-error memory has no terminal capability
     await box.terminal({ cols: 80, rows: 24 });
   }
-  expect("pause" in box).toBe(false); await box.destroy();
+
+  expect("pause" in box).toBe(false);
+  await box.destroy();
 });
+
 test("native types and supported capability methods remain precise", async () => {
-  const base = memory(); let paused = false;
-  const provider: Provider<{ typed: true }, "pause"> = { ...base, capabilities: new Set(["pause"]), native: () => ({ typed: true }), async pause() { paused = true; }, async resume() { paused = false; } };
-  const box = await createSandbox(provider); const typed: true = box.native.typed; expect(typed).toBe(true);
-  await box.pause(); expect(paused).toBe(true); await box.resume(); expect(paused).toBe(false); await box.destroy();
+  const base = memory();
+  let paused = false;
+
+  const provider: Provider<{ typed: true }, "pause"> = {
+    ...base,
+    capabilities: new Set(["pause"]),
+    native: () => ({ typed: true }),
+    async pause() {
+      paused = true;
+    },
+    async resume() {
+      paused = false;
+    },
+  };
+
+  const box = await createSandbox(provider);
+  const typed: true = box.native.typed;
+  expect(typed).toBe(true);
+  await box.pause();
+  expect(paused).toBe(true);
+  await box.resume();
+  expect(paused).toBe(false);
+  await box.destroy();
 });
 
 test("Vercel native sandbox is fully typed and terminal remains absent", () => {
   type VercelProvider = ReturnType<typeof import("../src/providers/vercel/index.js").vercel>;
+
   type Native = ReturnType<VercelProvider["native"]>;
-  const check = (native: Native) => { const value: import("@vercel/sandbox").Sandbox = native; return value; };
+
+  const check = (native: Native) => {
+    const value: import("@vercel/sandbox").Sandbox = native;
+
+    return value;
+  };
+
   expect(check).toBeTypeOf("function");
 });
 
@@ -33,13 +64,20 @@ test("a provider chosen at runtime exposes capability methods only after hasCapa
   const { hasCapability } = await import("../src/index.js");
   const providers: Record<string, () => Provider> = { memory };
   const box = await createSandbox(providers.memory!());
+
   // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
   if (false) {
     // @ts-expect-error pause may be missing on a runtime-chosen provider
     await box.pause();
   }
+
   if (hasCapability(box, "pause")) await box.pause();
-  if (hasCapability(box, "snapshot")) { const snap: { id: string } = await box.snapshot(); expect(snap.id).toBeTypeOf("string"); }
+
+  if (hasCapability(box, "snapshot")) {
+    const snap: { id: string } = await box.snapshot();
+    expect(snap.id).toBeTypeOf("string");
+  }
+
   expect(hasCapability(box, "pause")).toBe(false);
   expect(hasCapability(box, "network-policy")).toBe(true);
   await box.destroy();
@@ -54,14 +92,16 @@ test("start derives a stable process name when none is given", async () => {
   const box = await createSandbox(memory());
   const proc = await box.start("sleep 30");
   expect(proc.name).toBe(defaultProcessName("sleep 30"));
-  expect((await box.processes()).map(info => info.name)).toContain(proc.name);
-  await proc.stop(); await box.destroy();
+  expect((await box.processes()).map((info) => info.name)).toContain(proc.name);
+  await proc.stop();
+  await box.destroy();
 });
 
 test("hasCapability with a union capability narrows nothing it did not check", async () => {
   const { hasCapability } = await import("../src/index.js");
   const box = await createSandbox(memory() as Provider);
   const capability = "network-policy" as import("../src/provider.js").Capability;
+
   if (hasCapability(box, capability)) {
     // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
     if (false) {
@@ -69,6 +109,7 @@ test("hasCapability with a union capability narrows nothing it did not check", a
       await box.terminal({ cols: 80, rows: 24 });
     }
   }
+
   await box.destroy();
 });
 
@@ -77,11 +118,13 @@ test("a union of concrete providers keeps each provider's capabilities", async (
   const { hasCapability } = await import("../src/index.js");
   const pick = (useLocal: boolean) => (useLocal ? local() : memory());
   const box = await createSandbox(pick(false));
+
   // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
   if (false) {
     // @ts-expect-error memory in the union has no pause, so pause is not guaranteed
     await box.pause();
   }
+
   if (hasCapability(box, "pause")) await box.pause();
   expect(box.provider).toBe("memory");
   await box.destroy();

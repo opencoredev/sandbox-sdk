@@ -10,7 +10,9 @@ import type { ProviderId } from "@/lib/providers";
  * `bun run data` after `bun bench merge`.
  */
 type RawProvider = (typeof raw.providers)[number];
+
 type RawMetric = (typeof raw.metrics)[number];
+
 type RawValue = RawMetric["values"][number];
 
 export type Provider = Omit<RawProvider, "id" | "pauseSplit"> & {
@@ -18,7 +20,9 @@ export type Provider = Omit<RawProvider, "id" | "pauseSplit"> & {
   // Null in data generated before pause and resume were recorded apart (bench/src/site-data.ts pauseSplit).
   pauseSplit: { pause: number; resume: number; n: number } | null;
 };
+
 export type MetricValue = Omit<RawValue, "provider"> & { provider: ProviderId };
+
 export type Metric = Omit<RawMetric, "values" | "unit" | "better"> & {
   // The generator only writes these unit and direction strings (bench/src/site-data.ts).
   unit: Unit;
@@ -26,9 +30,12 @@ export type Metric = Omit<RawMetric, "values" | "unit" | "better"> & {
   values: MetricValue[];
 };
 
-const hasProviderId = <T extends { id: string }>(p: T): p is T & { id: ProviderId } => isProviderId(p.id);
+const hasProviderId = <T extends { id: string }>(p: T): p is T & { id: ProviderId } =>
+  isProviderId(p.id);
+
 const hasProvider = <T extends { provider: string }>(v: T): v is T & { provider: ProviderId } =>
   isProviderId(v.provider);
+
 const isUnit = (u: string): u is Unit => ["s", "ms", "ops/s", "MB/s", "IOPS"].includes(u);
 const isBetter = (b: string): b is Metric["better"] => b === "lower" || b === "higher";
 
@@ -42,7 +49,9 @@ const metrics: Metric[] = raw.metrics.flatMap((m) =>
 
 export function metric(id: string): Metric {
   const found = metrics.find((m) => m.id === id);
+
   if (!found) throw new Error(`Unknown metric ${id}`);
+
   return found;
 }
 

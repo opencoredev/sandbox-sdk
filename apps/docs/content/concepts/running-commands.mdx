@@ -22,17 +22,17 @@ if (!result.ok) {
 
 ## What a result contains
 
-| Field | Meaning |
-| --- | --- |
-| `ok` | `true` when `exitCode` is 0 |
-| `exitCode` | The exit code, or `null` if the command was killed |
-| `stdout`, `stderr` | Each stream on its own |
-| `output` | stdout and stderr interleaved in the order they arrived |
-| `durationMs` | Wall time of the command |
-| `truncated` | `true` if output passed `maxOutputBytes` |
-| `timedOut` | `true` if `timeoutMs` ran out |
-| `cwd` | The absolute directory the command ran in |
-| `command` | The command string |
+| Field              | Meaning                                                 |
+| ------------------ | ------------------------------------------------------- |
+| `ok`               | `true` when `exitCode` is 0                             |
+| `exitCode`         | The exit code, or `null` if the command was killed      |
+| `stdout`, `stderr` | Each stream on its own                                  |
+| `output`           | stdout and stderr interleaved in the order they arrived |
+| `durationMs`       | Wall time of the command                                |
+| `truncated`        | `true` if output passed `maxOutputBytes`                |
+| `timedOut`         | `true` if `timeoutMs` ran out                           |
+| `cwd`              | The absolute directory the command ran in               |
+| `command`          | The command string                                      |
 
 Show `output` to people and models. It reads like a terminal.
 

@@ -27,13 +27,17 @@ const total = (c: Column) => c.segments.reduce((sum, s) => sum + s.value, 0);
 
 /** An outlier this many times the runner-up would flatten every other column. */
 const OUTLIER = 4;
+
 /** When one is found, the axis ends this far above the runner-up instead. */
 const HEADROOM = 1.3;
 
 /** The value at the end of the axis: the largest total, or less when that total is an outlier. */
 function axisMax(columns: readonly Column[]) {
   const [first = 0, second = 0] = columns.map(total).sort((a, b) => b - a);
-  return second > 0 && first > OUTLIER * second ? second * HEADROOM : Math.max(first, Number.EPSILON);
+
+  return second > 0 && first > OUTLIER * second
+    ? second * HEADROOM
+    : Math.max(first, Number.EPSILON);
 }
 
 interface Bar {
@@ -51,9 +55,11 @@ interface Bar {
  */
 function layout(column: Column, max: number): Bar {
   const shares = column.segments.map((s) => s.value / max);
+
   if (total(column) <= max) return { shares, length: total(column) / max, broken: null };
   const broken = shares.indexOf(Math.max(...shares));
   const others = shares.reduce((sum, s, i) => (i === broken ? sum : sum + s), 0);
+
   return {
     shares: shares.map((s, i) => (i === broken ? Math.max(1 - others, 0.25) : s)),
     length: 1,
@@ -88,9 +94,19 @@ function Break({ color, along }: { color: string; along: "x" | "y" }) {
 }
 
 const Mark = ({ column }: { column: Column }) =>
-  column.mark === undefined ? null : <sup className="ml-px text-[9px] text-[var(--muted)]">{column.mark}</sup>;
+  column.mark === undefined ? null : (
+    <sup className="ml-px text-[9px] text-[var(--muted)]">{column.mark}</sup>
+  );
 
-const Card = ({ column, className, style }: { column: Column; className: string; style?: CSSProperties }) => (
+const Card = ({
+  column,
+  className,
+  style,
+}: {
+  column: Column;
+  className: string;
+  style?: CSSProperties;
+}) => (
   <div
     role="presentation"
     style={style}
@@ -119,9 +135,15 @@ function Vertical({ columns, max }: { columns: readonly Column[]; max: number })
         {columns.map((column, index) => {
           const bar = layout(column, max);
           const color = providerColor(column.provider);
+
           // Keep the hover card inside the chart: edge columns anchor it inward.
           const anchor =
-            index < 2 ? "left-0" : index >= columns.length - 2 ? "right-0" : "left-1/2 -translate-x-1/2";
+            index < 2
+              ? "left-0"
+              : index >= columns.length - 2
+                ? "right-0"
+                : "left-1/2 -translate-x-1/2";
+
           return (
             <div
               key={column.provider}
@@ -141,16 +163,27 @@ function Vertical({ columns, max }: { columns: readonly Column[]; max: number })
                     key={i}
                     aria-hidden
                     className="relative w-full"
-                    style={{ height: `${((bar.shares[i] ?? 0) / bar.length) * 100}%`, ...segmentStyle(s, "top", 34) }}
+                    style={{
+                      height: `${((bar.shares[i] ?? 0) / bar.length) * 100}%`,
+                      ...segmentStyle(s, "top", 34),
+                    }}
                   >
                     {bar.broken === i ? <Break color={s.color} along="y" /> : null}
                   </div>
                 ))}
                 {column.segments.length === 1 ? (
-                  <div aria-hidden className="absolute inset-x-0 top-0 h-[3px]" style={{ backgroundColor: color }} />
+                  <div
+                    aria-hidden
+                    className="absolute inset-x-0 top-0 h-[3px]"
+                    style={{ backgroundColor: color }}
+                  />
                 ) : null}
               </div>
-              <Card column={column} className={anchor} style={{ bottom: `calc(${bar.length * 100}% + 1.9rem)` }} />
+              <Card
+                column={column}
+                className={anchor}
+                style={{ bottom: `calc(${bar.length * 100}% + 1.9rem)` }}
+              />
               <span
                 aria-hidden
                 className="pointer-events-none absolute inset-x-1 -bottom-px h-px opacity-0 group-focus-visible:opacity-100"
@@ -183,11 +216,13 @@ function Vertical({ columns, max }: { columns: readonly Column[]; max: number })
 function Horizontal({ columns, max }: { columns: readonly Column[]; max: number }) {
   // Values sit in one right-aligned column wide enough for the longest label.
   const valueWidth = `${Math.max(...columns.map((c) => c.label.length), 3) + 0.5}ch`;
+
   return (
     <div className="flex flex-col gap-1">
       {columns.map((column) => {
         const bar = layout(column, max);
         const color = providerColor(column.provider);
+
         return (
           <div
             key={column.provider}
@@ -195,27 +230,44 @@ function Horizontal({ columns, max }: { columns: readonly Column[]; max: number 
             aria-label={describe(column, bar)}
             className="group relative grid h-8 grid-cols-[5.25rem_1fr_auto] items-center gap-x-2.5 rounded-[3px] outline-none focus:bg-[var(--band)] sm:h-[22px] sm:grid-cols-[4.75rem_1fr_auto]"
           >
-            <span aria-hidden className="truncate text-[13px] leading-none font-medium sm:text-[12px]" style={{ color }}>
+            <span
+              aria-hidden
+              className="truncate text-[13px] leading-none font-medium sm:text-[12px]"
+              style={{ color }}
+            >
               {providerName(column.provider)}
               <Mark column={column} />
             </span>
-            <div aria-hidden className="relative flex h-3.5 items-stretch border-l border-[var(--axis)] sm:h-3">
+            <div
+              aria-hidden
+              className="relative flex h-3.5 items-stretch border-l border-[var(--axis)] sm:h-3"
+            >
               <div className="relative flex" style={{ width: `${bar.length * 100}%`, minWidth: 2 }}>
                 {column.segments.map((s, i) => (
-                  <div key={i} className="relative h-full" style={{ width: `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}>
+                  <div
+                    key={i}
+                    className="relative h-full"
+                    style={{ width: `${((bar.shares[i] ?? 0) / bar.length) * 100}%` }}
+                  >
                     {/* Phones get a solid bar: at this size the dither fade reads as a dotted line. */}
                     <div
                       className={`absolute inset-0 ${s.variant === "gradient" ? "hidden sm:block" : ""}`}
                       style={segmentStyle(s, "right", 20)}
                     />
                     {s.variant === "gradient" ? (
-                      <div className="absolute inset-0 rounded-r-[2px] sm:hidden" style={{ backgroundColor: s.color }} />
+                      <div
+                        className="absolute inset-0 rounded-r-[2px] sm:hidden"
+                        style={{ backgroundColor: s.color }}
+                      />
                     ) : null}
                     {bar.broken === i ? <Break color={s.color} along="x" /> : null}
                   </div>
                 ))}
                 {column.segments.length === 1 ? (
-                  <div className="absolute inset-y-0 right-0 w-[3px]" style={{ backgroundColor: color }} />
+                  <div
+                    className="absolute inset-y-0 right-0 w-[3px]"
+                    style={{ backgroundColor: color }}
+                  />
                 ) : null}
               </div>
             </div>
@@ -250,8 +302,12 @@ export function Columns({
 }) {
   const max = axisMax(columns);
   const cut = columns.some((c) => total(c) > max);
+
   return (
-    <figure aria-label={cut ? `${label}. One bar is shortened to fit and marked with a break.` : label} className="relative">
+    <figure
+      aria-label={cut ? `${label}. One bar is shortened to fit and marked with a break.` : label}
+      className="relative"
+    >
       {compact ? (
         <Horizontal columns={columns} max={max} />
       ) : (

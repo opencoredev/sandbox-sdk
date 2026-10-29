@@ -4,18 +4,28 @@ import type { ConfigV2 } from "./v2-config.js";
 
 export function templateOptions(name: string, template: string | undefined) {
   if (template === undefined) return {};
+
   const keys: Record<string, string> = {
-    e2b: "template", superserve: "template", daytona: "snapshot",
-    freestyle: "snapshotId", tenki: "image", boxd: "image", local: "image",
+    e2b: "template",
+    superserve: "template",
+    daytona: "snapshot",
+    freestyle: "snapshotId",
+    tenki: "image",
+    boxd: "image",
+    local: "image",
   };
+
   const key = keys[name];
+
   if (!key) throw new Error(`${name} has no template/image factory option`);
+
   return { [key]: template };
 }
 
 /** Factory options selecting a native product; validated by parseV2. */
 export function productOptions(name: string, product: string | undefined) {
   if (product === undefined || product === "box") return {};
+
   if (name === "upstash" && product === "ephemeral") return { ephemeral: true };
   throw new Error(`${name} has no ${product} product`);
 }
@@ -27,12 +37,15 @@ export interface ReadyProvider {
   region: string | null;
   provider: Provider;
 }
+
 export interface SkippedProvider {
   kind: "skipped";
   name: string;
   note: string;
 }
+
 export type LoadedProvider = ReadyProvider | SkippedProvider;
+
 const credentials: Record<string, string[]> = {
   superserve: ["SUPERSERVE_API_KEY"],
   e2b: ["E2B_API_KEY"],
@@ -45,11 +58,13 @@ const credentials: Record<string, string[]> = {
   boxd: ["BOXD_API_KEY"],
   freestyle: ["FREESTYLE_API_KEY"],
 };
+
 const regionKeys: Record<string, string> = {
   e2b: "E2B_REGION",
   vercel: "VERCEL_REGION",
   daytona: "DAYTONA_TARGET",
 };
+
 const providerSchema: z.ZodType<Provider> = z
   .object({
     name: z.string(),
@@ -75,16 +90,22 @@ const providerSchema: z.ZodType<Provider> = z
     native: z.custom<Provider["native"]>((value) => typeof value === "function"),
   })
   .passthrough();
+
 // Preserve class identity / method receivers after validating the adapter boundary.
 function parseProvider(value: unknown): Provider {
   providerSchema.parse(value);
+
   return value as Provider;
 }
+
 export function missingCredentials(name: string, env: NodeJS.ProcessEnv): string[] {
   if (name === "tenki" && env.TENKI_AUTH_TOKEN?.trim()) return [];
+
   if (name === "vercel" && env.VERCEL_OIDC_TOKEN?.trim() && !env.VERCEL_TOKEN) return [];
+
   return (credentials[name] ?? []).filter((key) => !env[key]?.trim());
 }
+
 export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -98,9 +119,11 @@ export async function loadProvider(
       note: "Unknown provider; add its credential policy before enabling it",
     };
   const missing = missingCredentials(name, env);
+
   if (missing.length)
     return { kind: "skipped", name, note: `Missing credentials: ${missing.join(", ")}` };
   let module: unknown;
+
   try {
     module = await importer(`@opencoredev/sandbox-sdk/${name}`);
   } catch {
@@ -110,15 +133,19 @@ export async function loadProvider(
       note: "Provider entry point unavailable; build/install the adapter and its native SDK",
     };
   }
+
   const exports = z.record(z.string(), z.unknown()).parse(module);
   const factory = exports[name];
+
   if (typeof factory !== "function")
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
+
   // Factory failures are real configuration errors, not missing-provider skips.
   const value: unknown = await factory({
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
   });
+
   return {
     kind: "ready",
     name,
@@ -127,6 +154,7 @@ export async function loadProvider(
     provider: parseProvider(value),
   };
 }
+
 export function checkBudget(
   providers: LoadedProvider[],
   config: { runs: number; warmup: number; "max-sandboxes": number; yes: boolean },
@@ -134,9 +162,11 @@ export function checkBudget(
   const planned =
     providers.filter((provider) => provider.kind === "ready" && provider.cloud).length *
     (config.runs + config.warmup);
+
   if (planned > config["max-sandboxes"] && !config.yes)
     throw new Error(
       `Refusing ${planned} cloud sandboxes (including warmup); budget is ${config["max-sandboxes"]}. Raise --max-sandboxes or pass --yes.`,
     );
+
   return planned;
 }

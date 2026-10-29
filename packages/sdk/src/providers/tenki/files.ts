@@ -5,6 +5,7 @@ import { raw } from "./exec.js";
 import { workspaceSetup } from "./ready.js";
 import { failure, tenkiError } from "./errors.js";
 import { deadline } from "./deadline.js";
+
 // /workspace is the SDK's own link into durable disk. Report its target, a
 // directory, as the native path does, so stat never depends on cache state.
 const script = `import os,sys,json,stat
@@ -36,6 +37,7 @@ try:
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')
 except OSError: print('SDK_FILE_ERROR')
 `;
+
 function file(value: unknown): FileInfo {
   if (
     !value ||
@@ -51,29 +53,32 @@ function file(value: unknown): FileInfo {
   )
     throw failure("Invalid file metadata");
   const type = value.type;
+
   if (type !== "file" && type !== "directory" && type !== "symlink")
     throw failure("Invalid file type");
+
   return { path: value.path, type, size: value.size, modifiedAt: value.modifiedAt };
 }
+
 type NativeFile = Awaited<ReturnType<Session["fs"]["stat"]>>;
+
 // Go's os.ModeSymlink. Native list entries carry the mode but omit isSymlink.
 const symlinkMode = 1 << 27;
+
 function nativeInfo(path: string, value: NativeFile): FileInfo {
   const seconds = value.modifiedUnixNs / 1_000_000_000n;
   const nanos = value.modifiedUnixNs - seconds * 1_000_000_000n;
+
   return {
     path,
     type:
-      value.isSymlink || value.mode & symlinkMode
-        ? "symlink"
-        : value.isDir
-          ? "directory"
-          : "file",
+      value.isSymlink || value.mode & symlinkMode ? "symlink" : value.isDir ? "directory" : "file",
     size: Number(value.size),
     // Python's st_mtime is seconds + nanoseconds * 1e-9; match it exactly.
     modifiedAt: (Number(seconds) + Number(nanos) * 1e-9) * 1000,
   };
 }
+
 export function files(
   get: (id: string) => Promise<Session>,
   safe: <T>(id: string, action: () => Promise<T>) => Promise<T>,
@@ -83,43 +88,51 @@ export function files(
   // `extra` is the mode in octal for write and "true"/"false" for remove.
   const call = (id: string, op: string, path: string, data?: Uint8Array, extra = "") =>
     safe(id, async () => {
-      const result = await raw(
-        await get(id),
-        ["python3", "-c", script, op, path, extra],
-        data,
-      );
+      const result = await raw(await get(id), ["python3", "-c", script, op, path, extra], data);
+
       if (result.trim() === "SDK_FILE_NOT_FOUND")
         throw failure("File does not exist", "file_not_found");
+
       if (result.trim() === "SDK_FILE_ERROR")
         throw failure(
           "File operation failed; check permissions and recursive removal",
           "invalid_argument",
         );
+
       return result;
     });
+
   function nativePath(box: Session, path: string) {
     const normalized = posix.normalize(path);
+
     if (path !== normalized) return undefined;
+
     if (normalized === "/workspace" || normalized.startsWith("/workspace/")) {
       const root = workspaceRoot(box);
+
       if (!root) return undefined;
       const resolved = posix.join(root, normalized.slice(10));
+
       return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
     }
+
     return normalized.startsWith("/home/tenki/") ? normalized : undefined;
   }
+
   async function transfer<T>(
     operation: "read" | "write",
     action: () => Promise<T>,
     fallback: () => Promise<T>,
   ): Promise<T> {
     const pending = Promise.resolve().then(action);
+
     try {
       return await deadline(() => pending, 30_000);
     } catch (error) {
       // Native APIs reject symlinks escaping /home/tenki. Preserve arbitrary
       // guest paths with the privileged transport in that case.
       const code = tenkiError(error).code;
+
       if (operation === "write" && code === "timeout") {
         // Session.writeFile has no AbortSignal. Keep this mutation attached to
         // the caller's promise until it settles, so drains cannot miss a late write.
@@ -129,11 +142,13 @@ export function files(
           "outcome_unknown",
         );
       }
+
       if (code === "auth" || code === "invalid_argument" || code === "unsupported")
         return fallback();
       throw error;
     }
   }
+
   // Native metadata skips the guest Python start. It reports a missing path the
   // same way the guest does; any other native error (path escapes, non-directories,
   // timeouts) differs, so the guest transport answers instead.
@@ -146,23 +161,29 @@ export function files(
     safe(id, async () => {
       const box = await get(id);
       const resolved = nativePath(box, path);
+
       if (!resolved) return fallback();
+
       try {
         return await deadline(() => action(box, resolved), 30_000);
       } catch (error) {
         if (tenkiError(error).code === "file_not_found")
           throw failure("File does not exist", "file_not_found");
+
         return fallback();
       }
     });
+
   return {
     writeCreatesParents: true,
     writeSupportsMode: true,
     read: (id, path) =>
       safe(id, async () => {
         const resolved = nativePath(await get(id), path);
+
         const fallback = async () =>
           new Uint8Array(Buffer.from(await call(id, "read", path), "base64"));
+
         return resolved
           ? transfer("read", async () => (await get(id)).readFile(resolved), fallback)
           : fallback();
@@ -171,20 +192,28 @@ export function files(
       safe(id, async () => {
         const resolved = nativePath(await get(id), path);
         const mode = options?.mode;
+
         const fallback = async () => {
           await call(id, "write", path, data, mode === undefined ? "" : mode.toString(8));
         };
+
         // writeFile has no mode; the streaming write sets it on the file it writes.
         const native = async () => {
           const box = await get(id);
+
           if (mode === undefined) return box.writeFile(resolved ?? path, data);
-          await box.writeFileStream(resolved ?? path, new Blob([new Uint8Array(data)]).stream(), { mode, truncate: true });
+          await box.writeFileStream(resolved ?? path, new Blob([new Uint8Array(data)]).stream(), {
+            mode,
+            truncate: true,
+          });
         };
+
         if (resolved) await transfer("write", native, fallback);
         else await fallback();
       }),
     mkdir: async (id, path) => {
       if (["/", "/workspace"].includes(posix.normalize(path))) invalidateWorkspace(await get(id));
+
       try {
         await call(id, "mkdir", path);
       } finally {
@@ -194,6 +223,7 @@ export function files(
     remove: async (id, path, options) => {
       // Any removed symlink may be part of the workspace resolution chain.
       invalidateWorkspace(await get(id));
+
       try {
         await call(id, "remove", path, undefined, String(options.recursive));
       } finally {
@@ -217,7 +247,9 @@ export function files(
           ),
         async () => {
           const value: unknown = JSON.parse(await call(id, "list", path));
+
           if (!Array.isArray(value)) throw failure("Invalid file listing");
+
           return value.map(file);
         },
       ),

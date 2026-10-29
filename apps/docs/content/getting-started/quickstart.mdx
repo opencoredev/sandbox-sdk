@@ -59,10 +59,13 @@ import { local } from "@opencoredev/sandbox-sdk/local";
 
 await using box = await createSandbox(local(), { ports: [3000] });
 
-await box.files.write("server.mjs", `
+await box.files.write(
+  "server.mjs",
+  `
   import { createServer } from "node:http";
   createServer((req, res) => res.end("hello from the sandbox")).listen(3000);
-`);
+`,
+);
 
 const server = await box.start("node server.mjs", {
   name: "web",

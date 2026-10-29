@@ -173,10 +173,10 @@ No package. Install the SDK as a dev dependency if you only use it in tests.
 
 Agent tools live on their own subpaths and need their framework and `zod`. Skip this if you aren't giving a model tools.
 
-| Framework | Install | Import from |
-| --- | --- | --- |
-| [AI SDK](/integrations/ai-sdk) | `ai` 7 and `zod` 4.6 | `@opencoredev/sandbox-sdk/ai` |
-| [Mastra](/integrations/mastra) | `@mastra/core` 1.78 and `zod` 4.6 | `@opencoredev/sandbox-sdk/mastra` |
+| Framework                                    | Install                             | Import from                       |
+| -------------------------------------------- | ----------------------------------- | --------------------------------- |
+| [AI SDK](/integrations/ai-sdk)               | `ai` 7 and `zod` 4.6                | `@opencoredev/sandbox-sdk/ai`     |
+| [Mastra](/integrations/mastra)               | `@mastra/core` 1.78 and `zod` 4.6   | `@opencoredev/sandbox-sdk/mastra` |
 | [OpenAI Agents](/integrations/openai-agents) | `@openai/agents` 0.20 and `zod` 4.6 | `@opencoredev/sandbox-sdk/openai` |
 
 These are optional peer dependencies. Importing the package root never loads them.
@@ -210,13 +210,13 @@ A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either fo
 
 ## What the package exports
 
-| Import | What it gives you |
-| --- | --- |
-| `@opencoredev/sandbox-sdk` | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
-| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each |
-| `/ai`, `/mastra`, `/openai` | `sandboxTools` for each agent framework |
-| `/tools` | The framework-neutral tool definitions and their Zod schemas |
-| `/provider` | The adapter contract, for [writing a provider](/providers/custom) |
-| `/testing` | `runConformance`, the suite every provider passes |
+| Import                                                                                                                                                        | What it gives you                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `@opencoredev/sandbox-sdk`                                                                                                                                    | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
+| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each                                                                          |
+| `/ai`, `/mastra`, `/openai`                                                                                                                                   | `sandboxTools` for each agent framework                                                            |
+| `/tools`                                                                                                                                                      | The framework-neutral tool definitions and their Zod schemas                                       |
+| `/provider`                                                                                                                                                   | The adapter contract, for [writing a provider](/providers/custom)                                  |
+| `/testing`                                                                                                                                                    | `runConformance`, the suite every provider passes                                                  |
 
 Next: the [Quickstart](/getting-started/quickstart).

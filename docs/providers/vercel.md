@@ -1,6 +1,5 @@
 # Vercel provider
 
-
 Install `@vercel/sandbox` 3.8 or later, then import `vercel` from
 `@opencoredev/sandbox-sdk/vercel`. The provider dynamically loads the optional
 peer SDK on its first remote operation. `box.native` is typed as Vercel's
@@ -71,4 +70,3 @@ timeout 600s bunx vitest run tests/vercel.live.test.ts --maxWorkers=1 --testTime
 Run this command from `packages/sdk`. It creates and deletes billable sandboxes.
 The implementation was checked against the official [JavaScript SDK reference](https://vercel.com/docs/sandbox/sdk-reference)
 and the published `@vercel/sandbox` 3.8.0 types and source.
-

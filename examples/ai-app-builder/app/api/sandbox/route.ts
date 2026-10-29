@@ -6,9 +6,11 @@ import { parseSessionId, sessionCookie } from "../../../lib/session";
 export async function DELETE() {
   const jar = await cookies();
   const session = parseSessionId(jar.get(sessionCookie)?.value);
+
   if (session) {
     await destroySessionSandbox(session);
     jar.delete(sessionCookie);
   }
+
   return new Response(null, { status: 204 });
 }

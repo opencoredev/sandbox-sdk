@@ -41,6 +41,7 @@ export async function runAgent(options: {
     tools: sandboxTools(options.box, { root: repoDir }),
     stopWhen: isStepCount(options.maxSteps ?? 40),
   });
+
   for await (const part of result.fullStream) {
     switch (part.type) {
       case "text-delta":

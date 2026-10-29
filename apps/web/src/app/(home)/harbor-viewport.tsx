@@ -50,24 +50,32 @@ export function HarborViewport({ style, brackets }: { style: HalftoneStyle; brac
   const follow = useCallback(({ t, look, width, height }: FrameInfo) => {
     const cargo = harborCargo(width, height, t, look);
     const el = tag.current;
+
     if (el) {
       if (cargo.carried) place(el, cargo.carried, width, 16);
       else el.style.opacity = "0";
     }
+
     cargo.landed.forEach((mark, i) => {
       const chip = chips.current[i];
+
       if (!chip) return;
       place(chip, mark, width, 8);
     });
+
     for (let i = cargo.landed.length; i < MAX_LANDED; i++) {
       const chip = chips.current[i];
+
       if (chip) chip.style.opacity = "0";
     }
+
     const carriedId = cargo.carried?.provider.id ?? shown.current.carried;
     const landedIds = cargo.landed.map((m) => m.provider.id).join(",");
+
     // re-render only when what is on show changes, not every frame
     if (carriedId !== shown.current.carried || landedIds !== shown.current.landed) {
       shown.current = { carried: carriedId, landed: landedIds };
+
       if (cargo.carried) setCarried(cargo.carried.provider);
       setLanded(cargo.landed.map((m) => m.provider));
     }

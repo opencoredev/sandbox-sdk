@@ -31,7 +31,13 @@ export const sandboxDark = {
       settings: { foreground: "#d8a35c" },
     },
     {
-      scope: ["string", "string.template", "punctuation.definition.string", "markup.inline.raw", "string.regexp"],
+      scope: [
+        "string",
+        "string.template",
+        "punctuation.definition.string",
+        "markup.inline.raw",
+        "string.regexp",
+      ],
       settings: { foreground: "#c9b58a" },
     },
     {

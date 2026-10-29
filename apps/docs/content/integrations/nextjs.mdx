@@ -50,10 +50,7 @@ This page uses [Vercel Sandbox](/providers/vercel), which authenticates with OID
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: [
-    "@opencoredev/sandbox-sdk",
-    "@vercel/sandbox",
-  ],
+  serverExternalPackages: ["@opencoredev/sandbox-sdk", "@vercel/sandbox"],
 };
 
 export default nextConfig;
@@ -176,10 +173,10 @@ Schedule it in `vercel.json` under `crons`. Vercel sends `CRON_SECRET` as a bear
 
 ## Where code runs
 
-| Code | Runs on | Can import a provider |
-| --- | --- | --- |
-| Route handlers, server actions, cron routes | Your server | Yes |
-| `"use client"` components | The browser | No |
-| Middleware | The edge | No. Providers need Node or Bun. |
+| Code                                        | Runs on     | Can import a provider           |
+| ------------------------------------------- | ----------- | ------------------------------- |
+| Route handlers, server actions, cron routes | Your server | Yes                             |
+| `"use client"` components                   | The browser | No                              |
+| Middleware                                  | The edge    | No. Providers need Node or Bun. |
 
 Show a preview by putting its URL in an iframe. A Daytona preview needs a token header, so proxy it through a route instead.

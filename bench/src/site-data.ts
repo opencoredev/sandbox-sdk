@@ -5,7 +5,14 @@ import { priceAtSize, pricing } from "./pricing.js";
 import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
 import { hourly } from "./publication-report.js";
-import { countedFailures, publicationTrack, reliability, type MergedSample, type PublicationReport, type Suite } from "./merge.js";
+import {
+  countedFailures,
+  publicationTrack,
+  reliability,
+  type MergedSample,
+  type PublicationReport,
+  type Suite,
+} from "./merge.js";
 import { statistics } from "./stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
@@ -13,6 +20,7 @@ import type { Fingerprint } from "./fingerprint.js";
 // Every number here is derived from results.json; the site never hard-codes measurements.
 
 export type Better = "lower" | "higher";
+
 export interface MetricDef {
   id: string;
   suite: Suite;
@@ -34,6 +42,7 @@ const latency = (id: string, suite: Suite, scenario: string, label: string): Met
   better: "lower",
   scale: 1 / 1000,
 });
+
 const rate = (id: string, scenario: string, label: string, unit: MetricDef["unit"]): MetricDef => ({
   id,
   suite: "main",
@@ -80,21 +89,34 @@ export const metricDefs: MetricDef[] = [
 
 const egressText = (egress: Fingerprint["egress"], key: string) => {
   const value = egress?.[key];
+
   return typeof value === "string" && value ? value : null;
 };
 
 function cpuVendor(fp: Fingerprint) {
-  if (fp.flags.includes("asimd") || fp.flags.includes("fp") || /arm|graviton|neoverse/i.test(fp.cpuModel))
+  if (
+    fp.flags.includes("asimd") ||
+    fp.flags.includes("fp") ||
+    /arm|graviton|neoverse/i.test(fp.cpuModel)
+  )
     return { vendor: "Arm", arch: "arm64" };
-  if (/intel/i.test(fp.cpuModel) || fp.flags.includes("vmx")) return { vendor: "Intel", arch: "x86_64" };
-  if (/amd/i.test(fp.cpuModel) || fp.flags.includes("svm")) return { vendor: "AMD", arch: "x86_64" };
+
+  if (/intel/i.test(fp.cpuModel) || fp.flags.includes("vmx"))
+    return { vendor: "Intel", arch: "x86_64" };
+
+  if (/amd/i.test(fp.cpuModel) || fp.flags.includes("svm"))
+    return { vendor: "AMD", arch: "x86_64" };
+
   return { vendor: "Unknown", arch: "unknown" };
 }
 
 const cleanCpu = (model: string) =>
   /^[\d/]+$|^unknown$/i.test(model.trim())
     ? null
-    : model.replace(/\(R\)|\(TM\)/g, "").replace(/\s+/g, " ").trim();
+    : model
+        .replace(/\(R\)|\(TM\)/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
 
 const counts = (xs: string[]) =>
   [...xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>())]
@@ -105,10 +127,13 @@ function hardware(r: PublicationReport, provider: string) {
   const fps = r.samples
     .filter((s) => s.provider === provider && s.scenario === "fingerprint")
     .flatMap((s) => (s.fingerprint ? [s.fingerprint] : []));
+
   const first = fps[0];
+
   if (!first) return null;
   const vcpu = counts(fps.map((f) => String(Math.min(f.nproc, f.quotaCpus ?? f.nproc))));
   const vendor = cpuVendor(first);
+
   return {
     fingerprints: fps.length,
     vcpu: Number(vcpu[0]?.value),
@@ -127,6 +152,7 @@ function hardware(r: PublicationReport, provider: string) {
       fps.flatMap((f) => {
         const city = egressText(f.egress, "city");
         const country = egressText(f.egress, "country");
+
         return city || country ? [[city, country].filter(Boolean).join(", ")] : [];
       }),
     ),
@@ -137,14 +163,24 @@ function hardware(r: PublicationReport, provider: string) {
 /** The first sentence of a failure note, without HTML or the generic advice that follows it. For a traceback, its final exception line. */
 export function shortReason(note: string) {
   const title = /<title>([^<]+)<\/title>/i.exec(note)?.[1];
+
   if (title) return title.trim();
+
   // A Python traceback: the last line is the exception that ended it.
   if (/Traceback \(most recent call last\)/.test(note)) {
-    const last = note.trim().split("\n").filter((l) => l.trim()).at(-1)?.trim();
+    const last = note
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim())
+      .at(-1)
+      ?.trim();
+
     if (last) return last.length > 140 ? `${last.slice(0, 137)}...` : last;
   }
+
   const text = note.replace(/\s+/g, " ").trim();
   const first = text.split(/(?<=[.!?])\s/)[0] ?? text;
+
   return first.length > 140 ? `${first.slice(0, 137)}...` : first;
 }
 
@@ -152,8 +188,13 @@ const label = (sample: Pick<MergedSample, "suite" | "scenario">) =>
   metricDefs.find((d) => d.suite === sample.suite && d.scenario === sample.scenario)?.label ??
   sample.scenario.replace(/^burst-(\d+)\/.*$/, "$1 at once");
 
-type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outcome" | "failureClass"> &
-  Partial<Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration" | "sandboxId">>;
+type FailureInput = Pick<
+  MergedSample,
+  "provider" | "suite" | "scenario" | "outcome" | "failureClass"
+> &
+  Partial<
+    Pick<MergedSample, "sourceRunId" | "iterationNamespace" | "sourceIteration" | "sandboxId">
+  >;
 
 /**
  * Failures the site does not pin on the provider: ones our own harness
@@ -165,24 +206,33 @@ type FailureInput = Pick<MergedSample, "provider" | "suite" | "scenario" | "outc
 const ourFailureRules: readonly { test: (s: FailureInput) => boolean; reason: string }[] = [
   {
     // The machine probe uses Python multiprocessing, which needs /dev/shm. Every traceback shows the SemLock failing.
-    test: (s) => s.provider === "superserve" && s.outcome.kind === "failure" && /SemLock|\/dev\/shm/.test(s.outcome.note),
+    test: (s) =>
+      s.provider === "superserve" &&
+      s.outcome.kind === "failure" &&
+      /SemLock|\/dev\/shm/.test(s.outcome.note),
     reason: "Our machine probe needs /dev/shm, which Superserve's VMs don't have",
   },
   {
     test: (s) =>
       s.scenario === "files-10mb" &&
       s.outcome.kind === "failure" &&
-      /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(s.outcome.note),
-    reason: "Our SDK timed out or wrapped the error moving 10 MB, so we can't tell whose side failed",
+      /^(boxd request timed out|Request deadline exceeded|Freestyle request failed\.)/.test(
+        s.outcome.note,
+      ),
+    reason:
+      "Our SDK timed out or wrapped the error moving 10 MB, so we can't tell whose side failed",
   },
   {
-    test: (s) => s.outcome.kind === "failure" && s.outcome.note.startsWith("Process cancellation could not be confirmed"),
+    test: (s) =>
+      s.outcome.kind === "failure" &&
+      s.outcome.note.startsWith("Process cancellation could not be confirmed"),
     reason: "Our SDK could not confirm its own cleanup, so we can't tell whose side failed",
   },
 ];
 
 /** Why a failure is set aside, or null when it counts against the provider. */
-export const ourFailure = (s: FailureInput) => ourFailureRules.find((r) => r.test(s))?.reason ?? null;
+export const ourFailure = (s: FailureInput) =>
+  ourFailureRules.find((r) => r.test(s))?.reason ?? null;
 
 const skipped = new Set(["network-mbps", "snapshot-total"]);
 
@@ -192,39 +242,76 @@ const skipped = new Set(["network-mbps", "snapshot-total"]);
  * (one machine probe feeds eight metrics), so runs count each sandbox once.
  */
 export function failureReasons(samples: readonly FailureInput[], provider: string) {
-  const groups = new Map<string, { kind: string; reason: string; count: number; runs: Set<string>; tests: Set<string> }>();
+  const groups = new Map<
+    string,
+    { kind: string; reason: string; count: number; runs: Set<string>; tests: Set<string> }
+  >();
+
   for (const s of countedFailures(samples)) {
     // snapshot-total repeats the snapshot row it is derived from; download speed is off the site.
-    if (s.provider !== provider || s.outcome.kind !== "failure" || skipped.has(s.scenario) || ourFailure(s)) continue;
+    if (
+      s.provider !== provider ||
+      s.outcome.kind !== "failure" ||
+      skipped.has(s.scenario) ||
+      ourFailure(s)
+    )
+      continue;
     const evidence = s.outcome.cause;
-    const attribution = [s.outcome.code, evidence?.httpStatus ? `HTTP ${evidence.httpStatus}` : null, evidence?.providerCode,
-      evidence?.operation ? `operation=${evidence.operation}` : null, evidence?.requestId ? `requestId=${evidence.requestId}` : null].filter(Boolean);
-    const reason = shortReason(s.outcome.note) + (attribution.length ? ` (${attribution.join(", ")})` : "");
+
+    const attribution = [
+      s.outcome.code,
+      evidence?.httpStatus ? `HTTP ${evidence.httpStatus}` : null,
+      evidence?.providerCode,
+      evidence?.operation ? `operation=${evidence.operation}` : null,
+      evidence?.requestId ? `requestId=${evidence.requestId}` : null,
+    ].filter(Boolean);
+
+    const reason =
+      shortReason(s.outcome.note) + (attribution.length ? ` (${attribution.join(", ")})` : "");
+
     const kind = s.failureClass ?? "provider-operation";
     const key = `${kind}|${reason}`;
-    const group = groups.get(key) ?? { kind, reason, count: 0, runs: new Set<string>(), tests: new Set<string>() };
+
+    const group = groups.get(key) ?? {
+      kind,
+      reason,
+      count: 0,
+      runs: new Set<string>(),
+      tests: new Set<string>(),
+    };
+
     group.count += 1;
     group.runs.add(`${s.sourceRunId}:${s.iterationNamespace}:${s.sourceIteration}`);
     group.tests.add(label(s));
     groups.set(key, group);
   }
+
   return [...groups.values()]
     .sort((a, b) => b.runs.size - a.runs.size || b.count - a.count)
-    .map((g) => ({ kind: g.kind, reason: g.reason, count: g.count, runs: g.runs.size, tests: [...g.tests] }));
+    .map((g) => ({
+      kind: g.kind,
+      reason: g.reason,
+      count: g.count,
+      runs: g.runs.size,
+      tests: [...g.tests],
+    }));
 }
 
 /** Failures set aside rather than counted, grouped by reason, with the runs they hit. */
 export function ourFailures(samples: readonly FailureInput[], provider: string) {
   const groups = new Map<string, { reason: string; count: number; runs: Set<string> }>();
+
   for (const s of countedFailures(samples)) {
     if (s.provider !== provider || skipped.has(s.scenario)) continue;
     const reason = ourFailure(s);
+
     if (!reason) continue;
     const group = groups.get(reason) ?? { reason, count: 0, runs: new Set<string>() };
     group.count += 1;
     group.runs.add(`${s.sourceRunId}:${s.iterationNamespace}:${s.sourceIteration}`);
     groups.set(reason, group);
   }
+
   return [...groups.values()].map((g) => ({ reason: g.reason, count: g.count, runs: g.runs.size }));
 }
 
@@ -234,22 +321,43 @@ type PauseInput = Pick<MergedSample, "provider" | "scenario" | "outcome" | "phas
 export function pauseSplit(samples: readonly PauseInput[], provider: string) {
   const phase = (key: string) =>
     samples.flatMap((s) => {
-      const v = s.provider === provider && s.scenario === "pause-resume" && s.outcome.kind === "sample" ? s.phases?.[key] : undefined;
+      const v =
+        s.provider === provider && s.scenario === "pause-resume" && s.outcome.kind === "sample"
+          ? s.phases?.[key]
+          : undefined;
+
       return typeof v === "number" ? [v / 1000] : [];
     });
+
   const pause = statistics(phase("pauseMs"));
   const resume = statistics(phase("resumeReadyMs"));
-  return pause.p50 === null || resume.p50 === null ? null : { pause: pause.p50, resume: resume.p50, n: pause.count };
+
+  return pause.p50 === null || resume.p50 === null
+    ? null
+    : { pause: pause.p50, resume: resume.p50, n: pause.count };
 }
 
 export function siteData(input: PublicationReport, track: "default" | "same-spec" = "default") {
   const r = publicationTrack(input, track);
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
+
   for (const provider of names) {
-    const allocations = new Set(r.samples.filter(s => s.provider === provider).map(s => JSON.stringify([s.requestedSize ?? null, s.template ?? null, s.product ?? null])));
-    if (allocations.size > 1) throw new Error(`${provider}: multiple allocations or native products in ${track}; merge each separately before site-data`);
+    const allocations = new Set(
+      r.samples
+        .filter((s) => s.provider === provider)
+        .map((s) =>
+          JSON.stringify([s.requestedSize ?? null, s.template ?? null, s.product ?? null]),
+        ),
+    );
+
+    if (allocations.size > 1)
+      throw new Error(
+        `${provider}: multiple allocations or native products in ${track}; merge each separately before site-data`,
+      );
   }
+
   const counted = countedFailures(r.samples);
+
   const metrics = metricDefs.map((def) => ({
     ...def,
     comparable: def.comparable ?? true,
@@ -257,12 +365,19 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       const s = r.summaries.find(
         (x) => x.suite === def.suite && x.provider === provider && x.scenario === def.scenario,
       );
+
       if (!s) return [];
       const scaled = (v: number | null | undefined) => (v == null ? null : v * def.scale);
+
       // Our own failures are not attempts against the provider.
       const ours = counted.filter(
-        (x) => x.suite === def.suite && x.provider === provider && x.scenario === def.scenario && ourFailure(x),
+        (x) =>
+          x.suite === def.suite &&
+          x.provider === provider &&
+          x.scenario === def.scenario &&
+          ourFailure(x),
       ).length;
+
       return [
         {
           provider,
@@ -280,25 +395,34 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       ];
     }),
   }));
+
   const providers = names.map((name) => {
     const rel = reliability(r.samples.filter((s) => s.provider === name));
     const price = pricing[name];
     const hw = hardware(r, name);
     const hour = hourly(r, name);
     const allocation = allocationEvidence(r.samples, name);
+
     return {
       id: name,
       costPerTask: costPerTask(r, name),
       track,
-      requestedAllocation: {...allocation.requested, compute: allocation.requestedCompute, provisioned: allocation.provisioned},
+      requestedAllocation: {
+        ...allocation.requested,
+        compute: allocation.requestedCompute,
+        provisioned: allocation.provisioned,
+      },
       measuredAllocations: allocation.measured,
       equalSpec: allocation.equalSpec,
       currency: price?.currency ?? null,
       hourly: hour,
       commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
-      perVcpuHour: hour != null && allocation.pricingAllocation ? hour / allocation.pricingAllocation.cpu : null,
+      perVcpuHour:
+        hour != null && allocation.pricingAllocation
+          ? hour / allocation.pricingAllocation.cpu
+          : null,
       pricingAllocation: allocation.pricingAllocation,
-      allocationVerification: {verified: allocation.verified, mismatches: allocation.mismatches},
+      allocationVerification: { verified: allocation.verified, mismatches: allocation.mismatches },
       // Audited resource rates, size tiers and availability; tiered CPU has no per-vCPU rate.
       rates: price
         ? {
@@ -327,21 +451,28 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       pauseSplit: pauseSplit(r.samples, name),
     };
   });
+
   // Raw successful cold starts, for distribution plots.
   const coldSamples = Object.fromEntries(
     names.map((provider) => [
       provider,
       r.samples
-        .filter(
-          (s) => s.suite === "main" && s.provider === provider && s.scenario === "cold",
-        )
+        .filter((s) => s.suite === "main" && s.provider === provider && s.scenario === "cold")
         .flatMap((s) => (s.outcome.kind === "sample" ? [Math.round(s.outcome.value) / 1000] : []))
         .sort((a, b) => a - b),
     ]),
   );
+
   return {
     track,
-    allocations: providers.map(p => ({provider: p.id, track, requested: p.requestedAllocation, measured: p.measuredAllocations, equalSpec: p.equalSpec, verification: p.allocationVerification})),
+    allocations: providers.map((p) => ({
+      provider: p.id,
+      track,
+      requested: p.requestedAllocation,
+      measured: p.measuredAllocations,
+      equalSpec: p.equalSpec,
+      verification: p.allocationVerification,
+    })),
     generatedFrom: r.runId,
     window: { start: r.timestamp, end: r.finishedAt },
     observations: r.samples.length,
@@ -352,6 +483,7 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     coldSamples,
   };
 }
+
 export type SiteData = ReturnType<typeof siteData>;
 
 export async function siteDataCommand(args: string[]) {
@@ -363,10 +495,12 @@ export async function siteDataCommand(args: string[]) {
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
     },
   });
+
   // results.json is written by `bun bench merge`; its shape is PublicationReport by construction.
   const report: PublicationReport = JSON.parse(
     await readFile(join(values.report, "results.json"), "utf8"),
   );
+
   const track = (await import("./v2-config.js")).trackSchema.parse(values.track);
   await writeFile(values.out, `${JSON.stringify(siteData(report, track), null, 1)}\n`);
 

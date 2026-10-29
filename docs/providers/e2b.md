@@ -1,6 +1,5 @@
 # E2B provider
 
-
 Install the optional `e2b` peer (`^2.56.0`) and set `E2B_API_KEY`, or pass `apiKey` to the factory:
 
 ```ts
@@ -22,6 +21,5 @@ console.log((await box.run("echo hello")).stdout);
 - Pause/resume and snapshots are advertised capabilities. Snapshots return E2B's `snapshotId`; pass it as `from` to create a sandbox from that state. PTYs are not exposed by this adapter. Preview URLs use HTTPS and `getHost(port)`.
 
 The offline E2B tests replace the official SDK transport with isolated Linux commands and files, including real Git and HTTP probes. `tests/e2b.live.test.ts` registers the full conformance suite and skips it without `E2B_API_KEY`. With credentials, the suite creates billable sandboxes; run it with `timeout 600s node_modules/.bin/vitest run tests/e2b.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000` from this package.
-
 
 Credentials are checked on the first provider operation, not when `e2b()` is constructed. Set `E2B_API_KEY` before create, connect, or list, or pass `apiKey`. `template` defaults to `base`; `domain` falls back to `E2B_DOMAIN`, then `e2b.app`.

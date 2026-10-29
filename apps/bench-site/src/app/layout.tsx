@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 const title = "Sandbox bench: cloud sandboxes for agents, measured";
+
 const description =
   "8 cloud sandboxes for AI agents (E2B, Daytona, Upstash Box, Boat, boxd, Freestyle, Tenki, Superserve) timed on cold start, real agent tasks, bursts, reliability and price.";
 

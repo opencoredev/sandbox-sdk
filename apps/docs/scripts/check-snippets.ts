@@ -54,7 +54,9 @@ interface Snippet {
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
+
     if (entry.isDirectory()) return walk(path);
+
     return entry.name.endsWith(".mdx") ? [path] : [];
   });
 }
@@ -64,13 +66,16 @@ const fence = /^```(ts|tsx)(?:[ \t]+([^\n]*))?\n([\s\S]*?)^```$/gm;
 function extract(file: string): Snippet[] {
   const source = readFileSync(file, "utf8");
   const snippets: Snippet[] = [];
+
   for (const match of source.matchAll(fence)) {
     const [, lang, meta = "", code] = match;
+
     if (/\bcheck="skip"/.test(meta)) continue;
     const title = /title="([^"]+)"/.exec(meta)?.[1];
     const line = source.slice(0, match.index).split("\n").length;
     snippets.push({ file, line, lang: lang === "tsx" ? "tsx" : "ts", title, code: code ?? "" });
   }
+
   return snippets;
 }
 
@@ -100,6 +105,7 @@ function tsconfig(): string {
 }
 
 rmSync(outDir, { recursive: true, force: true });
+
 mkdirSync(outDir, { recursive: true });
 
 // Resolve the SDK through its package.json exports, as a user would, and share its peers.
@@ -108,21 +114,28 @@ const linkModule = (name: string, target: string) => {
   mkdirSync(dirname(path), { recursive: true });
   symlinkSync(target, path, "dir");
 };
+
 linkModule("@opencoredev/sandbox-sdk", sdkDir);
+
 const sdkManifest: { peerDependencies?: Record<string, string> } = JSON.parse(
   readFileSync(join(sdkDir, "package.json"), "utf8"),
 );
+
 for (const peer of Object.keys(sdkManifest.peerDependencies ?? {})) {
   const installed = join(sdkDir, "node_modules", peer);
+
   if (existsSync(installed)) linkModule(peer, realpathSync(installed));
 }
+
 // Web frameworks the integration pages use. They aren't SDK peers, so they come from the docs package.
 for (const name of ["hono"]) {
   const installed = join(docsDir, "node_modules", name);
+
   if (!existsSync(installed)) {
     console.error(`snippets: ${name} is not installed in apps/docs. Run bun install.`);
     process.exit(1);
   }
+
   linkModule(name, realpathSync(installed));
 }
 
@@ -131,10 +144,13 @@ const projects: string[] = [];
 
 for (const file of walk(contentDir)) {
   const snippets = extract(file);
+
   if (snippets.length === 0) continue;
+
   const slug = relative(contentDir, file)
     .replace(/\.mdx$/, "")
     .replaceAll("/", "__");
+
   const projectDir = join(outDir, slug);
   mkdirSync(projectDir, { recursive: true });
   cpSync(stubsDir, projectDir, { recursive: true });
@@ -164,6 +180,7 @@ function typecheck(projectDir: string): Promise<{ status: number | null; output:
 // At most 4 tsc processes at once, to keep load on shared machines bounded.
 const results: { projectDir: string; status: number | null; output: string }[] = [];
 const queue = [...projects];
+
 await Promise.all(
   Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (let projectDir = queue.shift(); projectDir; projectDir = queue.shift()) {
@@ -173,22 +190,28 @@ await Promise.all(
 );
 
 let failures = 0;
+
 for (const { projectDir, status, output } of results) {
   if (status === 0) continue;
   failures += 1;
+
   // Map "path/snippet-2.ts(4,7): error" back to the .mdx file and line.
   for (const line of output.split("\n")) {
     const located = /^(.+?)\((\d+),(\d+)\): (.*)$/.exec(line);
+
     if (!located) {
       if (line.trim()) console.error(line);
       continue;
     }
+
     const [, path = "", row = "0", , message = ""] = located;
     const snippet = origins.get(resolve(projectDir, path)) ?? origins.get(resolve(path));
+
     if (!snippet) {
       console.error(line);
       continue;
     }
+
     const mdxLine = snippet.line + Number(row);
     console.error(`${relative(docsDir, snippet.file)}:${mdxLine}: ${message}`);
   }
@@ -196,12 +219,14 @@ for (const { projectDir, status, output } of results) {
 
 const total = origins.size;
 const mode = "packages/sdk/dist";
+
 if (failures > 0) {
   console.error(
     `snippets: ${failures} of ${projects.length} page(s) failed to type-check against ${mode}.`,
   );
   process.exit(1);
 }
+
 console.log(
   `snippets: ${total} snippet(s) on ${projects.length} page(s) type-check against ${mode}.`,
 );

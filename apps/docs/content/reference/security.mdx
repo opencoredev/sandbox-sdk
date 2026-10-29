@@ -7,13 +7,13 @@ Sandbox SDK is a library over each provider's API. It does not add an isolation 
 
 ## Trust boundaries
 
-| Boundary | Who provides it |
-| --- | --- |
+| Boundary                                       | Who provides it                                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Isolation between the sandbox and your servers | The provider: a microVM on E2B and Vercel Sandbox, Daytona's sandbox, a Docker container on Local |
-| Isolation between sandboxes | The provider |
-| Who may create and reach sandboxes | Your provider credentials |
-| Which user may use which sandbox | Your app |
-| Outbound network | The provider, when you set `network` |
+| Isolation between sandboxes                    | The provider                                                                                      |
+| Who may create and reach sandboxes             | Your provider credentials                                                                         |
+| Which user may use which sandbox               | Your app                                                                                          |
+| Outbound network                               | The provider, when you set `network`                                                              |
 
 **Local is a container, not a VM.** Containers share the host kernel. Don't run untrusted code from strangers with `local()` on a machine that holds secrets. Use a cloud provider for that.
 

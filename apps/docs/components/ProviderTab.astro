@@ -13,6 +13,7 @@ interface Props {
 const { provider, title } = Astro.props;
 const { name, logo } = PROVIDERS[provider];
 const label = title ?? name;
+
 // Logos live in public/, which is served under the docs base path (/docs).
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 const style = logo ? `--sbx-mark: url("${base}${logo}")` : undefined;

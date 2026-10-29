@@ -22,11 +22,14 @@ export function ChartHead({ title, sub }: { title: string; sub: ReactNode }) {
 
 export function Footnotes({ items }: { items: readonly { mark?: number; text: ReactNode }[] }) {
   if (items.length === 0) return null;
+
   return (
     <ul className="mt-5 flex flex-col gap-1.5 border-t border-[var(--line)] pt-4 text-[12px] leading-snug text-[var(--muted)]">
       {items.map((item, i) => (
         <li key={i} className="flex gap-2">
-          {item.mark === undefined ? null : <span className="w-3 shrink-0 font-mono">{item.mark}</span>}
+          {item.mark === undefined ? null : (
+            <span className="w-3 shrink-0 font-mono">{item.mark}</span>
+          )}
           <span className="max-w-[90ch]">{item.text}</span>
         </li>
       ))}
@@ -35,20 +38,29 @@ export function Footnotes({ items }: { items: readonly { mark?: number; text: Re
 }
 
 type Measured = MetricValue & { p50: number };
+
 const isMeasured = (v: MetricValue): v is Measured => v.p50 !== null;
 
 const missingReason = (v: MetricValue | undefined) =>
-  !v ? "not supported" : v.limitFailures > 0 ? "stopped by our plan's limit" : v.failures > 0 ? "failed every attempt" : "not supported";
+  !v
+    ? "not supported"
+    : v.limitFailures > 0
+      ? "stopped by our plan's limit"
+      : v.failures > 0
+        ? "failed every attempt"
+        : "not supported";
 
 /** "100 attempts" or "30 attempts, 1 failed": every attempt counts, failed ones included. */
 export const attemptsLine = (v: Pick<MetricValue, "n" | "failures">) => {
   const attempts = v.n + v.failures;
+
   return `${formatCount(attempts)} ${attempts === 1 ? "attempt" : "attempts"}${v.failures ? `, ${formatCount(v.failures)} failed` : ""}`;
 };
 
 const better = (m: Metric) => (m.better === "lower" ? "Lower is better" : "Higher is better");
 
-export const metricSubtitle = (m: Metric, what: string) => `${what} · Median ${unitName[m.unit]} · ${better(m)}`;
+export const metricSubtitle = (m: Metric, what: string) =>
+  `${what} · Median ${unitName[m.unit]} · ${better(m)}`;
 
 /**
  * Median of one metric per provider, best first, with p95 and sample size on
@@ -74,15 +86,21 @@ export function MetricChart({
   const ids = only ?? providers.map((p) => p.id);
   const values = ids.map((id) => ({ id, value: metric.values.find((v) => v.provider === id) }));
   const sign = metric.better === "lower" ? 1 : -1;
+
   const measured = values
     .flatMap(({ value }) => (value && isMeasured(value) ? [value] : []))
     .sort((a, b) => sign * (a.p50 - b.p50));
+
   const missing = values.filter(({ value }) => !value || !isMeasured(value));
+
   // Providers left out of this chart on purpose still get their note.
-  const leftOut = only ? providers.flatMap((p) => (only.includes(p.id) || !notes[p.id] ? [] : [p.id])) : [];
+  const leftOut = only
+    ? providers.flatMap((p) => (only.includes(p.id) || !notes[p.id] ? [] : [p.id]))
+    : [];
 
   let next = 0;
   const marks = new Map<ProviderId, number>();
+
   for (const v of measured) if (notes[v.provider]) marks.set(v.provider, ++next);
 
   const columns: Column[] = measured.map((v) => ({
@@ -93,7 +111,9 @@ export function MetricChart({
     detail: [
       `median ${formatValue(v.p50, metric.unit)}`,
       ...(v.p95 === null ? [] : [`p95 ${formatValue(v.p95, metric.unit)}`]),
-      ...(v.ciLow === null || v.ciHigh === null ? [] : [`95% CI ${formatValue(v.ciLow, metric.unit)}–${formatValue(v.ciHigh, metric.unit)}`]),
+      ...(v.ciLow === null || v.ciHigh === null
+        ? []
+        : [`95% CI ${formatValue(v.ciLow, metric.unit)}–${formatValue(v.ciHigh, metric.unit)}`]),
       attemptsLine(v),
     ],
   }));
@@ -107,9 +127,27 @@ export function MetricChart({
           items={[
             ...measured.flatMap((v) => {
               const note = notes[v.provider];
-              return note ? [{ mark: marks.get(v.provider), text: <><Who id={v.provider} />: {note}</> }] : [];
+
+              return note
+                ? [
+                    {
+                      mark: marks.get(v.provider),
+                      text: (
+                        <>
+                          <Who id={v.provider} />: {note}
+                        </>
+                      ),
+                    },
+                  ]
+                : [];
             }),
-            ...leftOut.map((id) => ({ text: <><Who id={id} />: {notes[id]}.</> })),
+            ...leftOut.map((id) => ({
+              text: (
+                <>
+                  <Who id={id} />: {notes[id]}.
+                </>
+              ),
+            })),
             ...(missing.length > 0
               ? [
                   {

@@ -13,20 +13,28 @@ async function main() {
     process.stdout.write(
       "bun bench --providers memory,local,e2b,vercel,daytona,upstash --runs 50 --out results/\nOptions: --warmup 2 --concurrency 1 --timeout-ms 30000 --max-sandboxes 100 --yes\nOutput paths are relative to bench/. Cloud budget includes warmups.\n",
     );
+
     return;
   }
+
   const config = parseConfig(process.argv.slice(2));
   const providers = [];
+
   for (const name of config.providers) {
     const provider = await loadProvider(name);
     providers.push(provider);
+
     if (provider.kind === "skipped") process.stderr.write(`SKIP ${name}: ${provider.note}\n`);
   }
+
   const plannedCloudSandboxes = checkBudget(providers, config);
+
   const versionData: unknown = JSON.parse(
     await readFile(new URL("../../packages/sdk/package.json", import.meta.url), "utf8"),
   );
+
   const { version } = z.object({ version: z.string() }).parse(versionData);
+
   const report: Report = {
     schemaVersion: 1,
     timestamp: new Date().toISOString(),
@@ -51,7 +59,9 @@ async function main() {
     },
     providers: [],
   };
+
   let unsafeCleanup = false;
+
   for (const provider of providers) {
     if (unsafeCleanup) {
       report.providers.push({
@@ -61,6 +71,7 @@ async function main() {
       });
       continue;
     }
+
     if (provider.kind === "skipped") report.providers.push(provider);
     else {
       process.stderr.write(
@@ -71,9 +82,11 @@ async function main() {
       unsafeCleanup = measured.cleanupFailures.length > 0;
     }
   }
+
   await writeReport(report, resolve(config.out));
   process.stdout.write(markdown(report));
   process.stderr.write(`Reports: ${resolve(config.out)}\n`);
+
   if (
     !providers.some((provider) => provider.kind === "ready") ||
     report.providers.some(
@@ -86,6 +99,7 @@ async function main() {
   )
     process.exitCode = 1;
 }
+
 export const completion = main().catch((error) => {
   process.stderr.write(
     `Benchmark refused/failed: ${error instanceof Error ? error.message : "Unknown error"}\n`,

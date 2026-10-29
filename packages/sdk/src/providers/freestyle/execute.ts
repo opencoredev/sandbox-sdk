@@ -2,7 +2,9 @@ import { guestSpec } from "./wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { guestProcess, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
+
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
+
 // The one-shot launcher travels in the exec request; nothing is installed.
 // Small results return inline; large output uses bounded native ranged reads.
 export const supervisor = `import os,sys,marshal,_signal as signal,select,time,fcntl
@@ -94,6 +96,7 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
+
 export interface ExecutionGuest {
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   raw(command: string): Promise<string>;
@@ -103,16 +106,24 @@ export interface ExecutionGuest {
     signal?: AbortSignal,
   ): Promise<Uint8Array>;
 }
-export async function execute(g: ExecutionGuest, input: ExecInput, files?: [string, string][]): Promise<ExecResult> {
+
+export async function execute(
+  g: ExecutionGuest,
+  input: ExecInput,
+  files?: [string, string][],
+): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const root = `/tmp/.sandbox-sdk/run-${crypto.randomUUID()}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs);
+
   const signal = input.signal
     ? AbortSignal.any([input.signal, controller.signal])
     : controller.signal;
+
   let delivered = 0;
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+
   async function cancel() {
     // The lock makes cancellation safe even if the exec has not started yet.
     // No PID means no process to kill, not permission to delete the whole VM.
@@ -151,7 +162,9 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
         String(delivered),
       ),
     );
+
     const recovery: unknown = JSON.parse(text);
+
     if (
       !recovery ||
       typeof recovery !== "object" ||
@@ -164,25 +177,32 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
       recovery.offset < delivered
     )
       throw failure("Invalid cancellation output");
+
     // A contiguous recovery must retain partial UTF-8 bytes. If the bounded
     // tail skipped records, flush them before starting a new decoding segment.
     if (recovery.offset !== delivered) flush(decoders, input);
+
     for (const chunk of recovery.chunks) emitRecord(chunk, decoders, input);
     flush(decoders, input);
   }
 
   let paged = false;
+
   async function recoverCancellation(): Promise<ExecResult> {
     try {
       await cancel();
     } catch {
       throw failure("Process cancellation could not be confirmed", "outcome_unknown");
     }
+
     paged = false;
+
     return { exitCode: null, timedOut: true };
   }
+
   try {
     let text: string;
+
     try {
       text = await g.exec(
         `python3 -S -c ${quote(supervisor)} ${quote(root)}`,
@@ -204,10 +224,13 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
       } catch {
         throw failure("Process cancellation could not be confirmed", "outcome_unknown");
       }
+
       if (signal.aborted) return { exitCode: null, timedOut: true };
       throw error;
     }
+
     const page: unknown = JSON.parse(text);
+
     if (
       !page ||
       typeof page !== "object" ||
@@ -233,14 +256,17 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
       throw failure("Invalid command response");
     const emit = (value: unknown) => emitRecord(value, decoders, input);
     paged = page.offset < page.size || page.result.timedOut;
+
     if (signal.aborted) return await recoverCancellation();
     page.chunks.forEach(emit);
     delivered = page.offset;
     let offset = page.offset;
     let pending = "";
+
     while (offset < page.size) {
       if (signal.aborted) return await recoverCancellation();
       let data: Uint8Array;
+
       try {
         data = await g.read(
           root + "/out",
@@ -251,7 +277,9 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
         if (signal.aborted) return await recoverCancellation();
         throw error;
       }
+
       if (signal.aborted) return await recoverCancellation();
+
       if (!data.length) throw failure("Incomplete output read");
       offset += data.length;
       pending += new TextDecoder().decode(data);
@@ -262,11 +290,14 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
         delivered += Buffer.byteLength(line) + 1;
       });
     }
+
     if (pending) throw failure("Incomplete output record");
     flush(decoders, input);
+
     return { exitCode: page.result.exitCode, timedOut: page.result.timedOut };
   } finally {
     clearTimeout(timer);
+
     if (paged) await g.raw(`rm -rf -- ${quote(root)}`).catch(() => {});
   }
 }
@@ -285,12 +316,14 @@ function emitRecord(
     throw failure("Invalid output record");
   const stream = value[0] === "stdout" ? "stdout" : "stderr";
   const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
+
   if (text) input.onChunk({ stream, text });
 }
 
 function flush(decoders: { stdout: TextDecoder; stderr: TextDecoder }, input: ExecInput) {
   for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
     const text = decoders[stream].decode();
+
     if (text) input.onChunk({ stream, text });
   }
 }

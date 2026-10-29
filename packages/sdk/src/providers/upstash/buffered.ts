@@ -89,81 +89,156 @@ if pid:
   time.sleep(.01)
 `;
 
-export async function bufferedExecute(box: Box, input: ExecInput, prepare?: string): Promise<ExecResult | undefined> {
+export async function bufferedExecute(
+  box: Box,
+  input: ExecInput,
+  prepare?: string,
+): Promise<ExecResult | undefined> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const dir = `/tmp/.sandbox-sdk/exec/sdk-${crypto.randomUUID()}`;
-  const env = Object.entries(defaults).filter(([key]) => key in input.env).map(([key, value]) => quote(`${key}=${value}`)).join(" ");
+
+  const env = Object.entries(defaults)
+    .filter(([key]) => key in input.env)
+    .map(([key, value]) => quote(`${key}=${value}`))
+    .join(" ");
+
   const command = `${prepare ? `${prepare} && ` : ""}env ${env} python3 -S -u -c ${quote(bridge)} ${quote(input.command)} ${quote(dir)} ${quote(input.cwd)} ${quote(String(input.timeoutMs / 1000))} ''`;
+
   if (Buffer.byteLength(command) >= 96 * 1024) return undefined;
   const deadline = Date.now() + input.timeoutMs;
-  let cancelled = false, confirmed = false, cleanupNeeded = false;
+
+  let cancelled = false,
+    confirmed = false,
+    cleanupNeeded = false;
+
   let wake = () => {};
-  const stopped = new Promise<undefined>(resolve => { wake = () => resolve(undefined); });
+
+  const stopped = new Promise<undefined>((resolve) => {
+    wake = () => resolve(undefined);
+  });
+
   let cancellation: Promise<unknown> | undefined;
   let cancellationError: unknown;
-  const malformed = () => new SandboxError("Command output is incomplete. Upstash did not confirm exact output and exit. Inspect the box before retrying.", { code: "outcome_unknown", provider: "upstash", sandboxId: box.id });
+
+  const malformed = () =>
+    new SandboxError(
+      "Command output is incomplete. Upstash did not confirm exact output and exit. Inspect the box before retrying.",
+      { code: "outcome_unknown", provider: "upstash", sandboxId: box.id },
+    );
+
   const abort = () => {
-    cancelled = true; wake();
+    cancelled = true;
+    wake();
+
     if (confirmed) return;
-    cancellation ??= box.exec.command(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`)
-      .then(r => { if (r.exitCode !== 0) throw malformed(); })
-      .catch(error => { cancellationError = error; });
+    cancellation ??= box.exec
+      .command(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`)
+      .then((r) => {
+        if (r.exitCode !== 0) throw malformed();
+      })
+      .catch((error) => {
+        cancellationError = error;
+      });
   };
-  const decoders = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
+
+  const decoders = {
+    stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
+    stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
+  };
+
   const accept = (line: string) => {
     const frame = /^(O|E):([0-9a-f]*)$/.exec(line);
-    if (!frame || line.length > 8194 || Buffer.from(frame[2] ?? "", "hex").toString("hex") !== frame[2]) throw malformed();
+
+    if (
+      !frame ||
+      line.length > 8194 ||
+      Buffer.from(frame[2] ?? "", "hex").toString("hex") !== frame[2]
+    )
+      throw malformed();
     const stream = frame[1] === "O" ? "stdout" : "stderr";
     const text = decoders[stream].decode(Buffer.from(frame[2] ?? "", "hex"), { stream: true });
+
     if (text) input.onChunk({ stream, text });
   };
+
   input.signal?.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(abort, Math.max(0, deadline - Date.now()));
+
   try {
     // Only fixed non-interactive defaults enter argv. Sandbox env is native.
     const r = await box.exec.command(command);
+
     if (r.exitCode === 127 && r.stderr.includes("python3") && !cancelled) return undefined;
     const lines = r.stdout.trimEnd().split("\n");
     const summary = /^R:(\d+):([01]):([01])$/.exec(lines.pop() ?? "");
+
     if (r.exitCode !== 0 || !summary) throw malformed();
     confirmed = true;
     cleanupNeeded = summary[3] === "1";
+
     for (const line of lines) if (line) accept(line);
+
     if (cleanupNeeded && !cancelled) {
-      let offset = 0, pending = "";
+      let offset = 0,
+        pending = "";
+
       while (!cancelled) {
-        const data = await Promise.race([box.files.read(`${dir}/output`, { offset, length: 65536, encoding: "base64" }), stopped]);
+        const data = await Promise.race([
+          box.files.read(`${dir}/output`, { offset, length: 65536, encoding: "base64" }),
+          stopped,
+        ]);
+
         if (data === undefined) break;
         const bytes = Buffer.from(data, "base64");
+
         if (cancelled) break;
         offset += bytes.length;
         pending += bytes.toString("ascii");
         let newline: number;
+
         while ((newline = pending.indexOf("\n")) >= 0) {
-          accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+          accept(pending.slice(0, newline));
+          pending = pending.slice(newline + 1);
         }
+
         if (pending.length > 8194) throw malformed();
-        if (bytes.length < 65536) { if (pending) throw malformed(); break; }
+
+        if (bytes.length < 65536) {
+          if (pending) throw malformed();
+          break;
+        }
       }
     }
+
     for (const stream of ["stdout", "stderr"] as const) {
-      const text = decoders[stream].decode(); if (text) input.onChunk({ stream, text });
+      const text = decoders[stream].decode();
+
+      if (text) input.onChunk({ stream, text });
     }
+
     await cancellation;
+
     if (cancellationError !== undefined) throw malformed();
     const timedOut = summary[2] === "1" || cancelled;
+
     return { exitCode: timedOut ? null : Number(summary[1]), timedOut };
   } catch (error) {
     if (!confirmed) {
-      abort(); await cancellation;
+      abort();
+      await cancellation;
+
       // Retain the locked cancellation tombstone on a lost response. A delayed
       // launch must consume it before spawning; unrelated work stays alive.
       if (cancellationError !== undefined) throw malformed();
     }
+
     throw error;
   } finally {
-    clearTimeout(timer); input.signal?.removeEventListener("abort", abort);
+    clearTimeout(timer);
+    input.signal?.removeEventListener("abort", abort);
     await cancellation;
-    if (confirmed && (cancellation || cleanupNeeded)) await box.files.remove(dir, { recursive: true }).catch(() => {});
+
+    if (confirmed && (cancellation || cleanupNeeded))
+      await box.files.remove(dir, { recursive: true }).catch(() => {});
   }
 }

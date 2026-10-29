@@ -55,20 +55,20 @@ This creates a small box with Upstash's default runtime. `await using` deletes i
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output when you iterate |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Bearer header by default, or public |
-| Pause and resume | Partial | Durable boxes only; running processes end |
-| Snapshots | Yes | Full file system. `expiresInMs` fails with `unsupported` |
-| Machine size | Partial | Presets only |
-| Network policy | Yes | `"none"` or a host allow list |
-| Hard lifetime (`timeoutMs`) | No | Ephemeral boxes have a TTL backstop |
-| Idle timeout (`idleTimeoutMs`) | No | Upstash pauses idle durable boxes itself |
-| Keys | Best-effort | Read from metadata inside each box |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                    |
+| ------------------------------ | ----------- | -------------------------------------------------------- |
+| Commands and streaming         | Yes         | Live output when you iterate                             |
+| Files                          | Yes         |                                                          |
+| Background processes           | Yes         |                                                          |
+| Preview URLs                   | Yes         | Bearer header by default, or public                      |
+| Pause and resume               | Partial     | Durable boxes only; running processes end                |
+| Snapshots                      | Yes         | Full file system. `expiresInMs` fails with `unsupported` |
+| Machine size                   | Partial     | Presets only                                             |
+| Network policy                 | Yes         | `"none"` or a host allow list                            |
+| Hard lifetime (`timeoutMs`)    | No          | Ephemeral boxes have a TTL backstop                      |
+| Idle timeout (`idleTimeoutMs`) | No          | Upstash pauses idle durable boxes itself                 |
+| Keys                           | Best-effort | Read from metadata inside each box                       |
+| Terminal                       | No          |                                                          |
 
 ## Run commands
 
@@ -155,11 +155,11 @@ if (hasCapability(box, "pause")) await box.pause();
 
 ## Size, network, and lifetime
 
-| Preset | vCPUs | Memory | Storage |
-| --- | --- | --- | --- |
-| `small` | 2 | 4 GB | 5 GB |
-| `medium` | 4 | 8 GB | 10 GB |
-| `large` | 8 | 16 GB | 20 GB |
+| Preset   | vCPUs | Memory | Storage |
+| -------- | ----- | ------ | ------- |
+| `small`  | 2     | 4 GB   | 5 GB    |
+| `medium` | 4     | 8 GB   | 10 GB   |
+| `large`  | 8     | 16 GB  | 20 GB   |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -177,9 +177,11 @@ To give the box credentials it can use but never read, set `attachHeaders`. Upst
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 
-await using box = await createSandbox(upstash({
-  attachHeaders: { "api.stripe.com": { Authorization: `Bearer ${process.env.STRIPE_KEY}` } },
-}));
+await using box = await createSandbox(
+  upstash({
+    attachHeaders: { "api.stripe.com": { Authorization: `Bearer ${process.env.STRIPE_KEY}` } },
+  }),
+);
 await box.run("curl -s https://api.stripe.com/v1/balance");
 ```
 
@@ -187,19 +189,19 @@ Exact sizes fail with `unsupported`. Allow-list entries are plain DNS host names
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `UPSTASH_BOX_API_KEY` |
-| `baseUrl` | `string` | `https://us-east-1.box.upstash.com` | `UPSTASH_BOX_BASE_URL` |
-| `runtime` | `Runtime`, such as `"node"` | Upstash's default | |
-| `requestTimeoutMs` | `number` | `600_000` | |
-| `enableTelemetry` | `boolean` | `true` | `UPSTASH_DISABLE_TELEMETRY` |
-| `public` | `boolean` | `false` | |
-| `ephemeral` | `boolean` | `false` | |
-| `ttlSeconds` | `number` | `3600`, at most `259200` | |
-| `keepAlive` | `boolean` | `false` | |
-| `browser` | `boolean` | `false` | |
-| `attachHeaders` | `Record<string, Record<string, string>>` | | |
+| Option             | Type                                     | Default                             | Env var                     |
+| ------------------ | ---------------------------------------- | ----------------------------------- | --------------------------- |
+| `apiKey`           | `string`                                 |                                     | `UPSTASH_BOX_API_KEY`       |
+| `baseUrl`          | `string`                                 | `https://us-east-1.box.upstash.com` | `UPSTASH_BOX_BASE_URL`      |
+| `runtime`          | `Runtime`, such as `"node"`              | Upstash's default                   |                             |
+| `requestTimeoutMs` | `number`                                 | `600_000`                           |                             |
+| `enableTelemetry`  | `boolean`                                | `true`                              | `UPSTASH_DISABLE_TELEMETRY` |
+| `public`           | `boolean`                                | `false`                             |                             |
+| `ephemeral`        | `boolean`                                | `false`                             |                             |
+| `ttlSeconds`       | `number`                                 | `3600`, at most `259200`            |                             |
+| `keepAlive`        | `boolean`                                | `false`                             |                             |
+| `browser`          | `boolean`                                | `false`                             |                             |
+| `attachHeaders`    | `Record<string, Record<string, string>>` |                                     |                             |
 
 `ttlSeconds` applies only with `ephemeral: true`, and `keepAlive` and `browser` only without it. `browser: true` provisions a headless Chromium you reach through `box.native.browser`. `requestTimeoutMs` bounds native requests, not the box's lifetime. The default runtime needs passwordless `sudo -n` to make `/workspace` writable. `box.native` is the Upstash SDK's `Box` object.
 

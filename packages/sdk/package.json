@@ -3,44 +3,40 @@
   "version": "1.0.0-beta.1",
   "description": "One TypeScript API for cloud and local sandboxes: E2B, Daytona, Vercel, Upstash, Docker, and more. Run commands, edit files, start servers, and give AI agents a sandbox.",
   "keywords": [
-    "sandbox",
-    "code-execution",
-    "ai-agents",
     "agent-tools",
-    "e2b",
-    "daytona",
-    "vercel-sandbox",
-    "upstash",
-    "docker",
-    "microvm",
+    "ai-agents",
     "ai-sdk",
+    "code-execution",
+    "daytona",
+    "docker",
+    "e2b",
     "mastra",
+    "microvm",
     "openai-agents",
-    "typescript"
+    "sandbox",
+    "typescript",
+    "upstash",
+    "vercel-sandbox"
   ],
   "homepage": "https://sandbox-sdk.app",
   "bugs": {
     "url": "https://github.com/opencoredev/sandbox-sdk/issues"
   },
+  "license": "MIT",
+  "author": "OpenCore",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
     "directory": "packages/sdk"
   },
-  "license": "MIT",
-  "author": "OpenCore",
-  "type": "module",
-  "sideEffects": false,
   "files": [
     "dist",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
-  "publishConfig": {
-    "access": "public",
-    "tag": "next"
-  },
+  "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -128,6 +124,10 @@
     },
     "./package.json": "./package.json"
   },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -144,6 +144,7 @@
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
     "@rivet-dev/agentos-core": "0.4.1",
+    "@superserve/sdk": "0.11.4",
     "@tenkicloud/sandbox": "^1.4.1",
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "3.8.0",
@@ -153,26 +154,25 @@
     "freestyle": "0.2.20",
     "railway": "3.16.0",
     "vitest": "^3.2.4",
-    "zod": "^4.6.7",
-    "@superserve/sdk": "0.11.4"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
+    "@boatdev/sdk": "^1.9.9",
+    "@boxd-sh/sdk": "^0.2.17",
     "@daytonaio/sdk": ">=0.225.0 <1.0.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
+    "@rivet-dev/agentos-core": "0.4.1",
+    "@superserve/sdk": "^0.11.4",
+    "@tenkicloud/sandbox": "^1.4.1",
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "^3.8.0",
     "ai": "^7.0.143",
     "e2b": "^2.56.0",
-    "vitest": ">=3",
-    "zod": "^4.6.7",
-    "railway": "^3.16.0",
-    "@boatdev/sdk": "^1.9.9",
-    "@tenkicloud/sandbox": "^1.4.1",
-    "@rivet-dev/agentos-core": "0.4.1",
-    "@boxd-sh/sdk": "^0.2.17",
     "freestyle": "^0.2.20",
-    "@superserve/sdk": "^0.11.4"
+    "railway": "^3.16.0",
+    "vitest": ">=3",
+    "zod": "^4.6.7"
   },
   "peerDependenciesMeta": {
     "vitest": {

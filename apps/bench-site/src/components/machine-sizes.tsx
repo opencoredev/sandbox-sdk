@@ -14,7 +14,11 @@ const parts = [
 ] as const satisfies readonly { key: Part; title: string; format: (v: number) => string }[];
 
 const measured = (p: Provider, key: Part) =>
-  key === "vcpu" ? p.hardware?.vcpu : key === "memoryGiB" ? p.hardware?.memoryGiB : p.hardware?.diskGiB;
+  key === "vcpu"
+    ? p.hardware?.vcpu
+    : key === "memoryGiB"
+      ? p.hardware?.memoryGiB
+      : p.hardware?.diskGiB;
 
 /**
  * Who gives you the biggest machine by default: advertised vCPU, RAM and
@@ -29,6 +33,7 @@ export function MachineSizes({ providers }: { providers: readonly Provider[] }) 
             const inside = measured(p, part.key);
             // Disk is the one size a provider may not advertise; fall back to what we measured.
             const value = advertised[p.id][part.key] ?? inside;
+
             return value == null ? [] : [{ p, value, inside }];
           })
           .sort((a, b) => b.value - a.value)
@@ -37,14 +42,19 @@ export function MachineSizes({ providers }: { providers: readonly Provider[] }) 
             label: part.format(value),
             segments: [{ value, color: providerColor(p.id), variant: "gradient" }],
             detail: [
-              advertised[p.id][part.key] == null ? "not advertised; measured" : `advertised ${part.format(value)}`,
+              advertised[p.id][part.key] == null
+                ? "not advertised; measured"
+                : `advertised ${part.format(value)}`,
               ...(inside == null ? [] : [`measured inside ${part.format(inside)}`]),
             ],
           }));
+
         return (
           <div key={part.key}>
             <h4 className="text-[14px] font-medium">{part.title}</h4>
-            <p className="mt-0.5 mb-2 text-[12px] text-[var(--muted)]">Default sandbox · Higher is better</p>
+            <p className="mt-0.5 mb-2 text-[12px] text-[var(--muted)]">
+              Default sandbox · Higher is better
+            </p>
             <Columns columns={columns} label={`${part.title} by provider`} compact />
           </div>
         );

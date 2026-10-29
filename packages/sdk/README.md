@@ -55,13 +55,20 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 
 async function loadProvider(name: string): Promise<Provider> {
   switch (name) {
-    case "memory": return (await import("@opencoredev/sandbox-sdk/memory")).memory();
-    case "local": return (await import("@opencoredev/sandbox-sdk/local")).local();
-    case "e2b": return (await import("@opencoredev/sandbox-sdk/e2b")).e2b();
-    case "daytona": return (await import("@opencoredev/sandbox-sdk/daytona")).daytona();
-    case "vercel": return (await import("@opencoredev/sandbox-sdk/vercel")).vercel();
-    case "upstash": return (await import("@opencoredev/sandbox-sdk/upstash")).upstash();
-    default: throw new Error(`Unknown SANDBOX_PROVIDER "${name}"`);
+    case "memory":
+      return (await import("@opencoredev/sandbox-sdk/memory")).memory();
+    case "local":
+      return (await import("@opencoredev/sandbox-sdk/local")).local();
+    case "e2b":
+      return (await import("@opencoredev/sandbox-sdk/e2b")).e2b();
+    case "daytona":
+      return (await import("@opencoredev/sandbox-sdk/daytona")).daytona();
+    case "vercel":
+      return (await import("@opencoredev/sandbox-sdk/vercel")).vercel();
+    case "upstash":
+      return (await import("@opencoredev/sandbox-sdk/upstash")).upstash();
+    default:
+      throw new Error(`Unknown SANDBOX_PROVIDER "${name}"`);
   }
 }
 
@@ -86,22 +93,22 @@ Two things differ between providers and are worth checking before you go multi-p
 
 Import each provider from its own subpath. The root entry never loads a provider SDK, and constructing a factory performs no I/O.
 
-| Provider | Import from | Factory | Credentials (env) | Peer package | Capabilities | Previews |
-| --- | --- | --- | --- | --- | --- | --- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b) | `/e2b` | `e2b()` | `E2B_API_KEY` | `e2b` | pause, snapshot, network-policy | any port |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona) | `/daytona` | `daytona()` | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`) | `@daytonaio/sdk` | snapshot, size, network-policy | any port; private sandboxes need `preview.headers` |
-| [Vercel](https://sandbox-sdk.app/docs/providers/vercel) | `/vercel` | `vercel()` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox` | pause, snapshot, size, network-policy | declare in `ports` (max 15) |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash) | `/upstash` | `upstash()` | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`) | `@upstash/box` | pause, snapshot, size, network-policy; no pause with `ephemeral: true` | any port; bearer token in `preview.headers` unless `public: true` |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway) | `/railway` | `railway()` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | `railway` | snapshot | declare in `ports` (max 10) |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki) | `/tenki` | `tenki()` | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy | any port; URL may expire (`preview.expiresAt`) |
-| boxd | `/boxd` | `boxd()` | `BOXD_API_KEY` (optional `BOXD_BASE_URL`) | `@boxd-sh/sdk` | pause, snapshot, size | one port at a time; the URL follows the last port requested |
-| Freestyle | `/freestyle` | `freestyle()` | `FREESTYLE_API_KEY` | `freestyle` | pause, snapshot, network-policy | any port |
-| Superserve | `/superserve` | `superserve()` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot | any port; token in `preview.headers` |
-| Boat | `/boat` | `boat()` | `BOAT_API_KEY` (optional `BOAT_API_BASE`) | `@boatdev/sdk` | size | any port; cookie in `preview.headers` |
-| Sandboxer | `/sandboxer` | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`) | `@boatdev/sdk` | pause, snapshot, size | any port; private URL, send `preview.headers` |
-| [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local` | `local()` | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`) | none | pause, snapshot, size, network-policy (`"none"` only, no allow-lists) | declare in `ports` (default `[3000]`); URL is `http://127.0.0.1:<port>` |
-| [agentOS](https://sandbox-sdk.app/docs/providers/agentos) | `/agentos` | `agentos()` | none | `@rivet-dev/agentos-core` | network-policy | none; no background processes either |
-| Memory | `/memory` | `memory()` | none | none | network-policy | fake `*.memory.invalid` URL; never fetch it |
+| Provider                                                       | Import from   | Factory                 | Credentials (env)                                                               | Peer package              | Capabilities                                                           | Previews                                                                |
+| -------------------------------------------------------------- | ------------- | ----------------------- | ------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)              | `/e2b`        | `e2b()`                 | `E2B_API_KEY`                                                                   | `e2b`                     | pause, snapshot, network-policy                                        | any port                                                                |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)      | `/daytona`    | `daytona()`             | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`)                | `@daytonaio/sdk`          | snapshot, size, network-policy                                         | any port; private sandboxes need `preview.headers`                      |
+| [Vercel](https://sandbox-sdk.app/docs/providers/vercel)        | `/vercel`     | `vercel()`              | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox`         | pause, snapshot, size, network-policy                                  | declare in `ports` (max 15)                                             |
+| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         | `@upstash/box`            | pause, snapshot, size, network-policy; no pause with `ephemeral: true` | any port; bearer token in `preview.headers` unless `public: true`       |
+| [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   | `railway`                 | snapshot                                                               | declare in `ports` (max 10)                                             |
+| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           | `@tenkicloud/sandbox`     | pause, snapshot, size, network-policy                                  | any port; URL may expire (`preview.expiresAt`)                          |
+| boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       | `@boxd-sh/sdk`            | pause, snapshot, size                                                  | one port at a time; the URL follows the last port requested             |
+| Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             | `freestyle`               | pause, snapshot, network-policy                                        | any port                                                                |
+| Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            | `@superserve/sdk`         | pause, snapshot                                                        | any port; token in `preview.headers`                                    |
+| Boat                                                           | `/boat`       | `boat()`                | `BOAT_API_KEY` (optional `BOAT_API_BASE`)                                       | `@boatdev/sdk`            | size                                                                   | any port; cookie in `preview.headers`                                   |
+| Sandboxer                                                      | `/sandboxer`  | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`)      | `@boatdev/sdk`            | pause, snapshot, size                                                  | any port; private URL, send `preview.headers`                           |
+| [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local`      | `local()`               | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)   | none                      | pause, snapshot, size, network-policy (`"none"` only, no allow-lists)  | declare in `ports` (default `[3000]`); URL is `http://127.0.0.1:<port>` |
+| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)      | `/agentos`    | `agentos()`             | none                                                                            | `@rivet-dev/agentos-core` | network-policy                                                         | none; no background processes either                                    |
+| Memory                                                         | `/memory`     | `memory()`              | none                                                                            | none                      | network-policy                                                         | fake `*.memory.invalid` URL; never fetch it                             |
 
 Capability meanings: `pause` adds `box.pause()` and `box.resume()`, `snapshot` adds `box.snapshot()` and `createSandbox(provider, { from })`, `size` allows the `size` option, and `network-policy` allows `network: "none"` or `{ allow: [...] }`. The SDK also defines `terminal` (`box.terminal()`, an interactive PTY), but no built-in provider supports it yet.
 
@@ -300,22 +307,22 @@ try {
 
 The SDK only throws `SandboxError`. A non-zero exit, a command timeout, or an aborted `run` is a result, not an error. `hint` is the next step on its own, `retryable` says whether the same call can succeed again, and `provider` and `sandboxId` say where it happened. Secrets are redacted from every field.
 
-| `code` | Meaning |
-| --- | --- |
-| `auth` | Credentials are missing or rejected. |
-| `not_found` | The sandbox no longer exists, or this handle was closed. |
-| `quota` | A provider limit or billing stopped the request. Usually retryable. |
-| `unavailable` | The provider is down or unreachable. Usually retryable. |
-| `unsupported` | The provider cannot do what was asked: `size`, `network`, a lifetime option, an undeclared preview port. |
-| `timeout` | A provider operation or a readiness check took too long. |
-| `aborted` | Your `AbortSignal` fired during `createSandbox`. |
-| `outcome_unknown` | The request may or may not have happened. Check state before retrying. |
-| `process_exited` | A background process exited before it was ready. |
-| `port_not_ready` | A preview did not answer with a 2xx before `waitMs` ran out. |
-| `edit_not_found`, `edit_not_unique` | `files.edit` matched zero times or more than once. |
-| `file_not_found` | The path does not exist. |
-| `invalid_argument` | The input is invalid. Retrying will not help. |
-| `provider` | Any other provider or adapter failure. Read `message` and `cause`. |
+| `code`                              | Meaning                                                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `auth`                              | Credentials are missing or rejected.                                                                     |
+| `not_found`                         | The sandbox no longer exists, or this handle was closed.                                                 |
+| `quota`                             | A provider limit or billing stopped the request. Usually retryable.                                      |
+| `unavailable`                       | The provider is down or unreachable. Usually retryable.                                                  |
+| `unsupported`                       | The provider cannot do what was asked: `size`, `network`, a lifetime option, an undeclared preview port. |
+| `timeout`                           | A provider operation or a readiness check took too long.                                                 |
+| `aborted`                           | Your `AbortSignal` fired during `createSandbox`.                                                         |
+| `outcome_unknown`                   | The request may or may not have happened. Check state before retrying.                                   |
+| `process_exited`                    | A background process exited before it was ready.                                                         |
+| `port_not_ready`                    | A preview did not answer with a 2xx before `waitMs` ran out.                                             |
+| `edit_not_found`, `edit_not_unique` | `files.edit` matched zero times or more than once.                                                       |
+| `file_not_found`                    | The path does not exist.                                                                                 |
+| `invalid_argument`                  | The input is invalid. Retrying will not help.                                                            |
+| `provider`                          | Any other provider or adapter failure. Read `message` and `cause`.                                       |
 
 ## Give an agent a sandbox
 
@@ -333,12 +340,12 @@ const { text } = await generateText({
 });
 ```
 
-| Framework | Import | Returns |
-| --- | --- | --- |
-| AI SDK 7 | `@opencoredev/sandbox-sdk/ai` | tool map for `generateText` / `streamText` |
-| Mastra 1.78+ | `@opencoredev/sandbox-sdk/mastra` | tool map for `new Agent({ tools })` |
-| OpenAI Agents 0.20+ | `@opencoredev/sandbox-sdk/openai` | tool array for `new Agent({ tools })` |
-| Anything else | `@opencoredev/sandbox-sdk/tools` | `createSandboxTools` and Zod `toolSchemas` |
+| Framework           | Import                            | Returns                                    |
+| ------------------- | --------------------------------- | ------------------------------------------ |
+| AI SDK 7            | `@opencoredev/sandbox-sdk/ai`     | tool map for `generateText` / `streamText` |
+| Mastra 1.78+        | `@opencoredev/sandbox-sdk/mastra` | tool map for `new Agent({ tools })`        |
+| OpenAI Agents 0.20+ | `@opencoredev/sandbox-sdk/openai` | tool array for `new Agent({ tools })`      |
+| Anything else       | `@opencoredev/sandbox-sdk/tools`  | `createSandboxTools` and Zod `toolSchemas` |
 
 The default tools are `run`, `read_file`, `write_file`, `edit_file`, `start_process`, `process_logs`, and `stop_process`. Opt into `search`, `list_files`, `changes`, or `preview` with `allow`. Results are compact and capped for model context, and registered secrets never reach the model. Use `beforeRun` to deny or rewrite commands. `root` limits file paths, but it is not a security boundary; the sandbox is.
 
@@ -348,15 +355,15 @@ The SDK aims for near-zero overhead on top of each provider's own API. The root 
 
 Time the SDK adds on top of each provider's own SDK, as median milliseconds. "Cold" is `createSandbox` plus the first `box.run("true")`, compared with the provider SDK's create plus its own exec. "Run" is a warm `run("true")` on an existing sandbox. Negative numbers and small differences are within provider noise.
 
-| Provider | Create | Cold: create to first command | Warm `run` |
-| --- | ---: | ---: | ---: |
-| E2B | +24 | +52 | +8 |
-| Daytona | ±0 | ±0 | +38 |
-| Upstash Box | +27 | +69 | +15 |
-| Freestyle | ±0 | +51 | +23 |
-| Tenki | ±0 | +119 | +15 |
-| Superserve | ±0 | +73 | +9 |
-| boxd | +272 | +370 | +52 |
+| Provider    | Create | Cold: create to first command | Warm `run` |
+| ----------- | -----: | ----------------------------: | ---------: |
+| E2B         |    +24 |                           +52 |         +8 |
+| Daytona     |     ±0 |                            ±0 |        +38 |
+| Upstash Box |    +27 |                           +69 |        +15 |
+| Freestyle   |     ±0 |                           +51 |        +23 |
+| Tenki       |     ±0 |                          +119 |        +15 |
+| Superserve  |     ±0 |                           +73 |         +9 |
+| boxd        |   +272 |                          +370 |        +52 |
 
 boxd has no native metadata field, so a sandbox created with labels or a `key` writes its ownership record with one extra request before `createSandbox` returns. The other providers send labels with the create call itself and run any guest setup inside your first command.
 

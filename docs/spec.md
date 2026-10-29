@@ -25,20 +25,25 @@ This spec is the single source of truth for the rewrite. If an implementation ch
 ## 1. Getting a sandbox
 
 ```ts
-import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "@opencoredev/sandbox-sdk";
+import {
+  createSandbox,
+  connectSandbox,
+  listSandboxes,
+  reapSandboxes,
+} from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
 await using box = await createSandbox(e2b({ template: "base" }), {
-  key: `user:${userId}`,          // optional. get-or-create. box.created tells you which.
-  size: "small",                   // "small" | "medium" | "large" | { cpu, memoryMb, diskGb }
+  key: `user:${userId}`, // optional. get-or-create. box.created tells you which.
+  size: "small", // "small" | "medium" | "large" | { cpu, memoryMb, diskGb }
   env: { NODE_ENV: "development" },
-  secrets: { GITHUB_TOKEN: token },// injected as env, redacted from every output/log/error
-  network: "all",                  // "all" | "none" | { allow: ["registry.npmjs.org", ...] }
-  ports: [3000],                   // declared up front (Vercel needs this; others ignore)
-  idleTimeoutMs: 15 * 60_000,      // auto-stop/pause when idle (native where supported)
-  timeoutMs: 60 * 60_000,          // hard max lifetime
+  secrets: { GITHUB_TOKEN: token }, // injected as env, redacted from every output/log/error
+  network: "all", // "all" | "none" | { allow: ["registry.npmjs.org", ...] }
+  ports: [3000], // declared up front (Vercel needs this; others ignore)
+  idleTimeoutMs: 15 * 60_000, // auto-stop/pause when idle (native where supported)
+  timeoutMs: 60 * 60_000, // hard max lifetime
   labels: { app: "builder", userId },
-  signal,                          // abort creation; a sandbox that arrives late gets destroyed
+  signal, // abort creation; a sandbox that arrives late gets destroyed
 });
 ```
 
@@ -65,17 +70,19 @@ const r = await box.run("pnpm test", { cwd: "app", env: {}, timeoutMs: 120_000, 
 for await (const chunk of box.run("pnpm install")) ui.write(chunk.stream, chunk.text);
 // RunHandle is both PromiseLike<RunResult> and AsyncIterable<OutputChunk>
 
-await box.$`git clone ${url} app`;            // tagged template, every interpolation shell-escaped
-await box.$`ls ${dir}`.cwd("/workspace");     // same RunHandle, chainable .cwd/.env/.timeout
+await box.$`git clone ${url} app`; // tagged template, every interpolation shell-escaped
+await box.$`ls ${dir}`.cwd("/workspace"); // same RunHandle, chainable .cwd/.env/.timeout
 ```
 
 **Defaults:**
+
 - `timeoutMs` 120 000.
 - `maxOutputBytes` 1 MB kept per stream in `RunResult`. Beyond that, keep the head and tail, set `truncated: true`, and put a marker in the middle.
 - stdin closed unless given.
 - Env always includes `CI=1 PAGER=cat GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive TERM=dumb NO_COLOR=1`.
 
 **Results:**
+
 - `output` is stdout and stderr interleaved in arrival order.
 - `cwd` is the resolved absolute path.
 - On timeout or abort, the SDK kills the whole remote process group and returns `{ timedOut: true, exitCode: null, ok: false }` with the partial output. It does not throw.
@@ -85,37 +92,42 @@ await box.$`ls ${dir}`.cwd("/workspace");     // same RunHandle, chainable .cwd/
 
 ```ts
 const dev = await box.start("pnpm dev --port 3000", {
-  name: "dev",                                  // unique per sandbox; reattach by name
+  name: "dev", // unique per sandbox; reattach by name
   cwd: "app",
   ready: { port: 3000 } | { http: { port: 3000, path: "/" } } | { log: /Local:/ },
   readyTimeoutMs: 60_000,
 });
-dev.url;          // preview URL when ready included a port, verified to answer
-dev.status;       // "starting" | "running" | "exited" | "failed"
-for await (const line of dev.lines({ after: cursor })) {}   // line: { text, stream, cursor }
+dev.url; // preview URL when ready included a port, verified to answer
+dev.status; // "starting" | "running" | "exited" | "failed"
+for await (const line of dev.lines({ after: cursor })) {
+} // line: { text, stream, cursor }
 const page = await dev.logs({ after: cursor, maxBytes: 16_384 }); // { text, nextCursor, truncated }
-await dev.stop();                                // SIGTERM, then SIGKILL after graceMs; idempotent
+await dev.stop(); // SIGTERM, then SIGKILL after graceMs; idempotent
 await dev.restart();
-const exit = await dev.wait();                   // { exitCode, signal }
+const exit = await dev.wait(); // { exitCode, signal }
 
-box.process("dev");      // reattach from anywhere: works after the app server restarted
-await box.processes();   // [{ name, command, status, pid, ports, startedAt, exitCode }]
+box.process("dev"); // reattach from anywhere: works after the app server restarted
+await box.processes(); // [{ name, command, status, pid, ports, startedAt, exitCode }]
 const p = await box.preview(3000, { path: "/", waitMs: 10_000 }); // { url, headers?, expiresAt? }
 ```
 
 **Process records.**
+
 - Process records and logs live inside the sandbox under `/tmp/.sandbox-sdk/procs/<name>/`, in `spec.json`, `pid`, `exit`, and `out.log`. Logs rotate at 10 MB.
 - Native process APIs are used where a provider has them. The shell shim is the fallback.
 
 **Readiness.**
+
 - If the process exits before it's ready, `start` throws `SandboxError{ code: "process_exited" }` with the exit code and the last 50 log lines.
 - If readiness times out, the process keeps running, the handle reports `ready: false`, and the error carries the log tail.
 
 **Cursors and memory.**
+
 - Cursors are opaque, serializable strings, so a different server process can resume reading.
 - Host-side buffering per process is bounded at 1 MB.
 
 **Previews.**
+
 - `preview()` returns provider-correct access, including the Daytona token header and an expiry where relevant.
 - The SDK checks the URL from outside before returning it when `waitMs` is set.
 
@@ -154,11 +166,11 @@ These run through `run`, with credentials passed through a temporary credential 
 
 ## 6. Optional capabilities (type-gated)
 
-| Method | Returns |
-|---|---|
-| `box.pause()` / `box.resume()` | `void` |
-| `box.snapshot()` | `{ id }`, used as `createSandbox(provider, { from: snapshotId })` |
-| `box.terminal({ cols, rows })` | PTY handle with `write`, `resize`, `onData`, `close` |
+| Method                         | Returns                                                           |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `box.pause()` / `box.resume()` | `void`                                                            |
+| `box.snapshot()`               | `{ id }`, used as `createSandbox(provider, { from: snapshotId })` |
+| `box.terminal({ cols, rows })` | PTY handle with `write`, `resize`, `onData`, `close`              |
 
 - `network` policy and `size` are creation-time options that fail closed when the provider can't enforce them.
 - `box.capabilities` is a `ReadonlySet<"pause" | "snapshot" | "terminal" | "network-policy" | "size">`.
@@ -171,15 +183,16 @@ These run through `run`, with credentials passed through a temporary credential 
 
 ## 8. Providers
 
-| Factory | Subpath | keyMode | Notes |
-|---|---|---|---|
-| `local()` | `/local` | exact | Docker; real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
-| `memory()` | `/memory` | exact | In-process fake for tests. Supports files, a small shell subset via a command handler table, processes, and previews (fake URLs). It never touches the network. |
-| `e2b(opts)` | `/e2b` | best-effort | `e2b` SDK. Uses native commands and pause/snapshot. |
-| `vercel(opts)` | `/vercel` | exact | `@vercel/sandbox`. Named sandboxes, ports declared at create. |
-| `daytona(opts)` | `/daytona` | best-effort | `@daytonaio/sdk`. Labels, preview token. |
+| Factory         | Subpath    | keyMode     | Notes                                                                                                                                                           |
+| --------------- | ---------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local()`       | `/local`   | exact       | Docker; real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.                                                                     |
+| `memory()`      | `/memory`  | exact       | In-process fake for tests. Supports files, a small shell subset via a command handler table, processes, and previews (fake URLs). It never touches the network. |
+| `e2b(opts)`     | `/e2b`     | best-effort | `e2b` SDK. Uses native commands and pause/snapshot.                                                                                                             |
+| `vercel(opts)`  | `/vercel`  | exact       | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                                                                   |
+| `daytona(opts)` | `/daytona` | best-effort | `@daytonaio/sdk`. Labels, preview token.                                                                                                                        |
 
 **Adapter contract.** Internal, exported from `/provider` for third parties. Each adapter is about 200–400 lines:
+
 - `create(input)`
 - `find(key)`
 - `connect(id)`
@@ -198,10 +211,27 @@ Everything else, including runs, processes, the `$` tag, edit, upload, search, c
 
 ```ts
 class SandboxError extends Error {
-  code: "auth" | "not_found" | "quota" | "unavailable" | "unsupported" | "timeout" | "aborted"
-      | "outcome_unknown" | "process_exited" | "port_not_ready" | "edit_not_found"
-      | "edit_not_unique" | "file_not_found" | "invalid_argument" | "provider";
-  retryable: boolean; hint: string; provider: string; sandboxId?: string; cause?: unknown;
+  code:
+    | "auth"
+    | "not_found"
+    | "quota"
+    | "unavailable"
+    | "unsupported"
+    | "timeout"
+    | "aborted"
+    | "outcome_unknown"
+    | "process_exited"
+    | "port_not_ready"
+    | "edit_not_found"
+    | "edit_not_unique"
+    | "file_not_found"
+    | "invalid_argument"
+    | "provider";
+  retryable: boolean;
+  hint: string;
+  provider: string;
+  sandboxId?: string;
+  cause?: unknown;
 }
 ```
 
@@ -211,26 +241,28 @@ The message format is "what happened. why. what to do next." Secrets are redacte
 
 Each adapter is a subpath. `/ai` gives AI SDK tools, `/mastra` gives Mastra tools, and `/openai` gives OpenAI Agents SDK tools. Each one exports `sandboxTools(box, options?)`, which returns that framework's native tool map or array with no glue code needed.
 
-**Default tools.** Flat parameters, one verb each, and a description that says when *not* to use the tool:
+**Default tools.** Flat parameters, one verb each, and a description that says when _not_ to use the tool:
 
-| Tool | Parameters |
-|---|---|
-| `run` | `command`, `cwd?`, `timeoutMs?` |
-| `read_file` | `path`, `offset?`, `limit?`. Returns numbered lines and a sha. |
-| `write_file` | `path`, `content` |
-| `edit_file` | `path`, `find`, `replace` |
+| Tool            | Parameters                                                               |
+| --------------- | ------------------------------------------------------------------------ |
+| `run`           | `command`, `cwd?`, `timeoutMs?`                                          |
+| `read_file`     | `path`, `offset?`, `limit?`. Returns numbered lines and a sha.           |
+| `write_file`    | `path`, `content`                                                        |
+| `edit_file`     | `path`, `find`, `replace`                                                |
 | `start_process` | `name`, `command`, `cwd?`, `port?`. Waits for ready and returns the URL. |
-| `process_logs` | `name`, `cursor?` |
-| `stop_process` | `name` |
+| `process_logs`  | `name`, `cursor?`                                                        |
+| `stop_process`  | `name`                                                                   |
 
 **Optional tools:** `search`, `list_files`, `changes`, `preview`.
 
 **Model-facing output:**
+
 - It opens with a verdict line: `OK exit=0 1.2s cwd=/workspace` or `FAILED exit=1 ...`.
 - After that come `output:` and the interleaved, ANSI-stripped output, capped at 16 KB as head plus tail with a "[N bytes cut, use process_logs]" marker.
 - Errors use the section 9 format, and secrets never appear.
 
 **Options:**
+
 - `root` keeps paths inside it.
 - `allow` and `deny` select tools.
 - `beforeRun(command)` can deny or rewrite a command.
@@ -251,6 +283,7 @@ Each adapter is a subpath. `/ai` gives AI SDK tools, `/mastra` gives Mastra tool
   - SDK overhead against the raw provider SDK, as CPU time.
 
   It reports p50, p95, and p99 with the machine and region, writes JSON plus a Markdown table, and never runs cloud providers without keys.
+
 - Test commands must use timeouts and at most 4 workers.
 
 ## 12. Repo layout (branch from `v2`)

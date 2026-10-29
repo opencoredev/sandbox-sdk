@@ -7,10 +7,10 @@ You want a model to run commands, read and edit files, and start a dev server, w
 
 Each framework has its own subpath, so you only load the one you use:
 
-| Framework | Import | Returns | Page |
-| --- | --- | --- | --- |
-| AI SDK | `@opencoredev/sandbox-sdk/ai` | A tool set for `tools` | [AI SDK](/integrations/ai-sdk) |
-| Mastra | `@opencoredev/sandbox-sdk/mastra` | A tool map for `new Agent` | [Mastra](/integrations/mastra) |
+| Framework         | Import                            | Returns                      | Page                                         |
+| ----------------- | --------------------------------- | ---------------------------- | -------------------------------------------- |
+| AI SDK            | `@opencoredev/sandbox-sdk/ai`     | A tool set for `tools`       | [AI SDK](/integrations/ai-sdk)               |
+| Mastra            | `@opencoredev/sandbox-sdk/mastra` | A tool map for `new Agent`   | [Mastra](/integrations/mastra)               |
 | OpenAI Agents SDK | `@opencoredev/sandbox-sdk/openai` | A tool array for `new Agent` | [OpenAI Agents](/integrations/openai-agents) |
 
 The tools behave the same in every framework. This page uses the AI SDK. The framework pages show the same agent in Mastra and the OpenAI Agents SDK.
@@ -75,15 +75,15 @@ The agent calls `run` to execute the tests, `read_file` to look at the failure, 
 
 Seven tools are on by default. Each does one thing and has flat parameters, and each description tells the model when not to use it.
 
-| Tool | Parameters | What it does |
-| --- | --- | --- |
-| `run` | `command`, `cwd?`, `timeoutMs?` | Runs a command and waits for it to exit |
-| `read_file` | `path`, `offset?`, `limit?` | Returns numbered lines and a hash of the file |
-| `write_file` | `path`, `content` | Writes a whole file |
-| `edit_file` | `path`, `find`, `replace` | Replaces text that appears exactly once |
+| Tool            | Parameters                         | What it does                                               |
+| --------------- | ---------------------------------- | ---------------------------------------------------------- |
+| `run`           | `command`, `cwd?`, `timeoutMs?`    | Runs a command and waits for it to exit                    |
+| `read_file`     | `path`, `offset?`, `limit?`        | Returns numbered lines and a hash of the file              |
+| `write_file`    | `path`, `content`                  | Writes a whole file                                        |
+| `edit_file`     | `path`, `find`, `replace`          | Replaces text that appears exactly once                    |
 | `start_process` | `name`, `command`, `cwd?`, `port?` | Starts a background process, waits for it, returns its URL |
-| `process_logs` | `name`, `cursor?` | Reads a process's output from a cursor |
-| `stop_process` | `name` | Stops a background process |
+| `process_logs`  | `name`, `cursor?`                  | Reads a process's output from a cursor                     |
+| `stop_process`  | `name`                             | Stops a background process                                 |
 
 Four more are available when you ask for them: `search`, `list_files`, `changes`, and `preview`.
 

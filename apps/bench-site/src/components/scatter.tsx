@@ -23,6 +23,7 @@ const X_FLOOR = 2.5;
 const median = (xs: readonly number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
+
   return s.length % 2 ? (s[m] ?? 0) : ((s[m - 1] ?? 0) + (s[m] ?? 0)) / 2;
 };
 
@@ -62,20 +63,35 @@ export function Scatter({
   const fy = (y: number) => (y - y0) / (y1 - y0);
   const mx = fx(median(points.map((p) => p.x)));
   const my = fy(median(points.map((p) => p.y)));
+
   const summary = points
-    .map((p) => `${providerName(p.provider)}${p.tag ? ` (${p.tag})` : ""}: ${formatValue(p.x, "s")}, ${formatMoney(p.y, p.currency)} an hour`)
+    .map(
+      (p) =>
+        `${providerName(p.provider)}${p.tag ? ` (${p.tag})` : ""}: ${formatValue(p.x, "s")}, ${formatMoney(p.y, p.currency)} an hour`,
+    )
     .join("; ");
 
   return (
     <figure aria-label={`${yTitle} against ${xTitle}. ${summary}.`}>
       <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-[var(--muted)]">
         <span className="flex items-center gap-2">
-          <span aria-hidden className="size-3 rounded-[2px] border" style={{ backgroundColor: `color-mix(in oklch, ${QUADRANT} 16%, transparent)`, borderColor: `color-mix(in oklch, ${QUADRANT} 45%, transparent)` }} />
+          <span
+            aria-hidden
+            className="size-3 rounded-[2px] border"
+            style={{
+              backgroundColor: `color-mix(in oklch, ${QUADRANT} 16%, transparent)`,
+              borderColor: `color-mix(in oklch, ${QUADRANT} 45%, transparent)`,
+            }}
+          />
           Faster and cheaper than the median
         </span>
         {points.map((p) => (
           <span key={p.provider} className="flex items-center gap-1.5">
-            <span aria-hidden className="size-2 rounded-full" style={{ backgroundColor: providerColor(p.provider) }} />
+            <span
+              aria-hidden
+              className="size-2 rounded-full"
+              style={{ backgroundColor: providerColor(p.provider) }}
+            />
             {providerName(p.provider)}
           </span>
         ))}
@@ -101,14 +117,22 @@ export function Scatter({
             }}
           />
           {yTicks.map((t) => (
-            <div key={`y${t}`} className="absolute right-[18px] left-[56px] border-t border-dotted border-[var(--grid)]" style={{ top: along(fy(t), "y") }}>
+            <div
+              key={`y${t}`}
+              className="absolute right-[18px] left-[56px] border-t border-dotted border-[var(--grid)]"
+              style={{ top: along(fy(t), "y") }}
+            >
               <span className="absolute -left-2 -translate-x-full -translate-y-1/2 font-mono text-[11px] text-[var(--muted)] tabular-nums">
                 ${t.toFixed(2)}
               </span>
             </div>
           ))}
           {xs.map((t) => (
-            <div key={`x${t}`} className="absolute top-[14px] bottom-[30px] border-l border-dotted border-[var(--grid)]" style={{ left: along(fx(t), "x") }}>
+            <div
+              key={`x${t}`}
+              className="absolute top-[14px] bottom-[30px] border-l border-dotted border-[var(--grid)]"
+              style={{ left: along(fx(t), "x") }}
+            >
               <span className="absolute -bottom-6 -translate-x-1/2 font-mono whitespace-nowrap text-[11px] text-[var(--muted)] tabular-nums">
                 {t} s
               </span>
@@ -128,8 +152,13 @@ export function Scatter({
             const twin = points.find((q) => q !== p && Math.abs(fy(q.y) - fy(p.y)) < 0.05);
             const above = twin && (twin.y === p.y ? fx(twin.x) > px : p.y > twin.y);
             const nudge = twin ? (above ? -15 : 15) : 0;
+
             return (
-              <div key={p.provider} className="absolute" style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}>
+              <div
+                key={p.provider}
+                className="absolute"
+                style={{ left: along(px, "x"), top: along(fy(p.y), "y") }}
+              >
                 <span
                   className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-[3px] ring-[var(--surface)]"
                   style={{ backgroundColor: providerColor(p.provider) }}

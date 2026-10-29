@@ -24,15 +24,15 @@ try {
 
 ## Fields
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `code` | see below | What kind of failure |
-| `message` | `string` | "What happened. Why. What to do next." |
-| `retryable` | `boolean` | Whether the same call can succeed if you retry it |
-| `hint` | `string` | The next step on its own, for UIs |
-| `provider` | `string` | Provider name |
-| `sandboxId` | `string \| undefined` | The sandbox involved, when there is one |
-| `cause` | `unknown` | A redacted string from the underlying failure, when there is one. See [Causes](#causes). |
+| Field       | Type                  | Meaning                                                                                  |
+| ----------- | --------------------- | ---------------------------------------------------------------------------------------- |
+| `code`      | see below             | What kind of failure                                                                     |
+| `message`   | `string`              | "What happened. Why. What to do next."                                                   |
+| `retryable` | `boolean`             | Whether the same call can succeed if you retry it                                        |
+| `hint`      | `string`              | The next step on its own, for UIs                                                        |
+| `provider`  | `string`              | Provider name                                                                            |
+| `sandboxId` | `string \| undefined` | The sandbox involved, when there is one                                                  |
+| `cause`     | `unknown`             | A redacted string from the underlying failure, when there is one. See [Causes](#causes). |
 
 Secrets are redacted from `message`, `cause`, and logs. The same scrub runs on the SDK's own messages, including the log tail in `process_exited` and readiness timeouts, so a URL in that tail shows as `[URL REDACTED]`.
 
@@ -51,23 +51,23 @@ Kept text is scrubbed before it reaches you: URLs, `Authorization` headers, bear
 
 `code` is one of these fifteen strings, exported as the `ErrorCode` type.
 
-| Code | When | What to do |
-| --- | --- | --- |
-| `auth` | Missing or rejected credentials | Check the provider's environment variables or factory options. On Vercel, a token also needs team and project IDs. |
-| `not_found` | The sandbox ID doesn't exist, for example in `connectSandbox` or after a Local deadline passed | Create a new sandbox. With a `key`, `createSandbox` does this for you. |
-| `quota` | The provider's limits or billing stopped the request | Wait, reap unused sandboxes, or raise your plan. Usually retryable. |
-| `unavailable` | The provider is down or unreachable | Retry with backoff. Usually retryable. |
-| `unsupported` | The provider can't do what you asked, such as a size or network policy | Change the option or the provider. The message says what the provider allows. See [Capabilities](/reference/capabilities). |
-| `timeout` | A provider operation took too long, or a process's readiness check timed out | For readiness, raise `readyTimeoutMs` and read the log tail in the message. The process keeps running. |
-| `aborted` | Your `signal` fired | Nothing, unless you want to retry with a fresh signal. A sandbox that arrived late was destroyed. |
-| `outcome_unknown` | The request may or may not have happened, for example a create or a kill that lost its connection | Check the sandbox's state before retrying. If in doubt, destroy it. |
-| `process_exited` | A process exited before it was ready | Read the exit code and the last 50 log lines in the message, fix the command, and start it again. |
-| `port_not_ready` | A preview's `waitMs` ran out before the URL answered with a 2xx | Check that the server listens on `0.0.0.0` and the right port, then read its logs. |
-| `edit_not_found` | `files.edit` found no match | Read the file again and use text that is in it. |
-| `edit_not_unique` | `files.edit` found more than one match. The message lists their line numbers. | Add surrounding lines to `find` so it matches once. |
-| `file_not_found` | The path doesn't exist | Check the path. Relative paths resolve against `/workspace`. |
-| `invalid_argument` | The request itself is invalid, such as a bad port, a non-positive timeout, or an invalid environment variable name | Fix the input. Retrying won't help. |
-| `provider` | Any other provider failure, or an adapter that declares a capability without its method | Read `message` and `cause`. Report it if it looks like an SDK bug. |
+| Code               | When                                                                                                               | What to do                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `auth`             | Missing or rejected credentials                                                                                    | Check the provider's environment variables or factory options. On Vercel, a token also needs team and project IDs.         |
+| `not_found`        | The sandbox ID doesn't exist, for example in `connectSandbox` or after a Local deadline passed                     | Create a new sandbox. With a `key`, `createSandbox` does this for you.                                                     |
+| `quota`            | The provider's limits or billing stopped the request                                                               | Wait, reap unused sandboxes, or raise your plan. Usually retryable.                                                        |
+| `unavailable`      | The provider is down or unreachable                                                                                | Retry with backoff. Usually retryable.                                                                                     |
+| `unsupported`      | The provider can't do what you asked, such as a size or network policy                                             | Change the option or the provider. The message says what the provider allows. See [Capabilities](/reference/capabilities). |
+| `timeout`          | A provider operation took too long, or a process's readiness check timed out                                       | For readiness, raise `readyTimeoutMs` and read the log tail in the message. The process keeps running.                     |
+| `aborted`          | Your `signal` fired                                                                                                | Nothing, unless you want to retry with a fresh signal. A sandbox that arrived late was destroyed.                          |
+| `outcome_unknown`  | The request may or may not have happened, for example a create or a kill that lost its connection                  | Check the sandbox's state before retrying. If in doubt, destroy it.                                                        |
+| `process_exited`   | A process exited before it was ready                                                                               | Read the exit code and the last 50 log lines in the message, fix the command, and start it again.                          |
+| `port_not_ready`   | A preview's `waitMs` ran out before the URL answered with a 2xx                                                    | Check that the server listens on `0.0.0.0` and the right port, then read its logs.                                         |
+| `edit_not_found`   | `files.edit` found no match                                                                                        | Read the file again and use text that is in it.                                                                            |
+| `edit_not_unique`  | `files.edit` found more than one match. The message lists their line numbers.                                      | Add surrounding lines to `find` so it matches once.                                                                        |
+| `file_not_found`   | The path doesn't exist                                                                                             | Check the path. Relative paths resolve against `/workspace`.                                                               |
+| `invalid_argument` | The request itself is invalid, such as a bad port, a non-positive timeout, or an invalid environment variable name | Fix the input. Retrying won't help.                                                                                        |
+| `provider`         | Any other provider failure, or an adapter that declares a capability without its method                            | Read `message` and `cause`. Report it if it looks like an SDK bug.                                                         |
 
 ## Retrying
 

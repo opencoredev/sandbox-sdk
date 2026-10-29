@@ -19,11 +19,13 @@ import {
 import recorded from "../src/billing/fixtures/recorded.json";
 
 const directories: string[] = [];
+
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
+
 const sample = (
   provider = "upstash",
   id: string | null = "fixture-upstash",
@@ -35,6 +37,7 @@ const sample = (
   startedAt: "2026-10-19T20:34:00.000Z",
   finishedAt: "2026-10-19T20:35:00.000Z",
 });
+
 async function report(samples: ReturnType<typeof sample>[], ndjson = true) {
   const directory = await mkdtemp(join(tmpdir(), "bench-billing-"));
   directories.push(directory);
@@ -44,8 +47,10 @@ async function report(samples: ReturnType<typeof sample>[], ndjson = true) {
       ? samples.map((s) => JSON.stringify(s)).join("\n")
       : JSON.stringify({ ignored: { samples: ["wrong"] }, samples, tail: "ignored" }),
   );
+
   return directory;
 }
+
 const row = {
   provider: "upstash",
   id: "fixture-upstash",
@@ -53,6 +58,7 @@ const row = {
   startedAt: "2026-10-19T20:34:00.000Z",
   finishedAt: "2026-10-19T20:35:00.000Z",
 };
+
 const noNetwork: Transport = async () => {
   throw new Error("unexpected network");
 };
@@ -60,10 +66,12 @@ const noNetwork: Transport = async () => {
 describe("billing collector", () => {
   it("retries transient read-only billing throttles with a bounded delay", async () => {
     vi.useFakeTimers();
+
     const fetcher = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
       .mockResolvedValueOnce(Response.json(recorded.upstash));
+
     const pending = http("https://us-east-1.box.upstash.com/v2/box/fixture-upstash", {});
     await vi.advanceTimersByTimeAsync(20_000);
     expect(await pending).toMatchObject(recorded.upstash);
@@ -73,11 +81,13 @@ describe("billing collector", () => {
   it("uses a deleted box's recorded charge, never duration × price", async () => {
     const directory = await report([sample(), sample("upstash", "fixture-upstash", "command")]);
     const transport = vi.fn<Transport>(async () => recorded.upstash);
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "test-only" },
       transport,
     });
+
     expect(transport).toHaveBeenCalledTimes(1);
     const provider = result.providers[0];
     expect(provider?.billedUSD).toBe(0.00030777130555555555);
@@ -100,11 +110,13 @@ describe("billing collector", () => {
       sample("upstash", "fixture-upstash", "files"),
       sample("upstash", "fixture-upstash", "command"),
     ]);
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "test-only" },
       transport: async () => recorded.upstash,
     });
+
     expect(result.providers[0]?.unallocatedSandboxIds).toEqual(["fixture-upstash"]);
     expect(result.providers[0]?.scenarios.every((s) => s.billedUSD === null)).toBe(true);
   });
@@ -154,39 +166,47 @@ describe("billing collector", () => {
   it("keeps offline costs unknown even with credentials and makes no calls", async () => {
     const directory = await report([sample(), sample("tenki", "t"), sample("freestyle", "f")]);
     const transport = vi.fn(noNetwork);
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "test-only" },
       transport,
       offline: true,
     });
+
     expect(transport).not.toHaveBeenCalled();
     expect(result.providers.every((p) => p.billedUSD === null && p.meteredUSD === null)).toBe(true);
   });
   it("does not turn unavailable coverage into a partial total or biased per-task cost", async () => {
     const directory = await report([sample(), sample("upstash", "missing")]);
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "test-only" },
       transport: async (url) => {
         if (url.endsWith("missing")) throw new BillingHttpError(404);
+
         return recorded.upstash;
       },
     });
+
     expect(result.providers[0]?.billedUSD).toBeNull();
     expect(result.providers[0]?.recoveredBilledUSD).toBe(recorded.upstash.total_compute_cost_usd);
     expect(result.providers[0]?.scenarios[0]?.billedCostPerTaskUSD).toBeNull();
   });
   it("stops repeated unauthorized or offline requests without retaining secret errors", async () => {
     const directory = await report([sample(), sample("upstash", "second")]);
+
     const transport = vi.fn<Transport>(async () => {
       throw new Error("SECRET_KEY accidental diagnostic");
     });
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "SECRET_KEY" },
       transport,
     });
+
     expect(transport).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(result)).not.toContain("SECRET_KEY");
     expect(result.providers[0]?.unavailableSandboxes).toBe(2);
@@ -202,6 +222,7 @@ describe("billing collector", () => {
     const cost = decodeBoat({ sandboxId: "b", dollars: 0.005, seconds: 500, running: false }, "b");
     expect(cost).toMatchObject({ kind: "metered", usd: 0.005, complete: true });
     const directory = await report([sample("boat", "b")]);
+
     const result = await collectBilling({
       report: directory,
       env: { BOAT_API_KEY: "test-only" },
@@ -209,6 +230,7 @@ describe("billing collector", () => {
         throw new BillingHttpError(recorded.boatMissing.status);
       },
     });
+
     expect(result.providers[0]?.billedUSD).toBeNull();
     expect(result.providers[0]?.meteredUSD).toBeNull();
   });
@@ -230,11 +252,13 @@ describe("billing collector", () => {
   });
   it("does not report a complete scenario cost when some attempts have no sandbox ID", async () => {
     const directory = await report([sample(), sample("upstash", null)]);
+
     const result = await collectBilling({
       report: directory,
       env: { UPSTASH_BOX_API_KEY: "test-only" },
       transport: async () => recorded.upstash,
     });
+
     expect(result.providers[0]?.scenarios[0]?.billedCostPerTaskUSD).toBeNull();
     expect(result.providers[0]?.scenarios[0]?.recoveredBilledUSD).toBe(
       recorded.upstash.total_compute_cost_usd,
@@ -248,6 +272,7 @@ describe("billing collector", () => {
   it("uses all E2B execution segments in milliseconds, deduplicating events", () => {
     const cost = decodeEvents([...recorded.e2b, ...recorded.e2b]);
     expect(cost.kind).toBe("metered");
+
     if (cost.kind !== "unavailable") expect(cost.usd).toBeCloseTo(0.0015146175, 12);
     expect(decodeEvents([]).kind).toBe("unavailable");
     expect(
@@ -279,15 +304,18 @@ describe("billing collector", () => {
             end: new Date(recorded.boxdOrg.period.end),
           },
         };
+
       return params.pageToken
         ? { currency: "usd", entries: [], nextPageToken: null }
         : { ...recorded.boxdActivity, nextPageToken: "next-page" };
     });
+
     const result = await readBoxdAccount(
       [{ ...row, provider: "boxd", id: "fixture-boxd" }],
       {},
       query,
     );
+
     expect(query).toHaveBeenCalledTimes(3);
     expect(result.usage.machines[0]?.costMicro).toBe(3386);
     expect(result.account.charged).toBe(0.15878);
@@ -309,43 +337,54 @@ describe("billing collector", () => {
       id: `update-${i}`,
       type: "sandbox.lifecycle.updated",
     }));
+
     const transport = vi.fn<Transport>(async (url) =>
       url.includes("offset=0") ? filler : recorded.e2b,
     );
+
     const result = await collectProvider(
       "e2b",
       [{ ...row, provider: "e2b" }],
       { E2B_API_KEY: "test-only" },
       transport,
     );
+
     expect(transport).toHaveBeenCalledTimes(2);
     expect(result.sandboxes[0]?.cost.kind).toBe("metered");
   });
+
   /** Fake Superserve team: the charge over [start,end) is its overlap with each running interval. */
   function superserve(intervals: { id: string; start: string; end: string }[]): Transport {
     return async (url) => {
       if (url.includes("/summary")) return recorded.superserve.summary;
+
       if (url.includes("/pricing")) return recorded.superserve.pricing;
+
       if (url.includes("/activity"))
         return intervals.flatMap((i) => [
           { sandbox_id: i.id, action: "started", created_at: i.start },
           { sandbox_id: i.id, action: "deleted", created_at: i.end },
         ]);
       const query = new URL(url).searchParams;
+
       const from = Date.parse(query.get("start") ?? ""),
         to = Date.parse(query.get("end") ?? "");
+
       const ms = intervals.reduce(
         (sum, i) =>
           sum + Math.max(0, Math.min(to, Date.parse(i.end)) - Math.max(from, Date.parse(i.start))),
         0,
       );
+
       return { buckets: [{ start: "s", end: "e", billed_total_usd: (ms / 1000) * 0.0000185 }] };
     };
   }
+
   const superserveRows = [
     { ...row, provider: "superserve", id: "ss-a", finishedAt: "2026-10-19T20:34:20.000Z" },
     { ...row, provider: "superserve", id: "ss-b", startedAt: "2026-10-19T20:34:20.000Z" },
   ];
+
   const ssA = { id: "ss-a", start: "2026-10-19T20:34:01.000Z", end: "2026-10-19T20:34:19.000Z" };
   it("bills each Superserve sandbox the charge over its own range in a proven isolated run", async () => {
     const result = await collectProvider(
@@ -357,6 +396,7 @@ describe("billing collector", () => {
         { id: "ss-b", start: "2026-10-19T20:34:21.000Z", end: "2026-10-19T20:34:31.000Z" },
       ]),
     );
+
     expect(result.sandboxes.map((s) => s.cost)).toMatchObject([
       { kind: "billed", scope: "sandbox-lifetime", complete: true, confidence: "high" },
       { kind: "billed", scope: "sandbox-lifetime", complete: true, confidence: "high" },
@@ -368,32 +408,39 @@ describe("billing collector", () => {
   });
   it("refuses Superserve charges when anything else used the account in the run window", async () => {
     const env = { SUPERSERVE_API_KEY: "test-only" };
+
     const other = {
       id: "other",
       start: "2026-10-19T20:34:05.000Z",
       end: "2026-10-19T20:34:10.000Z",
     };
+
     const shared = await collectProvider(
       "superserve",
       superserveRows,
       env,
       superserve([ssA, other]),
     );
+
     expect(shared.sandboxes.every((s) => s.cost.kind === "unavailable")).toBe(true);
     // Usage in the margin with no audit entry (e.g. a sandbox started earlier) also blocks it.
     const margin = { ...other, start: "2026-10-19T20:33:30.000Z", end: "2026-10-19T20:33:40.000Z" };
     const unseen = superserve([ssA, margin]);
+
     const leaked = await collectProvider("superserve", superserveRows, env, async (url, headers) =>
       url.includes("/activity") ? superserve([ssA])(url, headers) : unseen(url, headers),
     );
+
     expect(leaked.sandboxes.every((s) => s.cost.kind === "unavailable")).toBe(true);
   });
   it("bills boxd machines only when their rounded parts sum to the posted 15-minute charge", async () => {
     const rows = [{ ...row, provider: "boxd", id: "m-1" }];
+
     const machines = [
       { machineId: "m-1", vcpuHours: 0.0416666, ramGibHours: 0.0106583, diskGibHours: 0.1499275 },
       { machineId: "other", vcpuHours: 0.01, ramGibHours: 0, diskGibHours: 0 },
     ];
+
     // m-1 rounds to 1958 + 149 + 14 = 2121 micro-USD (costMicro rounds each part up: 2124); other is 470.
     const query = (charged: number) => async (method: string, params: { since: Date }) =>
       method === "billingActivityPage"
@@ -415,8 +462,10 @@ describe("billing collector", () => {
             rates: { vcpuHourMicro: 47000, ramGibHourMicro: 14000, diskGibHourMicro: 96 },
             machines: params.since.getTime() === Date.parse("2026-10-19T20:30:00Z") ? machines : [],
           };
+
     const exact = await readBoxdCharges(rows, {}, query(2591));
     expect(exact.kind).toBe("charged");
+
     if (exact.kind === "charged") expect(exact.microById.get("m-1")).toBe(2121);
     expect((await readBoxdCharges(rows, {}, query(2594 + 3))).kind).toBe("unreconciled");
   });
@@ -426,6 +475,7 @@ describe("billing collector", () => {
         ? { organizationId: "org", value: "NEVER_SAVE" }
         : recorded.daytonaAggregate,
     );
+
     const result = await collectProvider(
       "daytona",
       [
@@ -440,6 +490,7 @@ describe("billing collector", () => {
       { DAYTONA_API_KEY: "test-only" },
       transport,
     );
+
     expect(result.sandboxes[0]?.cost).toMatchObject({ kind: "billed", complete: false });
     expect(JSON.stringify(result)).not.toContain("NEVER_SAVE");
     expect(transport.mock.calls[1]?.[0]).toContain(
@@ -448,11 +499,13 @@ describe("billing collector", () => {
   });
   it("never promotes settled Daytona window prices into lifetime cost per task", async () => {
     const directory = await report([sample("daytona", "fixture-daytona")]);
+
     const result = await collectBilling({
       report: directory,
       env: { DAYTONA_API_KEY: "test-only", DAYTONA_ORGANIZATION_ID: "org" },
       transport: async () => recorded.daytonaAggregate,
     });
+
     expect(result.providers[0]?.sandboxes[0]?.cost).toMatchObject({
       kind: "billed",
       complete: true,

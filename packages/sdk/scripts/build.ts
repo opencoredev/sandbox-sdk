@@ -6,7 +6,9 @@ await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 
 // Entry points come from package.json exports so each subpath only needs one entry there.
 const entrypoints = Object.values(pkg.exports).flatMap((target) =>
-  typeof target === "string" ? [] : [target.default.replace("./dist/", "src/").replace(/\.js$/, ".ts")],
+  typeof target === "string"
+    ? []
+    : [target.default.replace("./dist/", "src/").replace(/\.js$/, ".ts")],
 );
 
 // Optional peers (provider SDKs, agent frameworks) stay external, so adding a peer is the only step.
@@ -22,6 +24,7 @@ const result = await Bun.build({
   minify: true,
   external,
 });
+
 if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);

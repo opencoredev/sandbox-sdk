@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Public `https://`; declare up to 10 ports |
-| Pause and resume | No | |
-| Snapshots | Yes | File system checkpoints. `expiresInMs` fails with `unsupported` |
-| Machine size | No | Railway can't set disk size. Set CPU and memory with `resources` |
-| Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | |
-| Idle timeout (`idleTimeoutMs`) | Yes | Whole minutes; destroys the VM |
-| Keys | Best-effort | Read from a marker file in each VM |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                            |
+| ------------------------------ | ----------- | ---------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Live output                                                      |
+| Files                          | Yes         |                                                                  |
+| Background processes           | Yes         |                                                                  |
+| Preview URLs                   | Yes         | Public `https://`; declare up to 10 ports                        |
+| Pause and resume               | No          |                                                                  |
+| Snapshots                      | Yes         | File system checkpoints. `expiresInMs` fails with `unsupported`  |
+| Machine size                   | No          | Railway can't set disk size. Set CPU and memory with `resources` |
+| Network policy                 | No          | Only `"all"`                                                     |
+| Hard lifetime (`timeoutMs`)    | No          |                                                                  |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Whole minutes; destroys the VM                                   |
+| Keys                           | Best-effort | Read from a marker file in each VM                               |
+| Terminal                       | No          |                                                                  |
 
 ## Run commands
 
@@ -157,16 +157,16 @@ await using box = await createSandbox(railway({ resources: { cpu: 2, memoryGB: 4
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `token` | `string` | | `RAILWAY_API_TOKEN` |
-| `environmentId` | `string` | | `RAILWAY_ENVIRONMENT_ID` |
-| `authType` | `"bearer" \| "project-token"` | `"bearer"` | |
-| `region` | `string` | Railway's default | |
-| `networkIsolation` | `"ISOLATED" \| "PRIVATE"` | `"ISOLATED"`; `"PRIVATE"` with ports | |
-| `template` | `SandboxTemplate` | Railway's default image | |
-| `checkpoint` | `string` | | |
-| `resources` | `{ cpu?: number; memoryGB?: number }` | Railway's plan default | |
+| Option             | Type                                  | Default                              | Env var                  |
+| ------------------ | ------------------------------------- | ------------------------------------ | ------------------------ |
+| `token`            | `string`                              |                                      | `RAILWAY_API_TOKEN`      |
+| `environmentId`    | `string`                              |                                      | `RAILWAY_ENVIRONMENT_ID` |
+| `authType`         | `"bearer" \| "project-token"`         | `"bearer"`                           |                          |
+| `region`           | `string`                              | Railway's default                    |                          |
+| `networkIsolation` | `"ISOLATED" \| "PRIVATE"`             | `"ISOLATED"`; `"PRIVATE"` with ports |                          |
+| `template`         | `SandboxTemplate`                     | Railway's default image              |                          |
+| `checkpoint`       | `string`                              |                                      |                          |
+| `resources`        | `{ cpu?: number; memoryGB?: number }` | Railway's plan default               |                          |
 
 Set `template` or `checkpoint`, not both. `from` overrides either. Both isolation modes keep outbound internet access; `"PRIVATE"` joins the environment's private network. A custom template needs `sh`, GNU `stat`, `rm`, `setsid`, and Git. `box.native` is the Railway SDK's `Sandbox` object.
 

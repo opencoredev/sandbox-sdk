@@ -26,6 +26,7 @@ export function ProviderLogo({ id, ...props }: IconProps & { id: HarborProviderI
       return <HugeiconsIcon icon={ServerStack01Icon} className={props.className} />;
     default: {
       const _exhaustive: never = id;
+
       return _exhaustive;
     }
   }

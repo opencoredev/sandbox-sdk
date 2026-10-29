@@ -21,12 +21,16 @@ export interface Look {
 type Ctx = CanvasRenderingContext2D;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 const smooth = (v: number) => {
   const c = clamp01(v);
+
   return c * c * (3 - 2 * c);
 };
+
 function hash(n: number) {
   const s = Math.sin(n * 127.1) * 43758.5453;
+
   return s - Math.floor(s);
 }
 
@@ -51,8 +55,11 @@ function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number) {
 /** A sodium lamp striking on: dark, a few uneven flickers, then steady. */
 function lamp(t: number, delay: number) {
   const on = t - delay;
+
   if (on < 0) return 0;
+
   if (on > 1.2) return 1;
+
   return hash(Math.floor(t * 18) + delay * 97) > 0.45 ? 0.4 + on * 0.4 : 0.05;
 }
 
@@ -84,6 +91,7 @@ function container(
   ctx.fillStyle = `rgba(0,0,0,${0.25 + shade * 0.5})`;
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = "rgba(0,0,0,0.35)";
+
   for (let i = x + 5; i < x + w - 3; i += Math.max(5, w / 10))
     if (w < 80) ctx.fillRect(i, y + 2, 1.5, h - 3);
   ctx.fillStyle = "rgba(255,200,140,0.55)";
@@ -109,6 +117,7 @@ function sky(ctx: Ctx, t: number) {
   ctx.fillStyle = g;
   ctx.fillRect(-200, -200, W + 400, HORIZON + 200);
   glow(ctx, SUN.x, HORIZON, 520, "rgba(255,130,50,1)", 0.45);
+
   // thin cloud bands, lit from below by the sun
   for (const c of CLOUDS) {
     const x = ((c.x + t * c.v) % 2200) - 300;
@@ -122,6 +131,7 @@ function sky(ctx: Ctx, t: number) {
     ctx.fillStyle = band;
     ctx.fillRect(x, c.y, c.len, 3 + low * 5);
   }
+
   // the sun, half set
   ctx.save();
   ctx.beginPath();
@@ -157,6 +167,7 @@ function sea(ctx: Ctx, t: number) {
   ctx.fillStyle = g;
   ctx.fillRect(-200, HORIZON, W + 400, 200);
   ctx.globalCompositeOperation = "lighter";
+
   // the sun's reflection: broken bands that wobble and widen toward us
   for (let row = 0; row < 24; row++) {
     const y = HORIZON + 3 + row * 6;
@@ -166,14 +177,17 @@ function sea(ctx: Ctx, t: number) {
     ctx.fillRect(SUN.x - w / 2 + shift, y, w * 0.4, 3);
     ctx.fillRect(SUN.x + shift + w * 0.1, y, w * 0.4, 3);
   }
+
   // glints scattered wider
   for (let i = 0; i < 90; i++) {
     const v = Math.max(0, Math.sin(t * (1.5 + hash(i + 9) * 2) + i)) ** 10;
+
     if (v < 0.05) continue;
     const d = hash(i);
     ctx.fillStyle = `rgba(255,200,140,${v.toFixed(3)})`;
     ctx.fillRect(SUN.x + (hash(i + 30) - 0.5) * (200 + d * 900), HORIZON + 6 + d * d * 140, 8, 2);
   }
+
   ctx.globalCompositeOperation = "source-over";
 }
 
@@ -183,6 +197,7 @@ const DECK = Array.from({ length: 13 }, (_, i) => ({
   tiers: 2 + Math.floor(hash(i + 3) * 3),
   hue: HUES[Math.floor(hash(i + 7) * HUES.length)],
 })).filter((d) => d.x < 1250 || d.x > 1390);
+
 const WORKED = DECK[2];
 
 function ship(ctx: Ctx, t: number, emptied: number) {
@@ -194,16 +209,20 @@ function ship(ctx: Ctx, t: number, emptied: number) {
   ctx.lineTo(1110, 600);
   ctx.closePath();
   ctx.fill();
+
   for (const d of DECK) {
     const tiers = d === WORKED ? d.tiers - emptied : d.tiers;
+
     for (let k = 0; k < tiers; k++) container(ctx, d.x, 502 - (k + 1) * 18, 36, 17, d.hue, 0.15);
   }
+
   // superstructure with lit windows
   ctx.fillStyle = "#121316";
   ctx.fillRect(1262, 360, 116, 160);
   ctx.fillRect(1250, 344, 140, 18);
   ctx.fillRect(1316, 300, 6, 44);
   const on = lamp(t, 0.4);
+
   for (let r = 0; r < 7; r++) {
     for (let c = 0; c < 5; c++) {
       if (hash(r * 11 + c * 5) < 0.4) continue;
@@ -211,6 +230,7 @@ function ship(ctx: Ctx, t: number, emptied: number) {
       ctx.fillRect(1274 + c * 21, 374 + r * 19, 12, 7);
     }
   }
+
   glow(ctx, 1319, 300, 16, "rgba(255,70,50,1)", Math.sin(t * 2.4) > 0.3 ? 1 : 0.2);
   glow(ctx, 1250, 352, 24, "rgba(255,230,180,1)", on * 0.8);
   glow(ctx, 1390, 352, 24, "rgba(255,230,180,1)", on * 0.8);
@@ -241,10 +261,12 @@ const VISIT = Math.floor(Math.random() * 10_000);
 
 function roundOrder(n: number): Provider[] {
   const order = [...HARBOR_PROVIDERS];
+
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(hash(n * 31 + i * 7 + 1) * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
+
   return order;
 }
 
@@ -274,6 +296,7 @@ function craneState(t: number) {
   let x = shipX;
   let rope = up;
   let carrying = false;
+
   if (c < 0.9) rope = up + (toShip - up) * seg(0, 0.9);
   else if (c < 1.2) rope = toShip;
   else if (c < 2.2) {
@@ -292,6 +315,7 @@ function craneState(t: number) {
   } else x = quayX + (shipX - quayX) * seg(6.3, 7.9);
   // at the end of a round the whole row fades so the next round starts clear
   const clearing = slot === SLOTS.length - 1 ? 1 - seg(6.4, 7.8) : 1;
+
   const landed: Landed[] = order.slice(0, slot + (c >= LAND ? 1 : 0)).map((p, i) => ({
     x: SLOTS[i],
     provider: p,
@@ -299,6 +323,7 @@ function craneState(t: number) {
     since: within - (i * CYCLE + LAND),
     seed: (round + VISIT) * 7 + i * 3 + 1,
   }));
+
   return { x, rope, carrying, emptied: c >= 1.2 && c < 6.3 ? 1 : 0, landed, provider };
 }
 
@@ -322,6 +347,7 @@ function crane(ctx: Ctx, t: number, s: ReturnType<typeof craneState>) {
   // the boom, reaching out over the ship
   ctx.fillRect(40, BOOM_Y, 1500, 24);
   ctx.lineWidth = 3;
+
   for (let x = 40; x < 1540; x += 44) line(ctx, x, BOOM_Y + 2, x + 22, BOOM_Y + 22);
   // the A-frame and its stays
   ctx.lineWidth = 14;
@@ -333,11 +359,13 @@ function crane(ctx: Ctx, t: number, s: ReturnType<typeof craneState>) {
   line(ctx, 445, 40, 90, BOOM_Y);
   // boom lights
   const on = lamp(t, 0.8);
+
   for (let x = 80; x < 1540; x += 92) {
     glow(ctx, x, BOOM_Y + 30, 26, "rgba(255,180,90,1)", on * 0.9);
     ctx.fillStyle = `rgba(255,226,170,${on.toFixed(3)})`;
     ctx.fillRect(x - 3, BOOM_Y + 26, 7, 5);
   }
+
   glow(ctx, 1536, BOOM_Y - 6, 18, "rgba(255,60,40,1)", Math.sin(t * Math.PI) > 0.5 ? 1 : 0.15);
   // trolley, ropes, spreader, and the box when carried
   ctx.fillStyle = ink;
@@ -350,6 +378,7 @@ function crane(ctx: Ctx, t: number, s: ReturnType<typeof craneState>) {
   ctx.fillStyle = "#e0a832";
   ctx.fillRect(s.x - 22, sy, 44, 5);
   glow(ctx, s.x, sy + 4, 30, "rgba(255,220,150,1)", on * 0.7);
+
   if (s.carrying) container(ctx, s.x - CARGO.w / 2, sy + 5, CARGO.w, CARGO.h, s.provider.hue, 0);
 }
 
@@ -359,6 +388,7 @@ function crane(ctx: Ctx, t: number, s: ReturnType<typeof craneState>) {
  * the doors close again and a green light shows on the front.
  */
 const WORK = 4.6;
+
 /** The agent: a four-point spark that turns and pulses as it works. */
 function agent(ctx: Ctx, x: number, y: number, since: number, spin: number) {
   const k = 9 + Math.sin(since * 8) * 1.5;
@@ -367,11 +397,13 @@ function agent(ctx: Ctx, x: number, y: number, since: number, spin: number) {
   ctx.rotate(since * spin);
   ctx.fillStyle = "#ff8a5a";
   ctx.beginPath();
+
   for (let i = 0; i < 8; i++) {
     const r = i % 2 ? k * 0.34 : k;
     const ang = (i / 8) * Math.PI * 2;
     ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
   }
+
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -387,6 +419,7 @@ const JOBS = [
     const typed = t * 40;
     let left = typed;
     let end = { x: x + 12, y: y + 11 };
+
     for (let r = 0; r < 3 && left > 0; r++) {
       const len = 26 + hash(seed + r) * 22;
       const lx = x + 9 + (r === 1 ? 8 : 0);
@@ -396,28 +429,34 @@ const JOBS = [
       end = { x: lx + done + 10, y: y + 11 + r * 10 };
       left -= len + 8;
     }
+
     agent(ctx, Math.min(end.x, x + 84), end.y, t, 1.6);
   },
   // running tests: a grid of checks fills in, the odd red one turns green
   (ctx: Ctx, x: number, y: number, t: number, seed: number) => {
     const ran = Math.floor(t * 6);
+
     for (let i = 0; i < 24; i++) {
       const cx = x + 9 + (i % 8) * 9;
       const cy = y + 9 + Math.floor(i / 8) * 10;
+
       if (i > ran) {
         ctx.fillStyle = "#2a2118";
       } else {
         const flaky = hash(seed * 13 + i) < 0.18 && ran - i < 6;
         ctx.fillStyle = flaky ? "#ff5a4a" : "#5cf09a";
       }
+
       ctx.fillRect(cx, cy, 6, 6);
     }
+
     const at = Math.min(ran, 23);
     agent(ctx, x + 12 + (at % 8) * 9, y + 4 + Math.floor(at / 8) * 10, t, 2.4);
   },
   // tailing logs: lines of output scroll up past the agent
   (ctx: Ctx, x: number, y: number, t: number, seed: number) => {
     const scroll = t * 14;
+
     for (let r = -1; r < 5; r++) {
       const n = Math.floor(scroll / 10) + r;
       const ly = y + 34 - r * 10 + (scroll % 10) - 10;
@@ -425,6 +464,7 @@ const JOBS = [
       ctx.fillStyle = hash(seed + n * 3.1) < 0.2 ? "#ffc46a" : "#c9b89a";
       ctx.fillRect(x + 26, ly, len, 4);
     }
+
     agent(ctx, x + 14, y + 22, t, 1.1);
   },
   // building: a progress bar fills while the agent rides its edge
@@ -444,6 +484,7 @@ function sandbox(ctx: Ctx, x: number, y: number, hue: string, since: number, see
   const { w, h } = CARGO;
   const open = smooth(since / 0.5) * (1 - smooth((since - WORK) / 0.5));
   container(ctx, x, y, w, h, hue, 0.05);
+
   if (open > 0) {
     // the doors open inward from the middle, so the box never changes size
     const gap = (w - 8) * open;
@@ -461,6 +502,7 @@ function sandbox(ctx: Ctx, x: number, y: number, hue: string, since: number, see
     job(ctx, x, y, Math.max(0, since - 0.5), seed);
     ctx.restore();
   }
+
   if (since > WORK + 0.5) {
     ctx.fillStyle = "#5cf09a";
     ctx.fillRect(x + w - 12, y + 6, 5, 5);
@@ -474,6 +516,7 @@ function quay(ctx: Ctx, t: number, s: ReturnType<typeof craneState>) {
   ctx.fillRect(-200, 600, W + 400, 300);
   ctx.fillStyle = "#c9962e";
   ctx.fillRect(-200, 600, W + 400, 7);
+
   // the row of sandboxes the crane has set down; an agent works in each one
   for (const box of s.landed) {
     ctx.globalAlpha = box.opacity;
@@ -488,6 +531,7 @@ function frame(width: number, height: number) {
   const ox = (width - W * s) * 0.42;
   // the quay (down to y 640) sits on the bottom edge, so nothing empty shows below it
   const oy = Math.min(0, height - 616 * s);
+
   return { s, ox, oy };
 }
 
@@ -508,10 +552,12 @@ export interface CargoMark {
 export function harborCargo(width: number, height: number, t: number, look: Look) {
   const { s, ox, oy } = frame(width, height);
   const state = craneState(t);
+
   const at = (x: number, y: number, depth: number) => ({
     x: ox - look.x * depth * s + x * s,
     y: oy - look.y * depth * 0.5 * s + y * s,
   });
+
   const carried: CargoMark | null = state.carrying
     ? {
         ...at(state.x, BOOM_Y + 43 + state.rope, 16),
@@ -520,24 +566,28 @@ export function harborCargo(width: number, height: number, t: number, look: Look
         since: 0,
       }
     : null;
+
   const landed: CargoMark[] = state.landed.map((b) => ({
     ...at(b.x, 600 - CARGO.h, 12),
     opacity: b.opacity,
     provider: b.provider,
     since: b.since,
   }));
+
   return { carried, landed };
 }
 
 /** Paint the whole scene at play time `t` into a canvas of any size. */
 export function paintHarbor(ctx: Ctx, width: number, height: number, t: number, look: Look) {
   const { s, ox, oy } = frame(width, height);
+
   const layer = (depth: number, draw: () => void) => {
     ctx.save();
     ctx.setTransform(s, 0, 0, s, ox - look.x * depth * s, oy - look.y * depth * 0.5 * s);
     draw();
     ctx.restore();
   };
+
   const state = craneState(t);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#050608";

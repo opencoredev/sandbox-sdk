@@ -11,11 +11,14 @@ export const providerName = parseProviderName(process.env.SANDBOX_PROVIDER);
 declare global {
   var sandboxSessions: Map<SessionId, Promise<Sandbox>> | undefined;
 }
+
 const cache = (globalThis.sandboxSessions ??= new Map());
 
 export function sessionSandbox(session: SessionId): Promise<Sandbox> {
   const cached = cache.get(session);
+
   if (cached) return cached;
+
   const box = loadProvider(providerName).then((provider) =>
     createSandbox(provider, {
       key: `ai-app-builder:${session}`,
@@ -23,8 +26,10 @@ export function sessionSandbox(session: SessionId): Promise<Sandbox> {
       labels: { example: "ai-app-builder" },
     }),
   );
+
   cache.set(session, box);
   box.catch(() => cache.delete(session));
+
   return box;
 }
 

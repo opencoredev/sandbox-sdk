@@ -55,20 +55,20 @@ The first run pulls `node:22-bookworm`. `await using` removes the container when
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | `mode` is set in the same write |
-| Background processes | Yes | |
-| Preview URLs | Partial | `http://127.0.0.1` on the Docker host; declare ports |
-| Pause and resume | Yes | Processes freeze and continue |
-| Snapshots | Yes | Commits a local image; no `expiresInMs` |
-| Machine size | Partial | Presets or `{ cpu, memoryMb }`; no `diskGb` |
-| Network policy | Partial | `"none"` only; no allow lists |
-| Hard lifetime (`timeoutMs`) | Partial | Enforced on reconnect or reap |
-| Idle timeout (`idleTimeoutMs`) | Partial | Enforced on reconnect or reap |
-| Keys | Exact | Container name is a hash of the key |
-| Terminal | No | |
+| Feature                        | Support | Notes                                                |
+| ------------------------------ | ------- | ---------------------------------------------------- |
+| Commands and streaming         | Yes     | Live output                                          |
+| Files                          | Yes     | `mode` is set in the same write                      |
+| Background processes           | Yes     |                                                      |
+| Preview URLs                   | Partial | `http://127.0.0.1` on the Docker host; declare ports |
+| Pause and resume               | Yes     | Processes freeze and continue                        |
+| Snapshots                      | Yes     | Commits a local image; no `expiresInMs`              |
+| Machine size                   | Partial | Presets or `{ cpu, memoryMb }`; no `diskGb`          |
+| Network policy                 | Partial | `"none"` only; no allow lists                        |
+| Hard lifetime (`timeoutMs`)    | Partial | Enforced on reconnect or reap                        |
+| Idle timeout (`idleTimeoutMs`) | Partial | Enforced on reconnect or reap                        |
+| Keys                           | Exact   | Container name is a hash of the key                  |
+| Terminal                       | No      |                                                      |
 
 ## Run commands
 
@@ -143,11 +143,11 @@ Snapshot images stay in Docker until you run `docker image rm`. Images have no e
 
 ## Size, network, and lifetime
 
-| Preset | CPUs | Memory |
-| --- | --- | --- |
-| `small` | 1 | 1024 MiB |
-| `medium` | 2 | 4096 MiB |
-| `large` | 4 | 8192 MiB |
+| Preset   | CPUs | Memory   |
+| -------- | ---- | -------- |
+| `small`  | 1    | 1024 MiB |
+| `medium` | 2    | 4096 MiB |
+| `large`  | 4    | 8192 MiB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -166,20 +166,20 @@ A custom size sets Docker's CPU quota and memory directly; fractional CPUs work.
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `image` | `string` | `"node:22-bookworm"` | |
-| `dockerHost` | `string` | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
-| `platform` | `string` | Docker's platform | |
-| `user` | `string` | The image's user | |
-| `runtime` | `string` | Docker's default (`runc`) | |
-| `networkMode` | `string` | `"bridge"` | |
-| `mounts` | `LocalMount[]` | None | |
-| `pidsLimit` | `number` | No limit | |
-| `shmSizeMb` | `number` | 64 | |
-| `capAdd` | `string[]` | None | |
-| `capDrop` | `string[]` | None | |
-| `securityOpt` | `string[]` | None | |
+| Option        | Type           | Default                       | Env var       |
+| ------------- | -------------- | ----------------------------- | ------------- |
+| `image`       | `string`       | `"node:22-bookworm"`          |               |
+| `dockerHost`  | `string`       | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
+| `platform`    | `string`       | Docker's platform             |               |
+| `user`        | `string`       | The image's user              |               |
+| `runtime`     | `string`       | Docker's default (`runc`)     |               |
+| `networkMode` | `string`       | `"bridge"`                    |               |
+| `mounts`      | `LocalMount[]` | None                          |               |
+| `pidsLimit`   | `number`       | No limit                      |               |
+| `shmSizeMb`   | `number`       | 64                            |               |
+| `capAdd`      | `string[]`     | None                          |               |
+| `capDrop`     | `string[]`     | None                          |               |
+| `securityOpt` | `string[]`     | None                          |               |
 
 The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { createSandbox, connectSandbox, listSandboxes } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
+
 const provider = memory();
-const box = await createSandbox(provider, { key: "built-consumer", secrets: { TOKEN: "hidden-token" } });
+
+const box = await createSandbox(provider, {
+  key: "built-consumer",
+  secrets: { TOKEN: "hidden-token" },
+});
+
 try {
   await box.files.write("app/hello.txt", "hello\n");
   assert.equal((await box.$`cat ${"app/hello.txt"}`).stdout, "hello\n");
@@ -17,5 +23,9 @@ try {
   assert.equal((await dev.wait()).exitCode, 143);
   await box.close();
   assert.equal((await listSandboxes(provider)).length, 1);
-  console.log("PASS built ESM consumer: files, tag, stdin, redaction, changes, process reattach/stop, close");
-} finally { await box.destroy(); }
+  console.log(
+    "PASS built ESM consumer: files, tag, stdin, redaction, changes, process reattach/stop, close",
+  );
+} finally {
+  await box.destroy();
+}

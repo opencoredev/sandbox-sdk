@@ -69,23 +69,36 @@ export async function executeStream(
 ): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;
-  const spec = Buffer.from(guestSpec({
-    command: input.command, cwd: input.cwd, env: input.env,
-    stdin: input.stdin ?? "", timeoutMs: input.timeoutMs,
-    marker, activityPath: input.activityPath, workspace: "/workspace",
-  }).toString("hex"));
+
+  const spec = Buffer.from(
+    guestSpec({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+      stdin: input.stdin ?? "",
+      timeoutMs: input.timeoutMs,
+      marker,
+      activityPath: input.activityPath,
+      workspace: "/workspace",
+    }).toString("hex"),
+  );
+
   const transport = new AbortController();
   let result: ExecResult | undefined;
   let exited = false;
   let mayHaveLaunched = false;
+
   const decoders = {
     stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
     stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
   };
+
   const decoder = new TextDecoder();
   let pending = "";
+
   function record(line: string) {
     const value: unknown = JSON.parse(line);
+
     if (
       Array.isArray(value) &&
       value.length === 2 &&
@@ -95,6 +108,7 @@ export async function executeStream(
     ) {
       const stream = value[0] === "stdout" ? "stdout" : "stderr";
       const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
+
       if (text) input.onChunk({ stream, text });
     } else if (
       value &&
@@ -113,14 +127,18 @@ export async function executeStream(
       result = { exitCode: value.exitCode, timedOut: value.timedOut };
     } else throw failure("Invalid command output record");
   }
+
   const completion = (async () => {
     type Plane = Awaited<ReturnType<Session["requireDataPlane"]>>;
+
     type Request = Parameters<Plane["run"]>[0] extends AsyncIterable<infer T> ? T : never;
+
     for (let attempt = 0; attempt < 2; attempt++) {
       const attemptTransport = new AbortController();
       const signal = AbortSignal.any([transport.signal, attemptTransport.signal]);
       let plane: Plane | undefined;
       let receivedResponse = false;
+
       async function* requests() {
         signal.throwIfAborted();
         yield {
@@ -146,47 +164,61 @@ export async function executeStream(
           else signal.addEventListener("abort", () => resolve(), { once: true });
         });
       }
+
       try {
         signal.throwIfAborted();
         plane = await box.requireDataPlane(false);
         signal.throwIfAborted();
+
         for await (const response of plane.run(requests(), { signal })) {
           const frame = response.frame?.payload;
+
           if (!frame) continue;
+
           if (frame.case !== "keepalive") receivedResponse = true;
+
           if (frame.case === "started") {
             box.markDataPlaneServing(plane);
           } else if (frame.case === "stdout") {
             pending += decoder.decode(frame.value, { stream: true });
             let end: number;
+
             while ((end = pending.indexOf("\n")) !== -1) {
               record(pending.slice(0, end));
               pending = pending.slice(end + 1);
             }
+
             if (pending.length > 24000) throw failure("Oversized command output record");
           } else if (frame.case === "exit") {
             if (frame.value.exitCode !== 0 || !result || pending)
               throw failure("Command supervisor failed");
             exited = true;
+
             for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
               const text = decoders[stream].decode();
+
               if (text) input.onChunk({ stream, text });
             }
+
             return result;
           }
         }
+
         throw failure("Command stream closed before exit");
       } catch (error) {
         attemptTransport.abort();
+
         if (transport.signal.aborted) throw error;
         const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
         const message = error instanceof Error ? error.message : "";
         const auth = code === 16 || tenkiError(error).code === "auth";
+
         const provisioning =
           code === 5 &&
           /\bsession not found\b/i.test(message) &&
           plane !== undefined &&
           box.dataPlaneProvisioningPending(plane);
+
         // These statuses reject the RPC before dispatch, even if the transport
         // consumed our request iterator. Generic Unavailable/reset/GOAWAY do not
         // prove that: the peer may have launched the command and lost its reply.
@@ -195,20 +227,25 @@ export async function executeStream(
           provisioning ||
           (code === 12 && /\b404\b/.test(message)) ||
           ((code === 10 || code === 13 || code === 14) && /REFUSED_STREAM/i.test(message));
+
         if (!receivedResponse && (rejected || !mayHaveLaunched)) {
           mayHaveLaunched = false;
+
           if (auth) {
             if (attempt === 0 && (await box.reauthOnUnauthenticated(error))) continue;
             throw failure("Command authorization rejected before launch", "auth");
           }
+
           if (rejected || code === 14) {
             if (attempt === 0) {
               if (provisioning && plane) await box.refreshHintedDataPlane(plane);
               continue;
             }
+
             throw failure("Command transport rejected before launch", "unavailable");
           }
         }
+
         if (mayHaveLaunched)
           throw failure(
             "Command stream failed after submission; execution outcome is unknown",
@@ -219,9 +256,12 @@ export async function executeStream(
         attemptTransport.abort();
       }
     }
+
     throw failure("Command recovery exhausted", "unavailable");
   })();
+
   void completion.catch(() => {});
+
   try {
     // Give the guest its full command budget; the outer deadline also bounds transport setup.
     return await deadline(() => completion, input.timeoutMs + 1000, input.signal);
@@ -258,6 +298,7 @@ else: raise RuntimeError('PID unavailable')`,
         }
       }
     }
+
     if (input.signal?.aborted || tenkiError(error).code === "timeout")
       return { exitCode: null, timedOut: true };
     throw error;

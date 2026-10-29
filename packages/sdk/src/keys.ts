@@ -10,14 +10,30 @@ export const knownKey = (provider: Provider, key: string) => known.get(provider)
 
 export function rememberKey(provider: Provider, key: string, id: string) {
   let keys = known.get(provider);
-  if (!keys) { keys = new Map(); known.set(provider, keys); }
-  keys.delete(key); keys.set(key, id);
-  if (keys.size > limit) { const oldest = keys.keys().next().value; if (oldest !== undefined) keys.delete(oldest); }
+
+  if (!keys) {
+    keys = new Map();
+    known.set(provider, keys);
+  }
+
+  keys.delete(key);
+  keys.set(key, id);
+
+  if (keys.size > limit) {
+    const oldest = keys.keys().next().value;
+
+    if (oldest !== undefined) keys.delete(oldest);
+  }
 }
 
-export function forgetKey(provider: Provider, key: string) { known.get(provider)?.delete(key); }
+export function forgetKey(provider: Provider, key: string) {
+  known.get(provider)?.delete(key);
+}
 
 export function forgetSandbox(provider: Provider, id: string) {
-  const keys = known.get(provider); if (!keys) return;
+  const keys = known.get(provider);
+
+  if (!keys) return;
+
   for (const [key, value] of keys) if (value === id) keys.delete(key);
 }

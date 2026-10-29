@@ -1,6 +1,5 @@
 # Daytona provider
 
-
 Install `@daytonaio/sdk@^0.225.0` alongside this package, then import `daytona` from `@opencoredev/sandbox-sdk/daytona`. The adapter loads the optional SDK on its first operation. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
 
 Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. The adapter does not declare `pause`; an idle timeout stops the sandbox, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a typed Daytona `Sandbox`. Terminal support is not exposed.
@@ -16,6 +15,5 @@ Previews are private. `preview()` returns the URL and `X-Daytona-Preview-Token` 
 The offline Daytona tests replace the SDK transport with an SDK-shaped mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
 
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
-
 
 `apiUrl` remains a deprecated alias for `baseUrl` until 1.0.0. If both are set, `baseUrl` wins.

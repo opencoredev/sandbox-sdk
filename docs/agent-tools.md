@@ -2,7 +2,6 @@
 
 Reference for `/ai`, `/mastra`, `/openai`, and `/tools`. Moved from the package README.
 
-
 Install the framework you use and `zod`. Import its adapter, then pass the tools to your agent:
 
 ```ts
@@ -22,9 +21,9 @@ The default tools are `run`, `read_file`, `write_file`, `edit_file`, `start_proc
 const tools = sandboxTools(box, {
   root: "/workspace/app",
   allow: ["run", "read_file", "edit_file", "start_process", "process_logs", "stop_process"],
-  beforeRun: command => command.includes("rm -rf") ? false : command,
+  beforeRun: (command) => (command.includes("rm -rf") ? false : command),
   limits: { run: { timeoutMs: 30_000, maxOutputBytes: 16_384 } },
-  onEvent: event => sendToUI(event),
+  onEvent: (event) => sendToUI(event),
 });
 
 function sendToUI(event: { text: string }) {
@@ -41,4 +40,3 @@ Truncated foreground output includes a generated name and `cursor=0` for `proces
 `onEvent` receives redacted foreground chunks and requested log pages before model formatting. Framework cancellation signals stop foreground runs; returning an AI preliminary iterator aborts and awaits its command. AI SDK also receives those foreground chunks as preliminary results; its `toModelOutput` returns only the final compact result to the model. Consumers that fall behind AI preliminary output have a bounded 1 MB queue. Background startup waits for a supplied `port`; without a port it confirms launch only. A readiness timeout returns `ready=false` and leaves the process available for logs or stopping. Preview access headers stay server-side. Registered sandbox secrets are redacted from every model result, including file contents, errors, and preview URLs; raw `box.files.read` remains unchanged. Tools require handles created or connected by this SDK so their secret redactor is available.
 
 Framework API references checked for these adapters: [AI SDK tool](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool), [Mastra createTool](https://mastra.ai/reference/tools/create-tool), and [OpenAI Agents tools](https://openai.github.io/openai-agents-js/guides/tools/).
-

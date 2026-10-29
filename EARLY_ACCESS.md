@@ -29,22 +29,22 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 
 ## Providers
 
-| Provider | Import | Peer package | Environment variables | Capabilities |
-| --- | --- | --- | --- | --- |
-| E2B | `@opencoredev/sandbox-sdk/e2b` | `e2b` | `E2B_API_KEY` | pause, snapshot, network-policy |
-| Daytona | `@opencoredev/sandbox-sdk/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET` | snapshot, size, network-policy |
-| Vercel | `@opencoredev/sandbox-sdk/vercel` | `@vercel/sandbox` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | pause, snapshot, size, network-policy |
-| Upstash Box | `@opencoredev/sandbox-sdk/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL` | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
-| Railway | `@opencoredev/sandbox-sdk/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | snapshot |
-| Tenki | `@opencoredev/sandbox-sdk/tenki` | `@tenkicloud/sandbox` | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` | pause, snapshot, size, network-policy |
-| boxd | `@opencoredev/sandbox-sdk/boxd` | `@boxd-sh/sdk` | `BOXD_API_KEY`; optional `BOXD_BASE_URL` | pause, snapshot, size |
-| Freestyle | `@opencoredev/sandbox-sdk/freestyle` | `freestyle` | `FREESTYLE_API_KEY` | pause, snapshot, network-policy |
-| Superserve | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk` | `SUPERSERVE_API_KEY` | pause, snapshot |
-| Boat | `@opencoredev/sandbox-sdk/boat` | `@boatdev/sdk` | `BOAT_API_KEY`; optional `BOAT_API_BASE` | size |
-| Sandboxer | `@opencoredev/sandbox-sdk/sandboxer` | `@boatdev/sdk` | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) | pause, snapshot, size |
-| Local (Docker) | `@opencoredev/sandbox-sdk/local` | none | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`) | pause, snapshot, size, network-policy |
-| agentOS | `@opencoredev/sandbox-sdk/agentos` | `@rivet-dev/agentos-core` | none | network-policy |
-| Memory | `@opencoredev/sandbox-sdk/memory` | none | none | network-policy |
+| Provider       | Import                                | Peer package              | Environment variables                                                                                         | Capabilities                                                            |
+| -------------- | ------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| E2B            | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                     | `E2B_API_KEY`                                                                                                 | pause, snapshot, network-policy                                         |
+| Daytona        | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`          | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET`                                               | snapshot, size, network-policy                                          |
+| Vercel         | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`         | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`                               | pause, snapshot, size, network-policy                                   |
+| Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`            | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
+| Railway        | `@opencoredev/sandbox-sdk/railway`    | `railway`                 | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 | snapshot                                                                |
+| Tenki          | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`     | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                                                         | pause, snapshot, size, network-policy                                   |
+| boxd           | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `BOXD_API_KEY`; optional `BOXD_BASE_URL`                                                                      | pause, snapshot, size                                                   |
+| Freestyle      | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`               | `FREESTYLE_API_KEY`                                                                                           | pause, snapshot, network-policy                                         |
+| Superserve     | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`         | `SUPERSERVE_API_KEY`                                                                                          | pause, snapshot                                                         |
+| Boat           | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`            | `BOAT_API_KEY`; optional `BOAT_API_BASE`                                                                      | size                                                                    |
+| Sandboxer      | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`            | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) | pause, snapshot, size                                                   |
+| Local (Docker) | `@opencoredev/sandbox-sdk/local`      | none                      | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)                                       | pause, snapshot, size, network-policy                                   |
+| agentOS        | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core` | none                                                                                                          | network-policy                                                          |
+| Memory         | `@opencoredev/sandbox-sdk/memory`     | none                      | none                                                                                                          | network-policy                                                          |
 
 Every factory also takes its credential as an option, such as `e2b({ apiKey })`, so you can pass per-user keys instead of reading the environment. The package README has the preview behavior for each provider and the full API.
 
@@ -56,13 +56,20 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 
 async function loadProvider(name: string): Promise<Provider> {
   switch (name) {
-    case "memory": return (await import("@opencoredev/sandbox-sdk/memory")).memory();
-    case "local": return (await import("@opencoredev/sandbox-sdk/local")).local();
-    case "e2b": return (await import("@opencoredev/sandbox-sdk/e2b")).e2b();
-    case "daytona": return (await import("@opencoredev/sandbox-sdk/daytona")).daytona();
-    case "vercel": return (await import("@opencoredev/sandbox-sdk/vercel")).vercel();
-    case "upstash": return (await import("@opencoredev/sandbox-sdk/upstash")).upstash();
-    default: throw new Error(`Unknown SANDBOX_PROVIDER "${name}"`);
+    case "memory":
+      return (await import("@opencoredev/sandbox-sdk/memory")).memory();
+    case "local":
+      return (await import("@opencoredev/sandbox-sdk/local")).local();
+    case "e2b":
+      return (await import("@opencoredev/sandbox-sdk/e2b")).e2b();
+    case "daytona":
+      return (await import("@opencoredev/sandbox-sdk/daytona")).daytona();
+    case "vercel":
+      return (await import("@opencoredev/sandbox-sdk/vercel")).vercel();
+    case "upstash":
+      return (await import("@opencoredev/sandbox-sdk/upstash")).upstash();
+    default:
+      throw new Error(`Unknown SANDBOX_PROVIDER "${name}"`);
   }
 }
 

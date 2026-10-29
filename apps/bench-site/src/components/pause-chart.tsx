@@ -25,13 +25,17 @@ const list = (ps: readonly { id: ProviderId }[]) =>
  */
 export function PauseChart() {
   const m = metric("pause-resume");
+
   if (!providers.some((p) => p.pauseSplit)) return <MetricChart metric={m} what={what} />;
 
   // Providers with the split get two parts; any with only a total keep one column.
   const columns: Column[] = providers
     .flatMap((p): { p: Provider; sum: number; split: Provider["pauseSplit"] }[] => {
       const total = m.values.find((v) => v.provider === p.id)?.p50 ?? null;
-      if (p.pauseSplit) return [{ p, sum: p.pauseSplit.pause + p.pauseSplit.resume, split: p.pauseSplit }];
+
+      if (p.pauseSplit)
+        return [{ p, sum: p.pauseSplit.pause + p.pauseSplit.resume, split: p.pauseSplit }];
+
       return total === null ? [] : [{ p, sum: total, split: null }];
     })
     .sort((a, b) => a.sum - b.sum)
@@ -45,22 +49,41 @@ export function PauseChart() {
           ]
         : [{ value: sum, color: providerColor(p.id), variant: "gradient" }],
       detail: parts
-        ? [`pause ${formatValue(parts.pause, "s")}`, `resume ${formatValue(parts.resume, "s")}`, `${parts.n} attempts`]
+        ? [
+            `pause ${formatValue(parts.pause, "s")}`,
+            `resume ${formatValue(parts.resume, "s")}`,
+            `${parts.n} attempts`,
+          ]
         : [`median ${formatValue(sum, "s")}`, "pause and resume not recorded apart"],
     }));
-  const unsupported = providers.filter((p) => !p.pauseSplit && !m.values.some((v) => v.provider === p.id && v.p50 !== null));
+
+  const unsupported = providers.filter(
+    (p) => !p.pauseSplit && !m.values.some((v) => v.provider === p.id && v.p50 !== null),
+  );
+
   const whole = providers.filter((p) => !p.pauseSplit && !unsupported.includes(p));
 
   return (
     <>
-      <ChartHead title="Pause + resume" sub={`${what} · Median of each part, seconds · Lower is better`} />
+      <ChartHead
+        title="Pause + resume"
+        sub={`${what} · Median of each part, seconds · Lower is better`}
+      />
       <div className="mb-5 flex gap-5 text-[12px] text-[var(--muted)]">
         <span className="flex items-center gap-2">
-          <span aria-hidden className="inline-block size-3" style={fillStyle("solid", { color: "var(--muted)" })} />
+          <span
+            aria-hidden
+            className="inline-block size-3"
+            style={fillStyle("solid", { color: "var(--muted)" })}
+          />
           Pause
         </span>
         <span className="flex items-center gap-2">
-          <span aria-hidden className="inline-block size-3" style={fillStyle("hatched", { color: "var(--muted)" })} />
+          <span
+            aria-hidden
+            className="inline-block size-3"
+            style={fillStyle("hatched", { color: "var(--muted)" })}
+          />
           Resume until a command runs
         </span>
       </div>
@@ -68,9 +91,20 @@ export function PauseChart() {
       <Footnotes
         items={[
           ...(whole.length > 0
-            ? [{ text: <>{list(whole)}: pause and resume were not recorded apart, so the column is the total.</> }]
+            ? [
+                {
+                  text: (
+                    <>
+                      {list(whole)}: pause and resume were not recorded apart, so the column is the
+                      total.
+                    </>
+                  ),
+                },
+              ]
             : []),
-          ...(unsupported.length > 0 ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }] : []),
+          ...(unsupported.length > 0
+            ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }]
+            : []),
         ]}
       />
     </>
@@ -93,17 +127,34 @@ export function PausePart({ part }: { part: keyof typeof partText }) {
       segments: [{ value, color: providerColor(p.id), variant: "gradient" }],
       detail: [`median ${formatValue(value, "s")}`, `${n} attempts`],
     }));
-  const hasTotal = (p: Provider) => metric("pause-resume").values.some((v) => v.provider === p.id && v.p50 !== null);
+
+  const hasTotal = (p: Provider) =>
+    metric("pause-resume").values.some((v) => v.provider === p.id && v.p50 !== null);
+
   const unsupported = providers.filter((p) => !p.pauseSplit && !hasTotal(p));
   const unsplit = providers.filter((p) => !p.pauseSplit && hasTotal(p));
+
   return (
     <>
-      <ChartHead title={partText[part].title} sub={`${partText[part].what} · Median seconds · Lower is better`} />
+      <ChartHead
+        title={partText[part].title}
+        sub={`${partText[part].what} · Median seconds · Lower is better`}
+      />
       <Columns columns={columns} label={`${partText[part].title} by provider`} />
       <Footnotes
         items={[
-          ...(unsplit.length > 0 ? [{ text: <>No result for {list(unsplit)}: pause and resume were not recorded apart.</> }] : []),
-          ...(unsupported.length > 0 ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }] : []),
+          ...(unsplit.length > 0
+            ? [
+                {
+                  text: (
+                    <>No result for {list(unsplit)}: pause and resume were not recorded apart.</>
+                  ),
+                },
+              ]
+            : []),
+          ...(unsupported.length > 0
+            ? [{ text: <>No result for {list(unsupported)} (no pause support).</> }]
+            : []),
         ]}
       />
     </>

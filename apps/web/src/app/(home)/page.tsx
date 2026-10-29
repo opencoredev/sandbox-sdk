@@ -37,6 +37,7 @@ const INSTALL = "bun add @opencoredev/sandbox-sdk";
 const DOCS = { quickstart: "/docs", providers: "/docs/providers" } as const;
 
 const INK: readonly [number, number, number] = [0.043, 0.043, 0.047];
+
 const HARBOR_DOTS: HalftoneStyle = {
   cell: 4.2,
   fill: 0.82,
@@ -44,6 +45,7 @@ const HARBOR_DOTS: HalftoneStyle = {
   glow: 0.08,
   ground: INK,
 };
+
 const CARD_DOTS: HalftoneStyle = { cell: 5, fill: 0.8, shape: "square", glow: 0.12, ground: INK };
 const EMBER_DOTS: HalftoneStyle = { cell: 13, fill: 0.62, shape: "square", glow: 0.4, ground: INK };
 
@@ -103,6 +105,7 @@ function DocsButton() {
 
 function CopyCommand({ command }: { command: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
   const copy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(command);
@@ -111,8 +114,10 @@ function CopyCommand({ command }: { command: string }) {
       // no clipboard access: say so, the command stays selectable
       setState("failed");
     }
+
     window.setTimeout(() => setState("idle"), 2000);
   }, [command]);
+
   return (
     <button type="button" className={styles.command} onClick={copy} aria-label={`Copy: ${command}`}>
       <span>{command}</span>
@@ -446,6 +451,7 @@ function Wordmark({ text }: { text: string }) {
 
 function FooterLink({ href, children }: { href: string; children: ReactNode }) {
   const external = href.startsWith("http");
+
   return external ? (
     <a href={href} target="_blank" rel="noopener noreferrer">
       {children}
@@ -507,8 +513,10 @@ export default function HomePage() {
 
   useEffect(() => {
     const el = root.current;
+
     if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     el.dataset.motion = "on";
+
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -519,7 +527,9 @@ export default function HomePage() {
       },
       { rootMargin: "0px 0px -8% 0px" },
     );
+
     el.querySelectorAll("[data-reveal]").forEach((n) => io.observe(n));
+
     return () => io.disconnect();
   }, []);
 

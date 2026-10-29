@@ -13,7 +13,9 @@ export type PriceKey = "hourly" | "perVcpuHour";
 /** A provider's price in dollars, converted from euros where it bills in euros. */
 export function usdPrice(p: Provider, key: PriceKey) {
   const value = p[key];
+
   if (value === null) return null;
+
   return p.currency === "EUR"
     ? { usd: value * eurUsd.rate, converted: true, original: formatMoney(value, "EUR") }
     : { usd: value, converted: false, original: formatMoney(value, p.currency) };
@@ -29,6 +31,7 @@ export const commonSize = { vcpu: 4, memoryGiB: 8, label: "4 vCPU, 8 GB" } as co
 /** Compute-only price from the harness's audited size model, converted to USD. */
 export function commonPrice(p: Provider) {
   if (p.commonHourly === null) return null;
+
   return {
     usd: p.currency === "EUR" ? p.commonHourly * eurUsd.rate : p.commonHourly,
   };

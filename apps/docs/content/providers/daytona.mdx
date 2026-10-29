@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output when you iterate |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Send the `X-Daytona-Preview-Token` header, or set `public: true` |
-| Pause and resume | No | |
-| Snapshots | Yes | File system only. `expiresInMs` fails with `unsupported` |
-| Machine size | Yes | Presets or exact CPU, memory, and disk |
-| Network policy | Yes | `"none"` or a host allow list |
-| Hard lifetime (`timeoutMs`) | Yes | Whole minutes, at least one |
-| Idle timeout (`idleTimeoutMs`) | Yes | Whole minutes; the sandbox stops |
-| Keys | Best-effort | Found by label search |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                            |
+| ------------------------------ | ----------- | ---------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Live output when you iterate                                     |
+| Files                          | Yes         |                                                                  |
+| Background processes           | Yes         |                                                                  |
+| Preview URLs                   | Yes         | Send the `X-Daytona-Preview-Token` header, or set `public: true` |
+| Pause and resume               | No          |                                                                  |
+| Snapshots                      | Yes         | File system only. `expiresInMs` fails with `unsupported`         |
+| Machine size                   | Yes         | Presets or exact CPU, memory, and disk                           |
+| Network policy                 | Yes         | `"none"` or a host allow list                                    |
+| Hard lifetime (`timeoutMs`)    | Yes         | Whole minutes, at least one                                      |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Whole minutes; the sandbox stops                                 |
+| Keys                           | Best-effort | Found by label search                                            |
+| Terminal                       | No          |                                                                  |
 
 ## Run commands
 
@@ -140,11 +140,11 @@ The adapter waits up to ten minutes for a snapshot. If it times out, the error i
 
 ## Size, network, and lifetime
 
-| Preset | CPUs | Memory | Disk |
-| --- | --- | --- | --- |
-| `small` | 1 | 1024 MiB | 10 GiB |
-| `medium` | 2 | 4096 MiB | 10 GiB |
-| `large` | 4 | 8192 MiB | 10 GiB |
+| Preset   | CPUs | Memory   | Disk   |
+| -------- | ---- | -------- | ------ |
+| `small`  | 1    | 1024 MiB | 10 GiB |
+| `medium` | 2    | 4096 MiB | 10 GiB |
+| `large`  | 4    | 8192 MiB | 10 GiB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -171,7 +171,7 @@ import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
 const provider = daytona({
   autoArchiveMs: 24 * 60 * 60_000, // archive a day after it stops
-  autoDeleteMs: 0,                 // or delete it as soon as it stops
+  autoDeleteMs: 0, // or delete it as soon as it stops
 });
 await using box = await createSandbox(provider, { idleTimeoutMs: 15 * 60_000 });
 ```
@@ -180,23 +180,23 @@ To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/d
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `DAYTONA_API_KEY` |
-| `jwtToken` | `string` | | `DAYTONA_JWT_TOKEN` |
-| `organizationId` | `string` | | `DAYTONA_ORGANIZATION_ID` |
-| `baseUrl` | `string` | `https://app.daytona.io/api` | `DAYTONA_API_URL` |
-| `target` | `string` | `"us"` | `DAYTONA_TARGET` |
-| `image` | `string` | Daytona's default snapshot | |
-| `snapshot` | `string` | Daytona's default snapshot | |
-| `requestTimeoutMs` | `number` | `30_000` | |
-| `snapshotTimeoutMs` | `number` | `600_000`, at most `900_000` | |
-| `createTimeoutMs` | `number` | `60_000` | |
-| `public` | `boolean` | `false` | |
-| `autoArchiveMs` | `number` | Daytona's 7 days | |
-| `autoDeleteMs` | `number` | Never | |
-| `volumes` | `{ volumeId, mountPath }[]` | | |
-| `outboundProxyUrl` | `string` | | |
+| Option              | Type                        | Default                      | Env var                   |
+| ------------------- | --------------------------- | ---------------------------- | ------------------------- |
+| `apiKey`            | `string`                    |                              | `DAYTONA_API_KEY`         |
+| `jwtToken`          | `string`                    |                              | `DAYTONA_JWT_TOKEN`       |
+| `organizationId`    | `string`                    |                              | `DAYTONA_ORGANIZATION_ID` |
+| `baseUrl`           | `string`                    | `https://app.daytona.io/api` | `DAYTONA_API_URL`         |
+| `target`            | `string`                    | `"us"`                       | `DAYTONA_TARGET`          |
+| `image`             | `string`                    | Daytona's default snapshot   |                           |
+| `snapshot`          | `string`                    | Daytona's default snapshot   |                           |
+| `requestTimeoutMs`  | `number`                    | `30_000`                     |                           |
+| `snapshotTimeoutMs` | `number`                    | `600_000`, at most `900_000` |                           |
+| `createTimeoutMs`   | `number`                    | `60_000`                     |                           |
+| `public`            | `boolean`                   | `false`                      |                           |
+| `autoArchiveMs`     | `number`                    | Daytona's 7 days             |                           |
+| `autoDeleteMs`      | `number`                    | Never                        |                           |
+| `volumes`           | `{ volumeId, mountPath }[]` |                              |                           |
+| `outboundProxyUrl`  | `string`                    |                              |                           |
 
 Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. Use either `apiKey` or `jwtToken` with `organizationId`. `createTimeoutMs` covers the whole create call, including an image build. `outboundProxyUrl` routes the sandbox's HTTP(S) traffic through your proxy with `HTTP_PROXY` and `HTTPS_PROXY`. Daytona refuses it on tiers with restricted networking, and the create fails with `invalid_argument`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, and passwordless `sudo -n`. `box.native` is the Daytona SDK's `Sandbox` object.
 

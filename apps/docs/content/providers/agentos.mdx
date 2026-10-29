@@ -56,20 +56,20 @@ This prints `42`. `await using` disposes the VM when the block ends.
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Bundled shell tools, Node compatibility layer, WebAssembly Git |
-| Files | Yes | Virtual file system; native `mode` |
-| Background processes | No | Use `box.native.process` |
-| Preview URLs | No | Use `box.native.network.httpRequest()` |
-| Pause and resume | No | |
-| Snapshots | No | |
-| Machine size | No | |
-| Network policy | Yes | `"none"` or literal host names |
-| Hard lifetime (`timeoutMs`) | No | |
-| Idle timeout (`idleTimeoutMs`) | No | |
-| Keys | Exact | Within one application process |
-| Terminal | No | |
+| Feature                        | Support | Notes                                                          |
+| ------------------------------ | ------- | -------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Bundled shell tools, Node compatibility layer, WebAssembly Git |
+| Files                          | Yes     | Virtual file system; native `mode`                             |
+| Background processes           | No      | Use `box.native.process`                                       |
+| Preview URLs                   | No      | Use `box.native.network.httpRequest()`                         |
+| Pause and resume               | No      |                                                                |
+| Snapshots                      | No      |                                                                |
+| Machine size                   | No      |                                                                |
+| Network policy                 | Yes     | `"none"` or literal host names                                 |
+| Hard lifetime (`timeoutMs`)    | No      |                                                                |
+| Idle timeout (`idleTimeoutMs`) | No      |                                                                |
+| Keys                           | Exact   | Within one application process                                 |
+| Terminal                       | No      |                                                                |
 
 ## Run commands
 
@@ -149,12 +149,12 @@ await using box = await createSandbox(agentos(), {
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `gitPackagePath` | `string` | Rivet's pinned Git package, downloaded | |
-| `software` | `SoftwareInput[]` | None | |
-| `mounts` | `MountConfig[]` | None | |
-| `limits` | `AgentOsLimits` | agentOS's built-in limits | |
+| Option           | Type              | Default                                | Env var |
+| ---------------- | ----------------- | -------------------------------------- | ------- |
+| `gitPackagePath` | `string`          | Rivet's pinned Git package, downloaded |         |
+| `software`       | `SoftwareInput[]` | None                                   |         |
+| `mounts`         | `MountConfig[]`   | None                                   |         |
+| `limits`         | `AgentOsLimits`   | agentOS's built-in limits              |         |
 
 Pass a trusted local `.aospkg` file to work offline. `box.native` is the typed `AgentOs` VM.
 

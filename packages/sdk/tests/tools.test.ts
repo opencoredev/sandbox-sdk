@@ -10,9 +10,12 @@ import { sandboxTools as mastraTools } from "../src/mastra.js";
 import { sandboxTools as openaiTools } from "../src/openai.js";
 
 const names = Object.keys(toolSchemas).filter((name): name is ToolName => name in toolSchemas);
+
 function invoke(tools: ReturnType<typeof createSandboxTools>, name: ToolName, input: unknown) {
   const tool = tools.find((tool) => tool.name === name);
+
   if (!tool) throw new Error(`Missing ${name}`);
+
   return tool.execute(input);
 }
 
@@ -37,6 +40,7 @@ describe("sandbox agent tools", () => {
     expect((await invoke(tools, "list_files", {})).text).not.toContain("outside.txt");
     expect((await invoke(tools, "changes", {})).text).toContain('"added":["/workspace/app/a.txt"]');
     expect((await invoke(tools, "preview", { port: 3000 })).text).toContain(".memory.invalid");
+
     for (const path of ["../outside.txt", "/etc/passwd", "/workspace/application/a.txt"])
       expect((await invoke(tools, "read_file", { path })).text).toMatch(/^FAILED/);
     expect((await invoke(tools, "run", { command: "pwd", cwd: "../" })).text).toMatch(/^FAILED/);
@@ -55,11 +59,13 @@ describe("sandbox agent tools", () => {
       (await invoke(tools, "edit_file", { path: "same", find: "x", replace: "z" })).text,
     ).toContain("edit_not_unique");
     expect(await box.files.read("same")).toBe("x x");
+
     const timeout = await invoke(
       createSandboxTools(box, { limits: { run: { timeoutMs: 10 } } }),
       "run",
       { command: "sleep 2", timeoutMs: 1000 },
     );
+
     expect(timeout.text).toContain("Timed out");
   });
 
@@ -82,22 +88,26 @@ describe("sandbox agent tools", () => {
 
   it("caps UTF-8 output with head and tail while streaming complete ordered output", async () => {
     const events: string[] = [];
+
     await using box = await createSandbox(
       memory({
         handlers: {
           noisy({ stdout, stderr }) {
             stdout("\u001b[31mHEAD\n" + "界".repeat(15_000));
             stderr("\nTAIL\u001b[0m");
+
             return 0;
           },
         },
       }),
     );
+
     const output = await invoke(
       createSandboxTools(box, { onEvent: (e) => events.push(e.text) }),
       "run",
       { command: "noisy" },
     );
+
     expect(Buffer.byteLength(output.text)).toBeLessThanOrEqual(16_384);
     expect(output.text).toContain("HEAD");
     expect(output.text).toContain("TAIL");
@@ -112,6 +122,7 @@ describe("sandbox agent tools", () => {
     await using box = await createSandbox(memory(), { secrets: { TOKEN: secret } });
     await box.files.write("key", secret);
     const tools = createSandboxTools(box, { allow: names, onEvent: (e) => events.push(e.text) });
+
     for (const output of [
       await invoke(tools, "read_file", { path: "key" }),
       await invoke(tools, "run", { command: "printenv TOKEN" }),
@@ -155,12 +166,16 @@ describe("sandbox agent tools", () => {
     await using box = await createSandbox(memory());
     const ai = aiTools(box);
     const run = ai.run;
+
     if (!run?.execute) throw new Error("AI run missing");
+
     const result = run.execute(
       { command: "echo native" },
       { toolCallId: "call", messages: [], context: {}, abortSignal: new AbortController().signal },
     );
+
     const outputs: ToolResult[] = [];
+
     if (typeof result === "object" && result !== null && Symbol.asyncIterator in result) {
       for await (const output of result) outputs.push(output);
     } else throw new Error("Expected preliminary iterator");
@@ -174,11 +189,13 @@ describe("sandbox agent tools", () => {
       }),
     ).toMatchObject({ type: "text", value: expect.stringMatching(/^OK/) });
     const mastra = mastraTools(box).run;
+
     if (!mastra?.execute) throw new Error("Mastra run missing");
     expect(
       await mastra.execute({ command: "echo native" }, { observe: noopObserve }),
     ).toMatchObject({ text: expect.stringMatching(/^OK/) });
     const openai = openaiTools(box).find((t) => t.name === "run");
+
     if (!openai) throw new Error("OpenAI run missing");
     // Native invocation is covered in the built consumer; framework context has its own runtime contract.
     expect(openai.parameters.properties).toHaveProperty("command");
@@ -191,22 +208,27 @@ describe("sandbox agent tools", () => {
 describe("bounded replay and policy edges", () => {
   it("replays omitted UTF-8 foreground output using process_logs cursors", async () => {
     const content = "HEAD\n" + "界".repeat(15_000) + "\nTAIL";
+
     await using box = await createSandbox(
       memory({
         handlers: {
           large({ stdout }) {
             stdout(content);
+
             return 0;
           },
         },
       }),
     );
+
     const tools = createSandboxTools(box);
     const run = await invoke(tools, "run", { command: "large" });
     const name = /name=(run_[a-f0-9]+)/.exec(run.text)?.[1];
     expect(name).toBeDefined();
+
     let cursor = "0",
       replay = "";
+
     for (let page = 0; page < 10; page++) {
       const output = await invoke(tools, "process_logs", { name, cursor });
       expect(Buffer.byteLength(output.text)).toBeLessThanOrEqual(16_384);
@@ -214,8 +236,10 @@ describe("bounded replay and policy edges", () => {
       expect(match).not.toBeNull();
       cursor = match?.[1] ?? "0";
       replay += (match?.[3] ?? "").replace(/\n\[more output; use process_logs with cursor\]$/, "");
+
       if (match?.[2] === "false") break;
     }
+
     expect(replay).toBe(content);
     expect((await invoke(tools, "process_logs", { name, cursor: "invalid" })).text).toMatch(
       /^FAILED/,
@@ -234,10 +258,12 @@ describe("bounded replay and policy edges", () => {
       "long",
       Array.from({ length: 500 }, (_, i) => `line-${i}-text`).join("\n"),
     );
+
     const tools = createSandboxTools(box, {
       allow: names,
       limits: { read_file: { maxOutputBytes: 512 } },
     });
+
     const first = await invoke(tools, "read_file", { path: "long" });
     expect(Buffer.byteLength(first.text)).toBeLessThanOrEqual(512);
     const offset = Number(/nextOffset=(\d+)/.exec(first.text)?.[1]);
@@ -262,11 +288,13 @@ describe("bounded replay and policy edges", () => {
         : stat(id, path);
     await using box = await createSandbox(provider);
     const tools = createSandboxTools(box);
+
     const start = await invoke(tools, "start_process", {
       name: "port",
       command: "echo ready; sleep 2",
       port: 3000,
     });
+
     expect(start.text).toContain("ready=true");
     expect(start.text).toContain(".memory.invalid");
     await invoke(tools, "stop_process", { name: "port" });
@@ -281,6 +309,7 @@ describe("review regressions", () => {
   it("normalizes ANSI before redacting secrets, across streaming chunk boundaries", async () => {
     const secret = "secret-token-123",
       events: string[] = [];
+
     await using box = await createSandbox(
       memory({
         handlers: {
@@ -288,12 +317,14 @@ describe("review regressions", () => {
             stdout("secret-\x1b");
             stdout("[31m");
             stdout("token-123");
+
             return 0;
           },
         },
       }),
       { secrets: { TOKEN: secret } },
     );
+
     const tools = createSandboxTools(box, { onEvent: (event) => events.push(event.text) });
     const output = await invoke(tools, "run", { command: "leak" });
     expect(events.join("")).toBe("[REDACTED]");
@@ -309,23 +340,29 @@ describe("review regressions", () => {
     const output = await invoke(tools, "read_file", { path: "long" });
     const name = /name=(read_[a-f0-9]+)/.exec(output.text)?.[1];
     expect(name).toBeDefined();
+
     let cursor = "0",
       replay = "";
+
     for (let i = 0; i < 5; i++) {
       const page = await invoke(tools, "process_logs", { name, cursor });
       cursor = /cursor=(\d+)/.exec(page.text)?.[1] ?? "0";
       replay += page.text;
+
       if (page.text.includes("more=false")) break;
     }
+
     expect(replay).toContain("MIDDLE");
   });
 
   it("allows write_file to create a missing root while tracking changes", async () => {
     await using box = await createSandbox(memory());
+
     const tools = createSandboxTools(box, {
       root: "new-project",
       allow: ["write_file", "changes"],
     });
+
     expect((await invoke(tools, "write_file", { path: "main.ts", content: "ok" })).text).toMatch(
       /^OK/,
     );
@@ -336,11 +373,13 @@ describe("review regressions", () => {
 describe("UI callback isolation", () => {
   it("finishes a command even when its UI subscriber throws", async () => {
     await using box = await createSandbox(memory());
+
     const tools = createSandboxTools(box, {
       onEvent() {
         throw new Error("UI disconnected");
       },
     });
+
     const output = await invoke(tools, "run", { command: "echo first; echo finished" });
     expect(output.text).toMatch(/^OK exit=0/);
     expect(output.text).toContain("finished");
@@ -356,13 +395,16 @@ describe("startup readiness outcomes", () => {
         code: "port_not_ready",
       });
     };
+
     await using box = await createSandbox(provider);
     const tools = createSandboxTools(box, { limits: { start_process: { timeoutMs: 10 } } });
+
     const result = await invoke(tools, "start_process", {
       name: "pending",
       command: "echo booting; sleep 2",
       port: 3000,
     });
+
     expect(result.text).toMatch(/^FAILED/);
     expect(result.text).toContain("ready=false");
     expect((await box.processes()).find((p) => p.name === "pending")?.status).toBe("running");
@@ -372,11 +414,13 @@ describe("startup readiness outcomes", () => {
   it("reports a boot crash with its log and applies command rewrites to startup", async () => {
     await using box = await createSandbox(memory());
     const tools = createSandboxTools(box);
+
     const crash = await invoke(tools, "start_process", {
       name: "crash",
       command: "echo boot-error; exit 3",
       port: 3000,
     });
+
     expect(crash.text).toMatch(/^FAILED/);
     expect(crash.text).toContain("boot-error");
     const rewritten = createSandboxTools(box, { beforeRun: () => "echo rewritten" });
@@ -391,6 +435,7 @@ describe("startup readiness outcomes", () => {
 describe("framework cancellation", () => {
   it("terminates foreground work when the AI preliminary iterator is returned", async () => {
     let ended = false;
+
     await using box = await createSandbox(
       memory({
         handlers: {
@@ -401,17 +446,22 @@ describe("framework cancellation", () => {
               else signal.addEventListener("abort", () => resolve(), { once: true });
             });
             ended = true;
+
             return 143;
           },
         },
       }),
     );
+
     const run = aiTools(box).run;
+
     if (!run?.execute) throw new Error("Missing AI execute");
+
     const stream = run.execute(
       { command: "cancellable" },
       { toolCallId: "cancel", messages: [], context: {} },
     );
+
     if (typeof stream !== "object" || stream === null || !(Symbol.asyncIterator in stream))
       throw new Error("Missing stream");
     const iterator = stream[Symbol.asyncIterator]();
@@ -425,33 +475,41 @@ describe("pagination security", () => {
   it("redacts background secrets before pagination and merged foreground streams", async () => {
     const secret = "secret-token-123",
       events: string[] = [];
+
     await using box = await createSandbox(
       memory({
         handlers: {
           background({ stdout }) {
             stdout("x".repeat(15865) + "secret-\x1b[31mtoken-123\nTAIL");
+
             return 0;
           },
           merged({ stdout, stderr }) {
             stdout("secret-");
             stderr("token-123");
+
             return 0;
           },
         },
       }),
       { secrets: { TOKEN: secret } },
     );
+
     const tools = createSandboxTools(box, { onEvent: (e) => events.push(e.text) });
     await box.start("background", { name: "background" });
     await box.process("background").wait();
+
     let cursor = "0",
       output = "";
+
     for (let i = 0; i < 5; i++) {
       const page = await invoke(tools, "process_logs", { name: "background", cursor });
       output += page.text;
       cursor = /cursor=(\d+)/.exec(page.text)?.[1] ?? "0";
+
       if (page.text.includes("more=false")) break;
     }
+
     expect(events.join("")).not.toContain(secret);
     expect(events.join("")).toContain("[REDACTED]");
     expect(output).not.toContain(secret);

@@ -3,6 +3,7 @@ export function statistics(samples: readonly number[]) {
   if (samples.some((value) => !Number.isFinite(value))) throw new Error("Samples must be finite");
   const sorted = [...samples].sort((a, b) => a - b);
   const percentile = (p: number) => sorted[Math.max(0, Math.ceil(sorted.length * p) - 1)] ?? null;
+
   return {
     count: sorted.length,
     p50: percentile(0.5),

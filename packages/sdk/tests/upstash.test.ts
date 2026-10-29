@@ -4,70 +4,101 @@ import { upstashError } from "../src/providers/upstash/errors.js";
 import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 import { cleanup, MockBox, state } from "./upstash-mock.js";
+
 vi.mock("@upstash/box", async () => {
   const mock = await import("./upstash-mock.js");
+
   return { Box: mock.MockBox, EphemeralBox: mock.MockEphemeralBox };
 });
+
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 const factory = () => upstash({ apiKey: "mock-key" });
+
 // live:true authorizes this explicitly mocked cloud SDK; no Upstash calls run.
 runConformance(factory, { live: true });
+
 const ephemeral = () => upstash({ apiKey: "mock-key", ephemeral: true });
+
 describe("Upstash Ephemeral Box conformance", () => {
   runConformance(ephemeral, { live: true });
 });
+
 beforeEach(() => {
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     if (String(input) === "https://us-east-1.box.upstash.com/v2/box/snapshots")
-      return Promise.resolve(new Response(JSON.stringify({ snapshots: [...state.snapshotMetadata.values()] })));
-    const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(String(input))?.[1];
+      return Promise.resolve(
+        new Response(JSON.stringify({ snapshots: [...state.snapshotMetadata.values()] })),
+      );
+
+    const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(
+      String(input),
+    )?.[1];
+
     if (id !== undefined) {
       const box = state.boxes.get(decodeURIComponent(id));
-      return Promise.resolve(box ? new Response(JSON.stringify(box.data)) : new Response("{}", { status: 404 }));
+
+      return Promise.resolve(
+        box ? new Response(JSON.stringify(box.data)) : new Response("{}", { status: 404 }),
+      );
     }
+
     return fetch(input, init);
   });
 });
+
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await cleanup();
 });
+
 describe("Upstash Box mappings", () => {
   test("keeps secrets out of command text and argv for runs and processes", async () => {
     const secret = "private-token-9ec5e94f";
     const value = "override 'quotes' $literal\n雪";
+
     const box = await createSandbox(factory(), {
       secrets: { TOKEN: secret },
       env: { CHECK_OVERRIDE: "base" },
     });
+
     try {
       const commands = vi.spyOn(box.native.exec, "command");
       const sessions = vi.spyOn(box.native.exec, "session");
       const command = `node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.env.TOKEN + process.env.CHECK_OVERRIDE).digest("hex"))'`;
+
       const digest = await crypto.subtle.digest(
         "SHA-256",
         new TextEncoder().encode(secret + value),
       );
+
       const expected = Buffer.from(digest).toString("hex");
       expect((await box.run(command, { env: { CHECK_OVERRIDE: value } })).stdout).toBe(expected);
+
       const process = await box.start(command, {
         name: "secret-check",
         env: { CHECK_OVERRIDE: value },
       });
+
       expect(await process.wait()).toMatchObject({ exitCode: 0 });
       expect((await process.logs()).text).toContain(expected);
       expect(state.envWrites.length).toBeGreaterThan(0);
+
       for (const file of state.envWrites) {
         expect(file).toMatchObject({ mode: 0o600, directoryMode: 0o700 });
         expect(await box.files.exists(file.path)).toBe(false);
       }
+
       expect(commands).toHaveBeenCalled();
       expect(sessions).toHaveBeenCalled();
+
       for (const [command] of commands.mock.calls) expect(command).not.toContain(secret);
+
       for (const [options] of sessions.mock.calls) {
         expect(options.cmd ?? "").not.toContain(secret);
+
         for (const arg of options.argv ?? []) expect(arg).not.toContain(secret);
       }
     } finally {
@@ -77,11 +108,13 @@ describe("Upstash Box mappings", () => {
   test("lazy credentials, native sizes, network and protected preview", async () => {
     const provider = factory();
     expect(state.creates).toEqual([]);
+
     const box = await createSandbox(provider, {
       size: "medium",
       network: { allow: ["registry.npmjs.org"] },
       env: { HELLO: "world" },
     });
+
     expect(state.creates[0]).toMatchObject({
       apiKey: "mock-key",
       size: "medium",
@@ -97,10 +130,12 @@ describe("Upstash Box mappings", () => {
   });
   test("preserves arbitrary labels and keys across fresh clients and excludes foreign boxes", async () => {
     await MockBox.create();
+
     const box = await createSandbox(factory(), {
       key: "user:" + "long".repeat(30),
       labels: { app: "long value with spaces", "sandbox-sdk": "forged" },
     });
+
     expect((await createSandbox(factory(), { key: box.key })).id).toBe(box.id);
     expect(
       await listSandboxes(factory(), { labels: { app: "long value with spaces" } }),
@@ -145,9 +180,11 @@ describe("Upstash Box mappings", () => {
     });
     state.delayMs = 0;
     const controller = new AbortController();
+
     const pending = Promise.resolve(
       box.run("(sleep .2; echo leak > aborted) & wait", { signal: controller.signal }),
     );
+
     setTimeout(() => controller.abort(), 20);
     expect(await pending).toMatchObject({ timedOut: true, exitCode: null });
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -208,7 +245,9 @@ describe("Upstash Box mappings", () => {
       wait: async () => -1,
       close() {},
     });
-    await expect(box.run("echo lost", { stdin: "" })).rejects.toMatchObject({ code: "unavailable" });
+    await expect(box.run("echo lost", { stdin: "" })).rejects.toMatchObject({
+      code: "unavailable",
+    });
   });
   test("maps errors without credential leakage", async () => {
     for (const [statusCode, code] of [
@@ -226,6 +265,7 @@ describe("Upstash Box mappings", () => {
       expect(mapped.cause).toContain(`HTTP ${statusCode}`);
       expect(mapped.cause).not.toContain("secret");
     }
+
     expect(upstashError({ statusCode: 404 }, "box", true).code).toBe("file_not_found");
     const box = await createSandbox(factory());
     await expect(box.files.read("missing")).rejects.toMatchObject({ code: "file_not_found" });
@@ -237,52 +277,68 @@ test("creation makes an initially unwritable workspace usable for files and git"
   const { promises: fs } = await import("node:fs");
   const create = MockBox.create.bind(MockBox);
   let guest: MockBox | undefined;
-  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
+  vi.spyOn(MockBox, "create").mockImplementationOnce(async (params) => {
     guest = await create(params);
     await fs.mkdir(`${guest.root}/workspace`, { mode: 0o111 });
+
     return guest;
   });
+
   try {
     const box = await createSandbox(factory());
     await box.files.write("app/file", "writable");
     expect(await box.files.read("app/file")).toBe("writable");
     expect((await box.run("git init repo")).ok).toBe(true);
-  } finally { if (guest) await fs.chmod(`${guest.root}/workspace`, 0o755).catch(() => {}); }
+  } finally {
+    if (guest) await fs.chmod(`${guest.root}/workspace`, 0o755).catch(() => {});
+  }
 });
 
 test("binary files cross the native request limit without enlarging small transfers", async () => {
   const box = await createSandbox(factory());
   const nativeRead = box.native.files.read;
   const nativeWrite = box.native.files.write;
+
   const reads = vi.spyOn(box.native.files, "read").mockImplementation(async (path, options) => {
     if (options?.length !== undefined && options.length > 8 * 1024 * 1024)
       throw Object.assign(new Error("read limit"), { statusCode: 400 });
     const content = await nativeRead(path, options);
+
     // Model a response cap on unbounded reads so the chunked fallback runs.
     if (options?.length === undefined && Buffer.from(content, "base64").length > 8 * 1024 * 1024)
       throw Object.assign(new Error("read limit"), { statusCode: 400 });
+
     return content;
   });
+
   const writes = vi.spyOn(box.native.files, "write").mockImplementation(async (options) => {
     if (options.content.length > 8 * 1024 * 1024)
       throw Object.assign(new Error("request body limit"), { statusCode: 400 });
+
     if (options.path.includes("/upload-")) {
       const current = state.boxes.get(box.id);
+
       if (!current) throw new Error("Missing mock box");
       const { stat } = await import("node:fs/promises");
       const parent = options.path.slice(0, options.path.lastIndexOf("/"));
       expect((await stat(current.map(parent))).mode & 0o777).toBe(0o700);
     }
+
     return nativeWrite(options);
   });
+
   const data = Uint8Array.from({ length: 10 * 1024 * 1024 }, (_, i) => i % 251);
   await box.files.write("large.bin", data);
-  expect(Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
-  reads.mockClear(); writes.mockClear();
+  expect(
+    Buffer.from(await box.files.read("large.bin", { as: "bytes" })).equals(Buffer.from(data)),
+  ).toBe(true);
+  reads.mockClear();
+  writes.mockClear();
   const mkdir = vi.spyOn(box.native.files, "mkdir");
   await box.files.write("small.bin", "small");
   expect(await box.files.read("small.bin")).toBe("small");
-  expect(writes).toHaveBeenCalledTimes(1); expect(reads).toHaveBeenCalledTimes(1);
+  expect(writes).toHaveBeenCalledTimes(1);
+  expect(reads).toHaveBeenCalledTimes(1);
   expect(mkdir).not.toHaveBeenCalled();
 });
 
@@ -291,29 +347,40 @@ test("an upload timeout cannot delete inputs of a still-running atomic assembly"
   await box.files.write("atomic.bin", "original");
   const original = box.native.exec.command;
   let guest: Promise<Awaited<ReturnType<typeof original>>> | undefined;
-  vi.spyOn(box.native.exec, "command").mockImplementation(async command => {
+  vi.spyOn(box.native.exec, "command").mockImplementation(async (command) => {
     if (!command.startsWith("python3 -c")) return original(command);
-    guest = original(command.replace("import os,sys,shutil,tempfile,stat", "import os,sys,shutil,tempfile,stat,time").replace("shutil.copyfileobj(part,out)", "shutil.copyfileobj(part,out); time.sleep(.1)"));
-    await new Promise(resolve => setTimeout(resolve, 150));
+    guest = original(
+      command
+        .replace("import os,sys,shutil,tempfile,stat", "import os,sys,shutil,tempfile,stat,time")
+        .replace("shutil.copyfileobj(part,out)", "shutil.copyfileobj(part,out); time.sleep(.1)"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
     throw Object.assign(new Error("HTTP request timed out"), { statusCode: 504 });
   });
   const data = new Uint8Array(10 * 1024 * 1024).fill(237);
-  await expect(box.files.write("atomic.bin", data)).rejects.toMatchObject({ code: "outcome_unknown", retryable: false });
+  await expect(box.files.write("atomic.bin", data)).rejects.toMatchObject({
+    code: "outcome_unknown",
+    retryable: false,
+  });
   expect(await box.files.read("atomic.bin")).toBe("original");
   expect((await guest)?.exitCode).toBe(0);
-  expect(Buffer.from(await box.files.read("atomic.bin", { as: "bytes" })).equals(Buffer.from(data))).toBe(true);
+  expect(
+    Buffer.from(await box.files.read("atomic.bin", { as: "bytes" })).equals(Buffer.from(data)),
+  ).toBe(true);
 });
-
 
 test("Upstash listing skips corrupt or vanished metadata and preserves auth failures", async () => {
   const box = await createSandbox(factory());
   const native = state.boxes.get(box.id);
+
   if (!native) throw new Error("Missing mock box");
   const read = vi.spyOn(native.exec, "command");
+
   for (const body of ["{", JSON.stringify({ version: 1, labels: { bad: 2 } })]) {
     read.mockResolvedValue({ exitCode: 0, stdout: body, stderr: "", result: body });
     expect(await factory().list({})).toEqual([]);
   }
+
   read.mockRejectedValue(Object.assign(new Error("gone"), { statusCode: 404 }));
   expect(await factory().list({})).toEqual([]);
   read.mockRejectedValue(Object.assign(new Error("denied"), { statusCode: 401 }));
@@ -323,15 +390,17 @@ test("Upstash listing skips corrupt or vanished metadata and preserves auth fail
 test("create carries shell-safe discovery metadata without a post-create call", async () => {
   const create = MockBox.create.bind(MockBox);
   const commands: string[] = [];
-  vi.spyOn(MockBox, "create").mockImplementationOnce(async params => {
+  vi.spyOn(MockBox, "create").mockImplementationOnce(async (params) => {
     const value = await create(params);
     const command = value.exec.command;
-    vi.spyOn(value.exec, "command").mockImplementation(async text => {
+    vi.spyOn(value.exec, "command").mockImplementation(async (text) => {
       commands.push(text);
+
       return command(text);
     });
     vi.spyOn(value.files, "mkdir").mockRejectedValue(new Error("Unnecessary setup RPC"));
     vi.spyOn(value.files, "write").mockRejectedValue(new Error("Unnecessary setup RPC"));
+
     return value;
   });
   const provider = factory();
@@ -341,16 +410,29 @@ test("create carries shell-safe discovery metadata without a post-create call", 
   expect(commands).toHaveLength(0);
   expect(await factory().connect(info.id)).toMatchObject({ key, labels });
   expect(await factory().find(key)).toMatchObject({ id: info.id });
-  await expect(provider.files.stat(info.id, "/workspace/injected")).rejects.toMatchObject({ code: "file_not_found" });
-  expect(state.creates.at(-1)?.env?.SANDBOX_SDK_UPSTASH_METADATA).toBe(JSON.stringify({ version: 1, key, labels: { ...labels, "sandbox-sdk": "1" } }));
+  await expect(provider.files.stat(info.id, "/workspace/injected")).rejects.toMatchObject({
+    code: "file_not_found",
+  });
+  expect(state.creates.at(-1)?.env?.SANDBOX_SDK_UPSTASH_METADATA).toBe(
+    JSON.stringify({ version: 1, key, labels: { ...labels, "sandbox-sdk": "1" } }),
+  );
 });
 
 test("errors preserve operation, HTTP status and sanitized nested cause through core", async () => {
   const box = await createSandbox(factory(), { secrets: { TOKEN: "private-env-value" } });
-  const native = Object.assign(new Error('Request https://host/path?token=url-secret failed; Authorization: Bearer header-secret; apiKey="mock-key" private-env-value', {
-    cause: new Error("socket reset; password=nested-secret"),
-  }), { statusCode: 503, request: { headers: { authorization: "unretained-secret" } } });
+
+  const native = Object.assign(
+    new Error(
+      'Request https://host/path?token=url-secret failed; Authorization: Bearer header-secret; apiKey="mock-key" private-env-value',
+      {
+        cause: new Error("socket reset; password=nested-secret"),
+      },
+    ),
+    { statusCode: 503, request: { headers: { authorization: "unretained-secret" } } },
+  );
+
   vi.spyOn(box.native.files, "read").mockRejectedValue(native);
+
   try {
     await box.files.read("missing");
     throw new Error("Expected read failure");
@@ -359,7 +441,15 @@ test("errors preserve operation, HTTP status and sanitized nested cause through 
     expect(error).toHaveProperty("cause", expect.stringContaining("files.read HTTP 503"));
     expect(error).toHaveProperty("cause", expect.stringContaining("socket reset"));
     const evidence = String(error) + String(error instanceof Error ? error.cause : "");
-    for (const secret of ["url-secret", "header-secret", "mock-key", "private-env-value", "nested-secret", "unretained-secret"])
+
+    for (const secret of [
+      "url-secret",
+      "header-secret",
+      "mock-key",
+      "private-env-value",
+      "nested-secret",
+      "unretained-secret",
+    ])
       expect(evidence).not.toContain(secret);
   }
 });
@@ -376,7 +466,6 @@ test("native Authorization headers redact credentials for every scheme", () => {
     expect(mapped.cause).not.toContain("hidden");
   }
 });
-
 
 test("snapshots preserve native IDs and source size after source deletion and fresh clients", async () => {
   const source = await createSandbox(factory(), { size: "medium" });
@@ -395,14 +484,24 @@ test("legacy snapshots inherit a surviving source size or require an explicit ov
   const snapshot = await source.native.snapshot({ name: "legacy-sdk-snapshot" });
   expect((await createSandbox(factory(), { from: snapshot.id })).native.size).toBe("medium");
   await source.destroy();
-  await expect(createSandbox(factory(), { from: snapshot.id })).rejects.toMatchObject({ code: "unsupported" });
-  expect((await createSandbox(factory(), { from: snapshot.id, size: "medium" })).native.size).toBe("medium");
-  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({ code: "not_found" });
+  await expect(createSandbox(factory(), { from: snapshot.id })).rejects.toMatchObject({
+    code: "unsupported",
+  });
+  expect((await createSandbox(factory(), { from: snapshot.id, size: "medium" })).native.size).toBe(
+    "medium",
+  );
+  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({
+    code: "not_found",
+  });
 });
 
 test("an empty native snapshot list returns not_found", async () => {
-  vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: null })));
-  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({ code: "not_found" });
+  vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+    new Response(JSON.stringify({ snapshots: null })),
+  );
+  await expect(createSandbox(factory(), { from: "missing-snapshot" })).rejects.toMatchObject({
+    code: "not_found",
+  });
 });
 
 describe("Upstash Ephemeral Box mode", () => {
@@ -411,11 +510,22 @@ describe("Upstash Ephemeral Box mode", () => {
     expect([...provider.capabilities].sort()).toEqual(["network-policy", "size", "snapshot"]);
     expect(provider.pause).toBeUndefined();
     expect(provider.resume).toBeUndefined();
-    const box = await createSandbox(provider, { size: "medium", secrets: { TOKEN: "secret-value" }, labels: { run: "r1" } });
+
+    const box = await createSandbox(provider, {
+      size: "medium",
+      secrets: { TOKEN: "secret-value" },
+      labels: { run: "r1" },
+    });
+
     expect(state.ephemeralCreates).toHaveLength(1);
-    expect(state.ephemeralCreates[0]).toMatchObject({ ttl: 3600, size: "medium", labels: ["sandbox-sdk"], env: { TOKEN: "secret-value" } });
+    expect(state.ephemeralCreates[0]).toMatchObject({
+      ttl: 3600,
+      size: "medium",
+      labels: ["sandbox-sdk"],
+      env: { TOKEN: "secret-value" },
+    });
     expect(state.ephemeralCreates[0]).not.toHaveProperty("initCommand");
-    expect((await box.run("printf %s \"$TOKEN\"")).stdout).toBe("[REDACTED]");
+    expect((await box.run('printf %s "$TOKEN"')).stdout).toBe("[REDACTED]");
     expect(await ephemeral().list({ run: "r1" })).toMatchObject([{ id: box.id }]);
     expect(box.native.id).toBe(box.id);
     upstash({ apiKey: "mock-key", ephemeral: true, ttlSeconds: 259_200 });
@@ -446,41 +556,71 @@ describe("Upstash Ephemeral Box mode", () => {
     await source.files.write("saved", "kept");
     const snapshot = await source.snapshot();
     await source.destroy();
-    const copy = await createSandbox(ephemeral(), { from: snapshot.id, key: "clone", labels: { clone: "yes" } });
+
+    const copy = await createSandbox(ephemeral(), {
+      from: snapshot.id,
+      key: "clone",
+      labels: { clone: "yes" },
+    });
+
     expect(state.ephemeralCreates.at(-1)).toMatchObject({ labels: ["sandbox-sdk"], ttl: 3600 });
     expect(await copy.files.read("saved")).toBe("kept");
     expect((await copy.processes())[0]).toMatchObject({ status: "failed", exitCode: 137 });
-    expect(await ephemeral().find("clone")).toMatchObject({ id: copy.id, labels: { clone: "yes" } });
+    expect(await ephemeral().find("clone")).toMatchObject({
+      id: copy.id,
+      labels: { clone: "yes" },
+    });
   });
   test("a launch without a PID kills its own group instead of pausing", async () => {
     const provider = ephemeral();
     const info = await provider.create({ labels: {} });
     const value = state.boxes.get(info.id);
+
     if (!value) throw new Error("Missing mock box");
     const command = value.exec.command.bind(value.exec);
     const commands: string[] = [];
     vi.spyOn(value.exec, "command").mockImplementation(async (text) => {
       commands.push(text);
-      return text.includes("nohup setsid") ? { exitCode: 1, stdout: "", stderr: "", result: "" } : command(text);
+
+      return text.includes("nohup setsid")
+        ? { exitCode: 1, stdout: "", stderr: "", result: "" }
+        : command(text);
     });
     const pause = vi.spyOn(value, "pause");
-    await expect(provider.startProcess?.(info.id, { command: "sleep 5", cwd: "/workspace", env: {}, onChunk() {} })).rejects.toMatchObject({ code: "provider" });
+    await expect(
+      provider.startProcess?.(info.id, {
+        command: "sleep 5",
+        cwd: "/workspace",
+        env: {},
+        onChunk() {},
+      }),
+    ).rejects.toMatchObject({ code: "provider" });
     expect(pause).not.toHaveBeenCalled();
-    expect(commands.at(-1)).toMatch(/^for p in \$\(pgrep -f '\[t\]mp\/\.sandbox-sdk\/upstash-runs\/[0-9a-f-]+\/'\)/);
+    expect(commands.at(-1)).toMatch(
+      /^for p in \$\(pgrep -f '\[t\]mp\/\.sandbox-sdk\/upstash-runs\/[0-9a-f-]+\/'\)/,
+    );
   });
 });
 
 test("buffered commands preserve large ordered output and isolate environment overrides", async () => {
   const box = await createSandbox(factory(), { env: { TOKEN: "native-secret" } });
+
   try {
-    const result = await box.run("python3 -c 'import sys; sys.stdout.write(\"雪\"*50000); sys.stdout.flush(); sys.stderr.write(\"END\")'");
+    const result = await box.run(
+      'python3 -c \'import sys; sys.stdout.write("雪"*50000); sys.stdout.flush(); sys.stderr.write("END")\'',
+    );
+
     expect(result.stdout).toBe("雪".repeat(50000));
     expect(result.stderr).toBe("END");
     expect((await box.run('printf %s "$TOKEN"')).stdout).toBe("native-secret");
-    expect((await box.run('printf %s "$TOKEN"', { env: { TOKEN: "override-secret" } })).stdout).toBe("override-secret");
+    expect(
+      (await box.run('printf %s "$TOKEN"', { env: { TOKEN: "override-secret" } })).stdout,
+    ).toBe("override-secret");
     expect((await box.run('printf %s "$TOKEN"')).stdout).toBe("native-secret");
     expect((await box.run("cat")).stdout).toBe("");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("buffered cancellation retries when completion removes the locked directory", async () => {
@@ -488,119 +628,199 @@ test("buffered cancellation retries when completion removes the locked directory
   const box = await createSandbox(factory());
   const command = box.native.exec.command;
   let release = () => {};
-  const cancelled = new Promise<void>(resolve => { release = resolve; });
-  vi.spyOn(box.native.exec, "command").mockImplementation(async text => {
+
+  const cancelled = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  vi.spyOn(box.native.exec, "command").mockImplementation(async (text) => {
     if (text.includes("for attempt in range(3)")) {
       try {
-        return await command(text.replace(/^( *)open\(p\+"\/cancel","w"\)\.close\(\)/m, (_match: string, indent: string) => `${indent}if attempt==0:\n${indent} import shutil\n${indent} shutil.rmtree(p)\n${indent}open(p+"/cancel","w").close()`));
-      } finally { release(); }
+        return await command(
+          text.replace(
+            /^( *)open\(p\+"\/cancel","w"\)\.close\(\)/m,
+            (_match: string, indent: string) =>
+              `${indent}if attempt==0:\n${indent} import shutil\n${indent} shutil.rmtree(p)\n${indent}open(p+"/cancel","w").close()`,
+          ),
+        );
+      } finally {
+        release();
+      }
     }
+
     const result = await command(text);
+
     if (text.includes("python3 -S -u")) await cancelled;
+
     return result;
   });
+
   try {
-    expect(await bufferedExecute(box.native, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 200, onChunk() {} })).toEqual({ exitCode: null, timedOut: true });
-  } finally { release(); await box.destroy(); }
+    expect(
+      await bufferedExecute(box.native, {
+        command: "true",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 200,
+        onChunk() {},
+      }),
+    ).toEqual({ exitCode: null, timedOut: true });
+  } finally {
+    release();
+    await box.destroy();
+  }
 });
 
 test("quote-heavy commands fall back to a session without destroying sandbox files", async () => {
   const box = await createSandbox(factory());
+
   try {
     await box.files.write("kept", "yes");
     expect(await box.run(": #" + "'".repeat(10_000))).toMatchObject({ exitCode: 0 });
     expect(await box.files.read("kept")).toBe("yes");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("a lost buffered response prevents delayed launch without deleting unrelated files", async () => {
   const box = await createSandbox(factory());
   const command = box.native.exec.command;
   let late: Promise<unknown> | undefined;
-  vi.spyOn(box.native.exec, "command").mockImplementation(async text => {
+  vi.spyOn(box.native.exec, "command").mockImplementation(async (text) => {
     if (text.includes("python3 -S -u")) {
-      late = new Promise<void>(resolve => { setTimeout(resolve, 100); }).then(() => command(text));
+      late = new Promise<void>((resolve) => {
+        setTimeout(resolve, 100);
+      }).then(() => command(text));
       void late.catch(() => {});
       throw new Error("private-native-token");
     }
+
     return command(text);
   });
+
   try {
     await box.files.write("kept", "yes");
     await expect(box.run("echo leaked > delayed")).rejects.toMatchObject({ code: "provider" });
     await late;
     expect(await box.files.read("kept")).toBe("yes");
     expect(await box.files.exists("delayed")).toBe(false);
-  } finally { await late; await box.destroy(); }
+  } finally {
+    await late;
+    await box.destroy();
+  }
 });
 
 test("buffered primitives inherit sandbox defaults unless core explicitly overrides them", async () => {
   const provider = factory();
   const info = await provider.create({ labels: {}, env: { CI: "native-ci" } });
   const chunks: string[] = [];
+
   try {
-    expect(await provider.exec(info.id, { command: 'printf %s "$CI"', cwd: "/workspace", env: {}, timeoutMs: 3000, onChunk(chunk) { chunks.push(chunk.text); } })).toMatchObject({ exitCode: 0 });
+    expect(
+      await provider.exec(info.id, {
+        command: 'printf %s "$CI"',
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 3000,
+        onChunk(chunk) {
+          chunks.push(chunk.text);
+        },
+      }),
+    ).toMatchObject({ exitCode: 0 });
     expect(chunks.join("")).toBe("native-ci");
-  } finally { await provider.destroy(info.id); }
+  } finally {
+    await provider.destroy(info.id);
+  }
 });
 
-test.each([factory, ephemeral])("fresh workspace supports first file operations before the first command", async make => {
-  const provider = make();
-  const box = await createSandbox(provider, { labels: { suite: "sbx57-first-files" } });
-  try {
-    expect((await box.files.stat(".")).type).toBe("directory");
-    expect(await box.files.exists(".")).toBe(true);
-    expect(await box.files.list(".")).toEqual([]);
-    await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
-    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
-    expect((await box.run("pwd")).stdout).toBe("/workspace\n");
-  } finally { await box.destroy(); }
-});
+test.each([factory, ephemeral])(
+  "fresh workspace supports first file operations before the first command",
+  async (make) => {
+    const provider = make();
+    const box = await createSandbox(provider, { labels: { suite: "sbx57-first-files" } });
+
+    try {
+      expect((await box.files.stat(".")).type).toBe("directory");
+      expect(await box.files.exists(".")).toBe(true);
+      expect(await box.files.list(".")).toEqual([]);
+      await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
+      expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(
+        new Uint8Array([0, 255, 10]),
+      );
+      expect((await box.run("pwd")).stdout).toBe("/workspace\n");
+    } finally {
+      await box.destroy();
+    }
+  },
+);
 
 test("first mkdir prepares nested paths and removing a fresh workspace stays removed", async () => {
   const provider = factory();
   const first = await createSandbox(provider);
   const second = await createSandbox(provider);
+
   try {
     await provider.files.mkdir(first.id, "/workspace/nested/dir");
     expect((await first.files.stat("nested/dir")).type).toBe("directory");
     await second.files.remove(".", { recursive: true });
     expect(await second.files.exists(".")).toBe(false);
-  } finally { await first.destroy(); await second.destroy(); }
+  } finally {
+    await first.destroy();
+    await second.destroy();
+  }
 });
 
 test("reserved discovery environment cannot silently replace caller values", async () => {
-  await expect(factory().create({ labels: {}, env: { SANDBOX_SDK_UPSTASH_METADATA: "caller value" } })).rejects.toMatchObject({ code: "invalid_argument" });
+  await expect(
+    factory().create({ labels: {}, env: { SANDBOX_SDK_UPSTASH_METADATA: "caller value" } }),
+  ).rejects.toMatchObject({ code: "invalid_argument" });
   expect(state.creates).toHaveLength(0);
 });
 
+test.each([factory, ephemeral])(
+  "failed first session setup is retried before the next command",
+  async (make) => {
+    const box = await createSandbox(make());
+    const session = box.native.exec.session.bind(box.native.exec);
+    vi.spyOn(box.native.exec, "session").mockImplementationOnce((input) =>
+      session({
+        ...input,
+        argv: input.argv?.map((arg, i) =>
+          i === 2 ? arg.replace(/^[\s\S]*? && cd "\$1"/, 'false && cd "$1"') : arg,
+        ),
+      }),
+    );
+    expect((await box.run("true", { stdin: "" })).exitCode).toBe(1);
+    expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
+  },
+);
 
-test.each([factory, ephemeral])("failed first session setup is retried before the next command", async make => {
-  const box = await createSandbox(make());
-  const session = box.native.exec.session.bind(box.native.exec);
-  vi.spyOn(box.native.exec, "session").mockImplementationOnce(input => session({
-    ...input,
-    argv: input.argv?.map((arg, i) => i === 2 ? arg.replace(/^[\s\S]*? && cd "\$1"/, 'false && cd "$1"') : arg),
-  }));
-  expect((await box.run("true", { stdin: "" })).exitCode).toBe(1);
-  expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
-});
-
-test.each([factory, ephemeral])("successful session setup survives a nonzero user command", async make => {
-  const box = await createSandbox(make());
-  expect((await box.run("exit 7", { stdin: "" })).exitCode).toBe(7);
-  await box.native.files.remove("/workspace", { recursive: true });
-  expect((await box.run("true", { stdin: "", cwd: "/" })).ok).toBe(true);
-  expect(await box.files.exists("/workspace")).toBe(false);
-});
-
+test.each([factory, ephemeral])(
+  "successful session setup survives a nonzero user command",
+  async (make) => {
+    const box = await createSandbox(make());
+    expect((await box.run("exit 7", { stdin: "" })).exitCode).toBe(7);
+    await box.native.files.remove("/workspace", { recursive: true });
+    expect((await box.run("true", { stdin: "", cwd: "/" })).ok).toBe(true);
+    expect(await box.files.exists("/workspace")).toBe(false);
+  },
+);
 
 test("session setup confirmation tolerates split transport chunks without leaking into output", async () => {
   const box = await createSandbox(factory());
   const session = box.native.exec.session.bind(box.native.exec);
-  vi.spyOn(box.native.exec, "session").mockImplementation(input => session({
-    ...input,
-    onStdout: data => { for (const byte of data) input.onStdout?.(new Uint8Array([byte])); },
-  }));
-  expect(await box.run("printf 'é\\n'; exit 7", { stdin: "" })).toMatchObject({ exitCode: 7, stdout: "é\n", stderr: "" });
+  vi.spyOn(box.native.exec, "session").mockImplementation((input) =>
+    session({
+      ...input,
+      onStdout: (data) => {
+        for (const byte of data) input.onStdout?.(new Uint8Array([byte]));
+      },
+    }),
+  );
+  expect(await box.run("printf 'é\\n'; exit 7", { stdin: "" })).toMatchObject({
+    exitCode: 7,
+    stdout: "é\n",
+    stderr: "",
+  });
 });

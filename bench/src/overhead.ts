@@ -11,8 +11,11 @@ export interface OverheadFixture {
   rawCall(): Promise<void>;
   dispose(): Promise<void>;
 }
+
 export type OverheadHook = () => Promise<OverheadFixture>;
+
 const mockedNativeCall = async () => ({ exitCode: 0, timedOut: false });
+
 export const overheadHooks: Record<string, OverheadHook> = {
   async local() {
     const { local } = await import("@opencoredev/sandbox-sdk/local");
@@ -23,9 +26,14 @@ export const overheadHooks: Record<string, OverheadHook> = {
     const backing = memory();
     const box = await createSandbox(backing);
     backing.exec = (_id, input) => adapter.exec("mock-local", input);
+
     return {
-      async sdkCall() { if (!(await box.run("true")).ok) throw new Error("Mocked local command failed"); },
-      async rawCall() { await client.exec("mock-local", ["true"], { onChunk() {} }); },
+      async sdkCall() {
+        if (!(await box.run("true")).ok) throw new Error("Mocked local command failed");
+      },
+      async rawCall() {
+        await client.exec("mock-local", ["true"], { onChunk() {} });
+      },
       dispose: () => box.destroy(),
     };
   },
@@ -34,9 +42,11 @@ export const overheadHooks: Record<string, OverheadHook> = {
     const box = await createSandbox(provider);
     // Replace only exec AFTER initialization: all SDK run bookkeeping stays real.
     provider.exec = (_id: string, _input: ExecInput) => mockedNativeCall();
+
     return {
       async sdkCall() {
         const result = await box.run("true");
+
         if (!result.ok) throw new Error("Mocked SDK command failed");
       },
       async rawCall() {
@@ -46,9 +56,12 @@ export const overheadHooks: Record<string, OverheadHook> = {
     };
   },
 };
+
 export async function cpuPerCall(action: () => Promise<void>, iterations = 100): Promise<number> {
   const before = process.cpuUsage();
+
   for (let index = 0; index < iterations; index++) await action();
   const used = process.cpuUsage(before);
+
   return (used.user + used.system) / 1000 / iterations;
 }

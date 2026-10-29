@@ -29,12 +29,15 @@ function outputText(output: unknown): string {
 /** The one argument worth showing on the activity line. */
 function summary(input: unknown): string {
   if (typeof input !== "object" || input === null) return "";
+
   for (const key of ["command", "path", "name", "query"] as const) {
     if (key in input) {
       const value: unknown = Reflect.get(input, key);
+
       if (typeof value === "string") return value.split("\n")[0] ?? "";
     }
   }
+
   return "";
 }
 
@@ -48,12 +51,15 @@ function verdictOf(part: ToolPart): Verdict {
     case "output-available": {
       if (part.preliminary) return { kind: "running" };
       const [line = ""] = outputText(part.output).split("\n");
+
       const detail = line
         .replace(/^(OK|FAILED)\s*/, "")
         .replace(/cwd=\S+/, "")
         .trim();
+
       return line.startsWith("FAILED") ? { kind: "failed", detail } : { kind: "ok", detail };
     }
+
     case "output-error":
       return { kind: "failed", detail: "error" };
     case "output-denied":
@@ -65,12 +71,14 @@ function verdictOf(part: ToolPart): Verdict {
 
 function ToolLine({ part }: { part: ToolPart }) {
   const verdict = verdictOf(part);
+
   const body =
     part.state === "output-error"
       ? part.errorText
       : part.state === "output-available"
         ? outputText(part.output)
         : "";
+
   return (
     <details className="tool" data-verdict={verdict.kind}>
       <summary>
@@ -95,13 +103,17 @@ function Message({ message }: { message: UIMessage }) {
     const text = message.parts
       .flatMap((part) => (part.type === "text" ? [part.text] : []))
       .join("\n");
+
     return <p className="msg-user">{text}</p>;
   }
+
   return (
     <div className="msg-agent">
       {message.parts.map((part, index) => {
         if (part.type === "text") return part.text.trim() ? <p key={index}>{part.text}</p> : null;
+
         if (isToolUIPart(part)) return <ToolLine key={part.toolCallId} part={part} />;
+
         return null;
       })}
     </div>
@@ -113,12 +125,16 @@ function usePreview(messages: UIMessage[]) {
   return useMemo(() => {
     let ready = false;
     let revision = 0;
+
     for (const part of messages.flatMap(toolParts)) {
       if (part.state !== "output-available" || part.preliminary) continue;
       const name = getToolName(part);
+
       if (name === "start_process" && outputText(part.output).includes("ready=true")) ready = true;
+
       if (["start_process", "write_file", "edit_file"].includes(name)) revision++;
     }
+
     return { ready, revision };
   }, [messages]);
 }
@@ -139,6 +155,7 @@ export function Builder({ provider, model }: { provider: string; model: string }
   function submit(event?: FormEvent) {
     event?.preventDefault();
     const text = input.trim();
+
     if (!text || busy) return;
     void sendMessage({ text });
     setInput("");

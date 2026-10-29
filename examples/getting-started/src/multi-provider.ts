@@ -6,13 +6,31 @@
 import { createSandbox, hasCapability, type Sandbox } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 
-const providerNames = ["memory", "local", "e2b", "daytona", "vercel", "upstash", "railway", "tenki", "boxd", "freestyle", "superserve", "boat", "sandboxer"] as const;
+const providerNames = [
+  "memory",
+  "local",
+  "e2b",
+  "daytona",
+  "vercel",
+  "upstash",
+  "railway",
+  "tenki",
+  "boxd",
+  "freestyle",
+  "superserve",
+  "boat",
+  "sandboxer",
+] as const;
+
 type ProviderName = (typeof providerNames)[number];
 
 function parseProviderName(value: string | undefined): ProviderName {
   const name = value ?? "memory";
   const match = providerNames.find((candidate) => candidate === name);
-  if (!match) throw new Error(`SANDBOX_PROVIDER must be one of ${providerNames.join(", ")}; got "${name}".`);
+
+  if (!match)
+    throw new Error(`SANDBOX_PROVIDER must be one of ${providerNames.join(", ")}; got "${name}".`);
+
   return match;
 }
 
@@ -56,14 +74,19 @@ async function loadProvider(name: ProviderName): Promise<Provider> {
 async function greet(box: Sandbox): Promise<string> {
   await box.files.write("greeting.txt", `hello from ${box.provider}\n`);
   const result = await box.run("cat greeting.txt");
+
   if (!result.ok) throw new Error(`cat failed with exit code ${result.exitCode}: ${result.stderr}`);
+
   return result.stdout.trim();
 }
 
 const name = parseProviderName(process.env.SANDBOX_PROVIDER);
 await using box = await createSandbox(await loadProvider(name));
+
 console.log(`provider=${box.provider} id=${box.id}`);
+
 console.log(await greet(box));
+
 console.log(`capabilities: ${[...box.capabilities].join(", ") || "none"}`);
 
 // A runtime-selected `Provider` makes pause, resume, snapshot, and terminal optional.

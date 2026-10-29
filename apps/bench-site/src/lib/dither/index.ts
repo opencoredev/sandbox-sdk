@@ -8,6 +8,7 @@ export {
   isInked,
   thresholdAt,
 } from "@/lib/dither/matrices";
+
 export type { DitherMatrix, ThresholdMap } from "@/lib/dither/matrices";
 
 export {
@@ -17,12 +18,8 @@ export {
   DITHER_COLORS,
   MOTION,
 } from "@/lib/dither/tokens";
-export type {
-  DitherColor,
-  DitherColorName,
-  DitherPalette,
-  Rgba,
-} from "@/lib/dither/tokens";
+
+export type { DitherColor, DitherColorName, DitherPalette, Rgba } from "@/lib/dither/tokens";
 
 export {
   BLOOM_LEVELS,
@@ -37,6 +34,7 @@ export {
   SERIES_COLORS,
   seriesColor,
 } from "@/lib/dither/style";
+
 export type {
   Bloom,
   FillEdge,
@@ -60,13 +58,11 @@ export {
   useInView,
   usePrefersReducedMotion,
 } from "@/lib/dither/motion";
-export type {
-  FrameLoopCallback,
-  FrameLoopOptions,
-  FrameLoopState,
-} from "@/lib/dither/motion";
+
+export type { FrameLoopCallback, FrameLoopOptions, FrameLoopState } from "@/lib/dither/motion";
 
 export { DitherShader, MAX_LIVE_CONTEXTS } from "@/lib/dither/shader";
+
 export type {
   DitherShaderProps,
   DitherShaderState,
@@ -75,19 +71,11 @@ export type {
 } from "@/lib/dither/shader";
 
 export { BloomBox, BloomGroup, FillPattern } from "@/lib/dither/fill";
-export type {
-  BloomBoxProps,
-  BloomGroupProps,
-  FillPatternProps,
-  FillRamp,
-} from "@/lib/dither/fill";
 
-export {
-  DitherPattern,
-  ditherMask,
-  ditherMaskStyle,
-  ditherPath,
-} from "@/lib/dither/pattern";
+export type { BloomBoxProps, BloomGroupProps, FillPatternProps, FillRamp } from "@/lib/dither/fill";
+
+export { DitherPattern, ditherMask, ditherMaskStyle, ditherPath } from "@/lib/dither/pattern";
+
 export type {
   DitherMaskOptions,
   DitherMaskStyleOptions,
@@ -95,6 +83,7 @@ export type {
 } from "@/lib/dither/pattern";
 
 export { DITHER_METHODS, ditherImage } from "@/lib/dither/diffuse";
+
 export type {
   DiffuseOptions,
   DiffusionMethod,

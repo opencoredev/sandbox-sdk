@@ -8,6 +8,7 @@ const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 const subscribeToReducedMotion = (onChange: () => void) => {
   const query = window.matchMedia(REDUCED_MOTION_QUERY);
   query.addEventListener("change", onChange);
+
   return () => query.removeEventListener("change", onChange);
 };
 
@@ -16,11 +17,12 @@ export const usePrefersReducedMotion = (): boolean =>
   useSyncExternalStore(
     subscribeToReducedMotion,
     () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
-    () => false
+    () => false,
   );
 
 const subscribeToVisibility = (onChange: () => void) => {
   document.addEventListener("visibilitychange", onChange);
+
   return () => document.removeEventListener("visibilitychange", onChange);
 };
 
@@ -29,7 +31,7 @@ export const useDocumentVisible = (): boolean =>
   useSyncExternalStore(
     subscribeToVisibility,
     () => document.visibilityState === "visible",
-    () => true
+    () => true,
   );
 
 /**
@@ -38,20 +40,24 @@ export const useDocumentVisible = (): boolean =>
  */
 export const useInView = (
   ref: RefObject<Element | null>,
-  { rootMargin = "120px" }: { rootMargin?: string } = {}
+  { rootMargin = "120px" }: { rootMargin?: string } = {},
 ): boolean => {
   const [inView, setInView] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
+
     if (!el) {
       return;
     }
+
     const observer = new IntersectionObserver(
       ([entry]) => setInView(entry?.isIntersecting ?? false),
-      { rootMargin }
+      { rootMargin },
     );
+
     observer.observe(el);
+
     return () => observer.disconnect();
   }, [ref, rootMargin]);
 
@@ -97,7 +103,7 @@ const MAX_DELTA = 0.1;
  */
 export const useFrameLoop = (
   callback: FrameLoopCallback,
-  { target, enabled = true, fps = 30, stillTime = 0 }: FrameLoopOptions = {}
+  { target, enabled = true, fps = 30, stillTime = 0 }: FrameLoopOptions = {},
 ): FrameLoopState => {
   const callbackRef = useRef(callback);
   useEffect(() => {
@@ -116,20 +122,25 @@ export const useFrameLoop = (
   useEffect(() => {
     if (isStatic) {
       callbackRef.current(stillTime, 0);
+
       return;
     }
+
     if (!isRunning) {
       return;
     }
+
     const interval = 1000 / Math.max(1, fps);
     let frame = 0;
     let lastTick = performance.now();
     let lastDraw = -Infinity;
+
     const tick = (now: number) => {
       frame = requestAnimationFrame(tick);
       const delta = Math.min((now - lastTick) / 1000, MAX_DELTA);
       lastTick = now;
       timeRef.current += delta;
+
       // A small tolerance so 60Hz screens hit 30fps evenly.
       if (now - lastDraw >= interval - 2) {
         const sinceDraw = Math.min((now - lastDraw) / 1000, MAX_DELTA);
@@ -137,12 +148,15 @@ export const useFrameLoop = (
         callbackRef.current(timeRef.current, sinceDraw);
       }
     };
+
     frame = requestAnimationFrame(tick);
+
     return () => cancelAnimationFrame(frame);
   }, [isStatic, isRunning, fps, stillTime]);
 
   if (isStatic) {
     return "static";
   }
+
   return isRunning ? "running" : "paused";
 };

@@ -36,6 +36,7 @@ export async function buildApp(options: {
           `Built a small app for "${options.prompt}". It's running on port ${previewPort}.`,
         )
       : options.model.model;
+
   return streamText({
     model,
     instructions,

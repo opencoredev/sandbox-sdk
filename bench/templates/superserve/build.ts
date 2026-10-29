@@ -2,10 +2,13 @@ import { Sandbox, Template } from "@superserve/sdk";
 
 async function main() {
   const [size = "1x1", ...extra] = process.argv.slice(2);
+
   if ((size !== "1x1" && size !== "4x8") || extra.length > 0) {
     throw new Error("Usage: bun build.ts [1x1|4x8]");
   }
+
   const apiKey = process.env.SUPERSERVE_API_KEY;
+
   if (!apiKey?.trim()) throw new Error("Set SUPERSERVE_API_KEY");
 
   const template = await Template.create({
@@ -30,8 +33,11 @@ async function main() {
     ],
     signal: AbortSignal.timeout(60_000),
   });
+
   const ready = await template.waitUntilReady({ signal: AbortSignal.timeout(15 * 60_000) });
+
   if (ready.status !== "ready") throw new Error("Template did not become ready");
+
   // Verify the resulting runtime, rather than reporting versions inferred from tags.
   const sandbox = await Sandbox.create({
     apiKey,
@@ -40,15 +46,19 @@ async function main() {
     metadata: { verification: "sbx53-pinned-template" },
     signal: AbortSignal.timeout(60_000),
   });
+
   try {
     const result = await sandbox.commands.run(
       "node --version && npm --version && python3 --version",
       { timeoutMs: 10_000 },
     );
+
     const versions = result.stdout.trim().split("\n");
+
     if (result.exitCode !== 0 || versions.join("\n") !== "v22.23.4\n10.9.9\nPython 3.11.2") {
       throw new Error("Runtime versions did not match the pinned template");
     }
+
     process.stdout.write(
       `${ready.name}\nNode ${versions[0]}\nnpm ${versions[1]}\n${versions[2]}\n`,
     );
@@ -60,6 +70,7 @@ async function main() {
 main().catch((error: unknown) => {
   // Native errors can contain credentials; emit only safe diagnostics.
   const message = error instanceof Error ? error.message : "";
+
   if (message.includes("vcpu must be 1-2")) {
     process.stderr.write("BLOCKED: vcpu must be 1-2 (your team's limit)\n");
   } else {
@@ -67,5 +78,6 @@ main().catch((error: unknown) => {
       "Template build failed. Check the size argument, credentials, and Superserve build status.\n",
     );
   }
+
   process.exitCode = 1;
 });

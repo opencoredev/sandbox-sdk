@@ -1,4 +1,5 @@
 import { z } from "zod";
+
 export const fingerprintSchema = z.object({
   cpuModel: z.string(),
   flags: z.array(z.string()),
@@ -24,10 +25,13 @@ export const fingerprintSchema = z.object({
   tools: z.record(z.string(), z.string()),
   runtime: z.string(),
 });
+
 export type Fingerprint = z.infer<typeof fingerprintSchema>;
+
 export function parseFingerprint(text: string) {
   return fingerprintSchema.parse(JSON.parse(text));
 }
+
 export function resources(fp: Fingerprint) {
   return {
     cpu: Math.min(fp.nproc, fp.quotaCpus ?? fp.nproc),
@@ -36,14 +40,32 @@ export function resources(fp: Fingerprint) {
   };
 }
 
-export function verifyRestoredResources(source: Fingerprint | null, restored: Fingerprint, options: {compareDisk?: boolean} = {}) {
+export function verifyRestoredResources(
+  source: Fingerprint | null,
+  restored: Fingerprint,
+  options: { compareDisk?: boolean } = {},
+) {
   const actual = resources(restored);
-  if (!source) return { matches: null, source: null, restored: actual, mismatches: ["Source fingerprint unavailable"] };
+
+  if (!source)
+    return {
+      matches: null,
+      source: null,
+      restored: actual,
+      mismatches: ["Source fingerprint unavailable"],
+    };
   const original = resources(source);
+
   const mismatches = [
     ...(original.cpu === actual.cpu ? [] : ["cpu"]),
-    ...(Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05 ? [] : ["memoryGiB"]),
-    ...(options.compareDisk === false || Math.abs(actual.diskGiB - original.diskGiB) <= original.diskGiB * 0.05 ? [] : ["diskGiB"]),
+    ...(Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05
+      ? []
+      : ["memoryGiB"]),
+    ...(options.compareDisk === false ||
+    Math.abs(actual.diskGiB - original.diskGiB) <= original.diskGiB * 0.05
+      ? []
+      : ["diskGiB"]),
   ];
+
   return { matches: mismatches.length === 0, source: original, restored: actual, mismatches };
 }

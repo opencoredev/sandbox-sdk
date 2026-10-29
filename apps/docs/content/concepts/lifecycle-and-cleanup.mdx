@@ -7,10 +7,10 @@ Cloud sandboxes cost money while they run. This page covers how a sandbox ends: 
 
 ## Close or destroy
 
-| Call | The sandbox | Use it when |
-| --- | --- | --- |
-| `box.close()` | Keeps running | You will come back to it, by key or ID |
-| `box.destroy()` | Is deleted | You are done with it |
+| Call            | The sandbox   | Use it when                            |
+| --------------- | ------------- | -------------------------------------- |
+| `box.close()`   | Keeps running | You will come back to it, by key or ID |
+| `box.destroy()` | Is deleted    | You are done with it                   |
 
 `close()` only releases local resources such as open streams. `destroy()` deletes the sandbox at the provider.
 
@@ -51,13 +51,13 @@ await using box = await createSandbox(daytona(), {
 
 Most providers enforce both themselves, so they hold even after your server crashes. Local has no timer of its own: it stores the deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs. A provider that can't honor a limit at all makes `createSandbox` fail with `unsupported` instead of ignoring it:
 
-| Provider | `idleTimeoutMs` | `timeoutMs` |
-| --- | --- | --- |
-| Daytona | Yes, rounded up to whole minutes | Yes, rounded down to whole minutes, at least one minute |
-| E2B | No | Yes |
-| Vercel | No | Yes, per session; each resume starts a new one |
-| Local | Yes, on reconnect or reap | Yes, on reconnect or reap |
-| Memory | Yes, in your process | Yes, in your process |
+| Provider | `idleTimeoutMs`                  | `timeoutMs`                                             |
+| -------- | -------------------------------- | ------------------------------------------------------- |
+| Daytona  | Yes, rounded up to whole minutes | Yes, rounded down to whole minutes, at least one minute |
+| E2B      | No                               | Yes                                                     |
+| Vercel   | No                               | Yes, per session; each resume starts a new one          |
+| Local    | Yes, on reconnect or reap        | Yes, on reconnect or reap                               |
+| Memory   | Yes, in your process             | Yes, in your process                                    |
 
 The [capability matrix](/reference/capabilities) lists every provider.
 

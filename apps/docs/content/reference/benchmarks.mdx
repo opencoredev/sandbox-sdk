@@ -19,40 +19,40 @@ The SDK must be built first, because the harness imports each provider from `@op
 
 A provider without credentials is skipped with a note, not failed. Memory and Local need no keys. The cloud providers need:
 
-| Provider | Variables |
-| --- | --- |
-| E2B | `E2B_API_KEY` |
-| Vercel | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`. OIDC alone is not enough here. |
-| Daytona | `DAYTONA_API_KEY` |
+| Provider | Variables                                                                             |
+| -------- | ------------------------------------------------------------------------------------- |
+| E2B      | `E2B_API_KEY`                                                                         |
+| Vercel   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`. OIDC alone is not enough here. |
+| Daytona  | `DAYTONA_API_KEY`                                                                     |
 
 Each provider is created with its factory's defaults, so the environment variables on its provider page apply.
 
 ## What it measures
 
-| Scenario | What is timed |
-| --- | --- |
-| `cold` | `createSandbox` through the first successful `true` command |
-| `command` | One `true` command on a running sandbox |
-| `files-1kb`, `files-10mb` | Writing and reading back 1 KB and 10 MB, with a byte check |
-| `dev-server` | Starting a small Node HTTP server on port 3000 with `box.start` until it logs that it is ready |
-| `preview-first-byte` | Resolving the preview URL and reading the first byte of the response |
-| `destroy` | Deleting the sandbox |
+| Scenario                             | What is timed                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `cold`                               | `createSandbox` through the first successful `true` command                                            |
+| `command`                            | One `true` command on a running sandbox                                                                |
+| `files-1kb`, `files-10mb`            | Writing and reading back 1 KB and 10 MB, with a byte check                                             |
+| `dev-server`                         | Starting a small Node HTTP server on port 3000 with `box.start` until it logs that it is ready         |
+| `preview-first-byte`                 | Resolving the preview URL and reading the first byte of the response                                   |
+| `destroy`                            | Deleting the sandbox                                                                                   |
 | `raw-cpu`, `sdk-cpu`, `overhead-cpu` | CPU time per call in your process, for a mocked native call alone, through the SDK, and the difference |
 
 Latency results report p50, p95, p99, mean, min, and max. Warmups and failures are excluded from the statistics and counted separately. Memory skips the two server scenarios, since it has no sockets. Its numbers check the harness and the SDK's own overhead, not real provider speed.
 
 ## Options
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--providers` | `memory` | Comma-separated provider names |
-| `--runs` | `50` | Measured iterations per provider, one sandbox each |
-| `--warmup` | `2` | Extra iterations left out of the results |
-| `--concurrency` | `1` | Iterations in flight at once, from 1 to 32. Providers still run one after another. |
-| `--timeout-ms` | `30000` | Deadline for each scenario and cleanup attempt |
-| `--max-sandboxes` | `100` | Most cloud sandboxes the run may create, warmups included |
-| `--yes` | off | Allow a run that needs more than `--max-sandboxes` |
-| `--out` | `results` | Output directory, relative to `bench/` |
+| Option            | Default   | Meaning                                                                            |
+| ----------------- | --------- | ---------------------------------------------------------------------------------- |
+| `--providers`     | `memory`  | Comma-separated provider names                                                     |
+| `--runs`          | `50`      | Measured iterations per provider, one sandbox each                                 |
+| `--warmup`        | `2`       | Extra iterations left out of the results                                           |
+| `--concurrency`   | `1`       | Iterations in flight at once, from 1 to 32. Providers still run one after another. |
+| `--timeout-ms`    | `30000`   | Deadline for each scenario and cleanup attempt                                     |
+| `--max-sandboxes` | `100`     | Most cloud sandboxes the run may create, warmups included                          |
+| `--yes`           | off       | Allow a run that needs more than `--max-sandboxes`                                 |
+| `--out`           | `results` | Output directory, relative to `bench/`                                             |
 
 ## Cost and cleanup
 

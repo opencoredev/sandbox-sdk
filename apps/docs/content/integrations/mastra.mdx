@@ -60,7 +60,9 @@ const coder = new Agent({
   tools: sandboxTools(box),
 });
 
-const result = await coder.generate("Create a Vite React app in /workspace/app and start it on port 5173.");
+const result = await coder.generate(
+  "Create a Vite React app in /workspace/app and start it on port 5173.",
+);
 console.log(result.text);
 ```
 

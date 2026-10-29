@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | `mode` uses a `chmod` after the write |
-| Background processes | Yes | |
-| Preview URLs | Partial | One public route per machine; a new port moves it |
-| Pause and resume | Yes | Suspends to memory |
-| Snapshots | Yes | A restore keeps the source's size, image, and env; no `expiresInMs` |
-| Machine size | Partial | 1, 2, 4, or 8 vCPU at 4 GiB each, 100 GB disk |
-| Network policy | Partial | Allow lists only; no `"none"` |
-| Hard lifetime (`timeoutMs`) | Yes | Native delete timer |
-| Idle timeout (`idleTimeoutMs`) | Yes | Native auto-suspend |
-| Keys | Best-effort | Read from a marker file in each machine |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                               |
+| ------------------------------ | ----------- | ------------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Live output                                                         |
+| Files                          | Yes         | `mode` uses a `chmod` after the write                               |
+| Background processes           | Yes         |                                                                     |
+| Preview URLs                   | Partial     | One public route per machine; a new port moves it                   |
+| Pause and resume               | Yes         | Suspends to memory                                                  |
+| Snapshots                      | Yes         | A restore keeps the source's size, image, and env; no `expiresInMs` |
+| Machine size                   | Partial     | 1, 2, 4, or 8 vCPU at 4 GiB each, 100 GB disk                       |
+| Network policy                 | Partial     | Allow lists only; no `"none"`                                       |
+| Hard lifetime (`timeoutMs`)    | Yes         | Native delete timer                                                 |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Native auto-suspend                                                 |
+| Keys                           | Best-effort | Read from a marker file in each machine                             |
+| Terminal                       | No          |                                                                     |
 
 ## Run commands
 
@@ -115,7 +115,10 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 
 await using box = await createSandbox(boxd());
-await box.start("python3 -m http.server 3000 --bind 0.0.0.0", { name: "web", ready: { port: 3000 } });
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", {
+  name: "web",
+  ready: { port: 3000 },
+});
 const preview = await box.preview(3000);
 console.log(preview.url);
 ```
@@ -144,11 +147,11 @@ A restore inherits the snapshot's size, image, and environment. Passing `size` o
 
 Every size has 4 GiB of memory per vCPU and a 100 GB disk.
 
-| Preset | vCPU | Memory | Disk |
-| --- | --- | --- | --- |
-| `small` | 1 | 4 GiB | 100 GB |
-| `medium` | 2 | 8 GiB | 100 GB |
-| `large` | 4 | 16 GiB | 100 GB |
+| Preset   | vCPU | Memory | Disk   |
+| -------- | ---- | ------ | ------ |
+| `small`  | 1    | 4 GiB  | 100 GB |
+| `medium` | 2    | 8 GiB  | 100 GB |
+| `large`  | 4    | 16 GiB | 100 GB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -180,14 +183,14 @@ await using box = await createSandbox(boxd(), {
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `BOXD_API_KEY` |
-| `baseUrl` | `string` | `https://boxd.sh:9443` | `BOXD_BASE_URL`, then `BOXD_API_URL` |
-| `image` | `string` | boxd's service image | |
-| `requestTimeoutMs` | `number` | `30_000`; readiness waits `90_000` | |
-| `fileTransferSignal` | `AbortSignal` | | |
-| `volumes` | `{ diskId, mountPath, readOnly? }[]` | None | |
+| Option               | Type                                 | Default                            | Env var                              |
+| -------------------- | ------------------------------------ | ---------------------------------- | ------------------------------------ |
+| `apiKey`             | `string`                             |                                    | `BOXD_API_KEY`                       |
+| `baseUrl`            | `string`                             | `https://boxd.sh:9443`             | `BOXD_BASE_URL`, then `BOXD_API_URL` |
+| `image`              | `string`                             | boxd's service image               |                                      |
+| `requestTimeoutMs`   | `number`                             | `30_000`; readiness waits `90_000` |                                      |
+| `fileTransferSignal` | `AbortSignal`                        |                                    |                                      |
+| `volumes`            | `{ diskId, mountPath, readOnly? }[]` | None                               |                                      |
 
 `volumes` attaches [boxd disks](https://docs.boxd.sh) you created with the native `client.disks.create(name, "10G")`. A disk outlives the machine, so it is the way to keep data across sandboxes. A disk can be attached to one machine at a time.
 
@@ -195,7 +198,9 @@ await using box = await createSandbox(boxd(), {
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 
-await using box = await createSandbox(boxd({ volumes: [{ diskId: "disk_123", mountPath: "/data" }] }));
+await using box = await createSandbox(
+  boxd({ volumes: [{ diskId: "disk_123", mountPath: "/data" }] }),
+);
 await box.run("echo kept > /data/state");
 ```
 

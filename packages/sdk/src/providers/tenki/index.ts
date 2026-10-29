@@ -44,21 +44,28 @@ export interface TenkiOptions {
   /** Lifetime of each preview URL. Default: Tenki's preview TTL. */
   previewTtlMs?: number;
 }
+
 export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
+
 export type TenkiProvider = Provider<Session, TenkiCapability>;
+
 const keyTag = "sandbox-sdk-key";
 const createdTag = "sandbox-sdk-created-at";
+
 /** SDK bookkeeping and Tenki's own metadata. Labels show only the caller's labels and `sandbox-sdk`. */
 const internal = new Set([keyTag, createdTag, "enable_opencode"]);
+
 const presets = {
   small: { cpu: 1, memoryMb: 1024, diskGb: 10 },
   medium: { cpu: 2, memoryMb: 4096, diskGb: 20 },
   large: { cpu: 4, memoryMb: 8192, diskGb: 40 },
 };
+
 function size(input: CreateInput["size"]) {
   if (input === undefined) return {};
   const value = typeof input === "string" ? presets[input] : input;
   const diskGb = value?.diskGb ?? 5;
+
   if (
     !value ||
     !Number.isInteger(value.cpu) ||
@@ -76,16 +83,22 @@ function size(input: CreateInput["size"]) {
       "Size requires 1–128 CPUs, even memoryMb from 128–524288, and 5–100 diskGb",
       "unsupported",
     );
+
   return { cpuCores: value.cpu, memoryMb: value.memoryMb, diskSizeGb: diskGb };
 }
+
 function info(value: Session): SandboxInfo {
   const createdAt = Number(value.metadata[createdTag]);
+
   if (!Number.isFinite(createdAt) || createdAt <= 0 || value.metadata["sandbox-sdk"] !== "1")
     throw failure("Session was not created by Sandbox SDK or its metadata is missing", "not_found");
+
   return {
     id: value.id,
     key: value.metadata[keyTag],
-    labels: Object.fromEntries(Object.entries(value.metadata).filter(([key]) => !internal.has(key))),
+    labels: Object.fromEntries(
+      Object.entries(value.metadata).filter(([key]) => !internal.has(key)),
+    ),
     createdAt,
     state:
       value.state === "RUNNING"
@@ -95,6 +108,7 @@ function info(value: Session): SandboxInfo {
           : "stopped",
   };
 }
+
 // Tenki clears /tmp on pause. The canonical SDK path is a link into durable disk;
 // recreate it before process reattachment, including after snapshot restoration.
 const prepare = [
@@ -102,31 +116,40 @@ const prepare = [
   "-c",
   "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; exec 9>/home/tenki/.sandbox-sdk/setup.lock; flock -x 9; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; flock -u 9; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null; readlink -f /workspace",
 ];
+
 export function tenki(options: TenkiOptions = {}): TenkiProvider {
   let client:
     | Promise<InstanceType<(typeof import("@tenkicloud/sandbox"))["TenkiSandbox"]>>
     | undefined;
+
   const boxes = new Map<string, Session>();
   const destroying = new Map<string, Promise<void>>();
   const workspaceRoots = new WeakMap<Session, string>();
+
   const workspaceStates = new Map<
     string,
     { active: number; revision: number; overlap: boolean; untracked: boolean }
   >();
+
   function workspaceState(value: Session) {
     let state = workspaceStates.get(value.id);
+
     if (!state) {
       state = { active: 0, revision: 0, overlap: false, untracked: false };
       workspaceStates.set(value.id, state);
     }
+
     return state;
   }
+
   function invalidateWorkspace(value: Session) {
     workspaceRoots.delete(value);
     workspaceState(value).revision++;
   }
+
   function setWorkspaceRoot(value: Session, root: string) {
     const state = workspaceState(value);
+
     if (
       !state.active &&
       !state.untracked &&
@@ -134,31 +157,39 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     )
       workspaceRoots.set(value, root);
   }
+
   async function prepareBox(value: Session) {
     invalidateWorkspace(value);
     const revision = workspaceState(value).revision;
     const root = (await raw(value, prepare)).replace(/\n$/, "");
+
     if (revision === workspaceState(value).revision) setWorkspaceRoot(value, root);
   }
+
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   const resumeTimeoutMs = options.resumeTimeoutMs ?? 180_000;
+
   const request = <T>(action: () => Promise<T>, signal?: AbortSignal) =>
     deadline(action, requestTimeoutMs, signal);
+
   const wait = (
     action: (signal: AbortSignal) => Promise<void>,
     timeoutMs: number,
     signal?: AbortSignal,
   ) => deadline(action, timeoutMs, signal);
+
   async function api() {
     return (client ??= (async () => {
       if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
+
       if (
         !Number.isSafeInteger(resumeTimeoutMs) ||
         resumeTimeoutMs <= 0 ||
         resumeTimeoutMs > 900_000
       )
         throw failure("resumeTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
+
       if (
         options.waitTimeoutMs !== undefined &&
         (!Number.isSafeInteger(options.waitTimeoutMs) ||
@@ -166,18 +197,31 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           options.waitTimeoutMs > 900_000)
       )
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
+
       const authToken =
-        options.apiKey ?? options.authToken ??
+        options.apiKey ??
+        options.authToken ??
         (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
+
       if (!authToken)
-        throw failure("Tenki API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.", "auth");
-      const { TenkiSandbox } = await loadPeer("@tenkicloud/sandbox", "tenki", () => import("@tenkicloud/sandbox"));
+        throw failure(
+          "Tenki API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
+          "auth",
+        );
+
+      const { TenkiSandbox } = await loadPeer(
+        "@tenkicloud/sandbox",
+        "tenki",
+        () => import("@tenkicloud/sandbox"),
+      );
+
       return new TenkiSandbox({
         authToken,
         baseUrl: options.baseUrl,
       });
     })());
   }
+
   async function safe<T>(
     operation: TenkiOperation,
     id: string | undefined,
@@ -189,14 +233,19 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       throw tenkiError(error, id, operation, [options.apiKey ?? options.authToken ?? ""]);
     }
   }
+
   async function box(id: string) {
     const found = boxes.get(id);
+
     if (found) return found;
     await provider.connect(id);
     const value = boxes.get(id);
+
     if (!value) throw failure("Session is detached", "not_found");
+
     return value;
   }
+
   const provider: TenkiProvider = {
     name: "tenki",
     keyMode: "best-effort",
@@ -210,14 +259,17 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
             "Tenki no longer auto-pauses on idle; idleTimeoutMs is unavailable",
             "unsupported",
           );
+
         if (
           input.timeoutMs !== undefined &&
           (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
         )
           throw failure("timeoutMs must be a positive integer", "invalid_argument");
+
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const allocation = size(input.size);
         const domains = typeof input.network === "object" ? input.network.allow : undefined;
+
         if (
           domains?.some(
             (domain) =>
@@ -231,13 +283,17 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
             "Network allow entries must be DNS hostnames or leading wildcard domains",
             "unsupported",
           );
+
         const metadata: Record<string, string> = {
           ...input.labels,
           "sandbox-sdk": "1",
           [createdTag]: String(Date.now()),
         };
+
         delete metadata[keyTag];
+
         if (input.key !== undefined) metadata[keyTag] = input.key;
+
         const params: CreateOptions = {
           ...allocation,
           metadata,
@@ -248,30 +304,38 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           allowOutbound: input.network !== "none" && domains?.length !== 0,
           allowDomains: domains,
           ...(input.from ? { snapshotId: input.from } : { image: options.image }),
-          ...(options.pauseRetentionMs === undefined ? {} : { pauseRetentionMs: options.pauseRetentionMs }),
+          ...(options.pauseRetentionMs === undefined
+            ? {}
+            : { pauseRetentionMs: options.pauseRetentionMs }),
           ...(options.volumes === undefined ? {} : { volumes: options.volumes }),
           ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
           waitReady: false,
         };
+
         // Admit without waiting so every subsequent failure has an ID to clean up.
         const client = await api();
         // create() has no AbortSignal in Tenki 1.4.1. Keep observing its result
         // after the caller's deadline so a late allocation can still be closed.
         const pending = client.create(params);
         let value: Session;
+
         try {
           value = await request(() => pending, input.signal);
         } catch (error) {
           void pending.then((late) => request(() => late.close())).catch(() => {});
           throw error;
         }
+
         boxes.set(value.id, value);
         let stage: CreateStage = "waitReady";
+
         try {
           const timeoutMs = options.waitTimeoutMs ?? 180_000;
           await waitReady(value, timeoutMs, input.signal);
           stage = "validate";
+
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
+
           if (
             allocation.cpuCores !== undefined &&
             (value.cpuCores !== allocation.cpuCores ||
@@ -279,6 +343,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
               value.diskSizeGb !== allocation.diskSizeGb)
           )
             throw failure("Tenki returned different resources than requested", "unsupported");
+
           if (
             value.outboundEnabled !== params.allowOutbound ||
             (domains?.length &&
@@ -287,15 +352,18 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
                 value.egress.allowCidrs.length))
           )
             throw failure("Tenki did not confirm the requested network policy", "unsupported");
+
           return info(value);
         } catch (error) {
           const context = { id: value.id, state: value.state, stage };
           let cleanupError: unknown;
+
           try {
             await provider.destroy(value.id);
           } catch (error) {
             cleanupError = error;
           }
+
           throw createError(
             input.signal?.aborted ? failure("Creation aborted", "aborted") : error,
             context,
@@ -306,7 +374,13 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       }),
     list: (labels) =>
       safe("list", undefined, async () =>
-        (await request(async () => (await api()).list(options.workspaceId === undefined ? undefined : { workspaceId: options.workspaceId })))
+        (
+          await request(async () =>
+            (await api()).list(
+              options.workspaceId === undefined ? undefined : { workspaceId: options.workspaceId },
+            ),
+          )
+        )
           .filter(
             (value) =>
               value.state !== "TERMINATED" &&
@@ -320,29 +394,37 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
               return [info(value)];
             } catch (error) {
               if (tenkiError(error).code !== "not_found") throw error;
+
               return [];
             }
           }),
       ),
     async find(key) {
       const found = (await provider.list({ [keyTag]: key }))[0];
+
       return found ? provider.connect(found.id) : undefined;
     },
     connect: (id) =>
       safe("connect", id, async () => {
         const value = await request(async () => (await api()).get(id));
         const result = info(value);
+
         if (["TERMINATED", "TERMINATING"].includes(value.state))
           throw failure("Session has terminated", "not_found");
+
         if (result.state === "running") await prepareBox(value);
         boxes.set(id, value);
+
         return result;
       }),
     destroy(id) {
       const pending = destroying.get(id);
+
       if (pending) return pending;
+
       const operation = safe("destroy", id, async () => {
         let terminated = false;
+
         try {
           await request(async () => (await box(id)).close());
           terminated = true;
@@ -351,10 +433,13 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           terminated = true;
         } finally {
           boxes.delete(id);
+
           if (terminated) workspaceStates.delete(id);
         }
       }).finally(() => destroying.delete(id));
+
       destroying.set(id, operation);
+
       return operation;
     },
     async close(id) {
@@ -369,8 +454,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         const state = workspaceState(value);
         const revision = state.revision;
         state.active++;
+
         if (state.active > 1) state.overlap = true;
         let root: string | undefined;
+
         try {
           return await execute(value, input, (resolved, stable) => {
             if (!stable) state.untracked = true;
@@ -380,8 +467,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
           // Without a completion snapshot, detached work may have survived.
           if (root === undefined) state.untracked = true;
           state.active--;
+
           if (!state.overlap && revision === state.revision && root !== undefined)
             setWorkspaceRoot(value, root);
+
           if (!state.active) state.overlap = false;
         }
       }),
@@ -390,6 +479,7 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
       (id, action) => safe("files", id, action),
       (value) => {
         const state = workspaceState(value);
+
         return state.active || state.untracked ? undefined : workspaceRoots.get(value);
       },
       invalidateWorkspace,
@@ -397,7 +487,14 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     previewUrl: (id, port) =>
       safe("preview", id, async () => {
         const current = await box(id);
-        const value = await request(() => current.exposePort(port, options.previewTtlMs === undefined ? undefined : { ttlMs: options.previewTtlMs }));
+
+        const value = await request(() =>
+          current.exposePort(
+            port,
+            options.previewTtlMs === undefined ? undefined : { ttlMs: options.previewTtlMs },
+          ),
+        );
+
         return { url: value.previewUrl, expiresAt: value.expiresAt?.getTime() };
       }),
     pause: (id) =>
@@ -418,25 +515,38 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
     snapshot: (id, settings) =>
       safe("snapshot", id, async () => {
         const expiresInMs = settings?.expiresInMs;
+
         if (expiresInMs !== undefined && (!Number.isSafeInteger(expiresInMs) || expiresInMs < 0))
           throw failure("expiresInMs must be a non-negative integer", "invalid_argument");
         const client = await api();
+
         // 0 keeps the snapshot: Tenki applies no expiry when expiresAt is absent.
-        const snapshot = await request(() => client.createSnapshot(id, { async: true, ...(expiresInMs ? { expiresAt: new Date(Date.now() + expiresInMs) } : {}) }));
+        const snapshot = await request(() =>
+          client.createSnapshot(id, {
+            async: true,
+            ...(expiresInMs ? { expiresAt: new Date(Date.now() + expiresInMs) } : {}),
+          }),
+        );
+
         const timeoutMs = options.waitTimeoutMs ?? 300_000;
+
         const result = await deadline(
           (signal) => client.waitSnapshotReady(snapshot.id, timeoutMs, signal),
           timeoutMs,
         );
+
         return { id: result.id };
       }),
     native(id) {
       const value = boxes.get(id);
+
       if (!value) throw failure("Session is detached; connect first", "not_found");
       invalidateWorkspace(value);
       workspaceState(value).untracked = true;
+
       return value;
     },
   };
+
   return provider;
 }

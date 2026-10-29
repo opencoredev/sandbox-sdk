@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | |
-| Background processes | Yes | |
-| Preview URLs | Yes | Public `https://`; declare up to 15 ports |
-| Pause and resume | Partial | Files survive; running processes end. Not with `persistent: false` |
-| Snapshots | Yes | With `expiresInMs` |
-| Machine size | Partial | Presets, or whole vCPUs at 2048 MiB each; no disk setting |
-| Network policy | Yes | `"none"`, a host allow list, or a native policy |
-| Hard lifetime (`timeoutMs`) | Partial | Per session; each resume starts a new one |
-| Idle timeout (`idleTimeoutMs`) | No | |
-| Keys | Exact | Sandbox name is a hash of the key |
-| Terminal | No | |
+| Feature                        | Support | Notes                                                              |
+| ------------------------------ | ------- | ------------------------------------------------------------------ |
+| Commands and streaming         | Yes     | Live output                                                        |
+| Files                          | Yes     |                                                                    |
+| Background processes           | Yes     |                                                                    |
+| Preview URLs                   | Yes     | Public `https://`; declare up to 15 ports                          |
+| Pause and resume               | Partial | Files survive; running processes end. Not with `persistent: false` |
+| Snapshots                      | Yes     | With `expiresInMs`                                                 |
+| Machine size                   | Partial | Presets, or whole vCPUs at 2048 MiB each; no disk setting          |
+| Network policy                 | Yes     | `"none"`, a host allow list, or a native policy                    |
+| Hard lifetime (`timeoutMs`)    | Partial | Per session; each resume starts a new one                          |
+| Idle timeout (`idleTimeoutMs`) | No      |                                                                    |
+| Keys                           | Exact   | Sandbox name is a hash of the key                                  |
+| Terminal                       | No      |                                                                    |
 
 ## Run commands
 
@@ -125,7 +125,10 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
 await using box = await createSandbox(vercel(), { key: "user:123", ports: [5173] });
-const vite = await box.start("npx vite --host 0.0.0.0 --port 5173", { name: "vite", ready: { port: 5173 } });
+const vite = await box.start("npx vite --host 0.0.0.0 --port 5173", {
+  name: "vite",
+  ready: { port: 5173 },
+});
 await box.pause();
 await box.resume();
 await vite.restart();
@@ -154,11 +157,11 @@ With a `key`, the next `createSandbox` call for that key deletes an ended sandbo
 
 ## Size, network, and lifetime
 
-| Preset | vCPUs | Memory |
-| --- | --- | --- |
-| `small` | 1 | 2048 MiB |
-| `medium` | 2 | 4096 MiB |
-| `large` | 4 | 8192 MiB |
+| Preset   | vCPUs | Memory   |
+| -------- | ----- | -------- |
+| `small`  | 1     | 2048 MiB |
+| `medium` | 2     | 4096 MiB |
+| `large`  | 4     | 8192 MiB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -191,7 +194,9 @@ const provider = vercel({
   networkPolicy: {
     allow: {
       "registry.npmjs.org": [],
-      "ai-gateway.vercel.sh": [{ transform: [{ headers: { authorization: `Bearer ${process.env.AI_GATEWAY_API_KEY}` } }] }],
+      "ai-gateway.vercel.sh": [
+        { transform: [{ headers: { authorization: `Bearer ${process.env.AI_GATEWAY_API_KEY}` } }] },
+      ],
     },
   },
 });
@@ -206,24 +211,24 @@ await box.run("ls", { cwd: "/vercel/sandbox" });
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `token` | `string` | OIDC | `VERCEL_TOKEN`, else `VERCEL_OIDC_TOKEN` |
-| `teamId` | `string` | | `VERCEL_TEAM_ID` |
-| `projectId` | `string` | | `VERCEL_PROJECT_ID` |
-| `persistent` | `boolean` | `true` | |
-| `image` | `string`, such as `"vercel/sandbox/node:24"` | `vercel/sandbox/universal:latest` | |
-| `runtime` | `"node22"`, `"node24"`, `"node26"`, `"python3.13"` | | |
-| `source` | `{ type: "git", url, depth?, revision?, username?, password? }` or `{ type: "tarball", url }` | | |
-| `region` | `string`, such as `"fra1"` | `"iad1"` | |
-| `failoverRegions` | `string[]` | | |
-| `networkPolicy` | Vercel `NetworkPolicy` | `"allow-all"` | |
-| `networkId` | `string` (Secure Compute) | | |
-| `mounts` | Vercel `SandboxMounts` | | |
-| `snapshotExpiresInMs` | `number`, `0` or at least `86_400_000` | Vercel's | |
-| `keepLastSnapshots` | `{ count, expiresInMs?, deleteEvicted? }` | | |
-| `deleteOrphanSnapshots` | `boolean` | `false` | |
-| `fetch` | `typeof fetch` | `globalThis.fetch` | |
+| Option                  | Type                                                                                          | Default                           | Env var                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------- |
+| `token`                 | `string`                                                                                      | OIDC                              | `VERCEL_TOKEN`, else `VERCEL_OIDC_TOKEN` |
+| `teamId`                | `string`                                                                                      |                                   | `VERCEL_TEAM_ID`                         |
+| `projectId`             | `string`                                                                                      |                                   | `VERCEL_PROJECT_ID`                      |
+| `persistent`            | `boolean`                                                                                     | `true`                            |                                          |
+| `image`                 | `string`, such as `"vercel/sandbox/node:24"`                                                  | `vercel/sandbox/universal:latest` |                                          |
+| `runtime`               | `"node22"`, `"node24"`, `"node26"`, `"python3.13"`                                            |                                   |                                          |
+| `source`                | `{ type: "git", url, depth?, revision?, username?, password? }` or `{ type: "tarball", url }` |                                   |                                          |
+| `region`                | `string`, such as `"fra1"`                                                                    | `"iad1"`                          |                                          |
+| `failoverRegions`       | `string[]`                                                                                    |                                   |                                          |
+| `networkPolicy`         | Vercel `NetworkPolicy`                                                                        | `"allow-all"`                     |                                          |
+| `networkId`             | `string` (Secure Compute)                                                                     |                                   |                                          |
+| `mounts`                | Vercel `SandboxMounts`                                                                        |                                   |                                          |
+| `snapshotExpiresInMs`   | `number`, `0` or at least `86_400_000`                                                        | Vercel's                          |                                          |
+| `keepLastSnapshots`     | `{ count, expiresInMs?, deleteEvicted? }`                                                     |                                   |                                          |
+| `deleteOrphanSnapshots` | `boolean`                                                                                     | `false`                           |                                          |
+| `fetch`                 | `typeof fetch`                                                                                | `globalThis.fetch`                |                                          |
 
 A token needs both IDs, or creation fails with `auth`. Set `image` or `runtime`, not both. `snapshotExpiresInMs` also covers the automatic snapshots that persistence uses, so a paused sandbox loses its files once that snapshot expires. `keepLastSnapshots.count` runs from 1 to 10. Destroying a sandbox keeps its snapshots until they expire, including the one a paused sandbox saved. `deleteOrphanSnapshots` makes `destroy()` delete every snapshot no other sandbox uses instead, including ones you have not restored yet. `box.native` is the `@vercel/sandbox` `Sandbox` object.
 

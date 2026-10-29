@@ -55,20 +55,20 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Yes | Live output |
-| Files | Yes | `mode` is applied before the bytes land |
-| Background processes | Yes | |
-| Preview URLs | Yes | Send the returned `Cookie` header |
-| Pause and resume | No | |
-| Snapshots | No | |
-| Machine size | Partial | Presets only |
-| Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | Set the `ttlSeconds` auto-stop instead |
-| Idle timeout (`idleTimeoutMs`) | No | |
-| Keys | Best-effort | Stored in the VM's display name |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                   |
+| ------------------------------ | ----------- | --------------------------------------- |
+| Commands and streaming         | Yes         | Live output                             |
+| Files                          | Yes         | `mode` is applied before the bytes land |
+| Background processes           | Yes         |                                         |
+| Preview URLs                   | Yes         | Send the returned `Cookie` header       |
+| Pause and resume               | No          |                                         |
+| Snapshots                      | No          |                                         |
+| Machine size                   | Partial     | Presets only                            |
+| Network policy                 | No          | Only `"all"`                            |
+| Hard lifetime (`timeoutMs`)    | No          | Set the `ttlSeconds` auto-stop instead  |
+| Idle timeout (`idleTimeoutMs`) | No          |                                         |
+| Keys                           | Best-effort | Stored in the VM's display name         |
+| Terminal                       | No          |                                         |
 
 ## Run commands
 
@@ -136,11 +136,11 @@ if (hasCapability(box, "pause")) await box.pause();
 
 ## Size, network, and lifetime
 
-| Preset | Boat type | CPUs | Memory | Disk |
-| --- | --- | --- | --- | --- |
-| `small` | `small` | 2 | 4096 MiB | 12 GB |
-| `medium` | `default` | 4 | 8192 MiB | 50 GB |
-| `large` | `large` | 8 | 16384 MiB | 125 GB |
+| Preset   | Boat type | CPUs | Memory    | Disk   |
+| -------- | --------- | ---- | --------- | ------ |
+| `small`  | `small`   | 2    | 4096 MiB  | 12 GB  |
+| `medium` | `default` | 4    | 8192 MiB  | 50 GB  |
+| `large`  | `large`   | 8    | 16384 MiB | 125 GB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -157,21 +157,23 @@ By default Boat stops a VM an hour after it starts. Set `ttlSeconds` to change t
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 
-await using box = await createSandbox(boat({ ttlSeconds: 15 * 60, snapshots: false, monitoring: false }));
+await using box = await createSandbox(
+  boat({ ttlSeconds: 15 * 60, snapshots: false, monitoring: false }),
+);
 ```
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `BOAT_API_KEY` |
-| `baseUrl` | `string` | `https://boat.dev/api/v1` | `BOAT_API_BASE` |
-| `machine` | `"small" \| "default" \| "large" \| "xlarge"` | `"default"` | |
-| `ttlSeconds` | `number \| null` | `3600` | |
-| `snapshots` | `boolean` | `true` | |
-| `monitoring` | `boolean` | Account setting | |
-| `org` | `string` | Your active wallet | |
-| `requestTimeoutMs` | `number` | `90_000` | |
+| Option             | Type                                          | Default                   | Env var         |
+| ------------------ | --------------------------------------------- | ------------------------- | --------------- |
+| `apiKey`           | `string`                                      |                           | `BOAT_API_KEY`  |
+| `baseUrl`          | `string`                                      | `https://boat.dev/api/v1` | `BOAT_API_BASE` |
+| `machine`          | `"small" \| "default" \| "large" \| "xlarge"` | `"default"`               |                 |
+| `ttlSeconds`       | `number \| null`                              | `3600`                    |                 |
+| `snapshots`        | `boolean`                                     | `true`                    |                 |
+| `monitoring`       | `boolean`                                     | Account setting           |                 |
+| `org`              | `string`                                      | Your active wallet        |                 |
+| `requestTimeoutMs` | `number`                                      | `90_000`                  |                 |
 
 A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+ plan. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Boat never captures the disk, and a stop erases it. `monitoring: false` means Boat keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `apiUrl` and `type` are deprecated aliases. `box.native` is `{ sandbox, client }`, Boat's sandbox metadata and the `BoatApi` client.
 

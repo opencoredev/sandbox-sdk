@@ -55,20 +55,20 @@ The default template, `superserve/node-22`, has no Python, which the adapter nee
 
 ## What it supports
 
-| Feature | Support | Notes |
-| --- | --- | --- |
-| Commands and streaming | Partial | Output arrives when the command finishes |
-| Files | Yes | `mode` uses a `chmod` after the write |
-| Background processes | Yes | |
-| Preview URLs | Yes | Private by default; send the returned header |
-| Pause and resume | Yes | VM state survives |
-| Snapshots | Yes | Kept until deleted; no `expiresInMs` |
-| Machine size | No | Set by the template |
-| Network policy | Yes | `"none"` and allow lists of hosts, wildcards, or IPv4 CIDRs |
-| Hard lifetime (`timeoutMs`) | No | Use `autoPauseMs` and `autoDeleteMs` |
-| Idle timeout (`idleTimeoutMs`) | No | |
-| Keys | Best-effort | Found by metadata lookup |
-| Terminal | No | |
+| Feature                        | Support     | Notes                                                       |
+| ------------------------------ | ----------- | ----------------------------------------------------------- |
+| Commands and streaming         | Partial     | Output arrives when the command finishes                    |
+| Files                          | Yes         | `mode` uses a `chmod` after the write                       |
+| Background processes           | Yes         |                                                             |
+| Preview URLs                   | Yes         | Private by default; send the returned header                |
+| Pause and resume               | Yes         | VM state survives                                           |
+| Snapshots                      | Yes         | Kept until deleted; no `expiresInMs`                        |
+| Machine size                   | No          | Set by the template                                         |
+| Network policy                 | Yes         | `"none"` and allow lists of hosts, wildcards, or IPv4 CIDRs |
+| Hard lifetime (`timeoutMs`)    | No          | Use `autoPauseMs` and `autoDeleteMs`                        |
+| Idle timeout (`idleTimeoutMs`) | No          |                                                             |
+| Keys                           | Best-effort | Found by metadata lookup                                    |
+| Terminal                       | No          |                                                             |
 
 ## Run commands
 
@@ -183,17 +183,17 @@ await using box = await createSandbox(provider);
 
 ## Configuration
 
-| Option | Type | Default | Env var |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | | `SUPERSERVE_API_KEY` |
-| `baseUrl` | `string` | `https://api.superserve.ai` | `SUPERSERVE_BASE_URL` |
-| `template` | `string` | `"superserve/node-22"` | |
-| `installPython` | `boolean` | `false` | |
-| `requestTimeoutMs` | `number` | `90_000` | |
-| `autoPauseMs` | `number` | Never | |
-| `autoDeleteMs` | `number` | Never | |
-| `secretBindings` | `Record<string, string>` | None | |
-| `previewAccess` | `"private" \| "public"` | `"private"` | |
+| Option             | Type                     | Default                     | Env var               |
+| ------------------ | ------------------------ | --------------------------- | --------------------- |
+| `apiKey`           | `string`                 |                             | `SUPERSERVE_API_KEY`  |
+| `baseUrl`          | `string`                 | `https://api.superserve.ai` | `SUPERSERVE_BASE_URL` |
+| `template`         | `string`                 | `"superserve/node-22"`      |                       |
+| `installPython`    | `boolean`                | `false`                     |                       |
+| `requestTimeoutMs` | `number`                 | `90_000`                    |                       |
+| `autoPauseMs`      | `number`                 | Never                       |                       |
+| `autoDeleteMs`     | `number`                 | Never                       |                       |
+| `secretBindings`   | `Record<string, string>` | None                        |                       |
+| `previewAccess`    | `"private" \| "public"`  | `"private"`                 |                       |
 
 `secretBindings` maps env var names to [Superserve secrets](https://docs.superserve.ai/secrets/overview) you created: `{ OPENAI_API_KEY: "openai-prod" }`. The sandbox sees a proxy token in the env var, and Superserve attaches the real credential to outbound requests for the secret's hosts. These are secret names, not values, unlike `createSandbox`'s `secrets` option.
 

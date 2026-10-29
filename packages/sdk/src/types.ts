@@ -1,7 +1,19 @@
-import type { Capability, CreateInput, FileInfo, Labels, OutputChunk, Provider, SandboxInfo, Terminal, Preview, SnapshotOptions } from "./provider.js";
+import type {
+  Capability,
+  CreateInput,
+  FileInfo,
+  Labels,
+  OutputChunk,
+  Provider,
+  SandboxInfo,
+  Terminal,
+  Preview,
+  SnapshotOptions,
+} from "./provider.js";
 import type { Files } from "./files.js";
 import type { Git } from "./git.js";
 import type { ProcessHandle, ProcessInfo, StartOptions } from "./processes.js";
+
 /** Your own key-to-ID store (Redis, a database row) so `createSandbox({ key })` finds the same sandbox from any server. */
 export interface Locator {
   /** Return the sandbox ID stored for `key`, or `undefined`/`null` when there is none. */
@@ -13,6 +25,7 @@ export interface Locator {
   /** Run `action` while holding a distributed lock on `key`. Required for cross-host exactness with a best-effort provider. */
   withLock?<T>(key: string, action: () => Promise<T>): Promise<T>;
 }
+
 /** Options for `createSandbox`. Every field is optional. */
 export interface CreateOptions extends Omit<CreateInput, "labels"> {
   /** Your own tags. `listSandboxes` and `reapSandboxes` filter on them. The `sandbox-sdk` label is reserved. */
@@ -26,6 +39,7 @@ export interface CreateOptions extends Omit<CreateInput, "labels"> {
   /** Record a "start" checkpoint at create so `files.changes()` works without `since`. Costs one exec. */
   trackChanges?: boolean;
 }
+
 /** Options for `connectSandbox`. */
 export interface ConnectOptions extends Pick<CreateOptions, "secrets"> {
   /**
@@ -36,11 +50,13 @@ export interface ConnectOptions extends Pick<CreateOptions, "secrets"> {
    */
   recoverSecrets?: boolean;
 }
+
 /** Options for `listSandboxes`. */
 export interface ListOptions {
   /** Only return sandboxes that carry every one of these labels. */
   labels?: Labels;
 }
+
 /** Options for `reapSandboxes`. */
 export interface ReapOptions extends ListOptions {
   /** Only destroy sandboxes at least this old, in milliseconds. Default: 0. */
@@ -48,6 +64,7 @@ export interface ReapOptions extends ListOptions {
   /** Skip sandboxes with an active SDK command or a running background process. */
   idleOnly?: boolean;
 }
+
 /** Per-command options for `box.run`. */
 export interface RunOptions {
   /** Working directory. Relative paths resolve against `/workspace`. Default: `/workspace`. */
@@ -63,6 +80,7 @@ export interface RunOptions {
   /** Abort the command. It resolves with a result rather than throwing. */
   signal?: AbortSignal;
 }
+
 /** The outcome of a finished command. A non-zero exit, a timeout, or an abort is a result, not an error. */
 export interface RunResult {
   /** `true` when the command exited with code 0. */
@@ -86,6 +104,7 @@ export interface RunResult {
   /** The command as it was sent to the shell. */
   command: string;
 }
+
 /**
  * A lazy command. Nothing runs until you `await` it, call `then`, `catch` or `finally`
  * (for the {@link RunResult}), or iterate it with `for await` (for live {@link OutputChunk}s).
@@ -99,6 +118,7 @@ export interface RunHandle extends Promise<RunResult>, AsyncIterable<OutputChunk
   /** Set the timeout in milliseconds. */
   timeout(timeoutMs: number): RunHandle;
 }
+
 /** Options for `box.preview`. */
 export interface PreviewOptions {
   /** Path appended to the preview URL. */
@@ -106,6 +126,7 @@ export interface PreviewOptions {
   /** Wait up to this many milliseconds for the URL to answer with a 2xx. Fails with `port_not_ready` when it runs out. */
   waitMs?: number;
 }
+
 /** Counters from `box.usage()`. Providers may add their own numeric fields. */
 export type Usage = {
   /** When the sandbox was created, in epoch milliseconds. */
@@ -117,6 +138,7 @@ export type Usage = {
   /** Output bytes received through this handle. */
   bytesOut: number;
 } & Record<string, number>;
+
 /** The methods every sandbox has, whatever the provider. `N` is the provider's native client type. */
 export interface SandboxBase<N> {
   /** The provider's sandbox ID. Pass it to `connectSandbox` to reattach. */
@@ -158,6 +180,7 @@ export interface SandboxBase<N> {
   /** For `await using`: calls `close()` when the sandbox has a key, otherwise `destroy()`. */
   [Symbol.asyncDispose](): Promise<void>;
 }
+
 /** The methods each optional capability adds to a sandbox. */
 export interface CapabilityMethods {
   pause: {
@@ -175,10 +198,20 @@ export interface CapabilityMethods {
     terminal(options: { cols: number; rows: number }): Promise<Terminal>;
   };
 }
+
 type MethodCapability = keyof CapabilityMethods;
-type UnionToIntersection<U> = (U extends unknown ? (value: U) => void : never) extends (value: infer I) => void ? I : never;
+
+type UnionToIntersection<U> = (U extends unknown ? (value: U) => void : never) extends (
+  value: infer I,
+) => void
+  ? I
+  : never;
+
 /** The methods added by the capabilities in `C`. */
-export type MethodsFor<C extends Capability> = [Extract<C, MethodCapability>] extends [never] ? {} : UnionToIntersection<CapabilityMethods[Extract<C, MethodCapability>]>;
+export type MethodsFor<C extends Capability> = [Extract<C, MethodCapability>] extends [never]
+  ? {}
+  : UnionToIntersection<CapabilityMethods[Extract<C, MethodCapability>]>;
+
 /**
  * A sandbox handle. `N` is the native client type; `C` is the provider's capability union.
  * With a concrete provider, `pause`/`resume`, `snapshot`, and `terminal` exist only when
@@ -186,8 +219,11 @@ export type MethodsFor<C extends Capability> = [Extract<C, MethodCapability>] ex
  * provider typed as plain `Provider` (any capability), the methods are optional: check
  * them with {@link hasCapability} first. `createSandbox(e2b())` infers the precise type.
  */
-export type Sandbox<N = unknown, C extends Capability = never> = SandboxBase<N>
-  & (Capability extends C ? Partial<MethodsFor<MethodCapability>> : MethodsFor<C>);
+export type Sandbox<N = unknown, C extends Capability = never> = SandboxBase<N> &
+  (Capability extends C ? Partial<MethodsFor<MethodCapability>> : MethodsFor<C>);
+
 /** The sandbox type a provider produces: `ProviderSandbox<ReturnType<typeof e2b>>`. */
-export type ProviderSandbox<P extends Provider> = P extends Provider<infer N, infer C> ? Sandbox<N, C> : never;
+export type ProviderSandbox<P extends Provider> =
+  P extends Provider<infer N, infer C> ? Sandbox<N, C> : never;
+
 export type { OutputChunk, Capability, SandboxInfo, FileInfo, Labels, Preview, Terminal };

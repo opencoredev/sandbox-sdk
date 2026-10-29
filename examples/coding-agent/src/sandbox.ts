@@ -1,13 +1,16 @@
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 
 export const providerNames = ["local", "e2b", "vercel", "daytona"] as const;
+
 export type ProviderName = (typeof providerNames)[number];
 
 export function parseProviderName(value: string | undefined): ProviderName {
   const name = value ?? "local";
   const match = providerNames.find((candidate) => candidate === name);
+
   if (!match)
     throw new Error(`SANDBOX_PROVIDER must be one of ${providerNames.join(", ")}; got "${name}".`);
+
   return match;
 }
 

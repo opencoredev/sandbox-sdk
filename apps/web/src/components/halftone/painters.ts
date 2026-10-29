@@ -20,6 +20,7 @@ interface GlowField {
 
 function hash(n: number) {
   const s = Math.sin(n * 127.1) * 43758.5453;
+
   return s - Math.floor(s);
 }
 
@@ -42,9 +43,11 @@ export function glowField({ base, lights, streaks }: GlowField): Painter {
       ctx.fillStyle = g;
       ctx.fillRect(x - r, y - r, r * 2, r * 2);
     });
+
     if (streaks) {
       ctx.globalCompositeOperation = "source-over";
       ctx.fillStyle = streaks;
+
       for (let i = 0; i < 26; i++) {
         const x = hash(i) * w;
         const len = (0.2 + hash(i + 40) * 0.6) * h;
@@ -52,6 +55,7 @@ export function glowField({ base, lights, streaks }: GlowField): Painter {
         ctx.fillRect(x, Math.max(0, y), Math.max(1, w * 0.004), len);
       }
     }
+
     ctx.globalCompositeOperation = "source-over";
   };
 }

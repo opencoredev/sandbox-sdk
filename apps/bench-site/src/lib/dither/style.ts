@@ -19,12 +19,8 @@ import type { DitherColor, DitherColorName } from "@/lib/dither/tokens";
  * `hatched`: diagonal lines one cell wide.
  * `solid`: flat colour.
  */
-export const FILL_VARIANTS = [
-  "gradient",
-  "dotted",
-  "hatched",
-  "solid",
-] as const;
+export const FILL_VARIANTS = ["gradient", "dotted", "hatched", "solid"] as const;
+
 export type FillVariant = (typeof FILL_VARIANTS)[number];
 
 /** The side of a shape where a gradient fill is densest. */
@@ -32,6 +28,7 @@ export type FillEdge = "top" | "bottom" | "left" | "right";
 
 /** A soft glow in the fill's colour behind it. */
 export const BLOOMS = ["off", "low", "high"] as const;
+
 export type Bloom = (typeof BLOOMS)[number];
 
 /**
@@ -54,16 +51,15 @@ export const seriesColor = (color: DitherColor | undefined, index: number) =>
   color ?? SERIES_COLORS[index % SERIES_COLORS.length] ?? "ink";
 
 /** Write one SVG path covering the inked cells of a grid, in cell units. */
-const cellsPath = (
-  width: number,
-  height: number,
-  inked: (x: number, y: number) => boolean
-) => {
+const cellsPath = (width: number, height: number, inked: (x: number, y: number) => boolean) => {
   let path = "";
+
   for (let y = 0; y < height; y += 1) {
     let start = -1;
+
     for (let x = 0; x <= width; x += 1) {
       const on = x < width && inked(x, y);
+
       if (on && start === -1) {
         start = x;
       } else if (!on && start !== -1) {
@@ -72,6 +68,7 @@ const cellsPath = (
       }
     }
   }
+
   return path;
 };
 
@@ -138,36 +135,42 @@ export const ditherRamp = ({
 }: RampOptions): RampTile => {
   const key = `${edge}:${length}:${extent}:${from}:${to}:${matrix}`;
   const cached = rampCache.get(key);
+
   if (cached !== undefined) {
     return cached;
   }
+
   const { size, thresholds } = getThresholdMap(matrix);
   const fade = Math.max(1, Math.round(length));
   const along = Math.ceil(Math.max(fade, extent) / size) * size;
   const vertical = edge === "top" || edge === "bottom";
   const width = vertical ? size : along;
   const height = vertical ? along : size;
+
   const levelAt = (index: number) => {
     const step = edge === "top" || edge === "left" ? index : along - 1 - index;
+
     return step >= fade ? to : from + (to - from) * ((step + 0.5) / fade);
   };
+
   const tile: RampTile = {
     height,
     path: cellsPath(
       width,
       height,
-      (x, y) =>
-        levelAt(vertical ? y : x) >
-        (thresholds[(y % size) * size + (x % size)] ?? 1)
+      (x, y) => levelAt(vertical ? y : x) > (thresholds[(y % size) * size + (x % size)] ?? 1),
     ),
     width,
   };
+
   rampCache.set(key, tile);
+
   return tile;
 };
 
 const svgUrl = (width: number, height: number, path: string) => {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges"><path d="${path}"/></svg>`;
+
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 };
 
@@ -217,16 +220,19 @@ export const fillStyle = (
     from = 1,
     to = 0.0625,
     matrix = "bayer4",
-  }: FillStyleOptions = {}
+  }: FillStyleOptions = {},
 ): CSSProperties => {
   const backgroundColor = cssColor(color);
+
   if (variant === "solid") {
     return { backgroundColor };
   }
+
   if (variant === "dotted" || variant === "hatched") {
     const { size, path } = fillTile(variant);
     const image = svgUrl(size, size, path);
     const tile = times(cell, size);
+
     return {
       WebkitMaskImage: image,
       WebkitMaskSize: tile,
@@ -235,6 +241,7 @@ export const fillStyle = (
       maskSize: tile,
     };
   }
+
   // A ramp along the edge, unioned with the plain floor level. Bayer sets
   // nest, so the union is exact where both are anchored to the same edge.
   const ramp = ditherRamp({ edge, from, length, matrix, to });
@@ -243,6 +250,7 @@ export const fillStyle = (
   const size2 = `${times(cell, ramp.width)} ${times(cell, ramp.height)}, ${times(cell, size)}`;
   const repeat = `${edge === "top" || edge === "bottom" ? "repeat-x" : "repeat-y"}, repeat`;
   const position = `${EDGE_POSITION[edge]}, ${EDGE_POSITION[edge]}`;
+
   return {
     WebkitMaskImage: image,
     WebkitMaskPosition: position,
@@ -260,10 +268,7 @@ export const fillStyle = (
 export const BLOOM_LEVELS = {
   high: { blur: 18, strength: 0.55 },
   low: { blur: 10, strength: 0.3 },
-} as const satisfies Record<
-  Exclude<Bloom, "off">,
-  { blur: number; strength: number }
->;
+} as const satisfies Record<Exclude<Bloom, "off">, { blur: number; strength: number }>;
 
 /**
  * Styles for a bloom layer: a blurred, translucent copy of a fill drawn
@@ -274,7 +279,9 @@ export const bloomLayerStyle = (bloom: Bloom): CSSProperties | undefined => {
   if (bloom === "off") {
     return undefined;
   }
+
   const { blur, strength } = BLOOM_LEVELS[bloom];
+
   return {
     filter: `blur(${blur}px)`,
     opacity: `calc(var(--dither-bloom, 1) * ${strength})`,
@@ -285,21 +292,22 @@ export const bloomLayerStyle = (bloom: Bloom): CSSProperties | undefined => {
  * A CSS `filter` that glows around an element in `color`, for DOM pieces
  * (buttons, bars) where a copy of the fill is not handy. `undefined` when off.
  */
-export const bloomFilter = (
-  color: DitherColor,
-  bloom: Bloom
-): string | undefined => {
+export const bloomFilter = (color: DitherColor, bloom: Bloom): string | undefined => {
   if (bloom === "off") {
     return undefined;
   }
+
   const { blur, strength } = BLOOM_LEVELS[bloom];
+
   const tint = (share: number) =>
     `color-mix(in oklab, ${cssColor(color)} calc(var(--dither-bloom, 1) * ${Math.round(share * 100)}%), transparent)`;
+
   return `drop-shadow(0 0 ${Math.round(blur / 3)}px ${tint(strength * 1.4)}) drop-shadow(0 0 ${blur}px ${tint(strength)})`;
 };
 
 /** `{ filter }` for `bloomFilter`, ready to spread into `style`. */
 export const bloomStyle = (color: DitherColor, bloom: Bloom): CSSProperties => {
   const filter = bloomFilter(color, bloom);
+
   return filter === undefined ? {} : { filter };
 };
