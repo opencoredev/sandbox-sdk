@@ -67,11 +67,11 @@ async function main() {
   }
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error) {
   // Native errors can contain credentials; emit only safe diagnostics.
-  const message = error instanceof Error ? error.message : "";
-
-  if (message.includes("vcpu must be 1-2")) {
+  if (error instanceof Error && error.message.includes("vcpu must be 1-2")) {
     process.stderr.write("BLOCKED: vcpu must be 1-2 (your team's limit)\n");
   } else {
     process.stderr.write(
@@ -80,4 +80,4 @@ main().catch((error: unknown) => {
   }
 
   process.exitCode = 1;
-});
+}
