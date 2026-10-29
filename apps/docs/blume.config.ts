@@ -198,6 +198,7 @@ export default defineConfig({
           icon: "library",
           items: [
             { label: "Sandbox API", root: "/reference/sandbox", icon: "box" },
+            { label: "Native API", root: "/reference/native", icon: "plug" },
             { label: "Agent tools", root: "/reference/agent-tools", icon: "wrench" },
             { label: "Errors", root: "/reference/errors", icon: "triangle-alert" },
             { label: "Capabilities", root: "/reference/capabilities", icon: "list-checks" },

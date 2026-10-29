@@ -1,0 +1,98 @@
+---
+title: Native API
+description: Call any provider endpoint the SDK doesn't wrap with box.native.request and box.native.fetch, use the official SDK on demand with box.native.sdk, and make account-level calls with provider.api.
+---
+
+`box.native` is the escape hatch for anything Sandbox SDK doesn't wrap. What it holds depends on the provider:
+
+- **Providers that call their API directly** need no package besides `@opencoredev/sandbox-sdk`. Their `box.native` is a `NativeApi`: call any endpoint with `request` or `fetch`, or load the official SDK yourself with `sdk`. The factory also has an `api` property for calls that aren't about one sandbox.
+- **Providers that wrap their SDK** need that SDK installed, and their `box.native` is the SDK's own sandbox or client object.
+
+Each [provider page](/providers) says which kind it is, lists its planes, and names its sandbox placeholder.
+
+## `request(method, path, options?)`
+
+Calls an endpoint and resolves with its JSON body, or `undefined` when the body is empty, such as a 204. The call goes through the adapter's base URL, credentials, retries, error mapping, and redaction, so you only write the path.
+
+```ts title="files.ts"
+import type { NativeApi } from "@opencoredev/sandbox-sdk";
+
+// Any provider's box.native or provider.api fits NativeApi.
+export async function listWorkspace(native: NativeApi) {
+  return native.request<{ name: string; size: number }[]>("GET", "/sandboxes/{sandboxId}/files", {
+    query: { path: "/workspace" },
+  });
+}
+```
+
+`T` is not checked at runtime. It describes the body the same way `await response.json()` would.
+
+## `fetch(method, path, options?)`
+
+Calls an endpoint and resolves with the raw `Response`, for file bytes, logs, and other streams. A non-2xx response still rejects with `SandboxError`. You own the body: read it to the end, or cancel it with `response.body?.cancel()`.
+
+```ts title="logs.ts"
+import type { NativeApi } from "@opencoredev/sandbox-sdk";
+
+export async function printLogs(native: NativeApi, signal: AbortSignal) {
+  const response = await native.fetch("GET", "/sandboxes/{sandboxId}/logs", { query: { follow: true }, signal });
+  const decoder = new TextDecoder();
+  for await (const chunk of response.body ?? []) process.stdout.write(decoder.decode(chunk, { stream: true }));
+}
+```
+
+## Options
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `plane` | provider-specific string | Which of the provider's APIs to call, such as a control plane and a per-sandbox toolbox. Default: the control plane. |
+| `params` | `Record<string, string \| number>` | Values for `{name}` placeholders in the path, URI-encoded. |
+| `query` | `Record<string, string \| number \| boolean \| undefined>` | Query string values. `undefined` values are left out. |
+| `body` | `unknown` | Sent as is when it is a `string`, `Uint8Array`, `ArrayBuffer`, `Blob`, `FormData`, `URLSearchParams`, or `ReadableStream`. Anything else is sent as JSON. |
+| `headers` | `Record<string, string>` | Extra headers. |
+| `signal` | `AbortSignal` | Rejects with `aborted`. |
+| `timeoutMs` | `number` | `request` counts the whole call, body included. `fetch` counts until the response headers arrive. Default: the provider's request timeout. |
+
+### Placeholders
+
+On `box.native`, the provider's sandbox placeholder, such as `{sandboxId}`, fills itself from the sandbox. Every other placeholder must be in `params`. A missing placeholder value, or a `params` entry with no placeholder, fails with `invalid_argument` before any request is sent. A value in `params` wins over the automatic one. On `provider.api` nothing is bound, so pass the sandbox ID in `params` too.
+
+```ts title="ports.ts"
+import type { NativeApi } from "@opencoredev/sandbox-sdk";
+
+export async function previewUrl(native: NativeApi, port: number) {
+  return native.request<{ url: string }>("GET", "/sandboxes/{sandboxId}/ports/{port}/preview-url", { params: { port } });
+}
+```
+
+## Retries, errors, and credentials
+
+- **Retries.** A `GET`, `HEAD`, `PUT`, or `DELETE` is retried up to twice on 429, 502, 503, 504, and network errors, honouring `Retry-After` up to 20 seconds. `POST` and `PATCH` are never retried, and neither is a body you pass as a `ReadableStream`.
+- **Errors.** A failure rejects with `SandboxError`, with the code mapped from the status: 400 and 422 are `invalid_argument`, 401 and 403 `auth`, 404 `not_found`, 429 `quota`, 5xx `unavailable`. A `POST` that may have reached the provider before it failed, such as a dropped connection or a timeout, is `outcome_unknown`: check the provider's state before you repeat it. Native errors keep the provider's error code and message, with credentials and URLs removed. See [Errors](/reference/errors).
+- **Credentials** go only to the provider's own hosts. A path that is a full URL on another host, or a redirect to one, is sent without them.
+
+## `sdk(load)`
+
+Gives you the official SDK's object for this sandbox, built from the module you import. The SDK is not a dependency of Sandbox SDK, so install it next to it first. Because you write the `import()`, your bundler sees it and the result is typed from the module you installed.
+
+```ts check="skip"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+const sandbox = await box.native.sdk(() => import("@daytonaio/sdk"));
+await sandbox.git.status("/workspace");
+```
+
+If the import fails because the package isn't installed, `sdk` rejects with `unavailable` and the install command in `hint`. If the module doesn't have the exports the provider needs, it rejects with `invalid_argument`.
+
+## `provider.api`
+
+The provider factory has an `api` property: a `NativeApi` bound to no sandbox, for account-level calls such as listing snapshots or templates. `provider.api.sdk(load)` returns the SDK's client instead of a sandbox.
+
+```ts check="skip"
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const provider = daytona();
+const snapshots = await provider.api.request<{ items: { name: string }[] }>("GET", "/snapshots");
+```
