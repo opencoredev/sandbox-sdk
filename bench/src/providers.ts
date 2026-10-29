@@ -205,6 +205,7 @@ const providerMembers = {
   snapshot: (target) => target.snapshot?.bind(target),
   terminal: (target) => target.terminal?.bind(target),
   startProcess: (target) => target.startProcess?.bind(target),
+  readSecretEnvironment: (target) => target.readSecretEnvironment?.bind(target),
 } satisfies { readonly [K in keyof Provider]-?: (target: Provider) => Provider[K] };
 
 function isProviderKey(key: string | symbol): key is keyof Provider {
