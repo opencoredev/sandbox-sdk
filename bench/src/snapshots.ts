@@ -1,28 +1,29 @@
 import { z } from "zod";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { nativeModules, lookupError } from "./existence.js";
+import { loadNative, lookupError } from "./existence.js";
+import {
+  call,
+  construct,
+  member,
+  nativeSchema,
+  type Native,
+  type NativeArgument,
+} from "./native.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
-const fn = z.custom<(...args: unknown[]) => Promise<unknown>>((v) => typeof v === "function");
-const constructor = z.custom<new (options?: unknown) => unknown>((v) => typeof v === "function");
+const ignored = z.unknown();
 
-function member(target: unknown, name: string): unknown {
-  if ((typeof target !== "object" || target === null) && typeof target !== "function")
-    throw new Error(`Invalid snapshot client: ${name}`);
-
-  return Reflect.get(target, name);
+async function client(moduleName: string, exportName: string, options: NativeArgument) {
+  return construct(await loadNative(moduleName), exportName, options);
 }
 
-async function call(target: unknown, name: string, ...args: unknown[]) {
-  return fn.parse(member(target, name)).apply(target, args);
+function nativeHandle(provider: Provider, sandboxId: string) {
+  return nativeSchema.parse(provider.native(sandboxId));
 }
 
-async function client(moduleName: string, exportName: string, options: unknown) {
-  const module: unknown = await nativeModules.load(moduleName);
-  const C = constructor.parse(member(module, exportName));
-
-  return new C(options);
+function child(target: Native, name: string) {
+  return member(target, name, nativeSchema);
 }
 
 export async function snapshotCleaner(
@@ -31,71 +32,66 @@ export async function snapshotCleaner(
   sandboxId: string,
 ): Promise<(id: string) => Promise<void>> {
   if (name === "superserve") {
-    const mod: unknown = await nativeModules.load("@superserve/sdk");
-    const c = member(mod, "Snapshot");
+    const c = child(await loadNative("@superserve/sdk"), "Snapshot");
 
     return async (id) => {
-      await call(c, "deleteById", id);
+      await call(c, "deleteById", [id], ignored);
     };
   }
 
   if (name === "local") {
-    const c = member(provider.native(sandboxId), "client");
+    const c = child(nativeHandle(provider, sandboxId), "client");
 
     return async (id) => {
-      await call(c, "call", "DELETE", `/images/${encodeURIComponent(id)}`);
+      await call(c, "call", ["DELETE", `/images/${encodeURIComponent(id)}`], ignored);
     };
   }
 
   if (name === "boxd") {
     // A fresh client: cleanup can run after the source machine is gone, when the adapter's native handle is not.
-    const c = member(
+    const c = child(
       await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY }),
       "snapshots",
     );
 
     return async (id) => {
-      await call(c, "delete", id);
+      await call(c, "delete", [id], ignored);
     };
   }
 
   if (name === "upstash") {
-    const mod: unknown = await nativeModules.load("@upstash/box");
-    const c = member(mod, "Box");
+    const c = child(await loadNative("@upstash/box"), "Box");
 
     return async (id) => {
-      await call(c, "deleteSnapshots", { snapshotIds: [id] });
+      await call(c, "deleteSnapshots", [{ snapshotIds: [id] }], ignored);
     };
   }
 
   if (name === "e2b") {
-    const mod: unknown = await nativeModules.load("e2b");
-    const c = member(mod, "Sandbox");
+    const c = child(await loadNative("e2b"), "Sandbox");
 
     return async (id) => {
-      await call(c, "deleteSnapshot", id);
+      await call(c, "deleteSnapshot", [id], ignored);
     };
   }
 
   if (name === "daytona") {
-    const c = member(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
+    const c = child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
 
     return async (id) => {
-      await call(c, "delete", id);
+      await call(c, "delete", [id], ignored);
     };
   }
 
   if (name === "freestyle") {
-    const c = member(
-      member(
-        await client("freestyle", "Freestyle", { apiKey: process.env.FREESTYLE_API_KEY }),
-        "vms",
-      ),
-      "snapshots",
-    );
+    const freestyle = await client("freestyle", "Freestyle", {
+      apiKey: process.env.FREESTYLE_API_KEY,
+    });
+
+    const c = child(child(freestyle, "vms"), "snapshots");
 
     return async (id) => {
-      await call(c, "delete", id);
+      await call(c, "delete", [id], ignored);
     };
   }
 
@@ -105,7 +101,7 @@ export async function snapshotCleaner(
     });
 
     return async (id) => {
-      await call(c, "deleteSnapshot", id);
+      await call(c, "deleteSnapshot", [id], ignored);
     };
   }
 
@@ -118,14 +114,14 @@ export async function createNamedDaytonaSnapshot(
   sandboxId: string,
   name: string,
 ) {
-  await call(provider.native(sandboxId), "createSnapshot", name, 600);
+  await call(nativeHandle(provider, sandboxId), "createSnapshot", [name, 600], ignored);
 
   return { id: name };
 }
 
 /** Narrow recovery query for snapshots of a sandbox whose run ownership was already established. */
 export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
-  const c = member(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
+  const c = child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
 
   const pageSchema = z.object({
     items: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -135,7 +131,7 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
   const items: { id: string; name: string }[] = [];
 
   for (let page = 1; page <= 100; page++) {
-    const data = pageSchema.parse(await call(c, "list", { sourceSandboxId, page, limit: 100 }));
+    const data = await call(c, "list", [{ sourceSandboxId, page, limit: 100 }], pageSchema);
     items.push(...data.items);
 
     if (page >= data.totalPages) return items;
@@ -147,11 +143,13 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
 /** Query only a source sandbox already recorded in the run ownership journal. */
 export async function snapshotsFromSource(provider: string, sourceSandboxId: string) {
   if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
-  const mod: unknown = await nativeModules.load("@superserve/sdk");
 
-  return z
-    .array(z.object({ id: z.string(), name: z.string().optional() }))
-    .parse(await call(member(mod, "Snapshot"), "list", sourceSandboxId));
+  return call(
+    child(await loadNative("@superserve/sdk"), "Snapshot"),
+    "list",
+    [sourceSandboxId],
+    z.array(z.object({ id: z.string(), name: z.string().optional() })),
+  );
 }
 
 const snapshotInfo = z.object({
@@ -164,6 +162,8 @@ const snapshotInfo = z.object({
   box_id: z.string().nullish(),
 });
 
+type SnapshotInfo = z.infer<typeof snapshotInfo>;
+
 /** Read snapshot metadata without connecting to, activating, or requiring a live source sandbox. */
 export async function inspectSnapshot(
   name: string,
@@ -172,24 +172,28 @@ export async function inspectSnapshot(
   id: string,
 ): Promise<{ exists: boolean; sourceId?: string }> {
   try {
-    let raw: unknown;
+    let info: SnapshotInfo;
 
     switch (name) {
       case "e2b": {
         const page = await call(
-          member(await nativeModules.load("e2b"), "Sandbox"),
+          child(await loadNative("e2b"), "Sandbox"),
           "listSnapshots",
-          { name: id, limit: 100 },
+          [{ name: id, limit: 100 }],
+          nativeSchema,
         );
 
         for (let index = 0; index < 100; index++) {
-          const items = z
-            .array(z.object({ snapshotId: z.string() }))
-            .parse(await call(page, "nextItems"));
+          const items = await call(
+            page,
+            "nextItems",
+            [],
+            z.array(z.object({ snapshotId: z.string() })),
+          );
 
           if (items.some((item) => item.snapshotId === id)) return { exists: true };
 
-          if (member(page, "hasNext") === false || !items.length)
+          if (page.hasNext === false || !items.length)
             throw new Error("Snapshot metadata not visible; absence unproven");
         }
 
@@ -197,49 +201,49 @@ export async function inspectSnapshot(
       }
 
       case "daytona":
-        raw = await call(
-          member(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot"),
+        info = await call(
+          child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot"),
           "get",
-          id,
+          [id],
+          snapshotInfo,
         );
         break;
       case "boxd":
-        raw = await call(
-          member(
+        info = await call(
+          child(
             await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY }),
             "snapshots",
           ),
           "get",
-          id,
+          [id],
+          snapshotInfo,
         );
         break;
       case "tenki":
-        raw = await call(
+        info = await call(
           await client("@tenkicloud/sandbox", "TenkiSandbox", {
             authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN,
           }),
           "getSnapshot",
-          id,
+          [id],
+          snapshotInfo,
         );
         break;
-      case "freestyle":
-        raw = await call(
-          member(
-            member(
-              await client("freestyle", "Freestyle", { apiKey: process.env.FREESTYLE_API_KEY }),
-              "vms",
-            ),
-            "snapshots",
-          ),
-          "get",
-          id,
-        );
+      case "freestyle": {
+        const freestyle = await client("freestyle", "Freestyle", {
+          apiKey: process.env.FREESTYLE_API_KEY,
+        });
+
+        info = await call(child(child(freestyle, "vms"), "snapshots"), "get", [id], snapshotInfo);
         break;
+      }
+
       case "superserve":
-        raw = await call(
-          member(await nativeModules.load("@superserve/sdk"), "Snapshot"),
+        info = await call(
+          child(await loadNative("@superserve/sdk"), "Snapshot"),
           "get",
-          id,
+          [id],
+          snapshotInfo,
         );
         break;
       case "upstash": {
@@ -253,21 +257,20 @@ export async function inspectSnapshot(
             status: response.status,
           });
         const list = z.object({ snapshots: z.array(snapshotInfo) }).parse(await response.json());
-        raw = list.snapshots.find((snapshot) => snapshot.id === id);
+        const listed = list.snapshots.find((snapshot) => snapshot.id === id);
 
-        if (!raw) throw new Error("Snapshot metadata not visible; absence unproven");
+        if (!listed) throw new Error("Snapshot metadata not visible; absence unproven");
+        info = listed;
         break;
       }
 
       case "local": {
-        const image = await call(
-          member(provider.native(sourceId), "client"),
+        await call(
+          child(nativeHandle(provider, sourceId), "client"),
           "call",
-          "GET",
-          `/images/${encodeURIComponent(id)}/json`,
+          ["GET", `/images/${encodeURIComponent(id)}/json`],
+          z.object({ Id: z.string() }),
         );
-
-        z.object({ Id: z.string() }).parse(image);
 
         return { exists: true };
       }
@@ -275,8 +278,6 @@ export async function inspectSnapshot(
       default:
         throw new Error("Native snapshot metadata unavailable");
     }
-
-    const info = snapshotInfo.parse(raw);
 
     if (info.id !== id && info.name !== id) throw new Error("Snapshot metadata ID mismatch");
 
@@ -287,7 +288,9 @@ export async function inspectSnapshot(
     if (["daytona", "superserve", "tenki", "freestyle", "upstash"].includes(name) && !parent)
       throw new Error("Snapshot source metadata unavailable");
 
-    return { exists: true, ...(parent ? { sourceId: parent } : {}) };
+    if (!parent) return { exists: true };
+
+    return { exists: true, sourceId: parent };
   } catch (error) {
     if (lookupError(error, name, `${name}:snapshot-exact-get`).result === "not-found")
       return { exists: false };
