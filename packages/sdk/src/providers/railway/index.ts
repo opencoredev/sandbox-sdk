@@ -37,6 +37,10 @@ export type RailwayOptions = {
   checkpoint?: string;
 });
 const marker = "/tmp/.sandbox-sdk/railway.json";
+/** Every exec carries a unique value in this variable, so a follow-up exec can find and kill what it left behind. */
+const execTag = "SANDBOX_SDK_EXEC_ID";
+// One grep reads every environ file (NUL-separated, so -z), then each match is killed.
+const reapCommand = (token: string) => `for f in $(grep -lzx ${quote(`${execTag}=${token}`)} /proc/[0-9]*/environ 2>/dev/null); do p=\${f#/proc/}; kill -KILL "\${p%/environ}" 2>/dev/null; done; true`;
 const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
 type Metadata = { version: 1; key?: string; labels: Labels };
 function metadata(text: string): Metadata {
@@ -60,6 +64,9 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
   const sdk = () => module ??= loadPeer("railway", "railway", () => import("railway"));
   const api = () => ({ token: options.token ?? process.env.RAILWAY_API_TOKEN, environmentId: options.environmentId ?? process.env.RAILWAY_ENVIRONMENT_ID, authType: options.authType });
   const clients = new Map<string, Sandbox>();
+  // Ownership of sandboxes this provider created or connected. A VM that is not
+  // RUNNING cannot serve its marker file, so list() falls back to this record.
+  const owned = new Map<string, Metadata>();
   async function call<T>(id: string | undefined, action: () => Promise<T>): Promise<T> { try { return await action(); } catch (cause) { throw railwayError(cause, id); } }
   async function client(id: string) {
     const cached = clients.get(id); if (cached) return cached;
@@ -93,7 +100,17 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
     } while (after !== null);
     return result;
   }
-  async function execute(id: string, input: ExecInput) {
+  /** Kill every process that still carries this exec's tag, including descendants that left its process group. */
+  async function reap(id: string, token: string): Promise<boolean> {
+    try { const result = await execute(id, { command: reapCommand(token), cwd: "/", env: {}, timeoutMs: 15_000, onChunk() {} }, false); return result.exitCode === 0; }
+    catch { return false; }
+  }
+  const unconfirmed = (id: string) => new SandboxError("Command outcome unknown. Railway did not confirm that the command stopped, and the cleanup command failed. Check the sandbox, or destroy it if the command must not keep running.", { code: "outcome_unknown", provider: "railway", sandboxId: id });
+  // A timeout or abort kills only the command. The SDK signals its process group
+  // and confirms the exit. When that confirmation is lost, Railway still cleans up
+  // the group of an ephemeral exec on disconnect, and a tagged follow-up kill
+  // covers the rest. The sandbox is never destroyed for a command's sake.
+  async function execute(id: string, input: ExecInput, cleanup = true) {
     if (input.signal?.aborted) return { exitCode: null, timedOut: true };
     const box = await client(id);
     const controller = new AbortController();
@@ -101,8 +118,9 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
     const timer = setTimeout(abort, input.timeoutMs);
     input.signal?.addEventListener("abort", abort, { once: true });
     if (input.signal?.aborted) abort();
+    const token = crypto.randomUUID();
     try {
-      const handle = box.exec(input.command, { cwd: input.cwd, env: input.env, stdin: input.stdin !== undefined, ephemeral: true, captureOutput: false, signal: controller.signal, onStdout: text => input.onChunk({ stream: "stdout", text }), onStderr: text => input.onChunk({ stream: "stderr", text }) });
+      const handle = box.exec(input.command, { cwd: input.cwd, env: { ...input.env, [execTag]: token }, stdin: input.stdin !== undefined, ephemeral: true, captureOutput: false, signal: controller.signal, onStdout: text => input.onChunk({ stream: "stdout", text }), onStderr: text => input.onChunk({ stream: "stderr", text }) });
       const completion = Promise.resolve(handle); void completion.catch(() => {});
       try {
         if (input.stdin !== undefined) {
@@ -115,17 +133,19 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
           }
         }
         const result = await completion;
-        if (result.timedOut && result.exitCode === null) { await provider.destroy(id); }
+        // A null exit after a native deadline means the kill was not confirmed.
+        if (result.timedOut && result.exitCode === null && cleanup && !(await reap(id, token))) throw unconfirmed(id);
         return { exitCode: result.timedOut ? null : result.exitCode, timedOut: result.timedOut };
       } catch (cause) {
-        // The SDK rejects abort only after confirmed group termination. Any
-        // transport failure leaves outcome unknown: destroy the VM before return.
+        if (cause instanceof SandboxError && cause.code === "outcome_unknown") throw cause;
+        // The SDK rejects with the abort reason only after confirmed group termination.
         if (controller.signal.aborted) {
-          if (cause !== controller.signal.reason) await provider.destroy(id);
           await completion.catch(() => {});
+          if (cause !== controller.signal.reason && cleanup && !(await reap(id, token))) throw unconfirmed(id);
           return { exitCode: null, timedOut: true };
         }
-        if (railwayError(cause, id).code === "outcome_unknown") await provider.destroy(id);
+        // A lost connection leaves the outcome unknown. Stop the command, then report it.
+        if (cleanup && railwayError(cause, id).code === "outcome_unknown") await reap(id, token);
         throw cause;
       }
     } finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
@@ -170,24 +190,30 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
         });
         if (result.timedOut || result.exitCode !== 0) throw new Error("Railway workspace and ownership initialization failed");
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. Cancellation arrived during initialization. Retry with a fresh signal.", { code: "aborted", provider: "railway" });
+        owned.set(box.id, data);
         return info(box, data);
       } catch (cause) { await provider.destroy(box.id); throw cause; }
     }),
-    connect: id => call(id, async () => { const { Sandbox } = await sdk(); const box = await Sandbox.connect(id, api()); clients.set(id, box); return info(box, metadata(await box.files.read(marker))); }),
+    connect: id => call(id, async () => { const { Sandbox } = await sdk(); const box = await Sandbox.connect(id, api()); clients.set(id, box); const data = metadata(await box.files.read(marker)); owned.set(id, data); return info(box, data); }),
     find: key => call(undefined, async () => (await provider.list({})).find(box => box.key === key)),
     list: labels => call(undefined, async () => {
       const result: SandboxInfo[] = [];
+      // Railway has no stopped state: CREATING and FAILED VMs still exist and can be
+      // destroyed. Their ownership comes from the marker when it is readable, or from
+      // this provider's own record. Unproven VMs are never listed, so never reaped.
       for (const id of await ids()) {
         try {
           const { Sandbox } = await sdk(); const box = await Sandbox.connect(id, api());
-          if (box.status !== "RUNNING") continue;
-          const data = metadata(await box.files.read(marker));
-          if (data.labels["sandbox-sdk"] === "1" && Object.entries(labels).every(([key, value]) => data.labels[key] === value)) result.push(info(box, data));
+          if (box.status === "DESTROYED" || box.status === "DESTROYING") continue;
+          let data: Metadata | undefined;
+          try { data = metadata(await box.files.read(marker)); }
+          catch (cause) { data = owned.get(id); if (box.status === "RUNNING" && !data) throw cause; }
+          if (data && data.labels["sandbox-sdk"] === "1" && Object.entries(labels).every(([key, value]) => data.labels[key] === value)) result.push(info(box, data));
         } catch (cause) { if (!["not_found", "file_not_found"].includes(railwayError(cause, id).code)) throw cause; }
       }
       return result;
     }),
-    destroy: id => call(id, async () => { try { await (await client(id)).destroy(); } catch (cause) { if (railwayError(cause, id).code !== "not_found") throw cause; } clients.delete(id); }),
+    destroy: id => call(id, async () => { try { await (await client(id)).destroy(); } catch (cause) { if (railwayError(cause, id).code !== "not_found") throw cause; } clients.delete(id); owned.delete(id); }),
     close: async id => { clients.delete(id); },
     native(id) { const box = clients.get(id); if (!box) throw new SandboxError("Sandbox client is detached. No cached Railway object exists. Connect first.", { code: "not_found", provider: "railway", sandboxId: id }); return box; },
     exec: (id, input) => call(id, () => execute(id, input)),

@@ -3,7 +3,7 @@ const mock = await vi.hoisted(async () => import("./railway-mock.js"));
 vi.mock("railway", async importOriginal => ({ ...await importOriginal<typeof import("railway")>(), Sandbox: mock.MockSandbox }));
 import type { CreateOptions } from "../src/types.js";
 import { railway } from "../src/providers/railway/index.js";
-import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
+import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { railwayError } from "../src/providers/railway/errors.js";
 import { runConformance } from "../src/testing.js";
 const options = { token: "mock", environmentId: "mock-env" };
@@ -54,11 +54,51 @@ test("timeouts and aborts kill descendant groups", async () => {
     expect(await box.files.exists("child")).toBe(false); expect(await box.files.exists("aborted")).toBe(false);
   } finally { await box.destroy(); }
 });
-test("interrupted exec destroys the VM and returns a safe outcome_unknown error", async () => {
+test("interrupted exec keeps the VM and returns a safe outcome_unknown error", async () => {
   const provider = railway(options); const info = await provider.create({ labels: {} });
-  mock.state.interrupt = true;
-  await expect(provider.exec(info.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, onChunk() {} })).rejects.toMatchObject({ code: "outcome_unknown" });
-  expect(mock.state.boxes.has(info.id)).toBe(false);
+  try {
+    mock.state.interrupt = true;
+    await expect(provider.exec(info.id, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, onChunk() {} })).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(mock.state.boxes.has(info.id)).toBe(true);
+  } finally { await provider.destroy(info.id); }
+});
+test("a command timeout kills only the command and keeps the sandbox", async () => {
+  const box = await createSandbox(railway(options));
+  try {
+    const started = Date.now();
+    expect(await box.run("sleep 60", { timeoutMs: 300 })).toMatchObject({ timedOut: true, exitCode: null });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(mock.state.boxes.has(box.id)).toBe(true);
+    expect((await box.run("echo alive")).stdout).toBe("alive\n");
+  } finally { await box.destroy(); }
+});
+test("an unconfirmed timeout kills the command's tagged processes and keeps the sandbox", async () => {
+  const box = await createSandbox(railway(options));
+  try {
+    mock.state.unconfirmed = true;
+    // The mock leaves the command running, as a lost connection would.
+    expect(await box.run("(sleep .5; echo bad > late) & wait", { timeoutMs: 100 })).toMatchObject({ timedOut: true });
+    expect(mock.state.unconfirmed).toBe(false);
+    expect(mock.state.boxes.has(box.id)).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 800));
+    expect(await box.files.exists("late")).toBe(false);
+    expect((await box.run("echo alive")).stdout).toBe("alive\n");
+  } finally { await box.destroy(); }
+});
+test("list and reap include SDK sandboxes that are not RUNNING when ownership is known", async () => {
+  const provider = railway(options);
+  const failed = await createSandbox(provider, { labels: { app: "stopped-railway" } });
+  const gone = await createSandbox(provider, { labels: { app: "stopped-railway" } });
+  const failedBox = mock.state.boxes.get(failed.id), goneBox = mock.state.boxes.get(gone.id);
+  if (!failedBox || !goneBox) throw new Error("mock sandbox missing");
+  try {
+    failedBox.status = "FAILED"; goneBox.status = "DESTROYED";
+    expect(await listSandboxes(provider, { labels: { app: "stopped-railway" } })).toEqual([expect.objectContaining({ id: failed.id, state: "stopped", labels: { app: "stopped-railway", "sandbox-sdk": "1" } })]);
+    // A fresh client cannot read the marker of a FAILED VM, so it cannot prove ownership.
+    expect(await listSandboxes(railway(options), { labels: { app: "stopped-railway" } })).toEqual([]);
+    expect(await reapSandboxes(provider, { labels: { app: "stopped-railway" } })).toBe(1);
+    expect(mock.state.boxes.has(failed.id)).toBe(false);
+  } finally { failedBox.status = "RUNNING"; goneBox.status = "RUNNING"; await gone.destroy(); await failed.destroy(); }
 });
 test("native missing sandbox, file and auth errors are structured and secret safe", async () => {
   await expect(createSandbox(railway({ ...options, token: "invalid" }))).rejects.toMatchObject({ code: "auth", provider: "railway" });

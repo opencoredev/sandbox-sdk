@@ -16,8 +16,11 @@ test.each(["early", "blocked", "unconfirmed"] as const)("real Railway transport:
     if (query.includes("query RailwaySandbox(")) return Response.json({ data: { sandbox: { id: "fake", status: "RUNNING", domains: [], createdAt: new Date().toISOString(), environmentId: "env" } } });
     throw new Error("Unexpected GraphQL operation; network access is forbidden");
   });
+  let connections = 0;
   class Wire {
     bufferedAmount = 0;
+    // The first connection carries the command. Later ones are the tagged cleanup exec.
+    readonly cleanup = connections++ > 0;
     onopen?: () => void;
     onmessage?: (event: { data: string | ArrayBuffer }) => void;
     onclose?: (event: { code: number; reason: string }) => void;
@@ -33,7 +36,7 @@ test.each(["early", "blocked", "unconfirmed"] as const)("real Railway transport:
       }
       const frame: unknown = JSON.parse(data);
       if (typeof frame !== "object" || frame === null || !("type" in frame)) throw new Error("Invalid control frame");
-      if (frame.type === "exec_hello") queueMicrotask(() => this.frame("exec_capabilities", { version: 2, stdin_chunk_bytes: 16384, stdin_chunks: 1 }));
+      if (frame.type === "exec_hello") queueMicrotask(() => { this.frame("exec_capabilities", { version: 2, stdin_chunk_bytes: 16384, stdin_chunks: 1 }); if (this.cleanup) this.frame("exit", { exit_code: 0 }); });
       if (frame.type === "signal" && mode === "blocked") queueMicrotask(() => this.frame("exit", { exit_code: 143 }));
       if (frame.type === "signal" && mode === "unconfirmed") queueMicrotask(() => this.onclose?.({ code: 1006, reason: "lost" }));
     }
@@ -44,6 +47,8 @@ test.each(["early", "blocked", "unconfirmed"] as const)("real Railway transport:
   let output = "";
   const result = await provider.exec("fake", { command: "head -c 1", cwd: "/workspace", env: {}, stdin: "x".repeat(4 * 1024 * 1024), timeoutMs: 1000, onChunk: chunk => { output += chunk.text; } });
   expect(result).toEqual(mode === "early" ? { exitCode: 0, timedOut: false } : { exitCode: null, timedOut: true });
-  expect(destroyed).toBe(mode === "unconfirmed" ? 1 : 0);
+  // A lost confirmation runs a cleanup exec; the sandbox is never destroyed.
+  expect(destroyed).toBe(0);
+  expect(connections).toBe(mode === "unconfirmed" ? 2 : 1);
   expect(output).toBe(mode === "early" ? "x" : "");
 });
