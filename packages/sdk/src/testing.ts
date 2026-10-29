@@ -406,6 +406,7 @@ export function runConformance(
       }
 
       const { box } = await setup();
+
       const proc = await box.start(
         'node -e \'require("http").createServer((_,r)=>r.end("ok")).listen(3000,"0.0.0.0")\'',
         { name: "http", ready: { http: { port: 3000 } } },

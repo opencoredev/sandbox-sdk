@@ -1,6 +1,6 @@
 import { posix } from "node:path";
 import type { OutputChunk, Provider } from "./provider.js";
-import { invalid, Redactor } from "./errors.js";
+import { invalid, Redactor, type SandboxError } from "./errors.js";
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
 import { quote } from "./shared/shell.js";
 
@@ -100,11 +100,11 @@ export class BufferCap {
 export class OutputBus {
   private listeners = new Set<(chunk?: OutputChunk) => void>();
   private ended = false;
-  private failure: unknown;
+  private failure: SandboxError | undefined;
   emit(chunk: OutputChunk) {
     for (const listener of this.listeners) listener(chunk);
   }
-  fail(error: unknown) {
+  fail(error: SandboxError) {
     this.failure = error;
     this.end();
   }
@@ -186,8 +186,7 @@ export function chunkRedactor(
       }
 
       const text = queue
-        .filter((chunk) => interleaved || chunk.stream === first.stream)
-        .map((chunk) => chunk.text)
+        .flatMap((chunk) => (interleaved || chunk.stream === first.stream ? [chunk.text] : []))
         .join("");
 
       const secret = secrets.find((secret) => text.startsWith(secret));

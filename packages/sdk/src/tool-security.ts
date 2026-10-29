@@ -1,15 +1,15 @@
 import { stripVTControlCharacters } from "node:util";
 import type { Redactor } from "./errors.js";
-import type { OutputChunk } from "./types.js";
+import type { OutputChunk, SandboxBase } from "./types.js";
 import { chunkRedactor } from "./run.js";
 
-const redactors = new WeakMap<object, Redactor>();
+const redactors = new WeakMap<SandboxBase<unknown>, Redactor>();
 
-export function registerToolRedactor(box: object, redactor: Redactor) {
+export function registerToolRedactor(box: SandboxBase<unknown>, redactor: Redactor) {
   redactors.set(box, redactor);
 }
 
-function redactorOf(box: object) {
+function redactorOf(box: SandboxBase<unknown>) {
   const redactor = redactors.get(box);
 
   if (!redactor)
@@ -20,12 +20,12 @@ function redactorOf(box: object) {
   return redactor;
 }
 
-export function redactToolText(box: object, text: string) {
+export function redactToolText(box: SandboxBase<unknown>, text: string) {
   return redactorOf(box).text(stripVTControlCharacters(text));
 }
 
 /** ANSI sequences and secrets can both cross transport boundaries. Normalize before redacting. */
-export function toolOutputFilter(box: object, emit: (chunk: OutputChunk) => void) {
+export function toolOutputFilter(box: SandboxBase<unknown>, emit: (chunk: OutputChunk) => void) {
   type State = "plain" | "escape" | "csi" | "string" | "string_escape";
 
   const states: Record<OutputChunk["stream"], State> = { stdout: "plain", stderr: "plain" };

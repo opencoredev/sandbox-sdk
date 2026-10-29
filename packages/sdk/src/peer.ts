@@ -1,4 +1,5 @@
 import { SandboxError } from "./errors.js";
+import { isFunction, isObject } from "./core/guards.js";
 
 /** Peers loaded through {@link loadPeer}, by package name. */
 const loaded = new Map<string, unknown>();
@@ -58,15 +59,14 @@ export async function loadPeer<T>(
  * so `constructor.name`, and a `name` the SDK copies from `new.target.name`, are not stable. The
  * class object the adapter loaded is. False when the peer was never loaded: it cannot have thrown.
  */
-export function isPeerError(error: unknown, name: string, exportName: string): boolean {
+export function isPeerError(cause: unknown, name: string, exportName: string): boolean {
   const module = loaded.get(name);
 
-  const type: unknown =
-    typeof module === "object" && module !== null && exportName in module
-      ? Reflect.get(module, exportName)
-      : undefined;
+  if (!isObject(module)) return false;
+  // Module namespaces and peerModule's merged objects hold their exports as own properties.
+  const type = Object.getOwnPropertyDescriptor(module, exportName)?.value;
 
-  return typeof type === "function" && error instanceof type;
+  return isFunction(type) && cause instanceof type;
 }
 
 /** Normalizes a dynamically imported CommonJS peer. Bundlers that split chunks
@@ -77,10 +77,10 @@ export function isPeerError(error: unknown, name: string, exportName: string): b
  * returned as is.
  */
 export function peerModule<T>(module: T): T {
-  if (typeof module !== "object" || module === null || !("default" in module)) return module;
+  if (!isObject(module) || !("default" in module)) return module;
   const inner = module.default;
 
-  if (typeof inner !== "object" || inner === null) return module;
+  if (!isObject(inner)) return module;
 
   if (Object.keys(inner).every((key) => key in module)) return module;
 

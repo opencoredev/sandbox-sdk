@@ -17,6 +17,11 @@ export function hasNumber<K extends string>(value: unknown, key: K): value is { 
   return isObject(value) && typeof Object.getOwnPropertyDescriptor(value, key)?.value === "number";
 }
 
+/** Whether the value is callable, such as a class an `instanceof` check can use. */
+export function isFunction(value: unknown): value is (...args: never[]) => void {
+  return typeof value === "function";
+}
+
 /** Whether the value is a string. */
 export function isString(value: unknown): value is string {
   return typeof value === "string";
