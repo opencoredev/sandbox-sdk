@@ -135,6 +135,7 @@
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts",
     "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts",
+    "smoke:consumer:nopeers": "timeout 900s bun scripts/consumer-smoke-nopeers.ts",
     "smoke:bundle": "timeout 600s bun scripts/bundle-smoke.ts"
   },
   "devDependencies": {
