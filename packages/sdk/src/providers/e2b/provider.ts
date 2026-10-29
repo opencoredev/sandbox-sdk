@@ -1,5 +1,19 @@
 import { posix } from "node:path";
-import type { Sandbox as E2BSandbox, SandboxInfo as E2BInfo, EntryInfo, CommandHandle } from "e2b";
+import { setTimeout as sleep } from "node:timers/promises";
+import type {
+  Sandbox as E2BSandbox,
+  SandboxInfo as E2BInfo,
+  SandboxApiOpts,
+  SandboxConnectOpts,
+  SandboxListOpts,
+  SandboxNetworkOpts,
+  SandboxOpts,
+  CommandConnectOpts,
+  CommandResult,
+  CommandStartOpts,
+  EntryInfo,
+  WriteInfo,
+} from "e2b";
 import { loadPeer } from "../../peer.js";
 import type {
   Provider,
@@ -8,8 +22,10 @@ import type {
   FileInfo,
   NativeProcess,
   CreateInput,
+  Labels,
 } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
+import { quote } from "../../shared/shell.js";
 import { e2bError } from "./errors.js";
 
 export interface E2BOptions {
@@ -34,14 +50,17 @@ export interface E2BOptions {
 const keyTag = "sandbox-sdk-key";
 const workspaceMarker = "/tmp/.sandbox-sdk-workspace-ready";
 const deadlineTag = "sandbox-sdk-deadline";
-const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
-const prepareWorkspace = `flock -x ${workspaceMarker}.lock sh -c ${quote(`if [ ! -e ${workspaceMarker} ]; then mkdir -p /workspace && touch ${workspaceMarker} || exit 125; fi`)} || exit 125`;
+const createWorkspaceOnce = `if [ ! -e ${workspaceMarker} ]; then mkdir -p /workspace && touch ${workspaceMarker} || exit 125; fi`;
+
+/** Creates /workspace on first use. The lock makes concurrent first commands agree; failure exits 125. */
+const prepareWorkspace = `flock -x ${workspaceMarker}.lock sh -c ${quote(createWorkspaceOnce)} || exit 125`;
+
+function isMissingPath(cause: unknown): cause is { code: "ENOENT" } {
+  return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT";
+}
 
 const missing = (cause: unknown) =>
-  e2bError(cause, undefined, true).code === "file_not_found" ||
-  (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT");
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  e2bError(cause, undefined, true).code === "file_not_found" || isMissingPath(cause);
 
 const unsupported = (message: string) =>
   new SandboxError(
@@ -49,31 +68,101 @@ const unsupported = (message: string) =>
     { code: "unsupported", provider: "e2b" },
   );
 
-const infoOf = (info: E2BInfo): SandboxInfo => ({
-  id: info.sandboxId,
-  key: info.metadata[keyTag],
-  labels: Object.fromEntries(
-    Object.entries(info.metadata).filter(([key]) => ![keyTag, deadlineTag].includes(key)),
-  ),
-  state: info.state,
-  createdAt: info.startedAt.getTime(),
-});
+/** Metadata the adapter keeps for itself. Callers see the rest as labels. */
+const reservedMetadata = new Set([keyTag, deadlineTag]);
 
-const fileOf = (entry: EntryInfo): FileInfo => ({
-  path: entry.path,
-  type: entry.type === "dir" ? "directory" : entry.type === "symlink" ? "symlink" : "file",
-  size: entry.size,
-  modifiedAt: entry.modifiedTime?.getTime() ?? 0,
-});
+function infoOf(info: E2BInfo): SandboxInfo {
+  const labels = Object.fromEntries(
+    Object.entries(info.metadata).filter(([key]) => !reservedMetadata.has(key)),
+  );
 
-export type E2BProvider = Provider<E2BSandbox, "pause" | "snapshot" | "network-policy">;
+  return {
+    id: info.sandboxId,
+    key: info.metadata[keyTag],
+    labels,
+    state: info.state,
+    createdAt: info.startedAt.getTime(),
+  };
+}
 
-/** E2B's template fixes CPU, RAM and disk; explicit size requests fail closed.
- * Cloud modules are loaded only on first provider I/O, never by importing core.
- */
-export function e2b(options: E2BOptions = {}): E2BProvider {
-  let module: Promise<typeof import("e2b")> | undefined;
-  const sdk = () => (module ??= loadPeer("e2b", "e2b", () => import("e2b")));
+function fileType(type: EntryInfo["type"]): FileInfo["type"] {
+  if (type === "dir") return "directory";
+
+  if (type === "symlink") return "symlink";
+
+  return "file";
+}
+
+function fileOf(entry: EntryInfo): FileInfo {
+  return {
+    path: entry.path,
+    type: fileType(entry.type),
+    size: entry.size,
+    modifiedAt: entry.modifiedTime?.getTime() ?? 0,
+  };
+}
+
+type E2BCapability = "pause" | "snapshot" | "network-policy";
+
+export type E2BProvider = Provider<E2BSandbox, E2BCapability>;
+
+type AsRoot = { user: "root" };
+
+/** The parts of an E2B command handle the adapter uses. */
+export interface E2BCommand {
+  readonly pid: number;
+  readonly exitCode: number | undefined;
+  wait(): Promise<Pick<CommandResult, "exitCode">>;
+  kill(): Promise<boolean>;
+  disconnect(): Promise<void>;
+  sendStdin(data: string): Promise<void>;
+  closeStdin(): Promise<void>;
+}
+
+/** The parts of an E2B sandbox the adapter uses. */
+export type E2BBox = Pick<
+  E2BSandbox,
+  "sandboxId" | "trafficAccessToken" | "getHost" | "setTimeout" | "getInfo" | "createSnapshot"
+> & {
+  files: {
+    getInfo(path: string, opts: AsRoot): Promise<EntryInfo>;
+    read(path: string, opts: AsRoot & { format: "bytes" }): Promise<Uint8Array>;
+    write(path: string, data: ArrayBuffer | string, opts: AsRoot): Promise<WriteInfo | WriteInfo[]>;
+    write(
+      files: { path: string; data: ArrayBuffer | string }[],
+      opts: AsRoot,
+    ): Promise<WriteInfo | WriteInfo[]>;
+    list(path: string, opts: AsRoot & { depth: number }): Promise<EntryInfo[]>;
+    makeDir(path: string, opts: AsRoot): Promise<boolean>;
+    remove(path: string, opts: AsRoot): Promise<void>;
+  };
+  commands: {
+    run(cmd: string, opts: CommandStartOpts & { background: true }): Promise<E2BCommand>;
+    run(cmd: string, opts: CommandStartOpts & { background?: false }): Promise<CommandResult>;
+    connect(pid: number, opts: CommandConnectOpts): Promise<Pick<E2BCommand, "wait">>;
+  };
+};
+
+/** The parts of the E2B SDK the adapter uses: the real `e2b` module, or a test fixture. */
+export interface E2BModule<B extends E2BBox> {
+  Sandbox: {
+    create(template: string, opts: SandboxOpts): Promise<B>;
+    connect(id: string, opts: SandboxConnectOpts): Promise<B>;
+    getInfo(id: string, opts: SandboxApiOpts): Promise<E2BInfo>;
+    kill(id: string, opts: SandboxApiOpts): Promise<boolean>;
+    pause(id: string, opts: SandboxApiOpts): Promise<boolean>;
+    list(opts: SandboxListOpts): { readonly hasNext: boolean; nextItems(): Promise<E2BInfo[]> };
+  };
+  CommandExitError: abstract new (result: CommandResult) => Pick<CommandResult, "exitCode">;
+}
+
+/** @internal The adapter behind `e2b()`. `load` imports the E2B SDK; tests pass a local fixture. */
+export function createE2BProvider<B extends E2BBox>(
+  options: E2BOptions,
+  load: () => Promise<E2BModule<B>>,
+): Provider<B, E2BCapability> {
+  let module: Promise<E2BModule<B>> | undefined;
+  const sdk = () => (module ??= loadPeer("e2b", "e2b", load));
 
   const api = () => {
     const apiKey = options.apiKey ?? process.env.E2B_API_KEY;
@@ -87,7 +176,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     return { apiKey, domain: options.domain, requestTimeoutMs: options.requestTimeoutMs };
   };
 
-  const clients = new Map<string, E2BSandbox>();
+  const clients = new Map<string, B>();
   const deadlines = new Map<string, number>();
   const workspaces = new Map<string, number>();
   const detached = new Map<string, { wait: Promise<void>; release(): void }>();
@@ -108,7 +197,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     detached.delete(id);
   }
 
-  const handles = new Map<string, Set<CommandHandle>>();
+  const handles = new Map<string, Set<E2BCommand>>();
 
   async function call<T>(
     id: string | undefined,
@@ -184,7 +273,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     return box;
   }
 
-  async function reconcileWorkspace(id: string, box: E2BSandbox) {
+  async function reconcileWorkspace(id: string, box: B) {
     if (!workspaces.has(id)) return;
 
     try {
@@ -210,7 +299,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     return result;
   }
 
-  async function groupSignal(box: E2BSandbox, pid: number, signal: "TERM" | "KILL") {
+  async function groupSignal(box: B, pid: number, signal: "TERM" | "KILL") {
     await box.commands.run(`kill -${signal} -- -${pid} 2>/dev/null || true`, {
       user: "root",
       timeoutMs: 10_000,
@@ -241,7 +330,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
       onStderr: (text) => input.onChunk({ stream: "stderr", text }),
     });
 
-    const active = handles.get(id) ?? new Set<CommandHandle>();
+    const active = handles.get(id) ?? new Set<E2BCommand>();
     handles.set(id, active);
     active.add(handle);
 
@@ -282,6 +371,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
         })
         .finally(() => active.delete(handle));
 
+      // A started process may never be waited on; its failure must not go unhandled.
       void settled.catch(() => {});
 
       return { box, handle, pid: handle.pid, result: settled };
@@ -292,7 +382,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     }
   }
 
-  const provider: E2BProvider = {
+  const provider: Provider<B, E2BCapability> = {
     name: "e2b",
     keyMode: "best-effort",
     capabilities: new Set(["pause", "snapshot", "network-policy"]),
@@ -308,36 +398,43 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             ? undefined
             : createdAt + input.timeoutMs;
 
-        const box = await Sandbox.create(input.from ?? options.template ?? "base", {
+        const allow =
+          input.network === "all" || input.network === "none" ? undefined : input.network?.allow;
+
+        const metadata: Labels = { ...input.labels, "sandbox-sdk": "1" };
+
+        if (input.key !== undefined) metadata[keyTag] = input.key;
+
+        if (deadline !== undefined) metadata[deadlineTag] = String(deadline);
+
+        const settings: SandboxOpts = {
           ...api(),
           envs: input.env,
-          metadata: {
-            ...input.labels,
-            "sandbox-sdk": "1",
-            ...(input.key === undefined ? {} : { [keyTag]: input.key }),
-            ...(deadline === undefined ? {} : { [deadlineTag]: String(deadline) }),
-          },
+          metadata,
           timeoutMs: input.timeoutMs,
           lifecycle: options.autoPause
             ? { onTimeout: "pause", autoResume: options.autoResume ?? false }
             : { onTimeout: "kill", autoResume: false },
-          ...(input.network === "none"
-            ? { allowInternetAccess: false }
-            : typeof input.network === "object"
-              ? {}
-              : { allowInternetAccess: true }),
-          ...(typeof input.network === "object" || options.public === false
-            ? {
-                network: {
-                  ...(typeof input.network === "object"
-                    ? { denyOut: ["0.0.0.0/0"], allowOut: input.network.allow }
-                    : {}),
-                  ...(options.public === false ? { allowPublicTraffic: false } : {}),
-                },
-              }
-            : {}),
-          ...(options.volumes === undefined ? {} : { volumeMounts: options.volumes }),
-        });
+        };
+
+        // An allow list is enforced by the network rules below instead.
+        if (allow === undefined) settings.allowInternetAccess = input.network !== "none";
+
+        if (allow !== undefined || options.public === false) {
+          const network: SandboxNetworkOpts = {};
+
+          if (allow !== undefined) {
+            network.denyOut = ["0.0.0.0/0"];
+            network.allowOut = allow;
+          }
+
+          if (options.public === false) network.allowPublicTraffic = false;
+          settings.network = network;
+        }
+
+        if (options.volumes !== undefined) settings.volumeMounts = options.volumes;
+
+        const box = await Sandbox.create(input.from ?? options.template ?? "base", settings);
 
         clients.set(box.sandboxId, box);
 
@@ -351,39 +448,35 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             );
 
           // The native create object carries connection fields, not network policy.
-          const info =
-            input.network === "none" ||
-            typeof input.network === "object" ||
-            options.public === false
-              ? await box.getInfo()
-              : undefined;
-
-          if (
-            input.network === "none" &&
-            info?.allowInternetAccess !== false &&
-            !(info?.network?.denyOut?.includes("0.0.0.0/0") && !info?.network.allowOut?.length)
-          )
-            throw unsupported("E2B did not confirm that internet access is disabled");
-
-          if (typeof input.network === "object") {
-            const requested = input.network.allow;
-            const allowed = info?.network?.allowOut ?? [];
+          if (input.network === "none" || allow !== undefined || options.public === false) {
+            const info = await box.getInfo();
+            const deniesAll = info.network?.denyOut?.includes("0.0.0.0/0") === true;
+            const allowed = info.network?.allowOut ?? [];
 
             if (
-              !info?.network?.denyOut?.includes("0.0.0.0/0") ||
-              requested.some((host) => !allowed.includes(host)) ||
-              allowed.some((host) => !requested.includes(host))
+              input.network === "none" &&
+              info.allowInternetAccess !== false &&
+              !(deniesAll && !allowed.length)
+            )
+              throw unsupported("E2B did not confirm that internet access is disabled");
+
+            if (
+              allow !== undefined &&
+              (!deniesAll ||
+                allow.some((host) => !allowed.includes(host)) ||
+                allowed.some((host) => !allow.includes(host)))
             )
               throw unsupported("E2B did not confirm the requested outbound allow list");
+
+            if (
+              options.public === false &&
+              (info.network?.allowPublicTraffic !== false || !box.trafficAccessToken)
+            )
+              throw unsupported(
+                "E2B did not confirm that preview URLs require a traffic access token",
+              );
           }
 
-          if (
-            options.public === false &&
-            (info?.network?.allowPublicTraffic !== false || !box.trafficAccessToken)
-          )
-            throw unsupported(
-              "E2B did not confirm that preview URLs require a traffic access token",
-            );
           workspaces.set(box.sandboxId, createdAt);
 
           if (input.from !== undefined) await reconcileWorkspace(box.sandboxId, box);
@@ -483,6 +576,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             throw cause;
           }
 
+          // The command was killed and reports as timed out; only its settling matters here.
           await running.result.catch(() => {});
           await running.handle.disconnect();
 
@@ -714,6 +808,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
           pid: running.pid,
           wait: () =>
             call(id, async () => {
+              // The stream breaks when the sandbox is paused or closed. Reconnect for the real exit.
               try {
                 return exit((await running.result).exitCode);
               } catch {}

@@ -6,18 +6,32 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import { createServer } from "node:net";
-import type {
-  SandboxOpts,
-  SandboxInfo,
-  CommandStartOpts,
-  EntryInfo,
-  CommandConnectOpts,
+import { createServer, type AddressInfo } from "node:net";
+import {
+  AuthenticationError,
+  FileNotFoundError,
+  SandboxNotFoundError,
+  CommandExitError,
+  FileType,
+  type SandboxOpts,
+  type SandboxInfo,
+  type CommandStartOpts,
+  type EntryInfo,
+  type CommandConnectOpts,
+  type CreateSnapshotOpts,
+  type WriteInfo,
 } from "e2b";
-import { vi } from "vitest";
+import { createE2BProvider, type E2BOptions } from "../src/providers/e2b/provider.js";
 
-const { AuthenticationError, FileNotFoundError, SandboxNotFoundError, CommandExitError, FileType } =
-  await vi.importActual<typeof import("e2b")>("e2b");
+type FileData = string | ArrayBuffer;
+
+function isAddressInfo(address: AddressInfo | string | null): address is AddressInfo {
+  return address !== null && typeof address !== "string";
+}
+
+function isFileData(value: FileData | { user: string } | undefined): value is FileData {
+  return typeof value === "string" || value instanceof ArrayBuffer;
+}
 
 const machines = new Map<string, MockSandbox>();
 const snapshots = new Map<string, string>();
@@ -42,8 +56,8 @@ export function delayCreation(ms: number) {
 }
 
 export class MockSandbox {
-  private processes = new Map<number, MockCommand>();
-  private root: string;
+  readonly processes = new Map<number, MockCommand>();
+  readonly root: string;
   readonly sandboxId = crypto.randomUUID();
   readonly trafficAccessToken?: string;
   static readonly snapshotCalls: unknown[] = [];
@@ -76,7 +90,7 @@ export class MockSandbox {
       options.network?.allowPublicTraffic === false ? `traffic-${this.sandboxId}` : undefined;
     this.environment = options.envs ?? {};
   }
-  private environment: Record<string, string>;
+  readonly environment: Record<string, string>;
   static async create(template: string, options: SandboxOpts = {}) {
     calls.push({ template, options });
 
@@ -87,7 +101,7 @@ export class MockSandbox {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
 
-    if (!address || typeof address === "string") throw new Error("No mock port");
+    if (!isAddressInfo(address)) throw new Error("No mock port");
     await new Promise<void>((resolve) => server.close(() => resolve()));
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-"));
     await fs.mkdir(join(root, "tmp"));
@@ -200,7 +214,7 @@ export class MockSandbox {
   getHost(port: number) {
     return `${port}-${this.sandboxId}.e2b.test`;
   }
-  async createSnapshot(options?: unknown) {
+  async createSnapshot(options?: CreateSnapshotOpts) {
     MockSandbox.snapshotCalls.push(options);
     const id = crypto.randomUUID();
     const path = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-snapshot-"));
@@ -217,42 +231,35 @@ export class MockSandbox {
       )
       .replace(/\.listen\(3000,/g, `.listen(${this.port},`);
   files = {
-    read: async (path: string, options: { format?: string } = {}) => {
+    read: async (path: string, _options: { format: "bytes" }) => {
       try {
-        const data = await fs.readFile(this.mapped(path));
-
-        return options.format === "bytes" ? new Uint8Array(data) : data.toString();
+        return new Uint8Array(await fs.readFile(this.mapped(path)));
       } catch {
         throw new FileNotFoundError("missing file");
       }
     },
     write: async (
-      path: string | { path: string; data: string | ArrayBuffer }[],
-      data?: string | ArrayBuffer | { user: string },
-    ) => {
-      const files =
-        typeof path === "string"
-          ? [
-              {
-                path,
-                data:
-                  typeof data === "string" || data instanceof ArrayBuffer
-                    ? data
-                    : new ArrayBuffer(0),
-              },
-            ]
-          : path;
+      target: string | { path: string; data: FileData }[],
+      data?: FileData | { user: string },
+    ): Promise<WriteInfo[]> => {
+      const files = Array.isArray(target)
+        ? target
+        : [{ path: target, data: isFileData(data) ? data : new ArrayBuffer(0) }];
 
       for (const file of files) {
         await fs.mkdir(posix.dirname(this.mapped(file.path)), { recursive: true });
         await fs.writeFile(
           this.mapped(file.path),
-          typeof file.data === "string" ? file.data : new Uint8Array(file.data),
+          file.data instanceof ArrayBuffer ? new Uint8Array(file.data) : file.data,
         );
       }
+
+      return files.map((file) => ({ name: posix.basename(file.path), path: file.path }));
     },
     makeDir: async (path: string) => {
       await fs.mkdir(this.mapped(path), { recursive: true });
+
+      return true;
     },
     remove: async (path: string, options: { user?: string } = {}) => {
       if (path.startsWith("/tmp/.sandbox-sdk-e2b-") && options.user !== "root")
@@ -297,37 +304,50 @@ export class MockSandbox {
         ),
       ),
   };
-  commands = {
-    run: async (command: string, options: CommandStartOpts = {}) => {
-      const env = { ...process.env, ...this.environment, ...options.envs };
+  commands = new MockCommands(this);
+}
 
-      if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = this.rewrite(env.GIT_INDEX_FILE);
+/** The command API as E2B shapes it: background runs return a handle, others the result. */
+class MockCommands {
+  constructor(private readonly box: MockSandbox) {}
+  run(command: string, options: CommandStartOpts & { background: true }): Promise<MockCommand>;
+  run(
+    command: string,
+    options?: CommandStartOpts & { background?: false },
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  run(
+    command: string,
+    options?: CommandStartOpts & { background?: boolean },
+  ): Promise<MockCommand | { exitCode: number; stdout: string; stderr: string }>;
+  async run(command: string, options: CommandStartOpts & { background?: boolean } = {}) {
+    const env = { ...process.env, ...this.box.environment, ...options.envs };
 
-      if (env.BASH_ENV) env.BASH_ENV = this.rewrite(env.BASH_ENV);
+    if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = this.box.rewrite(env.GIT_INDEX_FILE);
 
-      const child = spawn("/bin/bash", ["-l", "-c", this.rewrite(command)], {
-        cwd: this.mapped(options.cwd ?? "/"),
-        env,
-        detached: launchGroupLeader,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+    if (env.BASH_ENV) env.BASH_ENV = this.box.rewrite(env.BASH_ENV);
 
-      const handle = new MockCommand(child, options, this.root);
-      this.processes.set(handle.pid, handle);
+    const child = spawn("/bin/bash", ["-l", "-c", this.box.rewrite(command)], {
+      cwd: this.box.mapped(options.cwd ?? "/"),
+      env,
+      detached: launchGroupLeader,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
-      if (commandDelayMs) await new Promise((resolve) => setTimeout(resolve, commandDelayMs));
+    const handle = new MockCommand(child, options, this.box.root);
+    this.box.processes.set(handle.pid, handle);
 
-      return options.background ? handle : handle.wait();
-    },
-    connect: async (pid: number, _options?: CommandConnectOpts) => {
-      const handle = this.processes.get(pid);
+    if (commandDelayMs) await new Promise((resolve) => setTimeout(resolve, commandDelayMs));
 
-      if (!handle) throw new SandboxNotFoundError("missing command");
-      reconnects.push(pid);
+    return options.background ? handle : handle.wait();
+  }
+  async connect(pid: number, _options?: CommandConnectOpts) {
+    const handle = this.box.processes.get(pid);
 
-      return { wait: () => handle.finished() };
-    },
-  };
+    if (!handle) throw new SandboxNotFoundError("missing command");
+    reconnects.push(pid);
+
+    return { wait: () => handle.finished() };
+  }
 }
 
 class MockCommand {
@@ -417,7 +437,7 @@ export async function cleanupMock() {
 export function mockFetch(original: typeof fetch): typeof fetch {
   return async (input, init) => {
     const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      input instanceof URL ? input.href : input instanceof Request ? input.url : input,
     );
 
     const match = /^3000-(.+)\.e2b\.test$/.exec(url.hostname);
@@ -427,4 +447,9 @@ export function mockFetch(original: typeof fetch): typeof fetch {
 
     return original(`http://127.0.0.1:${box.port}${url.pathname}`, init);
   };
+}
+
+/** The E2B adapter with this fixture in place of the E2B SDK. No request leaves the machine. */
+export function e2b(options: E2BOptions = {}) {
+  return createE2BProvider(options, async () => ({ Sandbox: MockSandbox, CommandExitError }));
 }
