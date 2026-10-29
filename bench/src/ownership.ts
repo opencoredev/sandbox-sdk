@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { open, rename, rm } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
+import { journalFiles } from "./files.js";
 import { dirname } from "node:path";
 import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
@@ -25,7 +26,7 @@ export async function writeOwnership(path: string, data: string) {
       await file.close();
     }
 
-    await rename(temporary, path);
+    await journalFiles.rename(temporary, path);
     const directory = await open(dirname(path), "r");
 
     try {

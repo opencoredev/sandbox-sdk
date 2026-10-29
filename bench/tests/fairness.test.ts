@@ -1,9 +1,11 @@
 import { tmpdir } from "node:os";
 import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
+import { z } from "zod";
 import { resolve } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import { journalFiles } from "../src/files.js";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
 import { PhaseClock, firstByteAttempt, perfMetrics, filePayloads } from "../src/measurement.js";
@@ -36,16 +38,6 @@ const fingerprint = {
   tools: {},
   runtime: "test",
 };
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:fs/promises")>();
-
-  return {
-    ...original,
-    appendFile: vi.fn(original.appendFile),
-    writeFile: vi.fn(original.writeFile),
-  };
-});
 
 const dirs: string[] = [];
 
@@ -107,10 +99,9 @@ it("keeps lifetime corrections on their own sample during concurrent appends (fi
     startHealthy = r;
   });
 
-  const append = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises"))
-    .appendFile;
+  const append = fs.appendFile;
 
-  vi.spyOn(fs, "appendFile").mockImplementation(async (path, data, options) => {
+  vi.spyOn(journalFiles, "appendFile").mockImplementation(async (path, data, options) => {
     const text = String(data);
 
     if (text.includes('"scenario":"sandbox-lifetime"') && text.includes('"provider":"boat"')) {
@@ -288,15 +279,9 @@ it("transfers precomputed file buffers with no payload generation inside the tim
 
   expect(report.samples.find((s) => s.scenario === "files-10mb")?.outcome.kind).toBe("sample");
   expect(transferred[0]).toBe(filePayloads.get(10485760));
-  expect(
-    from.mock.calls.some(
-      ([value]) =>
-        typeof value === "object" &&
-        value !== null &&
-        "length" in value &&
-        value.length === 10485760,
-    ),
-  ).toBe(false);
+  expect(from.mock.calls.some(([value]) => "length" in value && value.length === 10485760)).toBe(
+    false,
+  );
 });
 
 it("ends first-byte timing before asynchronous reader cancellation (finding 5)", async () => {
@@ -345,13 +330,10 @@ it("times only native snapshot API, excluding cleanup-client setup and journals 
     return async () => {};
   });
 
-  const write = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises"))
-    .writeFile;
+  vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+    if (String(to).endsWith("ownership.json")) await wait(40);
 
-  vi.spyOn(fs, "writeFile").mockImplementation(async (path, data, options) => {
-    if (String(path).endsWith("ownership.json")) await wait(40);
-
-    return write(path, data, options);
+    return fs.rename(from, to);
   });
 
   const provider = fake({
@@ -502,10 +484,9 @@ it("records client egress geography and runtime/commit metadata without provider
 });
 
 it("publishes each perf metric once even when metric persistence exceeds the guest deadline", async () => {
-  const append = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises"))
-    .appendFile;
+  const append = fs.appendFile;
 
-  vi.spyOn(fs, "appendFile").mockImplementation(async (path, data, options) => {
+  vi.spyOn(journalFiles, "appendFile").mockImplementation(async (path, data, options) => {
     if (String(data).includes('"scenario":"cpu-single"')) await wait(1200);
 
     return append(path, data, options);
@@ -635,13 +616,8 @@ it("excludes slow previous-handle cleanup from reconnect readiness", async () =>
   expect(row?.durationMs).toBeLessThan(80);
   expect(row?.details).toMatchObject({ firstCommandOKMs: expect.any(Number) });
 
-  if (
-    typeof row?.details !== "object" ||
-    row.details === null ||
-    !("firstCommandOKMs" in row.details)
-  )
-    throw new Error("Missing readiness phase");
-  expect(row.details.firstCommandOKMs).toBeLessThan(80);
+  const details = z.object({ firstCommandOKMs: z.number() }).parse(row?.details);
+  expect(details.firstCommandOKMs).toBeLessThan(80);
   expect(
     report.samples.find((s) => s.scenario === "reconnect-cleanup")?.durationMs,
   ).toBeGreaterThanOrEqual(140);

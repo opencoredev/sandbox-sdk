@@ -8,7 +8,8 @@ import {
 } from "@opencoredev/sandbox-sdk";
 import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { cpus, loadavg } from "node:os";
-import { readFile, mkdir, writeFile, appendFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
+import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
@@ -230,9 +231,13 @@ export async function runV2(
   metadata = collectMetadata(),
 ) {
   await mkdir(resolve(config.out), { recursive: true });
-  await writeFile(join(resolve(config.out), "run.json"), JSON.stringify({ runId: config.run }), {
-    flag: "wx",
-  });
+  await journalFiles.writeFile(
+    join(resolve(config.out), "run.json"),
+    JSON.stringify({ runId: config.run }),
+    {
+      flag: "wx",
+    },
+  );
 
   const report: ReportV2 = {
     schemaVersion: 2,
@@ -875,7 +880,7 @@ export async function runV2(
       };
 
       report.samples.push(sample);
-      await appendFile(join(runDir, "samples.ndjson"), JSON.stringify(sample) + "\n");
+      await journalFiles.appendFile(join(runDir, "samples.ndjson"), JSON.stringify(sample) + "\n");
       process.stderr.write(
         `${p.name}/${sample.scenario}: ${outcome.kind} ${Math.round(durationMs)}ms\n`,
       );
@@ -2251,7 +2256,7 @@ export async function runV2(
   report.summaries = summarize(report.samples, config.seed);
   await persist();
   await save();
-  await writeFile(
+  await journalFiles.writeFile(
     join(runDir, "samples.ndjson"),
     report.samples.map((s) => JSON.stringify(s) + "\n").join(""),
   );
