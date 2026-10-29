@@ -31,15 +31,15 @@ console.log(result.stdout);
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Yes | Live output |
-| Files | Yes | |
+| Files | Yes | `mode` is applied before the bytes land |
 | Background processes | Yes | |
 | Preview URLs | Yes | Send the returned `Cookie` header |
 | Pause and resume | Yes | Usually restores memory and processes |
-| Snapshots | Yes | Named disk snapshots |
+| Snapshots | Yes | Named disk snapshots, no expiry |
 | Machine size | Partial | Presets only |
 | Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | Sandboxer's own auto-stop applies |
-| Idle timeout (`idleTimeoutMs`) | No | |
+| Hard lifetime (`timeoutMs`) | No | Set the `ttlSeconds` auto-stop instead |
+| Idle timeout (`idleTimeoutMs`) | Yes | Pauses the VM, in whole minutes |
 | Keys | Best-effort | Stored in the VM's display name |
 | Terminal | No | |
 
@@ -72,7 +72,11 @@ await using box = await createSandbox(sandboxer());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
+
+await box.files.write(".env", "API_TOKEN=...\n", { mode: 0o600 });
 ```
+
+With `mode`, the file gets its permissions before any contents are written, so the contents are never readable by other users. Writes run as the sandbox user, so root-owned paths such as `/etc` fail. Write those with `box.run("sudo ...")`.
 
 ## Background processes and previews
 
@@ -107,7 +111,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(sandboxer(), { from: id });
 ```
 
-Snapshots outlive their source. Delete them through `DELETE /named-snapshots/{name}`. A restore must run in the snapshot's region.
+Snapshots outlive their source and never expire, so `snapshot({ expiresInMs })` fails with `unsupported` unless it is `0`. Delete them through `DELETE /named-snapshots/{name}`. A restore must run in the snapshot's region.
 
 ## Size, network, and lifetime
 
@@ -124,7 +128,18 @@ import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
 await using box = await createSandbox(sandboxer({ region: "eu-central" }), { size: "small" });
 ```
 
-Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported`. Trial accounts allow `small` and `default` sizes and two active sandboxes.
+Exact sizes, `network` other than `"all"`, and `timeoutMs` fail with `unsupported`. Trial accounts allow `small` and `default` sizes and two active sandboxes.
+
+`idleTimeoutMs` pauses the VM after that long without activity, rounded up to whole minutes, up to 7 days. The VM wakes by itself on the next API call or preview request. Without it, your plan's idle pause applies (15 minutes on the trial). It needs snapshots, so it fails with `invalid_argument` next to `snapshots: false`.
+
+Separately, Sandboxer stops a VM an hour after it starts. Set `ttlSeconds` to change that, or `null` to turn auto-stop off. It caps cost but is not a hard lifetime.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitoring: false }), { idleTimeoutMs: 10 * 60_000 });
+```
 
 ## Configuration
 
@@ -134,19 +149,26 @@ Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail
 | `baseUrl` | `string` | `https://sandboxer.com/api/v1` | |
 | `machine` | `"small" \| "default" \| "large" \| "xlarge"` | `"default"` | |
 | `region` | `"us-east" \| "eu-central"` | Nearest to the caller | `SANDBOXER_REGION` |
+| `ttlSeconds` | `number \| null` | `3600` | |
+| `snapshots` | `boolean` | `true` | |
+| `monitoring` | `boolean` | Account setting | |
+| `org` | `string` | Your active wallet | |
 | `requestTimeoutMs` | `number` | `90_000` | |
 
-`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
+`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Sandboxer never captures the disk, so `pause()` erases it, and resume, snapshots, and idle pause stop working. `monitoring: false` means Sandboxer keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
 
 ## Limitations
 
 - Keys are best-effort, and the encoded key and labels must fit a 120-character name.
-- No custom sizes, network restrictions, idle timers, hard lifetimes, or terminals.
+- No custom sizes, network restrictions, hard lifetimes, or terminals.
+- Snapshots have no expiry.
+- File writes run as the sandbox user, so root-owned paths fail.
 
 ## How it works
 
 - `createSandbox` makes two control-plane calls: the create and a metadata rename. Workspace setup runs inside the first command or file operation.
 - Sandboxes are created with `noEnv: true`, so they get none of your account's saved secrets.
+- stdin and file contents never travel in command text, which Sandboxer keeps in its history. Sandboxer's file API takes less than 5 MiB per write and only paths under `/home/user` or `/tmp`. A write of up to 4 MiB under those paths, without `mode`, goes straight to it. Anything else, and all stdin, is uploaded in 4 MiB parts to a new `0700` directory under `/tmp`. A guest command then copies the file into place, or the shell opens the stdin file and deletes it before your command starts.
 - Creates, resumes, and forks count as starts against your account's rate limits.
 - `destroy()` sends Sandboxer's delete confirmation header and waits for the deletion to finish.
 - Usage from `/sandboxes/{id}/usage` is machine time, not plan payments or credits.

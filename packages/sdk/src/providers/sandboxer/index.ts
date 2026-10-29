@@ -1,12 +1,12 @@
 /** Sandboxer API v1 derives from Boat API v1. https://sandboxer.com/api/v1/openapi.yaml */
 import type { CreateSandboxRequest } from "@boatdev/sdk";
 import type { Provider } from "../../provider.js";
-import type { BoatNative } from "../boat/index.js";
+import type { BoatCreateOptions, BoatNative } from "../boat/index.js";
 import { boatApi } from "../boat-api/index.js";
 import { errors } from "../boat-api/errors.js";
 /** `GET /regions` lists them: us-east (Ashburn, Virginia), eu-central (Helsinki). */
 export type SandboxerRegion = "us-east" | "eu-central" | (string & {});
-export interface SandboxerOptions {
+export interface SandboxerOptions extends BoatCreateOptions {
   /** Defaults to SANDBOXER_API_KEY; required on first use. */
   apiKey?: string;
   /** Default: https://sandboxer.com/api/v1. */
@@ -87,7 +87,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     }
   }
   const core = boatApi(options, {
-    name: "sandboxer", label: "Sandboxer", keyEnv: "SANDBOXER_API_KEY", baseUrl, createFrom: true, pausedStates: ["archived", "stopped"],
+    name: "sandboxer", label: "Sandboxer", keyEnv: "SANDBOXER_API_KEY", baseUrl, createFrom: true, idleStop: true, pausedStates: ["archived", "stopped"],
     fetch: async (url, init) => {
       const headers = new Headers(init?.headers);
       const path = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url).pathname;
@@ -164,7 +164,12 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       });
       await core.connect(id);
     },
-    snapshot: id => createSnapshot(id, `sdk-${crypto.randomUUID()}`),
+    async snapshot(id, settings = {}) {
+      // Named snapshots live until deleted; 0 asks for exactly that.
+      if (settings.expiresInMs !== undefined && settings.expiresInMs !== 0)
+        throw failure("Sandboxer named snapshots never expire; expiresInMs is unsupported. Delete the snapshot yourself", "unsupported", id);
+      return createSnapshot(id, `sdk-${crypto.randomUUID()}`);
+    },
     native: id => ({ ...core.native(id), region: null, regionSource: null, ...placements.get(id), createSnapshot: name => createSnapshot(id, name) }),
   };
 }

@@ -31,14 +31,14 @@ console.log(result.stdout);
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Yes | Live output |
-| Files | Yes | |
+| Files | Yes | `mode` is applied before the bytes land |
 | Background processes | Yes | |
 | Preview URLs | Yes | Send the returned `Cookie` header |
 | Pause and resume | No | |
 | Snapshots | No | |
 | Machine size | Partial | Presets only |
 | Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | Boat's own one-hour auto-stop applies |
+| Hard lifetime (`timeoutMs`) | No | Set the `ttlSeconds` auto-stop instead |
 | Idle timeout (`idleTimeoutMs`) | No | |
 | Keys | Best-effort | Stored in the VM's display name |
 | Terminal | No | |
@@ -74,7 +74,11 @@ await using box = await createSandbox(boat());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
+
+await box.files.write(".env", "API_TOKEN=...\n", { mode: 0o600 });
 ```
+
+With `mode`, the file gets its permissions before any contents are written, so the contents are never readable by other users. Writes run as the sandbox user, so root-owned paths such as `/etc` fail. Write those with `box.run("sudo ...")`.
 
 ## Background processes and previews
 
@@ -118,7 +122,16 @@ import { boat } from "@opencoredev/sandbox-sdk/boat";
 await using box = await createSandbox(boat(), { size: "large" });
 ```
 
-Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported`. Boat's default one-hour auto-stop still applies. Configure longer sessions through Boat's native API.
+Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported`.
+
+By default Boat stops a VM an hour after it starts. Set `ttlSeconds` to change that, or `null` to turn auto-stop off. The timer restarts while Boat's own agent works in the VM, so it caps cost but is not a hard lifetime. A stopped VM has no SDK resume, so destroy it.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+await using box = await createSandbox(boat({ ttlSeconds: 15 * 60, snapshots: false, monitoring: false }));
+```
 
 ## Configuration
 
@@ -127,14 +140,19 @@ Exact sizes, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail
 | `apiKey` | `string` | | `BOAT_API_KEY` |
 | `baseUrl` | `string` | `https://boat.dev/api/v1` | `BOAT_API_BASE` |
 | `machine` | `"small" \| "default" \| "large" \| "xlarge"` | `"default"` | |
+| `ttlSeconds` | `number \| null` | `3600` | |
+| `snapshots` | `boolean` | `true` | |
+| `monitoring` | `boolean` | Account setting | |
+| `org` | `string` | Your active wallet | |
 | `requestTimeoutMs` | `number` | `90_000` | |
 
-A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+ plan. `apiUrl` and `type` are deprecated aliases. `box.native` is `{ sandbox, client }`, Boat's sandbox metadata and the `BoatApi` client.
+A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+ plan. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Boat never captures the disk, and a stop erases it. `monitoring: false` means Boat keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `apiUrl` and `type` are deprecated aliases. `box.native` is `{ sandbox, client }`, Boat's sandbox metadata and the `BoatApi` client.
 
 ## Limitations
 
 - Keys are best-effort, and the encoded key and labels must fit a 120-character name.
 - No custom sizes, network policies, idle timers, hard lifetimes, pause, snapshots, or terminals.
+- File writes run as the sandbox user, so root-owned paths fail.
 - A native stop ends processes, and `/workspace` and `/tmp` records may not survive it.
 
 ## How it works
@@ -142,6 +160,7 @@ A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+
 - Sandboxes are created with `noEnv: true`, so they get none of your account's saved secrets. `env` and `secrets` still apply.
 - Boat has no labels, so the key and labels are compressed into the display name. Renaming the VM in Boat hides it from the SDK.
 - Create retries up to three times with the same idempotency key. Commands and file operations are never replayed.
+- stdin and file contents never travel in command text, which Boat keeps in its history. Boat's file API takes at most 5 MiB per write and only paths under `/home/user` or `/tmp`. A write of up to 4 MiB under those paths, without `mode`, goes straight to it. Anything else, and all stdin, is uploaded in 4 MiB parts to a new `0700` directory under `/tmp`. A guest command then copies the file into place, or the shell opens the stdin file and deletes it before your command starts.
 - Reads above 1 MiB use a signed download URL; smaller reads use guest commands.
 - `destroy()` deletes the VM and its snapshots. Boat purges the data asynchronously.
 
