@@ -77,12 +77,29 @@ const fail = (g: Guest, text: string, code: ErrorCode = "provider") =>
     provider: g.name,
   });
 
+// Prints argv[1] metadata as JSON, or its entries when argv[2] is "list".
 const metadata = `import os,sys,json,stat
 p=sys.argv[1]
 def info(p):
  s=os.lstat(p)
  return dict(path=p,type='symlink' if stat.S_ISLNK(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'file',size=s.st_size,modifiedAt=s.st_mtime*1000)
 try: print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)] if sys.argv[2]=='list' else info(p)))
+except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
+
+// Creates the parent directory of argv[1].
+const makeParents = "import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)";
+
+// Creates directory argv[1] and its parents.
+const makeDirectory = "import os,sys; os.makedirs(sys.argv[1],exist_ok=True)";
+
+// Removes argv[1]; a directory only when empty unless argv[2] is "true".
+const removePath = `import os,sys,shutil
+p=sys.argv[1]
+try:
+ if os.path.isdir(p) and not os.path.islink(p):
+  if sys.argv[2]=='true': shutil.rmtree(p)
+  else: os.rmdir(p)
+ else: os.unlink(p)
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
 
 /** A guest metadata record, as the metadata programs print it. */
@@ -136,9 +153,7 @@ export function files(
             !["not_found", "file_not_found"].includes(error.code)
           )
             throw error;
-          await g.raw(
-            python("import os,sys; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True)", path),
-          );
+          await g.raw(python(makeParents, path));
           await g.upload(path, data, options?.mode);
         }
       }),
@@ -164,28 +179,13 @@ export function files(
       }),
     mkdir: (id, path) =>
       safe(id, async () => {
-        await (
-          await get(id)
-        ).raw(python("import os,sys; os.makedirs(sys.argv[1],exist_ok=True)", path));
+        await (await get(id)).raw(python(makeDirectory, path));
       }),
     remove: (id, path, options) =>
       safe(id, async () => {
         const g = await get(id);
 
-        const text = await g.raw(
-          python(
-            `import os,sys,shutil
-p=sys.argv[1]
-try:
- if os.path.isdir(p) and not os.path.islink(p):
-  if sys.argv[2]=='true': shutil.rmtree(p)
-  else: os.rmdir(p)
- else: os.unlink(p)
-except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`,
-            path,
-            String(options.recursive),
-          ),
-        );
+        const text = await g.raw(python(removePath, path, String(options.recursive)));
 
         // Like the other providers, removing a missing path is file_not_found.
         if (text.trim() === "SDK_FILE_NOT_FOUND")

@@ -8,6 +8,26 @@ import { quote } from "../../shared/shell.js";
 // Base64 plus JSON must fit the native request body; read ranges cap at 8 MiB.
 const chunkSize = 4 * 1024 * 1024;
 
+// Writes stdin to argv[1], creating its parent directory.
+const uploadFile =
+  "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()";
+
+// Atomically joins chunk files argv[2]/0..argv[3]-1 into argv[1], keeping its mode, then removes them.
+const assembleFile = `import os,sys,shutil,tempfile,stat
+p,d,n=sys.argv[1:]; p=os.path.realpath(p); tmp=None
+try:
+ os.makedirs(os.path.dirname(p),exist_ok=True)
+ mode=stat.S_IMODE(os.stat(p).st_mode) if os.path.exists(p) else 0o644
+ with tempfile.NamedTemporaryFile(dir=os.path.dirname(p),prefix='.sandbox-upload-',delete=False) as out:
+  tmp=out.name; os.fchmod(out.fileno(),mode)
+  for i in range(int(n)):
+   with open(d+'/'+str(i),'rb') as part: shutil.copyfileobj(part,out)
+  out.flush(); os.fsync(out.fileno())
+ os.replace(tmp,p); tmp=None
+finally:
+ if tmp is not None: os.unlink(tmp)
+ shutil.rmtree(d,ignore_errors=True)`;
+
 export async function readFile(box: Box, path: string, range?: { offset: number; length: number }) {
   if (!range) {
     // An unbounded read is one request and about 30 ms faster than a bounded
@@ -50,11 +70,8 @@ export async function readFile(box: Box, path: string, range?: { offset: number;
 
 export async function writeFile(box: Box, path: string, data: Uint8Array, prepare?: string) {
   if (prepare) {
-    const script =
-      "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()";
-
     const session = await box.exec.session({
-      argv: ["sh", "-c", `${prepare} && exec python3 -c "$1" "$2"`, "sh", script, path],
+      argv: ["sh", "-c", `${prepare} && exec python3 -c "$1" "$2"`, "sh", uploadFile, path],
       cwd: "/",
     });
 
@@ -111,27 +128,12 @@ export async function writeFile(box: Box, path: string, data: Uint8Array, prepar
       await write(`${dir}/${count++}`, data.subarray(offset, offset + chunkSize));
 
     // No append RPC exists. Assemble only after every binary chunk has arrived.
-    const script = `import os,sys,shutil,tempfile,stat
-p,d,n=sys.argv[1:]; p=os.path.realpath(p); tmp=None
-try:
- os.makedirs(os.path.dirname(p),exist_ok=True)
- mode=stat.S_IMODE(os.stat(p).st_mode) if os.path.exists(p) else 0o644
- with tempfile.NamedTemporaryFile(dir=os.path.dirname(p),prefix='.sandbox-upload-',delete=False) as out:
-  tmp=out.name; os.fchmod(out.fileno(),mode)
-  for i in range(int(n)):
-   with open(d+'/'+str(i),'rb') as part: shutil.copyfileobj(part,out)
-  out.flush(); os.fsync(out.fileno())
- os.replace(tmp,p); tmp=None
-finally:
- if tmp is not None: os.unlink(tmp)
- shutil.rmtree(d,ignore_errors=True)`;
-
     submitted = true;
     let result: Awaited<ReturnType<Box["exec"]["command"]>>;
 
     try {
       result = await box.exec.command(
-        `python3 -c ${quote(script)} ${quote(path)} ${quote(dir)} ${count}`,
+        `python3 -c ${quote(assembleFile)} ${quote(path)} ${quote(dir)} ${count}`,
       );
     } catch {
       // The HTTP deadline does not stop guest execution. Only the guest may

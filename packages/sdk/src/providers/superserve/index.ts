@@ -94,6 +94,10 @@ const wholeSeconds = (value: number | undefined, label: string, zero: boolean) =
   return Math.ceil(value / 1000);
 };
 
+// Prints argv[3] bytes of argv[1] from offset argv[2], base64-encoded.
+const readRange =
+  "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())";
+
 export function superserve(options: SuperserveOptions = {}): SuperserveProvider {
   const boxes = new Map<string, Sandbox>();
   const environments = new Map<string, Record<string, string>>();
@@ -224,12 +228,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           if (range) {
             const r = await runGuest(
               id,
-              python(
-                "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
-                path,
-                String(range.offset),
-                String(range.length),
-              ),
+              python(readRange, path, String(range.offset), String(range.length)),
               { timeoutMs: timeout },
             );
 
@@ -406,12 +405,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             raw: g.raw,
             read: async (path, range) => {
               const text = await g.raw(
-                python(
-                  "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
-                  path,
-                  String(range.offset),
-                  String(range.length),
-                ),
+                python(readRange, path, String(range.offset), String(range.length)),
               );
 
               return new Uint8Array(Buffer.from(text.trim(), "base64"));

@@ -96,6 +96,28 @@ function rules(input: CreateInput): InlineFirewallRule[] {
   return [{ action: "allow", source: {}, destination: { public: true } }];
 }
 
+// Writes the pending SDK files, then execs the command with its stdin.
+const prepareAndRun = `import os,sys,json,tempfile,base64
+v=json.load(sys.stdin)
+for path in ['/workspace','/tmp/.sandbox-sdk']:
+ os.makedirs(path,exist_ok=True)
+for path,content in v['files']:
+ os.makedirs(os.path.dirname(path),exist_ok=True)
+ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
+ try:
+  with os.fdopen(fd,'w') as f: f.write(content)
+  os.replace(tmp,path)
+ finally:
+  if os.path.exists(tmp): os.unlink(tmp)
+with tempfile.TemporaryFile() as f:
+ f.write(base64.b64decode(v.get('stdin') or '')); f.seek(0); os.dup2(f.fileno(),0)
+ print('SDK_PREPARED:',end='',flush=True)
+ os.execvp('sh',['sh','-c',v['command']])`;
+
+// Writes stdin to argv[1], creating its parent and applying octal mode argv[2] if set.
+const uploadFile =
+  "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)";
+
 export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   let client: Promise<Freestyle> | undefined;
   const boxes = new Map<string, Vm>();
@@ -205,22 +227,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     if (!contents) return value.exec({ command, stdin, linuxUser: "root", timeoutMs });
 
     const result = await value.exec({
-      command: python(`import os,sys,json,tempfile,base64
-v=json.load(sys.stdin)
-for path in ['/workspace','/tmp/.sandbox-sdk']:
- os.makedirs(path,exist_ok=True)
-for path,content in v['files']:
- os.makedirs(os.path.dirname(path),exist_ok=True)
- fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path))
- try:
-  with os.fdopen(fd,'w') as f: f.write(content)
-  os.replace(tmp,path)
- finally:
-  if os.path.exists(tmp): os.unlink(tmp)
-with tempfile.TemporaryFile() as f:
- f.write(base64.b64decode(v.get('stdin') or '')); f.seek(0); os.dup2(f.fileno(),0)
- print('SDK_PREPARED:',end='',flush=True)
- os.execvp('sh',['sh','-c',v['command']])`),
+      command: python(prepareAndRun),
       stdin: Buffer.from(JSON.stringify({ files: contents, command, stdin })).toString("base64"),
       linuxUser: "root",
       timeoutMs,
@@ -258,11 +265,7 @@ with tempfile.TemporaryFile() as f:
           if (pending.has(id)) {
             const result = await run(
               value,
-              python(
-                "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)",
-                path,
-                mode === undefined ? "" : mode.toString(8),
-              ),
+              python(uploadFile, path, mode === undefined ? "" : mode.toString(8)),
               Buffer.from(bytes).toString("base64"),
               requestTimeoutMs,
             );

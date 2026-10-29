@@ -81,6 +81,7 @@ export async function waitReady(
   });
 }
 
+// Links /workspace to durable disk once per sandbox, under a lock.
 export const workspaceSetup = `workspace=globals().get('v',{}).get('workspace','/workspace')
 home=os.path.join(os.path.dirname(workspace),'home','tenki')
 tmp=os.path.join(os.path.dirname(workspace),'tmp')

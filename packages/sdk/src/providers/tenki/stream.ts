@@ -64,6 +64,17 @@ with stdin_file() as f:
     except FileNotFoundError: pass
 `;
 
+// Waits up to 1 s for the PID in argv[1], then kills its process group.
+const killProgram = `import os,sys,time,signal
+for _ in range(100):
+ try:
+  with open(sys.argv[1]) as f: pid=int(f.read())
+  os.killpg(pid,signal.SIGKILL)
+  break
+ except ProcessLookupError: break
+ except (FileNotFoundError,ValueError): time.sleep(.01)
+else: raise RuntimeError('PID unavailable')`;
+
 export async function executeStream(
   box: Session,
   input: ExecInput,
@@ -260,25 +271,7 @@ export async function executeStream(
   } catch (error) {
     if (mayHaveLaunched && !exited) {
       try {
-        await raw(
-          box,
-          [
-            "python3",
-            "-c",
-            `import os,sys,time,signal
-for _ in range(100):
- try:
-  with open(sys.argv[1]) as f: pid=int(f.read())
-  os.killpg(pid,signal.SIGKILL)
-  break
- except ProcessLookupError: break
- except (FileNotFoundError,ValueError): time.sleep(.01)
-else: raise RuntimeError('PID unavailable')`,
-            marker,
-          ],
-          undefined,
-          1500,
-        );
+        await raw(box, ["python3", "-c", killProgram, marker], undefined, 1500);
       } catch {
         // A completed supervisor can remove its PID while cancellation is in flight.
         // Its valid exit record confirms completion even if the kill RPC found no PID.

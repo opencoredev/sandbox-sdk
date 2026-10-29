@@ -68,6 +68,34 @@ finally:
   except FileNotFoundError: pass
 `;
 
+// Marks run argv[1] cancelled, kills its process group and waits up to 2 s for it to exit.
+const killProgram = `import os,sys,signal,time,fcntl
+p=sys.argv[1]
+with open(p+'.lock','a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ with open(p+'.cancel','w') as f: f.write('1')
+ try:
+  with open(p) as f: pgid=int(f.read())
+ except FileNotFoundError:
+  print('confirmed'); sys.exit(0)
+try: os.killpg(pgid,signal.SIGKILL)
+except ProcessLookupError: pass
+end=time.monotonic()+2
+while time.monotonic()<end:
+ alive=False
+ for name in os.listdir('/proc'):
+  if not name.isdigit(): continue
+  try:
+   with open('/proc/'+name+'/stat') as f: fields=f.read().rsplit(')',1)[1].split()
+   if int(fields[2])==pgid and fields[0]!='Z': alive=True
+  except (FileNotFoundError,ProcessLookupError): pass
+ if not alive:
+  try: os.unlink(p)
+  except FileNotFoundError: pass
+  print('confirmed'); sys.exit(0)
+ time.sleep(.01)
+sys.exit(1)`;
+
 export async function execute(
   client: Boxd,
   id: string,
@@ -168,35 +196,7 @@ export async function execute(
         // A transport cancellation error is not a process exit. Escalate only
         // the positively identified group, never delete an unrelated VM.
         const result = await client.machines.exec(id, {
-          command: python(
-            `import os,sys,signal,time,fcntl
-p=sys.argv[1]
-with open(p+'.lock','a') as lock:
- fcntl.flock(lock,fcntl.LOCK_EX)
- with open(p+'.cancel','w') as f: f.write('1')
- try:
-  with open(p) as f: pgid=int(f.read())
- except FileNotFoundError:
-  print('confirmed'); sys.exit(0)
-try: os.killpg(pgid,signal.SIGKILL)
-except ProcessLookupError: pass
-end=time.monotonic()+2
-while time.monotonic()<end:
- alive=False
- for name in os.listdir('/proc'):
-  if not name.isdigit(): continue
-  try:
-   with open('/proc/'+name+'/stat') as f: fields=f.read().rsplit(')',1)[1].split()
-   if int(fields[2])==pgid and fields[0]!='Z': alive=True
-  except (FileNotFoundError,ProcessLookupError): pass
- if not alive:
-  try: os.unlink(p)
-  except FileNotFoundError: pass
-  print('confirmed'); sys.exit(0)
- time.sleep(.01)
-sys.exit(1)`,
-            pidPath,
-          ),
+          command: python(killProgram, pidPath),
           timeout: 5000,
         });
 

@@ -63,6 +63,7 @@ finally:
   except FileNotFoundError: pass
 `;
 
+// Prints up to three complete spool records from argv[1] after byte offset argv[2].
 const page = `import sys,json
 pos=int(sys.argv[2]); chunks=[]
 try:
@@ -75,6 +76,18 @@ try:
 except FileNotFoundError: pass
 print(json.dumps({'offset':pos,'chunks':chunks}))
 `;
+
+// Waits up to 30 s for the PID in argv[1], then kills its process group.
+const killProgram = `import os,sys,time,signal
+p=sys.argv[1]
+for _ in range(3000):
+ try:
+  with open(p) as f: pid=int(f.read())
+  break
+ except (FileNotFoundError,ValueError): time.sleep(.01)
+else: raise RuntimeError('PID unavailable')
+try: os.killpg(pid,signal.SIGKILL)
+except ProcessLookupError: pass`;
 
 export async function raw(
   box: Session,
@@ -268,26 +281,7 @@ export async function execute(
 
   async function killGroup() {
     // Poll after launch: cancellation may arrive before the guest publishes its PID.
-    await raw(
-      box,
-      [
-        "python3",
-        "-c",
-        `import os,sys,time,signal
-p=sys.argv[1]
-for _ in range(3000):
- try:
-  with open(p) as f: pid=int(f.read())
-  break
- except (FileNotFoundError,ValueError): time.sleep(.01)
-else: raise RuntimeError('PID unavailable')
-try: os.killpg(pid,signal.SIGKILL)
-except ProcessLookupError: pass`,
-        marker,
-      ],
-      undefined,
-      1000,
-    );
+    await raw(box, ["python3", "-c", killProgram, marker], undefined, 1000);
   }
 
   try {

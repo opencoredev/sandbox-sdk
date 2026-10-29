@@ -9,6 +9,14 @@ import { quote } from "../../shared/shell.js";
 import { execute } from "./execute.js";
 import { FileTransfers } from "./transfers.js";
 
+// Writes base64 stdin to argv[1], creating its parent directory.
+const uploadFile =
+  "import os,sys,base64; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(base64.b64decode(sys.stdin.buffer.read())); f.close()";
+
+// Writes argv[3] bytes of argv[1] from offset argv[2] to stdout.
+const readRange =
+  "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))";
+
 export interface BoxdOptions {
   /** Defaults to BOXD_API_KEY; required on first use. */
   apiKey?: string;
@@ -201,10 +209,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
             c,
             id,
             {
-              command: python(
-                "import os,sys,base64; os.makedirs(os.path.dirname(sys.argv[1]),exist_ok=True); f=open(sys.argv[1],'wb'); f.write(base64.b64decode(sys.stdin.buffer.read())); f.close()",
-                path,
-              ),
+              command: python(uploadFile, path),
               cwd: "/",
               env: {},
               stdin: Buffer.from(bytes).toString("base64"),
@@ -229,12 +234,7 @@ export function boxd(options: BoxdOptions = {}): BoxdProvider {
         // Tail readers request a bounded range. Seek in the guest rather than
         // downloading a growing log in full for each page.
         const result = await c.machines.exec(id, {
-          command: python(
-            "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); sys.stdout.buffer.write(f.read(int(sys.argv[3])))",
-            path,
-            String(range.offset),
-            String(range.length),
-          ),
+          command: python(readRange, path, String(range.offset), String(range.length)),
           encoding: "buffer",
           timeout: options.requestTimeoutMs ?? 30000,
         });

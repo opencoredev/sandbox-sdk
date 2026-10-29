@@ -5,6 +5,7 @@ import { SandboxError } from "../../errors.js";
 import { defaults } from "../../run.js";
 import { quote } from "../../shared/shell.js";
 
+// Runs argv[1] in argv[3] with a deadline, printing hex output frames and an R: summary.
 const bridge = `import os,select,_signal as signal,sys,time,fcntl
 ${guestProcess}
 command,directory,cwd,limit=sys.argv[1:]
@@ -59,6 +60,7 @@ finally:
   os.rmdir(directory)
 `;
 
+// Marks run directory argv[1] cancelled and kills its process group, waiting up to 2 s.
 const cancelBridge = `import os,signal,sys,fcntl,time
 p=sys.argv[1]
 pid=None

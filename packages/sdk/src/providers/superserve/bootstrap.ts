@@ -1,6 +1,7 @@
 import { python } from "../../shared/guest.js";
 import { failure } from "./errors.js";
 
+// Checks the template tools, creates the SDK directories and saves the initial env.
 const initialize = python(`import os,json,shutil,sys,tempfile
 v=json.loads(os.environ.pop('SANDBOX_SDK_BOOTSTRAP'))
 if any(shutil.which(tool) is None for tool in ('git','tar','nohup')): sys.exit(79)

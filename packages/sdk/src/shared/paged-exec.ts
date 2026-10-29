@@ -77,6 +77,7 @@ function isFirstPage(value: unknown): value is FirstPage {
   );
 }
 
+// Cancels run argv[1] and prints the output records after byte offset argv[2].
 const cancelProgram = `import os,sys,fcntl,signal,shutil,time,json
 root=sys.argv[1]
 os.makedirs(root,mode=0o700,exist_ok=True)
