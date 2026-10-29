@@ -1,7 +1,7 @@
 import { guestSpec } from "../freestyle/wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { guestProcess, guestPump, python, quote, zygoteCommand, zygotePython } from "../boxd/guest.js";
+import { guestProcess, guestPump, python, quote, zygoteSupervisor } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // The one-shot launcher travels in the native exec request. Small results
@@ -89,8 +89,10 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
-const program = zygotePython(supervisor);
+const launch = zygoteSupervisor(supervisor);
 export interface ExecutionGuest {
+  /** The sandbox ID. */
+  readonly id: string;
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   run?(command: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   raw(command: string): Promise<string>;
@@ -186,13 +188,12 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
         activityPath: input.activityPath,
       };
       const oneShot = guestSpec({ ...spec, envKeys: Object.keys(input.env) }).toString("hex");
-      // The spec travels as a heredoc so a zygote child can read it from the client's stdin.
-      const command = `${zygoteCommand(program, root)} <<'SDKSPEC'\n${oneShot}\nSDKSPEC`;
+      const command = launch.command(g.id, root, oneShot);
       if (g.run && input.stdin === undefined && Buffer.byteLength(command) < 96 * 1024)
         text = await g.run(command, input.env, input.timeoutMs + 5000, signal);
       else
         text = await g.exec(
-          zygoteCommand(program, root),
+          launch.command(g.id, root),
           guestSpec({ ...spec, env: input.env, stdin: input.stdin ?? "" }).toString("hex"),
           input.timeoutMs + 5000, signal,
         );

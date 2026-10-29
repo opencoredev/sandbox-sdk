@@ -7,7 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { zygoteCommand, zygotePython } from "../src/providers/boxd/guest.js";
+import { zygoteSupervisor } from "../src/providers/boxd/guest.js";
 import { supervisor } from "../src/providers/freestyle/execute.js";
 import { guestSpec } from "../src/providers/freestyle/wire.js";
 
@@ -20,7 +20,7 @@ beforeAll(async () => {
 // Removing the directory also stops the zygotes these tests started.
 afterAll(() => rm(base, { recursive: true, force: true }));
 
-const program = zygotePython(supervisor);
+const launch = zygoteSupervisor(supervisor);
 // The supervisor's last argument: the zygote directory when a zygote child ran the request,
 // the run directory when the client ran the supervisor itself.
 const parent = "tr '\\0' '\\n' </proc/$PPID/cmdline | tail -1 | sed 's|.*/||' | cut -c1-2";
@@ -47,7 +47,7 @@ async function request(command: string, options: Request = {}): Promise<Outcome>
   const root = `/tmp/.sandbox-sdk/run-${crypto.randomUUID()}`;
   const id = crypto.randomUUID();
   const script = join(base, `${id}.sh`), input = join(base, `${id}.hex`), errors = join(base, `${id}.err`);
-  await writeFile(script, zygoteCommand(program, root).replaceAll("/tmp/.sandbox-sdk", guest));
+  await writeFile(script, launch.zygote(root).replaceAll("/tmp/.sandbox-sdk", guest));
   await writeFile(input, guestSpec({ command, cwd: options.cwd ?? base, env: { TOKEN: "secret-$-1" }, stdin: options.stdin ?? "", timeoutMs: options.timeoutMs ?? 10000 }).toString("hex"));
   const { stdout, status } = await new Promise<{ stdout: string; status: number | null }>((resolve, reject) => {
     // A shell pipeline gives the client pipes; spawn's own stdio are sockets.
@@ -105,7 +105,11 @@ function shell(command: string) {
   );
 }
 
-test("the first request runs in the client; later ones run through the zygote with the same results", async () => {
+test("the first requests run in the client; later ones run through the zygote with the same results", async () => {
+  expect((await request(parent)).stdout).toBe("ru\n");
+  // A sandbox that runs one command never starts a zygote; the second one-shot starts it.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await expect(readdir(join(base, "tmp/.sandbox-sdk"))).resolves.not.toContainEqual(expect.stringMatching(/^z-[0-9a-f]+$/));
   expect((await request(parent)).stdout).toBe("ru\n");
   await zygotePid();
   expect((await request(parent)).stdout).toBe("z-\n");

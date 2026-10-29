@@ -1,6 +1,6 @@
 import { guestSpec } from "./wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { guestProcess, guestPump, python, quote, zygoteCommand, zygotePython } from "../boxd/guest.js";
+import { guestProcess, guestPump, python, quote, zygoteSupervisor } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // The one-shot launcher travels in the exec request; nothing is installed.
@@ -85,8 +85,10 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
-const program = zygotePython(supervisor);
+const launch = zygoteSupervisor(supervisor);
 export interface ExecutionGuest {
+  /** The sandbox ID. */
+  readonly id: string;
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
   raw(command: string): Promise<string>;
   read(
@@ -177,7 +179,7 @@ if pid: shutil.rmtree(root,ignore_errors=True)`,
     let text: string;
     try {
       text = await g.exec(
-        zygoteCommand(program, root),
+        launch.command(g.id, root),
         guestSpec({
           files,
           command: input.command,

@@ -177,11 +177,12 @@ def gone(c,start,claim):
    os.unlink(claim); return
   time.sleep(.001)
 `;
+const zygoteDir = (program: string) => `/tmp/.sandbox-sdk/z-${createHash("sha256").update(program).digest("hex").slice(0, 16)}`;
 /**
  * A supervisor program that runs once (`python3 -S -c P root`) or as the
  * sandbox's zygote (`python3 -S -c P --serve dir`). See {@link zygoteCommand}.
  */
-export function zygotePython(source: string): string {
+function zygotePython(source: string): string {
   if (zygoteServer.includes("'''")) throw new Error("Zygote source cannot be embedded");
   // One-shot runs skip compiling the server: it is a string until --serve. They
   // also leave writing the bytecode cache to the zygote they start next, which
@@ -206,11 +207,13 @@ else: exec(c,{'__name__':'__main__','__builtins__':__builtins__})`, "sys.argv[1:
  * stalled; the client then clears the zygote record so later commands skip it.
  * A claimed request whose child died exits 70, like a supervisor that died. The
  * claim file is created exclusively, so exactly one side runs each request.
- * Without a usable zygote, the client runs the program itself, then starts a
- * zygote for later commands.
+ * Without a usable zygote, the client runs the program itself. From the
+ * sandbox's second such command on, it then starts a zygote for later ones: a
+ * sandbox that runs one command never pays for a zygote, and on a one-CPU
+ * sandbox the zygote's startup does not compete with its first commands.
  */
-export function zygoteCommand(program: string, root: string): string {
-  const zygote = `/tmp/.sandbox-sdk/z-${createHash("sha256").update(program).digest("hex").slice(0, 16)}`;
+function zygoteCommand(program: string, root: string): string {
+  const zygote = zygoteDir(program);
   return `{ P=${quote(program)}; r=${quote(root)}; z=${quote(zygote)}; f="$z/c-\${r##*/run-}"; n=1
 if [ ! -e "$z/off" ] && read -r k b 2>/dev/null <"$z/pid" && read -r o </proc/sys/kernel/random/boot_id && [ "$b" = "$o" ] && kill -0 "$k" 2>/dev/null; then
 trap 'kill "$w" 2>/dev/null; { read -r o; read -r c; } <"$f"; exit "\${c:-70}"' USR1
@@ -233,8 +236,40 @@ done
 exec 7<&- 8>&- 9>&-
 fi
 python3 -S -c "$P" "$r"; c=$?
+if [ -e "$z.seen" ]; then
 { [ -e "$z/off" ] || ! command -v setsid >/dev/null || exec setsid env -i PATH="$PATH" python3 -S -c "$P" --serve "$z"; } </dev/null >/dev/null 2>&1 &
+else : >"$z.seen" 2>/dev/null; fi
 exit "$c"; }`;
+}
+/**
+ * Commands for a supervisor that can run from a zygote. A client's first
+ * command in a sandbox runs the plain supervisor: a zygote only pays off from
+ * later commands, and its client and server add ~10 KB to the command, which
+ * Superserve charges for per request (~2 ms per KB on a fresh sandbox). The
+ * plain command still marks the sandbox as reused, so the next command's
+ * one-shot starts the zygote.
+ */
+export function zygoteSupervisor(source: string) {
+  const program = zygotePython(source);
+  const plain = cachedPython(source, undefined, "False");
+  const seen = `${zygoteDir(program)}.seen`;
+  // Sandboxes this client has sent a command; bounded, forgetting only costs a plain command.
+  const used = new Set<string>();
+  return {
+    /**
+     * Without `spec` the supervisor reads its hex spec from the command's stdin.
+     * With it, the spec travels in the command: as an argument to the plain
+     * supervisor, or as a heredoc that a zygote child can read as the client's stdin.
+     */
+    command(sandbox: string, root: string, spec?: string): string {
+      if (spec !== undefined && !/^[0-9a-f]*$/.test(spec)) throw new Error("Supervisor spec must be hex");
+      if (used.has(sandbox)) return spec === undefined ? zygoteCommand(program, root) : `${zygoteCommand(program, root)} <<'SDKSPEC'\n${spec}\nSDKSPEC`;
+      if (used.size >= 10_000) used.clear();
+      used.add(sandbox);
+      return `{ python3 -S -c ${quote(plain)} ${quote(root)}${spec === undefined ? "" : ` ${spec}`}; c=$?; : >${quote(seen)} 2>/dev/null; exit "$c"; }`;
+    },
+    zygote: (root: string) => zygoteCommand(program, root),
+  };
 }
 // Linux guests can launch without importing subprocess/tempfile on every run.
 // posix_spawn establishes the session before returning its PID to cancellation.
