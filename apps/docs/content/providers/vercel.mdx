@@ -1,6 +1,6 @@
 ---
 title: Vercel Sandbox
-description: Run sandboxes on Vercel Sandbox microVMs. Exact keys, OIDC auth inside Vercel, size presets, network allow lists, and up to 15 declared preview ports.
+description: Run sandboxes on Vercel Sandbox microVMs. Exact keys, OIDC auth inside Vercel, pinned images, session lifetimes, vCPU sizing, native network policies, and up to 15 declared preview ports.
 ---
 
 `vercel()` runs each sandbox as a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) microVM through the official `@vercel/sandbox` SDK.
@@ -34,11 +34,11 @@ console.log(result.stdout);
 | Files | Yes | |
 | Background processes | Yes | |
 | Preview URLs | Yes | Public `https://`; declare up to 15 ports |
-| Pause and resume | Partial | Files survive; running processes end |
-| Snapshots | Yes | |
-| Machine size | Partial | Presets only |
-| Network policy | Yes | `"none"` or a host allow list |
-| Hard lifetime (`timeoutMs`) | No | Vercel's timeout resets on resume |
+| Pause and resume | Partial | Files survive; running processes end. Not with `persistent: false` |
+| Snapshots | Yes | With `expiresInMs` |
+| Machine size | Yes | Presets or a vCPU count, 2048 MiB each |
+| Network policy | Yes | `"none"`, a host allow list, or a native policy |
+| Hard lifetime (`timeoutMs`) | Partial | Per session; each resume starts a new one |
 | Idle timeout (`idleTimeoutMs`) | No | |
 | Keys | Exact | Sandbox name is a hash of the key |
 | Terminal | No | |
@@ -62,7 +62,7 @@ for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) 
 
 ## Files
 
-Relative paths resolve against `/workspace`.
+Relative paths resolve against `/workspace`. Pass `mode` to set permissions. Vercel applies it as part of the upload, so a new secret file is created with `0o600` rather than tightened afterward.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -70,6 +70,7 @@ import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
 await using box = await createSandbox(vercel());
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "API_KEY=sk-test\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
@@ -90,7 +91,7 @@ console.log(preview.url);
 
 ## Pause, resume, and snapshots
 
-`pause()` stops the session. `resume()` starts a new one from the saved file system, so files survive but running processes don't. The SDK marks them failed with exit code 137; restart them by name.
+Vercel sandboxes are persistent by default. `pause()` stops the session. `resume()` starts a new one from the saved file system, so files survive but running processes don't. The SDK marks them failed with exit code 137; restart them by name.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -102,11 +103,27 @@ await box.pause();
 await box.resume();
 await vite.restart();
 
-const { id } = await box.snapshot();
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 });
 await using copy = await createSandbox(vercel(), { from: id });
 ```
 
-Any SDK call on a stopped sandbox resumes it. `snapshot()` also stops the sandbox. Vercel deletes old snapshots on its own retention schedule.
+Any SDK call on a stopped sandbox resumes it. `snapshot()` also stops the sandbox. `expiresInMs` must be `0` (never expires) or at least one day; anything else fails with `invalid_argument`. Without it, Vercel applies `snapshotExpiresInMs` or its own retention.
+
+### Non-persistent sandboxes
+
+Set `persistent: false` for sandboxes that hold credentials. Vercel then discards the file system whenever the session stops: on timeout, `snapshot()`, or a native `stop()`. Such a sandbox can never run again, so the provider has no `pause()`, `connect` reports it as `"stopped"`, and further calls fail with `not_found`. Destroy it and create a new one.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const provider = vercel({ persistent: false });
+await using box = await createSandbox(provider, { key: "job:42", timeoutMs: 10 * 60_000 });
+await box.files.write(".npmrc", "//registry.npmjs.org/:_authToken=npm_xxx\n", { mode: 0o600 });
+await box.run("npm ci");
+```
+
+With a `key`, the next `createSandbox` call for that key deletes an ended sandbox and creates a fresh one, as Vercel's own `getOrCreate` does. `snapshot()` still works and is the way to keep a template, but it ends the source sandbox.
 
 ## Size, network, and lifetime
 
@@ -121,12 +138,44 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 
 await using box = await createSandbox(vercel(), {
-  size: "medium",
+  size: { cpu: 8, memoryMb: 16_384 },
   network: { allow: ["registry.npmjs.org"] },
+  timeoutMs: 30 * 60_000,
 });
+await box.native.extendTimeout(15 * 60_000);
 ```
 
-Vercel gives 2048 MiB per vCPU and has no disk setting, so exact sizes fail with `unsupported`. An allow list denies everything else. `timeoutMs` and `idleTimeoutMs` fail with `unsupported`; command timeouts in `box.run` still work.
+Vercel gives 2048 MiB per vCPU and has no disk setting. An exact size works when `memoryMb` is 2048 times a whole `cpu` count and `diskGb` is unset; anything else fails with `unsupported`. Your plan caps the count (4 on Hobby, 8 on Pro, 32 on Enterprise). An allow list denies everything else.
+
+`timeoutMs` becomes Vercel's sandbox `timeout`, which bounds each session, not the sandbox's whole life. Without it, Vercel stops a session after 5 minutes. A persistent sandbox that times out resumes on the next call with a full new `timeoutMs`. `box.native.extendTimeout(ms)` extends only the running session; `box.native.update({ timeout })` changes the value for later sessions too. Plans cap a session at 45 minutes on Hobby and 24 hours on Pro and Enterprise. `idleTimeoutMs` fails with `unsupported`.
+
+### Image, source, and network policy
+
+These options go on `vercel()`, so they apply to every sandbox that provider creates. Use one provider per configuration.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const provider = vercel({
+  image: "vercel/sandbox/node:24",
+  source: { type: "git", url: "https://github.com/vercel/sandbox.git", depth: 1 },
+  region: "fra1",
+  networkPolicy: {
+    allow: {
+      "registry.npmjs.org": [],
+      "ai-gateway.vercel.sh": [{ transform: [{ headers: { authorization: `Bearer ${process.env.AI_GATEWAY_API_KEY}` } }] }],
+    },
+  },
+});
+await using box = await createSandbox(provider);
+await box.run("ls", { cwd: "/vercel/sandbox" });
+```
+
+- `image` pins a Vercel Container Registry image, by tag or `@sha256:` digest. `box.native.image` reports the digest you got. The managed images (`universal`, `node:22|24|26`, `python:3.14`, `ubuntu`, `arch`) are Ubuntu-based except `arch`; `universal` and `node:24` run Ubuntu 26.04 today. The legacy `runtime` values (`node22`, `node24`, `python3.13`) run Amazon Linux 2023. Set one or the other.
+- `source` clones a git repository (with `depth`, `revision`, and `username`/`password` for private repos) or unpacks a tarball into `/vercel/sandbox`, not `/workspace`. Run commands there with `cwd`, or clone into `/workspace` yourself.
+- `networkPolicy` takes Vercel's full policy: domain rules, header injection, proxying, and subnet allow and deny lists. Injected headers reach the destination without the sandbox seeing them. Use it or `network`, not both, or creation fails with `invalid_argument`.
+- `image`, `runtime`, and `source` apply to fresh sandboxes only. With `from`, the snapshot supplies the file system.
 
 ## Configuration
 
@@ -135,13 +184,27 @@ Vercel gives 2048 MiB per vCPU and has no disk setting, so exact sizes fail with
 | `token` | `string` | OIDC | `VERCEL_TOKEN`, else `VERCEL_OIDC_TOKEN` |
 | `teamId` | `string` | | `VERCEL_TEAM_ID` |
 | `projectId` | `string` | | `VERCEL_PROJECT_ID` |
+| `persistent` | `boolean` | `true` | |
+| `image` | `string`, such as `"vercel/sandbox/node:24"` | `vercel/sandbox/universal:latest` | |
+| `runtime` | `"node22"`, `"node24"`, `"node26"`, `"python3.13"` | | |
+| `source` | `{ type: "git", url, depth?, revision?, username?, password? }` or `{ type: "tarball", url }` | | |
+| `region` | `string`, such as `"fra1"` | `"iad1"` | |
+| `failoverRegions` | `string[]` | | |
+| `networkPolicy` | Vercel `NetworkPolicy` | `"allow-all"` | |
+| `networkId` | `string` (Secure Compute) | | |
+| `mounts` | Vercel `SandboxMounts` | | |
+| `snapshotExpiresInMs` | `number`, `0` or at least `86_400_000` | Vercel's | |
+| `keepLastSnapshots` | `{ count, expiresInMs?, deleteEvicted? }` | | |
+| `deleteOrphanSnapshots` | `boolean` | `false` | |
+| `fetch` | `typeof fetch` | `globalThis.fetch` | |
 
-A token needs both IDs, or creation fails with `auth`. `box.native` is the `@vercel/sandbox` `Sandbox` object.
+A token needs both IDs, or creation fails with `auth`. Set `image` or `runtime`, not both. `snapshotExpiresInMs` also covers the automatic snapshots that persistence uses, so a paused sandbox loses its files once that snapshot expires. `keepLastSnapshots.count` runs from 1 to 10. `deleteOrphanSnapshots` makes `destroy()` delete snapshots no other sandbox uses, including ones you have not restored yet. `box.native` is the `@vercel/sandbox` `Sandbox` object.
 
 ## Limitations
 
 - Preview ports must be declared at creation, 15 at most.
-- No hard lifetime or idle timeout.
+- `timeoutMs` bounds each session, not the sandbox's whole life. No idle timeout.
+- A non-persistent sandbox cannot run again once its session stops.
 - At most four labels, or three with a `key`.
 - Pause and resume end running processes.
 - No terminals.
@@ -151,6 +214,7 @@ A token needs both IDs, or creation fails with `auth`. `box.native` is the `@ver
 - Vercel enforces unique sandbox names in a project, so concurrent calls with the same key share one sandbox.
 - Your `labels` become Vercel tags. Vercel allows five; the SDK uses one, and a second for a keyed sandbox.
 - Command timeouts use GNU `timeout` on a new process group, so the whole tree is killed.
+- `files.write` with `mode` sends it in Vercel's upload, which keeps permission bits and drops setuid, setgid, and sticky. The adapter runs `chmod` only when one of those is set.
 
 ## Next steps
 

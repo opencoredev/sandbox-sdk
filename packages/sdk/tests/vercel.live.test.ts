@@ -62,4 +62,17 @@ describe.skipIf(!credentials)("Vercel live options", { timeout: 180000 }, () => 
       await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" });
     } finally { await box.destroy().catch(() => {}); }
   });
+
+  test("a keyed non-persistent sandbox that ended is replaced on the next lookup", async () => {
+    const key = `live-${crypto.randomUUID()}`;
+    const first = await createSandbox(vercel({ persistent: false }), { key, timeoutMs: 120_000 });
+    let second: Awaited<typeof first> | undefined;
+    try {
+      await first.files.write("old", "1");
+      await first.native.stop();
+      second = await createSandbox(vercel({ persistent: false }), { key, timeoutMs: 120_000 });
+      expect(second).toMatchObject({ id: first.id, created: true });
+      expect(await second.files.exists("old")).toBe(false);
+    } finally { await second?.destroy(); await first.destroy().catch(() => {}); }
+  });
 });
