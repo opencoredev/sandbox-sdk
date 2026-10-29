@@ -188,12 +188,32 @@ These are optional peer dependencies. Importing the package root never loads the
 - TypeScript is optional. Types ship with the package.
 - A server. Provider keys must never reach a browser bundle, so call the SDK from a route handler, a server action, a worker, or a script.
 
+## Bundling
+
+You don't need a bundler: Node and Bun run the package from `node_modules`. If your platform bundles server code anyway, as Next.js, Convex, and AWS Lambda builds do, mark the SDK and the provider SDKs you use as external so they load from `node_modules` at runtime:
+
+```bash
+esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \
+  --external:@opencoredev/sandbox-sdk --external:e2b
+```
+
+In Next.js, use `serverExternalPackages`, as the [Next.js page](/integrations/nextjs#bundling) shows. In Convex, list the packages under `node.externalPackages` in `convex.json`.
+
+When the packages have to go inside the bundle, for example because the deployment ships no `node_modules`, build an ESM bundle with a `require` shim. Provider SDKs are CommonJS and call `require` for Node built-ins, which an ESM bundle doesn't define. Without the shim, the first provider call fails with `Dynamic require of "node:fs" is not supported`.
+
+```bash
+esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \
+  --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
+```
+
+A CommonJS bundle (`--format=cjs`) needs no shim. In either format, leave out `--minify`: it renames the provider SDKs' error classes, and their errors then reach you as code `provider` instead of codes like `file_not_found`.
+
 ## What the package exports
 
 | Import | What it gives you |
 | --- | --- |
 | `@opencoredev/sandbox-sdk` | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
-| `/local`, `/e2b`, `/vercel`, `/daytona`, `/memory` | One provider factory each |
+| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each |
 | `/ai`, `/mastra`, `/openai` | `sandboxTools` for each agent framework |
 | `/tools` | The framework-neutral tool definitions and their Zod schemas |
 | `/provider` | The adapter contract, for [writing a provider](/providers/custom) |

@@ -42,6 +42,22 @@ bun add @opencoredev/sandbox-sdk@next @vercel/sandbox
 
 This page uses [Vercel Sandbox](/providers/vercel), which authenticates with OIDC when your app runs on Vercel. Any provider works the same way.
 
+## Bundling
+
+`next build` bundles your server code, and some provider SDKs break when they are bundled. The failures show up only in production. In a Next.js 16 production build, for example, E2B's `files.exists` on a missing file throws a `provider` error instead of returning `false`. Keep the SDK and every provider SDK you import out of the server bundle:
+
+```ts title="next.config.ts" check="skip"
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  serverExternalPackages: ["@opencoredev/sandbox-sdk", "@vercel/sandbox"],
+};
+
+export default nextConfig;
+```
+
+Add each provider package you use to the list, such as `e2b`, `@daytonaio/sdk`, or `@boxd-sh/sdk`. Node then loads them from `node_modules` at runtime, the same way it does in `next dev`.
+
 ## 1. Get a project's sandbox in one place
 
 Put creation in one module, so every route uses the same settings.
@@ -132,7 +148,7 @@ export async function previewUrl(projectId: string) {
 
 ## 5. Reap forgotten sandboxes
 
-Vercel Sandbox has no lifetime limit of its own, so remove abandoned sandboxes on a schedule. A cron route works:
+A Vercel sandbox's `timeoutMs` covers one session, and each resume starts a new one, so remove abandoned sandboxes on a schedule. A cron route works:
 
 ```ts title="app/api/cron/reap/route.ts"
 import { reapSandboxes } from "@opencoredev/sandbox-sdk";
