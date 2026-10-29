@@ -70,6 +70,8 @@ The first run pulls `node:22-bookworm`. `await using` removes the container when
 | Keys                           | Exact   | Container name is a hash of the key                  |
 | Terminal                       | No      |                                                      |
 
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
 ## Run commands
 
 Await `box.run` for the result, or iterate it to stream output as it arrives.
@@ -213,7 +215,7 @@ await using box = await createSandbox(provider);
 ## Limitations
 
 - Isolation is a container, not a VM, unless you set a sandboxing `runtime` such as gVisor. Don't run untrusted code on a machine that holds secrets.
-- No network allow lists. Use [E2B](/providers/e2b), [Vercel](/providers/vercel), or [Daytona](/providers/daytona) for one.
+- No network allow lists. The Allow list row of the [capability matrix](/reference/capabilities#matrix) lists the providers that have them.
 - Preview URLs are reachable only on the Docker host.
 - Timeouts need a reconnect or a reaper to take effect.
 - No terminals.

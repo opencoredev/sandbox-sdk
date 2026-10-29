@@ -57,7 +57,7 @@ await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 
 - `env?: Record<string, string>`: environment for every command.
 - `secrets?: Record<string, string>`: set as environment variables and redacted from all output, logs, and errors. Names must be valid shell variable names, for `env` too.
 - `network?: "all" | "none" | { allow: string[] }`: defaults to `"all"`. Fails with `unsupported` if the provider can't enforce it.
-- `ports?: number[]`: ports to preview. Required by Vercel (up to 15) and Local (defaults to `[3000]`). E2B, Daytona, and Memory ignore it.
+- `ports?: number[]`: ports to preview. Some providers route only the ports listed here, and the others ignore it. Local defaults to `[3000]`. The `ports` row of the [capability matrix](/reference/capabilities#matrix) says which providers need it and how many ports each takes.
 - `idleTimeoutMs?: number`: stop after this long idle. Fails with `unsupported` where the provider has no idle timer.
 - `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability matrix](/reference/capabilities).
 - `labels?: Record<string, string>`: your labels. The SDK adds `sandbox-sdk`.

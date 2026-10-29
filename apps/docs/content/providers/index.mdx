@@ -2,56 +2,37 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, and Memory side by side. Credentials, key mode, pause, snapshots, size, network, limits, and previews.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, and Memory side by side. Factories, credentials, and what each one is best for.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
 
-Each cloud provider uses that company's own SDK with your credentials. Install the SDK next to Sandbox SDK. It loads on the provider's first operation, so unused providers cost nothing.
+Each cloud provider uses that company's own SDK with your credentials. Install the SDK next to Sandbox SDK; [Peer packages](/reference/capabilities#peer-packages) names the package and version range for each one. It loads on the provider's first operation, so unused providers cost nothing.
 
 Not sure where to start? [Choose a provider](/getting-started/choose-a-provider) maps common needs to a provider.
 
 ## At a glance
 
-| Provider                                                                              | Factory                           | Install                         | Credentials                                                    | Best for                                                |
-| ------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
-| <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local)               | `local()` from `/local`           | Docker                          | None                                                           | Development and CI                                      |
-| <img src="/integrations/agentos.svg" alt="" /> [Local (agentOS)](/providers/agentos)  | `agentos()` from `/agentos`       | `@rivet-dev/agentos-core@0.4.1` | None                                                           | Local command and file tasks without Docker             |
-| <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b)                      | `e2b()` from `/e2b`               | `e2b`                           | `E2B_API_KEY`                                                  | Pause with memory, hard lifetimes                       |
-| <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel)     | `vercel()` from `/vercel`         | `@vercel/sandbox`               | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel                                 |
-| <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona)          | `daytona()` from `/daytona`       | `@daytonaio/sdk`                | `DAYTONA_API_KEY`                                              | Custom sizes, idle auto-stop                            |
-| <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash)      | `upstash()` from `/upstash`       | `@upstash/box`                  | `UPSTASH_BOX_API_KEY`                                          | Durable state, filesystem snapshots                     |
-| <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway)          | `railway()` from `/railway`       | `railway`                       | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                  | Ephemeral VMs, filesystem checkpoints                   |
-| <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer)    | `sandboxer()` from `/sandboxer`   | `@boatdev/sdk`                  | `SANDBOXER_API_KEY`                                            | Ubuntu microVMs, memory pause, named disk snapshots     |
-| <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat)                   | `boat()` from `/boat`             | `@boatdev/sdk`                  | `BOAT_API_KEY`                                                 | Persistent VMs for long-running agents                  |
-| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki)                | `tenki()` from `/tenki`           | `@tenkicloud/sandbox`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                     |
-| <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `@superserve/sdk`               | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                  |
-| <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `@boxd-sh/sdk`                  | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                   |
-| <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `freestyle`                     | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots |
-| <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory)             | `memory()` from `/memory`         | Nothing                         | None                                                           | Unit tests                                              |
+| Provider                                                                              | Factory                           | Credentials                                                    | Best for                                                |
+| ------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
+| <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local)               | `local()` from `/local`           | None                                                           | Development and CI                                      |
+| <img src="/integrations/agentos.svg" alt="" /> [Local (agentOS)](/providers/agentos)  | `agentos()` from `/agentos`       | None                                                           | Local command and file tasks without Docker             |
+| <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b)                      | `e2b()` from `/e2b`               | `E2B_API_KEY`                                                  | Pause with memory, hard lifetimes                       |
+| <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel)     | `vercel()` from `/vercel`         | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel                                 |
+| <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona)          | `daytona()` from `/daytona`       | `DAYTONA_API_KEY`                                              | Custom sizes, idle auto-stop                            |
+| <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash)      | `upstash()` from `/upstash`       | `UPSTASH_BOX_API_KEY`                                          | Durable state, filesystem snapshots                     |
+| <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway)          | `railway()` from `/railway`       | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                  | Ephemeral VMs, filesystem checkpoints                   |
+| <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer)    | `sandboxer()` from `/sandboxer`   | `SANDBOXER_API_KEY`                                            | Ubuntu microVMs, memory pause, named disk snapshots     |
+| <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat)                   | `boat()` from `/boat`             | `BOAT_API_KEY`                                                 | Persistent VMs for long-running agents                  |
+| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki)                | `tenki()` from `/tenki`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                     |
+| <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                  |
+| <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                   |
+| <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots |
+| <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory)             | `memory()` from `/memory`         | None                                                           | Unit tests                                              |
 
-## Feature matrix
+## What each provider supports
 
-"Partial" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit. The table scrolls sideways.
-
-|                     | Local     | agentOS            | E2B         | Vercel             | Daytona           | Upstash            | Railway            | Boat               | Sandboxer          | Tenki       | Superserve        | boxd        | Freestyle       | Memory   |
-| ------------------- | --------- | ------------------ | ----------- | ------------------ | ----------------- | ------------------ | ------------------ | ------------------ | ------------------ | ----------- | ----------------- | ----------- | --------------- | -------- |
-| Key&nbsp;mode       | exact     | exact              | best-effort | exact              | best-effort       | best-effort        | best-effort        | best-effort        | best-effort        | best-effort | best-effort       | best-effort | best-effort     | exact    |
-| Pause               | Yes       | No                 | Yes         | Partial            | No                | Partial            | No                 | No                 | Yes                | Yes         | Yes               | Yes         | Yes             | No       |
-| Snapshots           | Yes       | No                 | Yes         | Yes                | Yes               | Yes                | Files&nbsp;only    | No                 | Yes                | Yes         | Yes               | Yes         | Yes             | No       |
-| Block&nbsp;network  | Yes       | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No          | Yes             | Recorded |
-| Allow&nbsp;list     | No        | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes         | Empty&nbsp;only | Recorded |
-| Size&nbsp;presets   | Yes       | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes         | No              | No       |
-| Exact&nbsp;sizes    | Partial   | No                 | No          | Partial            | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Partial     | No              | No       |
-| Idle&nbsp;timeout   | Partial   | No                 | No          | No                 | Yes               | No                 | Yes                | No                 | Yes                | No          | No                | Yes         | Yes             | Yes      |
-| Hard&nbsp;lifetime  | Partial   | No                 | Yes         | Partial            | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Yes         | Yes             | Yes      |
-| Declared&nbsp;ports | Yes       | No                 | No          | Up&nbsp;to&nbsp;15 | No                | No                 | Up&nbsp;to&nbsp;10 | No                 | No                 | No          | No                | No          | No              | No       |
-| Preview&nbsp;URL    | Localhost | No                 | Public      | Public             | Token&nbsp;header | Bearer&nbsp;header | Public             | Cookie&nbsp;header | Cookie&nbsp;header | Public      | Token&nbsp;header | Public      | Public          | Fake     |
-| Terminal            | No        | No                 | No          | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No          | No              | No       |
-
-Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
-
-Previews differ the most. Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. "Public" means an `https://` URL anyone can open; boxd gives one public route per machine, and previewing a new port moves it. A header entry means `preview.headers` must go with every request. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. Each provider page has the details.
+Providers differ in key mode, pause, snapshots, size, network policy, idle and lifetime limits, declared ports, and preview URLs. The [capability matrix](/reference/capabilities) puts all of them side by side, with a note on each limit that matters. A script checks it against the adapters' source on every CI run.
 
 ## Key mode in one sentence
 

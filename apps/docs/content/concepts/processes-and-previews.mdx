@@ -23,7 +23,7 @@ const dev = await box.start("npm run dev -- --port 3000", {
 console.log(dev.status, dev.url);
 ```
 
-`start` resolves when the readiness check passes. Because `ready` names a port, `dev.url` is a preview URL that the SDK has already checked from outside the sandbox. Local, Vercel, and Railway need every port declared in `ports` at creation. The other providers don't need it.
+`start` resolves when the readiness check passes. Because `ready` names a port, `dev.url` is a preview URL that the SDK has already checked from outside the sandbox. Some providers need every port declared in `ports` at creation, and the others ignore it. The `ports` row of the [capability matrix](/reference/capabilities#matrix) says which, and how many ports each one takes.
 
 `name` is optional and unique within a sandbox. It is how you find the process later. Without one, the SDK derives a stable name from the command, so starting the same command again reaches the same process, and `dev.name` tells you what it picked.
 

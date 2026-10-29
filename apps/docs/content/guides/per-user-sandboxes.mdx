@@ -77,8 +77,10 @@ The first request starts the server. Later ones see it running and only fetch th
 
 Two requests for the same user can arrive at once, for example when a page opens two tabs. What happens depends on the provider's key mode:
 
-- **Exact providers** (Local, Vercel Sandbox, Memory) enforce unique names, so both requests always get one sandbox. Nothing to do.
-- **Best-effort providers** (E2B, Daytona) find sandboxes by searching labels. Two requests at the same moment can both miss and create two.
+- **Exact providers**, such as Local and Vercel Sandbox, enforce unique names, so both requests always get one sandbox. Nothing to do.
+- **Best-effort providers**, such as E2B and Daytona, find sandboxes by searching labels. Two requests at the same moment can both miss and create two.
+
+The Key mode row of the [capability matrix](/reference/capabilities#matrix) lists every provider's mode.
 
 Within one server process, the SDK queues calls for the same key, so they never race each other. Across servers, give the SDK a `locator` backed by a store you already run, with a lock:
 
