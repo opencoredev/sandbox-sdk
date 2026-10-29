@@ -183,3 +183,24 @@ export function checkBudget(
 
   return planned;
 }
+
+type ProviderKey = keyof Provider;
+
+type ProviderMethod = Extract<Provider[ProviderKey], (...args: never[]) => void>;
+
+function isProviderKey(target: Provider, key: string | symbol): key is ProviderKey {
+  return key in target;
+}
+
+function isProviderMethod(value: Provider[ProviderKey]): value is ProviderMethod {
+  return typeof value === "function";
+}
+
+/** Read a provider member from a Proxy trap, keeping the provider as each method's receiver. */
+export function providerMember(target: Provider, key: string | symbol) {
+  if (!isProviderKey(target, key)) return undefined;
+
+  const value = target[key];
+
+  return isProviderMethod(value) ? value.bind(target) : value;
+}

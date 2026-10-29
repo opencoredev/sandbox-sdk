@@ -3,6 +3,7 @@ import {
   SandboxError,
   createSandbox,
   connectSandbox,
+  type CreateOptions,
   type Sandbox,
 } from "@opencoredev/sandbox-sdk";
 import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
@@ -11,7 +12,7 @@ import { readFile, mkdir, writeFile, appendFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
-import type { LoadedProvider, ReadyProvider } from "./providers.js";
+import { providerMember, type LoadedProvider, type ReadyProvider } from "./providers.js";
 import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
@@ -84,8 +85,53 @@ const perfSchema = z.object({
   method: z.string(),
 });
 
-const errorNote = (error: unknown) =>
-  sanitize(error instanceof Error ? error.message : "Unknown failure");
+/** What a timed-out create left behind, recorded on the failed sample once it settles. */
+interface CreateEvidence {
+  unverifiedSandboxId?: string;
+  cleanupOutcome?: "succeeded" | "failed" | "already-absent" | "unknown";
+  settled: boolean;
+  sandboxId?: string;
+  stage: string;
+  code?: string;
+  cause?: import("./failure.js").FailureOutcome["cause"];
+}
+
+interface RestoreDetails {
+  verification: ReturnType<typeof verifyRestoredResources> | null;
+}
+
+/** Scenarios that cannot run once the keyed scenario has failed. */
+const downstream = new Map([
+  ["create-from-snapshot", ["restore-fingerprint"]],
+  ["npm-install", ["dev-server", "preview-provisioning", "preview-first-byte", "edit-loop"]],
+  ["preview-provisioning", ["dev-server", "preview-first-byte", "edit-loop"]],
+  ["dev-server", ["preview-first-byte", "edit-loop"]],
+  ["preview-first-byte", ["edit-loop"]],
+]);
+
+/** A burst cohort is a sample only when every sandbox became ready. */
+function burstOutcome(burst: {
+  k: number;
+  success: number;
+  attempted: number;
+  readyMs: number;
+  durationMs: number;
+}): Outcome {
+  const { k, success, attempted } = burst;
+
+  if (success === k) return { kind: "sample", value: burst.readyMs };
+
+  const note = `${success}/${k} ready; ${attempted} attempted (budgets may prevent admission)`;
+
+  if (attempted < k) return { kind: "skipped", note };
+
+  if (attempted > k) return { kind: "failure", note };
+
+  return { kind: "failure", note, stage: `burst-${k}/all-ready`, elapsedMs: burst.durationMs };
+}
+
+const errorNote = (cause: unknown) =>
+  sanitize(cause instanceof Error ? cause.message : "Unknown failure");
 
 export function sanitize(text: string) {
   let result = text;
@@ -506,15 +552,7 @@ export async function runV2(
     let createPhases = phases;
     let restoredId: string | undefined;
 
-    let createEvidence: {
-      unverifiedSandboxId?: string;
-      cleanupOutcome?: "succeeded" | "failed" | "already-absent" | "unknown";
-      settled: boolean;
-      sandboxId?: string;
-      stage: string;
-      code?: string;
-      cause?: import("./failure.js").FailureOutcome["cause"];
-    } = { settled: false, stage: "adapter-create" };
+    let createEvidence: CreateEvidence = { settled: false, stage: "adapter-create" };
 
     let adapterCreateRejected = false;
     let clockPhase: "adapter-create" | "first-command" | "sdk-init" = "adapter-create";
@@ -702,8 +740,8 @@ export async function runV2(
 
                 return info;
               })()
-                .catch(async (error: unknown) => {
-                  const failure = failureOutcome(error, sanitize);
+                .catch(async (cause: unknown) => {
+                  const failure = failureOutcome(cause, sanitize);
                   createEvidence.code = failure.code;
                   createEvidence.cause = failure.cause;
                   createEvidence.stage = failure.cause?.stage ?? createEvidence.stage;
@@ -715,8 +753,8 @@ export async function runV2(
                   if (nativeId && !createEvidence.unverifiedSandboxId) {
                     const admitted =
                       adapterCreateRejected &&
-                      error instanceof SandboxError &&
-                      error.provider === p.name &&
+                      cause instanceof SandboxError &&
+                      cause.provider === p.name &&
                       failure.cause?.operation === "create" &&
                       failure.cause.admittedByThisCall === true;
 
@@ -739,7 +777,7 @@ export async function runV2(
                           ? "Admitted error ID lacks live run/SDK ownership proof"
                           : "Create error has no trusted explicit admission marker",
                       );
-                      throw error;
+                      throw cause;
                     }
 
                     if (restore) restores.identify(restore, nativeId, "alive");
@@ -766,7 +804,7 @@ export async function runV2(
                     }
                   }
 
-                  throw error;
+                  throw cause;
                 })
                 .finally(() => {
                   createEvidence.settled = true;
@@ -781,20 +819,19 @@ export async function runV2(
                 ids.delete(id);
               }),
             );
-        const member: unknown = Reflect.get(target, key, target);
 
-        return typeof member === "function" ? member.bind(target) : member;
+        return providerMember(target, key);
       },
     });
 
-    const add = async (
+    const add = async <D>(
       scenario: string,
       unit: string,
       outcome: Outcome,
       start: number,
       startedAt: string,
       before: HostSample,
-      details: unknown = null,
+      details: D | null = null,
       phaseValues: Record<string, number> = {},
       clock?: PhaseClock,
       recordedDurationMs?: number,
@@ -864,12 +901,12 @@ export async function runV2(
       );
     }
 
-    async function measure<T>(
+    async function measure<T, F = null>(
       scenario: string,
       action: (signal: AbortSignal) => Promise<T>,
       phaseValues: Record<string, number> = {},
       clock?: PhaseClock,
-      failureDetails: unknown = null,
+      failureDetails: F | null = null,
     ) {
       const start = performance.now(),
         at = new Date().toISOString(),
@@ -948,20 +985,7 @@ export async function runV2(
 
           if (scenario === "fingerprint") dependencies.set("perf", scenario);
 
-          const downstream: Record<string, string[]> = {
-            "create-from-snapshot": ["restore-fingerprint"],
-            "npm-install": [
-              "dev-server",
-              "preview-provisioning",
-              "preview-first-byte",
-              "edit-loop",
-            ],
-            "preview-provisioning": ["dev-server", "preview-first-byte", "edit-loop"],
-            "dev-server": ["preview-first-byte", "edit-loop"],
-            "preview-first-byte": ["edit-loop"],
-          };
-
-          for (const target of downstream[scenario] ?? [])
+          for (const target of downstream.get(scenario) ?? [])
             dependencies.set(target, dependencies.get(scenario) ?? scenario);
         }
 
@@ -996,12 +1020,14 @@ export async function runV2(
       await measure(
         "cold",
         async (signal) => {
-          box = await createSandbox(tracked, {
+          const options: CreateOptions = {
             labels: { "sandbox-bench-run": config.run },
             ports: [3000],
             signal,
-            ...(createSize === null ? {} : { size: createSize }),
-          });
+          };
+
+          if (createSize !== null) options.size = createSize;
+          box = await createSandbox(tracked, options);
           phases.sdkReadyMs = performance.now() - (coldClock.start ?? lifeStart);
         },
         phases,
@@ -1360,9 +1386,7 @@ export async function runV2(
                 const sourceFingerprint: Fingerprint | null = fp;
                 let restoredFingerprint: Fingerprint | null = null;
 
-                const restoreDetails: {
-                  verification: ReturnType<typeof verifyRestoredResources> | null;
-                } = { verification: null };
+                const restoreDetails: RestoreDetails = { verification: null };
 
                 try {
                   await measure(
@@ -1945,19 +1969,13 @@ export async function runV2(
           finishedAt: new Date(readyAt).toISOString(),
           durationMs,
           sandboxId: null,
-          outcome:
-            success === k
-              ? {
-                  kind: "sample",
-                  value: readyMs,
-                }
-              : {
-                  kind: cohort.length < k ? "skipped" : "failure",
-                  note: `${success}/${k} ready; ${cohort.length} attempted (budgets may prevent admission)`,
-                  ...(cohort.length === k
-                    ? { stage: `burst-${k}/all-ready`, elapsedMs: durationMs }
-                    : {}),
-                },
+          outcome: burstOutcome({
+            k,
+            success,
+            attempted: cohort.length,
+            readyMs,
+            durationMs,
+          }),
           phases: {},
           hostBefore: before,
           hostAfter: cohortHostAfter,
@@ -1972,14 +1990,11 @@ export async function runV2(
     const errors: string[] = [];
     const deletionErrors = new Map<string, string>();
 
-    const ids = new Set([
-      ...[...owned.values()]
-        .filter((v) => v.provider === p.name && v.kind === "sandbox")
-        .map((v) => v.id),
-      ...(report.cleanupReview ?? [])
-        .filter((v) => v.provider === p.name && v.kind === "sandbox")
-        .map((v) => v.id),
-    ]);
+    const ids = new Set(
+      [...owned.values(), ...(report.cleanupReview ?? [])].flatMap((v) =>
+        v.provider === p.name && v.kind === "sandbox" ? [v.id] : [],
+      ),
+    );
 
     try {
       const listed = await deadline(config["timeout-ms"], () =>
