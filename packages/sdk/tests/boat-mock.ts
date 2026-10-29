@@ -301,8 +301,8 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
           mode: (await fs.stat(join(box.root, path))).mode & 0o777,
           directoryMode: (await fs.stat(join(box.root, path, ".."))).mode & 0o777,
         });
+        // Every attempt loses its response until the test resets it: the transport retries an idempotent PUT.
         if (loseWrite) {
-          loseWrite = false;
           req.socket.destroy();
           return;
         }

@@ -1,4 +1,4 @@
-/** Official sources, checked against @boatdev/sdk 1.9.9:
+/** Official sources. Routes, headers and bodies match @boatdev/sdk 1.9.9, which this adapter no longer loads:
  * https://boat.dev
  * https://docs.boat.dev/api/v1
  * https://docs.boat.dev/sdks/typescript
@@ -8,12 +8,12 @@
  */
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
-import type { BoatApi, InitOverrideFunction, Sandbox as BoatSandbox } from "@boatdev/sdk";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
+import { createNativeApi, sdkCall, sdkConstruct, type NativeApi, type NativeSdkBinding } from "../../native.js";
 import { execute, fileChunkBytes, quote, stage, workspace } from "./exec.js";
-import type { BoatOptions, BoatNative } from "../boat/index.js";
+import type { BoatOptions, BoatNative, BoatClientSdk, BoatSandboxSdk } from "../boat/index.js";
 import { errors } from "./errors.js";
-import { loadPeer } from "../../peer.js";
+import { boatHttp, command, parseSandboxBody, parseSandboxPage, writeFile, type BoatHttp, type BoatPlane, type BoatSandbox } from "./transport.js";
 export interface BoatApiSettings {
   name: string;
   label: string;
@@ -25,12 +25,18 @@ export interface BoatApiSettings {
   idleStop?: boolean;
   pausedStates?: readonly string[];
   downloadMaxBytes?: number;
-  destroy?: (api: BoatApi, id: string) => Promise<void>;
-  fetch?: typeof fetch;
-  download?: (api: BoatApi, id: string, path: string) => Promise<Uint8Array>;
+  /** Extra create body fields, such as Sandboxer's region. */
+  createFields?: Readonly<Record<string, unknown>>;
+  /** Sees every sandbox the API returns, such as Sandboxer recording regions. */
+  observe?: (sandbox: BoatSandbox) => void;
+  destroy?: (http: BoatHttp, id: string) => Promise<void>;
+  download?: (http: BoatHttp, id: string, path: string) => Promise<Uint8Array>;
   preview?: (url: string) => Promise<{ url: string; headers?: Record<string, string> }>;
+  /** Extra `Configuration` parameters for the client `native.sdk()` builds. */
+  sdkConfiguration?: Readonly<Record<string, unknown>>;
 }
 const defaults: BoatApiSettings = { name: "boat", label: "Boat", keyEnv: "BOAT_API_KEY", baseEnv: "BOAT_API_BASE", baseUrl: "https://boat.dev/api/v1" };
+const sdkPackage = "@boatdev/sdk";
 const prefix = "sandbox-sdk:1:";
 const own = { "sandbox-sdk": "1" };
 const presets = { small: "small", medium: "default", large: "large" } satisfies Record<
@@ -86,8 +92,8 @@ function info(raw: BoatSandbox, failure: ReturnType<typeof errors>["failure"], l
       "not_found",
       raw.id,
     );
-  const createdAt = raw.createdAt?.getTime();
-  if (createdAt === undefined || !Number.isFinite(createdAt))
+  const createdAt = raw.createdAt;
+  if (!Number.isFinite(createdAt))
     throw failure(`${label} returned no valid creation timestamp`, "provider", raw.id);
   return {
     id: raw.id,
@@ -116,39 +122,44 @@ function fileInfo(value: unknown, failure: ReturnType<typeof errors>["failure"],
 }
 const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
-/** Direct optional SDK with no installed remote agent or local daemon. */
-export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = defaults): Provider<BoatNative, "size"> {
+
+/** The adapter and the HTTP client it shares with `box.native`, `provider.api` and Sandboxer's extra calls. */
+export interface BoatCore {
+  provider: Provider<BoatNative, "size"> & { readonly api: NativeApi<BoatPlane, BoatClientSdk> };
+  http: BoatHttp;
+}
+
+/** Boat API v1 over plain HTTP, with no installed remote agent or local daemon. */
+export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = defaults): BoatCore {
   const { failure, boatError } = errors(settings.name, settings.label, settings.keyEnv, settings.name !== "boat");
   const label = settings.label;
-  let client: Promise<BoatApi> | undefined;
-  let nativeClient: BoatApi | undefined;
   const environmentFiles = new Map<string, Map<string, Promise<string>>>();
   const environments = new Map<string, Record<string, string>>();
-  const boxes = new Map<string, BoatSandbox>();
-  async function api() {
-    return (client ??= (async () => {
-      const key = options.apiKey ?? process.env[settings.keyEnv];
-      if (!key) throw failure(`${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`, "auth");
-      const timeoutMs = options.requestTimeoutMs ?? 90_000;
-      if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
-        throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-      const { BoatApi, Configuration } = await loadPeer("@boatdev/sdk", settings.name, () => import("@boatdev/sdk"));
-      nativeClient = new BoatApi(
-        new Configuration({
-          basePath: options.baseUrl ?? options.apiUrl ?? (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ?? settings.baseUrl,
-          accessToken: key,
-          fetchApi: (url, init) =>
-            (settings.fetch ?? fetch)(url, {
-              ...init,
-              signal: init?.signal
-                ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
-                : AbortSignal.timeout(timeoutMs),
-            }),
-        }),
-      );
-      return nativeClient;
-    })());
+  const timeoutMs = options.requestTimeoutMs ?? 90_000;
+  const key = () => options.apiKey ?? process.env[settings.keyEnv];
+  // Read on first use, not at construction, so a missing key or bad option fails the first call.
+  function credentials() {
+    const value = key();
+    if (!value) throw failure(`${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`, "auth");
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+      throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
+    return value;
   }
+  const transport = {
+    provider: settings.name, label, keyEnv: settings.keyEnv,
+    baseUrl: () => options.baseUrl ?? options.apiUrl ?? (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ?? settings.baseUrl,
+    credentials, secrets: () => [key()],
+    timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 90_000,
+  };
+  const http = boatHttp(transport);
+  // Create makes its own attempts, and the command follower its own reconnects, so their client never
+  // retries underneath them. A first attach that fails then fails fast, so the command is stopped at once.
+  const once = boatHttp({ ...transport, retries: 0 });
+  const sandboxOf = (value: unknown) => {
+    const sandbox = parseSandboxBody(value, settings.name, label);
+    settings.observe?.(sandbox);
+    return sandbox;
+  };
   async function safe<T>(action: () => Promise<T>, id?: string): Promise<T> {
     try {
       return await action();
@@ -156,13 +167,11 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       throw boatError(error, id);
     }
   }
-  async function raw(id: string, command: string, file = false, prepare = false) {
-    const result = await (
-      await api()
-    ).command({ sandboxId: id, commandRequest: { command: prepare ? `${workspace}; ${command}` : command, timeoutSeconds: 60 } });
-    if (!("stdout" in result))
+  async function raw(id: string, script: string, file = false, prepare = false) {
+    const result = await command(http, id, { command: prepare ? `${workspace}; ${script}` : script, timeoutSeconds: 60 });
+    if (result.kind !== "finished")
       throw failure(`${label} returned an unexpected detached result`, "outcome_unknown", id);
-    if (result.stdoutTruncated || result.stderrTruncated)
+    if (result.truncated)
       throw failure(
         `${label} truncated operation output; no partial file data was returned`,
         "provider",
@@ -205,7 +214,18 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     }
     return new Uint8Array(Buffer.concat(chunks));
   }
-  const provider: Provider<BoatNative, "size"> = {
+  // `native.sdk()` builds the caller's own BoatApi client against the same base URL and key.
+  const binding: NativeSdkBinding = {
+    package: sdkPackage,
+    async connect(module, sandboxId) {
+      const configuration = sdkConstruct(module, "Configuration", [{ ...settings.sdkConfiguration, basePath: transport.baseUrl(), accessToken: credentials() }], sdkPackage);
+      const client = sdkConstruct(module, "BoatApi", [configuration], sdkPackage);
+      if (sandboxId === undefined) return client;
+      const response = await sdkCall(client, "get", [{ sandboxId }], sdkPackage);
+      return { client, sandbox: typeof response === "object" && response !== null ? Reflect.get(response, "sandbox") : undefined };
+    },
+  };
+  const provider: BoatCore["provider"] = {
     name: settings.name,
     keyMode: "best-effort",
     capabilities: new Set(["size"]),
@@ -240,85 +260,71 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           throw failure(`${label} snapshots are not supported by this adapter`, "unsupported");
         const name = metadataName(input, failure, label);
         if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-        const sdk = await api();
-        const request = {
-          idempotencyKey: crypto.randomUUID(),
-          createSandboxRequest: {
-            noEnv: true,
-            ...(input.from === undefined ? {} : { from: input.from }),
-            env: input.env,
-            type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
-            ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-            ...(snapshots === undefined ? {} : { snapshots }),
-            ...(monitoring === undefined ? {} : { monitoring }),
-            ...(org === undefined ? {} : { org }),
-          },
+        const idempotencyKey = crypto.randomUUID();
+        const body = {
+          noEnv: true,
+          ...(input.from === undefined ? {} : { from: input.from }),
+          env: input.env,
+          type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
+          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+          ...(snapshots === undefined ? {} : { snapshots }),
+          ...(monitoring === undefined ? {} : { monitoring }),
+          ...(org === undefined ? {} : { org }),
+          ...(idleStopMinutes === undefined ? {} : { idleStopMinutes }),
+          ...settings.createFields,
         };
-        // @boatdev/sdk 1.9.9 drops fields its model lacks, so add them to the
-        // serialized body. The same override applies to every retry.
-        const body: InitOverrideFunction | undefined = idleStopMinutes === undefined ? undefined
-          : async ({ init }) => ({ body: { ...init.body, idleStopMinutes } });
         // A response may be lost after Boat accepts the VM. Retry only with the
         // same documented idempotency key and identical body, including on abort,
         // so a late VM can be recovered and destroyed below.
         let sandbox: BoatSandbox | undefined;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            sandbox = (await sdk.create(request, body)).sandbox;
+            sandbox = sandboxOf(await once.json({ method: "POST", path: "/sandboxes", body, idempotencyKey }));
             break;
           } catch (error) {
             const code = boatError(error).code;
             if (["auth", "invalid_argument", "quota", "not_found"].includes(code)) throw error;
             if (attempt === 2)
               throw failure(
-                `${label} create outcome remains unknown; recover with idempotency key ${request.idempotencyKey} and the same request body within 24 hours`,
+                `${label} create outcome remains unknown; recover with idempotency key ${idempotencyKey} and the same request body within 24 hours`,
                 "outcome_unknown",
               );
             await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           }
         }
         if (!sandbox) throw failure(`${label} returned no sandbox after create`, "outcome_unknown");
-        environments.set(sandbox.id, { ...input.env });
+        const id = sandbox.id;
+        environments.set(id, { ...input.env });
         try {
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           // Boat has no name at create. Preserve durable cross-client metadata;
           // its command API waits for provisioning when first use arrives early.
-          const renamed = await sdk.update({ sandboxId: sandbox.id, updateSandboxRequest: { name } });
+          const updated = sandboxOf(await http.json({ method: "PATCH", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, body: { name } }));
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
-          const updated = renamed.sandbox;
-          if (updated.name !== name) return await provider.connect(sandbox.id);
-          const result = { ...info(updated, failure, label, settings.pausedStates), state: "running" } satisfies SandboxInfo;
-          boxes.set(sandbox.id, updated);
-          return result;
+          if (updated.name !== name) return await provider.connect(id);
+          return { ...info(updated, failure, label, settings.pausedStates), state: "running" } satisfies SandboxInfo;
         } catch (error) {
-          await provider.destroy(sandbox.id);
+          await provider.destroy(id);
           throw error;
         }
       }),
     connect: (id) =>
-      safe(async () => {
-        const { sandbox } = await (await api()).get({ sandboxId: id });
-        const result = info(sandbox, failure, label, settings.pausedStates);
-        boxes.set(id, sandbox);
-        return result;
-      }, id),
+      safe(async () => info(sandboxOf(await http.json({ method: "GET", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id })), failure, label, settings.pausedStates), id),
     list: (labels) =>
       safe(async () => {
         const values: SandboxInfo[] = [];
         let cursor: string | undefined;
         const visited = new Set<string>();
         do {
-          const page = await (await api()).sandboxes({ limit: 200, cursor });
+          const page = parseSandboxPage(await http.json({ method: "GET", path: "/sandboxes", query: { limit: 200, cursor } }), settings.name, label);
           for (const sandbox of page.sandboxes) {
+            settings.observe?.(sandbox);
             if (!metadata(sandbox.name)) continue;
             const value = info(sandbox, failure, label, settings.pausedStates);
-            if (Object.entries(labels).every(([key, expected]) => value.labels[key] === expected)) {
-              values.push(value);
-              boxes.set(value.id, sandbox);
-            }
+            if (Object.entries(labels).every(([key, expected]) => value.labels[key] === expected)) values.push(value);
           }
-          if (!page.pageInfo?.hasMore) break;
-          const next = page.pageInfo.nextCursor;
+          if (!page.hasMore) break;
+          const next = page.nextCursor;
           if (!next || visited.has(next))
             throw failure(`${label} returned an invalid pagination cursor`);
           visited.add(next);
@@ -332,19 +338,18 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     destroy: (id) =>
       safe(async () => {
         try {
-          if (settings.destroy) await settings.destroy(await api(), id);
-          else await (await api()).deleteSandbox({ sandboxId: id, xAsciiConfirmDelete: id });
+          if (settings.destroy) await settings.destroy(http, id);
+          else await http.request({ method: "DELETE", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, headers: { "X-Ascii-Confirm-Delete": id } });
         } catch (error) {
           if (boatError(error).code !== "not_found") throw error;
         }
-        boxes.delete(id);
         environments.delete(id);
         environmentFiles.delete(id);
       }, id),
     exec: (id, input) => safe(async () => {
       let files = environmentFiles.get(id);
       if (!files) { files = new Map(); environmentFiles.set(id, files); }
-      return execute(await api(), id, input, environments.get(id), files, { failure, boatError });
+      return execute(http, id, input, environments.get(id), files, { failure, boatError }, { http: once });
     }, id),
     files: {
       writeCreatesParents: true,
@@ -379,17 +384,22 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             ));
             if (!Number.isSafeInteger(copiedSize) || copiedSize < 0) throw failure("Invalid staged file size", "provider", id);
             if (settings.download) {
-              const bytes = await settings.download(await api(), id, staged);
+              const bytes = await settings.download(http, id, staged);
               if (bytes.length !== copiedSize) throw failure("Incomplete artifact download", "provider", id);
               return bytes;
             }
-            const link = await (await api()).createDownloadUrl({ sandboxId: id, fileUrlRequest: { path: staged, ttlSeconds: 300 } });
-            const response = await fetch(link.url, { signal: AbortSignal.timeout(options.requestTimeoutMs ?? 90_000) });
-            if (!response.ok) {
-              await response.body?.cancel();
-              throw failure("Signed file download failed", "unavailable", id);
+            // Creating a link changes nothing, so a lost response is not an unknown outcome.
+            const link: unknown = await http.json({ method: "POST", path: "/sandboxes/{sandboxId}/files/download-url", params: { sandboxId: id }, sandboxId: id, body: { path: staged, ttlSeconds: 300 }, readOnly: true });
+            const url = typeof link === "object" && link !== null && "url" in link && typeof link.url === "string" ? link.url : undefined;
+            if (!url) throw failure(`${label} returned no signed download URL`, "provider", id);
+            // The URL carries its own signature: no account credentials, and errors never show it.
+            let bytes: Uint8Array;
+            try {
+              bytes = (await http.request({ method: "GET", path: url, auth: false, sandboxId: id, maxBytes: copiedSize + 1 })).body;
+            } catch (error) {
+              const code = boatError(error, id).code;
+              throw failure("Signed file download failed", code === "aborted" || code === "timeout" ? code : "unavailable", id);
             }
-            const bytes = new Uint8Array(await response.arrayBuffer());
             if (bytes.length !== copiedSize) throw failure("Incomplete signed file download", "provider", id);
             return bytes;
           } finally {
@@ -402,7 +412,6 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           const { mode } = options;
           if (mode !== undefined && (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o7777))
             throw failure("mode must be an integer from 0 to 0o7777", "invalid_argument", id);
-          const sdk = await api();
           const normalized = posix.normalize(path);
           // The API creates parents, but canonical paths outside these roots
           // are rejected. It cannot set a mode, so a mode always takes the
@@ -410,9 +419,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           if (mode === undefined && data.length <= fileChunkBytes &&
               (normalized.startsWith("/home/user/") || normalized.startsWith("/tmp/"))) {
             try {
-              await sdk.writeFile({ sandboxId: id, fileWriteRequest: {
-                path, content: Buffer.from(data).toString("base64"), encoding: "base64",
-              } });
+              await writeFile(http, id, { path, content: Buffer.from(data).toString("base64"), encoding: "base64" });
               return;
             } catch (error) {
               if (boatError(error).code !== "invalid_argument") throw error;
@@ -425,7 +432,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           const dir = `/tmp/.sandbox-sdk/write-${crypto.randomUUID()}`;
           let cleaned = false;
           try {
-            const parts = await stage(sdk, id, dir, data, failure);
+            const parts = await stage(http, id, dir, data, failure);
             await node(id,
               "const f=require('fs'),[d,dir,n,m]=process.argv.slice(1);try{f.mkdirSync(require('path').dirname(d),{recursive:true});const fd=f.openSync(d,'w',m?0o600:0o666);try{if(m)f.fchmodSync(fd,Number(m));for(let i=0;i<Number(n);i++)f.writeFileSync(fd,f.readFileSync(dir+'/part-'+i))}finally{f.closeSync(fd)}}finally{f.rmSync(dir,{recursive:true,force:true})}",
               [path, dir, String(parts.length), mode === undefined ? "" : String(mode)],
@@ -471,8 +478,9 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     },
     previewUrl: (id, port) =>
       safe(async () => {
-        const result = await (await api()).hostPort({ sandboxId: id, hostPortRequest: { port } });
-        if (!result.url) throw failure(`${label} returned no preview URL`, "provider", id);
+        const result: unknown = await http.json({ method: "POST", path: "/sandboxes/{sandboxId}/host", params: { sandboxId: id }, sandboxId: id, body: { port } });
+        if (typeof result !== "object" || result === null || !("url" in result) || typeof result.url !== "string" || !result.url)
+          throw failure(`${label} returned no preview URL`, "provider", id);
         if (settings.preview) return settings.preview(result.url);
         const url = new URL(result.url);
         const token = url.searchParams.get("_token");
@@ -483,16 +491,12 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           url.searchParams.delete("_token");
           return { url: url.toString(), headers: { Cookie: `_port_auth=${token}` } };
         }
-        if (result.isProtected || result.access === "private")
+        if (("isProtected" in result && result.isProtected === true) || ("access" in result && result.access === "private"))
           throw failure("Protected preview returned no token", "provider", id);
         return { url: url.toString() };
       }, id),
-    native(id) {
-      const sandbox = boxes.get(id);
-      if (!sandbox || !nativeClient)
-        throw failure("Sandbox is not connected; connect it first", "not_found", id);
-      return { sandbox, client: nativeClient };
-    },
+    native: (id) => createNativeApi<BoatPlane, BoatSandboxSdk>({ http, placeholder: "sandboxId", sandboxId: id, sdk: binding }),
+    api: createNativeApi<BoatPlane, BoatClientSdk>({ http, placeholder: "sandboxId", sdk: binding }),
   };
-  return provider;
+  return { provider, http };
 }
