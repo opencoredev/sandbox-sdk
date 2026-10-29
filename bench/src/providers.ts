@@ -102,7 +102,7 @@ function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
 }
 
-type FactoryOptions = Record<string, string | boolean | undefined>;
+export type FactoryOptions = Record<string, string | boolean | undefined>;
 
 /** A provider entry point's factory. Its result is checked by `assertProvider`. */
 type ProviderFactory = (options: FactoryOptions) => Provider | Promise<Provider>;

@@ -216,7 +216,8 @@ it.each([true, false])(
             id: "snapshot",
             kind: "snapshot",
             parent: "gone-source",
-            ...(recorded ? { snapshotProof: proof("gone-source") } : {}),
+            // JSON.stringify drops an undefined proof, as an unrecorded journal would.
+            snapshotProof: recorded ? proof("gone-source") : undefined,
           },
         ],
       }),

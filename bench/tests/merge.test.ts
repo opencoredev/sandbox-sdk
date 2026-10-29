@@ -553,8 +553,7 @@ it("exports measured allocation safeguards and never labels boxd or a 2-vCPU Sup
     [4, 7.59, false],
     [4, 8.41, false],
     [2, 8, false],
-  ]) {
-    if (typeof cpu !== "number" || typeof memory !== "number") throw new Error("Invalid fixture");
+  ] satisfies [number, number, boolean][]) {
     expect(
       siteData(allocationReport("e2b", cpu, memory), "same-spec").providers[0]?.equalSpec,
     ).toBe(expected);
