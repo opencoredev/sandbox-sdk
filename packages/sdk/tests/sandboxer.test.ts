@@ -91,7 +91,7 @@ test("names the HTTP status and fixed API code in Sandboxer failures, never free
   expect(boatError({ response, apiCode: "out_of_capacity" }).message).toContain("(HTTP 503 out_of_capacity)");
   expect(boatError({ response, apiCode: "Bearer sbx_live_secret" }).message).not.toContain("secret");
   expect(errors().boatError({ response, apiCode: "out_of_capacity" }).message)
-    .toBe("Boat request failed. The provider reported unavailable. Check the sandbox and Boat service before retrying.");
+    .toBe("Boat request failed: the service is down or unreachable. Check the sandbox and Boat service before retrying.");
 });
 
 test("Sandboxer create sends only create and rename, then the first run is one command", async () => {
@@ -104,7 +104,8 @@ test("Sandboxer create sends only create and rename, then the first run is one c
     expect(created.state).toBe("running");
     expect(mock.calls.slice(before)).toHaveLength(2);
     expect(mock.commands.length).toBe(commandsBefore);
-    const box = await connectSandbox(provider, id);
+    // Skip the lazy secret recovery so the count covers only the run.
+    const box = await connectSandbox(provider, id, { recoverSecrets: false });
     const first = mock.calls.length;
     expect(await box.run("pwd")).toMatchObject({ ok: true, stdout: "/workspace\n" });
     expect(mock.calls.slice(first).filter(call => /POST .*\/commands$/.test(call))).toHaveLength(1);

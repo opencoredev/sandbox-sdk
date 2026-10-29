@@ -195,6 +195,7 @@ for (const kind of ["upload", "download"] as const) {
     const client = transfers(server.baseURL);
     const pending = kind === "upload" ? client.upload("machine-id", "/file", new Uint8Array(4 * 1024 * 1024)) : client.download("machine-id", "/file");
     await expect(pending).rejects.toMatchObject({ code: "not_found", sandboxId: "machine-id" });
-    await expect(pending).rejects.toHaveProperty("cause", undefined);
+    // The worker sends only the error name and gRPC code, so the cause holds nothing else.
+    await expect(pending).rejects.toHaveProperty("cause", expect.stringMatching(/^\w+ gRPC \d+$/));
   });
 }

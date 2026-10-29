@@ -97,7 +97,8 @@ function nativeEvidence(error: unknown, denied: string[]) {
 // bug, a network error), so its scrubbed message is kept. A response's text never is.
 function localDetail(error: unknown, code: ErrorCode, evidence: ReturnType<typeof nativeEvidence>, denied: string[]): { native?: string } {
   const status = evidence.status ?? evidence.providerCode;
-  const { detail } = describeNative(error, { code, status: status === undefined ? undefined : String(status), redact: redacting(denied) });
+  // An allowlisted native name is a recognized Tenki failure, whose text can carry the server response.
+  const { detail } = describeNative(error, { code, known: evidence.nativeName === undefined ? undefined : true, status: status === undefined ? undefined : String(status), redact: redacting(denied) });
   return detail === undefined ? {} : { native: detail };
 }
 
