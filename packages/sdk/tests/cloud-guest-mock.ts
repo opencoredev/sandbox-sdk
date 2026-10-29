@@ -12,6 +12,7 @@ import {
   type ExecParams,
   type Proxy,
 } from "@boxd-sh/sdk";
+import type { BoxdClient } from "../src/providers/boxd/provider.js";
 import { isString } from "../src/shared/narrow.js";
 
 const exec = promisify(execFile);
@@ -271,6 +272,17 @@ export class MockBoxd {
       this.entry(id).machine.status = "running";
 
       return { resumeUs: 0 };
+    },
+  };
+  snapshots: BoxdClient["snapshots"] = {
+    create: async () => {
+      throw new Error("boxd snapshots are not mocked");
+    },
+    get: async () => {
+      throw new Error("boxd snapshots are not mocked");
+    },
+    delete: async () => {
+      throw new Error("boxd snapshots are not mocked");
     },
   };
   private exec(

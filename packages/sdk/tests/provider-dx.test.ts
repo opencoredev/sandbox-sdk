@@ -1,9 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
-import type { Boxd } from "@boxd-sh/sdk";
-import type { Daytona } from "@daytonaio/sdk";
-import type { TenkiSandbox } from "@tenkicloud/sandbox";
-import type { BoatApi, Configuration } from "@boatdev/sdk";
-import type { Sandbox as E2BSandbox } from "e2b";
+import { z } from "zod";
+import * as boxdSdk from "@boxd-sh/sdk";
+import type { BoxdOptions as BoxdClientOptions } from "@boxd-sh/sdk";
 import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
@@ -12,106 +10,111 @@ import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
+import { createBoxdProvider, type BoxdOptions } from "../src/providers/boxd/provider.js";
+import { FileTransfers } from "../src/providers/boxd/transfers.js";
+import { boatApi } from "../src/providers/boat-api/index.js";
+import type { BoatOptions } from "../src/providers/boat/index.js";
+import { MockBoxd } from "./cloud-guest-mock.js";
+import { daytona as mockDaytona, mockState as daytonaState } from "./daytona-mock.js";
+import { tenki as mockTenki, tenkiState, cleanupTenki } from "./tenki-mock.js";
+import { e2b as mockE2B, MockSandbox as MockE2BSandbox, listQueries } from "./e2b-sdk-mock.js";
 
-/** What each mocked SDK constructor or call received, in the SDKs' own types. */
-type NativeConfig =
-  | ConstructorParameters<typeof Boxd>[0]
-  | ConstructorParameters<typeof Daytona>[0]
-  | ConstructorParameters<typeof TenkiSandbox>[0]
-  | ConstructorParameters<typeof Configuration>[0]
-  | Parameters<typeof E2BSandbox.list>[0];
+const boxdConfigs: BoxdClientOptions[] = [];
 
-type BoatCreate = Parameters<BoatApi["create"]>[0];
+/** Records the options the adapter passes to the boxd client. */
+class RecordingBoxd extends MockBoxd {
+  constructor(config: BoxdClientOptions) {
+    super();
+    boxdConfigs.push(config);
+  }
+}
 
-const state = vi.hoisted(() => {
-  const configs: NativeConfig[] = [];
-  const creates: BoatCreate[] = [];
+function recordingBoxd(options: BoxdOptions) {
+  return createBoxdProvider(
+    options,
+    async () => ({ ...boxdSdk, Boxd: RecordingBoxd }),
+    (config, signal) => new FileTransfers(config, signal),
+  );
+}
 
-  return { configs, creates };
-});
+const boatOrigins: string[] = [];
+const boatTypes: string[] = [];
+const createBody = z.object({ type: z.string() });
 
-vi.mock("@boxd-sh/sdk", () => ({
-  Boxd: class {
-    constructor(config: ConstructorParameters<typeof Boxd>[0]) {
-      state.configs.push(config);
-    }
-    machines = { list: async () => [] };
-  },
-}));
+/** The real Boat SDK over a recording transport: lists are empty and creates are rejected. */
+async function boatTransport(input: RequestInfo | URL, init?: RequestInit) {
+  const request = new Request(input, init);
+  boatOrigins.push(new URL(request.url).origin);
 
-vi.mock("@daytonaio/sdk", () => ({
-  Daytona: class {
-    constructor(config: ConstructorParameters<typeof Daytona>[0]) {
-      state.configs.push(config);
-    }
-    async *list() {}
-  },
-}));
+  if (request.method === "GET") return Response.json({ sandboxes: [] });
 
-vi.mock("@tenkicloud/sandbox", () => ({
-  TenkiSandbox: class {
-    constructor(config: ConstructorParameters<typeof TenkiSandbox>[0]) {
-      state.configs.push(config);
-    }
-    async list() {
-      return [];
-    }
-  },
-}));
+  boatTypes.push(createBody.parse(await request.json()).type);
 
-vi.mock("@boatdev/sdk", () => ({
-  Configuration: class {
-    constructor(config: ConstructorParameters<typeof Configuration>[0]) {
-      state.configs.push(config);
-    }
-  },
-  BoatApi: class {
-    async sandboxes() {
-      return { sandboxes: [] };
-    }
-    async create(request: BoatCreate) {
-      state.creates.push(request);
-      throw { response: new Response(null, { status: 400 }) };
-    }
-  },
-}));
+  return new Response(null, { status: 400 });
+}
 
-vi.mock("e2b", () => ({
-  Sandbox: class {
-    static list(config: Parameters<typeof E2BSandbox.list>[0]) {
-      state.configs.push(config);
-
-      return { hasNext: false };
-    }
-  },
-}));
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-  state.configs.length = 0;
-  state.creates.length = 0;
-});
-
-for (const [name, factory, legacy] of [
-  ["boxd", boxd, { baseURL: "https://old.test" }],
-  ["daytona", daytona, { apiUrl: "https://old.test" }],
-  ["boat", boat, { apiUrl: "https://old.test" }],
-] as const) {
-  test(`${name} endpoint alias works and baseUrl wins`, async () => {
-    await factory({ apiKey: "offline", ...legacy }).list({});
-    await factory({ apiKey: "offline", ...legacy, baseUrl: "https://new.test" }).list({});
-    const nativeField = name === "boxd" ? "baseURL" : name === "daytona" ? "apiUrl" : "basePath";
-    expect(state.configs).toMatchObject([
-      { [nativeField]: "https://old.test" },
-      { [nativeField]: "https://new.test" },
-    ]);
+function recordingBoat(options: BoatOptions) {
+  return boatApi(options, {
+    name: "boat",
+    label: "Boat",
+    keyEnv: "BOAT_API_KEY",
+    baseEnv: "BOAT_API_BASE",
+    baseUrl: "https://boat.dev/api/v1",
+    fetch: boatTransport,
   });
 }
 
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  boxdConfigs.length = 0;
+  boatOrigins.length = 0;
+  boatTypes.length = 0;
+  daytonaState.configs.length = 0;
+  listQueries.length = 0;
+  await cleanupTenki();
+});
+
+test("boxd endpoint alias works and baseUrl wins", async () => {
+  await recordingBoxd({ apiKey: "offline", baseURL: "https://old.test" }).list({});
+  await recordingBoxd({
+    apiKey: "offline",
+    baseURL: "https://old.test",
+    baseUrl: "https://new.test",
+  }).list({});
+  expect(boxdConfigs).toMatchObject([
+    { baseURL: "https://old.test" },
+    { baseURL: "https://new.test" },
+  ]);
+});
+
+test("daytona endpoint alias works and baseUrl wins", async () => {
+  await mockDaytona({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
+  await mockDaytona({
+    apiKey: "offline",
+    apiUrl: "https://old.test",
+    baseUrl: "https://new.test",
+  }).list({});
+  expect(daytonaState.configs).toMatchObject([
+    { apiUrl: "https://old.test" },
+    { apiUrl: "https://new.test" },
+  ]);
+});
+
+test("boat endpoint alias works and baseUrl wins", async () => {
+  await recordingBoat({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
+  await recordingBoat({
+    apiKey: "offline",
+    apiUrl: "https://old.test",
+    baseUrl: "https://new.test",
+  }).list({});
+  expect(boatOrigins).toEqual(["https://old.test", "https://new.test"]);
+});
+
 test("Tenki authToken alias works and apiKey wins", async () => {
-  await tenki({ authToken: "old" }).list({});
-  await tenki({ apiKey: "new", authToken: "old" }).list({});
-  expect(state.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
+  await mockTenki({ authToken: "old" }).list({});
+  await mockTenki({ apiKey: "new", authToken: "old" }).list({});
+  expect(tenkiState.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
 });
 
 test("Boat type alias works, machine wins, and per-create size still wins", async () => {
@@ -121,15 +124,11 @@ test("Boat type alias works, machine wins, and per-create size still wins", asyn
     [{ machine: "large", type: "small" }, "medium"],
   ] as const) {
     await expect(
-      boat({ apiKey: "offline", ...options }).create({ labels: {}, size }),
+      recordingBoat({ apiKey: "offline", ...options }).create({ labels: {}, size }),
     ).rejects.toMatchObject({ code: "invalid_argument" });
   }
 
-  expect(state.creates).toMatchObject([
-    { createSandboxRequest: { type: "small" } },
-    { createSandboxRequest: { type: "large" } },
-    { createSandboxRequest: { type: "default" } },
-  ]);
+  expect(boatTypes).toEqual(["small", "large", "default"]);
 });
 
 for (const [name, factory, env, label, next] of [
@@ -158,7 +157,14 @@ test.each(["create", "connect", "list"] as const)(
   "E2B %s checks credentials before a native call",
   async (operation) => {
     vi.stubEnv("E2B_API_KEY", "");
-    const provider = e2b();
+
+    const native = [
+      vi.spyOn(MockE2BSandbox, "create"),
+      vi.spyOn(MockE2BSandbox, "connect"),
+      vi.spyOn(MockE2BSandbox, "list"),
+    ];
+
+    const provider = mockE2B();
 
     const result =
       operation === "create"
@@ -168,15 +174,16 @@ test.each(["create", "connect", "list"] as const)(
           : provider.list({});
 
     await expect(result).rejects.toMatchObject({ code: "auth" });
-    expect(state.configs).toEqual([]);
+
+    for (const call of native) expect(call).not.toHaveBeenCalled();
   },
 );
 
 test("E2B reads env after construction and allows retry after missing credentials", async () => {
   vi.stubEnv("E2B_API_KEY", "");
-  const provider = e2b();
+  const provider = mockE2B();
   await expect(provider.list({})).rejects.toMatchObject({ code: "auth" });
   vi.stubEnv("E2B_API_KEY", "late-key");
   expect(await provider.list({})).toEqual([]);
-  expect(state.configs).toMatchObject([{ apiKey: "late-key" }]);
+  expect(listQueries).toMatchObject([{ apiKey: "late-key" }]);
 });

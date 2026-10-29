@@ -24,7 +24,7 @@ const mocks = {
 
 /** The boxd client fixture: Linux-backed machines plus spied snapshot and egress calls. */
 class TestBoxd extends MockBoxd {
-  snapshots = {
+  override snapshots = {
     create: mocks.snapshotCreate,
     get: mocks.snapshotGet,
     delete: mocks.snapshotDelete,
