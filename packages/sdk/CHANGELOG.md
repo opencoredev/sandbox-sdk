@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `superserve()` calls Superserve's HTTP API directly, so `@superserve/sdk` is no longer a peer: `npm i @opencoredev/sandbox-sdk@next` is the whole install. Breaking for beta users: `box.native` is now a `NativeApi` (`request`, `fetch`, `sdk`) instead of the SDK's `Sandbox`. Get the old object with `await box.native.sdk(() => import("@superserve/sdk"))`. A stdin-free run whose connection drops after the command started now rejects with `outcome_unknown` instead of `provider`.
+
 ## 1.0.0-beta.1
 
 Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
