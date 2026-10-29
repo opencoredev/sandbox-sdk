@@ -45,6 +45,8 @@ export type DaytonaCapability = "snapshot" | "size" | "network-policy";
 export type DaytonaProvider = Provider<DaytonaSandbox, DaytonaCapability>;
 const sdkLabel = { "sandbox-sdk": "1" };
 const keyLabel = "sandbox-sdk-key";
+/** SDK bookkeeping and the Daytona SDK's own label. Labels show only the caller's labels and `sandbox-sdk`. */
+const internal = new Set([keyLabel, "code-toolbox-language"]);
 const presets = { small: { cpu: 1, memoryMb: 1024, diskGb: 10 }, medium: { cpu: 2, memoryMb: 4096, diskGb: 10 }, large: { cpu: 4, memoryMb: 8192, diskGb: 10 } };
 function resources(size: NonNullable<CreateInput["size"]>) {
   const value = typeof size === "string" ? presets[size] : size;
@@ -65,7 +67,19 @@ function network(input: CreateInput["network"]) {
 function info(box: DaytonaSandbox, fallbackCreatedAt?: number): SandboxInfo {
   const createdAt = Date.parse(box.createdAt ?? "") || fallbackCreatedAt;
   if (createdAt === undefined || !Number.isFinite(createdAt)) throw new SandboxError("Sandbox creation time is missing. Daytona returned incomplete metadata. Refresh the sandbox metadata.", { code: "provider", provider: "daytona", sandboxId: box.id });
-  return { id: box.id, key: box.labels[keyLabel], labels: { ...box.labels }, createdAt, state: box.state === "started" ? "running" : box.state === "paused" ? "paused" : "stopped" };
+  return { id: box.id, key: box.labels[keyLabel], labels: Object.fromEntries(Object.entries(box.labels).filter(([key]) => !internal.has(key))), createdAt, state: box.state === "started" ? "running" : box.state === "paused" ? "paused" : "stopped" };
+}
+/**
+ * Since 0.227, a create that times out after Daytona made the sandbox names it on the error, and Daytona
+ * leaves it running. Delete it, best effort and bounded, so the timeout still reaches the caller promptly.
+ */
+async function abandon(client: Daytona, error: unknown) {
+  const id = error && typeof error === "object" && "sandboxId" in error && typeof error.sandboxId === "string" ? error.sandboxId : undefined;
+  if (id === undefined) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const removal = (async () => { await (await client.get(id)).delete(60, false); })().catch(() => {});
+  await Promise.race([removal, new Promise<void>(resolve => { timer = setTimeout(resolve, 10_000); timer.unref?.(); })]);
+  clearTimeout(timer);
 }
 type NativeFile = Awaited<ReturnType<DaytonaSandbox["fs"]["getFileDetails"]>>;
 function fileInfo(path: string, file: NativeFile): FileInfo {
@@ -131,7 +145,8 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       };
       const params: CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams = image ? { ...base, image, resources: allocation } : { ...base, snapshot: input.from ?? options.snapshot ?? (allocation?.cpu === 4 && allocation.memory === 8 && allocation.disk === 10 ? "daytona-large" : undefined) };
       const createdAt = Date.now();
-      const value = await (await api()).create(params, { timeout: Math.ceil((options.createTimeoutMs ?? 60_000) / 1000) });
+      const client = await api();
+      const value = await client.create(params, { timeout: Math.ceil((options.createTimeoutMs ?? 60_000) / 1000) }).catch(async (error: unknown) => { await abandon(client, error); throw error; });
       boxes.set(value.id, value);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", { code: "aborted", provider: "daytona" });
