@@ -1,6 +1,6 @@
 ---
 title: boxd
-description: Persistent, isolated Linux machines through the official boxd SDK. Memory pause, snapshots, fixed-ratio sizes, and public HTTPS previews.
+description: Persistent, isolated Linux machines through the official boxd SDK. Memory pause, snapshots, fixed-ratio sizes, egress allow lists, lifetimes, persistent disks, and public HTTPS previews.
 ---
 
 `boxd()` runs each sandbox as a persistent, isolated Linux machine on [boxd](https://docs.boxd.sh).
@@ -31,15 +31,15 @@ console.log(result.stdout);
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Yes | Live output |
-| Files | Yes | |
+| Files | Yes | `mode` uses a `chmod` after the write |
 | Background processes | Yes | |
 | Preview URLs | Partial | One public route per machine; a new port moves it |
 | Pause and resume | Yes | Suspends to memory |
-| Snapshots | Yes | A restore keeps the source's size, image, and env |
+| Snapshots | Yes | A restore keeps the source's size, image, and env; no `expiresInMs` |
 | Machine size | Partial | 1, 2, 4, or 8 vCPU at 4 GiB each, 100 GB disk |
-| Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | |
-| Idle timeout (`idleTimeoutMs`) | No | |
+| Network policy | Partial | Allow lists only; no `"none"` |
+| Hard lifetime (`timeoutMs`) | Yes | Native delete timer |
+| Idle timeout (`idleTimeoutMs`) | Yes | Native auto-suspend |
 | Keys | Best-effort | Read from a marker file in each machine |
 | Terminal | No | |
 
@@ -72,9 +72,12 @@ import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 
 await using box = await createSandbox(boxd());
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
+
+boxd's file upload has no mode, so the SDK runs `chmod` right after a write that passes `mode`.
 
 ## Background processes and previews
 
@@ -108,7 +111,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(boxd(), { from: id });
 ```
 
-A restore inherits the snapshot's size, image, and environment. Passing `size` or `env` with `from`, or a provider with `image`, fails with `unsupported`.
+A restore inherits the snapshot's size, image, and environment. Passing `size` or `env` with `from`, or a provider with `image` or `volumes`, fails with `unsupported`. Snapshots are kept until deleted, so `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
 
 ## Size, network, and lifetime
 
@@ -129,7 +132,24 @@ await using box = await createSandbox(boxd(), {
 });
 ```
 
-An exact size must match that ratio, or it fails with `unsupported`. `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` also fail with `unsupported` before a machine is allocated.
+An exact size must match that ratio, or it fails with `unsupported`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd(), {
+  network: { allow: ["registry.npmjs.org", "*.github.com", "140.82.112.0/20"] },
+  timeoutMs: 60 * 60_000,
+  idleTimeoutMs: 15 * 60_000,
+});
+```
+
+- `network: { allow }` sets the machine's egress allow list before create returns, and the adapter checks the list boxd reports back. Entries are hostnames, `*.example.com` wildcards, or public IPv4 addresses and CIDRs. HTTP and HTTPS are matched by hostname, everything else by address.
+- `network: "none"` and an empty allow list fail with `unsupported`, because an empty boxd allow list means unrestricted.
+- `timeoutMs` sets boxd's delete timer. The platform deletes the machine that long after creation, in any state, even suspended.
+- `idleTimeoutMs` sets boxd's auto-suspend. boxd measures idleness by network traffic, so a background process that makes no traffic doesn't keep the machine awake. A suspended machine reports `paused`.
+- Both round up to whole seconds and also apply to a restore with `from`.
 
 ## Configuration
 
@@ -140,20 +160,31 @@ An exact size must match that ratio, or it fails with `unsupported`. `network` o
 | `image` | `string` | boxd's service image | |
 | `requestTimeoutMs` | `number` | `30_000`; readiness waits `90_000` | |
 | `fileTransferSignal` | `AbortSignal` | | |
+| `volumes` | `{ diskId, mountPath, readOnly? }[]` | None | |
+
+`volumes` attaches [boxd disks](https://docs.boxd.sh) you created with the native `client.disks.create(name, "10G")`. A disk outlives the machine, so it is the way to keep data across sandboxes. A disk can be attached to one machine at a time.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd({ volumes: [{ diskId: "disk_123", mountPath: "/data" }] }));
+await box.run("echo kept > /data/state");
+```
 
 `baseURL` is a deprecated alias for `baseUrl`. An image needs Python 3, Git, GNU tar, and `nohup`; a non-root image also needs passwordless `sudo -n`. `box.native` is `{ machine, client }`, the machine metadata and the official `Boxd` client.
 
 ## Limitations
 
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
-- No egress restrictions, idle deadlines, hard lifetimes, or terminals.
+- No `network: "none"` and no terminals.
 - One preview route per machine.
 - Listing reads guest metadata, which can wake sleeping machines.
 
 ## How it works
 
 - Keys, labels, and creation time live in `/var/lib/sandbox-sdk/metadata.json`. Machine names starting with `sbxsdk-` mark candidates. Keep both intact, and keep secrets out of labels.
-- Machines are created isolated, with auto-suspend and auto-destroy off. Isolation removes metadata access and machine peers but does not block the internet.
+- Machines are created isolated, with auto-suspend off unless you set `idleTimeoutMs`, and auto-destroy off. Isolation removes metadata access and machine peers but does not block the internet. boxd's own idle auto-hibernate (4 hours by default) still applies.
 - Large reads use bounded exec calls, and each chunk retries once on a timeout. Writes and commands are never replayed.
 - A failed snapshot capture is deleted so retries don't leave billable artifacts. If that cleanup can't be confirmed, you get `outcome_unknown` with the snapshot name.
 - The preview route has boxd's browser bot challenge turned off so server-side clients can connect.

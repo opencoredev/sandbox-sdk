@@ -1,6 +1,6 @@
 ---
 title: Superserve
-description: Run Firecracker microVMs on Superserve. Pause and resume, snapshots, and authenticated HTTPS previews.
+description: Run Firecracker microVMs on Superserve. Pause and resume, snapshots, egress allow lists, secret bindings, and HTTPS previews.
 ---
 
 `superserve()` runs each sandbox as a Firecracker microVM on [Superserve](https://docs.superserve.ai/sandbox/create) through the official `@superserve/sdk`.
@@ -31,14 +31,14 @@ The default template, `superserve/node-22`, has no Python, which the adapter nee
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Partial | Output arrives when the command finishes |
-| Files | Yes | |
+| Files | Yes | `mode` uses a `chmod` after the write |
 | Background processes | Yes | |
-| Preview URLs | Yes | Private; send the returned header |
+| Preview URLs | Yes | Private by default; send the returned header |
 | Pause and resume | Yes | VM state survives |
-| Snapshots | Yes | |
+| Snapshots | Yes | Kept until deleted; no `expiresInMs` |
 | Machine size | No | Set by the template |
-| Network policy | No | Only `"all"` |
-| Hard lifetime (`timeoutMs`) | No | |
+| Network policy | Yes | `"none"` and allow lists of hosts, wildcards, or IPv4 CIDRs |
+| Hard lifetime (`timeoutMs`) | No | Use `autoPauseMs` and `autoDeleteMs` |
 | Idle timeout (`idleTimeoutMs`) | No | |
 | Keys | Best-effort | Found by metadata lookup |
 | Terminal | No | |
@@ -70,13 +70,16 @@ import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 
 await using box = await createSandbox(superserve({ installPython: true }));
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
 
+Superserve's file API has no mode, so the SDK runs `chmod` right after a write that passes `mode`.
+
 ## Background processes and previews
 
-No ports to declare. `box.preview(port)` publishes the port as private and returns the auth header in `preview.headers`. Send it with every request. Ports must be between 1024 and 65535, except 49983.
+No ports to declare. `box.preview(port)` publishes the port as private and returns the auth header in `preview.headers`. Send it with every request. With `previewAccess: "public"`, ports are published publicly and `preview.headers` is absent. Ports must be between 1024 and 65535, except 49983.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -105,11 +108,11 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(superserve(), { from: id });
 ```
 
-Snapshots outlive their source; delete them with the native `Snapshot.deleteById(id)`.
+Snapshots outlive their source and have no expiry; delete them with the native `Snapshot.deleteById(id)`. `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
 
 ## Size, network, and lifetime
 
-Resources come from the template. `size`, `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported` before a VM is allocated.
+Resources come from the template. `size`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported` before a VM is allocated.
 
 ```ts
 import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
@@ -124,6 +127,33 @@ try {
 }
 ```
 
+`network` maps to Superserve egress rules. `"none"` denies `0.0.0.0/0`. An allow list denies everything else and accepts hostnames, `*.example.com` wildcards (subdomains only, not the apex), IPv4 addresses, and IPv4 CIDRs. When the list holds a hostname, the adapter also allows Superserve's DNS resolvers, `1.1.1.1/32` and `8.8.8.8/32`, because names can't resolve otherwise. The adapter reads the rules back after creation and fails with `unsupported` if they differ.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }), {
+  network: { allow: ["registry.npmjs.org", "*.github.com"] },
+});
+```
+
+Superserve has no hard lifetime or idle timeout. It has an auto-pause window and an auto-delete window, set on the provider:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+const provider = superserve({
+  installPython: true,
+  autoPauseMs: 30 * 60_000, // pause after 30 minutes of active time per session
+  autoDeleteMs: 24 * 60 * 60_000, // delete after a day spent paused
+});
+await using box = await createSandbox(provider);
+```
+
+`autoPauseMs` counts active time per session and re-arms on resume. `autoDeleteMs` counts from the pause, and `0` deletes the VM as soon as it pauses. Both round up to whole seconds.
+
 ## Configuration
 
 | Option | Type | Default | Env var |
@@ -133,20 +163,27 @@ try {
 | `template` | `string` | `"superserve/node-22"` | |
 | `installPython` | `boolean` | `false` | |
 | `requestTimeoutMs` | `number` | `90_000` | |
+| `autoPauseMs` | `number` | Never | |
+| `autoDeleteMs` | `number` | Never | |
+| `secretBindings` | `Record<string, string>` | None | |
+| `previewAccess` | `"private" \| "public"` | `"private"` | |
+
+`secretBindings` maps env var names to [Superserve secrets](https://docs.superserve.ai/secrets/overview) you created: `{ OPENAI_API_KEY: "openai-prod" }`. The sandbox sees a proxy token in the env var, and Superserve attaches the real credential to outbound requests for the secret's hosts. These are secret names, not values, unlike `createSandbox`'s `secrets` option.
 
 A template needs Git, tar, and `nohup`, plus Python 3 unless `installPython` is on. Installing Python needs root and package-repository access and slows the first operation. For fast starts, build a template with Python 3 included; the repo's benchmark has one in `bench/templates/superserve/build.ts`. `box.native` is the SDK's `Sandbox` object.
 
 ## Limitations
 
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
-- No sizes, network restrictions, idle timeouts, hard lifetimes, or terminals.
+- No sizes, idle timeouts, hard lifetimes, or terminals.
+- Egress rules cover IPv4 only.
 - Command output isn't live.
 - Connecting to a paused VM resumes it.
 
 ## How it works
 
 - Commands run under a guest supervisor in their own process group. A timeout or abort triggers a separate cancellation check, and an unconfirmed kill returns `outcome_unknown`.
-- If the template sets a native auto-pause timeout, the adapter clears it, because it is an active-time window, not a hard lifetime.
+- A restore inherits the snapshot's auto-pause window. The adapter replaces it with `autoPauseMs`, or clears it when `autoPauseMs` is unset.
 - Listing uses native metadata and doesn't wake VMs.
 - A failed snapshot reports `outcome_unknown` with the snapshot name. List the source's snapshots before retrying.
 

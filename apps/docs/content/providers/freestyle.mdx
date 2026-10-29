@@ -31,11 +31,11 @@ console.log(result.stdout);
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Partial | Output arrives when the command finishes |
-| Files | Yes | |
+| Files | Yes | Native `mode` |
 | Background processes | Yes | |
 | Preview URLs | Yes | Public `https://` on `style.dev` |
 | Pause and resume | Yes | Memory survives |
-| Snapshots | Yes | Memory and disk |
+| Snapshots | Yes | Memory and disk; `expiresInMs` is native |
 | Machine size | No | Pick a base snapshot instead |
 | Network policy | Partial | `"all"` or `"none"`; no host allow lists |
 | Hard lifetime (`timeoutMs`) | Yes | Whole seconds |
@@ -72,9 +72,12 @@ import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
 await using box = await createSandbox(freestyle());
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
+
+`mode` goes to Freestyle's native write. Without it, an existing file keeps its mode and a new file gets the guest default (`644`).
 
 ## Background processes and previews
 
@@ -104,11 +107,11 @@ await using box = await createSandbox(freestyle(), { key: "user:123" });
 await box.pause();
 await box.resume();
 
-const { id } = await box.snapshot();
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 });
 await using copy = await createSandbox(freestyle(), { from: id });
 ```
 
-Snapshots include the creation environment file, secrets included. Treat them as sensitive.
+`expiresInMs` sets the snapshot's native TTL, rounded up to whole seconds: Freestyle deletes it that long after capture. Without it, or with `0`, the snapshot is kept until you delete it, or until your plan's retention cap. Snapshots include the creation environment file, secrets included. Treat them as sensitive.
 
 ## Size, network, and lifetime
 
@@ -127,6 +130,14 @@ await using box = await createSandbox(freestyle(), {
 - `network: "none"`, or an empty allow list, adds no outbound rules. A nonempty allow list fails with `unsupported`.
 - `idleTimeoutMs` rounds up to whole seconds and measures network activity, not CPU.
 - `timeoutMs` rounds down to whole seconds, so deletion is never late. Under one second fails with `unsupported`.
+- `autoDeleteMs` on the provider deletes a VM once it has gone that long without running, for example after it was paused or stopped. Each start resets the clock, and `0` deletes the VM as soon as it stops. It rounds up to whole seconds.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle({ autoDeleteMs: 24 * 60 * 60_000 }));
+```
 
 The adapter reads the rules and limits back after creation and deletes the VM if they don't match.
 
@@ -138,6 +149,7 @@ The adapter reads the rules and limits back after creation and deletes the VM if
 | `baseUrl` | `string` | `https://api.freestyle.sh` | |
 | `snapshotId` | `string` | `"freestyle/ubuntu"` | |
 | `requestTimeoutMs` | `number` | `30_000` | |
+| `autoDeleteMs` | `number` | Never, or your plan's cap | |
 
 `requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. `box.native` is the SDK's typed `Vm` handle.
 

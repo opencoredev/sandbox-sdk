@@ -32,7 +32,7 @@ This prints `42`. `await using` disposes the VM when the block ends.
 | Feature | Support | Notes |
 | --- | --- | --- |
 | Commands and streaming | Yes | Bundled shell tools, Node compatibility layer, WebAssembly Git |
-| Files | Yes | Virtual file system |
+| Files | Yes | Virtual file system; native `mode` |
 | Background processes | No | Use `box.native.process` |
 | Preview URLs | No | Use `box.native.network.httpRequest()` |
 | Pause and resume | No | |
@@ -73,9 +73,12 @@ import { agentos } from "@opencoredev/sandbox-sdk/agentos";
 
 await using box = await createSandbox(agentos());
 await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
 ```
+
+`mode` is applied inside the VM right after the write. Without it, new files get `644`.
 
 ## Background processes and previews
 
@@ -122,8 +125,32 @@ await using box = await createSandbox(agentos(), {
 | Option | Type | Default | Env var |
 | --- | --- | --- | --- |
 | `gitPackagePath` | `string` | Rivet's pinned Git package, downloaded | |
+| `software` | `SoftwareInput[]` | None | |
+| `mounts` | `MountConfig[]` | None | |
+| `limits` | `AgentOsLimits` | agentOS's built-in limits | |
 
 Pass a trusted local `.aospkg` file to work offline. `box.native` is the typed `AgentOs` VM.
+
+`software`, `mounts`, and `limits` go to `AgentOs.create` unchanged, with the types from `@rivet-dev/agentos-core`:
+
+- `software` adds packages next to the bundled shell tools and Git.
+- `mounts` projects host directories or other file systems into the VM. `hostDirMount(path, hostPath)` is read-only unless you pass `{ readOnly: false }`, and the guest sees only that subtree.
+- `limits.resources` caps processes, open files, sockets, file system bytes, and WebAssembly memory and fuel. A command that hits a cap fails with an error such as `Resource temporarily unavailable`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+import { hostDirMount } from "@rivet-dev/agentos-core";
+
+const provider = agentos({
+  mounts: [hostDirMount("/fixtures", "/srv/fixtures")],
+  limits: { resources: { maxProcesses: 64, maxFilesystemBytes: 512 * 1024 * 1024 } },
+});
+await using box = await createSandbox(provider);
+console.log((await box.run("ls /fixtures")).stdout);
+```
+
+A custom VM `user` isn't exposed: agentOS 0.4.1 writes host-side files as uid 1000, so any other user can't write `/workspace`.
 
 ## Limitations
 
