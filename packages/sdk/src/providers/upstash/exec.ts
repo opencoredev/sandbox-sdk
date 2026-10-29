@@ -109,7 +109,7 @@ export async function execute(
 export async function startProcess(
   box: Box,
   input: Omit<ExecInput, "timeoutMs">,
-  halt: (dir: string) => Promise<unknown>,
+  halt: (dir: string) => Promise<void>,
   prepare?: string,
 ) {
   const dir = `/tmp/.sandbox-sdk/upstash-runs/${crypto.randomUUID()}`;

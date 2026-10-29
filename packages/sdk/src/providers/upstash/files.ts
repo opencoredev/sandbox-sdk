@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import type { Box } from "@upstash/box";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
+import { isNumber, isString } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 
 // Base64 plus JSON must fit the native request body; read ranges cap at 8 MiB.
@@ -176,25 +177,21 @@ export type ListedEntry = {
   modifiedAt: number;
 };
 
-function listed(value: unknown): ListedEntry[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries: ListedEntry[] = [];
+/** One row the list program prints: `[name, type, size, modifiedAt]`. */
+type ListedRow = [ListedEntry["name"], ListedEntry["type"], number, number];
 
-  for (const item of value) {
-    if (!Array.isArray(item) || item.length !== 4) return undefined;
-    const [name, type, size, modifiedAt]: unknown[] = item;
-
-    if (
-      typeof name !== "string" ||
-      (type !== "file" && type !== "directory" && type !== "symlink" && type !== "other") ||
-      typeof size !== "number" ||
-      typeof modifiedAt !== "number"
-    )
-      return undefined;
-    entries.push({ name, type, size, modifiedAt });
-  }
-
-  return entries;
+function isListedRow(value: unknown): value is ListedRow {
+  return (
+    Array.isArray(value) &&
+    value.length === 4 &&
+    isString(value[0]) &&
+    (value[1] === "file" ||
+      value[1] === "directory" ||
+      value[1] === "symlink" ||
+      value[1] === "other") &&
+    isNumber(value[2]) &&
+    isNumber(value[3])
+  );
 }
 
 /** Returns undefined when the guest cannot answer (no python3, truncated output),
@@ -217,7 +214,11 @@ export async function listDirectory(
     throw Object.assign(new Error("Directory entry vanished during listing"), { statusCode: 404 });
 
   try {
-    return listed(JSON.parse(text));
+    const value: unknown = JSON.parse(text);
+
+    if (!Array.isArray(value) || !value.every(isListedRow)) return undefined;
+
+    return value.map(([name, type, size, modifiedAt]) => ({ name, type, size, modifiedAt }));
   } catch {
     return undefined;
   }
