@@ -19,9 +19,9 @@ const style = logo ? `--sbx-mark: url("${base}${logo}")` : undefined;
 ---
 
 {/*
-  Logos are masked spans, not <img>: Blume binds click-to-zoom to every
-  `.prose img`, and a tab icon must only switch tabs. The mask takes the tab's
-  text color (see "brand marks" in theme.css).
+  Logos are spans with a background image, not <img>: Blume binds
+  click-to-zoom to every `.prose img`, and a tab icon must only switch tabs.
+  The logo keeps its own brand colors (see "brand marks" in theme.css).
 */}
 <Tab title={label}>
   <p class="provider-tab-fallback">

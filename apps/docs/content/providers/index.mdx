@@ -22,9 +22,10 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona) | `daytona()` from `/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY` | Custom sizes, idle auto-stop |
 | <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash) | `upstash()` from `/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY` | Durable state, filesystem snapshots |
 | <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway) | `railway()` from `/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | Ephemeral VMs, filesystem checkpoints |
-| [Sandboxer](/providers/sandboxer) | `sandboxer()` from `/sandboxer` | `@boatdev/sdk` | `SANDBOXER_API_KEY` | Ubuntu microVMs, memory pause, named disk snapshots |
+| <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer) | `sandboxer()` from `/sandboxer` | `@boatdev/sdk` | `SANDBOXER_API_KEY` | Ubuntu microVMs, memory pause, named disk snapshots |
 | <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat) | `boat()` from `/boat` | `@boatdev/sdk` | `BOAT_API_KEY` | Persistent VMs for long-running agents |
 | <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki) | `tenki()` from `/tenki` | `@tenkicloud/sandbox` | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN` | Full VMs, disk and memory snapshots |
+| <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `@superserve/sdk` | `SUPERSERVE_API_KEY` | Firecracker microVMs, pause, snapshots |
 | <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd) | `boxd()` from `/boxd` | `@boxd-sh/sdk` | `BOXD_API_KEY` | Persistent isolated VMs, memory pause |
 | <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle) | `freestyle()` from `/freestyle` | `freestyle` | `FREESTYLE_API_KEY` | Persistent VMs, default-deny firewall, memory snapshots |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory) | `memory()` from `/memory` | Nothing | None | Unit tests |
@@ -78,11 +79,14 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   <Card title="Boat" href="/providers/boat" icon="/integrations/boat.svg">
     Persistent cloud VMs with size presets and token-protected previews.
   </Card>
-  <Card title="Sandboxer" href="/providers/sandboxer" icon="server">
+  <Card title="Sandboxer" href="/providers/sandboxer" icon="/integrations/sandboxer.svg">
     Ubuntu microVMs in two regions with memory pause, named snapshots, and cookie-authenticated previews.
   </Card>
   <Card title="Tenki" href="/providers/tenki" icon="/integrations/tenki.svg">
     Full Linux VMs with disk and memory snapshots, pause, and exact machine sizes.
+  </Card>
+  <Card title="Superserve" href="/providers/superserve" icon="/integrations/superserve.svg">
+    Firecracker microVMs with pause, snapshots, and authenticated HTTPS previews.
   </Card>
   <Card title="boxd" href="/providers/boxd" icon="/integrations/boxd.svg">
     Persistent isolated Linux machines with pause and HTTPS proxies.
