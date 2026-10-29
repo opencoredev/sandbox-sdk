@@ -1,9 +1,11 @@
 ---
 title: Overview
-description: Sandboxes for your agents and your users. Any provider, one line. Sandbox SDK is one TypeScript API over Docker, E2B, Vercel Sandbox, and Daytona.
+description: Sandboxes for your agents and your users. Any provider, one line. Sandbox SDK is one TypeScript API over Docker, E2B, Vercel Sandbox, Daytona, and ten more providers.
 ---
 
-Sandbox SDK gives your code an isolated Linux machine to run commands in, write files to, and start dev servers on. You use the same TypeScript API whether that machine is a Docker container on your laptop or a microVM at E2B, Vercel, or Daytona. Changing providers is one import.
+> **1.0 is in beta.** These docs cover `1.0.0-beta`, published on the `next` tag. Install it with `npm i @opencoredev/sandbox-sdk@next`; a plain `npm i @opencoredev/sandbox-sdk` still gives you 0.2.
+
+Sandbox SDK gives your code an isolated Linux machine to run commands in, write files to, and start dev servers on. You use the same TypeScript API whether that machine is a Docker container on your laptop or a microVM at E2B, Vercel, Daytona, or any of the other [supported providers](/providers). Changing providers is one import.
 
 It is for two kinds of app. One gives an AI agent a computer: the model runs tests, edits code, and starts a server. The other runs code your users write, such as an app builder with a live preview. Both need a machine that can't touch your servers, and both need it to come back when the user does.
 
