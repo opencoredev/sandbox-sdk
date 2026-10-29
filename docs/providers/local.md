@@ -20,4 +20,4 @@ For local startup diagnosis, `usage()` includes `createInspectMs` (including any
 
 ## Benchmark cleanup policy
 
-The default benchmark harness requests no creation lifetime or idle timeout from any provider. It relies on tracked cleanup, including deletion of late arrivals, and on its `ownership.json` journal for `bun bench reap`. The original harness (`bun bench --v1`) requests creation lifetime only from memory, E2B, and Daytona, and its reports include that policy in their notes. Vercel still rejects creation `timeoutMs` because its native timer resets with each resumed session.
+The default benchmark harness requests no creation lifetime or idle timeout from any provider. It relies on tracked cleanup, including deletion of late arrivals, and on its `ownership.json` journal for `bun bench reap`. The original harness (`bun bench --v1`) requests creation lifetime only from memory, E2B, and Daytona, and its reports include that policy in their notes. It requests none from Vercel, because Vercel's creation `timeoutMs` bounds one session and resets with each resume.

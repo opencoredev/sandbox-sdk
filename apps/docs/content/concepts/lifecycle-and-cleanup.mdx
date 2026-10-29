@@ -49,17 +49,7 @@ await using box = await createSandbox(daytona(), {
 - `idleTimeoutMs` stops the sandbox after this long without activity, using the provider's own idle handling.
 - `timeoutMs` is the hard maximum lifetime. The provider ends the sandbox when it runs out, whatever it is doing.
 
-Most providers enforce both themselves, so they hold even after your server crashes. Local has no timer of its own: it stores the deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs. A provider that can't honor a limit at all makes `createSandbox` fail with `unsupported` instead of ignoring it:
-
-| Provider | `idleTimeoutMs`                  | `timeoutMs`                                             |
-| -------- | -------------------------------- | ------------------------------------------------------- |
-| Daytona  | Yes, rounded up to whole minutes | Yes, rounded down to whole minutes, at least one minute |
-| E2B      | No                               | Yes                                                     |
-| Vercel   | No                               | Yes, per session; each resume starts a new one          |
-| Local    | Yes, on reconnect or reap        | Yes, on reconnect or reap                               |
-| Memory   | Yes, in your process             | Yes, in your process                                    |
-
-The [capability matrix](/reference/capabilities) lists every provider.
+A provider that enforces a limit itself keeps enforcing it after your server crashes. A provider that can't honor a limit at all makes `createSandbox` fail with `unsupported` instead of ignoring it. Support differs a lot: many providers take only one of the two, some round to whole minutes or seconds, and a few enforce them only when a client reconnects. The `idleTimeoutMs` and `timeoutMs` rows of the [capability matrix](/reference/capabilities#matrix) say what each provider does, and its Timeouts note explains the rounding.
 
 Set the limits your provider supports on every keyed sandbox. Where it supports neither, run [`reapSandboxes`](#find-and-reap-sandboxes) on a schedule. A forgotten keyed sandbox is the most common source of surprise bills.
 
@@ -82,7 +72,7 @@ console.log(result.stdout);
 
 The copy starts with `node_modules` already installed. These methods only exist on providers that support them, so TypeScript catches a call on a provider that can't. Memory has neither.
 
-What survives a pause differs. Local, E2B, Tenki, boxd, and Freestyle keep running processes. Vercel and Upstash Box stop the machine and keep only the disk, so processes end and you restart them with `box.process(name).restart()`. Daytona has no pause. The [capability matrix](/reference/capabilities) has the details.
+What survives a pause differs. Some providers freeze the whole VM, so running processes continue on resume. Others keep only the disk, so processes end and you restart them with `box.process(name).restart()`. The Pause note under the [capability matrix](/reference/capabilities#notes) says which providers do which.
 
 ## Find and reap sandboxes
 

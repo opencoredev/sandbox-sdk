@@ -3,28 +3,31 @@ title: Capabilities
 description: The full capability matrix. Which options and methods each provider accepts, the exact limits, how TypeScript gates optional methods, and how to check at runtime.
 ---
 
-Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This page lists what each provider accepts. For a quicker overview, see [Compare providers](/providers).
+Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This page lists what each provider accepts. [Compare providers](/providers) lists each provider's factory, credentials, and what it is best for.
 
 ## Matrix
 
 Each row is an option or method. "No network" means `network: "none"`, and "Allow list" means a `network` policy with an `allow` array. "Partial" means a limit that matters, and the [notes](#notes) under the table explain each one. The table scrolls sideways.
 
-|                   | Local        | agentOS            | E2B         | Vercel             | Daytona     | Upstash     | Railway            | Boat           | Sandboxer      | Tenki       | Superserve  | boxd             | Freestyle              | Memory   |
-| ----------------- | ------------ | ------------------ | ----------- | ------------------ | ----------- | ----------- | ------------------ | -------------- | -------------- | ----------- | ----------- | ---------------- | ---------------------- | -------- |
-| `pause()`         | Yes          | No                 | Yes         | Partial            | No          | Partial     | No                 | No             | Yes            | Yes         | Yes         | Yes              | Yes                    | No       |
-| `snapshot()`      | Yes          | No                 | Yes         | Yes                | Yes         | Yes         | Files&nbsp;only    | No             | Yes            | Yes         | Yes         | Yes              | Yes                    | No       |
-| `terminal()`      | No           | No                 | No          | No                 | No          | No          | No                 | No             | No             | No          | No          | No               | No                     | No       |
-| No&nbsp;network   | Yes          | Yes                | Yes         | Yes                | Yes         | Yes         | No                 | No             | No             | Yes         | Yes         | No               | Yes                    | Recorded |
-| Allow&nbsp;list   | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes         | Yes         | No                 | No             | No             | Yes         | Yes         | Yes              | Empty&nbsp;only        | Recorded |
-| Size&nbsp;presets | Yes          | No                 | No          | Yes                | Yes         | Yes         | No                 | Yes            | Yes            | Yes         | No          | Yes              | No                     | No       |
-| Exact&nbsp;size   | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes         | No          | No                 | No             | No             | Yes         | No          | Fixed&nbsp;steps | No                     | No       |
-| `idleTimeoutMs`   | Partial      | No                 | No          | No                 | Minutes     | No          | Minutes            | No             | Minutes        | No          | No          | Seconds          | Seconds                | Yes      |
-| `timeoutMs`       | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes     | No          | No                 | No             | No             | Yes         | No          | Seconds          | Seconds                | Yes      |
-| `ports`           | Yes          | No                 | No          | Up&nbsp;to&nbsp;15 | No          | No          | Up&nbsp;to&nbsp;10 | No             | No             | No          | No          | No               | No                     | No       |
-| `labels`          | Yes          | Yes                | Yes         | Up&nbsp;to&nbsp;4  | Yes         | Yes         | Yes                | 120&nbsp;chars | 120&nbsp;chars | Yes         | Yes         | Yes              | About&nbsp;2.9&nbsp;KB | Yes      |
-| Key&nbsp;mode     | exact        | exact              | best-effort | exact              | best-effort | best-effort | best-effort        | best-effort    | best-effort    | best-effort | best-effort | best-effort      | best-effort            | exact    |
+|                   | Local        | agentOS            | E2B         | Vercel             | Daytona           | Upstash            | Railway            | Boat               | Sandboxer          | Tenki       | Superserve        | boxd             | Freestyle              | Memory   |
+| ----------------- | ------------ | ------------------ | ----------- | ------------------ | ----------------- | ------------------ | ------------------ | ------------------ | ------------------ | ----------- | ----------------- | ---------------- | ---------------------- | -------- |
+| `pause()`         | Yes          | No                 | Yes         | Partial            | No                | Partial            | No                 | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `snapshot()`      | Yes          | No                 | Yes         | Yes                | Yes               | Yes                | Files&nbsp;only    | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `terminal()`      | No           | No                 | No          | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
+| No&nbsp;network   | Yes          | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No               | Yes                    | Recorded |
+| Allow&nbsp;list   | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes              | Empty&nbsp;only        | Recorded |
+| Size&nbsp;presets | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | No       |
+| Exact&nbsp;size   | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Fixed&nbsp;steps | No                     | No       |
+| `idleTimeoutMs`   | Partial      | No                 | No          | No                 | Minutes           | No                 | Minutes            | No                 | Minutes            | No          | No                | Seconds          | Seconds                | Yes      |
+| `timeoutMs`       | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes           | No                 | No                 | No                 | No                 | Yes         | No                | Seconds          | Seconds                | Yes      |
+| `ports`           | Yes          | No                 | No          | Up&nbsp;to&nbsp;15 | No                | No                 | Up&nbsp;to&nbsp;10 | No                 | No                 | No          | No                | No               | No                     | No       |
+| `labels`          | Yes          | Yes                | Yes         | Up&nbsp;to&nbsp;4  | Yes               | Yes                | Yes                | 120&nbsp;chars     | 120&nbsp;chars     | Yes         | Yes               | Yes              | About&nbsp;2.9&nbsp;KB | Yes      |
+| Key&nbsp;mode     | exact        | exact              | best-effort | exact              | best-effort       | best-effort        | best-effort        | best-effort        | best-effort        | best-effort | best-effort       | best-effort      | best-effort            | exact    |
+| Preview&nbsp;URL  | Localhost    | No                 | Public      | Public             | Token&nbsp;header | Bearer&nbsp;header | Public             | Cookie&nbsp;header | Cookie&nbsp;header | Public      | Token&nbsp;header | Public           | Public                 | Fake     |
 
-`timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. "Minutes" and "Seconds" mean the provider enforces the limit in whole units of that size. In the `ports` row, an entry other than No means a preview port must be listed in `ports` when the sandbox is created.
+`timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. "Minutes" and "Seconds" mean the provider enforces the limit in whole units of that size. In the `ports` row, an entry other than No means a preview port must be listed in `ports` when the sandbox is created. In the Preview URL row, "Public" means an `https://` URL anyone can open, and a header entry means `preview.headers` must go with every request.
+
+`scripts/check-capabilities.ts` in the docs app checks this table against the adapters' source on every CI run.
 
 ## Notes
 
@@ -36,11 +39,35 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 - **Provider timers.** Some providers reject `timeoutMs` but have a timer of their own on the factory. Boat and Sandboxer take `ttlSeconds`, an auto-stop that restarts while Boat's agent works, so it is not a hard lifetime. Upstash Box takes `ttlSeconds` with `ephemeral: true` as a leak backstop. Superserve takes `autoPauseMs` and `autoDeleteMs`. The provider pages explain each one.
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox, so you get four labels, or three with a `key`. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded. Railway and boxd keep them in a marker file inside each VM.
 - **Key mode.** agentOS keys are exact within one application process.
+- **Previews.** Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. boxd gives one public route per machine, and previewing a new port moves it. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. agentOS has no preview URLs, and Memory returns fake ones.
 - **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
 - **Upstash Box.** Listing SDK boxes reads metadata from inside each box and may wake idle boxes.
 - **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).
 - **agentOS.** Supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local (agentOS)](/providers/agentos).
 - **boxd.** A restored snapshot keeps the source's size, image, and env. See [boxd](/providers/boxd).
+
+## Peer packages
+
+Each cloud provider loads its company's own SDK the first time it does anything. These are optional peers, so your package manager won't install them for you: add the one for each provider you use next to `@opencoredev/sandbox-sdk`. Version is the range the SDK accepts.
+
+| Provider                            | Import                                | Peer package              | Version            |
+| ----------------------------------- | ------------------------------------- | ------------------------- | ------------------ |
+| [Local](/providers/local)           | `@opencoredev/sandbox-sdk/local`      | None                      | None               |
+| [agentOS](/providers/agentos)       | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core` | `0.4.1`            |
+| [E2B](/providers/e2b)               | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                     | `^2.56.0`          |
+| [Vercel](/providers/vercel)         | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`         | `^3.8.0`           |
+| [Daytona](/providers/daytona)       | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`          | `>=0.225.0 <1.0.0` |
+| [Upstash](/providers/upstash)       | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`            | `^0.7.9`           |
+| [Railway](/providers/railway)       | `@opencoredev/sandbox-sdk/railway`    | `railway`                 | `^3.16.0`          |
+| [Boat](/providers/boat)             | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`            | `^1.9.9`           |
+| [Sandboxer](/providers/sandboxer)   | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`            | `^1.9.9`           |
+| [Tenki](/providers/tenki)           | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`     | `^1.4.1`           |
+| [Superserve](/providers/superserve) | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`         | `^0.11.4`          |
+| [boxd](/providers/boxd)             | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `^0.2.17`          |
+| [Freestyle](/providers/freestyle)   | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`               | `^0.2.20`          |
+| [Memory](/providers/memory)         | `@opencoredev/sandbox-sdk/memory`     | None                      | None               |
+
+Local needs a running Docker Engine instead. agentOS also needs its platform sidecar package; see [Local (agentOS)](/providers/agentos).
 
 ## Capability names
 

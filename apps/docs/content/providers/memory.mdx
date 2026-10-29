@@ -71,6 +71,8 @@ This prints `hi` and `done`. `await using` destroys the sandbox when the block e
 | Keys                           | Exact   | Per provider instance; lost when the process exits |
 | Terminal                       | No      |                                                    |
 
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
 ## Run commands
 
 Built in: `echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, and `printenv`. Register a handler for any other program. It gets the parsed `args`, `cwd`, `env`, `stdin`, an abort `signal`, `stdout` and `stderr` writers, and `files`, and returns the exit code.

@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk@next
 ```
 
-Then add the peer package for each provider you use (see [Providers](#providers)), for example `npm install e2b`. Provider packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+Then add the peer package for each provider you use, for example `npm install e2b`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Provider packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -91,24 +91,24 @@ Two things differ between providers and are worth checking before you go multi-p
 
 ## Providers
 
-Import each provider from its own subpath. The root entry never loads a provider SDK, and constructing a factory performs no I/O.
+Import each provider from its own subpath. The root entry never loads a provider SDK, and constructing a factory performs no I/O. The [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) lists each provider's peer package, capabilities, limits, and preview behavior, and a script checks it against this package's source.
 
-| Provider                                                       | Import from   | Factory                 | Credentials (env)                                                               | Peer package              | Capabilities                                                           | Previews                                                                |
-| -------------------------------------------------------------- | ------------- | ----------------------- | ------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)              | `/e2b`        | `e2b()`                 | `E2B_API_KEY`                                                                   | `e2b`                     | pause, snapshot, network-policy                                        | any port                                                                |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)      | `/daytona`    | `daytona()`             | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`)                | `@daytonaio/sdk`          | snapshot, size, network-policy                                         | any port; private sandboxes need `preview.headers`                      |
-| [Vercel](https://sandbox-sdk.app/docs/providers/vercel)        | `/vercel`     | `vercel()`              | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox`         | pause, snapshot, size, network-policy                                  | declare in `ports` (max 15)                                             |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         | `@upstash/box`            | pause, snapshot, size, network-policy; no pause with `ephemeral: true` | any port; bearer token in `preview.headers` unless `public: true`       |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   | `railway`                 | snapshot                                                               | declare in `ports` (max 10)                                             |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           | `@tenkicloud/sandbox`     | pause, snapshot, size, network-policy                                  | any port; URL may expire (`preview.expiresAt`)                          |
-| boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       | `@boxd-sh/sdk`            | pause, snapshot, size                                                  | one port at a time; the URL follows the last port requested             |
-| Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             | `freestyle`               | pause, snapshot, network-policy                                        | any port                                                                |
-| Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            | `@superserve/sdk`         | pause, snapshot                                                        | any port; token in `preview.headers`                                    |
-| Boat                                                           | `/boat`       | `boat()`                | `BOAT_API_KEY` (optional `BOAT_API_BASE`)                                       | `@boatdev/sdk`            | size                                                                   | any port; cookie in `preview.headers`                                   |
-| Sandboxer                                                      | `/sandboxer`  | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`)      | `@boatdev/sdk`            | pause, snapshot, size                                                  | any port; private URL, send `preview.headers`                           |
-| [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local`      | `local()`               | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)   | none                      | pause, snapshot, size, network-policy (`"none"` only, no allow-lists)  | declare in `ports` (default `[3000]`); URL is `http://127.0.0.1:<port>` |
-| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)      | `/agentos`    | `agentos()`             | none                                                                            | `@rivet-dev/agentos-core` | network-policy                                                         | none; no background processes either                                    |
-| Memory                                                         | `/memory`     | `memory()`              | none                                                                            | none                      | network-policy                                                         | fake `*.memory.invalid` URL; never fetch it                             |
+| Provider                                                       | Import from   | Factory                 | Credentials (env)                                                               |
+| -------------------------------------------------------------- | ------------- | ----------------------- | ------------------------------------------------------------------------------- |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)              | `/e2b`        | `e2b()`                 | `E2B_API_KEY`                                                                   |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)      | `/daytona`    | `daytona()`             | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`)                |
+| [Vercel](https://sandbox-sdk.app/docs/providers/vercel)        | `/vercel`     | `vercel()`              | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` |
+| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         |
+| [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   |
+| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           |
+| boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       |
+| Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             |
+| Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            |
+| Boat                                                           | `/boat`       | `boat()`                | `BOAT_API_KEY` (optional `BOAT_API_BASE`)                                       |
+| Sandboxer                                                      | `/sandboxer`  | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`)      |
+| [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local`      | `local()`               | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)   |
+| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)      | `/agentos`    | `agentos()`             | none                                                                            |
+| Memory                                                         | `/memory`     | `memory()`              | none                                                                            |
 
 Capability meanings: `pause` adds `box.pause()` and `box.resume()`, `snapshot` adds `box.snapshot()` and `createSandbox(provider, { from })`, `size` allows the `size` option, and `network-policy` allows `network: "none"` or `{ allow: [...] }`. The SDK also defines `terminal` (`box.terminal()`, an interactive PTY), but no built-in provider supports it yet.
 
@@ -191,7 +191,7 @@ console.log((await pending).ok); // false; an aborted run also reports timedOut:
 - Commands time out after 120 seconds unless you pass `timeoutMs` or chain `.timeout(ms)`. A timeout or an abort kills the command's process group and resolves with `ok: false`, `exitCode: null`, and `timedOut: true`. It does not throw.
 - `createSandbox(provider, { signal })` rejects with `SandboxError` code `aborted`. A sandbox that arrives after the abort is destroyed for you.
 - `start(..., { readyTimeoutMs })` bounds readiness (default 60 seconds), and `preview(port, { waitMs })` waits for a 2xx.
-- `timeoutMs` and `idleTimeoutMs` on `createSandbox` set the sandbox's own lifetime, not a command timeout. A hard lifetime (`timeoutMs`) works on E2B, Daytona (one minute or more), Tenki, Freestyle, Local, and Memory. An idle timeout (`idleTimeoutMs`) works on Daytona, Railway, Freestyle, Local, and Memory. Every other provider rejects them with `unsupported`.
+- `timeoutMs` and `idleTimeoutMs` on `createSandbox` set the sandbox's own lifetime, not a command timeout. A provider that can't enforce one rejects it with `unsupported`. The `timeoutMs` and `idleTimeoutMs` rows of the [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) say which providers support each, and in what units.
 
 ### Files
 
@@ -242,7 +242,7 @@ const response = await fetch(preview.url, { headers: preview.headers });
 console.log(preview.url, response.status); // http://127.0.0.1:<port>/ 200
 ```
 
-Always send `preview.headers`. Daytona (private sandboxes), Upstash, Superserve, Boat, and Sandboxer put the access token there, and those providers reject requests without it. Local, Vercel, and Railway only route ports you declared with `createSandbox(provider, { ports })`, so pass `ports` in provider-agnostic code; the other providers ignore it. Servers must listen on `0.0.0.0`, not `localhost`.
+Always send `preview.headers`. Several providers put the access token there and reject requests without it. Some providers only route ports you declared with `createSandbox(provider, { ports })`, so pass `ports` in provider-agnostic code; the other providers ignore it. The `ports` and Preview URL rows of the [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) say which. Servers must listen on `0.0.0.0`, not `localhost`.
 
 ### Pause, resume, and snapshots
 

@@ -134,7 +134,7 @@ To follow output live, iterate `box.process("dev").lines()`. Each line has its o
 
 ## 4. Restart after a resume
 
-A paused Vercel Sandbox or Upstash Box, or a Daytona sandbox stopped by its idle timeout, comes back with its files but without its processes. Check the status and restart:
+On providers that keep only the disk through a pause or an idle stop, such as Vercel Sandbox, a resumed sandbox comes back with its files but without its processes. Check the status and restart:
 
 ```ts title="ensure-dev.ts"
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -147,7 +147,7 @@ const info = (await box.processes()).find((p) => p.name === "dev");
 if (info && info.status !== "running") await dev.restart();
 ```
 
-`restart()` stops the process if it's still running and starts the same command again. Local, E2B, Tenki, boxd, and Freestyle keep processes through a pause, so they don't need this.
+`restart()` stops the process if it's still running and starts the same command again. Providers that freeze the whole VM keep processes through a pause, so they don't need this. The Pause note under the [capability matrix](/reference/capabilities#notes) says which providers keep processes.
 
 ## Stop it
 

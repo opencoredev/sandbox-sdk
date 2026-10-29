@@ -70,6 +70,8 @@ console.log(result.stdout);
 | Keys                           | Best-effort | Read from VM metadata, with a marker file as fallback |
 | Terminal                       | No          |                                                       |
 
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
 ## Run commands
 
 Await `box.run` for the result. Iterating works too, but Freestyle returns output only after the command exits, so chunks arrive together at the end.

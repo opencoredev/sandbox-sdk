@@ -59,7 +59,7 @@ The sandbox and its network policy are the real boundary. Assume anything the mo
 
 ## Previews
 
-A preview URL from E2B or Vercel Sandbox is reachable by anyone who has it. Don't put secrets in a preview app, and don't share the URL beyond the user it belongs to. Daytona previews need a token header. Keep that header on your server and proxy the preview. Local previews bind to `127.0.0.1` on the Docker host.
+A public preview URL is reachable by anyone who has it. Don't put secrets in a preview app, and don't share the URL beyond the user it belongs to. A private preview needs the header from `preview.headers`. Keep that header on your server and proxy the preview. Local previews bind to `127.0.0.1` on the Docker host. The Preview URL row of the [capability matrix](/reference/capabilities#matrix) says which providers give public URLs and which need a header.
 
 ## Snapshots
 

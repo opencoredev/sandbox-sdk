@@ -39,7 +39,7 @@ await using box = await createSandbox(e2b({ template: "base" }), {
   env: { NODE_ENV: "development" },
   secrets: { GITHUB_TOKEN: token }, // injected as env, redacted from every output/log/error
   network: "all", // "all" | "none" | { allow: ["registry.npmjs.org", ...] }
-  ports: [3000], // declared up front (Vercel needs this; others ignore)
+  ports: [3000], // declared up front where the provider routes only declared ports
   idleTimeoutMs: 15 * 60_000, // auto-stop/pause when idle (native where supported)
   timeoutMs: 60 * 60_000, // hard max lifetime
   labels: { app: "builder", userId },
@@ -184,22 +184,24 @@ These run through `run`, with credentials passed through a temporary credential 
 
 ## 8. Providers
 
-| Factory            | Subpath       | keyMode     | Native SDK (optional peer) and notes                                                                       |
-| ------------------ | ------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `local()`          | `/local`      | exact       | Docker CLI, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.   |
-| `memory()`         | `/memory`     | exact       | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network. |
-| `e2b(opts)`        | `/e2b`        | best-effort | `e2b`. Native commands and pause/snapshot.                                                                 |
-| `vercel(opts)`     | `/vercel`     | exact       | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                              |
-| `daytona(opts)`    | `/daytona`    | best-effort | `@daytonaio/sdk`. Labels, preview token.                                                                   |
-| `upstash(opts)`    | `/upstash`    | best-effort | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                           |
-| `railway(opts)`    | `/railway`    | best-effort | `railway`.                                                                                                 |
-| `boat(opts)`       | `/boat`       | best-effort | `@boatdev/sdk`.                                                                                            |
-| `sandboxer(opts)`  | `/sandboxer`  | best-effort | `@boatdev/sdk`, through the same API client as `boat`.                                                     |
-| `tenki(opts)`      | `/tenki`      | best-effort | `@tenkicloud/sandbox`.                                                                                     |
-| `boxd(opts)`       | `/boxd`       | best-effort | `@boxd-sh/sdk`.                                                                                            |
-| `freestyle(opts)`  | `/freestyle`  | best-effort | `freestyle`.                                                                                               |
-| `superserve(opts)` | `/superserve` | best-effort | `@superserve/sdk`.                                                                                         |
-| `agentos(opts)`    | `/agentos`    | exact       | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                         |
+| Factory            | Subpath       | Native SDK (optional peer) and notes                                                                            |
+| ------------------ | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
+| `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.      |
+| `e2b(opts)`        | `/e2b`        | `e2b`. Native commands and pause/snapshot.                                                                      |
+| `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                   |
+| `daytona(opts)`    | `/daytona`    | `@daytonaio/sdk`. Labels, preview token.                                                                        |
+| `upstash(opts)`    | `/upstash`    | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                                |
+| `railway(opts)`    | `/railway`    | `railway`.                                                                                                      |
+| `boat(opts)`       | `/boat`       | `@boatdev/sdk`.                                                                                                 |
+| `sandboxer(opts)`  | `/sandboxer`  | `@boatdev/sdk`, through the same API client as `boat`.                                                          |
+| `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                          |
+| `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
+| `freestyle(opts)`  | `/freestyle`  | `freestyle`.                                                                                                    |
+| `superserve(opts)` | `/superserve` | `@superserve/sdk`.                                                                                              |
+| `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                              |
+
+Each adapter's key mode, capabilities, limits, and peer package range are listed once, in the docs' [capability matrix](../apps/docs/content/reference/capabilities.mdx). `apps/docs/scripts/check-capabilities.ts` checks that page against the adapters.
 
 **Adapter contract.** Internal, exported from `/provider` for third parties. [adapters.md](./adapters.md) is the guide for writing one. Each adapter implements:
 

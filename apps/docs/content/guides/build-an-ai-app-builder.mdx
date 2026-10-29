@@ -74,7 +74,7 @@ export async function projectSandbox(projectId: string) {
 
 The key makes this safe to call on every request. The first call creates the sandbox and scaffolds a Next.js app in `/workspace/app`. Later calls find the same sandbox. Vercel needs port 3000 declared here so it can be previewed.
 
-Vercel rejects `idleTimeoutMs` and `timeoutMs`, so this sandbox has no lifetime limit of its own. The [reaper](#before-you-ship) below cleans up the ones users abandon. The two labels plus the SDK's own tags use four of the five tags Vercel allows.
+Vercel has no idle timer, and its `timeoutMs` bounds one session, not the sandbox's whole life: each resume starts a new one. So a sandbox users keep coming back to has no lifetime limit of its own. The [reaper](#before-you-ship) below cleans up the ones users abandon. The two labels plus the SDK's own tags use four of the five tags Vercel allows.
 
 ## 3. Stream the agent
 

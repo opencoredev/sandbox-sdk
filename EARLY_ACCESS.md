@@ -14,7 +14,7 @@ npm install @opencoredev/sandbox-sdk@next
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
-Then install the peer package for each provider you plan to use. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
+Then install the peer package for each provider you plan to use. They are optional peers, so npm will not add them for you. The [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. Node.js 22+ or Bun 1.3+, ESM only.
 
 Check it works with no account and no Docker:
 
@@ -29,24 +29,24 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 
 ## Providers
 
-| Provider       | Import                                | Peer package              | Environment variables                                                                                         | Capabilities                                                            |
-| -------------- | ------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| E2B            | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                     | `E2B_API_KEY`                                                                                                 | pause, snapshot, network-policy                                         |
-| Daytona        | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`          | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET`                                               | snapshot, size, network-policy                                          |
-| Vercel         | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`         | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`                               | pause, snapshot, size, network-policy                                   |
-| Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`            | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
-| Railway        | `@opencoredev/sandbox-sdk/railway`    | `railway`                 | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 | snapshot                                                                |
-| Tenki          | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`     | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                                                         | pause, snapshot, size, network-policy                                   |
-| boxd           | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `BOXD_API_KEY`; optional `BOXD_BASE_URL`                                                                      | pause, snapshot, size                                                   |
-| Freestyle      | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`               | `FREESTYLE_API_KEY`                                                                                           | pause, snapshot, network-policy                                         |
-| Superserve     | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`         | `SUPERSERVE_API_KEY`                                                                                          | pause, snapshot                                                         |
-| Boat           | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`            | `BOAT_API_KEY`; optional `BOAT_API_BASE`                                                                      | size                                                                    |
-| Sandboxer      | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`            | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) | pause, snapshot, size                                                   |
-| Local (Docker) | `@opencoredev/sandbox-sdk/local`      | none                      | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)                                       | pause, snapshot, size, network-policy                                   |
-| agentOS        | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core` | none                                                                                                          | network-policy                                                          |
-| Memory         | `@opencoredev/sandbox-sdk/memory`     | none                      | none                                                                                                          | network-policy                                                          |
+| Provider       | Import                                | Environment variables                                                                                         |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| E2B            | `@opencoredev/sandbox-sdk/e2b`        | `E2B_API_KEY`                                                                                                 |
+| Daytona        | `@opencoredev/sandbox-sdk/daytona`    | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET`                                               |
+| Vercel         | `@opencoredev/sandbox-sdk/vercel`     | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`                               |
+| Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        |
+| Railway        | `@opencoredev/sandbox-sdk/railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 |
+| Tenki          | `@opencoredev/sandbox-sdk/tenki`      | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                                                         |
+| boxd           | `@opencoredev/sandbox-sdk/boxd`       | `BOXD_API_KEY`; optional `BOXD_BASE_URL`                                                                      |
+| Freestyle      | `@opencoredev/sandbox-sdk/freestyle`  | `FREESTYLE_API_KEY`                                                                                           |
+| Superserve     | `@opencoredev/sandbox-sdk/superserve` | `SUPERSERVE_API_KEY`                                                                                          |
+| Boat           | `@opencoredev/sandbox-sdk/boat`       | `BOAT_API_KEY`; optional `BOAT_API_BASE`                                                                      |
+| Sandboxer      | `@opencoredev/sandbox-sdk/sandboxer`  | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) |
+| Local (Docker) | `@opencoredev/sandbox-sdk/local`      | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)                                       |
+| agentOS        | `@opencoredev/sandbox-sdk/agentos`    | none                                                                                                          |
+| Memory         | `@opencoredev/sandbox-sdk/memory`     | none                                                                                                          |
 
-Every factory also takes its credential as an option, such as `e2b({ apiKey })`, so you can pass per-user keys instead of reading the environment. The package README has the preview behavior for each provider and the full API.
+Every factory also takes its credential as an option, such as `e2b({ apiKey })`, so you can pass per-user keys instead of reading the environment. What each provider supports (pause, snapshots, size, network policy, idle and lifetime limits, ports, labels, key mode, and previews) is in the [capability matrix](https://v2.sandbox-sdk.app/docs/reference/capabilities). A script checks it against the adapters' source, so it stays current. The package README has the full API.
 
 ## Switch providers at runtime
 
@@ -121,11 +121,11 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 
 - No built-in provider supports `box.terminal()` yet.
 - `timeoutMs` (hard lifetime) and `idleTimeoutMs` work only where the provider can enforce them; elsewhere `createSandbox` fails with `unsupported`. The [capability matrix](https://v2.sandbox-sdk.app/docs/reference/capabilities) lists which providers support each one.
-- Previews on Local, Vercel, and Railway need the port declared up front: `createSandbox(provider, { ports: [3000] })`. Always send `preview.headers` with requests; several providers put the access token there.
+- Some providers need preview ports declared up front: `createSandbox(provider, { ports: [3000] })`. Always send `preview.headers` with requests; several providers put the access token there. The matrix's `ports` and Preview URL rows say which providers need each.
 - boxd routes one preview port at a time, the last one you requested.
 - agentOS has no preview URLs and no background processes (`start` fails with `unsupported`).
 - Memory runs a small fake shell (`echo`, `cat`, `printf`, `sleep`, `ls`, `printenv`) with no git and fake preview URLs. Use it for tests, not real workloads.
-- Local pulls `node:22-bookworm` on first use and supports `network: "none"` but not allow-lists.
+- Local pulls `node:22-bookworm` on first use.
 - Live smoke on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
 
 ## Report issues

@@ -54,9 +54,9 @@ records without an exit status are marked failed with exit code 137. Call
 snapshot clones and automatic SDK resumes. Snapshot creation stops the source
 box; its next command resumes it. PTYs are not exposed by this adapter.
 
-Vercel's native `timeout` is a session timeout reset by resume. It cannot
-enforce the SDK's absolute lifetime across multiple sessions, so creation
-`timeoutMs` fails with `unsupported`. Command `timeoutMs` is supported. The
+Creation `timeoutMs` maps to Vercel's native `timeout`, which bounds one
+session. Each resume starts a new session with a fresh timeout, so it is not an
+absolute lifetime across sessions. Command `timeoutMs` is supported. The
 native SDK also expires stored snapshots according to its retention policy.
 
 The offline tests run the full shared suite against a mock SDK backed by real
