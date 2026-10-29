@@ -18,16 +18,6 @@ vi.mock("@tenkicloud/sandbox", () => ({ TenkiSandbox: class {
   constructor(config: unknown) { state.configs.push(config); }
   async list() { return []; }
 } }));
-vi.mock("@boatdev/sdk", () => ({
-  Configuration: class { constructor(config: unknown) { state.configs.push(config); } },
-  BoatApi: class {
-    async sandboxes() { return { sandboxes: [] }; }
-    async create(request: unknown) {
-      state.creates.push(request);
-      throw { response: new Response(null, { status: 400 }) };
-    }
-  },
-}));
 vi.mock("e2b", () => ({ Sandbox: class {
   static list(config: unknown) {
     state.configs.push(config);
@@ -36,17 +26,11 @@ vi.mock("e2b", () => ({ Sandbox: class {
 } }));
 afterEach(() => { vi.unstubAllEnvs(); state.configs.length = 0; state.creates.length = 0; });
 
-for (const [name, factory, legacy] of [
-  ["boxd", boxd, { baseURL: "https://old.test" }],
-  ["boat", boat, { apiUrl: "https://old.test" }],
-] as const) {
-  test(`${name} endpoint alias works and baseUrl wins`, async () => {
-    await factory({ apiKey: "offline", ...legacy }).list({});
-    await factory({ apiKey: "offline", ...legacy, baseUrl: "https://new.test" }).list({});
-    const nativeField = name === "boxd" ? "baseURL" : "basePath";
-    expect(state.configs).toMatchObject([{ [nativeField]: "https://old.test" }, { [nativeField]: "https://new.test" }]);
-  });
-}
+test("boxd endpoint alias works and baseUrl wins", async () => {
+  await boxd({ apiKey: "offline", baseURL: "https://old.test" }).list({});
+  await boxd({ apiKey: "offline", baseURL: "https://old.test", baseUrl: "https://new.test" }).list({});
+  expect(state.configs).toMatchObject([{ baseURL: "https://old.test" }, { baseURL: "https://new.test" }]);
+});
 test("daytona endpoint alias works and baseUrl wins", async () => {
   const [old, next] = [await fakeServer(), await fakeServer()];
   try {
@@ -61,7 +45,28 @@ test("Tenki authToken alias works and apiKey wins", async () => {
   await tenki({ apiKey: "new", authToken: "old" }).list({});
   expect(state.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
 });
+/** Boat calls its API with fetch: record each request, list nothing, and refuse every create with a 400. */
+function stubBoatFetch() {
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const method = init.method ?? "GET";
+    requests.push({ url, method, body: typeof init.body === "string" ? JSON.parse(init.body) : undefined });
+    if (method === "POST") return Response.json({ ok: false, code: "invalid_request" }, { status: 400 });
+    return Response.json({ ok: true, sandboxes: [], pageInfo: { hasMore: false } });
+  });
+  return requests;
+}
+afterEach(() => { vi.unstubAllGlobals(); });
+
+test("boat endpoint alias works and baseUrl wins", async () => {
+  const requests = stubBoatFetch();
+  await boat({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
+  await boat({ apiKey: "offline", apiUrl: "https://old.test", baseUrl: "https://new.test" }).list({});
+  expect(requests.map(request => new URL(request.url).origin)).toEqual(["https://old.test", "https://new.test"]);
+});
+
 test("Boat type alias works, machine wins, and per-create size still wins", async () => {
+  const requests = stubBoatFetch();
   for (const [options, size] of [
     [{ type: "small" }, undefined],
     [{ machine: "large", type: "small" }, undefined],
@@ -69,10 +74,10 @@ test("Boat type alias works, machine wins, and per-create size still wins", asyn
   ] as const) {
     await expect(boat({ apiKey: "offline", ...options }).create({ labels: {}, size })).rejects.toMatchObject({ code: "invalid_argument" });
   }
-  expect(state.creates).toMatchObject([
-    { createSandboxRequest: { type: "small" } },
-    { createSandboxRequest: { type: "large" } },
-    { createSandboxRequest: { type: "default" } },
+  expect(requests.filter(request => request.method === "POST").map(request => request.body)).toMatchObject([
+    { type: "small" },
+    { type: "large" },
+    { type: "default" },
   ]);
 });
 
