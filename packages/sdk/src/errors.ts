@@ -279,6 +279,37 @@ export function describeNative(
   return { detail, cause: detail ?? (label || undefined) };
 }
 
+/**
+ * @internal Bounded machine fields an adapter copies from a native failure, each already checked
+ * against an allowlist and the secrets it knows. Never a response's message, body, headers or URL;
+ * `native` is at most the scrubbed text {@link describeNative} keeps.
+ */
+export interface NativeEvidence {
+  operation?: string;
+  status?: number;
+  providerCode?: string | number;
+  requestId?: string;
+  source?: string;
+  nativeName?: string;
+  native?: string;
+  /** Tenki create: the session this call created, and how far it got. */
+  admittedByThisCall?: true;
+  stage?: string;
+  sandboxId?: string;
+  state?: string;
+  cleanupCode?: ErrorCode;
+}
+
+/**
+ * @internal The one form an adapter passes {@link NativeEvidence} to the core in: the `cause` of its
+ * SandboxError, an Error whose message is the fields as JSON. {@link Redactor.error} reduces every
+ * cause to its message, so the JSON is what reaches users; the fields stay readable on the adapter's
+ * own error.
+ */
+export function evidenceCause(evidence: NativeEvidence): Error & NativeEvidence {
+  return Object.assign(new Error(JSON.stringify(evidence)), evidence);
+}
+
 /** @internal A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
 export function redacting(values: Iterable<string | undefined>): (text: string) => string {
   const redactor = new Redactor();

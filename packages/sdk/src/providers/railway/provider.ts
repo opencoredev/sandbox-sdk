@@ -23,7 +23,12 @@ import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, Labels, FileInfo, ExecInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../shared/shell.js";
-import { railwayError, unsupported } from "./errors.js";
+import {
+  railwayError,
+  rememberRailwayErrors,
+  unsupported,
+  type RailwayErrorClasses,
+} from "./errors.js";
 
 export type RailwayOptions = {
   /** Defaults to RAILWAY_API_TOKEN; required for authentication. */
@@ -181,7 +186,7 @@ export type RailwayBox = Pick<
 };
 
 /** The parts of the Railway SDK the adapter uses: the real `railway` module, or a test fixture. */
-export interface RailwayModule<B extends RailwayBox> {
+export interface RailwayModule<B extends RailwayBox> extends RailwayErrorClasses {
   Sandbox: {
     create(options: CreateOptions): Promise<B>;
     create(checkpointName: string, options: CreateOptions): Promise<B>;
@@ -213,7 +218,13 @@ export function createRailwayProvider<B extends RailwayBox>(
   load: () => Promise<RailwayModule<B>>,
 ): Provider<B, "snapshot"> {
   let module: Promise<RailwayModule<B>> | undefined;
-  const sdk = () => (module ??= loadPeer("railway", "railway", load));
+
+  const sdk = () =>
+    (module ??= loadPeer("railway", "railway", load).then((loaded) => {
+      rememberRailwayErrors(loaded);
+
+      return loaded;
+    }));
 
   const api = () => ({
     token: options.token ?? process.env.RAILWAY_API_TOKEN,

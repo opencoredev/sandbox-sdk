@@ -1,19 +1,5 @@
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
-
-function hasName(cause: unknown): cause is { name: string } {
-  return (
-    typeof cause === "object" && cause !== null && "name" in cause && typeof cause.name === "string"
-  );
-}
-
-function hasStatus(cause: unknown): cause is { status: number } {
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    "status" in cause &&
-    typeof cause.status === "number"
-  );
-}
+import { decodeNative } from "../../shared/native-error.js";
 
 /** Native messages can contain API keys and command output. Only an unrecognized failure without a
  * status keeps its scrubbed text, with the API key redacted, as `cause` (see describeNative). */
@@ -22,8 +8,9 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
 
   // e2b assigns each error class a literal name. Bundlers rename the classes (FileNotFoundError2, or a
   // minified letter), so constructor.name stops matching; the name field does not change.
-  const name = hasName(cause) ? cause.name : "";
-  const status = hasStatus(cause) ? cause.status : undefined;
+  const native = decodeNative(cause);
+  const name = native.name;
+  const status = native.status;
 
   let code: ErrorCode = "provider";
 
@@ -51,18 +38,18 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
       ? "Check E2B_API_KEY and the E2B domain."
       : "Check the sandbox, template and E2B service, then retry.";
 
-  const native = describeNative(cause, {
+  const kept = describeNative(cause, {
     code,
     status: status === undefined ? undefined : `HTTP ${status}`,
     redact: redacting([process.env.E2B_API_KEY]),
   });
 
-  return new SandboxError(`E2B request failed: ${reason(code, native.detail)}. ${hint}`, {
+  return new SandboxError(`E2B request failed: ${reason(code, kept.detail)}. ${hint}`, {
     code,
     provider: "e2b",
     sandboxId,
     hint,
     retryable: ["quota", "unavailable", "timeout"].includes(code),
-    cause: native.cause,
+    cause: kept.cause,
   });
 }

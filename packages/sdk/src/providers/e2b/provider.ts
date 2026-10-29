@@ -27,6 +27,7 @@ import type {
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../shared/shell.js";
 import { e2bError } from "./errors.js";
+import { decodeNative } from "../../shared/native-error.js";
 
 export interface E2BOptions {
   /** Defaults to E2B_API_KEY; required on first use. */
@@ -55,12 +56,9 @@ const createWorkspaceOnce = `if [ ! -e ${workspaceMarker} ]; then mkdir -p /work
 /** Creates /workspace on first use. The lock makes concurrent first commands agree; failure exits 125. */
 const prepareWorkspace = `flock -x ${workspaceMarker}.lock sh -c ${quote(createWorkspaceOnce)} || exit 125`;
 
-function isMissingPath(cause: unknown): cause is { code: "ENOENT" } {
-  return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT";
-}
-
 const missing = (cause: unknown) =>
-  e2bError(cause, undefined, true).code === "file_not_found" || isMissingPath(cause);
+  e2bError(cause, undefined, true).code === "file_not_found" ||
+  decodeNative(cause).code === "ENOENT";
 
 const unsupported = (message: string) =>
   new SandboxError(

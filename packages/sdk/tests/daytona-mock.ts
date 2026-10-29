@@ -8,11 +8,15 @@ import { join, posix } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
-import type {
-  DaytonaConfig,
-  CreateSandboxFromImageParams,
-  CreateSandboxFromSnapshotParams,
-  Sandbox,
+import {
+  DaytonaConnectionError,
+  DaytonaConnectionTimeoutError,
+  DaytonaInvalidArgumentError,
+  DaytonaTimeoutError,
+  type DaytonaConfig,
+  type CreateSandboxFromImageParams,
+  type CreateSandboxFromSnapshotParams,
+  type Sandbox,
 } from "@daytonaio/sdk";
 import type { OutputChunk } from "../src/provider.js";
 import { createDaytonaProvider, type DaytonaOptions } from "../src/providers/daytona/provider.js";
@@ -403,5 +407,11 @@ export async function cleanupMock() {
 
 /** The Daytona adapter with `client` (by default this fixture) in place of the SDK's Daytona client. */
 export function daytona(options: DaytonaOptions = {}, client: typeof MockDaytona = MockDaytona) {
-  return createDaytonaProvider(options, async () => ({ Daytona: client }));
+  return createDaytonaProvider(options, async () => ({
+    Daytona: client,
+    DaytonaConnectionError,
+    DaytonaConnectionTimeoutError,
+    DaytonaInvalidArgumentError,
+    DaytonaTimeoutError,
+  }));
 }

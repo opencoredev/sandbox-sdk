@@ -1,4 +1,13 @@
-import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
+import {
+  SandboxError,
+  describeNative,
+  evidenceCause,
+  reason,
+  redacting,
+  type ErrorCode,
+  type NativeEvidence,
+} from "../../errors.js";
+import { decodeNative } from "../../shared/native-error.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
 export type TenkiOperation =
@@ -40,41 +49,33 @@ const codes = new Map<string, ErrorCode>([
 ]);
 
 /** Bounded diagnostic scalars copied from a native error chain. */
-type NativeEvidence = {
-  status?: number;
-  providerCode?: number | string;
-  requestId?: string;
-  nativeName?: string;
-};
+type ChainEvidence = Pick<NativeEvidence, "status" | "providerCode" | "requestId" | "nativeName">;
+
+/** Tenki failures that name no ErrorCode of their own but are still recognized. */
+const recognized = new Set([
+  "ResumeFailedError",
+  "PauseFailedError",
+  "WaitReadyFailedError",
+  "StreamClosedError",
+]);
 
 // Native mapError wraps ConnectError in cause. Keep only bounded diagnostic
 // scalars, never messages, bodies, URLs, headers or arbitrary native objects.
-function nativeEvidence(cause: unknown, denied: string[]): NativeEvidence {
-  const evidence: NativeEvidence = {};
+function nativeEvidence(cause: unknown, denied: string[]): ChainEvidence {
+  const evidence: ChainEvidence = {};
   const visited = new Set<object>();
   let error = cause;
 
   for (let depth = 0; depth < 4 && isObject(error) && !visited.has(error); depth++) {
     visited.add(error);
+    const native = decodeNative(error);
 
-    if (
-      error instanceof Error &&
-      (codes.has(error.name) ||
-        [
-          "ResumeFailedError",
-          "PauseFailedError",
-          "WaitReadyFailedError",
-          "StreamClosedError",
-        ].includes(error.name))
-    )
-      evidence.nativeName ??= error.name;
+    if (codes.has(native.name) || recognized.has(native.name)) evidence.nativeName ??= native.name;
+    const status = native.status ?? native.statusCode;
 
-    const status =
-      "status" in error ? error.status : "statusCode" in error ? error.statusCode : undefined;
-
-    if (isNumber(status) && Number.isInteger(status) && status >= 100 && status <= 599)
+    if (status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599)
       evidence.status ??= status;
-    const code = "code" in error ? error.code : undefined;
+    const code = native.code;
 
     if (
       (isNumber(code) && Number.isInteger(code) && code >= 0 && code <= 16) ||
@@ -83,22 +84,17 @@ function nativeEvidence(cause: unknown, denied: string[]): NativeEvidence {
         !denied.some((secret) => code.includes(secret)))
     )
       evidence.providerCode ??= code;
-    const metadata = "metadata" in error ? error.metadata : undefined;
 
     const requestId =
-      "requestId" in error
-        ? error.requestId
-        : metadata instanceof Headers
-          ? (metadata.get("x-request-id") ?? metadata.get("request-id"))
-          : undefined;
+      native.requestId ?? native.metadata.get("x-request-id") ?? native.metadata.get("request-id");
 
     if (
-      isString(requestId) &&
+      requestId !== undefined &&
       /^[A-Za-z0-9_-]{1,128}$/.test(requestId) &&
       !denied.some((secret) => requestId.includes(secret))
     )
       evidence.requestId ??= requestId;
-    error = "cause" in error ? error.cause : undefined;
+    error = native.cause;
   }
 
   return evidence;
@@ -109,7 +105,7 @@ function nativeEvidence(cause: unknown, denied: string[]): NativeEvidence {
 function localDetail(
   cause: unknown,
   code: ErrorCode,
-  evidence: NativeEvidence,
+  evidence: ChainEvidence,
   denied: string[],
 ): { native?: string } {
   const status = evidence.status ?? evidence.providerCode;
@@ -149,17 +145,13 @@ export function tenkiError(
     ...localDetail(cause, code, native, denied),
   };
 
-  // Core preserves Error.message when redacting a cause; JSON survives that
-  // boundary as well as exposing structured fields to direct adapter callers.
-  const details = Object.assign(new Error(JSON.stringify(evidence)), evidence);
-
   return new SandboxError(
     `Tenki request failed: ${reason(code, evidence.native)}. Check credentials, quotas, and session state.`,
     {
       code,
       provider: "tenki",
       sandboxId,
-      cause: details,
+      cause: evidenceCause(evidence),
       retryable: ["quota", "unavailable", "timeout"].includes(code),
     },
   );
@@ -172,10 +164,6 @@ type CreateEvidence = NativeEvidence & {
   operation: "create";
   admittedByThisCall: true;
   stage: CreateStage;
-  sandboxId?: string;
-  state?: string;
-  native?: string;
-  cleanupCode?: ErrorCode;
 };
 
 // Only called after this invocation's CreateSession returned the session ID.
@@ -214,7 +202,7 @@ export function createError(
     sandboxId: context.id,
     retryable: mapped.retryable,
     hint: mapped.hint,
-    cause: Object.assign(new Error(JSON.stringify(evidence)), evidence),
+    cause: evidenceCause(evidence),
   });
 }
 

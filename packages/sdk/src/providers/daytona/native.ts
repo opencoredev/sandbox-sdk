@@ -1,5 +1,6 @@
 import type { CreateSandboxFromSnapshotParams, DaytonaConfig, Sandbox } from "@daytonaio/sdk";
 import type { Labels } from "../../provider.js";
+import type { DaytonaErrorClasses } from "./errors.js";
 
 /** The parts of a Daytona sandbox the adapter uses. */
 export type DaytonaBox = Pick<
@@ -57,7 +58,8 @@ export interface DaytonaClient<B extends DaytonaBox> {
   list(query: { labels: Labels }): AsyncIterable<B>;
 }
 
-/** The parts of the Daytona SDK the adapter uses: the real `@daytonaio/sdk` module, or a test fixture. */
-export interface DaytonaModule<B extends DaytonaBox> {
+/** The parts of the Daytona SDK the adapter uses: the real `@daytonaio/sdk` module, or a test fixture.
+ * A fixture passes the SDK's own error classes, which the error mapper matches by identity. */
+export interface DaytonaModule<B extends DaytonaBox> extends DaytonaErrorClasses {
   Daytona: new (config: DaytonaConfig) => DaytonaClient<B>;
 }

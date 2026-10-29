@@ -1,9 +1,5 @@
 import { SandboxError } from "./errors.js";
-import { hasFunction } from "./core/guards.js";
 import { isObject } from "./shared/narrow.js";
-
-/** Peers loaded through {@link loadPeer}, by package name. */
-const loaded = new Map<string, unknown>();
 
 const bundleHint = (name: string) =>
   `Bundle with a createRequire banner (import { createRequire } from "node:module"; const require = createRequire(import.meta.url);) or mark @opencoredev/sandbox-sdk and ${name} as external.`;
@@ -48,26 +44,7 @@ export async function loadPeer<T>(
     );
   }
 
-  const normalized = peerModule(module);
-  loaded.set(name, normalized);
-
-  return normalized;
-}
-
-/**
- * Whether `error` is an instance of the class `exportName` from the already loaded peer `name`.
- * Bundlers rename classes (minifiers always, esbuild on a collision such as `FileNotFoundError2`),
- * so `constructor.name`, and a `name` the SDK copies from `new.target.name`, are not stable. The
- * class object the adapter loaded is. False when the peer was never loaded: it cannot have thrown.
- */
-export function isPeerError<K extends string>(
-  cause: unknown,
-  name: string,
-  exportName: K,
-): boolean {
-  const module = loaded.get(name);
-
-  return hasFunction(module, exportName) && cause instanceof module[exportName];
+  return peerModule(module);
 }
 
 /** Normalizes a dynamically imported CommonJS peer. Bundlers that split chunks
