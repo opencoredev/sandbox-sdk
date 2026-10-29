@@ -11,6 +11,7 @@ import type { Provider, CreateInput, SandboxInfo } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { waitReady } from "./ready.js";
 import { execute, raw } from "./exec.js";
+import { quote } from "../../run.js";
 import { files } from "./files.js";
 import {
   tenkiError,
@@ -48,6 +49,8 @@ export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
 export type TenkiProvider = Provider<Session, TenkiCapability>;
 const keyTag = "sandbox-sdk-key";
 const createdTag = "sandbox-sdk-created-at";
+/** SDK bookkeeping and Tenki's own metadata. Labels show only the caller's labels and `sandbox-sdk`. */
+const internal = new Set([keyTag, createdTag, "enable_opencode"]);
 const presets = {
   small: { cpu: 1, memoryMb: 1024, diskGb: 10 },
   medium: { cpu: 2, memoryMb: 4096, diskGb: 20 },
@@ -83,7 +86,7 @@ function info(value: Session): SandboxInfo {
   return {
     id: value.id,
     key: value.metadata[keyTag],
-    labels: { ...value.metadata },
+    labels: Object.fromEntries(Object.entries(value.metadata).filter(([key]) => !internal.has(key))),
     createdAt,
     state:
       value.state === "RUNNING"
@@ -370,7 +373,10 @@ export function tenki(options: TenkiOptions = {}): TenkiProvider {
         if (state.active > 1) state.overlap = true;
         let root: string | undefined;
         try {
-          return await execute(value, input, (resolved, stable) => {
+          // The guest supervisor fails before spawning when cwd is missing. Change
+          // directory in the same shell instead: a bad cwd is then a failed result, as elsewhere.
+          const command = `cd ${quote(input.cwd)} || exit\n${input.command}`;
+          return await execute(value, { ...input, cwd: "/", command }, (resolved, stable) => {
             if (!stable) state.untracked = true;
             root = resolved;
           });

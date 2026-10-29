@@ -1176,3 +1176,46 @@ test("concurrent first commands preserve an existing workspace during migration"
     expect(await box.files.read("existing")).toBe("retained");
   } finally { await box.destroy(); }
 });
+
+test("/workspace stats as a directory on a fresh sandbox and stays that way, so agent tools accept paths", async () => {
+  const { createSandboxTools } = await import("../src/tools.js");
+  const box = await createSandbox(factory());
+  try {
+    // Fresh: no command has run, so the guest transport answers.
+    expect((await box.files.stat("/workspace")).type).toBe("directory");
+    const tools = createSandboxTools(box);
+    const invoke = (name: string, input: unknown) => { const tool = tools.find(tool => tool.name === name); if (!tool) throw new Error(`Missing ${name}`); return tool.execute(input); };
+    expect((await invoke("write_file", { path: "a.txt", content: "hello" })).text).toMatch(/^OK/);
+    expect((await invoke("read_file", { path: "a.txt" })).text).toContain("1: hello");
+    // A retained native handle disables the root cache: the guest path must agree.
+    void box.native;
+    expect((await box.files.stat("/workspace")).type).toBe("directory");
+    expect((await invoke("read_file", { path: "a.txt" })).text).toContain("1: hello");
+    // Only the SDK alias is followed. Other links still report as links.
+    await box.run("ln -s /workspace/a.txt /workspace/link");
+    expect((await box.files.stat("/workspace/link")).type).toBe("symlink");
+  } finally { await box.destroy(); }
+});
+
+test("labels hide SDK bookkeeping and Tenki's own metadata", async () => {
+  const provider = factory();
+  const box = await createSandbox(provider, { key: "labels-key", labels: { app: "tenki-labels" } });
+  try {
+    const native = tenkiState.boxes.get(box.id);
+    if (!native) throw new Error("Missing mock session");
+    native.metadata.enable_opencode = "true";
+    expect(box.labels).toEqual({ app: "tenki-labels", "sandbox-sdk": "1" });
+    const [listed] = await factory().list({ app: "tenki-labels" });
+    expect(listed).toMatchObject({ id: box.id, key: "labels-key", labels: { app: "tenki-labels", "sandbox-sdk": "1" } });
+    expect(Object.keys(listed?.labels ?? {}).sort()).toEqual(["app", "sandbox-sdk"]);
+  } finally { await box.destroy(); }
+});
+
+test("a missing cwd is a failed run with the shell error on stderr, and a real cwd still applies", async () => {
+  const box = await createSandbox(factory());
+  try {
+    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({ ok: false, exitCode: expect.any(Number), stdout: "", stderr: expect.stringMatching(/cd.*nope/) });
+    await box.files.write("sub/file.txt", "x");
+    expect(await box.run("cat file.txt", { cwd: "sub" })).toMatchObject({ ok: true, stdout: "x" });
+  } finally { await box.destroy(); }
+});
