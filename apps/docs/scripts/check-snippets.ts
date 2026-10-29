@@ -28,6 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { externalPackages } from "../../../packages/sdk/scripts/externals.ts";
 
 const docsDir = resolve(import.meta.dirname, "..");
 const contentDir = join(docsDir, "content");
@@ -112,9 +113,9 @@ linkModule("@opencoredev/sandbox-sdk", sdkDir);
 const sdkManifest: { peerDependencies?: Record<string, string>; devDependencies?: Record<string, string> } = JSON.parse(
   readFileSync(join(sdkDir, "package.json"), "utf8"),
 );
-// Dev dependencies too: a provider that calls its API directly drops its SDK from the peers, but pages still
-// show `box.native.sdk(() => import("<its sdk>"))`, which users install themselves.
-for (const peer of new Set([...Object.keys(sdkManifest.peerDependencies ?? {}), ...Object.keys(sdkManifest.devDependencies ?? {})])) {
+// Provider SDKs a converted adapter no longer depends on stay in `externalPackages`, because pages import
+// them for `box.native.sdk(() => import(...))`.
+for (const peer of new Set([...Object.keys(sdkManifest.peerDependencies ?? {}), ...externalPackages])) {
   const installed = join(sdkDir, "node_modules", peer);
   if (existsSync(installed)) linkModule(peer, realpathSync(installed));
 }

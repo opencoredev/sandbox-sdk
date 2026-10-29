@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { RateLimitError } from "e2b";
 import { createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
@@ -62,12 +61,6 @@ describe("provider error mappers keep a redacted cause", () => {
     expect(error).toMatchObject({ code: "unavailable", cause: "Error HTTP 503", retryable: true });
     expect(error.message).toBe("Boat request failed: the service is down or unreachable. Check the sandbox and Boat service before retrying.");
     expect(error.message).not.toContain("private");
-  });
-
-  test("a recognized error keeps its name, not its text", () => {
-    const error = e2bError(new RateLimitError("echoed private body"));
-    expect(error).toMatchObject({ code: "quota", cause: "RateLimitError" });
-    expect(error.message).toBe("E2B request failed: a provider limit or billing stopped the request. Check the sandbox, template and E2B service, then retry.");
   });
 
   test("railway reports a fetch network failure as unavailable, not invalid input", () => {

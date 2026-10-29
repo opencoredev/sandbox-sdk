@@ -1,4 +1,4 @@
-// Packs the SDK, installs the tarball into a fresh npm project with only the e2b peer,
+// Packs the SDK, installs the tarball into a fresh npm project with no provider peer (e2b needs none),
 // and checks every package.json export at runtime and under four tsc configurations.
 // Subpaths come from the exports map, so new entries are covered without edits here.
 import { spawnSync } from "node:child_process";
@@ -10,7 +10,8 @@ import pkg from "../package.json" with { type: "json" };
 const sdkDir = resolve(import.meta.dir, "..");
 const packDir = process.env.PACK_DIR ?? "/tmp/sandbox-sdk-pack";
 const consumerDir = process.env.CONSUMER_DIR ?? "/tmp/sandbox-sdk-smoke-consumer";
-const installedPeers = ["e2b"];
+// e2b, the provider the app below runs, needs no peer since SBX-74.
+const installedPeers: string[] = [];
 const failures: string[] = [];
 
 function sh(command: string, args: string[], options: { cwd: string; timeoutMs: number }) {
@@ -48,7 +49,7 @@ const subpaths = Object.entries(pkg.exports).flatMap(([subpath, target]) => (typ
 const missingTargets = subpaths.flatMap((entry) => [entry.types, entry.js]).filter((target) => !tarFiles.has(target.replace(/^\.\//, "")));
 check("every exports target ships in the tarball", missingTargets.length === 0, missingTargets.join(", "));
 
-// Step 2: fresh consumer with only the e2b provider peer.
+// Step 2: fresh consumer with no provider peer.
 rmSync(consumerDir, { recursive: true, force: true });
 mkdirSync(consumerDir, { recursive: true });
 must("npm", ["init", "-y"], { cwd: consumerDir, timeoutMs: 30_000 });

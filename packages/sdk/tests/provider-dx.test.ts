@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
@@ -28,13 +28,15 @@ vi.mock("@boatdev/sdk", () => ({
     }
   },
 }));
-vi.mock("e2b", () => ({ Sandbox: class {
-  static list(config: unknown) {
-    state.configs.push(config);
-    return { hasNext: false };
-  }
-} }));
-afterEach(() => { vi.unstubAllEnvs(); state.configs.length = 0; state.creates.length = 0; });
+// E2B speaks HTTP directly: record the key each control-plane call sends and answer an empty list.
+const fetchE2B = async (input: string | URL | Request, init?: RequestInit) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+  if (url.hostname !== "api.e2b.app") throw new TypeError("fetch failed: the network is blocked in this test");
+  state.configs.push({ apiKey: new Headers(init?.headers).get("x-api-key") });
+  return new Response("[]", { headers: { "content-type": "application/json" } });
+};
+beforeEach(() => { vi.stubGlobal("fetch", fetchE2B); });
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); state.configs.length = 0; state.creates.length = 0; });
 
 for (const [name, factory, legacy] of [
   ["boxd", boxd, { baseURL: "https://old.test" }],
