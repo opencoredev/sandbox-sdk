@@ -179,7 +179,6 @@
       "peerDependencies": {
         "@boatdev/sdk": "^1.9.9",
         "@boxd-sh/sdk": "^0.2.17",
-        "@daytonaio/sdk": ">=0.225.0 <1.0.0",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
@@ -197,7 +196,6 @@
       "optionalPeers": [
         "@boatdev/sdk",
         "@boxd-sh/sdk",
-        "@daytonaio/sdk",
         "@mastra/core",
         "@openai/agents",
         "@rivet-dev/agentos-core",
