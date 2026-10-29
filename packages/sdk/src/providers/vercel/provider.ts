@@ -62,8 +62,13 @@ function expiration(ms: number | undefined, name: string): number | undefined {
   if (ms !== undefined && (!Number.isSafeInteger(ms) || (ms !== 0 && ms < day))) invalid(`${name} must be 0 (never expires) or at least ${day} ms (one day). Vercel rejects shorter snapshot lifetimes.`);
   return ms;
 }
-// 410 means the session cannot resume: a stopped non-persistent sandbox, or an expired persistence snapshot.
-const ended = (error: unknown) => typeof error === "object" && error !== null && "response" in error && error.response instanceof Response && error.response.status === 410;
+// The session cannot resume: a stopped non-persistent sandbox, or an expired persistence snapshot.
+// Vercel answers 400 or 410 depending on the path, always with this code.
+function ended(error: unknown): boolean {
+  const body = typeof error === "object" && error !== null && "json" in error ? error.json : undefined;
+  const detail = typeof body === "object" && body !== null && "error" in body ? body.error : undefined;
+  return typeof detail === "object" && detail !== null && "code" in detail && detail.code === "snapshot_not_found";
+}
 const keyTag = "sandbox-sdk-key";
 const keyName = (key: string) => `sdk-${createHash("sha256").update(key).digest("hex")}`;
 const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chmod 777 /workspace && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;

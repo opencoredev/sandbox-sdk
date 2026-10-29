@@ -14,7 +14,7 @@ import type { NativeSandbox, NativeCommand, VercelClient } from "../src/provider
 type Params = NonNullable<Parameters<typeof Sandbox.create>[0]>;
 type RunParams = Parameters<NativeSandbox["runCommand"]>[0];
 const missing = () => Object.assign(new Error("Sandbox not found"), { response: new Response(null, { status: 404 }) });
-const gone = () => Object.assign(new Error("Cannot resume sandbox: no snapshot available."), { response: new Response(null, { status: 410 }) });
+const gone = () => Object.assign(new Error("Status code 400 is not ok: Cannot resume sandbox: no snapshot available."), { response: new Response(null, { status: 400 }), json: { error: { code: "snapshot_not_found", message: "Cannot resume sandbox: no snapshot available." } } });
 export async function vercelMock() {
   const root = await fs.mkdtemp(join(process.cwd(), ".vercel-mock-"));
   const machines = new Map<string, MockSandbox>(); const snapshots = new Map<string, string>();
