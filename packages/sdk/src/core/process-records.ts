@@ -1,8 +1,8 @@
 /** Parsers for the JSON the process shim keeps in the guest and hands back to callers. */
 import { invalid } from "../errors.js";
 import type { StartOptions } from "../processes.js";
-import { isObject, isString } from "../shared/narrow.js";
-import { hasNumber, hasString } from "./guards.js";
+import { isJsonObject, type JsonValue } from "../shared/json.js";
+import { isNumber, isString } from "../shared/narrow.js";
 
 /** The fields of spec.json the core reads back. */
 export interface ProcessRecord {
@@ -24,52 +24,47 @@ export interface LinePosition {
 }
 
 export function parseProcessRecord(text: string): ProcessRecord {
-  const raw: unknown = JSON.parse(text);
+  const raw: JsonValue = JSON.parse(text);
 
-  if (!hasString(raw, "command") || !hasNumber(raw, "startedAt")) invalid("Invalid process record");
+  if (!isJsonObject(raw)) invalid("Invalid process record");
+  const { command, startedAt, port } = raw;
 
-  return {
-    command: raw.command,
-    startedAt: raw.startedAt,
-    port: hasNumber(raw, "port") ? raw.port : undefined,
-  };
+  if (!isString(command) || !isNumber(startedAt)) invalid("Invalid process record");
+
+  return { command, startedAt, port: isNumber(port) ? port : undefined };
 }
 
 /** Fields of the wrong type are dropped, so a record from an older SDK still restarts. */
 export function parseRestartRecord(text: string, name: string): RestartRecord {
-  const raw: unknown = JSON.parse(text);
+  const raw: JsonValue = JSON.parse(text);
 
-  if (!isObject(raw)) invalid("Invalid process restart record");
+  if (!isJsonObject(raw)) invalid("Invalid process restart record");
+  const { command, cwd, env, readyTimeoutMs, readiness } = raw;
   const options: StartOptions = { name };
 
-  if (hasString(raw, "cwd")) options.cwd = raw.cwd;
+  if (isString(cwd)) options.cwd = cwd;
 
-  if ("env" in raw && isObject(raw.env)) {
+  if (isJsonObject(env)) {
     options.env = {};
 
-    for (const [key, value] of Object.entries(raw.env))
-      if (isString(value)) options.env[key] = value;
+    for (const [key, value] of Object.entries(env)) if (isString(value)) options.env[key] = value;
   }
 
-  if (hasNumber(raw, "readyTimeoutMs")) options.readyTimeoutMs = raw.readyTimeoutMs;
+  if (isNumber(readyTimeoutMs)) options.readyTimeoutMs = readyTimeoutMs;
 
   // A log pattern is stored as its source and flags.
-  if ("readiness" in raw && isObject(raw.readiness)) {
-    const ready = raw.readiness;
+  if (isJsonObject(readiness)) {
+    const { log, flags, port, http } = readiness;
 
-    if (hasString(ready, "log"))
-      options.ready = { log: new RegExp(ready.log, hasString(ready, "flags") ? ready.flags : "") };
-    else if (hasNumber(ready, "port")) options.ready = { port: ready.port };
-    else if ("http" in ready && hasNumber(ready.http, "port"))
+    if (isString(log)) options.ready = { log: new RegExp(log, isString(flags) ? flags : "") };
+    else if (isNumber(port)) options.ready = { port };
+    else if (isJsonObject(http) && isNumber(http.port))
       options.ready = {
-        http: {
-          port: ready.http.port,
-          path: hasString(ready.http, "path") ? ready.http.path : undefined,
-        },
+        http: { port: http.port, path: isString(http.path) ? http.path : undefined },
       };
   }
 
-  return { command: hasString(raw, "command") ? raw.command : undefined, options };
+  return { command: isString(command) ? command : undefined, options };
 }
 
 /** A cursor is a bare log offset, or JSON that also carries each stream's partial line. */
@@ -79,7 +74,7 @@ export function parseLineCursor(after: string | undefined): LinePosition {
   if (after === undefined || /^\d+$/.test(after)) return { offset: after, pending: empty };
 
   if (Buffer.byteLength(after) > 1_048_576) invalid("Invalid line cursor");
-  let raw: unknown;
+  let raw: JsonValue;
 
   try {
     raw = JSON.parse(after);
@@ -87,18 +82,20 @@ export function parseLineCursor(after: string | undefined): LinePosition {
     invalid("Invalid line cursor");
   }
 
+  if (!isJsonObject(raw)) invalid("Invalid line cursor");
+  const { v, offset, stdout, stderr } = raw;
+
   if (
-    !hasNumber(raw, "v") ||
-    raw.v !== 1 ||
-    !hasString(raw, "offset") ||
-    !/^\d+$/.test(raw.offset) ||
-    !Number.isSafeInteger(Number(raw.offset)) ||
-    !hasString(raw, "stdout") ||
-    !hasString(raw, "stderr") ||
-    Buffer.byteLength(raw.stdout) > 65_536 ||
-    Buffer.byteLength(raw.stderr) > 65_536
+    v !== 1 ||
+    !isString(offset) ||
+    !/^\d+$/.test(offset) ||
+    !Number.isSafeInteger(Number(offset)) ||
+    !isString(stdout) ||
+    !isString(stderr) ||
+    Buffer.byteLength(stdout) > 65_536 ||
+    Buffer.byteLength(stderr) > 65_536
   )
     invalid("Invalid line cursor");
 
-  return { offset: raw.offset, pending: { stdout: raw.stdout, stderr: raw.stderr } };
+  return { offset, pending: { stdout, stderr } };
 }

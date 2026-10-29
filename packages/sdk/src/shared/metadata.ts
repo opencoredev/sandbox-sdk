@@ -1,7 +1,7 @@
 /** Decodes the SDK metadata an adapter stores with a sandbox: the caller's key and labels. */
 import type { Labels } from "../provider.js";
-import type { JsonValue } from "./json.js";
-import { isNumber, isObject, isString } from "./narrow.js";
+import { isJsonObject, type JsonValue } from "./json.js";
+import { isNumber, isString } from "./narrow.js";
 
 /** SDK metadata as an adapter stored it. Each adapter checks the fields its own format requires. */
 export interface StoredMetadata {
@@ -19,7 +19,7 @@ export type MetadataPart = "metadata" | "label";
 
 /** Labels as stored: a JSON object whose values are all strings. Undefined for anything else. */
 export function decodeLabels(value: JsonValue | undefined): Labels | undefined {
-  if (!isObject(value) || Array.isArray(value)) return undefined;
+  if (!isJsonObject(value)) return undefined;
   const labels: Labels = {};
 
   for (const [key, label] of Object.entries(value)) {
@@ -49,13 +49,7 @@ export function parseMetadata(
     invalid("metadata");
   }
 
-  if (
-    !isObject(value) ||
-    Array.isArray(value) ||
-    !isObject(value.labels) ||
-    Array.isArray(value.labels)
-  )
-    invalid("metadata");
+  if (!isJsonObject(value) || !isJsonObject(value.labels)) invalid("metadata");
   const { key, version, createdAt } = value;
 
   if (
