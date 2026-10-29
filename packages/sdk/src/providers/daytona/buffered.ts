@@ -1,12 +1,10 @@
-import type { Readable } from "node:stream";
-import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
+import type { Toolbox } from "./api.js";
 import { quote, workspaceCommand } from "./exec.js";
-import { downloadStream as openDownload } from "./transfer.js";
 
 // A single native command returns at most 64 KiB of frames. Larger output is
-// spooled in the guest and downloaded as a stream, never buffered by the SDK.
+// spooled in the guest and downloaded as a stream, never buffered whole.
 // The child owns a separate process group, including inherited output pipes.
 const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil,fcntl
 command,directory,cwd,limit,activity=sys.argv[1:]
@@ -74,11 +72,11 @@ for attempt in range(3):
   if attempt==2: raise
 `;
 
-export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
+export async function bufferedExecute(box: Toolbox, input: ExecInput, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const deadline = Date.now() + input.timeoutMs;
   const transferController = new AbortController();
-  let downloadStream: Readable | undefined;
+  let download: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancelled = false;
   let wakeTransfer = () => {};
   const transferCancelled = new Promise<void>(resolve => { wakeTransfer = resolve; });
@@ -88,7 +86,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = 
   let cancellation: Promise<unknown> | undefined;
   let cancellationError: unknown;
   const abort = () => {
-    cancelled = true; wakeTransfer(); transferController.abort(); downloadStream?.destroy();
+    cancelled = true; wakeTransfer(); transferController.abort(); void download?.cancel().catch(() => {});
     if (confirmed) return;
     cancellation ??= box.process.executeCommand(`python3 -c ${quote(cancelBridge)} ${quote(dir)}`, "/", undefined, 10)
       .then(result => { if (result.exitCode !== 0) throw new Error("Cancellation failed"); })
@@ -119,15 +117,17 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = 
       if (remainingMs <= 0) abort();
       if (!cancelled) {
         const drain = async () => {
-          const stream = await openDownload(box, `${dir}/output`, { signal: transferController.signal, timeout: Math.max(1, Math.ceil(remainingMs / 1000)) });
-          downloadStream = stream;
+          const stream = await box.fs.downloadStream(`${dir}/output`, { signal: transferController.signal, timeoutMs: Math.max(1, remainingMs) });
+          const reader = stream.getReader();
+          download = reader;
           // A pending native download can resolve after cancellation won the race.
-          if (cancelled) { stream.destroy(); return; }
+          if (cancelled) { await reader.cancel().catch(() => {}); return; }
           let pending = "";
-          for await (const data of stream) {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
             if (cancelled) return;
-            if (!(data instanceof Uint8Array)) throw malformed();
-            pending += Buffer.from(data).toString("ascii");
+            pending += Buffer.from(value).toString("ascii");
             let newline: number;
             while ((newline = pending.indexOf("\n")) >= 0) {
               accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
@@ -136,7 +136,10 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = 
           }
           if (pending) throw malformed();
         };
-        await Promise.race([drain(), transferCancelled]);
+        const draining = drain();
+        // Cancellation wins the race; the aborted download then rejects with nobody waiting on it.
+        draining.catch(() => {});
+        await Promise.race([draining, transferCancelled]);
       }
       if (cancelled) return { exitCode: null, timedOut: true };
     }

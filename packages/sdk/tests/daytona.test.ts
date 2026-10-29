@@ -1,21 +1,20 @@
 import { Readable } from "node:stream";
 import { afterEach, describe, test, expect, vi } from "vitest";
-import { cleanupMock, mockState, MockDaytona, MockSandbox } from "./daytona-mock.js";
+import { apiUrl, cleanupMock, failure, guest, mockState, MockDaytona, MockSandbox, requests, toolboxFor } from "./daytona-mock.js";
 import { workspaceCommand } from "../src/providers/daytona/exec.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
-vi.mock("@daytonaio/sdk", async () => ({ Daytona: (await import("./daytona-mock.js")).MockDaytona }));
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 const factory = () => daytona({ apiKey: "offline-test-key" });
-// live:true authorizes this explicitly mocked cloud transport. No actual SDK or
-// network control-plane requests run; every conformance case remains enabled.
+// live:true authorizes this explicitly mocked cloud transport. Every request goes to the local
+// HTTP mock; no cloud calls run, and every conformance case remains enabled.
 runConformance(factory, { live: true });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await cleanupMock(); });
 test("commands without stdin need no directory or empty-file upload", async () => {
   const box = await createSandbox(factory());
-  const mkdir = vi.spyOn(box.native.fs, "createFolder");
-  const upload = vi.spyOn(box.native.fs, "uploadFile");
+  const mkdir = vi.spyOn(guest(box.id).fs, "createFolder");
+  const upload = vi.spyOn(guest(box.id).fs, "uploadFiles");
   expect(await box.run("true")).toMatchObject({ ok: true, exitCode: 0 });
   expect(mkdir).not.toHaveBeenCalled();
   expect(upload).not.toHaveBeenCalled();
@@ -24,32 +23,47 @@ test("commands without stdin need no directory or empty-file upload", async () =
 });
 describe("Daytona mappings", () => {
   test("lazy client, configuration and typed native object", async () => {
-    const provider = daytona({ apiKey: "key", apiUrl: "https://api.example.test", target: "us", requestTimeoutMs: 1234 });
-    expect(mockState.configs).toHaveLength(0);
-    const box = await createSandbox(provider); expect(box.native.id).toBe(box.id);
-    expect(mockState.configs[0]).toMatchObject({ apiKey: "key", apiUrl: "https://api.example.test", target: "us", requestTimeoutMs: 1234 });
+    // The deprecated apiUrl alias wins over the environment, which points nowhere here.
+    vi.stubEnv("DAYTONA_API_URL", "http://127.0.0.1:9/api");
+    const provider = daytona({ apiKey: "key", apiUrl, target: "us", requestTimeoutMs: 1234 });
+    expect(requests).toHaveLength(0);
+    const box = await createSandbox(provider); expect(box.native.sandboxId).toBe(box.id);
+    const create = requests.find(request => request.method === "POST" && request.url === "/api/sandbox");
+    expect(create?.headers.authorization).toBe("Bearer key");
+    expect(JSON.parse(create?.body.toString() ?? "{}")).toMatchObject({ target: "us" });
+    // requestTimeoutMs bounds each control-plane call.
+    vi.spyOn(MockDaytona.prototype, "get").mockImplementationOnce(() => new Promise(() => {}));
+    const started = Date.now();
+    await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "timeout", provider: "daytona" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1200);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
   test("environment configuration, missing auth, and sanitized provider errors", async () => {
     vi.stubEnv("DAYTONA_API_KEY", ""); await expect(createSandbox(daytona())).rejects.toMatchObject({ code: "auth" });
-    vi.stubEnv("DAYTONA_API_KEY", "env-key"); vi.stubEnv("DAYTONA_API_URL", "https://env.example.test"); vi.stubEnv("DAYTONA_TARGET", "eu");
-    const provider = daytona(); await createSandbox(provider); expect(mockState.configs[0]).toMatchObject({ apiKey: "env-key", apiUrl: "https://env.example.test", target: "eu" });
-    for (const [statusCode, code] of [[401, "auth"], [403, "auth"], [404, "not_found"], [429, "quota"], [503, "unavailable"], [408, "timeout"], [400, "invalid_argument"]]) {
-      vi.spyOn(MockDaytona.prototype, "get").mockRejectedValueOnce(Object.assign(new Error("env-key must not leak"), { statusCode }));
+    vi.stubEnv("DAYTONA_API_KEY", "env-key"); vi.stubEnv("DAYTONA_API_URL", apiUrl); vi.stubEnv("DAYTONA_TARGET", "eu");
+    const provider = daytona(); await createSandbox(provider);
+    const create = requests.find(request => request.method === "POST" && request.url === "/api/sandbox");
+    expect(create?.headers.authorization).toBe("Bearer env-key");
+    expect(JSON.parse(create?.body.toString() ?? "{}")).toMatchObject({ target: "eu" });
+    for (const [statusCode, code] of [[401, "auth"], [403, "auth"], [404, "not_found"], [429, "quota"], [503, "unavailable"], [408, "timeout"], [400, "invalid_argument"]] as const) {
+      // Retried statuses (429, 503) fail on every attempt.
+      const get = vi.spyOn(MockDaytona.prototype, "get").mockRejectedValue(failure(statusCode, "env-key must not leak"));
       await expect(provider.connect("missing")).rejects.toMatchObject({ code, provider: "daytona" });
+      get.mockRestore();
     }
-    vi.spyOn(MockDaytona.prototype, "get").mockRejectedValueOnce(Object.assign(new Error("env-key must not leak"), { statusCode: 401 }));
+    vi.spyOn(MockDaytona.prototype, "get").mockRejectedValueOnce(failure(401, "env-key must not leak"));
     try { await provider.connect("missing"); } catch (error) { expect(String(error)).not.toContain("env-key"); }
   });
   test("size, network, labels and native minute timeouts", async () => {
     const provider = daytona({ apiKey: "key", image: "node:22-bookworm" });
     const box = await createSandbox(provider, { key: "customer:123", size: "medium", network: { allow: ["registry.npmjs.org"] }, idleTimeoutMs: 90_000, timeoutMs: 150_000 });
-    expect(mockState.creates[0]).toMatchObject({ resources: { cpu: 2, memory: 4, disk: 10 }, domainAllowList: "registry.npmjs.org", networkBlockAll: false, autoStopInterval: 2, ttlMinutes: 2, labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "customer:123" } });
+    expect(mockState.creates[0]).toMatchObject({ buildInfo: { dockerfileContent: "FROM node:22-bookworm\n" }, cpu: 2, memory: 4, disk: 10, domainAllowList: "registry.npmjs.org", networkBlockAll: false, autoStopInterval: 2, ttlMinutes: 2, labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "customer:123" } });
     expect((await box.preview(3000)).headers).toEqual({ "X-Daytona-Preview-Token": "mock-preview-token" });
     expect((await box.preview(3000)).expiresAt).toBeUndefined();
   });
   test("default snapshots resize before returning and snapshots restore files", async () => {
     const provider = factory(); const box = await createSandbox(provider, { size: "small", network: "none" });
-    expect(box.native).toMatchObject({ cpu: 1, memory: 1, disk: 10 });
+    expect(await box.native.request("GET", "/sandbox/{sandboxId}")).toMatchObject({ cpu: 1, memory: 1, disk: 10 });
     expect(mockState.creates[0]).toMatchObject({ networkBlockAll: true });
     expect(box.capabilities.has("pause")).toBe(false);
     expect("pause" in box).toBe(false);
@@ -68,7 +82,7 @@ describe("Daytona mappings", () => {
   test("user labels cannot forge SDK keys", async () => {
     const provider = factory(); await createSandbox(provider, { labels: { "sandbox-sdk-key": "forged", "sandbox-sdk": "wrong" } });
     expect(await provider.find("forged")).toBeUndefined();
-    expect(mockState.creates[0]?.labels).toEqual({ "sandbox-sdk": "1" });
+    expect(mockState.creates[0]?.labels).toEqual({ "sandbox-sdk": "1", "code-toolbox-language": "python", "sandbox-sdk-create": expect.any(String) });
   });
   test("unsupported size, disk shrink, network expressions and sub-minute lifetime fail closed", async () => {
     const provider = factory();
@@ -78,9 +92,9 @@ describe("Daytona mappings", () => {
   test("timeout and abort kill descendants, including delayed launch", async () => {
     const box = await createSandbox(factory());
     mockState.launchDelayMs = 60;
-    expect(await box.run("(sleep 0.2; echo leaked > leaked) & wait", { timeoutMs: 20 })).toMatchObject({ timedOut: true, exitCode: null });
+    expect(await box.run("(sleep 1; echo leaked > leaked) & wait", { timeoutMs: 20 })).toMatchObject({ timedOut: true, exitCode: null });
     mockState.launchDelayMs = 0;
-    await new Promise(resolve => setTimeout(resolve, 250)); expect(await box.files.exists("leaked")).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 1_100)); expect(await box.files.exists("leaked")).toBe(false);
     const abort = new AbortController(); abort.abort(); expect(await box.run("echo bad > preabort", { signal: abort.signal })).toMatchObject({ timedOut: true }); expect(await box.files.exists("preabort")).toBe(false);
   });
   test("native monitors survive transport failures and close leaves durable work alive", async () => {
@@ -95,22 +109,24 @@ describe("Daytona mappings", () => {
   });
   test("native stop kills TERM-ignoring descendants after the leader exits", async () => {
     const provider = factory(); const box = await createSandbox(provider);
-    const hook = await provider.startProcess?.(box.id, { command: "(trap '' TERM; sleep .4; echo survived > stubborn) >/dev/null 2>&1 & wait", cwd: "/workspace", env: {}, onChunk() {} });
+    // The descendant outlives the stop's two kill requests even on a loaded machine.
+    const hook = await provider.startProcess?.(box.id, { command: "(trap '' TERM; sleep 2; echo survived > stubborn) >/dev/null 2>&1 & wait", cwd: "/workspace", env: {}, onChunk() {} });
     await new Promise(resolve => setTimeout(resolve, 40)); await hook?.stop({ graceMs: 20 });
-    await new Promise(resolve => setTimeout(resolve, 450)); expect(await box.files.exists("stubborn")).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 2_100)); expect(await box.files.exists("stubborn")).toBe(false);
   });
   test("a failed native stop can be retried", async () => {
     const provider = factory(); const box = await createSandbox(provider);
-    const hook = await provider.startProcess?.(box.id, { command: "sleep .4; echo survived > retry-stop", cwd: "/workspace", env: {}, onChunk() {} });
-    vi.spyOn(box.native.process, "executeCommand").mockRejectedValueOnce(Object.assign(new Error("transient"), { statusCode: 503 }));
+    const hook = await provider.startProcess?.(box.id, { command: "sleep 2; echo survived > retry-stop", cwd: "/workspace", env: {}, onChunk() {} });
+    // A POST is never retried, so one transient failure reaches stop().
+    vi.spyOn(guest(box.id).process, "executeCommand").mockRejectedValueOnce(failure(503, "transient"));
     await expect(hook?.stop({ graceMs: 10 })).rejects.toMatchObject({ code: "unavailable" });
     await hook?.stop({ graceMs: 10 });
-    await new Promise(resolve => setTimeout(resolve, 450)); expect(await box.files.exists("retry-stop")).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 2_100)); expect(await box.files.exists("retry-stop")).toBe(false);
   });
   test("cleanup failure preserves the confirmed durable exit record", async () => {
     const box = await createSandbox(factory());
     const proc = await box.start("echo READY; sleep 5; exit 0", { name: "cleanup", ready: { log: /READY/ } });
-    vi.spyOn(box.native.process, "deleteSession").mockRejectedValue(Object.assign(new Error("cleanup unavailable"), { statusCode: 503 }));
+    vi.spyOn(guest(box.id).process, "deleteSession").mockRejectedValue(failure(503, "cleanup unavailable"));
     await proc.wait(); await new Promise(resolve => setTimeout(resolve, 200));
     expect(await box.files.read("/tmp/.sandbox-sdk/procs/cleanup/exit")).toBe("0");
     expect((await proc.wait()).exitCode).toBe(0);
@@ -118,16 +134,17 @@ describe("Daytona mappings", () => {
   test("stream failures kill the command and map errors", async () => {
     const box = await createSandbox(factory()); mockState.failLogs = true;
     await expect((async () => {
-      for await (const chunk of box.run("sleep .2; echo bad > stream-leak")) { void chunk; }
+      // The follow is a GET, so the client retries it twice before giving up: give the command longer than that.
+      for await (const chunk of box.run("sleep 2; echo bad > stream-leak")) { void chunk; }
     })()).rejects.toMatchObject({ code: "unavailable", provider: "daytona" });
-    mockState.failLogs = false; await new Promise(resolve => setTimeout(resolve, 250)); expect(await box.files.exists("stream-leak")).toBe(false);
+    mockState.failLogs = false; await new Promise(resolve => setTimeout(resolve, 2_100)); expect(await box.files.exists("stream-leak")).toBe(false);
   });
 });
 
 test("session log failures do not affect awaited buffered commands", async () => {
   const box = await createSandbox(factory());
   mockState.failLogs = true;
-  const logs = vi.spyOn(box.native.process, "getSessionCommandLogs");
+  const logs = vi.spyOn(guest(box.id).process, "getSessionCommandLogs");
   expect(await box.run("printf buffered")).toMatchObject({ ok: true, exitCode: 0, stdout: "buffered" });
   expect(logs).not.toHaveBeenCalled();
 });
@@ -138,7 +155,7 @@ test("creation provisions workspace when the native filesystem cannot create roo
     const guest = await create(params);
     const mkdir = guest.fs.createFolder;
     vi.spyOn(guest.fs, "createFolder").mockImplementation(async (path, mode) => {
-      if (path === "/workspace") throw Object.assign(new Error("mkdir /workspace: permission denied"), { statusCode: 400 });
+      if (path === "/workspace") throw failure(400, "bad request: mkdir /workspace: permission denied", { code: "BAD_REQUEST" });
       return mkdir(path, mode);
     });
     return guest;
@@ -151,8 +168,8 @@ test("creation provisions workspace when the native filesystem cannot create roo
 
 test("session output preserves exact bytes through newline-normalized native logs", async () => {
   const box = await createSandbox(factory());
-  const logs = box.native.process.getSessionCommandLogs;
-  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation((session, command, stdout, stderr) => logs(session, command,
+  const logs = guest(box.id).process.getSessionCommandLogs;
+  vi.spyOn(guest(box.id).process, "getSessionCommandLogs").mockImplementation((session, command, stdout, stderr) => logs(session, command,
     text => stdout(text.endsWith("\n") ? text : text + "\n"),
     text => stderr(text.endsWith("\n") ? text : text + "\n")));
   expect(await box.run("printf exact; printf error >&2")).toMatchObject({ stdout: "exact", stderr: "error" });
@@ -162,10 +179,10 @@ test("session output preserves exact bytes through newline-normalized native log
 test("destroy coalesces overlapping native deletions from separate handles", async () => {
   const provider = factory(); const box = await createSandbox(provider);
   const second = await connectSandbox(provider, box.id);
-  const remove = box.native.delete.bind(box.native);
+  const remove = guest(box.id).delete.bind(guest(box.id));
   let active = false;
-  const spy = vi.spyOn(box.native, "delete").mockImplementation(async () => {
-    if (active) throw Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+  const spy = vi.spyOn(guest(box.id), "delete").mockImplementation(async () => {
+    if (active) throw failure(409, "Sandbox state change in progress");
     active = true; await new Promise(resolve => setTimeout(resolve, 20)); await remove();
   });
   await Promise.all([box.destroy(), second.destroy()]);
@@ -174,8 +191,8 @@ test("destroy coalesces overlapping native deletions from separate handles", asy
 
 test("destroy waits for native deletion completion", async () => {
   const provider = factory(); const box = await createSandbox(provider);
-  const remove = box.native.delete.bind(box.native);
-  vi.spyOn(box.native, "delete").mockImplementation(async (timeout, wait) => { if (wait) await remove(timeout, wait); });
+  // Daytona answers the DELETE while the sandbox is still `destroying`.
+  mockState.deleteDelayMs = 300;
   await box.destroy();
   await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" });
 });
@@ -187,7 +204,7 @@ test("framed output retains a leading UTF-8 BOM", async () => {
 
 test("incomplete base64 output fails closed", async () => {
   const box = await createSandbox(factory());
-  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => { stdout("O:Y\n"); });
+  vi.spyOn(guest(box.id).process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => { stdout("O:Y\n"); });
   await expect((async () => {
     for await (const chunk of box.run("sleep .1")) { void chunk; }
   })()).rejects.toMatchObject({ code: "provider" });
@@ -195,17 +212,17 @@ test("incomplete base64 output fails closed", async () => {
 
 test("malformed output arriving during exit status lookup cannot report success", async () => {
   const box = await createSandbox(factory());
-  const launch = box.native.process.executeSessionCommand;
-  vi.spyOn(box.native.process, "executeSessionCommand").mockImplementation(async (session, request) => {
+  const launch = guest(box.id).process.executeSessionCommand;
+  vi.spyOn(guest(box.id).process, "executeSessionCommand").mockImplementation(async (session, request) => {
     const response = await launch(session, request); await new Promise(resolve => setTimeout(resolve, 50)); return response;
   });
   let emit = (_text: string) => {};
   let finish = () => {};
-  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => {
+  vi.spyOn(guest(box.id).process, "getSessionCommandLogs").mockImplementation(async (_session, _command, stdout) => {
     emit = stdout; await new Promise<void>(resolve => { finish = resolve; });
   });
-  const status = box.native.process.getSessionCommand;
-  vi.spyOn(box.native.process, "getSessionCommand").mockImplementation(async (session, command) => {
+  const status = guest(box.id).process.getSessionCommand;
+  vi.spyOn(guest(box.id).process, "getSessionCommand").mockImplementation(async (session, command) => {
     const result = await status(session, command);
     emit("O:Y\n"); finish(); await new Promise(resolve => setTimeout(resolve, 0));
     return { ...result, exitCode: 0 };
@@ -215,28 +232,34 @@ test("malformed output arriving during exit status lookup cannot report success"
   })()).rejects.toMatchObject({ code: "provider" });
 });
 
-test("snapshot passes a sufficient bounded timeout and exposes its recovery name on failure", async () => {
-  const box = await createSandbox(daytona({ apiKey: "key", snapshotTimeoutMs: 180000 }));
-  const snapshot = vi.spyOn(box.native, "createSnapshot").mockResolvedValueOnce();
+test("snapshot waits within snapshotTimeoutMs and exposes its recovery name on failure", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key", snapshotTimeoutMs: 1000 }));
+  const snapshot = vi.spyOn(guest(box.id), "createSnapshot");
+  // Daytona answers at once and reports `snapshotting` until the snapshot is done.
+  mockState.snapshotMs = 300;
   const result = await box.snapshot();
-  expect(snapshot).toHaveBeenLastCalledWith(result.id, 180);
-  snapshot.mockRejectedValueOnce(Object.assign(new Error("private-native-body"), { name: "DaytonaTimeoutError" }));
-  try { await box.snapshot(); throw new Error("expected timeout"); }
-  catch (error) {
-    const name = snapshot.mock.calls.at(-1)?.[0] ?? "";
-    expect(name).toMatch(/^sdk-/);
-    expect(error).toMatchObject({ code: "timeout", retryable: false });
-    expect(String(error)).toContain(name);
-    expect(String(error)).not.toContain("private-native-body");
+  expect(snapshot).toHaveBeenLastCalledWith(result.id);
+  mockState.snapshotMs = 5_000;
+  for (const [setup, code] of [[() => {}, "timeout"], [() => { snapshot.mockRejectedValueOnce(failure(400, "private-native-body")); }, "invalid_argument"]] as const) {
+    setup();
+    try { await box.snapshot(); throw new Error("expected a failure"); }
+    catch (error) {
+      const name = snapshot.mock.calls.at(-1)?.[0] ?? "";
+      expect(name).toMatch(/^sdk-/);
+      expect(error).toMatchObject({ code, retryable: false });
+      expect(String(error)).toContain(name);
+      expect(String(error)).not.toContain("private-native-body");
+    }
   }
 });
 
-test("snapshot default allows native operations lasting more than five minutes", async () => {
-  const box = await createSandbox(daytona({ apiKey: "key" }));
+test("the snapshot wait is not bounded by requestTimeoutMs", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 200 }));
   try {
-    const snapshot = vi.spyOn(box.native, "createSnapshot").mockResolvedValue();
+    mockState.snapshotMs = 700;
+    const snapshot = vi.spyOn(guest(box.id), "createSnapshot");
     const result = await box.snapshot();
-    expect(snapshot).toHaveBeenCalledWith(result.id, 600);
+    expect(snapshot).toHaveBeenCalledWith(result.id);
   } finally { await box.destroy(); }
 });
 
@@ -245,14 +268,14 @@ test("snapshot default allows native operations lasting more than five minutes",
 import { execute } from "../src/providers/daytona/exec.js";
 const bufferedFactory = () => {
   const provider = factory();
-  provider.exec = (id, input) => execute(provider.native(id), { ...input, streaming: false });
+  provider.exec = (id, input) => execute(toolboxFor(id), { ...input, streaming: false });
   return provider;
 };
 describe("Daytona buffered native commands", () => {
   test("one native request preserves exact streams, exit, env and cwd", async () => {
     const box = await createSandbox(bufferedFactory());
-    const native = vi.spyOn(box.native.process, "executeCommand");
-    const session = vi.spyOn(box.native.process, "createSession");
+    const native = vi.spyOn(guest(box.id).process, "executeCommand");
+    const session = vi.spyOn(guest(box.id).process, "createSession");
     expect(await box.run("printf '%s' \"$VALUE\"; printf error >&2; exit 7", { env: { VALUE: "\uFEFFexact\n" } })).toMatchObject({ stdout: "\uFEFFexact\n", stderr: "error", exitCode: 7, ok: false });
     expect(native).toHaveBeenCalledTimes(1); expect(session).not.toHaveBeenCalled();
     expect((await box.run("pwd")).stdout).toBe("/workspace\n");
@@ -261,7 +284,7 @@ describe("Daytona buffered native commands", () => {
   });
   test("large output streams the spill file and core retains bounded head and tail", async () => {
     const box = await createSandbox(bufferedFactory());
-    const download = vi.spyOn(box.native.fs, "downloadFileStream");
+    const download = vi.spyOn(guest(box.id).fs, "downloadFileStream");
     const result = await box.run("python3 -c 'import sys; sys.stdout.write(\"HEAD\"+\"x\"*2097152+\"TAIL\")'", { maxOutputBytes: 1024 });
     expect(result).toMatchObject({ exitCode: 0, truncated: true });
     expect(result.stdout.startsWith("HEAD")).toBe(true); expect(result.stdout.endsWith("TAIL")).toBe(true);
@@ -269,25 +292,26 @@ describe("Daytona buffered native commands", () => {
   });
   test("timeout and abort retain partial output and kill descendants", async () => {
     const box = await createSandbox(bufferedFactory());
-    expect(await box.run("printf partial; (sleep .3; echo leaked > buffered-leak) & wait", { timeoutMs: 80 })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
+    // The deadline must leave time for the request to reach the guest and the command to print.
+    expect(await box.run("printf partial; (sleep 1; echo leaked > buffered-leak) & wait", { timeoutMs: 500 })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 80);
-    try { expect(await box.run("printf partial; (sleep .3; echo leaked > buffered-abort) & wait", { signal: controller.signal })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" }); }
+    const timer = setTimeout(() => controller.abort(), 500);
+    try { expect(await box.run("printf partial; (sleep 1; echo leaked > buffered-abort) & wait", { signal: controller.signal })).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" }); }
     finally { clearTimeout(timer); }
-    await new Promise(resolve => setTimeout(resolve, 350));
+    await new Promise(resolve => setTimeout(resolve, 1_100));
     expect(await box.files.exists("buffered-leak")).toBe(false); expect(await box.files.exists("buffered-abort")).toBe(false);
   });
   test("stdin retains the session transport", async () => {
-    const box = await createSandbox(bufferedFactory()); const session = vi.spyOn(box.native.process, "createSession");
+    const box = await createSandbox(bufferedFactory()); const session = vi.spyOn(guest(box.id).process, "createSession");
     expect((await box.run("cat", { stdin: "exact" })).stdout).toBe("exact"); expect(session).toHaveBeenCalledTimes(1);
   });
   test("streaming requests keep sessions and cancellation before native launch prevents side effects", async () => {
     const box = await createSandbox(bufferedFactory());
-    const session = vi.spyOn(box.native.process, "createSession");
-    await execute(box.native, { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, streaming: true, onChunk() {} });
+    const session = vi.spyOn(guest(box.id).process, "createSession");
+    await execute(toolboxFor(box.id), { command: "true", cwd: "/workspace", env: {}, timeoutMs: 1000, streaming: true, onChunk() {} });
     expect(session).toHaveBeenCalledTimes(1);
-    const native = box.native.process.executeCommand;
-    vi.spyOn(box.native.process, "executeCommand").mockImplementation(async (command, cwd, env, timeout) => {
+    const native = guest(box.id).process.executeCommand;
+    vi.spyOn(guest(box.id).process, "executeCommand").mockImplementation(async (command, cwd, env, timeout) => {
       if (command.includes("python3 -u")) await new Promise(resolve => setTimeout(resolve, 60));
       return native(command, cwd, env, timeout);
     });
@@ -299,22 +323,21 @@ describe("Daytona buffered native commands", () => {
   test("large preset uses matching 4/8/10 snapshot without stop or resize", async () => {
     const resize = vi.spyOn(MockSandbox.prototype, "resize"); const stop = vi.spyOn(MockSandbox.prototype, "stop");
     const box = await createSandbox(factory(), { size: "large" });
-    expect(mockState.configs[0]?.target).toBe("us");
-    expect(mockState.creates[0]).toMatchObject({ snapshot: "daytona-large" });
-    expect(box.native).toMatchObject({ cpu: 4, memory: 8, disk: 10 });
+    expect(mockState.creates[0]).toMatchObject({ snapshot: "daytona-large", target: "us" });
+    expect(await box.native.request("GET", "/sandbox/{sandboxId}")).toMatchObject({ cpu: 4, memory: 8, disk: 10 });
     expect(resize).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
   });
   test("nested writes need only native upload", async () => {
-    const box = await createSandbox(factory()); const mkdir = vi.spyOn(box.native.fs, "createFolder");
+    const box = await createSandbox(factory()); const mkdir = vi.spyOn(guest(box.id).fs, "createFolder");
     await box.files.write("nested/a/file", "content"); expect(await box.files.read("nested/a/file")).toBe("content"); expect(mkdir).not.toHaveBeenCalled();
   });
 });
 
 
-test("completed session output does not wait for a WebSocket that remains open", async () => {
+test("completed session output does not wait for a log stream that remains open", async () => {
   const box = await createSandbox(factory());
-  const logs = box.native.process.getSessionCommandLogs;
-  vi.spyOn(box.native.process, "getSessionCommandLogs").mockImplementation(async (session, command, stdout, stderr) => {
+  const logs = guest(box.id).process.getSessionCommandLogs;
+  vi.spyOn(guest(box.id).process, "getSessionCommandLogs").mockImplementation(async (session, command, stdout, stderr) => {
     await logs(session, command, stdout, stderr);
     await new Promise<void>(() => {});
   });
@@ -325,7 +348,7 @@ test("a fresh sandbox remains discoverable while native listing catches up", asy
   const provider = factory(); const box = await createSandbox(provider);
   vi.spyOn(MockDaytona.prototype, "list").mockImplementation(async function* () {});
   expect((await provider.list({})).map(value => value.id)).toContain(box.id);
-  await box.native.delete();
+  await box.native.request("DELETE", "/sandbox/{sandboxId}");
   expect(await provider.list({})).toEqual([]);
 });
 
@@ -334,7 +357,7 @@ test.each(["abort", "deadline"] as const)("buffered spill download settles and d
   const box = await createSandbox(bufferedFactory());
   const controller = new AbortController();
   const stalled = new Readable({ read() {} });
-  const download = vi.spyOn(box.native.fs, "downloadFileStream").mockImplementationOnce(async () => {
+  const download = vi.spyOn(guest(box.id).fs, "downloadFileStream").mockImplementationOnce(async () => {
     if (mode === "abort") setTimeout(() => controller.abort(), 10);
     return stalled;
   });
@@ -344,12 +367,8 @@ test.each(["abort", "deadline"] as const)("buffered spill download settles and d
     const result = await Promise.race([pending, new Promise<undefined>(resolve => { const watchdog = setTimeout(resolve, mode === "deadline" ? 1500 : 500); clearWatchdog = () => clearTimeout(watchdog); })]);
     expect(result).toMatchObject({ timedOut: true, exitCode: null });
     expect(download).toHaveBeenCalledTimes(1);
-    expect(stalled.destroyed).toBe(true);
-    const options = download.mock.calls[0]?.[1];
-    expect(options).toMatchObject({ signal: expect.any(AbortSignal), timeout: expect.any(Number) });
-    if (!options || typeof options === "number") throw new Error("Expected cancellable native download options");
-    expect(options.signal?.aborted).toBe(true);
-    expect(options.timeout).toBeLessThanOrEqual(mode === "deadline" ? 1 : 2);
+    // The client closed the download, so the guest's stream was torn down with it.
+    await expect.poll(() => stalled.destroyed, { timeout: 2_000 }).toBe(true);
   } finally {
     clearWatchdog(); stalled.destroy(); await pending.catch(() => {});
   }
@@ -414,16 +433,16 @@ test("fresh workspace handles verified missing-path HTTP 400 without swallowing 
   const provider = factory();
   const box = await createSandbox(provider);
   try {
-    const missing = () => Object.assign(new Error("open /workspace: no such file or directory"), { statusCode: 400 });
-    vi.spyOn(box.native.fs, "listFiles").mockRejectedValue(missing());
-    vi.spyOn(box.native.fs, "getFileDetails").mockRejectedValue(missing());
+    const missing = () => failure(400, "open /workspace: no such file or directory", { code: "BAD_REQUEST" });
+    vi.spyOn(guest(box.id).fs, "listFiles").mockRejectedValue(missing());
+    vi.spyOn(guest(box.id).fs, "getFileDetails").mockRejectedValue(missing());
     expect(await box.files.list(".")).toEqual([]);
     expect((await box.files.stat(".")).type).toBe("directory");
     expect(await box.files.exists(".")).toBe(true);
-    vi.spyOn(box.native.fs, "deleteFile").mockRejectedValue(missing());
+    vi.spyOn(guest(box.id).fs, "deleteFile").mockRejectedValue(missing());
     await box.files.remove(".", { recursive: true });
     expect(await box.files.exists(".")).toBe(false);
-    vi.mocked(box.native.fs.listFiles).mockRejectedValue(Object.assign(new Error("invalid path argument"), { statusCode: 400 }));
+    vi.mocked(guest(box.id).fs.listFiles).mockRejectedValue(failure(400, "invalid path argument", { code: "BAD_REQUEST" }));
     await expect(box.files.list(".")).rejects.toMatchObject({ code: "invalid_argument" });
   } finally { await box.destroy(); }
 });
@@ -431,7 +450,7 @@ test("fresh workspace handles verified missing-path HTTP 400 without swallowing 
 
 test("failed first session setup is retried before the next command", async () => {
   const box = await createSandbox(factory());
-  const native = box.native;
+  const native = guest(box.id);
   const execute = native.process.executeSessionCommand.bind(native.process);
   vi.spyOn(native.process, "executeSessionCommand").mockImplementationOnce((id, input) =>
     execute(id, { ...input, command: input.command.replace(workspaceCommand, "false") }));
@@ -442,7 +461,7 @@ test("failed first session setup is retried before the next command", async () =
 test("successful session setup survives a nonzero user command", async () => {
   const box = await createSandbox(factory());
   expect((await box.run("exit 7", { stdin: "" })).exitCode).toBe(7);
-  await box.native.fs.deleteFile("/workspace", true);
+  await box.native.request("DELETE", "/files", { plane: "toolbox", query: { path: "/workspace", recursive: true } });
   expect((await box.run("true", { stdin: "", cwd: "/" })).ok).toBe(true);
   expect(await box.files.exists("/workspace")).toBe(false);
 });

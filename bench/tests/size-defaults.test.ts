@@ -1,9 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { boxdState, MockBoxd } from "../../packages/sdk/tests/cloud-guest-mock.js";
-import { cleanupMock, mockState, MockDaytona } from "../../packages/sdk/tests/daytona-mock.js";
+import { cleanupMock, mockState } from "../../packages/sdk/tests/daytona-mock.js";
 import { cleanupTenki, tenkiState, MockTenki } from "../../packages/sdk/tests/tenki-mock.js";
 vi.mock("../../packages/sdk/node_modules/@boxd-sh/sdk", () => ({Boxd: MockBoxd}));
-vi.mock("../../packages/sdk/node_modules/@daytonaio/sdk", () => ({Daytona: MockDaytona}));
 vi.mock("../../packages/sdk/node_modules/@tenkicloud/sandbox", () => ({TenkiSandbox: MockTenki}));
 import { boxd } from "../../packages/sdk/src/providers/boxd/index.js";
 import { daytona } from "../../packages/sdk/src/providers/daytona/index.js";
@@ -22,7 +21,7 @@ it("boxd inherits its coupled 100 GB disk when omitted and rejects a conflicting
 it("Daytona supplies its own 10 GB default disk", async () => {
   const provider = daytona({apiKey: "offline", image: "node"});
   const box = await provider.create({labels: {}, size: {cpu: 4, memoryMb: 8192}});
-  expect(mockState.creates.at(-1)).toMatchObject({resources: {cpu: 4, memory: 8, disk: 10}});
+  expect(mockState.creates.at(-1)).toMatchObject({cpu: 4, memory: 8, disk: 10});
   await provider.destroy(box.id);
 });
 it("Tenki supplies its own 5 GB default disk", async () => {

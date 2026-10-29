@@ -1,13 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SandboxError } from "../src/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
-const nativeFailure = vi.hoisted(() => Object.assign(new Error("private body"), {
-  statusCode: 400, code: "QUOTA_EXCEEDED", headers: { "x-request-id": "3e01af1641ce491a" },
-}));
-vi.mock("@daytonaio/sdk", () => ({ Daytona: class {
-  async create() { throw nativeFailure; }
-  async get() { return { async createSnapshot() { throw nativeFailure; } }; }
-} }));
 import { daytonaError } from "../src/providers/daytona/errors.js";
+import { cleanupMock, failure, guest, MockDaytona, MockSandbox, requests } from "./daytona-mock.js";
+
+const nativeFailure = () => failure(400, "private body", { code: "QUOTA_EXCEEDED", headers: { "x-request-id": "3e01af1641ce491a" } });
+afterEach(async () => { vi.restoreAllMocks(); await cleanupMock(); });
 
 describe("Daytona error evidence", () => {
   it("preserves bounded native attribution through serialization", () => {
@@ -27,15 +25,21 @@ describe("Daytona error evidence", () => {
     expect(JSON.parse(error.cause instanceof Error ? error.cause.message : "null")).toEqual({ operation: "request" });
   });
   it("attributes native create and restore failures separately", async () => {
+    vi.spyOn(MockDaytona.prototype, "create").mockRejectedValue(nativeFailure());
     const provider = daytona({ apiKey: "configured-key" });
     for (const from of [undefined, "snapshot-name"]) {
       const error = await provider.create({ labels: {}, from }).catch(error => error);
-      expect(error.cause).toMatchObject({ operation: from ? "restore" : "create", status: 400, requestId: "3e01af1641ce491a" });
+      expect(error.cause).toMatchObject({ operation: from ? "restore" : "create", status: 400, requestId: "3e01af1641ce491a", providerCode: "QUOTA_EXCEEDED", source: "DAYTONA_DAEMON" });
+      expect(error.code).toBe("quota");
+      expect(String(error)).not.toContain("private body");
+      expect(JSON.stringify(error.cause)).not.toContain("private body");
     }
   });
   it("retains evidence when snapshot recovery wraps the native failure", async () => {
+    const box = await MockSandbox.create({});
+    vi.spyOn(guest(box.id), "createSnapshot").mockRejectedValue(nativeFailure());
     const provider = daytona({ apiKey: "configured-key" });
-    const error = await provider.snapshot!("sandbox-id").catch(error => error);
+    const error = await provider.snapshot!(box.id).catch(error => error);
     expect(error.cause).toMatchObject({ operation: "snapshot", status: 400, requestId: "3e01af1641ce491a" });
   });
   it("drops reflected secrets and arbitrary request IDs and codes", () => {
@@ -49,13 +53,26 @@ describe("Daytona error evidence", () => {
     expect(error.cause).not.toHaveProperty("requestId");
   });
   it("cumulatively excludes create and exec environment values from later errors", async () => {
+    vi.spyOn(MockDaytona.prototype, "create").mockRejectedValue(nativeFailure());
     const provider = daytona({ apiKey: "configured-key" });
     await expect(provider.create({ labels: {}, env: { SECRET: "QUOTA_EXCEEDED" } })).rejects.toBeDefined();
-    // get returns a box without a process transport, so exec fails locally after
-    // registering the override. The subsequent native failure reflects it.
+    // The sandbox does not exist, so exec fails after registering the override.
+    // The subsequent native failure reflects it.
     await expect(provider.exec("sandbox-id", { command: "true", cwd: "/", env: { SECRET: "3e01af1641ce491a" }, timeoutMs: 1000, onChunk() {} })).rejects.toBeDefined();
     const error = await provider.create({ labels: {} }).catch(error => error);
     expect(error.cause).not.toHaveProperty("requestId");
     expect(error.cause).not.toHaveProperty("providerCode");
+    expect(String(error)).not.toContain("3e01af1641ce491a");
+  });
+  it("keeps the API key out of errors, requests to other origins and native messages", async () => {
+    const provider = daytona({ apiKey: "configured-key-123456" });
+    vi.spyOn(MockDaytona.prototype, "get").mockRejectedValue(failure(403, "key configured-key-123456 is not allowed"));
+    const error = await provider.api.request("GET", "/sandbox/{sandboxId}", { params: { sandboxId: "x" } }).catch((error: unknown) => error);
+    if (!(error instanceof SandboxError)) throw new Error("expected a SandboxError");
+    expect(error).toMatchObject({ code: "auth", provider: "daytona" });
+    // Native calls keep the provider's message, scrubbed of the credential.
+    expect(error.message).toContain("is not allowed");
+    expect(JSON.stringify({ message: error.message, cause: error.cause, hint: error.hint })).not.toContain("configured-key-123456");
+    expect(requests.at(-1)?.headers.authorization).toBe("Bearer configured-key-123456");
   });
 });

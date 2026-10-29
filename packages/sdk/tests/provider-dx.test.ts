@@ -7,15 +7,12 @@ import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
+import { fakeServer } from "./http-fake.js";
 
 const state = vi.hoisted(() => ({ configs: [] as unknown[], creates: [] as unknown[] }));
 vi.mock("@boxd-sh/sdk", () => ({ Boxd: class {
   constructor(config: unknown) { state.configs.push(config); }
   machines = { list: async () => [] };
-} }));
-vi.mock("@daytonaio/sdk", () => ({ Daytona: class {
-  constructor(config: unknown) { state.configs.push(config); }
-  async *list() {}
 } }));
 vi.mock("@tenkicloud/sandbox", () => ({ TenkiSandbox: class {
   constructor(config: unknown) { state.configs.push(config); }
@@ -41,16 +38,24 @@ afterEach(() => { vi.unstubAllEnvs(); state.configs.length = 0; state.creates.le
 
 for (const [name, factory, legacy] of [
   ["boxd", boxd, { baseURL: "https://old.test" }],
-  ["daytona", daytona, { apiUrl: "https://old.test" }],
   ["boat", boat, { apiUrl: "https://old.test" }],
 ] as const) {
   test(`${name} endpoint alias works and baseUrl wins`, async () => {
     await factory({ apiKey: "offline", ...legacy }).list({});
     await factory({ apiKey: "offline", ...legacy, baseUrl: "https://new.test" }).list({});
-    const nativeField = name === "boxd" ? "baseURL" : name === "daytona" ? "apiUrl" : "basePath";
+    const nativeField = name === "boxd" ? "baseURL" : "basePath";
     expect(state.configs).toMatchObject([{ [nativeField]: "https://old.test" }, { [nativeField]: "https://new.test" }]);
   });
 }
+test("daytona endpoint alias works and baseUrl wins", async () => {
+  const [old, next] = [await fakeServer(), await fakeServer()];
+  try {
+    for (const server of [old, next]) server.on("GET /api/sandbox", { json: { items: [], nextCursor: null } });
+    await daytona({ apiKey: "offline", apiUrl: `${old.url}/api` }).list({});
+    await daytona({ apiKey: "offline", apiUrl: `${old.url}/api`, baseUrl: `${next.url}/api` }).list({});
+    expect([old.requests.length, next.requests.length]).toEqual([1, 1]);
+  } finally { await old.close(); await next.close(); }
+});
 test("Tenki authToken alias works and apiKey wins", async () => {
   await tenki({ authToken: "old" }).list({});
   await tenki({ apiKey: "new", authToken: "old" }).list({});

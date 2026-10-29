@@ -1,13 +1,12 @@
-import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
+import type { Toolbox } from "./api.js";
 import { daytonaError } from "./errors.js";
 import { bufferedExecute } from "./buffered.js";
-import { download, upload } from "./transfer.js";
 import { SandboxError } from "../../errors.js";
 
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-// Session logs are line-normalized by the native transport. Encode each pipe
-// chunk so terminal newlines and byte boundaries survive that normalization.
+// Session logs are line-normalized by the native transport, and the HTTP log stream merges stdout and
+// stderr without labels. Encode each pipe chunk so streams, terminal newlines and byte boundaries survive.
 const outputBridge = `import base64,os,selectors,subprocess,sys,shutil
 a=sys.argv[3]
 if a:
@@ -34,7 +33,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
  * run core's durable wrapper unchanged, so logs survive client detachment.
  */
 export const workspaceCommand = 'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace';
-export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeoutMs">, timeoutMs?: number, prepare = workspaceCommand): Promise<NativeProcess & { detach(): void }> {
+export async function sessionProcess(box: Toolbox, input: Omit<ExecInput, "timeoutMs">, timeoutMs?: number, prepare = workspaceCommand): Promise<NativeProcess & { detach(): void }> {
   const session = `sdk-${crypto.randomUUID()}`;
   const dir = `/tmp/.sandbox-sdk/exec/${session}`;
   const pidPath = `${dir}/pid`;
@@ -45,6 +44,8 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   let finished = false; let detached = false; let activityFinished = false;
   const persistent = timeoutMs === undefined;
   const abort = () => { cancelled = true; };
+  // Stops the log stream once the result is settled; the daemon ends it itself when the command exits.
+  const follow = new AbortController();
   const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
   input.signal?.addEventListener("abort", abort, { once: true });
   async function signal(kind: "TERM" | "KILL") {
@@ -55,13 +56,14 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   async function cleanup() {
     clearTimeout(timer); input.signal?.removeEventListener("abort", abort);
     if (input.activityPath && !activityFinished) await box.fs.deleteFile(input.activityPath, true).catch(() => {});
+    follow.abort();
     if (created) { try { await box.process.deleteSession(session); } catch (error) { if (daytonaError(error).code !== "not_found") throw error; } }
     try { await box.fs.deleteFile(dir, true); } catch (error) { if (daytonaError(error, box.id, true).code !== "file_not_found") throw error; }
   }
   try {
     if (input.stdin !== undefined) {
       await box.fs.createFolder(dir, "700");
-      await upload(box, Buffer.from(input.stdin), `${dir}/stdin`);
+      await box.fs.upload(Buffer.from(input.stdin), `${dir}/stdin`);
     }
     if (cancelled) { await cleanup(); return { pid: 0, wait: async () => ({ exitCode: null, signal: "SIGKILL" }), stop: async () => {}, detach() {} }; }
     await box.process.createSession(session); created = true;
@@ -85,6 +87,9 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
           for (const stream of ["stdout", "stderr"] as const) { const text = decoders[stream].decode(); if (!finished && text) input.onChunk({ stream, text }); }
           continue;
         }
+        // Only the bridge writes O:/E: frames. Anything else is the wrapper shell's own stderr (a failed
+        // cd or workspace setup), which the merged log stream cannot label.
+        if (!/^[OE]:/.test(line)) { if (!finished) input.onChunk({ stream: "stderr", text: `${line}\n` }); continue; }
         const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
         if (!frame || line.length > 5466 || Buffer.from(frame[2] ?? "", "base64").toString("base64") !== frame[2]) throw new SandboxError("Session output is malformed. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
         const stream = frame[1] === "O" ? "stdout" : "stderr";
@@ -95,7 +100,8 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
       if (pending.length > 5466) throw new SandboxError("Session output frame is too large. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
     };
     const acceptFrames = (text: string) => { try { if (logsError === undefined) readFrames(text); } catch (error) { logsError = error; } };
-    const logs = persistent ? Promise.resolve() : box.process.getSessionCommandLogs(session, commandId, acceptFrames, text => { if (!finished) input.onChunk({ stream: "stderr", text }); }).then(() => {
+    const logs = persistent ? Promise.resolve() : box.process.followSessionCommandLogs(session, commandId, acceptFrames, follow.signal).then(() => {
+      if (logsError === undefined && pending.trim() && !bridgeFinished && !/^[OEX]/.test(pending)) { if (!finished) input.onChunk({ stream: "stderr", text: pending }); pending = ""; }
       if (pending.trim()) throw new SandboxError("Session output is incomplete. Exact output could not be recovered. Retry the command.", { code: "provider", provider: "daytona", sandboxId: box.id });
       for (const stream of ["stdout", "stderr"] as const) { const text = decoders[stream].decode(); if (!finished && text) input.onChunk({ stream, text }); }
     });
@@ -104,11 +110,12 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
     const started = Date.now();
     while (pid === undefined) {
       try {
-        const value = Number(Buffer.from(await download(box, pidPath)).toString());
+        const value = Number(Buffer.from(await box.fs.download(pidPath)).toString());
         if (!Number.isSafeInteger(value) || value <= 1) throw new SandboxError("Invalid process group ID. Remote launch was not confirmed. Destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
         pid = value;
       } catch (error) {
-        if (error instanceof SandboxError && error.code !== "file_not_found") throw error;
+        // Not there yet, or a lost read (the download is a POST, so it is never retried): ask the session.
+        if (!(error instanceof SandboxError) || (error.code !== "file_not_found" && error.code !== "unavailable")) throw error;
         const status = await box.process.getSessionCommand(session, commandId);
         if (status.exitCode !== undefined) { pid = 0; break; }
         if (Date.now() - started > 10_000) throw new SandboxError("Process launch was not confirmed. No PID arrived in ten seconds. Destroy the sandbox.", { code: "outcome_unknown", provider: "daytona", sandboxId: box.id });
@@ -125,7 +132,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
           if (detached) await new Promise<void>(() => {});
           if (logsError !== undefined && !cancelled) throw logsError;
           if (cancelled && pid) await signal("KILL");
-          let status: Awaited<ReturnType<Sandbox["process"]["getSessionCommand"]>>;
+          let status: Awaited<ReturnType<Toolbox["process"]["getSessionCommand"]>>;
           try { status = await box.process.getSessionCommand(session, id); }
           catch (error) {
             if (!persistent || cancelled) throw error;
@@ -170,7 +177,7 @@ export async function sessionProcess(box: Sandbox, input: Omit<ExecInput, "timeo
   }
 }
 
-export async function execute(box: Sandbox, input: ExecInput & { streaming?: boolean }, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
+export async function execute(box: Toolbox, input: ExecInput & { streaming?: boolean }, prepare = workspaceCommand, prepared?: () => void): Promise<ExecResult> {
   // Only explicit live-chunk requests need a session. Core-internal commands
   // (checkpoints, secret probes, process helpers) omit the flag and collect output.
   // Stdin always goes through a session upload: carrying it in the command line
