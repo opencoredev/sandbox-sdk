@@ -1,5 +1,25 @@
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
+function hasResponse(cause: unknown): cause is { response: Response } {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "response" in cause &&
+    cause.response instanceof Response
+  );
+}
+
+/** A Boat API error code: a short snake_case word, never free text. */
+function hasApiCode(cause: unknown): cause is { apiCode: string } {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "apiCode" in cause &&
+    typeof cause.apiCode === "string" &&
+    /^[a-z][a-z0-9_]{0,63}$/.test(cause.apiCode)
+  );
+}
+
 /** `detailed` adds the HTTP status and the envelope's fixed error code, never free text. */
 export function errors(
   provider = "boat",
@@ -11,12 +31,7 @@ export function errors(
   function boatError(cause: unknown, sandboxId?: string): SandboxError {
     if (cause instanceof SandboxError) return cause;
 
-    const response =
-      typeof cause === "object" && cause !== null && "response" in cause
-        ? cause.response
-        : undefined;
-
-    const status = response instanceof Response ? response.status : undefined;
+    const status = hasResponse(cause) ? cause.response.status : undefined;
     let code: ErrorCode = "provider";
 
     if (status === 401 || status === 403) code = "auth";
@@ -33,14 +48,7 @@ export function errors(
         ? `Set ${keyEnv} to a valid ${label} API key.`
         : `Check the sandbox and ${label} service before retrying.`;
 
-    const apiCode =
-      typeof cause === "object" &&
-      cause !== null &&
-      "apiCode" in cause &&
-      typeof cause.apiCode === "string" &&
-      /^[a-z][a-z0-9_]{0,63}$/.test(cause.apiCode)
-        ? ` ${cause.apiCode}`
-        : "";
+    const apiCode = hasApiCode(cause) ? ` ${cause.apiCode}` : "";
 
     const detail = detailed && status !== undefined ? ` (HTTP ${status}${apiCode})` : "";
 

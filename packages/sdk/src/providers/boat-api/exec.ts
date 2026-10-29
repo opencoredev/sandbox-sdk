@@ -1,9 +1,17 @@
-import type { BoatApi } from "@boatdev/sdk";
+import type { BoatApi, CommandFrame } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { defaults } from "../../run.js";
 import { quote } from "../../shared/shell.js";
 import { loadPeer } from "../../peer.js";
 import { errors } from "./errors.js";
+
+function hasText<F extends CommandFrame>(frame: F): frame is F & { data: string } {
+  return typeof frame.data === "string";
+}
+
+function hasExitCode<F extends CommandFrame>(frame: F): frame is F & { exitCode: number | null } {
+  return typeof frame.exitCode === "number" || frame.exitCode === null;
+}
 
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
 
@@ -235,11 +243,10 @@ export async function execute(
         signal: stream.signal,
       })) {
         if (frame.type === "stdout" || frame.type === "stderr") {
-          if (typeof frame.data !== "string")
-            throw failure("Invalid Boat output frame", "provider", id);
+          if (!hasText(frame)) throw failure("Invalid Boat output frame", "provider", id);
           input.onChunk({ stream: frame.type, text: frame.data });
         } else if (frame.type === "exit") {
-          if (typeof frame.exitCode !== "number" && frame.exitCode !== null)
+          if (!hasExitCode(frame))
             throw failure("Boat returned no command exit code", "outcome_unknown", id);
           finished = true;
           // Exit 125 may be a setup failure before the shell removed staging.
@@ -253,12 +260,14 @@ export async function execute(
       throw failure("Boat stream ended without an exit result", "outcome_unknown", id);
     })();
 
+    // Observed now: a cancelled race never awaits completion's own failure.
     void completion.catch(() => {});
     const result = await Promise.race([completion, cancellation]);
 
     if (result === "cancelled" || cancelled) {
       await stop();
       stream.abort();
+      // The aborted stream rejects; the command is stopped and reports as timed out.
       await completion.catch(() => {});
 
       return { exitCode: null, timedOut: true };
@@ -304,6 +313,7 @@ export async function execute(
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
 
+    // Staging cleanup is best effort: the command's result or error stands either way.
     if (envDir)
       await api
         .command({
