@@ -2,6 +2,8 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import type { Json } from "../json.js";
+import { call, construct, member, nativeSchema } from "../native.js";
 import type { OwnedSandbox } from "./input.js";
 
 const money = z.number().finite().nonnegative();
@@ -29,7 +31,7 @@ export type ProviderCosts = {
   account: unknown;
 };
 
-export type Transport = (url: string, headers: Record<string, string>) => Promise<unknown>;
+export type Transport = (url: string, headers: Record<string, string>) => Promise<Json>;
 
 export class BillingHttpError extends Error {
   constructor(readonly status: number) {
@@ -69,77 +71,84 @@ export const http: Transport = async (url, headers) => {
 
 const unavailable = (note: string): Cost => ({ kind: "unavailable", confidence: "none", note });
 
-export const sources: Record<
-  string,
-  { source: string; granularity: string; delay: string; key: string; notes: string[] }
-> = {
-  boat: {
-    source: "https://boat.dev/api/v1/sandboxes/{id}/usage",
-    granularity: "sandbox lifetime, billable seconds",
-    delay: "final after stop",
-    key: "BOAT_API_KEY",
-    notes: [
-      "Boat dollars is explicitly list-price usage, not invoice cost. $20/month plan minimum and credits are separate.",
-    ],
-  },
-  upstash: {
-    source: "https://us-east-1.box.upstash.com/v2/box/{id}",
-    granularity: "sandbox lifetime CPU ns and compute USD",
-    delay: "cumulative; final after deletion",
-    key: "UPSTASH_BOX_API_KEY",
-    notes: ["Compute charge only; excludes any separate storage, subscription, credits or tax."],
-  },
-  e2b: {
-    source: "https://api.e2b.app/events/sandboxes/{id}",
-    granularity: "execution segment milliseconds",
-    delay: "lifecycle events; 7-day retention",
-    key: "E2B_API_KEY",
-    notes: [
-      "Metered, not invoice. execution_time is milliseconds. Published USD/second: vCPU 0.000014, GiB RAM 0.0000045; https://docs.e2b.dev/billing. Rates checked 2026-10-22; no historical rate guarantee.",
-    ],
-  },
-  boxd: {
-    source: "boxd orgs.usage / orgs.billingActivityPage",
-    granularity: "per-machine meter; org-wide 15-minute charges",
-    delay: "meter up to ~25 minutes; charges every 15 minutes",
-    key: "BOXD_API_KEY",
-    notes: [
-      "Machine cost is an estimate at current account rates, even when complete. Actual charges remain org-wide; no proportional allocation to tasks.",
-    ],
-  },
-  superserve: {
-    source: "https://api.superserve.ai/billing/usage-series (millisecond range) + /activity",
-    granularity: "account charge over any [start,end) range; buckets are clipped at range edges",
-    delay: "live; final once the sandbox is deleted",
-    key: "SUPERSERVE_API_KEY",
-    notes: [
-      "billed_total_usd is gross CPU + memory charge before credits/tax; storage is tracked, not billed. The account charge is per team, so a sandbox's charge is the charge over its own create-to-delete range, used only when the audit log shows no other sandbox in the run and the per-sandbox ranges add up exactly to the whole run range with a 60 s margin.",
-    ],
-  },
-  daytona: {
-    source: "https://analytics.app.daytona.io/organization/{org}/usage/sandbox",
-    granularity: "per-sandbox price in a fixed window",
-    delay: "up to 48 hours",
-    key: "DAYTONA_API_KEY",
-    notes: [
-      "Authenticated Analytics API verified; API-key organization discovered via /api-keys/current. Prices cover the requested window; pending until 48 hours after its end. Credits/tax are separate.",
-    ],
-  },
-  tenki: {
-    source: "No verified public billing endpoint",
-    granularity: "not available",
-    delay: "unknown",
-    key: "TENKI_API_KEY",
-    notes: ["No billing API found; no fabricated cost."],
-  },
-  freestyle: {
-    source: "No verified public billing endpoint",
-    granularity: "not available",
-    delay: "unknown",
-    key: "FREESTYLE_API_KEY",
-    notes: ["No billing API found; no fabricated cost."],
-  },
+type BillingSource = {
+  source: string;
+  granularity: string;
+  delay: string;
+  key: string;
+  notes: string[];
 };
+
+const sources = new Map<string, BillingSource>(
+  Object.entries({
+    boat: {
+      source: "https://boat.dev/api/v1/sandboxes/{id}/usage",
+      granularity: "sandbox lifetime, billable seconds",
+      delay: "final after stop",
+      key: "BOAT_API_KEY",
+      notes: [
+        "Boat dollars is explicitly list-price usage, not invoice cost. $20/month plan minimum and credits are separate.",
+      ],
+    },
+    upstash: {
+      source: "https://us-east-1.box.upstash.com/v2/box/{id}",
+      granularity: "sandbox lifetime CPU ns and compute USD",
+      delay: "cumulative; final after deletion",
+      key: "UPSTASH_BOX_API_KEY",
+      notes: ["Compute charge only; excludes any separate storage, subscription, credits or tax."],
+    },
+    e2b: {
+      source: "https://api.e2b.app/events/sandboxes/{id}",
+      granularity: "execution segment milliseconds",
+      delay: "lifecycle events; 7-day retention",
+      key: "E2B_API_KEY",
+      notes: [
+        "Metered, not invoice. execution_time is milliseconds. Published USD/second: vCPU 0.000014, GiB RAM 0.0000045; https://docs.e2b.dev/billing. Rates checked 2026-10-22; no historical rate guarantee.",
+      ],
+    },
+    boxd: {
+      source: "boxd orgs.usage / orgs.billingActivityPage",
+      granularity: "per-machine meter; org-wide 15-minute charges",
+      delay: "meter up to ~25 minutes; charges every 15 minutes",
+      key: "BOXD_API_KEY",
+      notes: [
+        "Machine cost is an estimate at current account rates, even when complete. Actual charges remain org-wide; no proportional allocation to tasks.",
+      ],
+    },
+    superserve: {
+      source: "https://api.superserve.ai/billing/usage-series (millisecond range) + /activity",
+      granularity: "account charge over any [start,end) range; buckets are clipped at range edges",
+      delay: "live; final once the sandbox is deleted",
+      key: "SUPERSERVE_API_KEY",
+      notes: [
+        "billed_total_usd is gross CPU + memory charge before credits/tax; storage is tracked, not billed. The account charge is per team, so a sandbox's charge is the charge over its own create-to-delete range, used only when the audit log shows no other sandbox in the run and the per-sandbox ranges add up exactly to the whole run range with a 60 s margin.",
+      ],
+    },
+    daytona: {
+      source: "https://analytics.app.daytona.io/organization/{org}/usage/sandbox",
+      granularity: "per-sandbox price in a fixed window",
+      delay: "up to 48 hours",
+      key: "DAYTONA_API_KEY",
+      notes: [
+        "Authenticated Analytics API verified; API-key organization discovered via /api-keys/current. Prices cover the requested window; pending until 48 hours after its end. Credits/tax are separate.",
+      ],
+    },
+    tenki: {
+      source: "No verified public billing endpoint",
+      granularity: "not available",
+      delay: "unknown",
+      key: "TENKI_API_KEY",
+      notes: ["No billing API found; no fabricated cost."],
+    },
+    freestyle: {
+      source: "No verified public billing endpoint",
+      granularity: "not available",
+      delay: "unknown",
+      key: "FREESTYLE_API_KEY",
+      notes: ["No billing API found; no fabricated cost."],
+    },
+  }),
+);
 
 const boatSchema = z.object({
   sandboxId: z.string(),
@@ -194,7 +203,7 @@ const activitySchema = z.object({
   nextPageToken: z.string().nullish(),
 });
 
-export function decodeBoat(raw: unknown, id: string): Cost {
+export function decodeBoat(raw: Json, id: string): Cost {
   const value = boatSchema.parse(raw);
 
   if (value.sandboxId !== id) throw new Error("Billing ID mismatch");
@@ -209,7 +218,7 @@ export function decodeBoat(raw: unknown, id: string): Cost {
   };
 }
 
-export function decodeUpstash(raw: unknown, id: string): Cost {
+export function decodeUpstash(raw: Json, id: string): Cost {
   const value = upstashSchema.parse(raw);
 
   if (value.id !== id) throw new Error("Billing ID mismatch");
@@ -225,7 +234,7 @@ export function decodeUpstash(raw: unknown, id: string): Cost {
 }
 
 export function decodeBoxd(
-  raw: unknown,
+  raw: Json,
   id: string,
   scope: "sandbox-lifetime" | "window" = "sandbox-lifetime",
 ): Cost {
@@ -246,7 +255,7 @@ export function decodeBoxd(
   };
 }
 
-export function decodeEvents(raw: unknown): Cost {
+export function decodeEvents(raw: Json): Cost {
   const events = z.array(eventSchema).parse(raw);
 
   if (
@@ -285,9 +294,9 @@ export function decodeEvents(raw: unknown): Cost {
   };
 }
 
-function errorNote(error: unknown) {
-  return error instanceof BillingHttpError
-    ? `Billing HTTP ${error.status}; retry after settlement or check retention/permissions`
+function errorNote(cause: unknown) {
+  return cause instanceof BillingHttpError
+    ? `Billing HTTP ${cause.status}; retry after settlement or check retention/permissions`
     : "Billing unavailable: network, optional SDK or response schema failed; retry later";
 }
 
@@ -304,35 +313,28 @@ function windowFor(rows: OwnedSandbox[]) {
   };
 }
 
-async function invoke(receiver: unknown, name: string, ...args: unknown[]): Promise<unknown> {
-  // Native SDK methods live on prototypes, not in the parsed record.
-  if (typeof receiver !== "object" || receiver === null) throw new Error("Invalid billing SDK");
-  const method: unknown = Reflect.get(receiver, name);
-
-  if (typeof method !== "function") throw new Error("Missing billing SDK method");
-
-  return Reflect.apply(method, receiver, args);
-}
-
 type BoxdQuery = (
   method: "usage" | "billingActivityPage",
   params: { org?: string; since: Date; until: Date; pageSize?: number; pageToken?: string },
-) => Promise<unknown>;
+) => Promise<object>;
 
 async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
   const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
-  const module: unknown = await import(pathToFileURL(require.resolve("@boxd-sh/sdk")).href);
-  const exports = z.record(z.string(), z.unknown()).parse(module);
 
-  if (typeof exports.Boxd !== "function") throw new Error("Missing Boxd SDK");
+  const module = nativeSchema.parse(
+    await import(pathToFileURL(require.resolve("@boxd-sh/sdk")).href),
+  );
 
-  const client: unknown = Reflect.construct(exports.Boxd, [
-    { apiKey: env.BOXD_API_KEY, timeout: 15_000, maxRetries: 0 },
-  ]);
+  const client = construct(module, "Boxd", {
+    apiKey: env.BOXD_API_KEY,
+    timeout: 15_000,
+    maxRetries: 0,
+  });
 
-  const api = z.object({ orgs: z.unknown() }).parse(client);
+  // Native SDK methods live on prototypes, so `call` keeps `orgs` as the receiver.
+  const orgs = member(client, "orgs", nativeSchema);
 
-  return (method, params) => invoke(api.orgs, method, params);
+  return (method, params) => call(orgs, method, [params], nativeSchema);
 }
 
 export async function readBoxdAccount(
@@ -417,7 +419,7 @@ type SuperserveCharges =
  */
 export async function readSuperserveCharges(
   rows: OwnedSandbox[],
-  get: (url: string) => Promise<unknown>,
+  get: (url: string) => Promise<Json>,
   now = Date.now(),
 ): Promise<SuperserveCharges> {
   const charge = async (start: number, end: number) => {
@@ -639,7 +641,7 @@ export async function collectProvider(
   offline = false,
   waitMs = 0,
 ): Promise<ProviderCosts> {
-  const spec = sources[provider] ?? {
+  const spec = sources.get(provider) ?? {
     source: "No billing collector",
     granularity: "not available",
     delay: "unknown",

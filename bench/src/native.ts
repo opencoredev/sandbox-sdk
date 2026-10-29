@@ -21,6 +21,7 @@ export type NativeArgument =
   | number
   | boolean
   | undefined
+  | Date
   | readonly string[]
   | Fetch
   | Native
