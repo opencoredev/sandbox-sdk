@@ -63,10 +63,23 @@ type DataPlaneClient = Awaited<ReturnType<NativeSession["requireDataPlane"]>>;
 
 type NativeRun = DataPlaneClient["run"];
 
+/** True when `T` is `any`, which is what an uninstalled optional peer's types resolve to. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
 /** A request frame for the data-plane `run` stream. */
 export type TenkiRunRequest = Parameters<NativeRun>[0] extends AsyncIterable<infer T> ? T : never;
 
-type NativeRunResponse = ReturnType<NativeRun> extends AsyncIterable<infer T> ? T : never;
+// Without the peer installed, the derived frame types stay `any` instead of collapsing to
+// `unknown`, so a consumer's typecheck reports only the missing module.
+type NativeRunResponse =
+  IsAny<NativeRun> extends true
+    ? any
+    : ReturnType<NativeRun> extends AsyncIterable<infer T>
+      ? T
+      : never;
+
+type NativeRunOptions =
+  IsAny<NativeRun> extends true ? { signal?: AbortSignal } : NonNullable<Parameters<NativeRun>[1]>;
 
 type NativeRunPayload = NonNullable<NativeRunResponse["frame"]>["payload"];
 
@@ -92,7 +105,7 @@ export interface TenkiRunResponse {
 export interface TenkiDataPlane {
   run(
     requests: AsyncIterable<TenkiRunRequest>,
-    options: Required<Pick<NonNullable<Parameters<NativeRun>[1]>, "signal">>,
+    options: Required<Pick<NativeRunOptions, "signal">>,
   ): AsyncIterable<TenkiRunResponse>;
 }
 
