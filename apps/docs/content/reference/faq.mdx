@@ -53,7 +53,7 @@ E2B and Daytona find sandboxes by searching, so simultaneous requests can both m
 
 ## My dev server is running but the preview doesn't load.
 
-Check three things. The server must listen on `0.0.0.0`, not `localhost`. On Local and Vercel Sandbox, the port must be in `ports` at creation. On Daytona, requests need the token header from `preview.headers`, so a plain iframe won't work. See [Dev servers and previews](/guides/dev-servers-and-previews).
+Check three things. The server must listen on `0.0.0.0`, not `localhost`. On Local, Vercel Sandbox, and Railway, the port must be in `ports` at creation. On providers with private previews, such as Daytona, Upstash Box, Boat, Sandboxer, and Superserve, requests need the header from `preview.headers`, so a plain iframe won't work. See [Dev servers and previews](/guides/dev-servers-and-previews).
 
 ## Is there a terminal or PTY?
 

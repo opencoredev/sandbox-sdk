@@ -22,12 +22,12 @@ await using custom = await createSandbox(daytona(), {
 | Preset | Local | Vercel | Daytona |
 | --- | --- | --- | --- |
 | `small` | 1 CPU, 1024 MiB | 1 vCPU, 2048 MiB | 1 CPU, 1024 MiB, 10 GiB disk |
-| `medium` | 2 CPUs, 4096 MiB | 2 vCPUs, 4096 MiB | 2 CPUs, 4096 MiB, 20 GiB disk |
-| `large` | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 40 GiB disk |
+| `medium` | 2 CPUs, 4096 MiB | 2 vCPUs, 4096 MiB | 2 CPUs, 4096 MiB, 10 GiB disk |
+| `large` | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 10 GiB disk |
 
-Only Daytona accepts exact numbers, because it is the only provider that can set disk size. E2B takes no `size` at all: the machine comes from the E2B template.
+Daytona and Tenki accept exact CPU, memory, and disk. Local accepts `{ cpu, memoryMb }` without `diskGb`. Vercel accepts a whole number of vCPUs with 2048 MiB each and no disk, and boxd accepts 1, 2, 4, or 8 vCPU with 4 GiB each. Upstash Box, Boat, and Sandboxer take presets only. E2B, Railway, Superserve, and Freestyle take no `size` at all: the machine comes from the template or the provider's own settings.
 
-When a provider can't give you the size you asked for, creation fails with code `unsupported`, and the error message says what that provider allows. Vercel, for example, takes presets only:
+When a provider can't give you the size you asked for, creation fails with code `unsupported`, and the error message says what that provider allows. Vercel, for example, has no disk setting:
 
 ```ts
 import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
@@ -75,6 +75,6 @@ Use an allow list whenever a model or a user's code runs in the sandbox. A short
 
 A network policy is only useful if it holds. When a provider has no way to enforce `"none"` or an allow list, `createSandbox` throws `SandboxError` with code `unsupported` rather than create an open sandbox. The same goes for `size`.
 
-Local is the case to know: it enforces `"none"` but has no allow lists, so `{ allow }` fails there. E2B, Vercel, and Daytona enforce both. Check ahead of time with `box.capabilities`, which includes `"network-policy"` and `"size"` when the provider supports them in some form, and use the [capability matrix](/reference/capabilities) for the exact limits.
+Local and Freestyle enforce `"none"` but have no host allow lists, so `{ allow }` fails there. boxd is the reverse: it enforces allow lists but not `"none"`, because an empty boxd list means unrestricted. Railway, Boat, and Sandboxer accept only `"all"`. E2B, Vercel, Daytona, Upstash Box, Tenki, and Superserve enforce both. Check ahead of time with `box.capabilities`, which includes `"network-policy"` and `"size"` when the provider supports them in some form, and use the [capability matrix](/reference/capabilities) for the exact limits.
 
 Previews are inbound, so an allow list doesn't block them. The exception is Local with `network: "none"`, where the container has no network at all and previews fail.

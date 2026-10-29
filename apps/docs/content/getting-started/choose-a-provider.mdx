@@ -13,13 +13,13 @@ Start with [Local](/providers/local) while you build and [Memory](/providers/mem
 | --- | --- | --- |
 | To develop or run CI with no cloud account | [Local](/providers/local) | Real Linux in Docker on your own machine |
 | Unit tests that start no machine | [Memory](/providers/memory) | Runs in your process, no network |
-| Sandboxes that pause with running processes and memory intact | [E2B](/providers/e2b) | Pauses the whole microVM |
-| A hard lifetime limit that a reconnect can't extend | [E2B](/providers/e2b) or [Daytona](/providers/daytona) | Enforced by the provider, even if your server crashes |
+| Sandboxes that pause with running processes and memory intact | [E2B](/providers/e2b), [Tenki](/providers/tenki), [boxd](/providers/boxd), or [Freestyle](/providers/freestyle) | Pauses the whole VM |
+| A hard lifetime limit that a reconnect can't extend | [E2B](/providers/e2b), [Daytona](/providers/daytona), [Tenki](/providers/tenki), or [Freestyle](/providers/freestyle) | Enforced by the provider, even if your server crashes |
 | To deploy on Vercel with no extra keys | [Vercel Sandbox](/providers/vercel) | OIDC auth inside Vercel deployments |
 | Get-or-create by key with no race, and no extra store | [Vercel Sandbox](/providers/vercel) or [Local](/providers/local) | The provider enforces unique names |
-| Exact CPU, memory, and disk numbers | [Daytona](/providers/daytona) | The only provider that sizes disk |
-| Workspaces that stop on their own when idle | [Daytona](/providers/daytona) | Native auto-stop, in minutes |
-| A network allow list for untrusted code | [E2B](/providers/e2b), [Vercel Sandbox](/providers/vercel), or [Daytona](/providers/daytona) | Local can block all traffic but can't filter by host |
+| Exact CPU, memory, and disk numbers | [Daytona](/providers/daytona) or [Tenki](/providers/tenki) | The only providers that size disk |
+| Workspaces that stop on their own when idle | [Daytona](/providers/daytona), [Sandboxer](/providers/sandboxer), or [boxd](/providers/boxd) | Native idle timer. Daytona stops the sandbox; Sandboxer and boxd pause it |
+| A network allow list for untrusted code | [E2B](/providers/e2b), [Vercel Sandbox](/providers/vercel), [Daytona](/providers/daytona), or [Tenki](/providers/tenki) | Local can block all traffic but can't filter by host. The [comparison](/providers) lists the rest |
 | A service that isn't listed | [Write a provider](/providers/custom) | A small adapter gets you the whole API |
 
 The [comparison page](/providers) puts every feature side by side, and the [capability matrix](/reference/capabilities) has the exact limits.
@@ -109,9 +109,9 @@ No machine. Files live in a map and commands run through handlers you write.
 
 Most of your code won't notice the provider. These four things can:
 
-- **Keys.** Local, Vercel Sandbox, and Memory guarantee that two requests with the same `key` get one sandbox. E2B and Daytona find sandboxes by searching, so a race can create two. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
-- **Pause.** Local and E2B keep running processes through a pause. Vercel Sandbox and Daytona keep the disk and end the processes, so you restart them.
-- **Previews.** Local and Vercel Sandbox need `ports` declared up front. Daytona previews need a header, so a browser can't load them directly.
-- **Limits.** Idle and lifetime limits are enforced differently, and Vercel Sandbox has neither. See [Clean up sandboxes](/guides/cleanup).
+- **Keys.** Local, Vercel Sandbox, and Memory guarantee that two requests with the same `key` get one sandbox. The other cloud providers find sandboxes by searching, so a race can create two. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+- **Pause.** Local, E2B, Tenki, boxd, and Freestyle keep running processes through a pause. Vercel Sandbox and Upstash Box keep the disk and end the processes, so you restart them. Daytona can't pause; its idle timeout stops the sandbox.
+- **Previews.** Local, Vercel Sandbox, and Railway need `ports` declared up front. Daytona, Upstash Box, Boat, Sandboxer, and Superserve previews need a header by default, so a browser can't load them directly.
+- **Limits.** Idle and lifetime limits are enforced differently, and many providers support only one of them or neither. See [Clean up sandboxes](/guides/cleanup).
 
 When you ask for something a provider can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. You find out in development, not in production.

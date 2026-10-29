@@ -32,24 +32,24 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 
 ## Feature matrix
 
-"Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit.
+"Partly" means the feature works with a limit that matters. The [capability matrix](/reference/capabilities) spells out each limit. The table scrolls sideways on narrow screens.
 
-|  | Local | Local (agentOS) | E2B | Vercel Sandbox | Daytona | Upstash Box | Railway | Boat | Sandboxer | Tenki | Superserve | boxd | Freestyle | Memory |
+|  | Local | agentOS | E2B | Vercel | Daytona | Upstash | Railway | Boat | Sandboxer | Tenki | Superserve | boxd | Freestyle | Memory |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Key mode | exact | exact, in-process | best-effort | exact | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | best-effort | exact |
-| Pause and resume | Yes | No | Yes | Partly, processes end | No | Yes, processes end | No | No | Yes | Yes | Yes | Yes | Yes | No |
+| Pause and resume | Yes | No | Yes | Partly, processes end | No | Partly, processes end | No | No | Yes | Yes | Yes | Yes | Yes | No |
 | Snapshots | Yes | No | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes | Yes | Yes | No |
-| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Yes | Yes |
-| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | No | No | Empty only | Yes |
+| Block all network | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | No | Yes | Recorded only |
+| Network allow list | No | Yes, literal hosts | Yes | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | Empty only | Recorded only |
 | Size presets | Yes | No | No | Yes | Yes | Yes | No | Yes | Yes | Yes | No | Yes | No | No |
-| Exact CPU, memory, disk | No | No | No | No | Yes | No | No | No | No | Yes | No | Partial, 1/2/4/8 vCPU at 4 GiB each | No | No |
-| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, in minutes | No | Yes, destroys VM | No | No | No | No | No | Yes, whole seconds | Yes |
-| Hard lifetime | Partly, on reconnect or reap | No | Yes | No | Yes, in minutes | No | No | No | No | Yes | No | No | Yes, whole seconds | Yes |
+| Exact CPU, memory, disk | Partly, no disk | No | No | Partly, vCPUs only | Yes | No | No | No | No | Yes | No | Partly, fixed steps | No | No |
+| Idle timeout | Partly, on reconnect or reap | No | No | No | Yes, minutes | No | Yes, destroys VM | No | Yes, pauses | No | No | Yes, seconds | Yes, seconds | Yes |
+| Hard lifetime | Partly, on reconnect or reap | No | Yes | Partly, per session | Yes, minutes | No | No | No | No | Yes | No | Yes, seconds | Yes, seconds | Yes |
 | Ports declared up front | Yes | No | No | Yes, up to 15 | No | No | Yes, up to 10 | No | No | No | No | No | No | No |
-| Preview URL | `127.0.0.1` only | Unsupported | Public `https://` | Public `https://` | Needs a token header | Needs a bearer header | Public `https://` | Needs a cookie header | Needs a cookie header | Public `https://` | Needs a token header | Public `https://` | Public `https://` | Fake |
+| Preview URL | `127.0.0.1` only | No | Public `https://` | Public `https://` | Token header | Bearer header | Public `https://` | Cookie header | Cookie header | Public `https://` | Token header | Public `https://`, one port at a time | Public `https://` | Fake |
 | Terminal | No | No | No | No | No | No | No | No | No | No | No | No | No | No |
 
-Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing.
+Memory accepts a network policy because it has no network to open. It records the setting and enforces nothing. Daytona, Upstash Box, and Superserve can also make previews public with a factory option; see each provider page.
 
 ## Key mode in one sentence
 

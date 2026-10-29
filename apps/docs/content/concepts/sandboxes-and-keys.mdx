@@ -51,8 +51,10 @@ How reliable the lookup is depends on the provider.
 | [Local](/providers/local) | exact | Container name, a hash of the key |
 | [Vercel](/providers/vercel) | exact | Sandbox name, a hash of the key |
 | [Memory](/providers/memory) | exact | In-process map |
+| [Local (agentOS)](/providers/agentos) | exact, in-process | In-process map |
 | [E2B](/providers/e2b) | best-effort | Sandbox metadata |
 | [Daytona](/providers/daytona) | best-effort | Sandbox labels |
+| Every other cloud provider | best-effort | Metadata, the VM name, or a marker file in the VM. Each provider page says which |
 
 Exact means the provider enforces unique names, so two concurrent calls with the same key always land on one sandbox. Best-effort means the SDK finds the sandbox by searching metadata. Two requests that arrive at the same moment can both miss and create two sandboxes.
 

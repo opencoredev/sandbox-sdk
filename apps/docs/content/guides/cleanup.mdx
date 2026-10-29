@@ -68,10 +68,11 @@ import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 await using box = await createSandbox(vercel(), {
   key: "user:123",
   labels: { app: "builder" },
+  timeoutMs: 45 * 60_000,
 });
 ```
 
-Vercel Sandbox accepts neither limit, because its session timeout resets on every resume. Rely on the reaper below.
+Vercel Sandbox has no idle timer, so `idleTimeoutMs` fails with `unsupported`. `timeoutMs` limits one session, and each resume starts a new one, so a sandbox your users keep resuming never reaches a final deadline. Run the reaper below as well.
 
 </ProviderTab>
 <ProviderTab provider="local">
