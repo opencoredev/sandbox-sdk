@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ComponentProps, ReactNode, Ref, RefCallback, RefObject } from "react";
+import type { ComponentProps, ReactNode, RefObject } from "react";
 
 import { readDitherCell, resolveColor, subscribeToTheme } from "@/lib/dither/color";
 import { getThresholdMap } from "@/lib/dither/matrices";
@@ -532,11 +532,6 @@ const clampLevels = (levels: number) => Math.min(256, Math.max(2, Math.round(lev
 const CANVAS_CLASS =
   "absolute top-0 left-0 block opacity-100 transition-opacity duration-700 ease-out [image-rendering:pixelated] group-data-[state=fallback]/dither:opacity-0 group-data-[state=fallback]/dither:duration-0 motion-reduce:transition-none";
 
-/** Whether a forwarded ref is a callback rather than a ref object. */
-function isRefCallback(ref: Ref<HTMLDivElement> | undefined): ref is RefCallback<HTMLDivElement> {
-  return typeof ref === "function";
-}
-
 /**
  * A dithered full-bleed canvas driven by a GLSL `field`. Renders one pixel
  * per dither cell, scaled up with crisp edges. Pauses offscreen and in
@@ -567,13 +562,13 @@ export const DitherShader = ({
   const setRoot = (node: HTMLDivElement | null) => {
     rootRef.current = node;
 
-    if (isRefCallback(ref)) {
-      return ref(node);
+    if (ref && "current" in ref) {
+      ref.current = node;
+
+      return;
     }
 
-    if (ref) {
-      ref.current = node;
-    }
+    return ref?.(node);
   };
 
   const rendererRef = useRef<Renderer | null>(null);
