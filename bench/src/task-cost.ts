@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PublicationReport } from "./merge.js";
 import { allocationEvidence } from "./allocation.js";
+import { isSizePreset } from "./v2-config.js";
 import { estimateCost, pricing } from "./pricing.js";
 
 const cost = z.discriminatedUnion("kind", [
@@ -98,10 +99,11 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
     if (!resources)
       return { ...empty, source: `${empty.source}; matching verified allocation required` };
 
+    const size = allocation.requested.size;
+
     const diskGiB =
-      typeof allocation.requested.size === "object" &&
-      allocation.requested.size?.diskGb !== undefined
-        ? allocation.requested.size.diskGb
+      size !== null && !isSizePreset(size) && size.diskGb !== undefined
+        ? size.diskGb
         : (allocation.provisioned?.diskGiB ?? (provider === "tenki" ? 5 : 32));
 
     const values = lifetimes.map((s) =>

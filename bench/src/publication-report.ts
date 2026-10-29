@@ -17,7 +17,7 @@ import {
 // Layout: summary first, then expandable scenario strips and auditable source tables.
 // Signature: every successful observation is a dot, with the median and its bootstrap interval.
 // Avoiding: winner badges, composite scores, decorative gradients, and cross-currency rankings.
-const esc = (value: unknown) =>
+const esc = (value: string | number | boolean | null | undefined) =>
   String(value ?? "unknown")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -629,8 +629,9 @@ export function publicationHtml(r: PublicationReport) {
 
   const charts = (guest: boolean) =>
     scenarioGroups
-      .filter((s) => perf.has(s.scenario) === guest)
-      .map((s) => chart(r, s.suite, s.scenario, s.unit))
+      .flatMap((s) =>
+        perf.has(s.scenario) === guest ? [chart(r, s.suite, s.scenario, s.unit)] : [],
+      )
       .join("");
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'"><title>Sandbox provider benchmark | Publication report</title><style>

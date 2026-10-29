@@ -11,7 +11,12 @@ interface ProvisionedAllocation {
   documentedDisk?: { value: number; unit: "GB"; scope: string; source: string };
 }
 
-const templates: Record<string, Record<string, ProvisionedAllocation>> = {
+/** Allocations of known templates, by provider and then template. */
+interface TemplateAllocations {
+  readonly [provider: string]: Record<string, ProvisionedAllocation>;
+}
+
+const templates: TemplateAllocations = {
   e2b: {
     "sandbox-bench-same-spec": { cpu: 4, memoryGiB: 8 },
     r1h7gud12rf1f6iu29r0: { cpu: 4, memoryGiB: 8 },
@@ -29,7 +34,11 @@ const templates: Record<string, Record<string, ProvisionedAllocation>> = {
   },
 };
 
-const defaults: Record<string, ProvisionedAllocation> = {
+interface DefaultAllocations {
+  readonly [provider: string]: ProvisionedAllocation;
+}
+
+const defaults: DefaultAllocations = {
   e2b: { cpu: 2, memoryGiB: 0.5 },
   daytona: { cpu: 1, memoryGiB: 1, diskGiB: 3 },
   upstash: { cpu: 2, memoryGiB: 4, diskGiB: 5 },

@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { z } from "zod";
 import { priceAtSize, pricing } from "./pricing.js";
 import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
@@ -88,9 +89,9 @@ export const metricDefs: MetricDef[] = [
 ];
 
 const egressText = (egress: Fingerprint["egress"], key: string) => {
-  const value = egress?.[key];
+  const value = z.string().min(1).safeParse(egress?.[key]);
 
-  return typeof value === "string" && value ? value : null;
+  return value.success ? value.data : null;
 };
 
 function cpuVendor(fp: Fingerprint) {
@@ -326,7 +327,7 @@ export function pauseSplit(samples: readonly PauseInput[], provider: string) {
           ? s.phases?.[key]
           : undefined;
 
-      return typeof v === "number" ? [v / 1000] : [];
+      return v === undefined ? [] : [v / 1000];
     });
 
   const pause = statistics(phase("pauseMs"));

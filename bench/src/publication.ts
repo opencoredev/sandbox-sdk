@@ -32,8 +32,7 @@ export async function collectMetadata(lookupLocation = false) {
         .catch(() => null),
       lookupLocation
         ? fetch("https://ipinfo.io/json", { signal: AbortSignal.timeout(3000) })
-            .then((r) => r.json())
-            .then((v: unknown) => locationSchema.parse(v))
+            .then(async (r) => locationSchema.parse(await r.json()))
             .catch(() => null)
         : null,
     ]);
