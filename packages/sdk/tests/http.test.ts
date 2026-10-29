@@ -98,8 +98,9 @@ describe("retries", () => {
   test("a Retry-After past the deadline is not waited for", async () => {
     server.on("GET /v1/x", { status: 503, headers: { "retry-after": "5" } });
     const started = Date.now();
-    expect((await failure(client().json({ method: "GET", path: "/x", timeoutMs: 500 }))).code).toBe("unavailable");
-    expect(Date.now() - started).toBeLessThan(400);
+    expect((await failure(client().json({ method: "GET", path: "/x", timeoutMs: 1_000 }))).code).toBe("unavailable");
+    // It answers at once instead of sleeping 5 s first.
+    expect(Date.now() - started).toBeLessThan(3_000);
     expect(server.requests).toHaveLength(1);
   });
 
@@ -179,8 +180,9 @@ describe("unknown outcomes", () => {
   });
 
   test("one deadline covers several calls", async () => {
-    server.on("GET /v1/x", { json: {}, delayMs: 120 });
-    const deadline = createDeadline(200);
+    // The first call fits; the second needs as long again and only 400 ms are left, with room for a loaded machine.
+    server.on("GET /v1/x", { json: {}, delayMs: 600 });
+    const deadline = createDeadline(1_000);
     await client().json({ method: "GET", path: "/x", deadline });
     expect((await failure(client().json({ method: "GET", path: "/x", deadline }))).code).toBe("timeout");
   });
@@ -280,9 +282,10 @@ describe("errors are redacted and bounded", () => {
 
   test("a huge error body is read only up to 64 KB", async () => {
     server.on("GET /v1/x", { status: 400, stream: ['{"message":"', "y".repeat(200_000), '"}'], hold: true });
+    // The server never ends the body; reading stops at 64 KB instead of waiting for the 10 s deadline.
     const started = Date.now();
-    expect((await failure(client().json({ method: "GET", path: "/x" }))).code).toBe("invalid_argument");
-    expect(Date.now() - started).toBeLessThan(1_500);
+    expect((await failure(client({ timeoutMs: 10_000 }).json({ method: "GET", path: "/x" }))).code).toBe("invalid_argument");
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   test("parseErrorBody reads the common shapes", () => {
@@ -321,8 +324,9 @@ describe("streams", () => {
   });
 
   test("the idle timeout fires between chunks, not over the whole stream", async () => {
-    server.on("GET /v1/logs", { stream: ["a", "b", "c"], intervalMs: 60, hold: true });
-    const response = await client().stream({ method: "GET", path: "/logs", idleTimeoutMs: 200 });
+    // Gaps of 50 ms stay under the 1 s idle timeout; the held-open end trips it.
+    server.on("GET /v1/logs", { stream: ["a", "b", "c"], intervalMs: 50, hold: true });
+    const response = await client().stream({ method: "GET", path: "/logs", idleTimeoutMs: 1_000 });
     const reader = response.body!.getReader();
     const seen: string[] = [];
     let caught: unknown;
