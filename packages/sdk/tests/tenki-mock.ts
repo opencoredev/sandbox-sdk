@@ -33,6 +33,7 @@ export const tenkiState = {
   streamAttempts: 0,
   streamFailures,
   streamExitWaits,
+  calls: { writeFile: 0, writeFileStream: [] as { path: string; options: unknown }[], exposePort: [] as unknown[], createSnapshot: [] as unknown[], list: [] as unknown[] },
 };
 export class MockSession {
   readonly id = crypto.randomUUID();
@@ -203,7 +204,15 @@ export class MockSession {
       throw error;
     }
   }
+  async writeFileStream(path: string, data: ReadableStream<Uint8Array>, options: { mode?: number; truncate?: boolean } = {}) {
+    tenkiState.calls.writeFileStream.push({ path, options });
+    const mapped = this.rewrite(path);
+    await fs.mkdir(join(mapped, ".."), { recursive: true });
+    await fs.writeFile(mapped, new Uint8Array(await new Response(data).arrayBuffer()));
+    if (options.mode !== undefined) await fs.chmod(mapped, options.mode);
+  }
   async writeFile(path: string, data: Uint8Array) {
+    tenkiState.calls.writeFile++;
     const mapped = this.rewrite(path);
     await fs.mkdir(join(mapped, ".."), { recursive: true });
     await fs.writeFile(mapped, data);
@@ -328,7 +337,8 @@ v=sdk_paths(v)`;
     // A watcher poll stopped just before close can still be writing here; retry ENOTEMPTY.
     await fs.rm(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
-  async exposePort(_port: number) {
+  async exposePort(_port: number, options?: unknown) {
+    tenkiState.calls.exposePort.push(options);
     return {
       port: _port,
       previewUrl: `http://127.0.0.1:${this.port}`,
@@ -349,10 +359,12 @@ export class MockTenki {
     if (!value) throw missing();
     return value;
   }
-  async list() {
+  async list(options?: unknown) {
+    tenkiState.calls.list.push(options);
     return [...tenkiState.boxes.values()];
   }
-  async createSnapshot(id: string) {
+  async createSnapshot(id: string, options?: unknown) {
+    tenkiState.calls.createSnapshot.push(options);
     const box = await this.get(id);
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-tenki-snapshot-"));
     await promisify(execFile)("cp", ["-a", `${box.root}/.`, root]);
@@ -379,4 +391,5 @@ export async function cleanupTenki() {
   tenkiState.streamAttempts = 0;
   tenkiState.streamFailures.length = 0;
   tenkiState.streamExitWaits.length = 0;
+  tenkiState.calls = { writeFile: 0, writeFileStream: [], exposePort: [], createSnapshot: [], list: [] };
 }
