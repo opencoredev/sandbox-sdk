@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import { promises as local } from "node:fs";
 import type { Provider, FileInfo, WriteOptions } from "./provider.js";
 import { SandboxError, invalid, type Redactor } from "./errors.js";
-import { pathOf, quote, defaults } from "./run.js";
+import { pathOf, defaults } from "./run.js";
+import { quote } from "./shared/shell.js";
 
 export interface FileEvent {
   type: "added" | "modified" | "removed";

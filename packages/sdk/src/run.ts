@@ -2,6 +2,10 @@ import { posix } from "node:path";
 import type { OutputChunk, Provider } from "./provider.js";
 import { invalid, Redactor } from "./errors.js";
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
+import { quote } from "./shared/shell.js";
+
+// Providers built on run.ts helpers import quote from here.
+export { quote };
 
 export const defaults = {
   CI: "1",
@@ -13,7 +17,6 @@ export const defaults = {
 };
 
 export const pathOf = (path = ".") => posix.resolve("/workspace", path);
-export const quote = (value: unknown) => `'${String(value).replaceAll("'", "'\\''")}'`;
 export const secretRecoveryCommand = `if [ -f /tmp/.sandbox-sdk/secret-names.json ]; then cat /tmp/.sandbox-sdk/secret-names.json || exit 1; printf '\\000'; env -0; fi`;
 
 // Anonymous-pipe relays keep activity alive until inherited stdout/stderr close.

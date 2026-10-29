@@ -1,7 +1,7 @@
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
 import type { Files } from "./files.js";
 import type { Redactor } from "./errors.js";
-import { quote } from "./run.js";
+import { quote } from "./shared/shell.js";
 
 export interface Git {
   clone(
@@ -53,7 +53,7 @@ export function makeGit(
   return {
     clone: (url, options = {}) =>
       auth(
-        `clone ${options.branch ? `--branch ${quote(options.branch)} ` : ""}${options.depth ? `--depth ${quote(options.depth)} ` : ""}-- ${quote(url)} ${quote(options.dir ?? "app")}`,
+        `clone ${options.branch ? `--branch ${quote(options.branch)} ` : ""}${options.depth ? `--depth ${quote(String(options.depth))} ` : ""}-- ${quote(url)} ${quote(options.dir ?? "app")}`,
         options.token,
       ),
     status: (dir) => Promise.resolve(run("git status --porcelain", { cwd: dir })),

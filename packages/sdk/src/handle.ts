@@ -2,7 +2,8 @@ import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provide
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
 import { forgetSandbox } from "./keys.js";
-import { makeRun, quote, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
+import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
+import { quote } from "./shared/shell.js";
 import { makeFiles } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
@@ -255,7 +256,7 @@ export async function makeHandle<N>(
       return run(
         strings.reduce(
           (command, part, index) =>
-            command + part + (index < values.length ? quote(values[index]) : ""),
+            command + part + (index < values.length ? quote(String(values[index])) : ""),
           "",
         ),
       );
