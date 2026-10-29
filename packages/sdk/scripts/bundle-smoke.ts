@@ -5,6 +5,10 @@
 // dependency can require a Node builtin. Offline: each consumer blocks every TCP connection and counts the attempts,
 // so a provider passes when its native client is constructed and tries to connect, and its
 // failure is a SandboxError. A TypeError such as "m is not a constructor" fails the provider.
+// Each bundle runs from its own directory, with no node_modules in reach, like a deploy.
+// Also checked: boxd file transfers in every format (they used to resolve a file through
+// import.meta.url), the hint an ESM bundle without the banner gets, and that the error mappers
+// still recognize native errors once a minifier has renamed every class.
 //
 //   bun scripts/bundle-smoke.ts                         build, then check every provider offline
 //   SKIP_BUILD=1 bun scripts/bundle-smoke.ts            reuse dist
@@ -68,21 +72,35 @@ async function probe(name, factory) {
   const outcome = await Promise.race([listSandboxes(factory()).then(() => ({ ok: true }), error => ({ error })), timeout]);
   console.log(JSON.stringify({ name, attempts, timedOut: outcome.timedOut === true, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
 }
+// boxd moves file bytes with its fetch client; reading through the adapter reaches it without a sandbox.
+async function transferProbe(name, provider) {
+  attempts = 0;
+  const outcome = await provider.files.read("smoke-machine", "/workspace/smoke.txt").then(() => ({ ok: true }), error => ({ error }));
+  console.log(JSON.stringify({ name, attempts, timedOut: false, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
+}
 `;
 const imports = [
   `import { listSandboxes, SandboxError } from "@opencoredev/sandbox-sdk";`,
   ...Object.keys(fakes).map(name => `import { ${name} } from "@opencoredev/sandbox-sdk/${name}";`),
 ].join("\n");
-const probes = Object.entries(fakes).map(([name, options]) => `await probe(${JSON.stringify(name)}, () => ${name}(${options}));`);
+const probes = [
+  ...Object.entries(fakes).map(([name, options]) => `await probe(${JSON.stringify(name)}, () => ${name}(${options}));`),
+  `await transferProbe("boxd files", boxd(${fakes.boxd}));`,
+];
+const rowNames = [...Object.keys(fakes), "boxd files"];
 const esm = [imports, blocker, ...probes].join("\n");
 // cjs output has no top-level await, so the same probes run in an async IIFE.
 const cjs = [imports, blocker, "(async () => {", ...probes, "})();"].join("\n");
 
 const requireBanner = { js: `import { createRequire as __smokeRequire } from "node:module"; const require = __smokeRequire(import.meta.url);` };
-const formats: { label: string; options: BuildOptions; source: string }[] = [
+// Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
+// They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
+const needsRequire = ["e2b", "vercel", "daytona", "tenki", "boxd", "boxd files"];
+const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   { label: "esm + splitting (Convex)", options: { format: "esm", splitting: true, banner: requireBanner }, source: esm },
   { label: "esm", options: { format: "esm", banner: requireBanner }, source: esm },
   { label: "cjs", options: { format: "cjs" }, source: cjs },
+  { label: "esm without the createRequire banner", options: { format: "esm" }, source: esm, noBanner: true },
 ];
 type Row = { name: string; attempts: number; timedOut: boolean; sandboxError: boolean; code?: string; text: string };
 function parseRow(line: string): Row | undefined {
@@ -100,22 +118,67 @@ function parseRow(line: string): Row | undefined {
 const bad = /is not a constructor|is not a function|Cannot read propert|Cannot destructure|undefined is not/;
 const work = mkdtempSync(join(tmpdir(), "sandbox-sdk-bundle-smoke-"));
 try {
-  for (const { label, options, source } of formats) {
+  for (const { label, options, source, noBanner } of formats) {
     const outdir = join(work, label.replace(/\W+/g, "-"));
     const extension = options.format === "cjs" ? ".cjs" : ".mjs";
     // The entry resolves from the package itself: the SDK through its own exports (dist), peers from node_modules.
     const result = await build({ stdin: { contents: source, resolveDir: sdkDir, sourcefile: `entry${extension}`, loader: "js" }, bundle: true, platform: "node", target: "node22", outdir, entryNames: "entry", outExtension: { ".js": extension }, logLevel: "silent", ...options });
     const warnings = [...new Set(result.warnings.map(warning => warning.text))];
     console.log(`\n${label}: ${readdirSync(outdir).length} output file(s)${warnings.length ? `, warnings: ${warnings.join("; ")}` : ""}`);
-    const run = spawnSync("node", [join(outdir, `entry${extension}`)], { encoding: "utf8", timeout: 300_000 });
+    const run = spawnSync("node", [join(outdir, `entry${extension}`)], { cwd: outdir, encoding: "utf8", timeout: 300_000 });
     const rows = run.stdout.split("\n").filter(line => line.startsWith("{")).map(parseRow).filter(row => row !== undefined);
     for (const row of rows) {
+      if (noBanner && needsRequire.includes(row.name)) {
+        const ok = row.sandboxError && row.code === "unavailable" && /Dynamic require of "[^"]+" is not supported/.test(row.text) && row.text.includes("createRequire banner");
+        check(`${label} ${row.name} names the cause and the fix`, ok, ok ? `${row.code}: ${/Dynamic require of "[^"]+"/.exec(row.text)?.[0] ?? ""}` : row.text);
+        continue;
+      }
+      // A boxd transfer must reach the network: before, a CommonJS bundle failed to resolve its worker module first.
       const ok = row.attempts > 0 && !bad.test(row.text) && (row.sandboxError || row.timedOut);
-      check(`${label} ${row.name}`, ok, `${row.attempts} connection attempt(s), ${row.timedOut ? "still retrying at 20s" : row.code ?? "no error"}${ok ? "" : ` | ${row.text}`}`);
+      check(`${label} ${row.name}`, ok, `${row.attempts} connection attempt(s), ${row.timedOut ? "still retrying at 20s" : row.code ?? "no error"}${ok && row.name !== "boxd files" ? "" : ` | ${row.text}`}`);
     }
-    for (const name of Object.keys(fakes)) if (!rows.some(row => row.name === name)) check(`${label} ${name}`, false, `no result; exit ${run.status ?? run.signal}\n${run.stderr.slice(-2000)}`);
+    for (const name of rowNames) if (!rows.some(row => row.name === name)) check(`${label} ${name}`, false, `no result; exit ${run.status ?? run.signal}\n${run.stderr.slice(-2000)}`);
   }
   for (const [name, why] of Object.entries(skipped)) console.log(`SKIP ${name}: ${why}`);
+
+  // Minifiers rename every class, and esbuild renames colliding ones (e2b's and Tenki's FileNotFoundError)
+  // even without --minify. The mappers must still recognize the real native errors.
+  const mapping = `
+const { FileNotFoundError, SandboxNotFoundError } = require("e2b");
+const { FileNotFoundError: TenkiFileNotFoundError } = require("@tenkicloud/sandbox");
+const railway = require("railway");
+const daytona = require("@daytonaio/sdk");
+const { e2bError } = require("./src/providers/e2b/errors.ts");
+const { tenkiError } = require("./src/providers/tenki/errors.ts");
+const { railwayError } = require("./src/providers/railway/errors.ts");
+const { daytonaError } = require("./src/providers/daytona/errors.ts");
+const { loadPeer } = require("./src/peer.ts");
+(async () => {
+  await loadPeer("railway", "railway", async () => railway);
+  await loadPeer("@daytonaio/sdk", "daytona", async () => daytona);
+  const cases = [
+    ["e2b FileNotFoundError", FileNotFoundError, e2bError(new FileNotFoundError("missing.txt"), "box").code, "file_not_found"],
+    ["e2b SandboxNotFoundError", SandboxNotFoundError, e2bError(new SandboxNotFoundError("gone"), "box").code, "not_found"],
+    ["tenki FileNotFoundError", TenkiFileNotFoundError, tenkiError(new TenkiFileNotFoundError("missing.txt"), "box", "files").code, "file_not_found"],
+    ["railway SandboxFileNotFoundError", railway.SandboxFileNotFoundError, railwayError(new railway.SandboxFileNotFoundError({ operation: "read", path: "/x", message: "missing" }), "box").code, "file_not_found"],
+    ["railway ExecNotStartedError", railway.ExecNotStartedError, railwayError(new railway.ExecNotStartedError({ message: "not started" }), "box").code, "unavailable"],
+    ["daytona DaytonaConnectionError", daytona.DaytonaConnectionError, daytonaError(new daytona.DaytonaConnectionError("down"), "box").code, "unavailable"],
+    ["daytona DaytonaTimeoutError", daytona.DaytonaTimeoutError, daytonaError(new daytona.DaytonaTimeoutError("slow"), "box").code, "timeout"],
+  ];
+  for (const [name, type, code, expected] of cases) console.log(JSON.stringify({ name, className: type.name, code, expected }));
+})();
+`;
+  const mappingDir = join(work, "minified-mapping");
+  await build({ stdin: { contents: mapping, resolveDir: sdkDir, sourcefile: "mapping.cjs", loader: "js" }, bundle: true, minify: true, platform: "node", target: "node22", format: "cjs", outdir: mappingDir, entryNames: "entry", outExtension: { ".js": ".cjs" }, logLevel: "silent" });
+  const mapped = spawnSync("node", [join(mappingDir, "entry.cjs")], { cwd: mappingDir, encoding: "utf8", timeout: 120_000 });
+  console.log("\nminified multi-provider bundle, native error mapping:");
+  const mappedRows = mapped.stdout.split("\n").filter(line => line.startsWith("{")).map(line => {
+    const row: unknown = JSON.parse(line);
+    const field = (key: string) => typeof row === "object" && row !== null && key in row ? String(Reflect.get(row, key)) : "";
+    return { name: field("name"), className: field("className"), code: field("code"), expected: field("expected") };
+  });
+  for (const row of mappedRows) check(`minified ${row.name}`, row.code === row.expected, `class renamed to ${JSON.stringify(row.className)}, mapped to ${row.code}`);
+  check("minified mapping cases ran", mappedRows.length === 7, `${mappedRows.length} of 7${mapped.status === 0 ? "" : `\n${mapped.stderr.slice(-2000)}`}`);
 
   const live = process.env.BUNDLE_SMOKE_LIVE;
   if (live) {

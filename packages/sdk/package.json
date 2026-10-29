@@ -157,7 +157,7 @@
     "@superserve/sdk": "0.11.4"
   },
   "peerDependencies": {
-    "@daytonaio/sdk": "^0.225.0",
+    "@daytonaio/sdk": ">=0.225.0 <1.0.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
     "@upstash/box": "^0.7.9",

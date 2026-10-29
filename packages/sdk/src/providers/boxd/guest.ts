@@ -140,20 +140,23 @@ export function files(
       }),
     remove: (id, path, options) =>
       safe(id, async () => {
-        await (
-          await get(id)
-        ).raw(
+        const g = await get(id);
+        const text = await g.raw(
           python(
             `import os,sys,shutil
 p=sys.argv[1]
-if os.path.isdir(p) and not os.path.islink(p):
- if sys.argv[2]=='true': shutil.rmtree(p)
- else: os.rmdir(p)
-else: os.unlink(p)`,
+try:
+ if os.path.isdir(p) and not os.path.islink(p):
+  if sys.argv[2]=='true': shutil.rmtree(p)
+  else: os.rmdir(p)
+ else: os.unlink(p)
+except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`,
             path,
             String(options.recursive),
           ),
         );
+        // Like the other providers, removing a missing path is file_not_found.
+        if (text.trim() === "SDK_FILE_NOT_FOUND") throw fail(g, "File does not exist", "file_not_found");
       }),
   };
 }

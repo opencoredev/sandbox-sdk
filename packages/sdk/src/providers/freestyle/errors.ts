@@ -74,7 +74,10 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   }
   if (context?.operation) evidence.operation = context.operation;
   if (context?.status === status && context?.requestId) evidence.requestId = context.requestId;
-  const code: ErrorCode =
+  // The filesystem API answers a missing guest path with 404 NOT_FOUND too. Its message (classified,
+  // never kept) tells it apart from a missing VM.
+  const missingFile = status === 404 && error instanceof Error && /no such file or directory|\bos error 2\b/i.test(error.message);
+  const code: ErrorCode = missingFile ? "file_not_found" :
     typeof status === "number"
       ? (codes[status] ?? "provider")
       : error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")

@@ -3,6 +3,7 @@ import type { Sandbox } from "@daytonaio/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote, workspaceCommand } from "./exec.js";
+import { downloadStream as openDownload } from "./transfer.js";
 
 // A single native command returns at most 64 KiB of frames. Larger output is
 // spooled in the guest and downloaded as a stream, never buffered by the SDK.
@@ -118,7 +119,7 @@ export async function bufferedExecute(box: Sandbox, input: ExecInput, prepare = 
       if (remainingMs <= 0) abort();
       if (!cancelled) {
         const drain = async () => {
-          const stream = await box.fs.downloadFileStream(`${dir}/output`, { signal: transferController.signal, timeout: Math.max(1, Math.ceil(remainingMs / 1000)) });
+          const stream = await openDownload(box, `${dir}/output`, { signal: transferController.signal, timeout: Math.max(1, Math.ceil(remainingMs / 1000)) });
           downloadStream = stream;
           // A pending native download can resolve after cancellation won the race.
           if (cancelled) { stream.destroy(); return; }

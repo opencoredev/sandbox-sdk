@@ -682,3 +682,12 @@ describe("freestyle native options (SBX-71)", () => {
     expect(() => freestyle({ autoDeleteMs: -1 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
   });
 });
+
+test("a missing file is file_not_found for read, edit and remove, like the other providers", async () => {
+  const box = await createSandbox(factory());
+  try {
+    await box.run("true");
+    for (const action of [() => box.files.read("missing.txt"), () => box.files.edit("missing.txt", { find: "a", replace: "b" }), () => box.files.remove("missing.txt")])
+      await expect(action()).rejects.toMatchObject({ code: "file_not_found", provider: "freestyle" });
+  } finally { await box.destroy(); }
+});

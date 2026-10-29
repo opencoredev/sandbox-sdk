@@ -5,7 +5,7 @@ import type { NetworkPolicy, Sandbox, SandboxMounts, SandboxRegion } from "@verc
 import type { Provider, CreateInput, SandboxInfo, FileInfo, ExecInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../run.js";
-import { unsupported, vercelError } from "./errors.js";
+import { apiCode, unsupported, vercelError } from "./errors.js";
 import type { NativeSandbox, VercelClient } from "./transport.js";
 
 type NativeCreate = NonNullable<Parameters<typeof Sandbox.create>[0]>;
@@ -62,13 +62,6 @@ function expiration(ms: number | undefined, name: string): number | undefined {
   if (ms !== undefined && (!Number.isSafeInteger(ms) || (ms !== 0 && ms < day))) invalid(`${name} must be 0 (never expires) or at least ${day} ms (one day). Vercel rejects shorter snapshot lifetimes.`);
   return ms;
 }
-// The session cannot resume: a stopped non-persistent sandbox, or an expired persistence snapshot.
-// Vercel answers 400 or 410 depending on the path, always with this code.
-function ended(error: unknown): boolean {
-  const body = typeof error === "object" && error !== null && "json" in error ? error.json : undefined;
-  const detail = typeof body === "object" && body !== null && "error" in body ? body.error : undefined;
-  return typeof detail === "object" && detail !== null && "code" in detail && detail.code === "snapshot_not_found";
-}
 const keyTag = "sandbox-sdk-key";
 const keyName = (key: string) => `sdk-${createHash("sha256").update(key).digest("hex")}`;
 const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chmod 777 /workspace && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
@@ -105,7 +98,9 @@ export function createVercelProvider<N extends NativeSandbox>(load: () => Promis
   const sdk = () => client ??= load();
   const safe = async <T>(id: string | undefined, action: () => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) {
-      if (ended(error)) throw new SandboxError("Sandbox session has ended. Vercel has no saved file system to resume from, because the sandbox is not persistent or its snapshot expired. Destroy it and create a new sandbox.", { code: "not_found", provider: "vercel", sandboxId: id });
+      // On an existing sandbox, a missing snapshot means the session cannot resume: it was not
+      // persistent, or its persistence snapshot expired. Without an ID it is a missing `from` snapshot.
+      if (id !== undefined && apiCode(error) === "snapshot_not_found") throw new SandboxError("Sandbox session has ended. Vercel has no saved file system to resume from, because the sandbox is not persistent or its snapshot expired. Destroy it and create a new sandbox.", { code: "not_found", provider: "vercel", sandboxId: id });
       throw vercelError(error, id);
     }
   };

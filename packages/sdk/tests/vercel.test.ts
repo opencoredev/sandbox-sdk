@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { createVercelProvider } from "../src/providers/vercel/provider.js";
 import { vercel, type VercelNonPersistentProvider, type VercelOptions, type VercelProvider } from "../src/providers/vercel/index.js";
@@ -347,6 +347,45 @@ describe("Vercel native options", { timeout: 30_000 }, () => {
     expect(await fresh.connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
     await fresh.destroy(box.id);
     await expect(provider().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  test("a keyed non-persistent sandbox that ended is replaced even when this adapter remembers its ID", async () => {
+    const adapter = configured({ persistent: false }); const key = crypto.randomUUID();
+    const first = await createSandbox(adapter, { key });
+    await first.files.write("old", "1"); await first.snapshot();
+    // Same adapter: the key lookup connects to the remembered ID instead of searching.
+    const second = await createSandbox(adapter, { key });
+    try {
+      expect(second.created).toBe(true);
+      expect((await second.run("echo alive")).stdout).toBe("alive\n");
+      expect(await second.files.exists("old")).toBe(false);
+    } finally { await second.destroy(); }
+  });
+
+  test("a keyed persistent sandbox that was paused is resumed, not replaced", async () => {
+    const adapter = configured({}); const key = crypto.randomUUID();
+    const first = await createSandbox(adapter, { key });
+    await first.files.write("kept", "1"); await first.pause();
+    const second = await createSandbox(adapter, { key });
+    try {
+      expect(second.created).toBe(false); expect(second.id).toBe(first.id);
+      expect(await second.files.read("kept")).toBe("1");
+    } finally { await second.destroy(); }
+  });
+
+  test("connectSandbox(...).then(box => box.destroy()) works on an ended non-persistent sandbox", async () => {
+    const adapter = configured({ persistent: false });
+    const box = await createSandbox(adapter, { secrets: { TOKEN: "secret-value" } }); await box.snapshot();
+    // Secret recovery runs a command, which an ended sandbox cannot do. It waits until a command needs it.
+    await connectSandbox(configured({ persistent: false }), box.id).then(connected => connected.destroy());
+    await expect(provider().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  test("restoring from a snapshot that does not exist is not_found", async () => {
+    const adapter = configured({});
+    const create = vi.spyOn(mock.client, "create").mockRejectedValueOnce(Object.assign(new Error("Status code 404 is not ok"), { response: new Response(null, { status: 404 }), json: { error: { code: "snapshot_not_found", message: "Snapshot not found" } } }));
+    try { await expect(createSandbox(adapter, { from: "snap_missing" })).rejects.toMatchObject({ code: "not_found", provider: "vercel", message: expect.stringContaining("snapshot not found") }); }
+    finally { create.mockRestore(); }
   });
 
   test("deleteOrphanSnapshots and fetch reach the native SDK", async () => {

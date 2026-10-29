@@ -44,6 +44,9 @@ export async function createSandbox(provider: Provider, options: CreateOptions =
       if (options.key) {
         const stored = await options.locator?.get(options.key) ?? knownKey(provider, options.key);
         if (stored) { try { info = await provider.connect(stored); } catch (error) { if (!(error instanceof SandboxError) || error.code !== "not_found") throw error; forgetKey(provider, options.key); } }
+        // A stopped sandbox may never run again (an ended non-persistent Vercel session). The adapter's
+        // find decides: it returns the sandbox when it can resume, and removes and skips it when it cannot.
+        if (info?.state === "stopped") { info = undefined; forgetKey(provider, options.key); }
         info ??= await provider.find(options.key);
       }
       let created = !info;

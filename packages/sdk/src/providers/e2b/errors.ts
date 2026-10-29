@@ -4,7 +4,9 @@ import { SandboxError, describeNative, reason, redacting, type ErrorCode } from 
  * status keeps its scrubbed text, with the API key redacted, as `cause` (see describeNative). */
 export function e2bError(cause: unknown, sandboxId?: string, file = false): SandboxError {
   if (cause instanceof SandboxError) return cause;
-  const name = cause instanceof Error ? cause.constructor.name : "";
+  // e2b assigns each error class a literal name. Bundlers rename the classes (FileNotFoundError2, or a
+  // minified letter), so constructor.name stops matching; the name field does not change.
+  const name = typeof cause === "object" && cause !== null && "name" in cause && typeof cause.name === "string" ? cause.name : "";
   const status = typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined;
   let code: ErrorCode = "provider";
   if (name === "AuthenticationError" || status === 401 || status === 403) code = "auth";
@@ -13,7 +15,7 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
   else if (["RateLimitError", "NotEnoughSpaceError"].includes(name) || status === 429 || status === 507) code = "quota";
   else if (["ServiceBusyError", "SandboxUnreachableError", "SandboxNotRunningError"].includes(name) || (typeof status === "number" && status >= 500)) code = "unavailable";
   else if (name === "TimeoutError" || name === "TimeoutException") code = "timeout";
-  else if (name === "AbortError" || (typeof cause === "object" && cause !== null && "name" in cause && cause.name === "AbortError")) code = "aborted";
+  else if (name === "AbortError") code = "aborted";
   else if (name === "InvalidArgumentError" || status === 400) code = "invalid_argument";
   const hint = code === "auth" ? "Check E2B_API_KEY and the E2B domain." : "Check the sandbox, template and E2B service, then retry.";
   const native = describeNative(cause, { code, status: status === undefined ? undefined : `HTTP ${String(status)}`, redact: redacting([process.env.E2B_API_KEY]) });

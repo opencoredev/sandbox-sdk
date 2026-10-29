@@ -71,6 +71,18 @@ export class SandboxError extends Error {
     this.provider = options.provider ?? "unknown";
     this.sandboxId = options.sandboxId;
   }
+  static {
+    // The published build is minified, so the class itself is named something like `e`. Node prints
+    // the constructor name next to `name`, which showed uncaught errors as `e [SandboxError]`.
+    Object.defineProperty(this, "name", { value: "SandboxError" });
+  }
+  /** How Node prints the error (console.log, uncaught): `SandboxError [code]: message`, the stack, then the fields. */
+  [Symbol.for("nodejs.util.inspect.custom")](_depth: number, options: object, inspect: (value: unknown, options: object) => string): string {
+    const stack = this.stack ?? "";
+    const frames = stack.indexOf("\n    at ") >= 0 ? stack.slice(stack.indexOf("\n    at ")) : "";
+    const fields = { code: this.code, provider: this.provider, sandboxId: this.sandboxId, retryable: this.retryable, hint: this.hint, cause: this.cause };
+    return `SandboxError [${this.code}]: ${this.message}${frames} ${inspect(fields, options)}`;
+  }
 }
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
