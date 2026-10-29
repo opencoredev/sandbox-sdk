@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { Box } from "@upstash/box";
+import type { UpstashBox as Box } from "./provider.js";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
 import { isNumber, isString } from "../../shared/narrow.js";

@@ -1,15 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { upstash, type UpstashOptions } from "../src/providers/upstash/index.js";
+import { upstash as publicUpstash, type UpstashOptions } from "../src/providers/upstash/index.js";
 import { upstashError } from "../src/providers/upstash/errors.js";
 import { createSandbox, connectSandbox, listSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
-import { cleanup, MockBox, state } from "./upstash-mock.js";
-
-vi.mock("@upstash/box", async () => {
-  const mock = await import("./upstash-mock.js");
-
-  return { Box: mock.MockBox, EphemeralBox: mock.MockEphemeralBox };
-});
+import { cleanup, MockBox, state, upstash } from "./upstash-mock.js";
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
@@ -540,7 +534,7 @@ describe("Upstash Ephemeral Box mode", () => {
     await expect(factory().connect(short.id)).rejects.toMatchObject({ code: "unsupported" });
     await expect(ephemeral().connect(durable.id)).rejects.toMatchObject({ code: "unsupported" });
     const options: UpstashOptions = { apiKey: "mock-key", ephemeral: true };
-    const unknown = upstash(options);
+    const unknown = publicUpstash(options);
     // @ts-expect-error A provider of unknown mode does not promise pause.
     void unknown.capabilities.has("pause");
   });

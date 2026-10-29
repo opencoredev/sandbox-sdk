@@ -15,6 +15,16 @@ import type {
   FileStat,
 } from "@upstash/box";
 import { isString } from "../src/shared/narrow.js";
+import {
+  createUpstashProvider,
+  type BoxHandleConfig,
+  type UpstashBoxOptions,
+  type UpstashCapability,
+  type UpstashEphemeralCapability,
+  type UpstashEphemeralOptions,
+  type UpstashOptions,
+} from "../src/providers/upstash/provider.js";
+import type { Provider } from "../src/provider.js";
 
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 
@@ -34,26 +44,52 @@ export const state = {
   envWrites,
 };
 
+/** One mock machine. Every handle for the same box ID shares it. */
+type Machine = {
+  root: string;
+  params: BoxConfig;
+  port: number;
+  data: BoxData;
+  ephemeral: boolean;
+};
+
+const machines = new Map<string, Machine>();
+
+const connection: BoxHandleConfig = {
+  baseUrl: "https://mock.invalid",
+  headers: {},
+  timeout: 30_000,
+  debug: false,
+};
+
 export class MockBox {
-  readonly id = crypto.randomUUID();
+  readonly id: string;
   readonly data: BoxData;
   readonly size: BoxSize;
+  readonly root: string;
+  readonly params: BoxConfig;
+  readonly port: number;
   readonly children = new Set<number>();
+  private readonly machine: Machine;
+  /** Attaches a handle to an existing mock machine, as the public Box constructor does. */
+  constructor(data: BoxData, _config: BoxHandleConfig) {
+    const machine = machines.get(data.id);
+
+    if (!machine) throw missing();
+    this.machine = machine;
+    this.id = data.id;
+    this.data = machine.data;
+    this.root = machine.root;
+    this.params = machine.params;
+    this.port = machine.port;
+    this.size = machine.params.size ?? "small";
+  }
   /** Ephemeral boxes reject pause and resume, as Upstash does. */
-  ephemeral = false;
-  private constructor(
-    readonly root: string,
-    readonly params: BoxConfig,
-    readonly port: number,
-  ) {
-    this.size = params.size ?? "small";
-    this.data = {
-      id: this.id,
-      status: "running",
-      labels: params.labels ?? [],
-      created_at: Date.now() / 1000,
-      updated_at: Date.now() / 1000,
-    };
+  get ephemeral() {
+    return this.machine.ephemeral;
+  }
+  set ephemeral(value: boolean) {
+    this.machine.ephemeral = value;
   }
   static async create(params: BoxConfig = {}) {
     state.creates.push(params);
@@ -63,7 +99,24 @@ export class MockBox {
 
     if (!address || isString(address)) throw new Error("No port");
     await new Promise<void>((resolve) => socket.close(() => resolve()));
-    const box = new MockBox(await fs.mkdtemp(join(tmpdir(), "sdk-upstash-")), params, address.port);
+    const id = crypto.randomUUID();
+
+    const machine: Machine = {
+      root: await fs.mkdtemp(join(tmpdir(), "sdk-upstash-")),
+      params,
+      port: address.port,
+      data: {
+        id,
+        status: "running",
+        labels: params.labels ?? [],
+        created_at: Date.now() / 1000,
+        updated_at: Date.now() / 1000,
+      },
+      ephemeral: false,
+    };
+
+    machines.set(id, machine);
+    const box = new MockBox(machine.data, connection);
     await fs.mkdir(box.map("/tmp"), { recursive: true });
     state.boxes.set(box.id, box);
 
@@ -344,6 +397,7 @@ export class MockBox {
   async delete() {
     await this.terminate();
     state.boxes.delete(this.id);
+    machines.delete(this.id);
     await fs.rm(this.root, { recursive: true, force: true });
   }
 }
@@ -380,4 +434,16 @@ export async function cleanup() {
   state.ephemeralCreates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
+}
+
+const load = async () => ({ Box: MockBox, EphemeralBox: MockEphemeralBox });
+
+/** The Upstash adapter with this fixture in place of the SDK, typed per mode like `upstash()`. */
+export function upstash(
+  options: UpstashEphemeralOptions,
+): Provider<MockBox, UpstashEphemeralCapability>;
+export function upstash(options?: UpstashBoxOptions): Provider<MockBox, UpstashCapability>;
+export function upstash(options: UpstashOptions): Provider<MockBox, UpstashEphemeralCapability>;
+export function upstash(options: UpstashOptions = {}) {
+  return createUpstashProvider(options, load);
 }
