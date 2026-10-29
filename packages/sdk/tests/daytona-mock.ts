@@ -12,7 +12,7 @@ import type { OutputChunk } from "../src/provider.js";
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 type Params = CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams;
 type Command = { chunks: OutputChunk[]; listeners: ((chunk: OutputChunk) => void)[]; done: Promise<void>; exitCode?: number; pid?: number };
-export const mockState = { configs: [] as DaytonaConfig[], creates: [] as Params[], boxes: new Map<string, MockSandbox>(), snapshots: new Map<string, string>(), launchDelayMs: 0, failStatus: false, failLogs: false };
+export const mockState = { configs: [] as DaytonaConfig[], creates: [] as Params[], createOptions: [] as ({ timeout?: number } | undefined)[], permissions: [] as { path: string; mode?: string }[], boxes: new Map<string, MockSandbox>(), snapshots: new Map<string, string>(), launchDelayMs: 0, failStatus: false, failLogs: false };
 export class MockSandbox {
   readonly id = crypto.randomUUID();
   readonly createdAt = new Date().toISOString();
@@ -28,6 +28,7 @@ export class MockSandbox {
     await new Promise<void>((resolve, reject) => socket.close(error => error ? reject(error) : resolve()));
     const box = new MockSandbox(await fs.mkdtemp(join(tmpdir(), "sdk-daytona-")), params, address.port);
     if ("resources" in params) Object.assign(box, params.resources);
+    box.public = params.public ?? false;
     if ("snapshot" in params && params.snapshot) {
       if (params.snapshot === "daytona-large") Object.assign(box, { cpu: 4, memory: 8, disk: 10 });
       else { const root = mockState.snapshots.get(params.snapshot); if (!root) throw missing();
@@ -46,10 +47,11 @@ export class MockSandbox {
     downloadFileStream: async (path: string, _options?: number | Parameters<Sandbox["fs"]["downloadFileStream"]>[1]) => createReadStream(this.mapped(path)),
     uploadFile: async (data: Buffer | string, path: string) => { await fs.mkdir(posix.dirname(this.mapped(path)), { recursive: true }); await fs.writeFile(this.mapped(path), typeof data === "string" ? await fs.readFile(data) : data); },
     createFolder: async (path: string, _mode: string) => { await fs.mkdir(this.mapped(path), { recursive: true }); },
+    setFilePermissions: async (path: string, permissions: { mode?: string }) => { mockState.permissions.push({ path, mode: permissions.mode }); if (permissions.mode) await fs.chmod(this.mapped(path), Number.parseInt(permissions.mode, 8)); },
     getFileDetails: (path: string) => this.file(path),
     listFiles: async (path: string) => { try { return await Promise.all((await fs.readdir(this.mapped(path))).map(name => this.file(posix.join(path, name)))); } catch { throw missing(); } },
     deleteFile: async (path: string, recursive = false) => { try { await fs.rm(this.mapped(path), { recursive }); } catch { throw missing(); } },
-  } satisfies Pick<Sandbox["fs"], "downloadFileStream" | "uploadFile" | "createFolder" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
+  } satisfies Pick<Sandbox["fs"], "downloadFileStream" | "uploadFile" | "createFolder" | "setFilePermissions" | "getFileDetails" | "listFiles" | "deleteFile"> & { downloadFile(path: string): Promise<Buffer> };
   private run(command: string, cwd = "/", env: Record<string, string> = {}) {
     const chunks: OutputChunk[] = []; const listeners: ((chunk: OutputChunk) => void)[] = [];
     const child = spawn("sh", ["-c", this.rewrite(command)], { cwd: this.mapped(cwd), env: { ...process.env, ...this.params.envVars, ...Object.fromEntries(Object.entries(env).map(([key, value]) => [key, this.rewrite(value)])) }, stdio: ["ignore", "pipe", "pipe"] });
@@ -93,12 +95,12 @@ export class MockSandbox {
 }
 export class MockDaytona {
   constructor(config: DaytonaConfig) { mockState.configs.push(config); }
-  async create(params: Params = {}) { mockState.creates.push(params); return MockSandbox.create(params); }
+  async create(params: Params = {}, options?: { timeout?: number }) { mockState.creates.push(params); mockState.createOptions.push(options); return MockSandbox.create(params); }
   async get(id: string) { const box = mockState.boxes.get(id); if (!box) throw missing(); return box; }
   async *list(query: { labels?: Record<string, string> } = {}) { for (const box of mockState.boxes.values()) if (Object.entries(query.labels ?? {}).every(([key, value]) => box.labels[key] === value)) yield box; }
 }
 export async function cleanupMock() {
   await Promise.all([...mockState.boxes.values()].map(box => box.delete()));
   await Promise.all([...mockState.snapshots.values()].map(root => fs.rm(root, { recursive: true, force: true })));
-  mockState.snapshots.clear(); mockState.creates.length = 0; mockState.configs.length = 0; mockState.launchDelayMs = 0; mockState.failLogs = false; mockState.failStatus = false;
+  mockState.snapshots.clear(); mockState.creates.length = 0; mockState.createOptions.length = 0; mockState.permissions.length = 0; mockState.configs.length = 0; mockState.launchDelayMs = 0; mockState.failLogs = false; mockState.failStatus = false;
 }

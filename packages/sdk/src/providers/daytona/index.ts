@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { Daytona, DaytonaConfig, Sandbox as DaytonaSandbox, CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams } from "@daytonaio/sdk";
+import type { Daytona, DaytonaConfig, Sandbox as DaytonaSandbox, CreateSandboxBaseParams, CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams } from "@daytonaio/sdk";
 import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { SandboxError } from "../../errors.js";
@@ -7,8 +7,12 @@ import { daytonaError, unsupported } from "./errors.js";
 import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
 
 export interface DaytonaOptions {
-  /** Defaults to DAYTONA_API_KEY; required on first use. */
+  /** Defaults to DAYTONA_API_KEY; required on first use unless jwtToken is set. */
   apiKey?: string;
+  /** JWT authentication instead of an API key. Defaults to DAYTONA_JWT_TOKEN; needs organizationId. */
+  jwtToken?: string;
+  /** Organization for JWT authentication. Defaults to DAYTONA_ORGANIZATION_ID. */
+  organizationId?: string;
   /** Defaults to DAYTONA_API_URL, then DAYTONA_SERVER_URL, then https://app.daytona.io/api. */
   baseUrl?: string;
   /** @deprecated Use baseUrl. Removed in 1.0.0. */
@@ -23,6 +27,18 @@ export interface DaytonaOptions {
   requestTimeoutMs?: number;
   /** Snapshot completion budget. Default: 600 seconds; maximum: 15 minutes. */
   snapshotTimeoutMs?: number;
+  /** Creation budget, including any image build. Default: 60 s. */
+  createTimeoutMs?: number;
+  /** Serve preview URLs without the preview token. Default: false. */
+  public?: boolean;
+  /** Archive a stopped sandbox after this long, rounded up to whole minutes. Default: Daytona's 7 days. */
+  autoArchiveMs?: number;
+  /** Delete a stopped sandbox after this long, rounded up to whole minutes. `0` deletes it as soon as it stops. Default: never. */
+  autoDeleteMs?: number;
+  /** Daytona volumes to mount, such as `[{ volumeId: "my-volume", mountPath: "/data" }]`. */
+  volumes?: CreateSandboxBaseParams["volumes"];
+  /** Route the sandbox's HTTP(S) traffic through this proxy with HTTP(S)_PROXY. Not a security boundary on its own. */
+  outboundProxyUrl?: string;
 }
 export type DaytonaCapability = "snapshot" | "size" | "network-policy";
 export type DaytonaProvider = Provider<DaytonaSandbox, DaytonaCapability>;
@@ -35,8 +51,8 @@ function resources(size: NonNullable<CreateInput["size"]>) {
   if (!value || !Number.isInteger(value.cpu) || value.cpu <= 0 || !Number.isInteger(value.memoryMb) || value.memoryMb <= 0 || value.memoryMb % 1024 || !Number.isInteger(diskGb) || diskGb <= 0) unsupported("Size requires positive integer CPUs, whole GiB memory (memoryMb divisible by 1024), and integer diskGb");
   return { cpu: value.cpu, memory: value.memoryMb / 1024, disk: diskGb };
 }
-function minutes(ms: number) {
-  if (!Number.isFinite(ms) || ms <= 0) throw new SandboxError("Timeout must be positive. Invalid milliseconds supplied. Use a positive finite duration.", { code: "invalid_argument", provider: "daytona" });
+function minutes(ms: number, allowZero = false) {
+  if (!Number.isFinite(ms) || ms < 0 || (ms === 0 && !allowZero)) throw new SandboxError(`Timeout must be ${allowZero ? "zero or positive" : "positive"}. Invalid milliseconds supplied. Use a ${allowZero ? "non-negative" : "positive"} finite duration.`, { code: "invalid_argument", provider: "daytona" });
   return Math.ceil(ms / 60_000);
 }
 function network(input: CreateInput["network"]) {
@@ -75,12 +91,20 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     return client ??= (async () => {
       if (!Number.isSafeInteger(options.snapshotTimeoutMs ?? 600_000) || (options.snapshotTimeoutMs ?? 600_000) <= 0 || (options.snapshotTimeoutMs ?? 600_000) > 900_000)
         throw new SandboxError("snapshotTimeoutMs must be an integer from 1 to 900000.", { code: "invalid_argument", provider: "daytona" });
-      const config: DaytonaConfig = { apiKey: options.apiKey ?? process.env.DAYTONA_API_KEY, apiUrl: options.baseUrl ?? options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000 };
-      if (!config.apiKey) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.", { code: "auth", provider: "daytona" });
+      if (options.createTimeoutMs !== undefined && (!Number.isSafeInteger(options.createTimeoutMs) || options.createTimeoutMs <= 0))
+        throw new SandboxError("createTimeoutMs must be a positive integer.", { code: "invalid_argument", provider: "daytona" });
+      // An explicit jwtToken wins over the API key environment variable.
+      const apiKey = options.apiKey ?? (options.jwtToken ? undefined : process.env.DAYTONA_API_KEY);
+      const jwtToken = apiKey ? undefined : options.jwtToken ?? process.env.DAYTONA_JWT_TOKEN;
+      const config: DaytonaConfig = { apiUrl: options.baseUrl ?? options.apiUrl ?? process.env.DAYTONA_API_URL, target: options.target ?? process.env.DAYTONA_TARGET ?? "us", requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+        ...(jwtToken ? { jwtToken, organizationId: options.organizationId ?? process.env.DAYTONA_ORGANIZATION_ID } : { apiKey }) };
+      if (config.jwtToken && !config.organizationId) throw new SandboxError("Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId.", { code: "auth", provider: "daytona" });
+      if (!config.apiKey && !config.jwtToken) throw new SandboxError("Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.", { code: "auth", provider: "daytona" });
       const { Daytona } = await loadPeer("@daytonaio/sdk", "daytona", () => import("@daytonaio/sdk"));
       return new Daytona(config);
     })();
   }
+  for (const secret of [options.jwtToken, process.env.DAYTONA_JWT_TOKEN]) if (secret) knownSecrets.add(secret);
   async function safe<T>(action: () => Promise<T>, id?: string, file = false, operation = file ? "files" : "request"): Promise<T> { try { return await action(); } catch (error) { throw daytonaError(error, id, file, operation, options.apiKey ?? process.env.DAYTONA_API_KEY, knownSecrets); } }
   async function box(id: string) { const cached = boxes.get(id); if (cached) return cached; const value = await (await api()).get(id); boxes.set(id, value); unprepared.add(id); return value; }
   const onFile = <T>(id: string, action: (value: DaytonaSandbox) => Promise<T>) => safe(async () => action(await box(id)), id, true);
@@ -96,13 +120,17 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       if (input.key !== undefined) labels[keyLabel] = input.key;
       const base: CreateSandboxFromSnapshotParams = {
         labels, envVars: input.env,
-        public: false, ...network(input.network),
+        public: options.public ?? false, ...network(input.network),
         autoStopInterval: input.idleTimeoutMs === undefined ? undefined : minutes(input.idleTimeoutMs), autoPauseInterval: 0,
+        ...(options.autoArchiveMs === undefined ? {} : { autoArchiveInterval: minutes(options.autoArchiveMs) }),
+        ...(options.autoDeleteMs === undefined ? {} : { autoDeleteInterval: minutes(options.autoDeleteMs, true) }),
+        ...(options.volumes === undefined ? {} : { volumes: options.volumes }),
+        ...(options.outboundProxyUrl === undefined ? {} : { outboundProxyUrl: options.outboundProxyUrl }),
         ttlMinutes: input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
       };
       const params: CreateSandboxFromImageParams | CreateSandboxFromSnapshotParams = image ? { ...base, image, resources: allocation } : { ...base, snapshot: input.from ?? options.snapshot ?? (allocation?.cpu === 4 && allocation.memory === 8 && allocation.disk === 10 ? "daytona-large" : undefined) };
       const createdAt = Date.now();
-      const value = await (await api()).create(params, { timeout: 60 });
+      const value = await (await api()).create(params, { timeout: Math.ceil((options.createTimeoutMs ?? 60_000) / 1000) });
       boxes.set(value.id, value);
       try {
         if (input.signal?.aborted) throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", { code: "aborted", provider: "daytona" });
@@ -159,16 +187,22 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     }, id, false, "process"); },
     async close(id) { for (const detach of monitors.get(id) ?? []) detach(); monitors.delete(id); },
     files: {
-      writeCreatesParents: true,
+      writeCreatesParents: true, writeSupportsMode: true,
       read: (id, path) => onFile(id, async value => new Uint8Array(await value.fs.downloadFile(path))),
-      write: (id, path, data) => onFile(id, async value => {
-        if (!unprepared.has(id)) return value.fs.uploadFile(Buffer.from(data), path);
+      write: (id, path, data, settings) => onFile(id, async value => {
+        const mode = settings?.mode;
+        if (!unprepared.has(id)) {
+          await value.fs.uploadFile(Buffer.from(data), path);
+          if (mode !== undefined) await value.fs.setFilePermissions(path, { mode: mode.toString(8) });
+          return;
+        }
         // Code is a request body, so even a large first write avoids argv limits.
         const result = await value.process.codeRun(`import os,base64,subprocess
 subprocess.run(["sh","-c",${JSON.stringify(workspace)}],check=True)
 p=${JSON.stringify(path)}
 os.makedirs(os.path.dirname(p),exist_ok=True)
-with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))`, undefined, 120);
+with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))${mode === undefined ? "" : `
+os.chmod(p,${mode})`}`, undefined, 120);
         if (result.exitCode !== 0) throw new SandboxError("File write failed. Workspace setup or the native code operation failed. Check guest permissions.", { code: "provider", provider: "daytona", sandboxId: id });
         unprepared.delete(id);
       }),
@@ -193,7 +227,8 @@ with open(p,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(da
       }),
     },
     previewUrl: (id, port) => safe(async () => { const value = await box(id); const link = await value.getPreviewLink(port); return { url: link.url, ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }) }; }, id, false, "preview"),
-    snapshot: id => safe(async () => {
+    snapshot: (id, settings) => safe(async () => {
+      if (settings?.expiresInMs) unsupported("Snapshot expiry is unavailable; Daytona keeps snapshots until you delete them. Omit expiresInMs, or pass 0");
       const name = `sdk-${crypto.randomUUID()}`;
       try { await (await box(id)).createSnapshot(name, (options.snapshotTimeoutMs ?? 600_000) / 1000); }
       catch (error) {
