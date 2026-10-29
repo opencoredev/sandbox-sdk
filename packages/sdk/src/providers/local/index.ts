@@ -1,8 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Provider, SandboxInfo, FileInfo, CreateInput } from "../../provider.js";
+import type { Provider, SandboxInfo, FileInfo, CreateInput, Labels } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { quote } from "../../shared/shell.js";
-import { Docker, object, string, number, array, encode, failure, parse } from "./docker.js";
+import {
+  Docker,
+  object,
+  string,
+  number,
+  array,
+  encode,
+  failure,
+  parse,
+  type DockerJson,
+} from "./docker.js";
 
 /** One Docker mount. Anonymous volumes and tmpfs mounts are removed with the container; named volumes and bind sources are not. */
 export interface LocalMount {
@@ -68,15 +78,22 @@ const presets = {
   large: { cpu: 4, memoryMb: 8192 },
 };
 
+type Size = NonNullable<CreateInput["size"]>;
+
+function isPreset(size: Size): size is keyof typeof presets {
+  return typeof size === "string";
+}
+
 function limits(size: CreateInput["size"]) {
   if (!size) return {};
 
-  if (typeof size !== "string" && size.diskGb !== undefined)
+  if (!isPreset(size) && size.diskGb !== undefined)
     throw failure(
       "Docker cannot enforce diskGb portably; pass only cpu and memoryMb, or use small, medium, or large",
       "unsupported",
     );
-  const value = typeof size === "string" ? presets[size] : size;
+  // A preset name from untyped callers may still be unknown.
+  const value = isPreset(size) ? presets[size] : size;
 
   if (!value) throw failure("Unknown size preset", "unsupported");
 
@@ -95,7 +112,7 @@ function limits(size: CreateInput["size"]) {
   };
 }
 
-function samePlatform(image: unknown, platform: string) {
+function samePlatform(image: DockerJson, platform: string) {
   const value = object(image);
 
   return platform.startsWith(`${String(value.Os)}/${String(value.Architecture)}`);
@@ -139,28 +156,29 @@ function hostOptions(options: LocalOptions) {
       );
   }
 
+  // JSON.stringify leaves out the undefined fields, so Docker's defaults apply to them.
   return {
-    ...(options.runtime === undefined ? {} : { Runtime: options.runtime }),
-    ...(options.mounts?.length
-      ? {
-          Mounts: options.mounts.map((m) => ({
-            Type: m.type,
-            Target: m.target,
-            ...(m.source === undefined ? {} : { Source: m.source }),
-            ReadOnly: m.readOnly ?? false,
-          })),
-        }
-      : {}),
-    ...(options.pidsLimit === undefined ? {} : { PidsLimit: options.pidsLimit }),
-    ...(options.shmSizeMb === undefined ? {} : { ShmSize: options.shmSizeMb * 1024 * 1024 }),
-    ...(options.capAdd?.length ? { CapAdd: options.capAdd } : {}),
-    ...(options.capDrop?.length ? { CapDrop: options.capDrop } : {}),
-    ...(options.securityOpt?.length ? { SecurityOpt: options.securityOpt } : {}),
+    Runtime: options.runtime,
+    Mounts: options.mounts?.length
+      ? options.mounts.map((m) => ({
+          Type: m.type,
+          Target: m.target,
+          Source: m.source,
+          ReadOnly: m.readOnly ?? false,
+        }))
+      : undefined,
+    PidsLimit: options.pidsLimit,
+    ShmSize: options.shmSizeMb === undefined ? undefined : options.shmSizeMb * 1024 * 1024,
+    CapAdd: options.capAdd?.length ? options.capAdd : undefined,
+    CapDrop: options.capDrop?.length ? options.capDrop : undefined,
+    SecurityOpt: options.securityOpt?.length ? options.securityOpt : undefined,
   };
 }
 
 /** The container's info plus its raw labels, which carry the adapter's deadline and idle settings. */
-function inspected(value: unknown): { info: SandboxInfo; labels: Record<string, string> } {
+type Inspected = { info: SandboxInfo; labels: Labels };
+
+function inspected(value: DockerJson): Inspected {
   const raw = object(value);
   const config = object(raw.Config);
   const state = object(raw.State);
@@ -184,7 +202,7 @@ function inspected(value: unknown): { info: SandboxInfo; labels: Record<string, 
   };
 }
 
-const info = (value: unknown): SandboxInfo => inspected(value).info;
+const info = (value: DockerJson): SandboxInfo => inspected(value).info;
 
 export type LocalProvider = Provider<LocalNative, LocalCapability>;
 
@@ -237,7 +255,7 @@ export function local(options: LocalOptions = {}): LocalProvider {
 
   const statScript = `const fs=require('fs'); const p=require('path'); const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
-  function fileInfo(value: unknown): FileInfo {
+  function fileInfo(value: DockerJson): FileInfo {
     const item = object(value);
     const type = item.type;
 
@@ -257,7 +275,7 @@ export function local(options: LocalOptions = {}): LocalProvider {
     keyMode: "exact",
     capabilities: new Set<LocalCapability>(["pause", "snapshot", "size", "network-policy"]),
     async create(input) {
-      if (typeof input.network === "object")
+      if (input.network !== undefined && input.network !== "all" && input.network !== "none")
         throw failure(
           "Network allow-lists cannot be enforced by this Docker adapter",
           "unsupported",
@@ -317,7 +335,7 @@ export function local(options: LocalOptions = {}): LocalProvider {
             Image: source,
             WorkingDir: "/workspace",
             Cmd: ["sh", "-c", "exec sleep infinity"],
-            ...(options.user === undefined ? {} : { User: options.user }),
+            User: options.user,
             Env: Object.entries(input.env ?? {}).map(([k, v]) => `${k}=${v}`),
             Labels: labels,
             ExposedPorts: Object.fromEntries(ports.map((port) => [`${port}/tcp`, {}])),

@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { local } from "../src/providers/local/index.js";
-import { Demux } from "../src/providers/local/docker.js";
+import { Demux, object, string } from "../src/providers/local/docker.js";
+import type { Labels } from "../src/provider.js";
 
 describe("local transport", () => {
   test("rejects remote Docker hosts that cannot supply localhost previews", () => {
@@ -255,7 +256,7 @@ test("plain local create returns after Docker start without guest setup or metad
 });
 
 describe("local native options (SBX-71)", () => {
-  async function fake(inspect: Record<string, unknown> = {}) {
+  async function fake(inspect: { Architecture?: string } = {}) {
     const { vi } = await import("vitest");
     const { Docker } = await import("../src/providers/local/docker.js");
     const calls: [string, string, unknown][] = [];
@@ -427,7 +428,7 @@ test.each([undefined, 5_000])(
       "sandbox-sdk.local.snapshot": "1",
     };
 
-    let labels: Record<string, string> = {};
+    let labels: Labels = {};
     const calls: string[] = [];
 
     const call = vi
@@ -439,7 +440,11 @@ test.each([undefined, 5_000])(
           return { Os: "linux", Architecture: "amd64", Config: { Labels: image } };
 
         if (path.startsWith("/containers/create")) {
-          labels = { ...image, ...(body as { Labels: Record<string, string> }).Labels };
+          const sent = Object.entries(object(object(body).Labels));
+          labels = {
+            ...image,
+            ...Object.fromEntries(sent.map(([key, value]) => [key, string(value)])),
+          };
 
           return { Id: "restored" };
         }
