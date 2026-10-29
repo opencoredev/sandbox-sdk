@@ -25,6 +25,8 @@ export type RailwayOptions = {
   networkIsolation?: CreateOptions["networkIsolation"];
   /** Token kind; default: the native Railway SDK authentication mode. */
   authType?: CreateOptions["authType"];
+  /** vCPUs (fractions allowed) and memory in decimal GB, such as `{ cpu: 2, memoryGB: 4 }`. Railway caps both at the workspace's VM maximum. Default: the plan default. */
+  resources?: CreateOptions["resources"];
 } & ({
   /** Base template; default: the Railway service default; mutually exclusive with checkpoint. */
   template?: SandboxTemplate;
@@ -152,7 +154,7 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
       if (input.ports?.length && options.networkIsolation === "ISOLATED") unsupported("Public domains require PRIVATE networking");
       if (input.idleTimeoutMs !== undefined && (!Number.isFinite(input.idleTimeoutMs) || input.idleTimeoutMs <= 0)) throw new SandboxError("Invalid idle timeout. A positive duration is required. Set idleTimeoutMs above zero.", { code: "invalid_argument", provider: "railway" });
       const { Sandbox } = await sdk();
-      const config: CreateOptions = { ...api(), region: options.region, env: input.env, idleTimeoutMinutes: input.idleTimeoutMs === undefined ? undefined : Math.ceil(input.idleTimeoutMs / 60_000), networkIsolation: input.ports?.length ? "PRIVATE" : options.networkIsolation, domains: input.ports?.map(port => ({ port })) };
+      const config: CreateOptions = { ...api(), region: options.region, env: input.env, ...(options.resources === undefined ? {} : { resources: options.resources }), idleTimeoutMinutes: input.idleTimeoutMs === undefined ? undefined : Math.ceil(input.idleTimeoutMs / 60_000), networkIsolation: input.ports?.length ? "PRIVATE" : options.networkIsolation, domains: input.ports?.map(port => ({ port })) };
       const source = input.from ?? options.checkpoint ?? options.template;
       const box = source === undefined ? await Sandbox.create(config) : typeof source === "string" ? await Sandbox.create(source, config) : await Sandbox.create(source, config);
       clients.set(box.id, box);
@@ -190,10 +192,10 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
     native(id) { const box = clients.get(id); if (!box) throw new SandboxError("Sandbox client is detached. No cached Railway object exists. Connect first.", { code: "not_found", provider: "railway", sandboxId: id }); return box; },
     exec: (id, input) => call(id, () => execute(id, input)),
     files: {
-      writeCreatesParents: true,
+      writeCreatesParents: true, writeSupportsMode: true,
       read: (id, path) => call(id, async () => (await client(id)).files.read(path, { format: "bytes" })),
       readRange: (id, path, range) => call(id, async () => range.length === 0 ? new Uint8Array() : (await client(id)).files.read(path, { format: "bytes", ...range })),
-      write: (id, path, data) => call(id, async () => { await (await client(id)).files.write(path, data); }),
+      write: (id, path, data, settings) => call(id, async () => { await (await client(id)).files.write(path, data, settings?.mode === undefined ? undefined : { mode: settings.mode }); }),
       mkdir: (id, path) => call(id, async () => { await (await client(id)).files.mkdir(path); }),
       stat: (id, path) => call(id, () => stat(id, path)),
       list: (id, path) => call(id, async () => { const entries = await (await client(id)).files.list(path); const result: FileInfo[] = []; for (const entry of entries) result.push(await stat(id, posix.join(path, entry.name))); return result; }),
@@ -209,7 +211,10 @@ export function railway(options: RailwayOptions = {}): RailwayProvider {
       if (!domain) unsupported("The preview port was not declared at creation; pass ports to createSandbox");
       return { url: `https://${domain.domain}` };
     }),
-    snapshot: id => call(id, async () => ({ id: (await (await client(id)).checkpoint(`sandbox-sdk-${crypto.randomUUID()}`)).key })),
+    snapshot: (id, settings) => call(id, async () => {
+      if (settings?.expiresInMs) unsupported("Checkpoint expiry is unavailable; Railway keeps checkpoints until you delete them. Omit expiresInMs, or pass 0");
+      return { id: (await (await client(id)).checkpoint(`sandbox-sdk-${crypto.randomUUID()}`)).key };
+    }),
   };
   return provider;
 }
