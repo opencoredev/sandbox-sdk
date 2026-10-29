@@ -1,5 +1,5 @@
 import { guestSpec } from "../freestyle/wire.js";
-import { guestProcess } from "../boxd/guest.js";
+import { guestProcess, guestPump } from "../boxd/guest.js";
 import type { Session } from "@tenkicloud/sandbox";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
@@ -11,6 +11,7 @@ import { workspaceSetup } from "./ready.js";
 // The supervisor owns the deadline and process group even after an RPC disconnect.
 const supervisor = `import os,sys,marshal,_signal as signal,select,time,pwd
 ${guestProcess}
+${guestPump}
 v=marshal.loads(bytes.fromhex(sys.stdin.read()))
 ${workspaceSetup}
 def processes():
@@ -37,18 +38,7 @@ with stdin_file() as f:
   if v.get('activityPath'):
    os.makedirs(os.path.dirname(v['activityPath']),exist_ok=True)
    with open(v['activityPath'],'w') as a: a.write('1')
-  stdout=p.stdout.fileno(); streams={stdout:'stdout',p.stderr.fileno():'stderr'}
-  end=time.monotonic()+v['timeoutMs']/1000
-  timed=False
-  while streams or p.poll() is None:
-   if not timed and time.monotonic()>=end:
-    timed=True
-    try: os.killpg(p.pid,signal.SIGKILL)
-    except ProcessLookupError: pass
-   for fd in select.select(list(streams),[],[],.01)[0]:
-    data=os.read(fd,8192)
-    if data: print('["'+streams[fd]+'","'+data.hex()+'"]',flush=True)
-    else: del streams[fd]; (p.stdout if fd==stdout else p.stderr).close()
+  timed=pump(p,lambda name,data: print('["'+name+'","'+data.hex()+'"]',flush=True),time.monotonic()+v['timeoutMs']/1000)
   code=p.wait()
   print('{"exitCode":%s,"timedOut":%s,"workspaceStable":%s,"workspaceRootHex":"%s"}'%('null' if timed else str(code if code>=0 else 128-code),str(timed).lower(),str(stable()).lower(),os.path.realpath(v['workspace']).encode().hex()),flush=True)
  except BaseException:

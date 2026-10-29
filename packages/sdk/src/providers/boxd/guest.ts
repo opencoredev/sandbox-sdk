@@ -1,8 +1,10 @@
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+// Guest helpers use only the standard library, so skip site-packages discovery:
+// it is a third of interpreter startup on a small VM.
 export const python = (code: string, ...args: string[]) =>
-  `python3 -c ${quote(code)} ${args.map(quote).join(" ")}`;
+  `python3 -S -c ${quote(code)} ${args.map(quote).join(" ")}`;
 // Linux guests can launch without importing subprocess/tempfile on every run.
 // posix_spawn establishes the session before returning its PID to cancellation.
 export const guestProcess = `def stdin_file():
@@ -25,6 +27,8 @@ class Process:
    error=FileNotFoundError(2,os.strerror(2),'sh')
    signals=[getattr(signal,s) for s in ['SIGPIPE','SIGXFZ','SIGXFSZ'] if hasattr(signal,s)]
    for path in os.get_exec_path(env):
+    # A missing candidate would cost a whole spawn and failed exec; skip it with one stat.
+    if not os.path.exists(os.path.join(path,'sh')): continue
     try:
      self.pid=os.posix_spawn(os.path.join(path,'sh'),argv,env,file_actions=[(os.POSIX_SPAWN_DUP2,stdin.fileno(),0),(os.POSIX_SPAWN_DUP2,w,1),(os.POSIX_SPAWN_DUP2,x,2)],setsid=session,setsigdef=signals)
      break
@@ -58,6 +62,29 @@ class Process:
   if hasattr(self,'child'): return self.child.wait()
   if self.code is None: self.code=os.waitstatus_to_exitcode(os.waitpid(self.pid,0)[1])
   return self.code
+`;
+// Relays both pipes in arrival order until they close and the shell exits, and
+// kills the whole group at the deadline. The shell often exits just after its
+// pipes close, so a SIGCHLD wakeup ends the wait at once instead of a poll tick.
+// Needs os, select, time and _signal imported as signal.
+export const guestPump = `def pump(p,emit,end):
+ r,w=os.pipe(); os.set_blocking(w,False)
+ signal.set_wakeup_fd(w,warn_on_full_buffer=False)
+ signal.signal(signal.SIGCHLD,lambda *_:None)
+ streams={p.stdout.fileno():('stdout',p.stdout),p.stderr.fileno():('stderr',p.stderr)}
+ timed=False
+ while streams or p.poll() is None:
+  left=end-time.monotonic()
+  if not timed and left<=0:
+   timed=True
+   try: os.killpg(p.pid,signal.SIGKILL)
+   except ProcessLookupError: pass
+  for fd in select.select(list(streams)+[r],[],[],None if timed else max(left,0))[0]:
+   if fd==r: os.read(r,512); continue
+   data=os.read(fd,8192)
+   if data: emit(streams[fd][0],data)
+   else: streams.pop(fd)[1].close()
+ return timed
 `;
 export interface Guest {
   name: string;

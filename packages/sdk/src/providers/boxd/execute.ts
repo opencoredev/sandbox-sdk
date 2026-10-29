@@ -6,12 +6,14 @@ import { failure } from "./errors.js";
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
 // the native process group, so cancelling the stream kills all descendants.
-const launcher = `import sys,json,os,fcntl,selectors,signal
+// The spec is JSON of strings, numbers and objects only, which is also a Python
+// literal: evaluating it with no builtins skips importing json's regex tree.
+const launcher = `import sys,os,fcntl,select,_signal as signal
 ${guestProcess}
 # Keep the output owner alive through native TERM grace. Caught handlers reset
 # to the default disposition when the user shell execs.
 signal.signal(signal.SIGTERM,lambda *_:None)
-v=json.load(sys.stdin)
+v=eval(sys.stdin.buffer.read().decode(),{'__builtins__':{}})
 if v.get('preparing'): print('SDK_PREPARED:',end='',flush=True)
 a=v.get('activityPath')
 m=v['pidPath']
@@ -30,14 +32,12 @@ try:
     print(str(e),file=sys.stderr); sys.exit(127)
   # Keep the supervisor and marker until inherited output pipes close, even
   # after the direct shell exits and only background descendants remain.
-  sel=selectors.DefaultSelector()
-  sel.register(p.stdout,selectors.EVENT_READ,sys.stdout.buffer)
-  sel.register(p.stderr,selectors.EVENT_READ,sys.stderr.buffer)
-  while sel.get_map():
-   for key,_ in sel.select():
-    data=os.read(key.fd,16384)
-    if data: key.data.write(data); key.data.flush()
-    else: sel.unregister(key.fileobj); key.fileobj.close()
+  streams={p.stdout.fileno():(p.stdout,sys.stdout.buffer),p.stderr.fileno():(p.stderr,sys.stderr.buffer)}
+  while streams:
+   for fd in select.select(list(streams),[],[])[0]:
+    data=os.read(fd,16384)
+    if data: streams[fd][1].write(data); streams[fd][1].flush()
+    else: streams.pop(fd)[0].close()
   code=p.wait()
   sys.exit(code if code>=0 else 128-code)
 finally:
@@ -111,17 +111,17 @@ export async function execute(client: Boxd, id: string, input: ExecInput, setup 
   const timer = setTimeout(cancel, input.timeoutMs);
   input.signal?.addEventListener("abort", cancel, { once: true });
   try {
-    stream.write(
-      JSON.stringify({
-        pidPath,
-        preparing: Boolean(setup),
-        command: input.command,
-        cwd: input.cwd,
-        env: input.env,
-        stdin: input.stdin ?? "",
-        activityPath: input.activityPath,
-      }),
-    );
+    // Strings, numbers and objects only: the launcher reads this as a Python literal.
+    const spec: Record<string, string | number | Record<string, string>> = {
+      pidPath,
+      preparing: setup ? 1 : 0,
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+      stdin: input.stdin ?? "",
+      ...(input.activityPath === undefined ? {} : { activityPath: input.activityPath }),
+    };
+    stream.write(JSON.stringify(spec));
     stream.end();
     const outcome = await Promise.race([
       completion,

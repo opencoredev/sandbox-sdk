@@ -1,27 +1,35 @@
 import { guestSpec } from "../freestyle/wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { guestProcess, python, quote } from "../boxd/guest.js";
+import { guestProcess, guestPump, python, quote } from "../boxd/guest.js";
 import { failure } from "./errors.js";
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // The one-shot launcher travels in the native exec request. Small results
 // return inline; large output uses bounded native ranged reads.
 export const supervisor = `import os,sys,marshal,_signal as signal,select,time,fcntl
 ${guestProcess}
+${guestPump}
 root=sys.argv[1]
 v=marshal.loads(bytes.fromhex(sys.argv[2])) if len(sys.argv)>2 else marshal.loads(bytes.fromhex(sys.stdin.read()))
 if 'envKeys' in v: v['env']={k:os.environ[k] for k in v['envKeys']}
 os.makedirs(root,mode=0o700,exist_ok=True)
 # Keep small completed responses until their request deadline has passed.
-# Sweep expired responses inline, so no ack RPC or background daemon is needed.
-for entry in os.scandir(os.path.dirname(root)):
- if not entry.name.startswith('run-') or entry.path==root: continue
- try:
-  with open(entry.path+'/expires') as f: expired=time.time()>float(f.read())
-  if expired:
-   import shutil
-   shutil.rmtree(entry.path,ignore_errors=True)
- except (FileNotFoundError,NotADirectoryError): pass
+# Sweep expired responses inline, at most every 30 seconds, so no ack RPC or
+# background daemon is needed and a busy sandbox does not rescan every run.
+with open(os.path.dirname(root)+'/.sweep','a') as sweep:
+ try: fcntl.flock(sweep,fcntl.LOCK_EX|fcntl.LOCK_NB)
+ except BlockingIOError: pass
+ else:
+  if time.time()-os.fstat(sweep.fileno()).st_mtime>30:
+   os.utime(sweep.fileno(),None)
+   for entry in os.scandir(os.path.dirname(root)):
+    if not entry.name.startswith('run-') or entry.path==root: continue
+    try:
+     with open(entry.path+'/expires') as f: expired=time.time()>float(f.read())
+     if expired:
+      import shutil
+      shutil.rmtree(entry.path,ignore_errors=True)
+    except (FileNotFoundError,NotADirectoryError): pass
 a=v.get('activityPath')
 timed=False
 code=127
@@ -61,17 +69,7 @@ try:
    if p:
     with open(root+'/pid','w') as m: m.write(str(p.pid))
   if p:
-   stdout=p.stdout.fileno(); streams={stdout:'stdout',p.stderr.fileno():'stderr'}
-   end=time.monotonic()+v['timeoutMs']/1000
-   while streams or p.poll() is None:
-    if not timed and time.monotonic()>=end:
-     timed=True
-     try: os.killpg(p.pid,signal.SIGKILL)
-     except ProcessLookupError: pass
-    for fd in select.select(list(streams),[],[],.01)[0]:
-     data=os.read(fd,8192)
-     if data: out.write(('["'+streams[fd]+'","'+data.hex()+'"]\\n').encode())
-     else: del streams[fd]; (p.stdout if fd==stdout else p.stderr).close()
+   timed=pump(p,lambda name,data: out.write(('["'+name+'","'+data.hex()+'"]\\n').encode()),time.monotonic()+v['timeoutMs']/1000)
    code=p.wait()
   timed=timed or os.path.exists(root+'/cancelled')
  result='{"exitCode":%s,"timedOut":%s}'%('null' if timed else str(code if code>=0 else 128-code),str(timed).lower())
