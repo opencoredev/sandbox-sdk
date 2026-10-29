@@ -206,7 +206,7 @@ esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mj
   --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
 ```
 
-A CommonJS bundle (`--format=cjs`) needs no shim. In either format, leave out `--minify`: it renames the provider SDKs' error classes, and their errors then reach you as code `provider` instead of codes like `file_not_found`.
+A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either format.
 
 ## What the package exports
 

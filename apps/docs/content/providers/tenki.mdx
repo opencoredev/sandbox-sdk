@@ -7,9 +7,36 @@ description: Run coding agents on full Tenki Linux VMs. Memory pause, disk and m
 
 ## Install
 
-```package-install
-npm i @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
 ```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+</Tabs>
 
 The adapter needs `@tenkicloud/sandbox` 1.4.1 or later. Set `TENKI_API_KEY` to a workspace API key on your server, and keep it out of browser bundles.
 

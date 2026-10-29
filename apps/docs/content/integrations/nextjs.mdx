@@ -44,7 +44,7 @@ This page uses [Vercel Sandbox](/providers/vercel), which authenticates with OID
 
 ## Bundling
 
-`next build` bundles your server code, and some provider SDKs break when they are bundled. The failures show up only in production. In a Next.js 16 production build, for example, E2B's `files.exists` on a missing file throws a `provider` error instead of returning `false`. Keep the SDK and every provider SDK you import out of the server bundle:
+`next build` bundles your server code, and the SDK works inside that bundle. E2B, Daytona, and boxd were checked in a Next.js 16 production build with no extra config. If a provider SDK still fails only in production, keep it and the SDK out of the server bundle:
 
 ```ts title="next.config.ts" check="skip"
 import type { NextConfig } from "next";

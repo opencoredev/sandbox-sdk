@@ -15,7 +15,7 @@ It is not a hosted service: it calls each provider's own SDK with your keys, and
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. Install a provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, \`@upstash/box\`, \`railway\`, \`@boatdev/sdk\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, \`freestyle\`, \`@superserve/sdk\`, or \`@rivet-dev/agentos-core\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk@next\` or \`bun add @opencoredev/sandbox-sdk@next\` (1.0 is in beta on the \`next\` tag). Install a provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, \`@upstash/box\`, \`railway\`, \`@boatdev/sdk\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, \`freestyle\`, \`@superserve/sdk\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).

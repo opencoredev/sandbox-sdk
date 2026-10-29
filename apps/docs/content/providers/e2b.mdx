@@ -7,9 +7,36 @@ description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots,
 
 ## Install
 
-```package-install
-npm i @opencoredev/sandbox-sdk@next e2b
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next e2b
 ```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next e2b
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next e2b
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next e2b
+```
+
+  </Tab>
+</Tabs>
 
 The adapter needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server, and keep it out of browser bundles.
 
