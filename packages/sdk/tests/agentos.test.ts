@@ -48,7 +48,10 @@ test("native failures are sanitized and unsupported SDK processes/previews are c
     await expect(box.start("echo again", { name: "dev" })).rejects.toMatchObject({ code: "unsupported" });
     await expect(box.preview(3000)).rejects.toMatchObject({ code: "unsupported" });
     expect(box.capabilities).toEqual(new Set(["network-policy"]));
-    expect(String(agentosError(new Error("secret-sensitive")))).not.toContain("secret-sensitive");
+    // Unmapped native failures keep their scrubbed text as cause and in the message; credential-shaped values never survive.
+    const native = agentosError(new Error("sidecar crashed; password=secret-sensitive"));
+    expect(native).toMatchObject({ code: "provider", cause: "Error: sidecar crashed; password=[REDACTED]" });
+    expect(String(native)).toContain("sidecar crashed"); expect(String(native)).not.toContain("secret-sensitive");
   } finally { await box.destroy(); }
 });
 

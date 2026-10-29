@@ -240,7 +240,8 @@ test("maps statuses without retaining native secrets", () => {
   ] as const) {
     const error = superserveError(Object.assign(new Error("secret-api-key"), { statusCode }));
     expect(error.code).toBe(code);
-    expect(error.cause).toBeUndefined();
+    // An HTTP failure keeps its name and status as cause, never the response text.
+    expect(error.cause).toBe(`Error HTTP ${statusCode}`);
     expect(String(error)).not.toContain("secret-api-key");
   }
 });

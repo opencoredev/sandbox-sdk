@@ -77,7 +77,7 @@ describe("Vercel adapter", { timeout: 30_000 }, () => {
   });
   test("maps native failures without leaking request credentials", () => {
     for (const [status, code] of [[401, "auth"], [403, "auth"], [404, "not_found"], [429, "quota"], [503, "unavailable"], [400, "invalid_argument"]] as const) {
-      const mapped = vercelError(Object.assign(new Error("Bearer secret"), { response: new Response(null, { status }) })); expect(mapped.code).toBe(code); expect(mapped.message).not.toContain("secret"); expect(mapped.cause).toBeUndefined();
+      const mapped = vercelError(Object.assign(new Error("Bearer secret"), { response: new Response(null, { status }) })); expect(mapped.code).toBe(code); expect(mapped.message).not.toContain("secret"); expect(mapped.cause).toBe(`Error HTTP ${status}`);
     }
     expect(vercelError({ code: "ENOENT" }, "box").code).toBe("file_not_found");
   });

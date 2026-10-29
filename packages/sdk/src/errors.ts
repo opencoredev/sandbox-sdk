@@ -83,15 +83,82 @@ export class Redactor {
   get secrets() { return [...this.values].sort((a, b) => b.length - a.length); }
   get maxLength() { return Math.max(1, ...[...this.values].map(value => value.length)); }
   error(error: unknown, provider: string, sandboxId?: string): SandboxError {
-    const detail = error instanceof Error ? error.message : String(error);
-    const message = error instanceof SandboxError ? detail : `${detail}. Provider request failed. Check the provider settings and retry.`;
-    const options: ErrorOptions = error instanceof SandboxError ? error : { code: "provider" };
-    return new SandboxError(this.text(message), {
-      code: options.code, retryable: options.retryable, hint: this.text(options.hint ?? hints[options.code] ?? hints.provider), provider, sandboxId,
-      // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
-      cause: error instanceof Error && error.cause !== undefined ? this.text(String(error.cause instanceof Error ? error.cause.message : error.cause)) : undefined,
+    if (error instanceof SandboxError) {
+      return new SandboxError(this.text(error.message), {
+        code: error.code, retryable: error.retryable, hint: this.text(error.hint), provider, sandboxId,
+        // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
+        cause: error.cause === undefined ? undefined : this.text(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+      });
+    }
+    // A raw failure reached the core, usually an SDK or adapter bug. Its scrubbed text is the only clue, so keep it in both places.
+    const message = scrub(this.text(error instanceof Error ? error.message : typeof error === "string" ? error : "Non-Error value thrown"));
+    return new SandboxError(`${message}. Provider request failed. Check the provider settings and retry.`, {
+      code: "provider", hint: hints.provider, provider, sandboxId, cause: nativeDetail(error, text => this.text(text)),
     });
   }
+}
+/** Credential-shaped text in native messages: URLs (which can carry tokens), auth headers, and key=value pairs. */
+const credentialPatterns: [RegExp, string][] = [
+  [/https?:\/\/[^\s"'<>]+/gi, "[URL REDACTED]"],
+  [/(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi, "$1[REDACTED]"],
+  [/\bBearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]"],
+  [/((?:["']?(?:api[-_]?key|access[-_]?token|token|password|secret)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, "$1[REDACTED]"],
+  [/\p{Cc}+/gu, " "],
+];
+/** @internal Removes credential-shaped text (URLs, auth headers, key=value secrets, control characters) and bounds the length. */
+export function scrub(text: string): string {
+  for (const [pattern, replacement] of credentialPatterns) text = text.replace(pattern, replacement);
+  return text.slice(0, 1000);
+}
+/**
+ * @internal `Name: message` of a native failure, redacted, scrubbed and bounded, with up to two nested causes.
+ * Undefined for thrown values that are not Errors, which carry no message to keep.
+ */
+export function nativeDetail(error: unknown, redact: (text: string) => string = text => text, depth = 0): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const text = scrub(redact(error.message ? `${error.name}: ${error.message}` : error.name));
+  const nested = depth < 2 ? nativeDetail(error.cause, redact, depth + 1) : undefined;
+  return nested === undefined ? text : `${text}; caused by ${nested}`;
+}
+const meanings: Record<ErrorCode, string> = {
+  auth: "the credentials are missing or were rejected",
+  not_found: "the sandbox does not exist",
+  quota: "a provider limit or billing stopped the request",
+  unavailable: "the service is down or unreachable",
+  unsupported: "the provider cannot do what was asked",
+  timeout: "the operation took too long",
+  aborted: "the request was aborted",
+  outcome_unknown: "the request may or may not have happened",
+  process_exited: "the process exited before it was ready",
+  port_not_ready: "the port did not become ready",
+  edit_not_found: "the text to replace was not found",
+  edit_not_unique: "the text to replace matched more than once",
+  file_not_found: "the path does not exist",
+  invalid_argument: "the provider rejected the request as invalid",
+  provider: "the provider returned an unexpected error",
+};
+/**
+ * @internal What an adapter keeps from a native failure. Only a failure the adapter did not recognize
+ * (`code` is `provider`, unless `known` says otherwise) and that carries no `status` keeps its text:
+ * that is an SDK bug or a network error, and the text is the only clue. A recognized error type or a response may carry server text that
+ * echoes the request, so it keeps only its name and status. `detail` is the kept text, for the message;
+ * `cause` is the detail, or else the name and status.
+ */
+export function describeNative(error: unknown, options: { code: ErrorCode; known?: boolean; status?: string; redact?: (text: string) => string }): { detail?: string; cause?: string } {
+  const known = options.known ?? options.code !== "provider";
+  const detail = !known && options.status === undefined ? nativeDetail(error, options.redact) : undefined;
+  const label = [error instanceof Error ? error.name : undefined, options.status].filter(part => part !== undefined).join(" ");
+  return { detail, cause: detail ?? (label || undefined) };
+}
+/** @internal A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
+export function redacting(values: Iterable<string | undefined>): (text: string) => string {
+  const redactor = new Redactor();
+  for (const value of values) if (value) redactor.add([value]);
+  return text => redactor.text(text);
+}
+/** @internal Why an adapter request failed, as a clause, never the code itself: the kept detail, or what `code` means. */
+export function reason(code: ErrorCode, detail?: string): string {
+  return detail ?? meanings[code];
 }
 /** @internal Throws an `invalid_argument` SandboxError. */
 export function invalid(message: string): never {

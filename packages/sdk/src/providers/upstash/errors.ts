@@ -1,19 +1,8 @@
-import { Redactor, SandboxError, type ErrorCode } from "../../errors.js";
+import { Redactor, SandboxError, describeNative, nativeDetail, reason, type ErrorCode } from "../../errors.js";
 
-// Retain only text, never native response/request objects (headers can hold keys).
-function detail(error: unknown, redact: (text: string) => string, depth = 0): string {
-  const text = error instanceof Error ? `${error.name}: ${error.message}` : "Native request failed";
-  const safe = redact(text)
-    .replace(/https?:\/\/[^\s"'<>]+/gi, "[URL REDACTED]")
-    .replace(/(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi, "$1[REDACTED]")
-    .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]")
-    .replace(/((?:["']?(?:authorization|api[-_]?key|token|password|secret)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, "$1[REDACTED]")
-    .replace(/\p{Cc}+/gu, " ")
-    .slice(0, 1000);
-  return error instanceof Error && error.cause !== undefined && depth < 2
-    ? `${safe}; caused by ${detail(error.cause, redact, depth + 1)}`
-    : safe;
-}
+// Retain only scrubbed text, never native response/request objects (headers can hold keys).
+const detail = (error: unknown, redact: (text: string) => string) => nativeDetail(error, redact) ?? "Native request failed";
+
 export function upstashError(
   error: unknown,
   sandboxId?: string,
@@ -38,7 +27,7 @@ export function upstashError(
   else if (status === 400 || status === 422) code = "invalid_argument";
   const evidence = `${operation}${typeof status === "number" ? ` HTTP ${status}` : ""}: ${detail(error, redact)}`;
   return new SandboxError(
-    `Upstash Box ${operation} failed (${code}${typeof status === "number" ? `, HTTP ${status}` : ""}). The provider could not complete the operation. Check credentials, limits, and sandbox state.`,
+    `Upstash Box ${operation} failed${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${reason(code, describeNative(error, { code, status: status === undefined ? undefined : String(status), redact }).detail)}. Check credentials, limits, and sandbox state.`,
     {
       code,
       provider: "upstash",

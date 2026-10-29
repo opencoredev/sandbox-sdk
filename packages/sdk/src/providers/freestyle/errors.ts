@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
 type RequestEvidence = { status?: number; requestId?: string; operation?: string };
 export const requestEvidence = new AsyncLocalStorage<RequestEvidence & { deniedValues?: string[]; backgroundRequestId?: string }>();
@@ -63,7 +63,7 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
     504: "timeout",
   };
   const context = requestEvidence.getStore();
-  const evidence: RequestEvidence & { providerCode?: string } = {};
+  const evidence: RequestEvidence & { providerCode?: string; native?: string } = {};
   if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) evidence.status = status;
   if (typeof error === "object" && error !== null) {
     if ("code" in error && typeof error.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)) {
@@ -74,14 +74,7 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   }
   if (context?.operation) evidence.operation = context.operation;
   if (context?.status === status && context?.requestId) evidence.requestId = context.requestId;
-  // Core's redactor preserves Error.message rather than arbitrary cause objects.
-  // JSON in the message keeps these fields available there, too, without ever
-  // copying the native message, response body, headers, URL or native cause.
-  const cause = Object.keys(evidence).length
-    ? Object.assign(new Error(JSON.stringify(evidence)), evidence)
-    : undefined;
-  return failure(
-    "Freestyle request failed",
+  const code: ErrorCode =
     typeof status === "number"
       ? (codes[status] ?? "provider")
       : error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
@@ -90,8 +83,16 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
           : "aborted"
         : error instanceof Error && error.name === "FreestyleTransportError"
           ? "unavailable"
-          : "provider",
-    sandboxId,
-    cause,
-  );
+          : "provider";
+  // An unrecognized failure without a status keeps its scrubbed message (see describeNative).
+  // A response's message, body and headers never are kept.
+  const { detail } = describeNative(error, { code, status: status === undefined ? undefined : String(status), redact: redacting([process.env.FREESTYLE_API_KEY, ...(context?.deniedValues ?? [])]) });
+  if (detail !== undefined) evidence.native = detail;
+  // Core's redactor preserves Error.message rather than arbitrary cause objects.
+  // JSON in the message keeps these fields available there, too, without ever
+  // copying a response's message, body, headers, URL or native cause.
+  const cause = Object.keys(evidence).length
+    ? Object.assign(new Error(JSON.stringify(evidence)), evidence)
+    : undefined;
+  return failure(`Freestyle request failed: ${reason(code, evidence.native)}`, code, sandboxId, cause);
 }

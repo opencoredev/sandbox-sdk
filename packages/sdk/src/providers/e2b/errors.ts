@@ -1,6 +1,7 @@
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
-/** Native messages/causes can contain API keys and command output. Keep them private. */
+/** Native messages can contain API keys and command output. Only an unrecognized failure without a
+ * status keeps its scrubbed text, with the API key redacted, as `cause` (see describeNative). */
 export function e2bError(cause: unknown, sandboxId?: string, file = false): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const name = cause instanceof Error ? cause.constructor.name : "";
@@ -15,5 +16,8 @@ export function e2bError(cause: unknown, sandboxId?: string, file = false): Sand
   else if (name === "AbortError" || (typeof cause === "object" && cause !== null && "name" in cause && cause.name === "AbortError")) code = "aborted";
   else if (name === "InvalidArgumentError" || status === 400) code = "invalid_argument";
   const hint = code === "auth" ? "Check E2B_API_KEY and the E2B domain." : "Check the sandbox, template and E2B service, then retry.";
-  return new SandboxError(`E2B request failed. The provider reported ${code}. ${hint}`, { code, provider: "e2b", sandboxId, hint, retryable: ["quota", "unavailable", "timeout"].includes(code) });
+  const native = describeNative(cause, { code, status: status === undefined ? undefined : `HTTP ${String(status)}`, redact: redacting([process.env.E2B_API_KEY]) });
+  return new SandboxError(`E2B request failed: ${reason(code, native.detail)}. ${hint}`, {
+    code, provider: "e2b", sandboxId, hint, retryable: ["quota", "unavailable", "timeout"].includes(code), cause: native.cause,
+  });
 }

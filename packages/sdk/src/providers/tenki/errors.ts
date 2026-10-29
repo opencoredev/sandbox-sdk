@@ -1,4 +1,4 @@
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
 export type TenkiOperation =
   | "request"
@@ -93,6 +93,13 @@ function nativeEvidence(error: unknown, denied: string[]) {
   }
   return evidence;
 }
+// An unrecognized failure with no status or RPC code never got a Tenki response (an SDK
+// bug, a network error), so its scrubbed message is kept. A response's text never is.
+function localDetail(error: unknown, code: ErrorCode, evidence: ReturnType<typeof nativeEvidence>, denied: string[]): { native?: string } {
+  const status = evidence.status ?? evidence.providerCode;
+  const { detail } = describeNative(error, { code, status: status === undefined ? undefined : String(status), redact: redacting(denied) });
+  return detail === undefined ? {} : { native: detail };
+}
 
 export function tenkiError(
   error: unknown,
@@ -109,15 +116,17 @@ export function tenkiError(
     process.env.TENKI_API_KEY ?? "",
     process.env.TENKI_AUTH_TOKEN ?? "",
   ].filter(Boolean);
+  const native = nativeEvidence(error, denied);
   const evidence = {
     operation,
-    ...nativeEvidence(error, denied),
+    ...native,
+    ...localDetail(error, code, native, denied),
   };
   // Core preserves Error.message when redacting a cause; JSON survives that
   // boundary as well as exposing structured fields to direct adapter callers.
   const cause = Object.assign(new Error(JSON.stringify(evidence)), evidence);
   return new SandboxError(
-    `Tenki request failed (${code}). The provider could not complete the operation. Check credentials, quotas, and session state.`,
+    `Tenki request failed: ${reason(code, evidence.native)}. Check credentials, quotas, and session state.`,
     {
       code,
       provider: "tenki",
@@ -150,6 +159,7 @@ export function createError(
       : {}),
     ...(/^[A-Z_]{1,32}$/.test(context.state) ? { state: context.state } : {}),
     ...nativeEvidence(error, denied),
+    ...localDetail(error, mapped.code, nativeEvidence(error, denied), denied),
     ...(cleanupError !== undefined ? { cleanupCode: tenkiError(cleanupError).code } : {}),
   };
   return new SandboxError(mapped.message, {

@@ -76,7 +76,7 @@ describe("boxd contract", () => {
     ] as const) {
       const error = boxdError(Object.assign(new Error("secret-native-error"), { grpcCode }));
       expect(error.code).toBe(code);
-      expect(error.cause).toBeUndefined();
+      expect(error.cause).toBe(`Error gRPC ${grpcCode}`);
       expect(String(error)).not.toContain("secret-native-error");
     }
   });
@@ -87,9 +87,10 @@ describe("boxd contract", () => {
       ["APIConnectionError", "unavailable"],
       ["RateLimitError", "quota"],
     ] as const) {
+      // A recognized error keeps only its name as cause.
       const result = boxdError(Object.assign(new Error("private-key"), { name }));
       expect(result.code).toBe(code);
-      expect(result.cause).toBeUndefined();
+      expect(result.cause).toBe(name);
     }
   });
   test("secrets use native stdin and never command text", async () => {
@@ -141,7 +142,7 @@ test("plain BoxdError local exec deadline maps to timeout without native details
     Object.assign(new Error("exec timed out after 10ms"), { name: "BoxdError" }),
   );
   expect(result.code).toBe("timeout");
-  expect(result.cause).toBeUndefined();
+  expect(result.cause).toBe("BoxdError");
   expect(String(result)).not.toContain("10ms");
   expect(boxdError(Object.assign(new Error("unrelated failure"), { name: "BoxdError" })).code).toBe(
     "provider",
@@ -277,7 +278,7 @@ test("permission failures give a fixed safe category without native details", ()
   expect(result.message).toContain("permission denied");
   expect(result.message).not.toContain("private-key");
   expect(result.message).not.toContain("/secret/path");
-  expect(result.cause).toBeUndefined();
+  expect(result.cause).toBe("Error gRPC 13");
 });
 
 

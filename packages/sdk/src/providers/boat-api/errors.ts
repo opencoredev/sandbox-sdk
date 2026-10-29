@@ -1,4 +1,4 @@
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
 /** `detailed` adds the HTTP status and the envelope's fixed error code, never free text. */
 export function errors(provider = "boat", label = "Boat", keyEnv = "BOAT_API_KEY", detailed = false) {
@@ -24,12 +24,15 @@ export function errors(provider = "boat", label = "Boat", keyEnv = "BOAT_API_KEY
     const apiCode = typeof cause === "object" && cause !== null && "apiCode" in cause &&
       typeof cause.apiCode === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(cause.apiCode) ? ` ${cause.apiCode}` : "";
     const detail = detailed && status !== undefined ? ` (HTTP ${status}${apiCode})` : "";
-    return new SandboxError(`${label} request failed${detail}. The provider reported ${code}. ${hint}`, {
+    // Response text can echo the request, so an HTTP failure keeps only its status.
+    const native = describeNative(cause, { code, status: status === undefined ? undefined : `HTTP ${status}${apiCode}`, redact: redacting([process.env[keyEnv]]) });
+    return new SandboxError(`${label} request failed${detail}: ${reason(code, native.detail)}. ${hint}`, {
       code,
       provider,
       sandboxId,
       hint,
       retryable: code === "unavailable" || code === "quota",
+      cause: native.cause,
     });
   }
   function failure(message: string, code: ErrorCode = "provider", sandboxId?: string) {

@@ -1,4 +1,4 @@
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
 // These codes are already recognized by this adapter. Unknown wire codes are
 // omitted until verified; a spelling filter alone can admit reflected secrets.
@@ -19,8 +19,9 @@ export function daytonaError(error: unknown, sandboxId?: string, file = false, o
   else if (status === 408 || status === 504 || name.includes("Timeout")) code = "timeout";
   else if (typeof status === "number" && status >= 500 || name.includes("Connection")) code = "unavailable";
   else if (status === 400 || status === 422 || name.includes("InvalidArgument")) code = "invalid_argument";
-  // Copy only bounded machine fields; never copy native messages or bodies.
-  const evidence: { status?: number; providerCode?: string; requestId?: string; operation: string; source?: string } = {
+  // Copy only bounded machine fields; never a response's message or body. An unrecognized
+  // failure without a status keeps its scrubbed message as `native` (see describeNative).
+  const evidence: { status?: number; providerCode?: string; requestId?: string; operation: string; source?: string; native?: string } = {
     operation: /^(request|create|restore|list|connect|destroy|exec|process|preview|snapshot|files)$/.test(operation) ? operation : "request",
   };
   const denied = [...knownSecrets, apiKey, process.env.DAYTONA_API_KEY].filter((value): value is string => typeof value === "string" && value.length > 0);
@@ -37,9 +38,11 @@ export function daytonaError(error: unknown, sandboxId?: string, file = false, o
       }
     }
   }
+  const { detail } = describeNative(error, { code, status: status === undefined ? undefined : String(status), redact: redacting(denied) });
+  if (detail !== undefined) evidence.native = detail;
   // Error.message survives the SDK redactor; own fields support direct clients.
   const cause = Object.assign(new Error(JSON.stringify(evidence)), evidence);
-  return new SandboxError(`Daytona request failed (${code}). The provider could not complete the operation. Check the sandbox and provider configuration.`, {
+  return new SandboxError(`Daytona request failed: ${reason(code, evidence.native)}. Check the sandbox and provider configuration.`, {
     code, provider: "daytona", sandboxId, cause, retryable: ["quota", "unavailable", "timeout"].includes(code),
     hint: "Check Daytona credentials, quotas, sandbox state, and request options before retrying.",
   });

@@ -1,10 +1,11 @@
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError, describeNative, reason, type ErrorCode } from "../../errors.js";
 
-export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string): SandboxError {
-  return new SandboxError(`${message}. Check the agentOS runtime or use local() with Docker.`, { code, provider: "agentos", sandboxId });
+export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string, cause?: string): SandboxError {
+  return new SandboxError(`${message}. Check the agentOS runtime or use local() with Docker.`, { code, provider: "agentos", sandboxId, cause });
 }
 
-/** Native errors may include file contents, environment variables, or credentials. */
+/** Native errors may include file contents or environment variables. Only an unrecognized failure keeps
+ * its text (see describeNative), scrubbed here; the core redacts registered secrets from it too. */
 export function agentosError(cause: unknown, sandboxId?: string, file = false): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const message = cause instanceof Error ? cause.message : "";
@@ -12,5 +13,6 @@ export function agentosError(cause: unknown, sandboxId?: string, file = false): 
     : /limit|quota|ENOSPC/i.test(message) ? "quota"
     : /sidecar.*(exit|closed|missing)|cannot find package|module not found/i.test(message) ? "unavailable"
     : /EACCES|EPERM|invalid|EINVAL/i.test(message) ? "invalid_argument" : "provider";
-  return failure(`agentOS operation failed (${code})`, code, sandboxId);
+  const native = describeNative(cause, { code });
+  return failure(`agentOS operation failed: ${reason(code, native.detail)}`, code, sandboxId, native.cause);
 }
