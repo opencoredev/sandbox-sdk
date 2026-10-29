@@ -1,5 +1,6 @@
 import type { FileInfo, ProviderFiles } from "../provider.js";
 import { SandboxError, type ErrorCode } from "../errors.js";
+import { isNumber, isObject, isString } from "./narrow.js";
 import { quote } from "./shell.js";
 
 export const python = (code: string, ...args: string[]) =>
@@ -84,22 +85,24 @@ def info(p):
 try: print(json.dumps([info(os.path.join(p,n)) for n in os.listdir(p)] if sys.argv[2]=='list' else info(p)))
 except FileNotFoundError: print('SDK_FILE_NOT_FOUND')`;
 
-function file(g: Guest, v: unknown): FileInfo {
-  if (
-    !v ||
-    typeof v !== "object" ||
-    !("path" in v) ||
-    typeof v.path !== "string" ||
-    !("type" in v) ||
-    (v.type !== "file" && v.type !== "directory" && v.type !== "symlink") ||
-    !("size" in v) ||
-    typeof v.size !== "number" ||
-    !("modifiedAt" in v) ||
-    typeof v.modifiedAt !== "number"
-  )
-    throw fail(g, "Invalid file metadata");
+/** A guest metadata record, as the metadata programs print it. */
+export function isFileInfo(value: unknown): value is FileInfo {
+  return (
+    isObject(value) &&
+    "path" in value &&
+    isString(value.path) &&
+    "type" in value &&
+    (value.type === "file" || value.type === "directory" || value.type === "symlink") &&
+    "size" in value &&
+    isNumber(value.size) &&
+    "modifiedAt" in value &&
+    isNumber(value.modifiedAt)
+  );
+}
 
-  return { path: v.path, type: v.type, size: v.size, modifiedAt: v.modifiedAt };
+/** Copies only the FileInfo fields, so extra JSON keys never reach callers. */
+export function fileInfo(value: FileInfo): FileInfo {
+  return { path: value.path, type: value.type, size: value.size, modifiedAt: value.modifiedAt };
 }
 
 export function files(
@@ -143,7 +146,9 @@ export function files(
       safe(id, async () => {
         const { g, value } = await info(id, path, "stat");
 
-        return file(g, value);
+        if (!isFileInfo(value)) throw fail(g, "Invalid file metadata");
+
+        return fileInfo(value);
       }),
     list: (id, path) =>
       safe(id, async () => {
@@ -151,7 +156,11 @@ export function files(
 
         if (!Array.isArray(value)) throw fail(g, "Invalid directory listing");
 
-        return value.map((v) => file(g, v));
+        return value.map((item) => {
+          if (!isFileInfo(item)) throw fail(g, "Invalid file metadata");
+
+          return fileInfo(item);
+        });
       }),
     mkdir: (id, path) =>
       safe(id, async () => {

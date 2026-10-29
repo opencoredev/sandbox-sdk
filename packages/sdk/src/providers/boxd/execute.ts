@@ -83,7 +83,7 @@ export async function execute(
 
   const completion = stream.wait().then(
     (exitCode) => ({ kind: "exit", exitCode }) as const,
-    (error: unknown) => ({ kind: "error", error }) as const,
+    (cause: unknown) => ({ kind: "error", cause }) as const,
   );
 
   // The SDK pushes each wire frame synchronously into one of these public
@@ -204,7 +204,7 @@ sys.exit(1)`,
           throw failure("Process termination could not be confirmed", "outcome_unknown", id);
       }
     } else if (outcome.kind === "error") {
-      throw outcome.error;
+      throw outcome.cause;
     }
 
     for (const name of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[]) {
@@ -234,9 +234,9 @@ sys.exit(1)`,
           command: `rm -f -- ${quote(input.activityPath)} ${quote(pidPath)}`,
           timeout: 5000,
         })
-        .catch((error: unknown) => {
+        .catch((cause: unknown) => {
           // Preserve the primary execution/termination failure during cleanup.
-          if (!interrupted) throw error;
+          if (!interrupted) throw cause;
         });
   }
 }

@@ -1,6 +1,11 @@
 /** @superserve/sdk 0.11.4; https://docs.superserve.ai/sdk-reference/sandbox */
-import type { NetworkConfig, Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
-import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
+import type {
+  NetworkConfig,
+  Sandbox,
+  SandboxCreateOptions,
+  SandboxInfo as NativeInfo,
+} from "@superserve/sdk";
+import type { CreateInput, Preview, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { failure, superserveError } from "./errors.js";
@@ -266,10 +271,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
 
-        const metadata: Record<string, string> = {
-          "sandbox-sdk": "1",
-          ...(input.key !== undefined ? { "sdk-key": input.key } : {}),
-        };
+        const metadata: Record<string, string> = {};
+        metadata["sandbox-sdk"] = "1";
+
+        if (input.key !== undefined) metadata["sdk-key"] = input.key;
 
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
         const createdAt = Date.now();
@@ -277,24 +282,29 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         // Load the SDK first: a missing peer allocated nothing, so it is not an unknown outcome.
         const native = await api();
 
+        const params: SandboxCreateOptions = {
+          ...connection(),
+          name: `sbxsdk-${crypto.randomUUID()}`,
+          metadata,
+          envVars: input.env,
+          previewAccess,
+          signal: AbortSignal.timeout(timeout),
+        };
+
+        if (network) params.network = network;
+
+        if (autoPauseSeconds !== undefined) params.timeoutSeconds = autoPauseSeconds;
+
+        if (autoDeleteSeconds !== undefined) params.autoDeleteSeconds = autoDeleteSeconds;
+
+        if (options.secretBindings && Object.keys(options.secretBindings).length)
+          params.secrets = options.secretBindings;
+
+        if (input.from) params.fromSnapshot = input.from;
+        else params.fromTemplate = options.template ?? "superserve/node-22";
+
         try {
-          box = await native.Sandbox.create({
-            ...connection(),
-            name: `sbxsdk-${crypto.randomUUID()}`,
-            metadata,
-            envVars: input.env,
-            previewAccess,
-            ...(network ? { network } : {}),
-            ...(autoPauseSeconds === undefined ? {} : { timeoutSeconds: autoPauseSeconds }),
-            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
-            ...(options.secretBindings && Object.keys(options.secretBindings).length
-              ? { secrets: options.secretBindings }
-              : {}),
-            ...(input.from
-              ? { fromSnapshot: input.from }
-              : { fromTemplate: options.template ?? "superserve/node-22" }),
-            signal: AbortSignal.timeout(timeout),
-          });
+          box = await native.Sandbox.create(params);
         } catch (error) {
           const mapped = superserveError(error);
 
@@ -483,11 +493,14 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         if (previewAccess === "public") return { url: box.getPreviewUrl(port) };
         const token = await box.getPreviewToken(port);
 
-        return {
+        const preview: Preview = {
           url: box.getPreviewUrl(port),
           headers: { [token.header]: token.token },
-          ...(token.expiresAt ? { expiresAt: token.expiresAt.getTime() } : {}),
         };
+
+        if (token.expiresAt) preview.expiresAt = token.expiresAt.getTime();
+
+        return preview;
       }),
     pause: (id) =>
       safe(id, async () => {

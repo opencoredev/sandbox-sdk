@@ -1,4 +1,5 @@
 import type { ExecInput } from "../provider.js";
+import { isNumber, isString } from "./narrow.js";
 
 type Spec = Pick<ExecInput, "command" | "cwd" | "env" | "stdin" | "timeoutMs" | "activityPath"> & {
   marker?: string;
@@ -16,13 +17,13 @@ export function guestSpec(
   const parts: Buffer[] = [];
 
   function write(value: Value): void {
-    if (typeof value === "string") {
+    if (isString(value)) {
       const bytes = Buffer.from(value);
       const header = Buffer.alloc(5);
       header[0] = 117;
       header.writeUInt32LE(bytes.length, 1);
       parts.push(header, bytes);
-    } else if (typeof value === "number") {
+    } else if (isNumber(value)) {
       const bytes = Buffer.alloc(9);
       bytes[0] = 103;
       bytes.writeDoubleLE(value, 1);

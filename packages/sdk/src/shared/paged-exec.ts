@@ -1,6 +1,7 @@
 import type { ExecInput, ExecResult } from "../provider.js";
 import { SandboxError, type ErrorCode } from "../errors.js";
 import { python } from "./guest.js";
+import { isBoolean, isNumber, isObject, isString } from "./narrow.js";
 import { quote } from "./shell.js";
 
 /** A guest that runs paged supervisors: Freestyle and Superserve. */
@@ -23,6 +24,58 @@ export interface PagedExecution {
 }
 
 type Decoders = { stdout: TextDecoder; stderr: TextDecoder };
+
+/** One hex-encoded output chunk: `["stdout", "6869"]`. */
+type OutputRecord = readonly [stream: "stdout" | "stderr", hex: string, ...rest: unknown[]];
+
+/** The cancellation program's answer: the output records after `offset`. */
+type Recovery = { chunks: unknown[]; offset: number };
+
+/** The supervisor's first response: its result, up to three records and the output size. */
+type FirstPage = {
+  result: { exitCode: number | null; timedOut: boolean };
+  chunks: unknown[];
+  offset: number;
+  size: number;
+};
+
+/** At most 8192 bytes, hex-encoded, plus slack. */
+function isOutputRecord(value: unknown): value is OutputRecord {
+  return (
+    Array.isArray(value) &&
+    (value[0] === "stdout" || value[0] === "stderr") &&
+    isString(value[1]) &&
+    value[1].length <= 21848
+  );
+}
+
+function isRecovery(value: unknown): value is Recovery {
+  return (
+    isObject(value) &&
+    "chunks" in value &&
+    Array.isArray(value.chunks) &&
+    "offset" in value &&
+    isNumber(value.offset)
+  );
+}
+
+function isFirstPage(value: unknown): value is FirstPage {
+  return (
+    isObject(value) &&
+    "result" in value &&
+    isObject(value.result) &&
+    "exitCode" in value.result &&
+    (value.result.exitCode === null || isNumber(value.result.exitCode)) &&
+    "timedOut" in value.result &&
+    isBoolean(value.result.timedOut) &&
+    "chunks" in value &&
+    Array.isArray(value.chunks) &&
+    "offset" in value &&
+    isNumber(value.offset) &&
+    "size" in value &&
+    isNumber(value.size)
+  );
+}
 
 const cancelProgram = `import os,sys,fcntl,signal,shutil,time,json
 root=sys.argv[1]
@@ -79,13 +132,8 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
     const recovery: unknown = JSON.parse(text);
 
     if (
-      !recovery ||
-      typeof recovery !== "object" ||
-      !("chunks" in recovery) ||
-      !Array.isArray(recovery.chunks) ||
+      !isRecovery(recovery) ||
       recovery.chunks.length > 65536 ||
-      !("offset" in recovery) ||
-      typeof recovery.offset !== "number" ||
       !Number.isSafeInteger(recovery.offset) ||
       recovery.offset < delivered
     )
@@ -95,7 +143,11 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
     // tail skipped records, flush them before starting a new decoding segment.
     if (recovery.offset !== delivered) flush(decoders, input);
 
-    for (const chunk of recovery.chunks) emitRecord(chunk, decoders, input, fail);
+    for (const chunk of recovery.chunks) {
+      if (!isOutputRecord(chunk)) throw fail("Invalid output record");
+      emitRecord(chunk, decoders, input);
+    }
+
     flush(decoders, input);
   }
 
@@ -136,33 +188,24 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
     const page: unknown = JSON.parse(text);
 
     if (
-      !page ||
-      typeof page !== "object" ||
-      !("result" in page) ||
-      !page.result ||
-      typeof page.result !== "object" ||
-      !("exitCode" in page.result) ||
-      (page.result.exitCode !== null && typeof page.result.exitCode !== "number") ||
-      !("timedOut" in page.result) ||
-      typeof page.result.timedOut !== "boolean" ||
-      !("chunks" in page) ||
-      !Array.isArray(page.chunks) ||
+      !isFirstPage(page) ||
       page.chunks.length > 3 ||
-      !("offset" in page) ||
-      typeof page.offset !== "number" ||
       !Number.isSafeInteger(page.offset) ||
       page.offset < 0 ||
-      !("size" in page) ||
-      typeof page.size !== "number" ||
       !Number.isSafeInteger(page.size) ||
       page.size < page.offset
     )
       throw fail("Invalid command response");
-    const emit = (value: unknown) => emitRecord(value, decoders, input, fail);
+
     paged = page.offset < page.size || page.result.timedOut;
 
     if (signal.aborted) return await recoverCancellation();
-    page.chunks.forEach(emit);
+
+    for (const record of page.chunks) {
+      if (!isOutputRecord(record)) throw fail("Invalid output record");
+      emitRecord(record, decoders, input);
+    }
+
     delivered = page.offset;
     let offset = page.offset;
     let pending = "";
@@ -189,10 +232,14 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
       pending += new TextDecoder().decode(data);
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
-      lines.forEach((line) => {
-        emit(JSON.parse(line));
+
+      for (const line of lines) {
+        const record: unknown = JSON.parse(line);
+
+        if (!isOutputRecord(record)) throw fail("Invalid output record");
+        emitRecord(record, decoders, input);
         delivered += Buffer.byteLength(line) + 1;
-      });
+      }
     }
 
     if (pending) throw fail("Incomplete output record");
@@ -207,21 +254,9 @@ export async function pagedExecute(execution: PagedExecution): Promise<ExecResul
   }
 }
 
-function emitRecord(
-  value: unknown,
-  decoders: Decoders,
-  input: ExecInput,
-  fail: PagedExecution["fail"],
-) {
-  if (
-    !Array.isArray(value) ||
-    (value[0] !== "stdout" && value[0] !== "stderr") ||
-    typeof value[1] !== "string" ||
-    value[1].length > 21848
-  )
-    throw fail("Invalid output record");
-  const stream = value[0] === "stdout" ? "stdout" : "stderr";
-  const text = decoders[stream].decode(Buffer.from(value[1], "hex"), { stream: true });
+function emitRecord(record: OutputRecord, decoders: Decoders, input: ExecInput) {
+  const [stream, hex] = record;
+  const text = decoders[stream].decode(Buffer.from(hex, "hex"), { stream: true });
 
   if (text) input.onChunk({ stream, text });
 }

@@ -8,6 +8,7 @@ import type { Freestyle, Vm, VmData, CreateVmOptions, InlineFirewallRule } from 
 import { loadPeer } from "../../peer.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../../shared/guest.js";
+import { isObject, isString } from "../../shared/narrow.js";
 import {
   failure,
   freestyleError,
@@ -40,7 +41,7 @@ const supervisorHash = createHash("sha256").update(supervisor).digest("hex");
 // interrupted. Freestyle allows 64 entries with at most 63 characters each.
 const nativeInfo = "sandbox-sdk-info";
 
-function creationMetadata(input: CreateInput): Record<string, string> {
+function creationMetadata(input: CreateInput) {
   const encoded = Buffer.from(
     JSON.stringify({ key: input.key ?? null, labels: input.labels }),
   ).toString("base64url");
@@ -59,6 +60,20 @@ function creationMetadata(input: CreateInput): Record<string, string> {
 
 const envFile = "/var/lib/sandbox-sdk-env.json";
 
+/** The marker JSON written at creation. Labels are checked one by one. */
+type StoredMetadata = { key: string | null; labels: object };
+
+function isStoredMetadata(value: unknown): value is StoredMetadata {
+  return (
+    isObject(value) &&
+    "key" in value &&
+    (value.key === null || isString(value.key)) &&
+    "labels" in value &&
+    isObject(value.labels) &&
+    !Array.isArray(value.labels)
+  );
+}
+
 function seconds(value: number | undefined, hard: boolean) {
   if (value === undefined) return undefined;
 
@@ -72,13 +87,10 @@ function seconds(value: number | undefined, hard: boolean) {
 }
 
 function rules(input: CreateInput): InlineFirewallRule[] {
-  if (
-    input.network === "none" ||
-    (typeof input.network === "object" && input.network.allow.length === 0)
-  )
+  if (input.network === "none" || (isObject(input.network) && input.network.allow.length === 0))
     return [];
 
-  if (typeof input.network === "object")
+  if (isObject(input.network))
     throw failure("Host allow lists are not implemented; use all or none", "unsupported");
 
   return [{ action: "allow", source: {}, destination: { public: true } }];
@@ -256,11 +268,9 @@ with tempfile.TemporaryFile() as f:
             );
 
             if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
-          } else
-            await value.fs.writeFile(path, bytes, {
-              ...(mode === undefined ? {} : { mode }),
-              signal: operationSignal.getStore(),
-            });
+          } else if (mode === undefined)
+            await value.fs.writeFile(path, bytes, { signal: operationSignal.getStore() });
+          else await value.fs.writeFile(path, bytes, { mode, signal: operationSignal.getStore() });
         }),
       read: (path, range) =>
         safe(id, () => value.fs.readFile(path, { ...range, signal: operationSignal.getStore() })),
@@ -296,21 +306,11 @@ with tempfile.TemporaryFile() as f:
       throw failure("Invalid SDK metadata", "not_found", data.id);
     }
 
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !("key" in value) ||
-      (value.key !== null && typeof value.key !== "string") ||
-      !("labels" in value) ||
-      !value.labels ||
-      typeof value.labels !== "object" ||
-      Array.isArray(value.labels)
-    )
-      throw failure("Invalid SDK metadata", "not_found", data.id);
+    if (!isStoredMetadata(value)) throw failure("Invalid SDK metadata", "not_found", data.id);
     const labels: Record<string, string> = {};
 
     for (const [k, v] of Object.entries(value.labels)) {
-      if (typeof v !== "string") throw failure("Invalid SDK label", "not_found", data.id);
+      if (!isString(v)) throw failure("Invalid SDK label", "not_found", data.id);
       Object.defineProperty(labels, k, { value: v, enumerable: true });
     }
 
@@ -365,8 +365,9 @@ with tempfile.TemporaryFile() as f:
             vpcs: [],
             idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
             ttlSeconds,
-            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
           };
+
+          if (autoDeleteSeconds !== undefined) params.autoDeleteSeconds = autoDeleteSeconds;
 
           // No retries: a transport failure may have allocated a VM. An unknown
           // outcome must be inspected before another create is attempted.

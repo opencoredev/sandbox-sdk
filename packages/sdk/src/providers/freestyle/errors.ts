@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
 type RequestEvidence = { status?: number; requestId?: string; operation?: string };
 
@@ -96,46 +97,39 @@ export function failure(
   );
 }
 
-export function freestyleError(error: unknown, sandboxId?: string): SandboxError {
-  if (error instanceof SandboxError) return error;
+const codes = new Map<number, ErrorCode>([
+  [400, "invalid_argument"],
+  [401, "auth"],
+  [403, "auth"],
+  [404, "not_found"],
+  [402, "quota"],
+  [408, "timeout"],
+  [429, "quota"],
+  [500, "unavailable"],
+  [502, "unavailable"],
+  [503, "unavailable"],
+  [504, "timeout"],
+]);
 
-  const status =
-    typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
-
-  const codes: Record<number, ErrorCode> = {
-    400: "invalid_argument",
-    401: "auth",
-    403: "auth",
-    404: "not_found",
-    402: "quota",
-    408: "timeout",
-    429: "quota",
-    500: "unavailable",
-    502: "unavailable",
-    503: "unavailable",
-    504: "timeout",
-  };
+export function freestyleError(cause: unknown, sandboxId?: string): SandboxError {
+  if (cause instanceof SandboxError) return cause;
+  const status = isObject(cause) && "status" in cause ? cause.status : undefined;
 
   const context = requestEvidence.getStore();
   const evidence: RequestEvidence & { providerCode?: string; native?: string } = {};
 
-  if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599)
+  if (isNumber(status) && Number.isInteger(status) && status >= 100 && status <= 599)
     evidence.status = status;
 
-  if (typeof error === "object" && error !== null) {
-    if (
-      "code" in error &&
-      typeof error.code === "string" &&
-      /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
-    ) {
-      const code = error.code;
+  if (isObject(cause)) {
+    if ("code" in cause && isString(cause.code) && /^[A-Z][A-Z0-9_]{0,63}$/.test(cause.code)) {
+      const code = cause.code;
 
       if (!context?.deniedValues?.some((value) => code.includes(value)))
         evidence.providerCode = code;
     }
 
-    if ("path" in error && typeof error.path === "string")
-      evidence.operation = operation(error.path);
+    if ("path" in cause && isString(cause.path)) evidence.operation = operation(cause.path);
   }
 
   if (context?.operation) evidence.operation = context.operation;
@@ -146,24 +140,24 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   // never kept) tells it apart from a missing VM.
   const missingFile =
     status === 404 &&
-    error instanceof Error &&
-    /no such file or directory|\bos error 2\b/i.test(error.message);
+    cause instanceof Error &&
+    /no such file or directory|\bos error 2\b/i.test(cause.message);
 
   const code: ErrorCode = missingFile
     ? "file_not_found"
-    : typeof status === "number"
-      ? (codes[status] ?? "provider")
-      : error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
-        ? error.name === "TimeoutError"
+    : isNumber(status)
+      ? (codes.get(status) ?? "provider")
+      : cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError")
+        ? cause.name === "TimeoutError"
           ? "timeout"
           : "aborted"
-        : error instanceof Error && error.name === "FreestyleTransportError"
+        : cause instanceof Error && cause.name === "FreestyleTransportError"
           ? "unavailable"
           : "provider";
 
   // An unrecognized failure without a status keeps its scrubbed message (see describeNative).
   // A response's message, body and headers never are kept.
-  const { detail } = describeNative(error, {
+  const { detail } = describeNative(cause, {
     code,
     status: status === undefined ? undefined : String(status),
     redact: redacting([process.env.FREESTYLE_API_KEY, ...(context?.deniedValues ?? [])]),
@@ -174,7 +168,7 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   // Core's redactor preserves Error.message rather than arbitrary cause objects.
   // JSON in the message keeps these fields available there, too, without ever
   // copying a response's message, body, headers, URL or native cause.
-  const cause = Object.keys(evidence).length
+  const details = Object.keys(evidence).length
     ? Object.assign(new Error(JSON.stringify(evidence)), evidence)
     : undefined;
 
@@ -182,6 +176,6 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
     `Freestyle request failed: ${reason(code, evidence.native)}`,
     code,
     sandboxId,
-    cause,
+    details,
   );
 }
