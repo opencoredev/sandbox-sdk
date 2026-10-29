@@ -1,19 +1,19 @@
 ---
 title: Daytona
-description: Run sandboxes on Daytona through @daytonaio/sdk. Custom machine sizes, idle auto-stop, labels for lookup, and preview URLs protected by a token header.
+description: Run sandboxes on Daytona. Exact machine sizes, idle auto-stop, wall-clock lifetimes, network allow lists, snapshots, and token-protected previews.
 ---
 
-`daytona()` runs each sandbox on [Daytona](https://daytona.io). It takes exact machine sizes and stops sandboxes on its own when they sit idle, which suits long-lived workspaces that a user returns to over days.
+`daytona()` runs each sandbox on [Daytona](https://daytona.io) through the official `@daytonaio/sdk`.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @daytonaio/sdk
+npm i @opencoredev/sandbox-sdk@next @daytonaio/sdk
 ```
 
-The adapter needs `@daytonaio/sdk` 0.225 or later. Run this code on a server. The API key must never reach a browser bundle.
+The adapter needs `@daytonaio/sdk` 0.225 or later. Set `DAYTONA_API_KEY` on your server, and keep it out of browser bundles. Your Daytona organization needs a default region, set in the Daytona Dashboard.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -24,126 +24,142 @@ const result = await box.run("uname -a");
 console.log(result.stdout);
 ```
 
-The provider reads `DAYTONA_API_KEY` from the environment and starts Daytona's default snapshot.
+`await using` deletes the sandbox when the block ends.
 
+## What it supports
 
-The organization must have a default region configured in the Daytona Dashboard before creating sandboxes. If creation reports that the organization has no default region, open the dashboard, select that organization, and set its default region. `DAYTONA_TARGET` selects a target; it does not configure the organization’s default region.
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output when you iterate |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Send the `X-Daytona-Preview-Token` header |
+| Pause and resume | No | |
+| Snapshots | Yes | File system only |
+| Machine size | Yes | Presets or exact CPU, memory, and disk |
+| Network policy | Yes | `"none"` or a host allow list |
+| Hard lifetime (`timeoutMs`) | Yes | Whole minutes, at least one |
+| Idle timeout (`idleTimeoutMs`) | Yes | Whole minutes; the sandbox stops |
+| Keys | Best-effort | Found by label search |
+| Terminal | No | |
 
-## Configuration
+## Run commands
 
-Creation makes `/workspace` writable by the guest user. The default snapshot needs passwordless `sudo -n` for this one-time directory setup. Creation fails if the workspace remains unwritable.
+Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
-const provider = daytona({
-  target: "eu",
-  image: "node:22-bookworm",
-  requestTimeoutMs: 60_000,
-});
+await using box = await createSandbox(daytona());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
 
-await using box = await createSandbox(provider, { size: "medium" });
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
 ```
 
-- `apiKey`, `baseUrl`, and `target` override `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
-- `image` starts sandboxes from a container image. `snapshot` starts them from a named Daytona snapshot. Set one or neither: setting both fails with `unsupported`. A `from` passed to `createSandbox` overrides either.
-- `requestTimeoutMs` is the deadline for each request to Daytona's API. It defaults to 30 seconds.
+## Files
 
-The image needs `sh`, `env`, `setsid`, and `/bin/kill`.
+Relative paths resolve against `/workspace`.
 
-## Keys
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
-Key mode is **best-effort**. The key is stored as a Daytona label and found by label search, so two requests with the same key at the same moment can create two sandboxes. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters.
+await using box = await createSandbox(daytona());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
 
-Your own `labels` become Daytona labels too, so you can filter sandboxes in the Daytona dashboard by them.
+## Background processes and previews
 
-## Size
+No ports to declare. Sandboxes are private, so send `preview.headers` with every request.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+A browser can't add headers to an iframe or link. To show a preview to a user, proxy it through your server.
+
+## Pause, resume, and snapshots
+
+This adapter has no pause or resume, and the methods don't exist on its sandbox type. `snapshot()` captures the file system as a new Daytona snapshot and returns its name, which `from` accepts.
+
+```ts
+import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), { key: "user:123" });
+if (hasCapability(box, "pause")) await box.pause();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(daytona(), { from: id });
+```
+
+The adapter waits up to ten minutes for a snapshot. If it times out, the error includes the snapshot name; the snapshot may still finish. Destroying a sandbox does not delete its snapshots.
+
+## Size, network, and lifetime
 
 | Preset | CPUs | Memory | Disk |
 | --- | --- | --- | --- |
 | `small` | 1 | 1024 MiB | 10 GiB |
-| `medium` | 2 | 4096 MiB | 20 GiB |
-| `large` | 4 | 8192 MiB | 40 GiB |
-
-Exact sizes work too: `{ cpu, memoryMb, diskGb }` with whole CPUs, memory in whole GiB (`memoryMb` divisible by 1024), and whole GiB of disk. Anything else fails with `unsupported`. Your Daytona quotas still apply.
-
-With `image`, Daytona allocates the size at creation. With a snapshot, the SDK creates the sandbox, then stops it, resizes it, and starts it again before `createSandbox` returns, which takes longer. A snapshot's disk can't shrink, so asking for less disk than the snapshot has fails and the new sandbox is deleted.
-
-## Network
-
-`network: "none"` blocks all traffic. An allow list uses Daytona's domain allow list. Entries must be plain DNS hostnames, with no scheme, port, comma, or wildcard, or creation fails with `unsupported`. An empty allow list blocks all traffic.
-
-## Idle and lifetime limits
+| `medium` | 2 | 4096 MiB | 10 GiB |
+| `large` | 4 | 8192 MiB | 10 GiB |
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
 await using box = await createSandbox(daytona(), {
-  key: "user:123",
+  size: { cpu: 2, memoryMb: 8192, diskGb: 20 },
+  network: { allow: ["registry.npmjs.org"] },
   idleTimeoutMs: 15 * 60_000,
   timeoutMs: 8 * 60 * 60_000,
 });
 ```
 
-Daytona counts both in whole minutes:
+- Exact sizes need whole CPUs, memory in whole GiB, and whole GiB of disk. A snapshot's disk can't shrink.
+- Allow-list entries are plain DNS host names, with no scheme, port, or wildcard. An empty list blocks all traffic.
+- `idleTimeoutMs` rounds up to the next minute and stops the sandbox, keeping its disk.
+- `timeoutMs` rounds down to the minute, so the sandbox never outlives it. Under one minute fails with `unsupported`.
 
-- `idleTimeoutMs` becomes Daytona's auto-stop interval, rounded **up** to the next minute. An idle sandbox stops and keeps its disk. Daytona's auto-pause is turned off, so idle sandboxes always stop.
-- `timeoutMs` becomes Daytona's wall-clock TTL, rounded **down** to the minute, so the sandbox never outlives the limit you set. Values under one minute fail with `unsupported`.
+## Configuration
 
-## Pause and snapshots
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `DAYTONA_API_KEY` |
+| `baseUrl` | `string` | `https://app.daytona.io/api` | `DAYTONA_API_URL` |
+| `target` | `string` | `"us"` | `DAYTONA_TARGET` |
+| `image` | `string` | Daytona's default snapshot | |
+| `snapshot` | `string` | Daytona's default snapshot | |
+| `requestTimeoutMs` | `number` | `30_000` | |
+| `snapshotTimeoutMs` | `number` | `600_000`, at most `900_000` | |
 
-`box.pause()` and `box.resume()` call Daytona's stop and start. The disk survives, and running processes end. `box.snapshot()` captures the file system as a new Daytona snapshot and returns its name. Pass it as `from` to start a new sandbox from it.
-
-Snapshot creation can outlast the native SDK’s 60-second default. The adapter waits up to ten minutes by default. A timeout leaves the provider operation running and does not automatically retry it. The error message and hint include the generated snapshot name and source sandbox ID. Keep these identifiers, inspect the snapshot through the native client, and delete it when ready or failed. A snapshot can appear after the source is destroyed; retain the name until cleanup is confirmed. Destroying a sandbox does not delete its snapshots.
-
-## Previews
-
-Daytona sandboxes are private, so preview URLs require a token. `box.preview(port)` returns it as the `X-Daytona-Preview-Token` header in `headers`. Send those headers with every request:
-
-```ts
-import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { daytona } from "@opencoredev/sandbox-sdk/daytona";
-
-await using box = await createSandbox(daytona(), { key: "project:42" });
-
-const preview = await box.preview(3000, { waitMs: 10_000 });
-const response = await fetch(preview.url, { headers: preview.headers });
-console.log(response.status);
-```
-
-A browser can't add headers to an iframe or a link, so to show a Daytona preview to a user, proxy it through your server and add the headers there. You don't need to declare ports up front. Daytona's preview links don't report an expiry, so `expiresAt` is not set.
-
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `DAYTONA_API_KEY` | Your Daytona API key, from the Daytona dashboard. Required. |
-| `DAYTONA_API_URL` | The Daytona API URL. Optional. |
-| `DAYTONA_TARGET` | The region to create sandboxes in. Optional. |
-
-## API reference
-
-### `daytona(options?)`
-
-- `apiKey?: string`. Defaults to `DAYTONA_API_KEY`.
-- `baseUrl?: string`. Defaults to `DAYTONA_API_URL`. `apiUrl` is a deprecated alias.
-- `target?: string`. Defaults to `DAYTONA_TARGET`.
-- `image?: string`. A container image to start from.
-- `snapshot?: string`. A Daytona snapshot name to start from.
-- `requestTimeoutMs?: number`. Defaults to `30_000`.
-- `snapshotTimeoutMs?: number`. Defaults to `600_000`; accepts integers from `1` to `900_000`. Passed to the native snapshot completion wait.
-
-Returns a provider. `box.native` is the Daytona SDK's `Sandbox` object.
+Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, and passwordless `sudo -n`. `box.native` is the Daytona SDK's `Sandbox` object.
 
 ## Limitations
 
-- Keys are best-effort. Use a `locator` for exact get-or-create.
-- Idle and lifetime limits are whole minutes, and the lifetime must be at least one minute.
-- Pause ends running processes.
-- Previews need a header, so they can't be embedded directly in an iframe.
-- No terminals.
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+- No pause, resume, or terminals.
+- Timeouts are whole minutes.
+- Previews need a header, so they can't go straight into an iframe.
+
+## How it works
+
+- Keys and your `labels` become Daytona labels, so you can filter by them in the dashboard.
+- With `image`, Daytona allocates the size at creation. From a snapshot, the SDK creates the sandbox, then stops, resizes, and restarts it before returning, which takes longer.
+- Daytona's auto-pause is turned off, so an idle sandbox always stops.
+- `DAYTONA_TARGET` picks a target. It doesn't set the organization's default region.
 
 ## Next steps
 

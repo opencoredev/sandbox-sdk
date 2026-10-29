@@ -1,84 +1,162 @@
 ---
 title: boxd
-description: Persistent Linux machines through the official boxd SDK, with process-group cancellation and HTTPS previews.
+description: Persistent, isolated Linux machines through the official boxd SDK. Memory pause, snapshots, fixed-ratio sizes, and public HTTPS previews.
 ---
 
-`boxd()` runs a persistent, isolated Linux machine through [boxd](https://docs.boxd.sh). The adapter uses `@boxd-sh/sdk` 0.2.17 or later.
+`boxd()` runs each sandbox as a persistent, isolated Linux machine on [boxd](https://docs.boxd.sh).
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk @boxd-sh/sdk
+npm i @opencoredev/sandbox-sdk@next @boxd-sh/sdk
 ```
 
-Set `BOXD_API_KEY` on your server. Keep the key out of browser bundles.
+The adapter needs `@boxd-sh/sdk` 0.2.17 or later. Set `BOXD_API_KEY` on your server, and keep it out of browser bundles.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 
 await using box = await createSandbox(boxd());
-console.log((await box.run("uname -a")).stdout);
+const result = await box.run("uname -a");
+console.log(result.stdout);
 ```
 
-## Configuration
+`await using` destroys the machine when the block ends.
 
-`boxd({ apiKey, baseUrl, image, requestTimeoutMs })` accepts an explicit key, API endpoint, image, and request deadline. The deadline defaults to 30 seconds; initial readiness defaults to 90 seconds when no override is given. Images must include Python 3, Git, GNU tar, and `nohup`. The SDK checks these tools and creates `/workspace` and `/var/lib/sandbox-sdk`, owned by the guest user, with the first command or file operation. With a `key` or custom labels it does this at creation instead, so discovery works right away. A non-root image must provide passwordless `sudo -n` for this one-time setup.
+## What it supports
 
-## Keys and labels
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Yes | Live output |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Partial | One public route per machine; a new port moves it |
+| Pause and resume | Yes | Suspends to memory |
+| Snapshots | Yes | A restore keeps the source's size, image, and env |
+| Machine size | Partial | 1, 2, 4, or 8 vCPU at 4 GiB each, 100 GB disk |
+| Network policy | No | Only `"all"` |
+| Hard lifetime (`timeoutMs`) | No | |
+| Idle timeout (`idleTimeoutMs`) | No | |
+| Keys | Best-effort | Read from a marker file in each machine |
+| Terminal | No | |
 
-Key mode is **best-effort**. Keys, labels, and creation time live in `/var/lib/sandbox-sdk/metadata.json`. Names beginning with `sbxsdk-` identify candidate machines; listing reads their marker files and can wake sleeping machines. A new adapter instance can find the same machine. Keep the generated name and marker file intact, and keep secrets out of labels.
+## Run commands
 
-Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create across concurrent requests.
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+A timeout or abort kills the command's whole process group.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+Bind your server to `0.0.0.0`. `box.preview(port)` points the machine's default `https://<machine>.boxd.sh` route at that port. A machine has one such route, so previewing a second port changes where earlier URLs point.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd());
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+The URL is public and needs no headers. Add authentication to any app you expose.
+
+## Pause, resume, and snapshots
+
+`pause()` suspends the machine to memory. `snapshot()` returns a snapshot name that `from` accepts.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+
+await using box = await createSandbox(boxd(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(boxd(), { from: id });
+```
+
+A restore inherits the snapshot's size, image, and environment. Passing `size` or `env` with `from`, or a provider with `image`, fails with `unsupported`.
 
 ## Size, network, and lifetime
 
-This adapter accepts the service's default size and `network: "all"`. Explicit sizes, `network: "none"`, allow lists, `idleTimeoutMs`, and sandbox `timeoutMs` fail with `unsupported` before allocation.
+Every size has 4 GiB of memory per vCPU and a 100 GB disk.
 
-boxd's empty egress allowlist means unrestricted access. Its host-bound secrets may admit additional destinations. The adapter therefore exposes no network-policy capability. It creates an isolated machine with auto-suspend and auto-destroy disabled; isolation removes metadata access and machine peers, but does not block internet access.
+| Preset | vCPU | Memory | Disk |
+| --- | --- | --- | --- |
+| `small` | 1 | 4 GiB | 100 GB |
+| `medium` | 2 | 8 GiB | 100 GB |
+| `large` | 4 | 16 GiB | 100 GB |
 
-## Commands and files
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 
-Commands use the native `streamExec()` bidirectional stream. The adapter sends command, environment, cwd, and stdin as JSON over stream stdin, then closes it. It never uses boxd's `env` exec option, which the native SDK prepends to command text. Stdout and stderr stream live, with incremental UTF-8 decoding. Timeout or abort cancels the native stream, whose server kills the entire remote process group. If the stream cannot confirm exit, a guest lock and cancellation marker prevent a late launch while a follow-up call kills and checks any recorded process group. An unconfirmed cleanup still fails with `outcome_unknown`. A bad cwd returns a failed command without deleting the machine.
+await using box = await createSandbox(boxd(), {
+  size: { cpu: 8, memoryMb: 32_768, diskGb: 100 },
+});
+```
 
-A successful `box.run("true")` uses one native exec, including creation and removal of the core activity record. It uploads no supervisor or per-command files. Cancellation may need a separate call to remove its activity record.
+An exact size must match that ratio, or it fails with `unsupported`. `network` other than `"all"`, `idleTimeoutMs`, and `timeoutMs` also fail with `unsupported` before a machine is allocated.
 
-Whole-file reads and ranges use bounded byte-exact native exec calls. Writes use `machines.files.upload()` once when the parent exists. Missing parents trigger directory creation and an upload retry. Directory listings and file metadata use Python.
+## Configuration
 
-## Pause and snapshots
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `BOXD_API_KEY` |
+| `baseUrl` | `string` | `https://boxd.sh:9443` | `BOXD_BASE_URL`, then `BOXD_API_URL` |
+| `image` | `string` | boxd's service image | |
+| `requestTimeoutMs` | `number` | `30_000`; readiness waits `90_000` | |
+| `fileTransferSignal` | `AbortSignal` | | |
 
-`pause()` and `resume()` use boxd's suspend-to-memory API. Snapshots, restore through `from`, and terminals are not exposed by this adapter; native APIs remain available through `box.native.client`.
-
-`box.close()` detaches the local handle. `box.destroy()` deletes the machine. The metadata marker survives pause and reconnect.
-
-## Previews
-
-`box.preview(port)` pins the machine’s default HTTPS route to that port. Bind your server to `0.0.0.0`. The adapter reads the hostname from the native proxy list. Requesting another port changes the same route, including earlier preview URLs. No up-front port declarations are required.
-
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `BOXD_API_KEY` | Required API key, overridden by `apiKey` |
-| `BOXD_BASE_URL` | Optional native SDK endpoint, overridden by `baseUrl` (`baseURL` is a deprecated alias) |
-
-## API reference
-
-`boxd(options?)` returns a provider with the `"pause"` capability. `box.native.machine` is typed boxd machine metadata and `box.native.client` is the official `Boxd` client.
-
-## Preview and file transfer limits
-
-Previews use the machine’s default hostname, `<machine>.boxd.sh`, covered by the provider’s `*.boxd.sh` certificate. Nested named routes can fail TLS while their individual certificates are unavailable. TLS verification stays enabled. The adapter pins the default route to the requested port and disables its browser bot challenge so server-side HTTP clients can connect. A VM has one default route: requesting a different port changes where earlier preview URLs point. Add authentication to any app you expose.
-
-The native SDK streams uploads above 3 MiB, so large writes need no adapter chunking. Native multi-MiB downloads can truncate their final block or exceed the request deadline. The adapter reads binary data through bounded native exec calls instead, with one call for files up to 1 MiB and additional calls for larger files. Each read chunk retries at most once on a native timeout or unavailable error; writes and arbitrary commands are not replayed. Files must remain unchanged during a multi-call read.
+`baseURL` is a deprecated alias for `baseUrl`. An image needs Python 3, Git, GNU tar, and `nohup`; a non-root image also needs passwordless `sudo -n`. `box.native` is `{ machine, client }`, the machine metadata and the official `Boxd` client.
 
 ## Limitations
 
-- No explicit sizes, egress restrictions, idle deadlines, hard sandbox lifetimes, snapshot restore, or terminals.
-- Discovery reads guest metadata, which can wake machines and makes list operations more expensive.
-- Live cloud behavior has a separate opt-in test gated by `SANDBOX_BOXD_LIVE=1` and `BOXD_API_KEY`.
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+- No egress restrictions, idle deadlines, hard lifetimes, or terminals.
+- One preview route per machine.
+- Listing reads guest metadata, which can wake sleeping machines.
+
+## How it works
+
+- Keys, labels, and creation time live in `/var/lib/sandbox-sdk/metadata.json`. Machine names starting with `sbxsdk-` mark candidates. Keep both intact, and keep secrets out of labels.
+- Machines are created isolated, with auto-suspend and auto-destroy off. Isolation removes metadata access and machine peers but does not block the internet.
+- Large reads use bounded exec calls, and each chunk retries once on a timeout. Writes and commands are never replayed.
+- A failed snapshot capture is deleted so retries don't leave billable artifacts. If that cleanup can't be confirmed, you get `outcome_unknown` with the snapshot name.
+- The preview route has boxd's browser bot challenge turned off so server-side clients can connect.
 
 ## Next steps
 

@@ -1,95 +1,160 @@
 ---
 title: Freestyle
-description: Persistent Linux VMs through the current Freestyle SDK, with default-deny networking, memory snapshots, and public HTTPS previews.
+description: Run persistent Linux VMs on Freestyle. Default-deny outbound networking, memory pause and snapshots, second-level timeouts, and public HTTPS previews.
 ---
 
-`freestyle()` runs persistent Linux VMs through [Freestyle](https://www.freestyle.sh/docs). It uses the current `freestyle` package, version 0.2.20 or later. The older `freestyle-sandboxes` package has a different API and is not supported.
+`freestyle()` runs each sandbox as a persistent Linux VM on [Freestyle](https://www.freestyle.sh/docs) through the current `freestyle` SDK.
 
-## Installation
+## Install
 
 ```package-install
-npm i @opencoredev/sandbox-sdk freestyle
+npm i @opencoredev/sandbox-sdk@next freestyle
 ```
 
-Set `FREESTYLE_API_KEY` on your server. Keep it out of browser bundles.
+The adapter needs `freestyle` 0.2.20 or later. The older `freestyle-sandboxes` package isn't supported. Set `FREESTYLE_API_KEY` on your server, and keep it out of browser bundles.
 
-## Basic usage
+## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
-await using box = await createSandbox(freestyle(), { network: "none" });
-console.log((await box.run("uname -a")).stdout);
+await using box = await createSandbox(freestyle());
+const result = await box.run("uname -a");
+console.log(result.stdout);
 ```
+
+`await using` deletes the VM when the block ends.
+
+## What it supports
+
+| Feature | Support | Notes |
+| --- | --- | --- |
+| Commands and streaming | Partial | Output arrives when the command finishes |
+| Files | Yes | |
+| Background processes | Yes | |
+| Preview URLs | Yes | Public `https://` on `style.dev` |
+| Pause and resume | Yes | Memory survives |
+| Snapshots | Yes | Memory and disk |
+| Machine size | No | Pick a base snapshot instead |
+| Network policy | Partial | `"all"` or `"none"`; no host allow lists |
+| Hard lifetime (`timeoutMs`) | Yes | Whole seconds |
+| Idle timeout (`idleTimeoutMs`) | Yes | Whole seconds of network inactivity |
+| Keys | Best-effort | Read from a marker file in each VM |
+| Terminal | No | |
+
+## Run commands
+
+Await `box.run` for the result. Iterating works too, but Freestyle returns output only after the command exits, so chunks arrive together at the end.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("echo one; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+Commands run as root. A timeout or abort kills the command's process group.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+No ports to declare. Bind your server to `0.0.0.0`. `box.preview(port)` creates a public TLS rule at a random `sdk-<uuid>.style.dev` domain, with no headers needed.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+The URL is public. Protect sensitive apps yourself. Previews keep working under `network: "none"`, which only blocks outbound traffic.
+
+## Pause, resume, and snapshots
+
+`pause()` freezes the VM with its memory. `snapshot()` captures memory and disk, and `from` starts a new VM from it with fresh SDK identity and the network rules you ask for.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(freestyle(), { from: id });
+```
+
+Snapshots include the creation environment file, secrets included. Treat them as sensitive.
+
+## Size, network, and lifetime
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle(), {
+  network: "none",
+  idleTimeoutMs: 10 * 60_000,
+  timeoutMs: 2 * 60 * 60_000,
+});
+```
+
+- `size` fails with `unsupported`. Pick a machine through the base snapshot (`snapshotId`).
+- `network: "none"`, or an empty allow list, adds no outbound rules. A nonempty allow list fails with `unsupported`.
+- `idleTimeoutMs` rounds up to whole seconds and measures network activity, not CPU.
+- `timeoutMs` rounds down to whole seconds, so deletion is never late. Under one second fails with `unsupported`.
+
+The adapter reads the rules and limits back after creation and deletes the VM if they don't match.
 
 ## Configuration
 
-`freestyle({ apiKey, baseUrl, snapshotId, requestTimeoutMs })` accepts an explicit key, API endpoint, base snapshot, and request deadline. The default snapshot is `freestyle/ubuntu`. The deadline defaults to 30 seconds and bounds each adapter operation, including all native HTTP 202 background polling. Timeout or caller abort cancels the HTTP signal and stops later polls before another network request. A timed-out create can still finish on the service and reports `outcome_unknown`.
+| Option | Type | Default | Env var |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | | `FREESTYLE_API_KEY` |
+| `baseUrl` | `string` | `https://api.freestyle.sh` | |
+| `snapshotId` | `string` | `"freestyle/ubuntu"` | |
+| `requestTimeoutMs` | `number` | `30_000` | |
 
-Guest operations run as `root`. Images need Python 3, Git, GNU tar, and `nohup`; creation checks these tools and creates `/workspace`. Explicit `size` presets and custom resources fail with `unsupported`. To select a machine configuration, supply a base snapshot through `snapshotId`; the adapter does not promise an SDK size mapping.
-
-## Keys and labels
-
-Key mode is **best-effort**. Native metadata marks SDK VMs. The full key and labels live in `/var/lib/sandbox-sdk.json`, avoiding the service's short metadata-value limit. Listing paginates the VM API and reads each SDK VM's marker, which can wake a sleeping VM. Keep that file intact and never store secrets in labels.
-
-A fresh adapter can find the same VM. Use a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) when concurrent callers need exact get-or-create.
-
-## Network
-
-- `network: "all"`, also the default, creates one outbound rule from the VM to public destinations. Freestyle's platform restrictions, including outbound mail, still apply.
-- `network: "none"` creates no firewall or outbound TLS rules and attaches no VPC. An empty `{ allow: [] }` has the same behavior.
-- Nonempty allow lists fail with `unsupported`. The current firewall matches addresses and resource identities; TLS hostname rules authorize specific protocols. The adapter does not treat either as a general host allow list.
-
-The adapter reads back the VM's firewall rules, VPCs, and TLS grants. A broader policy makes creation fail and deletes the VM.
-
-Freestyle's platform ingress, including mapped HTTPS and SSH, remains available under `"none"`. This option blocks outbound network access; it does not disable previews.
-
-## Idle and lifetime limits
-
-`idleTimeoutMs` maps to the native network-activity idle timer, rounded up to whole seconds. `timeoutMs` maps to `ttlSeconds`, rounded down to whole seconds so deletion is never later than requested. Hard lifetimes below one second fail with `unsupported`. The adapter reads both settings back and fails closed if the service does not confirm them.
-
-Omitting the idle timeout requests no idle pause. Your plan can still reclaim unused VMs under its retention policy. `box.close()` detaches; `box.destroy()` deletes the VM and its dependent network and TLS rules.
-
-## Commands and files
-
-Freestyle's `vm.exec()` returns buffered output. A versioned Python supervisor is installed once during creation and checked during reconnect, never uploaded per command. Each run sends its command, environment, cwd, and finite stdin through the native base64 stdin field. Values never become command text or process arguments. The encoded specification must fit Freestyle's 1 MiB decoded-stdin limit.
-
-A successful `box.run("true")` uses one native exec, including the core activity record. The supervisor returns at most three 16 KiB output records with the exit result. Larger output stays on guest disk and is fetched through native ranged reads, keeping each response bounded. Small completed responses remain on disk for the run timeout plus five seconds to allow cancellation recovery if response delivery fails. Later commands remove expired responses. Output chunks arrive after the command completes, rather than live. On timeout or abort, the cancellation call recovers up to 64 KiB of the captured output tail before settling. A bad cwd returns a failed command without deleting the VM.
-
-Command execution uses the run timeout plus a cleanup margin; `requestTimeoutMs` bounds control and file operations. The supervisor owns the child process group and kills it on timeout. Abort or an execution deadline sends one separate cancellation command that also retrieves captured output; a launch lock prevents a late process from escaping cancellation. Failure to confirm cancellation reports `outcome_unknown` and preserves the VM.
-
-Creation environment values live in a root-only `0600` file so fresh handles recover their environment. Snapshots capture that file, including secrets. Treat snapshots as sensitive.
-
-Whole-file reads use one `vm.fs.readFile()` call. Ranges pass their full offset and length to the same API. Writes use one `vm.fs.writeFile()` call with mode `0600` when the parent exists; missing parents trigger directory creation and a retry. No extra chmod is sent. Metadata, recursive directories, and removal use Python. Guest output spooling uses disk proportional to command output.
-
-## Pause and snapshots
-
-`pause()` freezes the VM with memory. `resume()` calls native `start()`. `snapshot()` captures memory and disk; pass its ID as `from` to create another VM. The new VM gets fresh SDK identity and the requested network rules. The adapter has no separate fork method: use snapshot plus `from`, or the typed native API for other operations.
-
-## Previews
-
-`box.preview(port)` creates a public HTTP TLS rule at a random `sdk-<uuid>.style.dev` domain, targeting the VM and port. Bind the guest server to `0.0.0.0`. No ports need to be declared up front. The adapter caches the domain for that port while the provider instance lives; reconnecting through a new instance can create another domain.
-
-These URLs are public and require no extra headers. Protect sensitive applications yourself. The current SDK uses `tls.rules.create()`, replacing the older domain-mappings API. Deleting the VM deletes its dependent TLS rules.
-
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `FREESTYLE_API_KEY` | Required API key, overridden by `apiKey` |
-
-## API reference
-
-`freestyle(options?)` returns a provider with `"pause"`, `"snapshot"`, and `"network-policy"`. `box.native` is the official SDK's typed `Vm` handle.
+`requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. `box.native` is the SDK's typed `Vm` handle.
 
 ## Limitations
 
-- No explicit sizes, nonempty host allow lists, or SDK terminals.
-- Idle time measures network activity, not guest CPU use.
-- A deadline stops client polling, but service-side background work can continue. An uncertain create reports `outcome_unknown`; inspect your account before retrying.
-- Listing can wake VMs. Snapshots retain their guest environment and any running processes.
-- Live tests require both `SANDBOX_FREESTYLE_LIVE=1` and `FREESTYLE_API_KEY`.
+- Keys are best-effort, and listing can wake VMs.
+- No sizes, host allow lists, or terminals.
+- Command output isn't live.
+- A timed-out create can still finish on Freestyle and reports `outcome_unknown`. Check your account before retrying.
+
+## How it works
+
+- Native metadata marks SDK VMs. The full key and labels live in `/var/lib/sandbox-sdk.json`. Keep it intact, and keep secrets out of labels.
+- A Python supervisor is installed once at creation and runs every command. Large output stays on guest disk and is fetched with ranged reads.
+- Creation env lives in a root-only `0600` file so new handles can recover it.
+- The preview domain is cached per port for the life of the provider instance. A new instance can create another domain.
+- Your plan can still reclaim unused VMs under its retention policy.
 
 ## Next steps
 
