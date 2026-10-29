@@ -116,9 +116,7 @@
         "typescript": "^6.0.3",
       },
       "optionalDependencies": {
-        "@daytonaio/sdk": "^0.225.0",
         "@vercel/sandbox": "3.8.0",
-        "e2b": "2.56.0",
       },
     },
     "examples/coding-agent": {
@@ -137,9 +135,7 @@
         "typescript": "^6.0.3",
       },
       "optionalDependencies": {
-        "@daytonaio/sdk": "^0.225.0",
         "@vercel/sandbox": "3.8.0",
-        "e2b": "2.56.0",
       },
     },
     "examples/getting-started": {

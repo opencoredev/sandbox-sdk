@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk@next
 ```
 
-Then add the peer package for each provider you use (see [Providers](#providers)), for example `npm install e2b`. Provider packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package (see [Providers](#providers)), for example `npm install @vercel/sandbox`. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -35,7 +35,7 @@ For a real Linux sandbox, swap the provider. Nothing else changes:
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-// Reads E2B_API_KEY from the environment. Run `npm install e2b` first.
+// Reads E2B_API_KEY from the environment. No other package needed.
 await using box = await createSandbox(e2b());
 
 await box.files.write("hello.py", "print('hello from the sandbox')");
@@ -47,7 +47,7 @@ console.log(result.ok, result.stdout);
 
 ## Switch providers with one variable
 
-Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out.
+Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed, if it has one. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out.
 
 ```ts
 import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
@@ -88,17 +88,17 @@ Import each provider from its own subpath. The root entry never loads a provider
 
 | Provider | Import from | Factory | Credentials (env) | Peer package | Capabilities | Previews |
 | --- | --- | --- | --- | --- | --- | --- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b) | `/e2b` | `e2b()` | `E2B_API_KEY` | `e2b` | pause, snapshot, network-policy | any port |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona) | `/daytona` | `daytona()` | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`) | `@daytonaio/sdk` | snapshot, size, network-policy | any port; private sandboxes need `preview.headers` |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b) | `/e2b` | `e2b()` | `E2B_API_KEY` | none | pause, snapshot, network-policy | any port |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona) | `/daytona` | `daytona()` | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`) | none | snapshot, size, network-policy | any port; private sandboxes need `preview.headers` |
 | [Vercel](https://sandbox-sdk.app/docs/providers/vercel) | `/vercel` | `vercel()` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | `@vercel/sandbox` | pause, snapshot, size, network-policy | declare in `ports` (max 15) |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash) | `/upstash` | `upstash()` | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`) | `@upstash/box` | pause, snapshot, size, network-policy; no pause with `ephemeral: true` | any port; bearer token in `preview.headers` unless `public: true` |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway) | `/railway` | `railway()` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | `railway` | snapshot | declare in `ports` (max 10) |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki) | `/tenki` | `tenki()` | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` | `@tenkicloud/sandbox` | pause, snapshot, size, network-policy | any port; URL may expire (`preview.expiresAt`) |
 | boxd | `/boxd` | `boxd()` | `BOXD_API_KEY` (optional `BOXD_BASE_URL`) | `@boxd-sh/sdk` | pause, snapshot, size | one port at a time; the URL follows the last port requested |
 | Freestyle | `/freestyle` | `freestyle()` | `FREESTYLE_API_KEY` | none | pause, snapshot, network-policy | any port |
-| Superserve | `/superserve` | `superserve()` | `SUPERSERVE_API_KEY` | `@superserve/sdk` | pause, snapshot | any port; token in `preview.headers` |
-| Boat | `/boat` | `boat()` | `BOAT_API_KEY` (optional `BOAT_API_BASE`) | `@boatdev/sdk` | size | any port; cookie in `preview.headers` |
-| Sandboxer | `/sandboxer` | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`) | `@boatdev/sdk` | pause, snapshot, size | any port; private URL, send `preview.headers` |
+| Superserve | `/superserve` | `superserve()` | `SUPERSERVE_API_KEY` | none | pause, snapshot | any port; token in `preview.headers` |
+| Boat | `/boat` | `boat()` | `BOAT_API_KEY` (optional `BOAT_API_BASE`) | none | size | any port; cookie in `preview.headers` |
+| Sandboxer | `/sandboxer` | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`) | none | pause, snapshot, size | any port; private URL, send `preview.headers` |
 | [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local` | `local()` | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`) | none | pause, snapshot, size, network-policy (`"none"` only, no allow-lists) | declare in `ports` (default `[3000]`); URL is `http://127.0.0.1:<port>` |
 | [agentOS](https://sandbox-sdk.app/docs/providers/agentos) | `/agentos` | `agentos()` | none | `@rivet-dev/agentos-core` | network-policy | none; no background processes either |
 | Memory | `/memory` | `memory()` | none | none | network-policy | fake `*.memory.invalid` URL; never fetch it |

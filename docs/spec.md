@@ -177,7 +177,7 @@ These run through `run`, with credentials passed through a temporary credential 
     - Placeholders: only the provider's sandbox placeholder (documented per provider, such as `{sandboxId}`) fills itself on `box.native`. Every other `{name}` must be in `params`, and a missing or unused one is `invalid_argument` before any request. Explicit `params` win.
     - Non-2xx responses throw `SandboxError`; native errors keep the provider's error message, scrubbed of credentials and URLs.
     - The factory's return type also carries `api: NativeApi<Plane>` with no sandbox bound, for account-level calls (`daytona().api.request("GET", "/snapshots")`). `api` is not on the shared `Provider` interface.
-  - **SDK-backed providers** (boxd, Tenki, agentOS, Railway, and any provider not yet converted) give the SDK's own client or sandbox object, fully typed through the optional peer.
+  - **SDK-backed providers** (Vercel, Upstash, Railway, Tenki, boxd, and agentOS) give the SDK's own client or sandbox object, fully typed through the optional peer.
   Switching a provider from the second kind to the first is a breaking change for `box.native` users; the changelog and the provider page show the migration (`(await box.native.sdk(() => import("pkg"))).method()`).
 
 ## 8. Providers
@@ -186,9 +186,9 @@ These run through `run`, with credentials passed through a temporary credential 
 |---|---|---|---|
 | `local()` | `/local` | exact | Docker; real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
 | `memory()` | `/memory` | exact | In-process fake for tests. Supports files, a small shell subset via a command handler table, processes, and previews (fake URLs). It never touches the network. |
-| `e2b(opts)` | `/e2b` | best-effort | `e2b` SDK. Uses native commands and pause/snapshot. |
+| `e2b(opts)` | `/e2b` | best-effort | Direct HTTP to E2B's API and each sandbox's envd; no peer. Uses native commands and pause/snapshot. |
 | `vercel(opts)` | `/vercel` | exact | `@vercel/sandbox`. Named sandboxes, ports declared at create. |
-| `daytona(opts)` | `/daytona` | best-effort | `@daytonaio/sdk`. Labels, preview token. |
+| `daytona(opts)` | `/daytona` | best-effort | Direct HTTP to Daytona's API and toolbox; no peer. Labels, preview token. |
 
 **Adapter contract.** Internal, exported from `/provider` for third parties. Each adapter is about 200–400 lines:
 - `create(input)`

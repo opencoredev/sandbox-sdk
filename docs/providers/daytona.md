@@ -1,9 +1,9 @@
 # Daytona provider
 
 
-Install `@daytonaio/sdk@^0.225.0` alongside this package, then import `daytona` from `@opencoredev/sandbox-sdk/daytona`. The adapter loads the optional SDK on its first operation. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
+Import `daytona` from `@opencoredev/sandbox-sdk/daytona`; no other package is needed, because the adapter calls Daytona's API and toolbox over HTTP. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
 
-Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. The adapter does not declare `pause`; an idle timeout stops the sandbox, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a typed Daytona `Sandbox`. Terminal support is not exposed.
+Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. The adapter does not declare `pause`; an idle timeout stops the sandbox, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a `NativeApi` with the `"api"` and `"toolbox"` planes; `box.native.sdk(() => import("@daytonaio/sdk"))` returns the SDK's `Sandbox` if you install `@daytonaio/sdk` yourself. Terminal support is not exposed.
 
 Size presets map to `{ cpu, memoryMb, diskGb }`: small is `{ 1, 1024, 10 }`, medium is `{ 2, 4096, 20 }`, and large is `{ 4, 8192, 40 }`. Custom sizes require positive integer CPUs, memory in whole GiB (`memoryMb` divisible by 1024), and positive integer disk GiB. Image creation allocates resources directly. Snapshot creation stops, resizes, and restarts before returning; Daytona cannot shrink a snapshot's disk, so a smaller disk request fails and the new sandbox is deleted. Provider quotas and resource limits still apply.
 
@@ -13,7 +13,7 @@ Commands use fresh sessions with streamed stdout/stderr and separate Linux proce
 
 Previews are private. `preview()` returns the URL and `X-Daytona-Preview-Token` header. Daytona's standard preview-link response has no expiry, so `expiresAt` is omitted rather than guessed. Do not discard the headers when fetching a preview.
 
-The offline Daytona tests replace the SDK transport with an SDK-shaped mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
+The offline Daytona tests send every request to a local HTTP mock backed by real Linux files and processes, including Git and HTTP. `DAYTONA_API_KEY` enables the entire separate live conformance suite. Run the live suite with `timeout 15m bunx vitest run tests/daytona.live.test.ts --maxWorkers=1` from `packages/sdk`; without credentials it skips every live case.
 
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
 

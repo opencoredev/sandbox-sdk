@@ -14,7 +14,7 @@ npm install @opencoredev/sandbox-sdk@next
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
-Then install the peer package for each provider you plan to use. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the peer package in the table below. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
 
 Check it works with no account and no Docker:
 
@@ -31,17 +31,17 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 
 | Provider | Import | Peer package | Environment variables | Capabilities |
 | --- | --- | --- | --- | --- |
-| E2B | `@opencoredev/sandbox-sdk/e2b` | `e2b` | `E2B_API_KEY` | pause, snapshot, network-policy |
-| Daytona | `@opencoredev/sandbox-sdk/daytona` | `@daytonaio/sdk` | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET` | snapshot, size, network-policy |
+| E2B | `@opencoredev/sandbox-sdk/e2b` | none | `E2B_API_KEY` | pause, snapshot, network-policy |
+| Daytona | `@opencoredev/sandbox-sdk/daytona` | none | `DAYTONA_API_KEY`; optional `DAYTONA_API_URL`, `DAYTONA_TARGET` | snapshot, size, network-policy |
 | Vercel | `@opencoredev/sandbox-sdk/vercel` | `@vercel/sandbox` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | pause, snapshot, size, network-policy |
 | Upstash Box | `@opencoredev/sandbox-sdk/upstash` | `@upstash/box` | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL` | pause, snapshot, size, network-policy (no pause with `ephemeral: true`) |
 | Railway | `@opencoredev/sandbox-sdk/railway` | `railway` | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID` | snapshot |
 | Tenki | `@opencoredev/sandbox-sdk/tenki` | `@tenkicloud/sandbox` | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` | pause, snapshot, size, network-policy |
 | boxd | `@opencoredev/sandbox-sdk/boxd` | `@boxd-sh/sdk` | `BOXD_API_KEY`; optional `BOXD_BASE_URL` | pause, snapshot, size |
-| Freestyle | `@opencoredev/sandbox-sdk/freestyle` | `freestyle` | `FREESTYLE_API_KEY` | pause, snapshot, network-policy |
-| Superserve | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk` | `SUPERSERVE_API_KEY` | pause, snapshot |
-| Boat | `@opencoredev/sandbox-sdk/boat` | `@boatdev/sdk` | `BOAT_API_KEY`; optional `BOAT_API_BASE` | size |
-| Sandboxer | `@opencoredev/sandbox-sdk/sandboxer` | `@boatdev/sdk` | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) | pause, snapshot, size |
+| Freestyle | `@opencoredev/sandbox-sdk/freestyle` | none | `FREESTYLE_API_KEY` | pause, snapshot, network-policy |
+| Superserve | `@opencoredev/sandbox-sdk/superserve` | none | `SUPERSERVE_API_KEY` | pause, snapshot |
+| Boat | `@opencoredev/sandbox-sdk/boat` | none | `BOAT_API_KEY`; optional `BOAT_API_BASE` | size |
+| Sandboxer | `@opencoredev/sandbox-sdk/sandboxer` | none | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) | pause, snapshot, size |
 | Local (Docker) | `@opencoredev/sandbox-sdk/local` | none | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`) | pause, snapshot, size, network-policy |
 | agentOS | `@opencoredev/sandbox-sdk/agentos` | `@rivet-dev/agentos-core` | none | network-policy |
 | Memory | `@opencoredev/sandbox-sdk/memory` | none | none | network-policy |
@@ -76,7 +76,7 @@ await using box = await createSandbox(await loadProvider(process.env.SANDBOX_PRO
 console.log(await greet(box));
 ```
 
-The dynamic `import()` per case means only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
+The dynamic `import()` per case means only the provider you pick needs its peer package installed, if it has one. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
 
 ## Check capabilities before optional calls
 
