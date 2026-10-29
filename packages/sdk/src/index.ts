@@ -6,6 +6,7 @@ export { SandboxError } from "./errors.js";
 export type { ErrorCode, ErrorOptions } from "./errors.js";
 export type { Sandbox, SandboxBase, ProviderSandbox, CreateOptions, ConnectOptions, ListOptions, ReapOptions, PreviewOptions, Usage, Locator, RunOptions, RunHandle, RunResult, OutputChunk, Capability, CapabilityMethods, MethodsFor, SandboxInfo, FileInfo, Labels, Preview, Terminal } from "./types.js";
 export type { WriteOptions, SnapshotOptions } from "./provider.js";
+export type { NativeApi, NativeRequestOptions, HttpMethod, NativeSdkLoader, AnyNativeSdk } from "./native.js";
 export type { Files, FileDiff, FileEvent } from "./files.js";
 export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
 export type { Git } from "./git.js";
