@@ -61,18 +61,30 @@ export type TenkiProvider = Provider<NativeSession, TenkiCapability>;
 
 type DataPlaneClient = Awaited<ReturnType<NativeSession["requireDataPlane"]>>;
 
-/** A request frame for the data-plane `run` stream. */
-export type TenkiRunRequest =
-  Parameters<DataPlaneClient["run"]>[0] extends AsyncIterable<infer T> ? T : never;
+type NativeRun = DataPlaneClient["run"];
 
-/** A response frame from the data-plane `run` stream, as far as the adapter reads it. */
+/** A request frame for the data-plane `run` stream. */
+export type TenkiRunRequest = Parameters<NativeRun>[0] extends AsyncIterable<infer T> ? T : never;
+
+type NativeRunResponse = ReturnType<NativeRun> extends AsyncIterable<infer T> ? T : never;
+
+type NativeRunPayload = NonNullable<NativeRunResponse["frame"]>["payload"];
+
+type NativeRunVariant<Case extends NativeRunPayload["case"]> = Extract<
+  NativeRunPayload,
+  { case: Case }
+>;
+
+/** A response frame from the data-plane `run` stream. Each variant keeps only the
+ * fields the adapter reads, so the native frames satisfy it and test fixtures can
+ * build it without protobuf message metadata.
+ */
 export interface TenkiRunResponse {
   frame?: {
     payload:
-      | { case: "started"; value: { pid: bigint } }
-      | { case: "stdout" | "stderr"; value: Uint8Array }
-      | { case: "exit"; value: { exitCode: number } }
-      | { case: "flow" | "keepalive" | undefined };
+      | NativeRunVariant<"stdout" | "stderr">
+      | { case: "exit"; value: Pick<NativeRunVariant<"exit">["value"], "exitCode"> }
+      | { case: Exclude<NativeRunPayload["case"], "stdout" | "stderr" | "exit"> };
   };
 }
 
@@ -80,7 +92,7 @@ export interface TenkiRunResponse {
 export interface TenkiDataPlane {
   run(
     requests: AsyncIterable<TenkiRunRequest>,
-    options: { signal: AbortSignal },
+    options: Required<Pick<NonNullable<Parameters<NativeRun>[1]>, "signal">>,
   ): AsyncIterable<TenkiRunResponse>;
 }
 

@@ -24,8 +24,6 @@ import {
   type TenkiRunResponse,
 } from "../src/providers/tenki/provider.js";
 
-type DataPlane = TenkiDataPlane;
-
 type WriteStreamOptions = { mode?: number; truncate?: boolean };
 
 type ExposeOptions = Parameters<Session["exposePort"]>[1];
@@ -297,13 +295,13 @@ export class MockSession {
   async reauthOnUnauthenticated(_error: Parameters<Session["reauthOnUnauthenticated"]>[0]) {
     return false;
   }
-  dataPlaneProvisioningPending(_plane: DataPlane) {
+  dataPlaneProvisioningPending(_plane: TenkiDataPlane) {
     return true;
   }
-  async refreshHintedDataPlane(_plane: DataPlane) {
+  async refreshHintedDataPlane(_plane: TenkiDataPlane) {
     return true;
   }
-  markDataPlaneServing(_plane: DataPlane) {}
+  markDataPlaneServing(_plane: TenkiDataPlane) {}
   private async *frames(
     requests: AsyncIterable<TenkiRunRequest>,
   ): AsyncGenerator<TenkiRunResponse> {
@@ -392,7 +390,7 @@ v=sdk_paths(v)`;
 
     child.stdin.on("error", () => {});
     child.stderr.resume();
-    yield { frame: { payload: { case: "started", value: { pid: BigInt(child.pid ?? 0) } } } };
+    yield { frame: { payload: { case: "started" } } };
     child.stdin.end(wire ? Buffer.from(input.value) : JSON.stringify(mapped));
     await iterator.next();
 

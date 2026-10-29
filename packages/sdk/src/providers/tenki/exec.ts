@@ -5,8 +5,8 @@ import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
 import { executeStream } from "./stream.js";
 import { workspaceSetup } from "./ready.js";
-import { isChunk, isRunResult } from "./records.js";
-import { isNumber, isObject, isString } from "../../shared/narrow.js";
+import { isChunk, isExitRecord } from "./records.js";
+import { isNumber, isObject } from "../../shared/narrow.js";
 
 /** Python is included in Tenki's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
@@ -269,13 +269,10 @@ export async function execute(
       await raw(box, ["cat", `${marker}.exit`], undefined, 30_000, outputTransport.signal),
     );
 
-    if (!isRunResult(value)) throw failure("Invalid command result");
+    if (!isExitRecord(value)) throw failure("Invalid command result");
 
-    if ("workspaceRoot" in value && isString(value.workspaceRoot))
-      workspaceRoot?.(
-        value.workspaceRoot,
-        "workspaceStable" in value && value.workspaceStable === true,
-      );
+    if (value.workspaceRoot !== undefined)
+      workspaceRoot?.(value.workspaceRoot, value.workspaceStable === true);
 
     return { exitCode: value.exitCode, timedOut: value.timedOut };
   });
