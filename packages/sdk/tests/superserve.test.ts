@@ -507,11 +507,12 @@ test("native lifetime, secret and preview options reach Sandbox.create in second
 test("network policy maps to Superserve egress rules and is confirmed after create", async () => {
   const provider = factory();
   expect(provider.capabilities.has("network-policy")).toBe(true);
-  for (const [network, expected] of [
+  const cases: [import("../src/provider.js").CreateInput["network"], unknown][] = [
     ["none", { allowOut: [], denyOut: ["0.0.0.0/0"] }],
     [{ allow: ["10.0.0.0/8", "1.2.3.4"] }, { allowOut: ["10.0.0.0/8", "1.2.3.4/32"], denyOut: ["0.0.0.0/0"] }],
     [{ allow: ["registry.npmjs.org", "*.github.com"] }, { allowOut: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"], denyOut: ["0.0.0.0/0"] }],
-  ] as const) {
+  ];
+  for (const [network, expected] of cases) {
     const box = await provider.create({ labels: {}, network });
     try { expect(state.createOptions).toMatchObject({ network: expected }); }
     finally { await provider.destroy(box.id); }

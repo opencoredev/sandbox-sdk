@@ -5,9 +5,11 @@ const mocks = vi.hoisted(() => ({
   snapshotCreate: vi.fn(),
   snapshotGet: vi.fn(),
   snapshotDelete: vi.fn(),
+  setEgressAllow: vi.fn(async (_id: string, entries: string[]) => entries),
 }));
 vi.mock("@boxd-sh/sdk", () => ({ Boxd: class extends MockBoxd {
   snapshots = { create: mocks.snapshotCreate, get: mocks.snapshotGet, delete: mocks.snapshotDelete };
+  egress = Object.assign(this.machines, { setEgressAllow: mocks.setEgressAllow });
 } }));
 vi.mock("../src/providers/boxd/transfers.js", () => ({ FileTransfers: class {
   private client = new MockBoxd();
@@ -54,9 +56,7 @@ describe("boxd contract", () => {
     for (const opts of [
       { network: "none" },
       { network: { allow: [] } },
-      { network: { allow: ["example.com"] } },
-      { idleTimeoutMs: 1000 },
-      { timeoutMs: 1000 },
+      { network: { allow: ["https://example.com"] } },
     ] satisfies Partial<Parameters<typeof provider.create>[0]>[])
       await expect(provider.create({ labels: {}, ...opts })).rejects.toMatchObject({
         code: "unsupported",
@@ -539,4 +539,48 @@ test("fresh client prepares a sandbox closed before first use", async () => {
   const connected = await connectSandbox(factory(), id);
   try { expect(await connected.run("pwd")).toMatchObject({ stdout: "/workspace\n", exitCode: 0 }); }
   finally { await connected.destroy(); }
+});
+
+describe("boxd native options (SBX-71)", () => {
+  test("lifetime, idle suspend and volumes reach machines.create in seconds", async () => {
+    const provider = boxd({ apiKey: "mock-key", volumes: [{ diskId: "disk-1", mountPath: "/data", readOnly: true }] });
+    const created = await provider.create({ labels: {}, timeoutMs: 90_500, idleTimeoutMs: 300_000 });
+    try {
+      expect(boxdState.creates.at(-1)).toMatchObject({ deleteAfter: 91, config: { autoSuspendTimeout: 300, autoDestroyTimeout: 0, volumes: [{ diskId: "disk-1", mountPath: "/data", readOnly: true }] } });
+    } finally { await provider.destroy(created.id); }
+    const plain = await factory().create({ labels: {} });
+    try {
+      expect(boxdState.creates.at(-1)).not.toHaveProperty("deleteAfter");
+      expect(boxdState.creates.at(-1)).toMatchObject({ config: { autoSuspendTimeout: 0 } });
+    } finally { await factory().destroy(plain.id); }
+    await expect(provider.create({ labels: {}, from: "snap" })).rejects.toMatchObject({ code: "unsupported" });
+    await expect(factory().create({ labels: {}, timeoutMs: 0 })).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+  test("snapshot restores carry the lifetime and idle settings", async () => {
+    const provider = factory();
+    const created = await provider.create({ labels: {}, from: "snap", timeoutMs: 60_000, idleTimeoutMs: 1_000 });
+    try { expect(boxdState.creates.at(-1)).toMatchObject({ fromSnapshot: "snap", deleteAfter: 60, config: { autoSuspendTimeout: 1 } }); }
+    finally { await provider.destroy(created.id); }
+  });
+  test("an allow-list is applied with setEgressAllow and confirmed before return", async () => {
+    const provider = factory();
+    expect(provider.capabilities.has("network-policy")).toBe(true);
+    mocks.setEgressAllow.mockClear();
+    const created = await provider.create({ labels: {}, network: { allow: ["registry.npmjs.org", "*.github.com", "140.82.112.0/20"] } });
+    try { expect(mocks.setEgressAllow).toHaveBeenCalledWith(created.id, ["registry.npmjs.org", "*.github.com", "140.82.112.0/20"]); }
+    finally { await provider.destroy(created.id); }
+    mocks.setEgressAllow.mockResolvedValueOnce([]);
+    const before = boxdState.boxes.size;
+    await expect(provider.create({ labels: {}, network: { allow: ["example.com"] } })).rejects.toMatchObject({ code: "unsupported" });
+    expect(boxdState.boxes.size).toBe(before);
+  });
+  test("snapshot rejects expiresInMs before capturing", async () => {
+    const provider = factory();
+    const created = await provider.create({ labels: {} });
+    try {
+      mocks.snapshotCreate.mockClear();
+      await expect(provider.snapshot?.(created.id, { expiresInMs: 1000 })).rejects.toMatchObject({ code: "unsupported" });
+      expect(mocks.snapshotCreate).not.toHaveBeenCalled();
+    } finally { await provider.destroy(created.id); }
+  });
 });
