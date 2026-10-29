@@ -48,17 +48,18 @@ const providers: Record<string, () => Promise<Loaded>> = {
     const m: typeof import("@opencoredev/sandbox-sdk/e2b") = await import(moduleUrl("providers/e2b/index.js"));
     const template = templates.get("e2b");
     const provider = m.e2b(template === undefined ? {} : { template });
-    return { provider, floor: (id) => { const box = provider.native(id); return {
-      exec: async (command = "true") => { await box.commands.run(command, { user: "root" }); },
-      write: async (path, data) => { await box.files.write(path, new Uint8Array(data).buffer, { user: "root" }); },
+    // The adapter calls E2B over HTTP; the floor is the official SDK, connected once per sandbox.
+    return { provider, floor: (id) => { let box: Promise<import("../../packages/sdk/node_modules/e2b").Sandbox> | undefined; const sdk = () => box ??= provider.native(id).sdk(() => import(nativeUrl("e2b"))); return {
+      exec: async (command = "true") => { await (await sdk()).commands.run(command, { user: "root" }); },
+      write: async (path, data) => { await (await sdk()).files.write(path, new Uint8Array(data).buffer, { user: "root" }); },
     }; } };
   },
   async daytona() {
     const m: typeof import("@opencoredev/sandbox-sdk/daytona") = await import(moduleUrl("providers/daytona/index.js"));
     const provider = m.daytona();
-    return { provider, floor: (id) => { const box = provider.native(id); return {
-      exec: async (command = "true") => { const r = await box.process.executeCommand(command); if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`); },
-      write: (path, data) => box.fs.uploadFile(Buffer.from(data), path),
+    return { provider, floor: (id) => { let box: Promise<import("../../packages/sdk/node_modules/@daytonaio/sdk").Sandbox> | undefined; const sdk = () => box ??= provider.native(id).sdk(() => import(nativeUrl("@daytonaio/sdk"))); return {
+      exec: async (command = "true") => { const r = await (await sdk()).process.executeCommand(command); if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`); },
+      write: async (path, data) => { await (await sdk()).fs.uploadFile(Buffer.from(data), path); },
     }; } };
   },
   async upstash() {
@@ -80,9 +81,9 @@ const providers: Record<string, () => Promise<Loaded>> = {
   async freestyle() {
     const m: typeof import("@opencoredev/sandbox-sdk/freestyle") = await import(moduleUrl("providers/freestyle/index.js"));
     const provider = m.freestyle();
-    return { provider, floor: (id) => { const vm = provider.native(id); return {
-      exec: async (command = "true") => { const r = await vm.exec({ command, linuxUser: "root", timeoutMs }); if (r.statusCode !== 0) throw new Error(`exit ${r.statusCode}`); },
-      write: async (path, data) => { await vm.fs.writeFile(path, data); },
+    return { provider, floor: (id) => { let vm: Promise<any> | undefined; const sdk = () => vm ??= provider.native(id).sdk(() => import(nativeUrl("freestyle"))); return {
+      exec: async (command = "true") => { const r = await (await sdk()).exec({ command, linuxUser: "root", timeoutMs }); if (r.statusCode !== 0) throw new Error(`exit ${r.statusCode}`); },
+      write: async (path, data) => { await (await sdk()).fs.writeFile(path, data); },
     }; } };
   },
   async tenki() {
@@ -96,9 +97,9 @@ const providers: Record<string, () => Promise<Loaded>> = {
     const m: typeof import("@opencoredev/sandbox-sdk/superserve") = await import(moduleUrl("providers/superserve/index.js"));
     const template = templates.get("superserve");
     const provider = m.superserve(template === undefined ? {} : { template });
-    return { provider, floor: (id) => { const box = provider.native(id); return {
-      exec: async (command = "true") => { await box.commands.run(command, { timeoutMs }); },
-      write: async (path, data) => { await box.files.write(path, data, { timeoutMs }); },
+    return { provider, floor: (id) => { let box: Promise<import("../../packages/sdk/node_modules/@superserve/sdk").Sandbox> | undefined; const sdk = () => box ??= provider.native(id).sdk(() => import(nativeUrl("@superserve/sdk"))); return {
+      exec: async (command = "true") => { await (await sdk()).commands.run(command, { timeoutMs }); },
+      write: async (path, data) => { await (await sdk()).files.write(path, data, { timeoutMs }); },
     }; } };
   },
 };
