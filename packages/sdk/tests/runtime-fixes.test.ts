@@ -77,3 +77,15 @@ test("a RunHandle is a lazy Promise: then, catch and finally work and streaming 
     expect(chunks.join("")).toBe("streamed\n");
   } finally { await box.destroy(); }
 });
+
+test("start() on a provider with native process hooks reports a command that exits at once", async () => {
+  const { memory } = await import("../src/memory.js");
+  const box = await createSandbox(memory());
+  try {
+    expect((await box.start("true", { name: "ok" })).status).toBe("exited");
+    const failed = await box.start("exit 3", { name: "bad" });
+    expect(failed.status).toBe("failed");
+    expect(failed.ready).toBe(false);
+    expect((await box.start("sleep 5", { name: "long" })).status).toBe("running");
+  } finally { await box.destroy(); }
+});

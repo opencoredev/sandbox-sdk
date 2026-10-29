@@ -256,7 +256,8 @@ export function makeProcesses(provider: Provider, id: string, files: Files, reda
           });
           const hook = await provider.startProcess(id, { command, cwd: pathOf(options.cwd), env: { ...env, ...options.env, ...defaults }, onChunk: chunk => filter.push(chunk) });
           native.set(options.name, hook); await files.write(`${dir}/pid`, String(hook.pid));
-          void hook.wait().then(async result => { early = result.exitCode ?? 137; filter.flush(); await drain(); await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); controller?.state(result.exitCode === 0 ? "exited" : "failed"); }).catch(async error => { await files.write(`${dir}/exit`, "1").catch(() => {}); controller?.state("failed"); void error; });
+          const exited = hook.wait(); hookExit = exited.then(result => { early = result.exitCode ?? 137; }, () => {});
+          void exited.then(async result => { early = result.exitCode ?? 137; filter.flush(); await drain(); await files.write(`${dir}/exit`, String(result.exitCode ?? 137)); controller?.state(result.exitCode === 0 ? "exited" : "failed"); }).catch(async error => { await files.write(`${dir}/exit`, "1").catch(() => {}); controller?.state("failed"); void error; });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
           const append = `append() { while ! mkdir ${quote(`${dir}/lock`)} 2>/dev/null; do sleep 0.01; done; printf '%s%s\\n' "$1" "$2" >> ${quote(`${dir}/out.log`)}; n=$(wc -c < ${quote(`${dir}/out.log`)}); if [ "$n" -gt 10485760 ]; then tail -c 5242880 ${quote(`${dir}/out.log`)} | tail -n +2 > ${quote(`${dir}/rotate`)}; kept=$(wc -c < ${quote(`${dir}/rotate`)}); b=$(cat ${quote(`${dir}/base`)}); echo $((b+n-kept)) > ${quote(`${dir}/base`)}; mv ${quote(`${dir}/rotate`)} ${quote(`${dir}/out.log`)}; fi; rmdir ${quote(`${dir}/lock`)}; };`;
