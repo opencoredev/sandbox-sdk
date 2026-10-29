@@ -1,12 +1,7 @@
 import { stat } from "node:fs/promises";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanupTenki, MockSession, tenkiState } from "./tenki-mock.js";
-import { tenki } from "../src/providers/tenki/index.js";
+import { cleanupTenki, MockSession, tenki, tenkiState } from "./tenki-mock.js";
 import { createSandbox } from "../src/index.js";
-
-vi.mock("@tenkicloud/sandbox", async () => ({
-  TenkiSandbox: (await import("./tenki-mock.js")).MockTenki,
-}));
 
 vi.setConfig({ testTimeout: 30_000 });
 

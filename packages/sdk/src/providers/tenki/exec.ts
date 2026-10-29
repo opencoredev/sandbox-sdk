@@ -1,5 +1,5 @@
 import { guestProcess } from "../../shared/guest.js";
-import type { Session } from "@tenkicloud/sandbox";
+import type { StreamingSession, TenkiSession as Session } from "./provider.js";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
@@ -115,13 +115,17 @@ export async function raw(
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(result.stdout);
 }
 
+function streams(box: Session): box is StreamingSession {
+  return box.requireDataPlane !== undefined;
+}
+
 export async function execute(
   box: Session,
   input: ExecInput,
   workspaceRoot?: (root: string, stable: boolean) => void,
 ) {
   // A client without the data plane falls back to buffered Session.run() pages.
-  if (box.requireDataPlane !== undefined) return executeStream(box, input, workspaceRoot);
+  if (streams(box)) return executeStream(box, input, workspaceRoot);
 
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const marker = `/home/tenki/.sandbox-sdk-run-${crypto.randomUUID()}`;

@@ -1,6 +1,6 @@
 import { guestSpec } from "../../shared/wire.js";
 import { guestProcess } from "../../shared/guest.js";
-import type { Session } from "@tenkicloud/sandbox";
+import type { StreamingSession, TenkiDataPlane, TenkiRunRequest } from "./provider.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
@@ -76,7 +76,7 @@ for _ in range(100):
 else: raise RuntimeError('PID unavailable')`;
 
 export async function executeStream(
-  box: Session,
+  box: StreamingSession,
   input: ExecInput,
   workspaceRoot?: (root: string, stable: boolean) => void,
 ): Promise<ExecResult> {
@@ -131,9 +131,9 @@ export async function executeStream(
   }
 
   const completion = (async () => {
-    type Plane = Awaited<ReturnType<Session["requireDataPlane"]>>;
+    type Plane = TenkiDataPlane;
 
-    type Request = Parameters<Plane["run"]>[0] extends AsyncIterable<infer T> ? T : never;
+    type Request = TenkiRunRequest;
 
     for (let attempt = 0; attempt < 2; attempt++) {
       const attemptTransport = new AbortController();

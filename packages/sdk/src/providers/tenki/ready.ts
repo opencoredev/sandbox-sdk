@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Session } from "@tenkicloud/sandbox";
+import type { TenkiSession as Session } from "./provider.js";
 import { SandboxError } from "../../errors.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
