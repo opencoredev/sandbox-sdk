@@ -6,19 +6,27 @@ import type {
   ExecOptions,
   InlineFirewallRule,
   CreateTlsRuleOptions,
+  Vm,
 } from "freestyle";
+import { isObject, isString } from "../src/shared/narrow.js";
+
+type SnapshotOptions = Parameters<Vm["snapshot"]>[0];
+
+const creates: CreateVmOptions[] = [];
+const rules: CreateTlsRuleOptions[] = [];
+const snapshotOptions: SnapshotOptions[] = [];
 
 export const freestyleState = {
   boxes: new Map<string, MockVm>(),
-  creates: [] as CreateVmOptions[],
+  creates,
   snapshots: new Map<string, string>(),
-  rules: [] as CreateTlsRuleOptions[],
+  rules,
   error: 0,
   listError: 0,
   widen: false,
   delay: 0,
   peak: 0,
-  snapshotOptions: [] as unknown[],
+  snapshotOptions,
 };
 
 const error = (status: number) => Object.assign(new Error("secret-native-error"), { status });
@@ -42,10 +50,10 @@ export class MockVm {
       updatedAt: new Date().toISOString(),
       idleTimeoutSeconds: params.idleTimeoutSeconds,
       ttlSeconds: params.ttlSeconds,
-      ...(params.autoDeleteSeconds === undefined
-        ? {}
-        : { autoDeleteSeconds: params.autoDeleteSeconds }),
     };
+
+    if (params.autoDeleteSeconds !== undefined)
+      this.record.autoDeleteSeconds = params.autoDeleteSeconds;
   }
   async data() {
     if (freestyleState.error) throw error(freestyleState.error);
@@ -74,13 +82,12 @@ export class MockVm {
       const envelope: unknown = JSON.parse(input);
 
       if (
-        envelope &&
-        typeof envelope === "object" &&
+        isObject(envelope) &&
         "command" in envelope &&
-        typeof envelope.command === "string" &&
+        isString(envelope.command) &&
         envelope.command.includes("sandbox-sdk-exec-v2.py") &&
         "stdin" in envelope &&
-        typeof envelope.stdin === "string"
+        isString(envelope.stdin)
       ) {
         envelope.stdin = Buffer.from(
           this.guest.rewrite(Buffer.from(envelope.stdin, "base64").toString()),
@@ -132,7 +139,7 @@ v=sdk_paths(v)`;
 
     return this.record;
   }
-  async snapshot(options?: unknown) {
+  async snapshot(options?: SnapshotOptions) {
     freestyleState.snapshotOptions.push(options);
     const snapshotId = crypto.randomUUID();
     const root = await fs.mkdtemp("/tmp/sdk-freestyle-snapshot-");

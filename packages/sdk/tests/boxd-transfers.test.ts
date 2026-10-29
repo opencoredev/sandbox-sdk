@@ -2,10 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Worker } from "node:worker_threads";
 import { afterEach, expect, test, vi } from "vitest";
 import { FileTransfers } from "../src/providers/boxd/transfers.js";
+import { isString } from "../src/shared/narrow.js";
 
 // Real pinned SDK, real fetch/socket/body. Only the remote grpc-web server is a
 // local fixture. Stalling after headers catches deadlines that only cover fetch().
-const cleanup: (() => Promise<unknown>)[] = [];
+const cleanup: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
   for (const stop of cleanup.splice(0).reverse()) await stop();
@@ -88,7 +89,7 @@ async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing" |
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
 
-  if (!address || typeof address === "string") throw new Error("No fixture port");
+  if (!address || isString(address)) throw new Error("No fixture port");
   cleanup.push(async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

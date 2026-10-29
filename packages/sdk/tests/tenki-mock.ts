@@ -12,12 +12,28 @@ import type {
   ProcessRunOptions,
   ProcessRunResult,
   Session,
+  TenkiSandbox,
 } from "@tenkicloud/sandbox";
+import { isObject, isString } from "../src/shared/narrow.js";
+
+type DataPlane = Awaited<ReturnType<Session["requireDataPlane"]>>;
+
+type WriteStreamOptions = { mode?: number; truncate?: boolean };
+
+type ExposeOptions = Parameters<Session["exposePort"]>[1];
+
+type SnapshotOptions = Parameters<TenkiSandbox["createSnapshot"]>[1];
+
+type ListOptions = Parameters<TenkiSandbox["list"]>[0];
 
 const missing = () => Object.assign(new Error("missing"), { name: "SessionNotFoundError" });
 const configs: ClientOptions[] = [];
 const creates: CreateOptions[] = [];
 const streamExitWaits: (() => Promise<void>)[] = [];
+const writeFileStreamCalls: { path: string; options: WriteStreamOptions }[] = [];
+const exposePortCalls: ExposeOptions[] = [];
+const createSnapshotCalls: SnapshotOptions[] = [];
+const listCalls: ListOptions[] = [];
 
 const streamFailures: {
   phase: "before-start" | "before-response" | "after-input" | "after-output";
@@ -38,10 +54,10 @@ export const tenkiState = {
   streamExitWaits,
   calls: {
     writeFile: 0,
-    writeFileStream: [] as { path: string; options: unknown }[],
-    exposePort: [] as unknown[],
-    createSnapshot: [] as unknown[],
-    list: [] as unknown[],
+    writeFileStream: writeFileStreamCalls,
+    exposePort: exposePortCalls,
+    createSnapshot: createSnapshotCalls,
+    list: listCalls,
   },
 };
 
@@ -71,7 +87,7 @@ export class MockSession {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
 
-    if (!address || typeof address === "string") throw new Error("No port");
+    if (!address || isString(address)) throw new Error("No port");
     await new Promise<void>((resolve) => server.close(() => resolve()));
 
     const value = new MockSession(
@@ -185,19 +201,16 @@ export class MockSession {
           for await (const chunk of input) chunks.push(chunk);
           const data: unknown = JSON.parse(Buffer.concat(chunks).toString());
 
-          if (!data || typeof data !== "object") throw new Error("Invalid spec");
+          if (!isObject(data)) throw new Error("Invalid spec");
 
           const mapped = Object.fromEntries(
             Object.entries(data).map(([key, value]) => [
               key,
-              typeof value === "string" && key !== "stdin"
+              isString(value) && key !== "stdin"
                 ? this.rewrite(value)
-                : key === "env" && value && typeof value === "object"
+                : key === "env" && isObject(value)
                   ? Object.fromEntries(
-                      Object.entries(value).map(([k, v]) => [
-                        k,
-                        typeof v === "string" ? this.rewrite(v) : v,
-                      ]),
+                      Object.entries(value).map(([k, v]) => [k, isString(v) ? this.rewrite(v) : v]),
                     )
                   : value,
             ]),
@@ -234,7 +247,7 @@ export class MockSession {
     try {
       return new Uint8Array(await fs.readFile(this.rewrite(path)));
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+      if (isObject(error) && "code" in error && error.code === "ENOENT")
         throw Object.assign(new Error("missing"), { name: "FileNotFoundError" });
       throw error;
     }
@@ -242,7 +255,7 @@ export class MockSession {
   async writeFileStream(
     path: string,
     data: ReadableStream<Uint8Array>,
-    options: { mode?: number; truncate?: boolean } = {},
+    options: WriteStreamOptions = {},
   ) {
     tenkiState.calls.writeFileStream.push({ path, options });
     const mapped = this.rewrite(path);
@@ -264,16 +277,16 @@ export class MockSession {
 
     return async () => ({ run: (requests: Requests) => this.frames(requests) });
   }
-  async reauthOnUnauthenticated(_error: unknown) {
+  async reauthOnUnauthenticated(_error: Parameters<Session["reauthOnUnauthenticated"]>[0]) {
     return false;
   }
-  dataPlaneProvisioningPending(_plane: unknown) {
+  dataPlaneProvisioningPending(_plane: DataPlane) {
     return true;
   }
-  async refreshHintedDataPlane(_plane: unknown) {
+  async refreshHintedDataPlane(_plane: DataPlane) {
     return true;
   }
-  markDataPlaneServing(_plane: unknown) {}
+  markDataPlaneServing(_plane: DataPlane) {}
   private async *frames(
     requests: Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0],
   ) {
@@ -298,19 +311,16 @@ export class MockSession {
     const wire = start.value.cmd.some((arg) => arg.includes("marshal.loads"));
     const data: unknown = wire ? {} : JSON.parse(Buffer.from(input.value).toString());
 
-    if (!data || typeof data !== "object") throw new Error("Invalid spec");
+    if (!isObject(data)) throw new Error("Invalid spec");
 
     const mapped = Object.fromEntries(
       Object.entries(data).map(([key, value]) => [
         key,
-        typeof value === "string" && key !== "stdin"
+        isString(value) && key !== "stdin"
           ? this.rewrite(value)
-          : key === "env" && value && typeof value === "object"
+          : key === "env" && isObject(value)
             ? Object.fromEntries(
-                Object.entries(value).map(([k, v]) => [
-                  k,
-                  typeof v === "string" ? this.rewrite(v) : v,
-                ]),
+                Object.entries(value).map(([k, v]) => [k, isString(v) ? this.rewrite(v) : v]),
               )
             : value,
       ]),
@@ -407,7 +417,7 @@ v=sdk_paths(v)`;
     // A watcher poll stopped just before close can still be writing here; retry ENOTEMPTY.
     await fs.rm(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
-  async exposePort(_port: number, options?: unknown) {
+  async exposePort(_port: number, options?: ExposeOptions) {
     tenkiState.calls.exposePort.push(options);
 
     return {
@@ -434,12 +444,12 @@ export class MockTenki {
 
     return value;
   }
-  async list(options?: unknown) {
+  async list(options?: ListOptions) {
     tenkiState.calls.list.push(options);
 
     return [...tenkiState.boxes.values()];
   }
-  async createSnapshot(id: string, options?: unknown) {
+  async createSnapshot(id: string, options?: SnapshotOptions) {
     tenkiState.calls.createSnapshot.push(options);
     const box = await this.get(id);
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-tenki-snapshot-"));

@@ -99,13 +99,7 @@ test("snapshot expiresInMs becomes expiresAt; 0 sets no expiry", async () => {
     const options = tenkiState.calls.createSnapshot.at(-1);
     expect(options).toMatchObject({ async: true, expiresAt: expect.any(Date) });
 
-    const expiresAt =
-      options &&
-      typeof options === "object" &&
-      "expiresAt" in options &&
-      options.expiresAt instanceof Date
-        ? options.expiresAt.getTime()
-        : 0;
+    const expiresAt = options?.expiresAt instanceof Date ? options.expiresAt.getTime() : 0;
 
     expect(expiresAt).toBeGreaterThanOrEqual(before + 3_600_000);
     expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3_600_000);

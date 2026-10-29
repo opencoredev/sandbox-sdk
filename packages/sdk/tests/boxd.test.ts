@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { boxdState, MockBoxd } from "./cloud-guest-mock.js";
+import { isString } from "../src/shared/narrow.js";
 
 const mocks = vi.hoisted(() => ({
-  web: [] as MockBoxd[],
+  web: new Array<MockBoxd>(),
   snapshotCreate: vi.fn(),
   snapshotGet: vi.fn(),
   snapshotDelete: vi.fn(),
@@ -711,7 +712,7 @@ test.each(["missing", "unsupported", "restricted"])(
           : 'def unavailable(*args,**kwargs): raise OSError(38,"unavailable")\nos.memfd_create=unavailable\nos.posix_spawn=unavailable';
 
     const spy = vi.spyOn(machines, "streamExec").mockImplementation((id, params) => {
-      if (typeof params.command !== "string") throw new Error("Expected shell command");
+      if (!isString(params.command)) throw new Error("Expected shell command");
 
       return stream(id, {
         ...params,

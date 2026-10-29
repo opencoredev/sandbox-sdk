@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { isObject, isString } from "../src/shared/narrow.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { FreestyleApiError, FreestyleClient } from "freestyle";
 
@@ -41,7 +42,7 @@ test("every awaited native operation is bounded and aborts its fetch", async () 
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      (_url: unknown, init?: RequestInit) =>
+      (_url: string | URL | Request, init?: RequestInit) =>
         new Promise((_resolve, reject) => {
           const signal = init?.signal;
 
@@ -90,7 +91,7 @@ test("caller abort interrupts a pending native create and its HTTP request", asy
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      (_url: unknown, init?: RequestInit) =>
+      (_url: string | URL | Request, init?: RequestInit) =>
         new Promise((_resolve, reject) => {
           fetchSignal = init?.signal ?? undefined;
           fetchSignal?.addEventListener(
@@ -132,12 +133,11 @@ test.each(["running", "starting"])(
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const path = new URL(url instanceof Request ? url.url : url).pathname;
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
         requests.push({ method: init?.method, path, body });
 
         if (path === "/v5/vms" && init?.method === "POST") {
-          if (!body || typeof body !== "object" || !("metadata" in body))
-            throw new Error("Missing metadata");
+          if (!isObject(body) || !("metadata" in body)) throw new Error("Missing metadata");
 
           return Response.json({
             id: "offline",
@@ -179,13 +179,7 @@ test.each(["running", "starting"])(
     });
     const setup = requests[1]?.body;
 
-    if (
-      !setup ||
-      typeof setup !== "object" ||
-      !("command" in setup) ||
-      !("stdin" in setup) ||
-      typeof setup.stdin !== "string"
-    )
+    if (!isObject(setup) || !("command" in setup) || !("stdin" in setup) || !isString(setup.stdin))
       throw new Error("Missing setup exec");
     expect(String(setup.command)).not.toContain("private-test-value");
     expect(String(setup.command)).not.toMatch(/apt(-get)? |pip install|npm install/);
@@ -348,10 +342,9 @@ test.each(["vpc", "tls", "firewall", "limits", "setup"])(
 
         if (path.endsWith("/exec-await"))
           return Response.json({ statusCode: 1, stdout: "", stderr: "private" });
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
 
-        if (!body || typeof body !== "object" || !("metadata" in body))
-          throw new Error("Missing create metadata");
+        if (!isObject(body) || !("metadata" in body)) throw new Error("Missing create metadata");
 
         return Response.json({
           id: "offline",
@@ -372,12 +365,11 @@ test.each(["vpc", "tls", "firewall", "limits", "setup"])(
       }),
     );
     await expect(
-      freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create({
-        labels: {},
-        network: "none",
-        timeoutMs: 180000,
-        ...(kind === "setup" ? { env: { SETUP: "required" } } : {}),
-      }),
+      freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create(
+        kind === "setup"
+          ? { labels: {}, network: "none", timeoutMs: 180000, env: { SETUP: "required" } }
+          : { labels: {}, network: "none", timeoutMs: 180000 },
+      ),
     ).rejects.toMatchObject({ code: kind === "setup" ? "provider" : "unsupported" });
     expect(requests.at(-1)).toBe("DELETE /v5/vms/offline");
     expect(requests.filter((r) => r.startsWith("GET"))).toEqual([]);
@@ -397,10 +389,9 @@ test("a later setup failure never inherits the allocation's background request I
         return Response.json({ code: "SETUP_FAILED", message: "private" }, { status: 413 });
 
       if (path === "/v5/vms") {
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
 
-        if (!body || typeof body !== "object" || !("metadata" in body))
-          throw new Error("Missing metadata");
+        if (!isObject(body) || !("metadata" in body)) throw new Error("Missing metadata");
         metadata = body.metadata;
 
         return Response.json(
