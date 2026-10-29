@@ -15,7 +15,9 @@ import { local } from "@opencoredev/sandbox-sdk/local";
 
 await using box = await createSandbox(local(), { key: "project:42", ports: [5173] });
 
-const dev = await box.start("npx vite --port 5173 --host", {
+await box.files.write("app/index.html", "<h1>Hello from the sandbox</h1>\n");
+
+const dev = await box.start("npx --yes vite@6 --port 5173 --host", {
   name: "dev",
   cwd: "app",
   ready: { http: { port: 5173, path: "/" } },
@@ -25,7 +27,9 @@ const dev = await box.start("npx vite --port 5173 --host", {
 console.log(dev.url);
 ```
 
-`start` resolves only when an HTTP request to port 5173 gets a response. Because `ready` names a port, `dev.url` is a preview URL the SDK already checked from outside the sandbox.
+The script writes a one-page site to `app/` and serves it with Vite. `start` resolves only when an HTTP request to port 5173 gets a response. Because `ready` names a port, `dev.url` is a preview URL the SDK already checked from outside the sandbox.
+
+The `key` keeps the sandbox, and the server in it, running after the script ends, so later steps and later requests can reach it. Run the script a second time and `start` throws `invalid_argument`, because a process named `dev` is already running. Step 4 shows how to check first, and [Remove the sandbox](#remove-the-sandbox) shows how to clean up.
 
 Bind the server to `0.0.0.0` (here, `--host`). A server that listens only on `localhost` inside the sandbox can't be reached from outside.
 
@@ -130,7 +134,7 @@ To follow output live, iterate `box.process("dev").lines()`. Each line has its o
 
 ## 4. Restart after a resume
 
-A paused Vercel sandbox, or a Daytona sandbox stopped by its idle timeout, comes back with its files but without its processes. Check the status and restart:
+A paused Vercel Sandbox or Upstash Box, or a Daytona sandbox stopped by its idle timeout, comes back with its files but without its processes. Check the status and restart:
 
 ```ts title="ensure-dev.ts"
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -143,8 +147,26 @@ const info = (await box.processes()).find((p) => p.name === "dev");
 if (info && info.status !== "running") await dev.restart();
 ```
 
-`restart()` stops the process if it's still running and starts the same command again. Local and E2B keep processes through a pause, so they don't need this.
+`restart()` stops the process if it's still running and starts the same command again. Local, E2B, Tenki, boxd, and Freestyle keep processes through a pause, so they don't need this.
 
 ## Stop it
 
 `await box.process("dev").stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it twice is safe. Destroying the sandbox stops everything in it.
+
+## Remove the sandbox
+
+`await using` only closes the handle of a keyed sandbox, so the container or VM keeps running and keeps costing money. When the user is done with the project, find the sandbox by its key and destroy it:
+
+```ts title="remove.ts"
+import { connectSandbox, listSandboxes } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const provider = local();
+const found = (await listSandboxes(provider)).find((info) => info.key === "project:42");
+if (found) {
+  const box = await connectSandbox(provider, found.id);
+  await box.destroy();
+}
+```
+
+In code that already holds the handle, `await box.destroy()` does the same. To catch sandboxes nobody removed, set a lifetime or run a reaper, as [Clean up sandboxes](/guides/cleanup) shows.
