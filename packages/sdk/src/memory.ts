@@ -9,7 +9,6 @@ import type {
   NativeProcess,
 } from "./provider.js";
 import { SandboxError } from "./errors.js";
-import { secretRecoveryCommand } from "./run.js";
 
 export interface CommandContext {
   args: string[];
@@ -389,25 +388,6 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
         await files.write(id, input.activityPath, new Uint8Array([1]));
       }
 
-      // Execute the core's recovery transaction without implementing host shell
-      // conditionals or exposing environment through the fake's native handle.
-      if (input.command === secretRecoveryCommand) {
-        const record = m.nodes.get("/tmp/.sandbox-sdk/secret-names.json");
-
-        if (record?.data)
-          input.onChunk({
-            stream: "stdout",
-            text:
-              new TextDecoder().decode(record.data) +
-              "\0" +
-              Object.entries(env)
-                .map(([key, value]) => `${key}=${value}\0`)
-                .join(""),
-          });
-
-        return { exitCode: 0, timedOut: false };
-      }
-
       const tokens = tokenize(input.command, env);
 
       const unsupported = tokens.find(
@@ -702,6 +682,15 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
       machines.delete(id);
     },
     exec: execute,
+    // The fake has no shell conditionals or `env -0`, so it answers recovery directly.
+    async readSecretEnvironment(id) {
+      const m = machine(id);
+      const record = m.nodes.get("/tmp/.sandbox-sdk/secret-names.json");
+
+      if (!record?.data) return undefined;
+
+      return { record: new TextDecoder().decode(record.data), environment: { ...m.env } };
+    },
     async previewUrl(id, port) {
       machine(id);
 

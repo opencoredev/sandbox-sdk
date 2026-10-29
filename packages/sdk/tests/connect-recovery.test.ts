@@ -16,6 +16,8 @@ async function stopped() {
 
   const provider: Provider = {
     ...backing,
+    // Like a shell provider, recovery goes through exec.
+    readSecretEnvironment: undefined,
     exec,
     destroy,
     capabilities: new Set(["pause", "snapshot"]),
@@ -58,12 +60,17 @@ describe("connectSandbox secret recovery", () => {
     const created = await createSandbox(backing, { secrets: { TOKEN: "secret-value" } });
     let failing = true;
 
+    // A shell provider: core's recovery command fails once, then prints the record and env.
     const provider: Provider = {
       ...backing,
-      exec: (id, input) =>
-        failing && input.command === secretRecoveryCommand
-          ? Promise.resolve({ exitCode: 1, timedOut: false })
-          : backing.exec(id, input),
+      readSecretEnvironment: undefined,
+      exec: (id, input) => {
+        if (input.command !== secretRecoveryCommand) return backing.exec(id, input);
+
+        if (!failing) input.onChunk({ stream: "stdout", text: '["TOKEN"]\0TOKEN=secret-value\0' });
+
+        return Promise.resolve({ exitCode: failing ? 1 : 0, timedOut: false });
+      },
     };
 
     const box = await connectSandbox(provider, created.id);
@@ -93,6 +100,26 @@ describe("connectSandbox secret recovery", () => {
     const box = await connectSandbox(provider, created.id, { recoverSecrets: false });
     expect((await box.run("true")).ok).toBe(true);
     expect(commands).toEqual(["true"]);
+    await box.destroy();
+  });
+
+  test("a provider's recovery hook replaces the recovery exec", async () => {
+    const backing = memory();
+    const created = await createSandbox(backing, { secrets: { TOKEN: "secret-value" } });
+    const commands: string[] = [];
+
+    const provider: Provider = {
+      ...backing,
+      exec: (id, input) => {
+        commands.push(input.command);
+
+        return backing.exec(id, input);
+      },
+    };
+
+    const box = await connectSandbox(provider, created.id);
+    expect((await box.run("printenv TOKEN")).stdout).toBe("[REDACTED]\n");
+    expect(commands).toEqual(["printenv TOKEN"]);
     await box.destroy();
   });
 

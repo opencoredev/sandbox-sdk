@@ -5,8 +5,8 @@ import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure, tenkiError } from "./errors.js";
 import { raw } from "./exec.js";
-import { isChunk, isRunResult } from "./records.js";
-import { isObject, isString } from "../../shared/narrow.js";
+import { isChunk, isExitRecord } from "./records.js";
+import { isObject } from "../../shared/narrow.js";
 import { workspaceSetup } from "./ready.js";
 
 // Unlike Session.run(), the public data-plane client does not collect output.
@@ -117,28 +117,25 @@ export async function executeStream(
       const text = decoders[stream].decode(Buffer.from(hex, "hex"), { stream: true });
 
       if (text) input.onChunk({ stream, text });
-    } else if (
-      isRunResult(value) &&
-      (value.exitCode === null || Number.isInteger(value.exitCode))
-    ) {
-      if ("workspaceRootHex" in value && isString(value.workspaceRootHex))
-        workspaceRoot?.(
-          Buffer.from(value.workspaceRootHex, "hex").toString(),
-          "workspaceStable" in value && value.workspaceStable === true,
-        );
-      result = { exitCode: value.exitCode, timedOut: value.timedOut };
-    } else throw failure("Invalid command output record");
+
+      return;
+    }
+
+    if (!isExitRecord(value)) throw failure("Invalid command output record");
+
+    if (value.workspaceRootHex !== undefined)
+      workspaceRoot?.(
+        Buffer.from(value.workspaceRootHex, "hex").toString(),
+        value.workspaceStable === true,
+      );
+    result = { exitCode: value.exitCode, timedOut: value.timedOut };
   }
 
   const completion = (async () => {
-    type Plane = TenkiDataPlane;
-
-    type Request = TenkiRunRequest;
-
     for (let attempt = 0; attempt < 2; attempt++) {
       const attemptTransport = new AbortController();
       const signal = AbortSignal.any([transport.signal, attemptTransport.signal]);
-      let plane: Plane | undefined;
+      let plane: TenkiDataPlane | undefined;
       let receivedResponse = false;
 
       async function* requests() {
@@ -155,12 +152,12 @@ export async function executeStream(
               },
             },
           },
-        } satisfies Request;
+        } satisfies TenkiRunRequest;
         // Send input immediately: waiting for started adds a network round trip.
         signal.throwIfAborted();
         mayHaveLaunched = true;
-        yield { frame: { payload: { case: "stdin", value: spec } } } satisfies Request;
-        yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies Request;
+        yield { frame: { payload: { case: "stdin", value: spec } } } satisfies TenkiRunRequest;
+        yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies TenkiRunRequest;
         await new Promise<void>((resolve) => {
           if (signal.aborted) resolve();
           else signal.addEventListener("abort", () => resolve(), { once: true });

@@ -2,10 +2,9 @@ import { describe, expect, test } from "vitest";
 import { connectSandbox, createSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
-import { secretRecoveryCommand } from "../src/run.js";
 import { rejection } from "./rejection.js";
 
-/** A connected memory sandbox whose secret recovery exec waits until `release` is called. */
+/** A connected memory sandbox whose secret recovery waits until `release` is called. */
 async function slowRecovery() {
   const backing = memory();
   const created = await createSandbox(backing, { secrets: { TOKEN: "secret-value" } });
@@ -22,10 +21,14 @@ async function slowRecovery() {
   const provider: Provider = {
     ...backing,
     async exec(id, input) {
-      if (input.command === secretRecoveryCommand) await gate;
-      else commands.push(input.command);
+      commands.push(input.command);
 
       return backing.exec(id, input);
+    },
+    async readSecretEnvironment(id) {
+      await gate;
+
+      return backing.readSecretEnvironment?.(id);
     },
     files: {
       ...backing.files,

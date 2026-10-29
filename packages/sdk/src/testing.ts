@@ -11,7 +11,7 @@ import {
   SandboxError,
 } from "./index.js";
 import type { Provider, SnapshotOptions } from "./provider.js";
-import type { SandboxBase } from "./types.js";
+import type { RunOptions, SandboxBase } from "./types.js";
 
 /** Register a provider-independent Vitest suite. Call inside a test module.
  * live must be explicitly true to run a cloud provider. Each case calls the factory
@@ -20,8 +20,9 @@ import type { SandboxBase } from "./types.js";
  * Live runs give each case 120 seconds by default, since real providers boot
  * machines and cross the network; pass timeoutMs to change it.
  * snapshotExpiry declares what `snapshot({ expiresInMs })` does: "honored" must
- * return a snapshot, "refused" must throw unsupported or invalid_argument.
- * Omit it to check only the core's input validation.
+ * return a snapshot, "refused" must throw unsupported or invalid_argument. snapshot()
+ * returns only an ID, so the suite cannot read the expiry back; check it in the
+ * provider's own tests. Omit it to check only the core's input validation.
  * unsupported skips checks the provider cannot run, with the reason: gitPush for a
  * runtime without git, httpProbe for previews that no HTTP client can reach.
  */
@@ -106,21 +107,57 @@ export function runConformance(
         ).stdout,
       ).toBe("1:cat:0:noninteractive:dumb:1");
     });
-    test("timeout and abort kill work before following side effects", async () => {
-      const { box } = await setup();
-      const started = Date.now();
-      const result = await box.run("sleep 1; echo survived > survived", { timeoutMs: 20 });
-      expect(result).toMatchObject({ timedOut: true, exitCode: null, ok: false });
-      const controller = new AbortController();
-      const handle = box.run("sleep 1; echo survived > aborted", { signal: controller.signal });
-      const pending = Promise.resolve(handle);
-      setTimeout(() => controller.abort(), 20);
-      expect(await pending).toMatchObject({ timedOut: true, exitCode: null });
-      // Both writes would land about a second after their commands started; look after that.
-      await new Promise((resolve) => setTimeout(resolve, Math.max(0, started + 1500 - Date.now())));
-      expect(await box.files.exists("survived")).toBe(false);
-      expect(await box.files.exists("aborted")).toBe(false);
-    });
+    // Two observation windows run back to back, so this case gets more than the default 5 s.
+    const killTimeout = Math.max(timeout ?? 0, 30_000);
+    test(
+      "timeout and abort kill a launched command before its delayed side effect",
+      { timeout: killTimeout },
+      async () => {
+        const { box } = await setup();
+        // Size the windows from one round trip: mock-backed suites also pass live: true.
+        const began = Date.now();
+        await box.run("true");
+        const overheadMs = Date.now() - began;
+        // Each command writes a launch marker, then a second file after a delay. The kill
+        // must come after the marker, or a run cancelled before it started would pass.
+        // The command has to launch within its timeout, and the kill to land before the write.
+        const timeoutMs = 500 + 2 * overheadMs;
+        const delayMs = Math.ceil((timeoutMs + overheadMs + 500) / 1000) * 1000;
+        const graceMs = 500 + overheadMs;
+
+        async function launch(name: string, runOptions: RunOptions) {
+          const run = Promise.resolve(
+            box.run(
+              `echo launched > ${name}-launched; sleep ${delayMs / 1000}; echo survived > ${name}-survived`,
+              runOptions,
+            ),
+          );
+
+          await expect
+            .poll(() => box.files.exists(`${name}-launched`), { timeout: delayMs, interval: 20 })
+            .toBe(true);
+
+          return { run, launchedAt: Date.now() };
+        }
+
+        // The command launched before launchedAt, so its write would land by launchedAt + delayMs.
+        async function expectNoSideEffect(name: string, launchedAt: number) {
+          const wait = launchedAt + delayMs + graceMs - Date.now();
+          await new Promise((resolve) => setTimeout(resolve, Math.max(0, wait)));
+          expect(await box.files.exists(`${name}-survived`)).toBe(false);
+        }
+
+        const timed = await launch("timeout", { timeoutMs });
+        expect(await timed.run).toMatchObject({ timedOut: true, exitCode: null, ok: false });
+        await expectNoSideEffect("timeout", timed.launchedAt);
+
+        const controller = new AbortController();
+        const aborted = await launch("abort", { signal: controller.signal });
+        controller.abort();
+        expect(await aborted.run).toMatchObject({ timedOut: true, exitCode: null, ok: false });
+        await expectNoSideEffect("abort", aborted.launchedAt);
+      },
+    );
     test("bounded head and tail output, interleaving and streaming", async () => {
       const { box } = await setup();
       const result = await box.run(`printf '${"a".repeat(1024)}END'`, { maxOutputBytes: 64 });
@@ -206,7 +243,7 @@ export function runConformance(
         });
       expect(await box.files.exists("modes/bad")).toBe(false);
     });
-    test("snapshot expiry is validated, passed to the provider, then returned or refused as declared", async (context) => {
+    test("snapshot expiresInMs is validated, forwarded to the provider, and accepted or refused as declared", async (context) => {
       const provider = await fresh();
       const requests = recordSnapshotOptions(provider);
       const { box } = await setup({}, provider);

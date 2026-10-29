@@ -383,7 +383,10 @@ test("reaping tolerates deletion after listing and still surfaces auth failures"
 
 describe("core hot paths", () => {
   for (const transport of ["memory", "shell"]) {
-    test(`${transport} reconnect recovers many secrets lazily in one exec and no file RPCs`, async () => {
+    // Memory answers recovery through its hook; a shell provider spends one exec on it.
+    const recovery = transport === "memory" ? "recover" : "exec";
+
+    test(`${transport} reconnect recovers many secrets lazily in one call and no file RPCs`, async () => {
       const provider =
         transport === "memory"
           ? memory()
@@ -396,6 +399,7 @@ describe("core hot paths", () => {
 
       const calls: string[] = [];
       const exec = provider.exec;
+      const recover = provider.readSecretEnvironment;
       const read = provider.files.read;
       const stat = provider.files.stat;
       provider.exec = (id, input) => {
@@ -403,6 +407,13 @@ describe("core hot paths", () => {
 
         return exec(id, input);
       };
+
+      if (recover)
+        provider.readSecretEnvironment = (id) => {
+          calls.push("recover");
+
+          return recover(id);
+        };
 
       provider.files.read = (id, path) => {
         calls.push("read");
@@ -420,7 +431,7 @@ describe("core hot paths", () => {
         const connected = await connectSandbox(provider, box.id);
         expect(calls).toEqual([]);
         expect((await connected.run("printf '%s' \"$FIRST\"")).stdout).toBe("[REDACTED]");
-        expect(calls).toEqual(["exec", "exec"]);
+        expect(calls).toEqual([recovery, "exec"]);
         expect((await connected.run("printf '%s' \"$SECOND\"")).stdout).toBe("[REDACTED]");
         expect((await connected.run("printf '%s' \"$PUBLIC\"")).stdout).toBe("public-value");
         expect((await connected.run("printf '%s' \"$EMPTY\"")).stdout).toBe("");
@@ -428,7 +439,7 @@ describe("core hot paths", () => {
         await box.destroy();
       }
     });
-    test(`${transport} empty reconnect uses one exec without reading files`, async () => {
+    test(`${transport} empty reconnect uses one call without reading files`, async () => {
       const provider =
         transport === "memory"
           ? memory()
@@ -437,12 +448,20 @@ describe("core hot paths", () => {
       const box = await createSandbox(provider);
       const calls: string[] = [];
       const exec = provider.exec;
+      const recover = provider.readSecretEnvironment;
       const read = provider.files.read;
       provider.exec = (id, input) => {
         calls.push("exec");
 
         return exec(id, input);
       };
+
+      if (recover)
+        provider.readSecretEnvironment = (id) => {
+          calls.push("recover");
+
+          return recover(id);
+        };
 
       provider.files.read = (id, path) => {
         calls.push("read");
@@ -455,7 +474,7 @@ describe("core hot paths", () => {
         expect(calls).toEqual([]);
         await connected.files.exists("anything");
         await connected.run("true");
-        expect(calls).toEqual(["exec", "exec"]);
+        expect(calls).toEqual([recovery, "exec"]);
       } finally {
         await box.destroy();
       }
@@ -503,6 +522,7 @@ describe("core hot paths", () => {
       await process.wait();
       const calls: string[] = [];
       const exec = provider.exec;
+      const recover = provider.readSecretEnvironment;
       const read = provider.files.read;
       const stat = provider.files.stat;
       provider.exec = (id, input) => {
@@ -510,6 +530,13 @@ describe("core hot paths", () => {
 
         return exec(id, input);
       };
+
+      if (recover)
+        provider.readSecretEnvironment = (id) => {
+          calls.push("recover");
+
+          return recover(id);
+        };
 
       provider.files.read = (id, path) => {
         calls.push("read");
