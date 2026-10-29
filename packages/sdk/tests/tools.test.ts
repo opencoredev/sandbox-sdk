@@ -8,25 +8,17 @@ import { createSandboxTools, toolSchemas, type ToolName, type ToolResult } from 
 import { sandboxTools as aiTools } from "../src/ai.js";
 import { sandboxTools as mastraTools } from "../src/mastra.js";
 import { sandboxTools as openaiTools } from "../src/openai.js";
+import type { JsonValue } from "../src/shared/json.js";
 
 const names = Object.keys(toolSchemas).filter((name): name is ToolName => name in toolSchemas);
-
-/** Tool arguments as a model would send them, valid or not. */
-type ModelInput =
-  | undefined
-  | string
-  | number
-  | boolean
-  | null
-  | ModelInput[]
-  | { [key: string]: ModelInput };
 
 /** Whether an AI SDK tool result streams preliminary outputs. */
 function isOutputStream(value: unknown): value is AsyncIterable<ToolResult> {
   return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
-function invoke(tools: ReturnType<typeof createSandboxTools>, name: ToolName, input: ModelInput) {
+/** Runs a tool with arguments as a model would send them, valid or not. */
+function invoke(tools: ReturnType<typeof createSandboxTools>, name: ToolName, input: JsonValue) {
   const tool = tools.find((tool) => tool.name === name);
 
   if (!tool) throw new Error(`Missing ${name}`);
