@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
+import { parseLineCursor, parseProcessRecord, parseRestartRecord } from "./core/process-records.js";
 import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
 import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
@@ -69,41 +70,6 @@ export interface ProcessHandle {
   stop(options?: { graceMs?: number }): Promise<void>;
   restart(): Promise<void>;
   wait(): Promise<{ exitCode: number | null; signal: string | null }>;
-}
-
-function linePosition(after?: string) {
-  const empty = { stdout: "", stderr: "" };
-
-  if (after === undefined || /^\d+$/.test(after)) return { offset: after, pending: empty };
-
-  if (Buffer.byteLength(after) > 1_048_576) invalid("Invalid line cursor");
-  let raw: unknown;
-
-  try {
-    raw = JSON.parse(after);
-  } catch {
-    invalid("Invalid line cursor");
-  }
-
-  if (
-    !raw ||
-    typeof raw !== "object" ||
-    !("v" in raw) ||
-    raw.v !== 1 ||
-    !("offset" in raw) ||
-    typeof raw.offset !== "string" ||
-    !/^\d+$/.test(raw.offset) ||
-    !Number.isSafeInteger(Number(raw.offset)) ||
-    !("stdout" in raw) ||
-    typeof raw.stdout !== "string" ||
-    !("stderr" in raw) ||
-    typeof raw.stderr !== "string" ||
-    Buffer.byteLength(raw.stdout) > 65_536 ||
-    Buffer.byteLength(raw.stderr) > 65_536
-  )
-    invalid("Invalid line cursor");
-
-  return { offset: raw.offset, pending: { stdout: raw.stdout, stderr: raw.stderr } };
 }
 
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -186,25 +152,15 @@ export function makeProcesses(
       files.read(`${dir}/pid`),
     ]);
 
-    const raw: unknown = JSON.parse(record);
-
-    if (
-      !raw ||
-      typeof raw !== "object" ||
-      !("command" in raw) ||
-      typeof raw.command !== "string" ||
-      !("startedAt" in raw) ||
-      typeof raw.startedAt !== "number"
-    )
-      invalid("Invalid process record");
+    const spec = parseProcessRecord(record);
 
     return {
       name,
-      command: redactor.text(raw.command),
+      command: redactor.text(spec.command),
       status: exit === null ? "running" : exit === 0 ? "exited" : "failed",
       pid: Number(pid),
-      ports: "port" in raw && typeof raw.port === "number" ? [raw.port] : [],
-      startedAt: raw.startedAt,
+      ports: spec.port === undefined ? [] : [spec.port],
+      startedAt: spec.startedAt,
       exitCode: exit,
     };
   }
@@ -291,7 +247,7 @@ export function makeProcesses(
     let launch: (() => Promise<void>) | undefined;
 
     async function readEvents(options: { after?: string; maxBytes?: number } = {}) {
-      const position = linePosition(options.after).offset;
+      const position = parseLineCursor(options.after).offset;
 
       const requested = position === undefined ? undefined : Number(position),
         max = options.maxBytes ?? 16384;
@@ -353,17 +309,8 @@ export function makeProcesses(
         const separator = wire.indexOf("\0");
 
         if (separator < 0) invalid("Invalid process record");
-        const record: unknown = JSON.parse(wire.slice(0, separator));
-
-        if (
-          !record ||
-          typeof record !== "object" ||
-          !("command" in record) ||
-          typeof record.command !== "string" ||
-          !("startedAt" in record) ||
-          typeof record.startedAt !== "number"
-        )
-          invalid("Invalid process record");
+        // Validated only: a page from a corrupt record must fail like info() does.
+        parseProcessRecord(wire.slice(0, separator));
         const newline = wire.indexOf("\n", separator + 1);
         const header = wire.slice(separator + 1, newline).split(" ");
         base = Number(header[0]);
@@ -416,7 +363,7 @@ export function makeProcesses(
           };
         }),
       async *lines(options = {}) {
-        const position = linePosition(options.after);
+        const position = parseLineCursor(options.after);
         let cursor = position.offset;
         const pending = position.pending;
         const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
@@ -481,57 +428,8 @@ export function makeProcesses(
 
           if (!launch) {
             const current = await info(name);
-            const raw: unknown = JSON.parse(await files.read(`${dir}/restart.json`));
-
-            if (!raw || typeof raw !== "object") invalid("Invalid process restart record");
-            const options: StartOptions = { name };
-
-            if ("cwd" in raw && typeof raw.cwd === "string") options.cwd = raw.cwd;
-
-            if ("env" in raw && raw.env && typeof raw.env === "object") {
-              options.env = {};
-
-              for (const [key, value] of Object.entries(raw.env))
-                if (typeof value === "string") options.env[key] = value;
-            }
-
-            if ("readyTimeoutMs" in raw && typeof raw.readyTimeoutMs === "number")
-              options.readyTimeoutMs = raw.readyTimeoutMs;
-
-            if ("readiness" in raw && raw.readiness && typeof raw.readiness === "object") {
-              const ready = raw.readiness;
-
-              if ("log" in ready && typeof ready.log === "string")
-                options.ready = {
-                  log: new RegExp(
-                    ready.log,
-                    "flags" in ready && typeof ready.flags === "string" ? ready.flags : "",
-                  ),
-                };
-              else if ("port" in ready && typeof ready.port === "number")
-                options.ready = { port: ready.port };
-              else if (
-                "http" in ready &&
-                ready.http &&
-                typeof ready.http === "object" &&
-                "port" in ready.http &&
-                typeof ready.http.port === "number"
-              )
-                options.ready = {
-                  http: {
-                    port: ready.http.port,
-                    path:
-                      "path" in ready.http && typeof ready.http.path === "string"
-                        ? ready.http.path
-                        : undefined,
-                  },
-                };
-            }
-
-            await start(
-              "command" in raw && typeof raw.command === "string" ? raw.command : current.command,
-              options,
-            );
+            const record = parseRestartRecord(await files.read(`${dir}/restart.json`), name);
+            await start(record.command ?? current.command, record.options);
           } else await launch();
         }),
       wait: () =>
