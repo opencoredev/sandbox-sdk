@@ -12,8 +12,9 @@ export const python = (code: string, ...args: string[]) =>
  * travels with each command, so a missing, foreign or stale cache only means a
  * compile. A cache entry is used only when this user owns it, nobody else can
  * write it, and it was compiled from this exact source by this interpreter.
+ * `store` is the Python condition under which a compile writes the cache.
  */
-export function cachedPython(source: string, run = "exec(c,{'__name__':'__main__','__builtins__':__builtins__})"): string {
+export function cachedPython(source: string, run = "exec(c,{'__name__':'__main__','__builtins__':__builtins__})", store = "True"): string {
   // The source travels as a raw triple-quoted literal.
   if (source.includes("'''") || source.endsWith("\\")) throw new Error("Supervisor source cannot be embedded");
   const name = createHash("sha256").update(source).digest("hex").slice(0, 16);
@@ -28,8 +29,9 @@ try:
    k,c=marshal.load(f)
    if k!=(sys.version,s): c=None
 except Exception: c=None
-if c is None:
- c=compile(s,'<sandbox-sdk>','exec')
+w=c is None
+if w: c=compile(s,'<sandbox-sdk>','exec')
+if w and ${store}:
  t=p+'.'+str(os.getpid())
  try:
   with open(os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as f: marshal.dump(((sys.version,s),c),f)
@@ -181,11 +183,13 @@ def gone(c,start,claim):
  */
 export function zygotePython(source: string): string {
   if (zygoteServer.includes("'''")) throw new Error("Zygote source cannot be embedded");
-  // One-shot runs skip compiling the server: it is a string until --serve.
+  // One-shot runs skip compiling the server: it is a string until --serve. They
+  // also leave writing the bytecode cache to the zygote they start next, which
+  // takes that write off the command's critical path.
   return cachedPython(source, `if sys.argv[1:2]==['--serve']:
  exec(r'''${zygoteServer}''')
  serve(c,sys.argv[2])
-else: exec(c,{'__name__':'__main__','__builtins__':__builtins__})`);
+else: exec(c,{'__name__':'__main__','__builtins__':__builtins__})`, "sys.argv[1:2]==['--serve']");
 }
 /**
  * The shell command that runs `program` (from {@link zygotePython}) for one
