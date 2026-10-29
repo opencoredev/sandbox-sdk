@@ -7,7 +7,7 @@ import { quote } from "../src/providers/boxd/guest.js";
 const state = vi.hoisted(() => ({
   boxes: new Map<
     string,
-    { guest: MockGuest; metadata: Record<string, string>; createdAt: Date; status: string }
+    { guest: MockGuest; metadata: Record<string, string>; createdAt: Date; status: string; network?: unknown }
   >(),
   creates: 0,
   nativeTimeoutSeconds: 0,
@@ -20,11 +20,13 @@ const state = vi.hoisted(() => ({
   bootstrap: undefined as undefined | (() => Promise<void>),
   snapshotFailure: false,
   snapshotOptions: undefined as unknown,
+  dropNetwork: false,
+  previewAccess: [] as unknown[],
 }));
 vi.mock("@superserve/sdk", () => ({
   Sandbox: class {
     constructor(readonly id: string) {}
-    static async create(options: { metadata: Record<string, string> }) {
+    static async create(options: { metadata: Record<string, string>; network?: unknown }) {
       const guest = await MockGuest.create();
       state.creates++;
       state.createOptions = options;
@@ -33,6 +35,7 @@ vi.mock("@superserve/sdk", () => ({
         metadata: options.metadata,
         createdAt: new Date(),
         status: "active",
+        ...(options.network && !state.dropNetwork ? { network: options.network } : {}),
       });
       return new this(guest.id);
     }
@@ -193,7 +196,7 @@ v=sdk_paths(v)`;
         },
       };
     }
-    async publishPreviewPort() {}
+    async publishPreviewPort(_port: number, options: unknown) { state.previewAccess.push(options); }
     async getPreviewToken() {
       return { header: "x-preview", token: "mock" };
     }
@@ -218,8 +221,8 @@ test("fails closed before allocation for unsupported creation settings", async (
   for (const options of [
     { size: "small" },
     { size: { cpu: 1, memoryMb: 1024, diskGb: 4 } },
-    { network: "none" },
-    { network: { allow: ["example.com"] } },
+    { network: { allow: ["https://example.com"] } },
+    { network: { allow: ["example.com:443"] } },
     { timeoutMs: 1000 },
     { idleTimeoutMs: 1000 },
   ] satisfies Partial<Parameters<typeof p.create>[0]>[])
@@ -487,4 +490,57 @@ test("first file operation persists create environment for a fresh client", asyn
     try { expect((await reconnected.run('printf %s "$FIRST_FILE_ENV"')).stdout).toBe("persisted"); }
     finally { await reconnected.close(); }
   } finally { await box.destroy(); }
+});
+
+test("native lifetime, secret and preview options reach Sandbox.create in seconds", async () => {
+  const provider = superserve({ apiKey: "mock", autoPauseMs: 90_500, autoDeleteMs: 0, secretBindings: { OPENAI_API_KEY: "openai-prod" }, previewAccess: "public" });
+  const box = await provider.create({ labels: {} });
+  try {
+    expect(state.createOptions).toMatchObject({ timeoutSeconds: 91, autoDeleteSeconds: 0, secrets: { OPENAI_API_KEY: "openai-prod" }, previewAccess: "public" });
+    expect(state.createOptions).not.toHaveProperty("network");
+    expect(await provider.previewUrl(box.id, 3000)).toEqual({ url: "https://mock.invalid/3000" });
+    expect(state.previewAccess.at(-1)).toEqual({ access: "public" });
+  } finally { await provider.destroy(box.id); }
+  expect(() => superserve({ autoPauseMs: 0 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
+  expect(() => superserve({ autoDeleteMs: -1 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
+});
+test("network policy maps to Superserve egress rules and is confirmed after create", async () => {
+  const provider = factory();
+  expect(provider.capabilities.has("network-policy")).toBe(true);
+  for (const [network, expected] of [
+    ["none", { allowOut: [], denyOut: ["0.0.0.0/0"] }],
+    [{ allow: ["10.0.0.0/8", "1.2.3.4"] }, { allowOut: ["10.0.0.0/8", "1.2.3.4/32"], denyOut: ["0.0.0.0/0"] }],
+    [{ allow: ["registry.npmjs.org", "*.github.com"] }, { allowOut: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"], denyOut: ["0.0.0.0/0"] }],
+  ] as const) {
+    const box = await provider.create({ labels: {}, network });
+    try { expect(state.createOptions).toMatchObject({ network: expected }); }
+    finally { await provider.destroy(box.id); }
+  }
+  state.dropNetwork = true;
+  const before = state.boxes.size;
+  try { await expect(provider.create({ labels: {}, network: "none" })).rejects.toMatchObject({ code: "unsupported" }); }
+  finally { state.dropNetwork = false; }
+  expect(state.boxes.size).toBe(before);
+});
+test("restores apply the configured auto-pause instead of the inherited one", async () => {
+  const provider = superserve({ apiKey: "mock", autoPauseMs: 30_000 });
+  const before = state.updates.length;
+  state.nativeTimeoutSeconds = 60;
+  try {
+    const box = await provider.create({ labels: {}, from: "external-snapshot" });
+    try {
+      expect(state.createOptions).toMatchObject({ fromSnapshot: "external-snapshot", timeoutSeconds: 30 });
+      expect(state.updates.slice(before)).toEqual([{ timeoutSeconds: 30 }]);
+    } finally { await provider.destroy(box.id); }
+  } finally { state.nativeTimeoutSeconds = 0; }
+});
+test("snapshot rejects expiresInMs because Superserve keeps snapshots until deleted", async () => {
+  const provider = factory();
+  const box = await provider.create({ labels: {} });
+  try {
+    state.snapshotOptions = undefined;
+    await expect(provider.snapshot?.(box.id, { expiresInMs: 3_600_000 })).rejects.toMatchObject({ code: "unsupported" });
+    expect(state.snapshotOptions).toBeUndefined();
+    expect(await provider.snapshot?.(box.id, { expiresInMs: 0 })).toEqual({ id: "snapshot-1" });
+  } finally { await provider.destroy(box.id); }
 });

@@ -1,6 +1,6 @@
 /** @superserve/sdk 0.11.4; https://docs.superserve.ai/sdk-reference/sandbox */
-import type { Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
-import type { Provider, SandboxInfo } from "../../provider.js";
+import type { NetworkConfig, Sandbox, SandboxInfo as NativeInfo } from "@superserve/sdk";
+import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { files, python, type Guest } from "../boxd/guest.js";
 import { failure, superserveError } from "./errors.js";
@@ -23,8 +23,40 @@ export interface SuperserveOptions {
   installPython?: boolean;
   /** Native request deadline. Default: 90 s. */
   requestTimeoutMs?: number;
+  /** Auto-pause after this much active time per session, re-armed on resume. Rounded up to whole seconds. Default: never. */
+  autoPauseMs?: number;
+  /** Delete the sandbox once it has been paused this long; `0` deletes it as soon as it pauses. Rounded up to whole seconds. Default: never. */
+  autoDeleteMs?: number;
+  /** Bind stored Superserve secrets to env vars: `{ ENV_VAR: secretName }`. The sandbox sees a proxy token; the real value is attached at egress. */
+  secretBindings?: Record<string, string>;
+  /** Access for preview ports. `private` returns a token header with each preview; `public` URLs need none. Default: `private`. */
+  previewAccess?: "private" | "public";
 }
-export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot">;
+export type SuperserveProvider = Provider<Sandbox, "pause" | "snapshot" | "network-policy">;
+// Superserve resolves names through these; a domain allow-list needs them reachable.
+const resolvers = ["1.1.1.1/32", "8.8.8.8/32"];
+const cidr = (entry: string) => /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(entry);
+/** Maps SDK network policy to Superserve egress rules; undefined leaves egress open. */
+function egress(network: CreateInput["network"]): NetworkConfig | undefined {
+  if (network === undefined || network === "all") return undefined;
+  if (network === "none") return { allowOut: [], denyOut: ["0.0.0.0/0"] };
+  for (const entry of network.allow)
+    if (!cidr(entry) && !/^(\*\.)?(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(entry))
+      throw failure("Network allow entries must be hostnames, *.wildcards, IPv4 addresses or IPv4 CIDRs", "unsupported");
+  const allow = network.allow.map((entry) => (cidr(entry) && !entry.includes("/") ? `${entry}/32` : entry));
+  const domains = allow.some((entry) => !cidr(entry));
+  return { allowOut: [...new Set([...allow, ...(domains ? resolvers : [])])], denyOut: ["0.0.0.0/0"] };
+}
+function sameEgress(requested: NetworkConfig, actual: NetworkConfig | undefined) {
+  const same = (a: string[] = [], b: string[] = []) => a.length === b.length && a.every((x) => b.includes(x));
+  return same(requested.allowOut, actual?.allowOut) && same(requested.denyOut, actual?.denyOut);
+}
+const wholeSeconds = (value: number | undefined, label: string, zero: boolean) => {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0 || (!zero && value === 0))
+    throw failure(`${label} must be a ${zero ? "non-negative" : "positive"} integer of milliseconds`, "invalid_argument");
+  return Math.ceil(value / 1000);
+};
 export function superserve(options: SuperserveOptions = {}): SuperserveProvider {
   const boxes = new Map<string, Sandbox>();
   const environments = new Map<string, Record<string, string>>();
@@ -37,6 +69,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
     return { apiKey, baseUrl: options.baseUrl };
   };
   const timeout = options.requestTimeoutMs ?? 90000;
+  const autoPauseSeconds = wholeSeconds(options.autoPauseMs, "autoPauseMs", false);
+  const autoDeleteSeconds = wholeSeconds(options.autoDeleteMs, "autoDeleteMs", true);
+  const previewAccess = options.previewAccess ?? "private";
+  if (previewAccess !== "private" && previewAccess !== "public") throw failure("previewAccess must be private or public", "invalid_argument");
   async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
     try {
       return await action();
@@ -127,19 +163,15 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
     name: "superserve",
     keyMode: "best-effort",
     inlineActivity: true,
-    capabilities: new Set(["pause", "snapshot"]),
+    capabilities: new Set(["pause", "snapshot", "network-policy"]),
     create: (input) =>
       safe(undefined, async () => {
-        if (
-          input.size !== undefined ||
-          input.idleTimeoutMs !== undefined ||
-          input.timeoutMs !== undefined ||
-          (input.network && input.network !== "all")
-        )
+        if (input.size !== undefined || input.idleTimeoutMs !== undefined || input.timeoutMs !== undefined)
           throw failure(
-            "Template resources cannot be overridden; SDK idle/lifetime limits and network restrictions are not implemented",
+            "Template resources cannot be overridden, and Superserve has no idle or hard lifetime; use autoPauseMs and autoDeleteMs",
             "unsupported",
           );
+        const network = egress(input.network);
         if (!Number.isSafeInteger(timeout) || timeout <= 0)
           throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
@@ -158,7 +190,11 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             name: `sbxsdk-${crypto.randomUUID()}`,
             metadata,
             envVars: input.env,
-            previewAccess: "private",
+            previewAccess,
+            ...(network ? { network } : {}),
+            ...(autoPauseSeconds === undefined ? {} : { timeoutSeconds: autoPauseSeconds }),
+            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
+            ...(options.secretBindings && Object.keys(options.secretBindings).length ? { secrets: options.secretBindings } : {}),
             ...(input.from
               ? { fromSnapshot: input.from }
               : { fromTemplate: options.template ?? "superserve/node-22" }),
@@ -177,9 +213,12 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         try {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
           environments.set(box.id, { ...input.env });
-          if (input.from) {
+          if (input.from || network) {
             const details = await box.getInfo();
-            if (details.timeoutSeconds !== undefined) await box.update({ timeoutSeconds: null });
+            // Restores inherit the snapshot's auto-pause; keep only what this adapter asked for.
+            if (input.from && details.timeoutSeconds !== autoPauseSeconds) await box.update({ timeoutSeconds: autoPauseSeconds ?? null });
+            if (network && !sameEgress(network, details.network))
+              throw failure("Superserve did not confirm the requested egress rules", "unsupported", box.id);
           }
           return { id: box.id, key: input.key, labels: { ...input.labels, "sandbox-sdk": "1" }, createdAt, state: "running" };
         } catch (error) {
@@ -295,7 +334,8 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
     previewUrl: (id, port) =>
       safe(id, async () => {
         const box = await vm(id);
-        await box.publishPreviewPort(port, { access: "private" });
+        await box.publishPreviewPort(port, { access: previewAccess });
+        if (previewAccess === "public") return { url: box.getPreviewUrl(port) };
         const token = await box.getPreviewToken(port);
         return {
           url: box.getPreviewUrl(port),
@@ -311,8 +351,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       safe(id, async () => {
         await (await vm(id)).resume({ timeoutMs: timeout });
       }),
-    snapshot: (id) =>
+    snapshot: (id, snapshotOptions) =>
       safe(id, async () => {
+        if (snapshotOptions?.expiresInMs)
+          throw failure("Superserve keeps snapshots until they are deleted; omit expiresInMs", "unsupported", id);
         const name = `sbxsdk-${crypto.randomUUID()}`;
         try {
           return {
