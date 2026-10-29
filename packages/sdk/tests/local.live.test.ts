@@ -1,6 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { runConformance } from "../src/testing.js";
-import { createSandbox } from "../src/index.js";
+import { createSandbox, listSandboxes } from "../src/index.js";
 import { local } from "../src/providers/local/index.js";
 
 if (process.env.SANDBOX_LOCAL_LIVE === "1") {
@@ -54,10 +54,12 @@ if (process.env.SANDBOX_LOCAL_LIVE === "1") {
     const labels = { "review-lifecycle": crypto.randomUUID(), sbx57: "adapters-c-lifecycle" }; const provider = local(); const ids: string[] = [];
     try {
       const lifetime = await createSandbox(provider, { labels, timeoutMs: 60_000, idleTimeoutMs: 120_000 }); ids.push(lifetime.id);
-      expect(Number(lifetime.labels["sandbox-sdk.local.deadline"])).toBeGreaterThan(Date.now());
+      // The deadline is adapter bookkeeping, kept out of the labels callers see.
+      expect(lifetime.labels).toEqual({ ...labels, "sandbox-sdk": "1" });
+      const deadline = (await lifetime.usage()).createdAt + 60_000;
       expect((await lifetime.run("true")).ok).toBe(true);
       await lifetime.close();
-      await new Promise(resolve => setTimeout(resolve, Math.max(0, Number(lifetime.labels["sandbox-sdk.local.deadline"]) - Date.now() + 50)));
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now() + 50)));
       await expect(connectSandbox(local(), lifetime.id)).rejects.toMatchObject({ code: "not_found" });
       const idle = await createSandbox(provider, { labels, timeoutMs: 120_000, idleTimeoutMs: 10_000 }); ids.push(idle.id);
       const connected = await connectSandbox(local(), idle.id); expect(connected.id).toBe(idle.id); await connected.close(); await idle.close();
@@ -66,4 +68,21 @@ if (process.env.SANDBOX_LOCAL_LIVE === "1") {
       await expect(connectSandbox(local(), idle.id)).rejects.toMatchObject({ code: "not_found" });
     } finally { for (const id of ids) await provider.destroy(id); }
   }, 120_000);
+  describe("SBX-71 runtime behavior", () => {
+    test("labels hide adapter bookkeeping; a missing cwd fails as a shell error on stderr", async () => {
+      const provider = local(); const ids: string[] = [];
+      try {
+        const box = await createSandbox(provider, { labels: { verification: "sbx71" }, timeoutMs: 600_000, idleTimeoutMs: 600_000 }); ids.push(box.id);
+        expect(box.labels).toEqual({ verification: "sbx71", "sandbox-sdk": "1" });
+        const [listed] = await listSandboxes(local(), { labels: { verification: "sbx71" } });
+        expect(listed?.labels).toEqual({ verification: "sbx71", "sandbox-sdk": "1" });
+        const result = await box.run("pwd", { cwd: "nope" });
+        expect(result).toMatchObject({ ok: false, stdout: "", stderr: expect.stringMatching(/cd.*\/workspace\/nope/) });
+        expect(result.exitCode).not.toBe(127);
+        const process = await box.start("sleep 30", { name: "bad-cwd", cwd: "nope" });
+        expect(process.status).toBe("failed");
+        expect((await process.logs()).text).toMatch(/cd.*nope/);
+      } finally { for (const id of ids) await provider.destroy(id); }
+    }, 120_000);
+  });
 }

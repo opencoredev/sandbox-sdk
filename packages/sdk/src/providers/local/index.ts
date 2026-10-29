@@ -44,6 +44,10 @@ const deadlineLabel = "sandbox-sdk.local.deadline";
 const idleLabel = "sandbox-sdk.local.idle-ms";
 const activity = "/tmp/.sandbox-sdk-activity";
 const keyLabel = "sandbox-sdk.local.key";
+const snapshotLabel = "sandbox-sdk.local.snapshot";
+/** Adapter bookkeeping kept in Docker labels. Callers see only their labels and `sandbox-sdk`. A restored container inherits its image's snapshot label. */
+const internal = new Set([deadlineLabel, idleLabel, keyLabel, snapshotLabel]);
+const userLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => !internal.has(key)));
 const name = (key: string) => `sandbox-sdk-${createHash("sha256").update(key).digest("hex")}`;
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 const presets = { small: { cpu: 1, memoryMb: 1024 }, medium: { cpu: 2, memoryMb: 4096 }, large: { cpu: 4, memoryMb: 8192 } };
@@ -76,12 +80,14 @@ function hostOptions(options: LocalOptions) {
     ...(options.securityOpt?.length ? { SecurityOpt: options.securityOpt } : {}),
   };
 }
-function info(value: unknown): SandboxInfo {
+/** The container's info plus its raw labels, which carry the adapter's deadline and idle settings. */
+function inspected(value: unknown): { info: SandboxInfo; labels: Record<string, string> } {
   const raw = object(value); const config = object(raw.Config); const state = object(raw.State);
   const labels = Object.fromEntries(Object.entries(object(config.Labels ?? {})).map(([k, v]) => [k, string(v)]));
   if (labels["sandbox-sdk"] !== "1") throw failure("Container was not created by Sandbox SDK", "not_found");
-  return { id: string(raw.Id), key: labels[keyLabel] || undefined, labels, state: state.Paused ? "paused" : state.Running ? "running" : "stopped", createdAt: Date.parse(string(raw.Created)) };
+  return { info: { id: string(raw.Id), key: labels[keyLabel] || undefined, labels: userLabels(labels), state: state.Paused ? "paused" : state.Running ? "running" : "stopped", createdAt: Date.parse(string(raw.Created)) }, labels };
 }
+const info = (value: unknown): SandboxInfo => inspected(value).info;
 export type LocalProvider = Provider<LocalNative, LocalCapability>;
 /** Local Docker Engine transport. No Docker CLI or daemon inside the container. */
 export function local(options: LocalOptions = {}): LocalProvider {
@@ -147,13 +153,13 @@ export function local(options: LocalOptions = {}): LocalProvider {
         phases.createPrerequisiteMs = performance.now() - phase;
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         if (input.timeoutMs !== undefined || input.idleTimeoutMs !== undefined) return await provider.connect(id);
-        return { id, key: input.key, labels, state: "running", createdAt };
+        return { id, key: input.key, labels: userLabels(labels), state: "running", createdAt };
       } catch (error) { await provider.destroy(id); throw error; }
     },
     async find(key) { try { const found = await provider.connect(name(key)); return found.key === key ? found : undefined; } catch (error) { if (error instanceof SandboxError && error.code === "not_found") return undefined; throw error; } },
     async connect(id) {
-      const current = info(await inspect(id));
-      const deadline = Number(current.labels[deadlineLabel] ?? Infinity), idle = Number(current.labels[idleLabel] ?? Infinity);
+      const { info: current, labels } = inspected(await inspect(id));
+      const deadline = Number(labels[deadlineLabel] ?? Infinity), idle = Number(labels[idleLabel] ?? Infinity);
       if (Number.isFinite(deadline) || Number.isFinite(idle)) timers.add(current.id);
       let expired = Date.now() >= deadline;
       if (!expired && Number.isFinite(idle) && current.state === "running") {
@@ -194,9 +200,11 @@ export function local(options: LocalOptions = {}): LocalProvider {
       const cancellation = new Promise<"cancelled">(resolve => { cancel = () => { cancelled = true; resolve("cancelled"); }; });
       input.signal?.addEventListener("abort", cancel, { once: true });
       const timer = setTimeout(cancel, input.timeoutMs);
-      // The wrapper writes its session leader PID before running any user code.
-      const command = ["setsid", "--wait", "sh", "-c", `echo $$ > ${quote(pidfile)}; ${timers.has(id) ? `touch ${activity}; trap 'touch ${activity}' EXIT;` : ""} sh -c ${quote(input.command)}`];
-      const execution = client.exec(id, command, { cwd: input.cwd, env: input.env, stdin: input.stdin, onChunk: input.onChunk });
+      // The wrapper writes its session leader PID before running any user code. It
+      // changes directory itself: a missing cwd then fails as a shell error on stderr,
+      // not as Docker's OCI chdir error on stdout.
+      const command = ["setsid", "--wait", "sh", "-c", `echo $$ > ${quote(pidfile)}; ${timers.has(id) ? `touch ${activity}; trap 'touch ${activity}' EXIT;` : ""} cd ${quote(input.cwd)} || exit; sh -c ${quote(input.command)}`];
+      const execution = client.exec(id, command, { env: input.env, stdin: input.stdin, onChunk: input.onChunk });
       void execution.catch(() => {});
       try {
         await Promise.race([execution, cancellation]);
@@ -237,7 +245,7 @@ export function local(options: LocalOptions = {}): LocalProvider {
     async resume(id) { await provider.connect(id); await client.call("POST", `/containers/${encode(id)}/unpause`); },
     async snapshot(id, options) {
       if (options?.expiresInMs) throw failure("Docker images do not expire; omit expiresInMs and delete the snapshot image when you are done", "unsupported");
-      await provider.connect(id); const value = object(await client.call("POST", `/commit?container=${encode(id)}&pause=true`, { Labels: { "sandbox-sdk": "1", "sandbox-sdk.local.snapshot": "1" } })); return { id: string(value.Id) }; },
+      await provider.connect(id); const value = object(await client.call("POST", `/commit?container=${encode(id)}&pause=true`, { Labels: { "sandbox-sdk": "1", [snapshotLabel]: "1" } })); return { id: string(value.Id) }; },
   };
   return provider;
 }
