@@ -585,3 +585,15 @@ describe("boxd native options (SBX-71)", () => {
     } finally { await provider.destroy(created.id); }
   });
 });
+
+test("a missing file is file_not_found for read, edit and remove, like the other providers", async () => {
+  const box = await createSandbox(factory());
+  try {
+    await box.run("true");
+    for (const action of [() => box.files.read("missing.txt"), () => box.files.edit("missing.txt", { find: "a", replace: "b" }), () => box.files.remove("missing.txt"), () => box.files.remove("missing-dir/x.txt", { recursive: true })])
+      await expect(action()).rejects.toMatchObject({ code: "file_not_found", provider: "boxd" });
+    await box.files.write("present.txt", "x");
+    await box.files.remove("present.txt");
+    expect(await box.files.exists("present.txt")).toBe(false);
+  } finally { await box.destroy(); }
+});

@@ -13,7 +13,7 @@ function frame(payload: Uint8Array) {
   result.set(payload, 5);
   return result;
 }
-async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing") {
+async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing" | "nofile") {
   let behavior = stall;
   let responseDelay = 0;
   let arrived = () => {};
@@ -38,6 +38,10 @@ async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing") 
       res.write(Buffer.from([0]));
     } else if (behavior === "missing") {
       res.writeHead(200, { "grpc-status": "5", "grpc-message": "private-native-detail" });
+      res.end();
+    } else if (behavior === "nofile") {
+      // boxd's wording for a missing guest path; a missing VM is "VM not found".
+      res.writeHead(200, { "grpc-status": "5", "grpc-message": encodeURIComponent("no such file on sbxsdk-private: /workspace/private.txt") });
       res.end();
     } else if (behavior === "none") {
       res.writeHead(200, { "content-type": "application/grpc-web+proto", "grpc-status": "0" });
@@ -199,3 +203,44 @@ for (const kind of ["upload", "download"] as const) {
     await expect(pending).rejects.toHaveProperty("cause", expect.stringMatching(/^\w+ gRPC \d+$/));
   });
 }
+
+for (const kind of ["upload", "download"] as const) {
+  test(`${kind} of a missing guest path is file_not_found without its path`, async () => {
+    const server = await fixture("nofile");
+    const client = transfers(server.baseURL);
+    const pending = kind === "upload" ? client.upload("machine-id", "/file", new Uint8Array(4)) : client.download("machine-id", "/file");
+    await expect(pending).rejects.toMatchObject({ code: "file_not_found", sandboxId: "machine-id" });
+    await expect(pending).rejects.not.toHaveProperty("cause", expect.stringContaining("private"));
+  });
+}
+
+test("with no SDK file on disk for a worker, as in a bundle, transfers run in this thread", async () => {
+  const server = await fixture("none");
+  const client = transfers(server.baseURL, undefined, 2000);
+  // What webModuleURL() finds when import.meta.url is empty and the app directory has no node_modules.
+  Reflect.set(client, "moduleURL", null);
+  const workers = vi.spyOn(Worker.prototype, "postMessage");
+  expect(await client.upload("machine", "/file", new Uint8Array(4 * 1024 * 1024))).toBe(4 * 1024 * 1024);
+  expect(await client.download("machine", "/file")).toEqual(new Uint8Array([0, 255, 42]));
+  expect(workers).not.toHaveBeenCalled();
+  workers.mockRestore();
+  const missing = await fixture("nofile");
+  const direct = transfers(missing.baseURL);
+  Reflect.set(direct, "moduleURL", null);
+  await expect(direct.download("machine-id", "/file")).rejects.toMatchObject({ code: "file_not_found", sandboxId: "machine-id" });
+});
+
+test("in this thread, a stalled transfer still settles the caller at its deadline and on abort", async () => {
+  const server = await fixture("body");
+  const client = transfers(server.baseURL, undefined, 300);
+  Reflect.set(client, "moduleURL", null);
+  await expect(deadline<unknown>(client.download("machine", "/file"))).rejects.toMatchObject({ code: "timeout", sandboxId: "machine" });
+  const controller = new AbortController();
+  const aborting = transfers(server.baseURL, controller.signal, 10_000);
+  Reflect.set(aborting, "moduleURL", null);
+  const pending = aborting.download("machine", "/file");
+  const result = expect(pending).rejects.toMatchObject({ code: "aborted" });
+  await deadline(server.started);
+  controller.abort();
+  await result;
+});

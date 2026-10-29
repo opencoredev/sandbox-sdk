@@ -41,6 +41,10 @@ export function boxdError(error: unknown, sandboxId?: string): SandboxError {
     /^exec timed out after \d+ms$/.test(error.message)
   )
     return failure("boxd request timed out", "timeout", sandboxId, describe("timeout").cause);
+  // gRPC NOT_FOUND covers both a missing VM ("VM not found") and a missing guest path
+  // ("no such file on <machine>: <path>"). Only the latter is a file_not_found.
+  if (error instanceof Error && /\bno such file\b/i.test(error.message))
+    return failure("File does not exist", "file_not_found", sandboxId, describe("file_not_found").cause);
   const code =
     typeof status === "number"
       ? (codes[status] ?? "provider")
