@@ -6,8 +6,10 @@
 //     bundle must contain no provider SDK.
 //   - Types: a consumer file with positive and @ts-expect-error checks compiles under NodeNext and bundler
 //     resolution, with skipLibCheck true and false.
-//   - Provider subpaths in `noPeerProviders` (adapters that call their API directly) import and build a
-//     provider without any peer installed. Builders add their provider here when they drop its peer.
+//   - Provider subpaths in `noPeerProviders` (adapters that call their API directly) run for real without any
+//     peer installed: each creates a sandbox, lists it, runs a command, writes and reads a file, and destroys
+//     it, against the same local fake its own test suite uses (tests/nopeer-fakes.ts, bundled into the app).
+//     Builders add their provider here, and to the fakes, when they drop its peer.
 //
 //   bun scripts/consumer-smoke-nopeers.ts             build, pack and check
 //   SKIP_BUILD=1 bun scripts/consumer-smoke-nopeers.ts reuse dist
@@ -66,11 +68,26 @@ const markers = [/node_modules\//, /@license\b/];
 const suspicious = distFiles.filter((file) => markers.some((pattern) => pattern.test(readFileSync(join(distDir, file), "utf8"))));
 check("dist contains no bundled dependency code", suspicious.length === 0, suspicious.join(", "));
 
-// Step 4: the consumer app. Plain ESM JavaScript so every runtime runs the same file.
+// Step 4: the provider fakes, bundled from the workspace into one file next to the app. Their `vitest` imports
+// resolve to a small shim, and the bundle must not contain any provider SDK: only the tarball serves the app.
+const { build } = await import("esbuild");
+const fakes = await build({
+  entryPoints: [join(sdkDir, "tests/nopeer-fakes.ts")], absWorkingDir: sdkDir, bundle: true, platform: "node", format: "esm", target: "node22",
+  outfile: join(consumerDir, "fakes.mjs"), alias: { vitest: join(sdkDir, "tests/vitest-shim.ts") }, metafile: true, logLevel: "error",
+});
+const fakeInputs = Object.keys(fakes.metafile.inputs);
+// zod validates requests inside the Boat fake; it is no provider SDK and the app never imports it.
+const bundledSdks = externalPackages.filter((name) => name !== "zod" && fakeInputs.some((input) => input.includes(`node_modules/${name}/`)));
+check("the provider fakes bundle no provider SDK", bundledSdks.length === 0, bundledSdks.join(", "));
+const missingFakes = noPeerProviders.filter((name) => !readFileSync(join(sdkDir, "tests/nopeer-fakes.ts"), "utf8").includes(`  ${name}: {`));
+check("every no-peer provider has a fake", missingFakes.length === 0, missingFakes.join(", "));
+
+// Step 5: the consumer app. Plain ESM JavaScript so every runtime runs the same file.
 const app = String.raw`import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { SandboxError } from "${pkg.name}";
+import { SandboxError, createSandbox } from "${pkg.name}";
 import { createHttpClient, createNativeApi, sdkCall, sdkConstruct } from "${pkg.name}/provider";
+import { startFakes } from "./fakes.mjs";
 
 const seen = [];
 let flaky = 0;
@@ -140,33 +157,56 @@ try {
   assert.ok((await api.sdk(async () => ({ FakeClient }))) instanceof FakeClient);
   await assert.rejects(native.sdk(async () => ({ Other: FakeClient })), error => error instanceof SandboxError && error.code === "invalid_argument");
 
-  // One literal import per provider, so a bundler can follow each one.
-${noPeerProviders.map(subpath => `  assert.equal(typeof (await import("${pkg.name}/${subpath}")).${subpath}, "function", "${subpath} exports its factory");`).join("\n")}
   console.log("native api ok on " + (globalThis.Bun ? "bun " + Bun.version : "node " + process.version));
 } finally {
   server.close();
 }
+
+// Each converted provider's real code paths, from the installed tarball, against its local fake.
+const fakes = await startFakes();
+async function drive(name, factory) {
+  const provider = factory(fakes.options[name]);
+  const box = await createSandbox(provider, { labels: { smoke: name } });
+  try {
+    assert.ok((await provider.list({ smoke: name })).some(info => info.id === box.id), name + " lists the sandbox");
+    const result = await box.run("echo hello-" + name + " && echo warn >&2");
+    assert.deepEqual([result.exitCode, result.stdout.trim(), result.stderr.trim()], [0, "hello-" + name, "warn"], name + " runs a command");
+    await box.files.write("smoke/data.txt", "data-" + name + "-é");
+    assert.equal(await box.files.read("smoke/data.txt"), "data-" + name + "-é", name + " reads back the file it wrote");
+  } finally {
+    await box.destroy();
+  }
+  assert.ok(!(await provider.list({ smoke: name })).some(info => info.id === box.id), name + " destroyed the sandbox");
+  console.log("provider ok " + name);
+}
+try {
+  // One literal import per provider, so a bundler can follow each one.
+${noPeerProviders.map(subpath => `  await drive("${subpath}", (await import("${pkg.name}/${subpath}")).${subpath});`).join("\n")}
+} finally {
+  await fakes.close();
+}
+console.log("providers ok: ${noPeerProviders.join(", ")}");
 `;
 writeFileSync(join(consumerDir, "native.mjs"), app);
+const passed = (output: string) => output.includes("native api ok") && output.includes(`providers ok: ${noPeerProviders.join(", ")}`);
 function run(label: string, command: string, args: string[]) {
   const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8" });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  check(label, result.status === 0 && output.includes("native api ok"), output.split("\n").slice(-3).join(" | "));
+  check(label, result.status === 0 && passed(output), output.split("\n").slice(-3).join(" | "));
 }
 const node22 = process.env.NODE22 ? [process.env.NODE22] : ["npx", "-y", "node@22"];
 run("Node 22 runs the consumer app", node22[0]!, [...node22.slice(1), "native.mjs"]);
 run(`current Node (${process.versions.node ? spawnSync("node", ["--version"], { encoding: "utf8" }).stdout.trim() : "?"}) runs the consumer app`, "node", ["native.mjs"]);
 run(`Bun ${Bun.version} runs the consumer app`, "bun", ["native.mjs"]);
 
-// Step 5: the same app bundled as split ESM, with the tarball as the only package in reach.
-const { build } = await import("esbuild");
+// Step 6: the same app bundled as split ESM, with the tarball as the only package in reach.
 const bundleDir = join(workDir, "bundle");
 await build({ entryPoints: [join(consumerDir, "native.mjs")], absWorkingDir: consumerDir, bundle: true, platform: "node", format: "esm", splitting: true, outdir: bundleDir, logLevel: "error", banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
 writeFileSync(join(bundleDir, "package.json"), '{ "type": "module" }');
 const bundled = spawnSync("node", ["native.js"], { cwd: bundleDir, timeout: 120_000, encoding: "utf8" });
-check("an esbuild split-ESM bundle runs the consumer app", bundled.status === 0 && bundled.stdout.includes("native api ok"), `${bundled.stdout}${bundled.stderr}`.trim().split("\n").slice(-3).join(" | "));
+check("an esbuild split-ESM bundle runs the consumer app", bundled.status === 0 && passed(bundled.stdout), `${bundled.stdout}${bundled.stderr}`.trim().split("\n").slice(-3).join(" | "));
 
-// Step 6: types, with positive and negative checks, in four configurations.
+// Step 7: types, with positive and negative checks, in four configurations.
 const types = `import { createSandbox, type NativeApi, type NativeRequestOptions, type HttpMethod, type ProviderSandbox } from "${pkg.name}";
 import { createHttpClient, createNativeApi, type Provider } from "${pkg.name}/provider";
 import { memory } from "${pkg.name}/memory";
