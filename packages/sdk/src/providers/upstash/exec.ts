@@ -1,5 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
-import type { Box, ExecSessionHandle } from "@upstash/box";
+import type { ExecSessionHandle } from "@upstash/box";
+import type { UpstashBox as Box } from "./provider.js";
 import { SandboxError } from "../../errors.js";
 import { upstashError } from "./errors.js";
 import { quote } from "../../shared/shell.js";

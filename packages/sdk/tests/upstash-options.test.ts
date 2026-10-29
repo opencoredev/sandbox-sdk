@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { upstash } from "../src/providers/upstash/index.js";
 import { createSandbox } from "../src/index.js";
-import { cleanup, state } from "./upstash-mock.js";
-
-vi.mock("@upstash/box", async () => {
-  const mock = await import("./upstash-mock.js");
-
-  return { Box: mock.MockBox, EphemeralBox: mock.MockEphemeralBox };
-});
+import { cleanup, state, upstash } from "./upstash-mock.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 

@@ -6,6 +6,7 @@ import { SandboxError, invalid } from "./errors.js";
 import { BufferCap } from "./run.js";
 import { isString } from "./core/guards.js";
 import { redactToolText, toolOutputFilter } from "./tool-security.js";
+import type { JsonValue } from "./shared/json.js";
 
 const text = z.string();
 const positive = z.number().int().positive();
@@ -213,7 +214,7 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
       description: descriptions[tool],
       inputSchema: schema,
       async execute(
-        input: unknown,
+        input: JsonValue,
         emit?: (event: ToolEvent) => void,
         signal?: AbortSignal,
       ): Promise<ToolResult> {

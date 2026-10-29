@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { Session } from "@tenkicloud/sandbox";
+import type { TenkiSession as Session } from "./provider.js";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
 import { workspaceSetup } from "./ready.js";

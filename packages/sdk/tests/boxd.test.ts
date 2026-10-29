@@ -1,48 +1,54 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { boxdState, MockBoxd } from "./cloud-guest-mock.js";
+import { ExecStream } from "@boxd-sh/sdk";
+import { boxd as mockBoxd, boxdState, MockBoxd } from "./cloud-guest-mock.js";
 import { isString } from "../src/shared/narrow.js";
-
-const mocks = vi.hoisted(() => ({
-  web: new Array<MockBoxd>(),
-  snapshotCreate: vi.fn(),
-  snapshotGet: vi.fn(),
-  snapshotDelete: vi.fn(),
-  setEgressAllow: vi.fn(async (_id: string, entries: string[]) => entries),
-}));
-
-vi.mock("@boxd-sh/sdk", () => ({
-  Boxd: class extends MockBoxd {
-    snapshots = {
-      create: mocks.snapshotCreate,
-      get: mocks.snapshotGet,
-      delete: mocks.snapshotDelete,
-    };
-    egress = Object.assign(this.machines, { setEgressAllow: mocks.setEgressAllow });
-  },
-}));
-
-vi.mock("../src/providers/boxd/transfers.js", () => ({
-  FileTransfers: class {
-    private client = new MockBoxd();
-    constructor() {
-      mocks.web.push(this.client);
-    }
-    upload(id: string, path: string, bytes: Uint8Array) {
-      return this.client.machines.files.upload(id, path, bytes);
-    }
-    download(id: string, path: string) {
-      return this.client.machines.files.download(id, path);
-    }
-    async close() {}
-    async closeMachine() {}
-    async releaseIdle() {}
-  },
-}));
-
-import { boxd } from "../src/providers/boxd/index.js";
+import type { BoxdClient, BoxdOptions, BoxdTransfers } from "../src/providers/boxd/provider.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
 import { createSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+
+type Snapshots = BoxdClient["snapshots"];
+
+const mocks = {
+  web: new Array<MockBoxd>(),
+  snapshotCreate: vi.fn<Snapshots["create"]>(),
+  snapshotGet: vi.fn<Snapshots["get"]>(),
+  snapshotDelete: vi.fn<Snapshots["delete"]>(),
+  setEgressAllow: vi.fn(async (_id: string, entries: string[]) => entries),
+};
+
+/** The boxd client fixture: Linux-backed machines plus spied snapshot and egress calls. */
+class TestBoxd extends MockBoxd {
+  override snapshots = {
+    create: mocks.snapshotCreate,
+    get: mocks.snapshotGet,
+    delete: mocks.snapshotDelete,
+  };
+  constructor() {
+    super();
+    this.machines.setEgressAllow = mocks.setEgressAllow;
+  }
+}
+
+/** Whole-file transfers through an in-process mock client instead of worker threads. */
+class TestTransfers implements BoxdTransfers {
+  private client = new MockBoxd();
+  constructor() {
+    mocks.web.push(this.client);
+  }
+  upload(id: string, path: string, bytes: Uint8Array) {
+    return this.client.machines.files.upload(id, path, bytes);
+  }
+  download(id: string, path: string) {
+    return this.client.machines.files.download(id, path);
+  }
+  async closeMachine() {}
+  async releaseIdle() {}
+}
+
+function boxd(options: BoxdOptions) {
+  return mockBoxd(options, TestBoxd, () => new TestTransfers());
+}
 
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
@@ -205,7 +211,6 @@ test("plain BoxdError local exec deadline maps to timeout without native details
 });
 
 test("cancellation before launch is confirmed by preventing a late command", async () => {
-  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
   const native = box.native.client;
   let cancelled = false;
@@ -237,7 +242,6 @@ test("cancellation before launch is confirmed by preventing a late command", asy
 });
 
 test("cancellation waits for the native terminal event", async () => {
-  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
   let terminated = false;
 
@@ -265,7 +269,6 @@ test("cancellation waits for the native terminal event", async () => {
 });
 
 test("stdout and stderr preserve native wire arrival order", async () => {
-  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
 
   const stream = new ExecStream({
@@ -320,7 +323,6 @@ test("cancellation waits through native TERM grace and escalates transport-only 
 });
 
 test("cleanup failure preserves unconfirmed cancellation", async () => {
-  const { ExecStream } = await vi.importActual<typeof import("@boxd-sh/sdk")>("@boxd-sh/sdk");
   const box = await createSandbox(factory());
   const stream = new ExecStream({ write() {}, end() {}, resize() {}, cancel() {} });
   const native = box.native.client;

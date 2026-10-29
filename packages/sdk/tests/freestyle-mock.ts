@@ -1,5 +1,10 @@
 import { promises as fs } from "node:fs";
+import * as freestyleSdk from "freestyle";
 import { MockGuest } from "./cloud-guest-mock.js";
+import {
+  createFreestyleProvider,
+  type FreestyleOptions,
+} from "../src/providers/freestyle/provider.js";
 import type {
   CreateVmOptions,
   VmData,
@@ -98,7 +103,7 @@ export class MockVm {
 
     const mapping = `
 def sdk_paths(value):
- if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(this.guest.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/var/lib/"+"sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/var/lib/sandbox-sdk").toString("hex")}").decode())
+ if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(this.guest.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/var/lib/"+"sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/var/lib/sandbox-sdk").toString("hex")}").decode()).replace("/tmp/"+"sdk-bare",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/sdk-bare").toString("hex")}").decode())
  if isinstance(value,list): return [sdk_paths(x) for x in value]
  if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
  return value
@@ -239,4 +244,12 @@ export async function cleanupFreestyle() {
     ),
   );
   freestyleState.snapshots.clear();
+}
+
+/** The Freestyle adapter with this fixture in place of the SDK's client. */
+export function freestyle(options: FreestyleOptions = {}) {
+  return createFreestyleProvider(options, async () => ({
+    ...freestyleSdk,
+    Freestyle: MockFreestyle,
+  }));
 }

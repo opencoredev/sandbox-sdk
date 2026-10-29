@@ -1,12 +1,5 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { MockFreestyle, freestyleState, cleanupFreestyle } from "./freestyle-mock.js";
-
-vi.mock("freestyle", async () => ({
-  ...(await vi.importActual("freestyle")),
-  Freestyle: MockFreestyle,
-}));
-
-import { freestyle } from "../src/providers/freestyle/index.js";
+import { freestyle, freestyleState, cleanupFreestyle } from "./freestyle-mock.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -28,7 +21,6 @@ vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 runConformance(factory, {
   live: true,
   unsupported: {
-    gitPush: "The mock guest shares the host /tmp/sdk-bare across runs",
     httpProbe: "Mock freestyle preview URLs point at an unreachable host",
   },
 });
@@ -394,10 +386,6 @@ test.each(["missing", "outdated"])(
       expect(native.guest.commands.length - before).toBe(0);
       await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
       const clients = Array.from({ length: 8 }, () => factory());
-
-      // Warm the mocked dynamic import serially: Vitest can expose importActual
-      // while its async mock factory is resolving concurrent imports.
-      for (const client of clients) await client.list({});
       await Promise.all(clients.map((client) => client.connect(box.id)));
       expect((await box.run("echo ready")).stdout).toBe("ready\n");
     } finally {

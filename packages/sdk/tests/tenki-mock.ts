@@ -9,14 +9,22 @@ import { createServer } from "node:net";
 import type {
   ClientOptions,
   CreateOptions,
+  FileInfo,
   ProcessRunOptions,
   ProcessRunResult,
   Session,
   TenkiSandbox,
 } from "@tenkicloud/sandbox";
 import { isObject, isString } from "../src/shared/narrow.js";
+import {
+  createTenkiProvider,
+  type TenkiDataPlane,
+  type TenkiOptions,
+  type TenkiRunRequest,
+  type TenkiRunResponse,
+} from "../src/providers/tenki/provider.js";
 
-type DataPlane = Awaited<ReturnType<Session["requireDataPlane"]>>;
+type DataPlane = TenkiDataPlane;
 
 type WriteStreamOptions = { mode?: number; truncate?: boolean };
 
@@ -70,6 +78,15 @@ export class MockSession {
   diskSizeGb: number;
   outboundEnabled: boolean;
   egress: Session["egress"];
+  // No native metadata API: stat and list fail, so the adapter answers from the guest.
+  fs = {
+    stat: async (_path: string): Promise<FileInfo> => {
+      throw new Error("native metadata is not mocked");
+    },
+    list: async (_path: string): Promise<FileInfo[]> => {
+      throw new Error("native metadata is not mocked");
+    },
+  };
   private constructor(
     readonly root: string,
     readonly params: CreateOptions,
@@ -273,9 +290,9 @@ export class MockSession {
   get requireDataPlane() {
     if (!tenkiState.streaming) return undefined;
 
-    type Requests = Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0];
-
-    return async () => ({ run: (requests: Requests) => this.frames(requests) });
+    return async () => ({
+      run: (requests: AsyncIterable<TenkiRunRequest>) => this.frames(requests),
+    });
   }
   async reauthOnUnauthenticated(_error: Parameters<Session["reauthOnUnauthenticated"]>[0]) {
     return false;
@@ -288,8 +305,8 @@ export class MockSession {
   }
   markDataPlaneServing(_plane: DataPlane) {}
   private async *frames(
-    requests: Parameters<Awaited<ReturnType<Session["requireDataPlane"]>>["run"]>[0],
-  ) {
+    requests: AsyncIterable<TenkiRunRequest>,
+  ): AsyncGenerator<TenkiRunResponse> {
     tenkiState.streamAttempts++;
     const beforeExit = tenkiState.streamExitWaits.shift();
     const failure = tenkiState.streamFailures.shift();
@@ -486,4 +503,9 @@ export async function cleanupTenki() {
     createSnapshot: [],
     list: [],
   };
+}
+
+/** The Tenki adapter with this fixture in place of the SDK's client. */
+export function tenki(options: TenkiOptions = {}) {
+  return createTenkiProvider(options, async () => ({ TenkiSandbox: MockTenki }));
 }

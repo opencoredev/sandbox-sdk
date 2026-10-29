@@ -1,5 +1,5 @@
 import { guestProcess } from "../../shared/guest.js";
-import type { Box } from "@upstash/box";
+import type { UpstashBox as Box } from "./provider.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { defaults } from "../../run.js";
