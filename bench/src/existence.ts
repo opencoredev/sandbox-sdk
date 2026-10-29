@@ -1,14 +1,15 @@
 import { z } from "zod";
 import { createRequire } from "node:module";
+import type { BoatApi, Configuration } from "@boatdev/sdk";
+import type { Boxd } from "@boxd-sh/sdk";
+import type { Daytona } from "@daytonaio/sdk";
+import type { LocalNative } from "@opencoredev/sandbox-sdk/local";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import {
-  call,
-  construct,
-  member,
-  nativeSchema,
-  optionalNativeClass,
-  type NativeArgument,
-} from "./native.js";
+import type { Snapshot } from "@superserve/sdk";
+import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { Box } from "@upstash/box";
+import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
+import type { Freestyle } from "freestyle";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -61,7 +62,6 @@ export function lookupError(cause: unknown, name: string, method: string): Looku
 
   const boxdMissing =
     name === "boxd" &&
-    boxdNotFound !== undefined &&
     cause instanceof boxdNotFound &&
     outer.success &&
     outer.data.grpcCode === 5 &&
@@ -89,34 +89,118 @@ export function lookupError(cause: unknown, name: string, method: string): Looku
   return evidence;
 }
 
-async function sdk(name: string): Promise<object> {
-  return import(
-    import.meta.resolve(name, new URL("../../packages/sdk/package.json", import.meta.url).href)
-  );
+/**
+ * The parts of each native SDK the bench calls, typed by the SDK itself: the installed module, or
+ * a test fake.
+ */
+export interface NativeModules {
+  e2b: {
+    Sandbox: Pick<typeof Sandbox, "getInfo" | "deleteSnapshot"> & {
+      listSnapshots(opts?: SnapshotListOpts): Pick<SnapshotPaginator, "hasNext" | "nextItems">;
+    };
+    SandboxNotFoundError: abstract new (...args: never[]) => Error;
+  };
+  "@daytonaio/sdk": {
+    Daytona: new (...args: ConstructorParameters<typeof Daytona>) => {
+      readonly snapshot: Pick<Daytona["snapshot"], "get" | "list" | "delete">;
+    };
+  };
+  "@upstash/box": { Box: Pick<typeof Box, "get" | "deleteSnapshots"> };
+  "@boatdev/sdk": {
+    Configuration: new (...args: ConstructorParameters<typeof Configuration>) => Configuration;
+    BoatApi: new (...args: ConstructorParameters<typeof BoatApi>) => Pick<BoatApi, "get">;
+  };
+  "@boxd-sh/sdk": {
+    Boxd: new (...args: ConstructorParameters<typeof Boxd>) => {
+      readonly machines: Pick<Boxd["machines"], "get">;
+      readonly snapshots: Pick<Boxd["snapshots"], "get" | "delete">;
+    };
+  };
+  freestyle: {
+    Freestyle: new (...args: ConstructorParameters<typeof Freestyle>) => {
+      readonly vms: Pick<Freestyle["vms"], "get"> & {
+        readonly snapshots: Pick<Freestyle["vms"]["snapshots"], "get" | "delete">;
+      };
+    };
+  };
+  "@tenkicloud/sandbox": {
+    TenkiSandbox: new (
+      ...args: ConstructorParameters<typeof TenkiSandbox>
+    ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
+  };
+  "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
+}
+
+/** The installed SDKs. Each must satisfy its `NativeModules` entry, which `sdk` checks. */
+interface InstalledModules {
+  e2b: typeof import("e2b");
+  "@daytonaio/sdk": typeof import("@daytonaio/sdk");
+  "@upstash/box": typeof import("@upstash/box");
+  "@boatdev/sdk": typeof import("@boatdev/sdk");
+  "@boxd-sh/sdk": typeof import("@boxd-sh/sdk");
+  freestyle: typeof import("freestyle");
+  "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
+  "@superserve/sdk": typeof import("@superserve/sdk");
+}
+
+type NativePackage = keyof NativeModules;
+
+const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
+
+// Resolve from the SDK package so the bench shares the adapters' module instances.
+async function sdk<P extends NativePackage>(name: P): Promise<NativeModules[P]> {
+  const installed: InstalledModules[P] = await import(import.meta.resolve(name, sdkPackage.href));
+
+  return installed;
 }
 
 // Match the installed native class, never an error name/message or an arbitrary gRPC-shaped object.
-const boxdNotFound = member(
-  nativeSchema.parse(
-    await import(
-      createRequire(new URL("../../packages/sdk/package.json", import.meta.url)).resolve(
-        "@boxd-sh/sdk",
-      )
-    ),
-  ),
-  "NotFoundError",
-  optionalNativeClass,
+const { NotFoundError: boxdNotFound }: typeof import("@boxd-sh/sdk") = await import(
+  createRequire(sdkPackage).resolve("@boxd-sh/sdk")
 );
 
+/** Loads installed native SDKs; tests replace `load`. */
 export const nativeModules = { load: sdk };
 
-/** Load an installed native SDK through `nativeModules`, which tests replace. */
-export async function loadNative(name: string) {
-  return nativeSchema.parse(await nativeModules.load(name));
+/** `local().native(id)`: the adapter's handle on its Docker container. */
+type LocalHandle = { readonly client: Pick<LocalNative["client"], "call"> };
+
+/**
+ * Whether a native handle is the local adapter's. `Provider` erases the handle's type, so this
+ * checks the one member the bench calls.
+ */
+function isLocalHandle(handle: unknown): handle is LocalHandle {
+  return (
+    typeof handle === "object" &&
+    handle !== null &&
+    "client" in handle &&
+    typeof handle.client === "object" &&
+    handle.client !== null &&
+    "call" in handle.client &&
+    typeof handle.client.call === "function"
+  );
 }
 
-async function client(pkg: string, key: string, options?: NativeArgument) {
-  return construct(await loadNative(pkg), key, options);
+/** The Docker client behind a local sandbox. */
+export function localDocker(provider: Provider, id: string) {
+  const handle = provider.native(id);
+
+  if (!isLocalHandle(handle)) throw new Error("Local native handle unavailable");
+
+  return handle.client;
+}
+
+/** The one read the bench makes on Daytona's generated sandbox API; its response is decoded. */
+type DaytonaSandboxApi = { getSandbox(id: string): Promise<object> };
+
+/** Whether a value is Daytona's sandbox API. The SDK declares that field private and untyped. */
+function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
+  return (
+    typeof api === "object" &&
+    api !== null &&
+    "getSandbox" in api &&
+    typeof api.getSandbox === "function"
+  );
 }
 
 const lookupKeys = new Map([
@@ -159,85 +243,76 @@ export async function lookupSandbox(
       if (key && !process.env[key]) throw new Error("Native lookup credentials unavailable");
 
       switch (name) {
-        case "tenki":
-          return call(
-            await client("@tenkicloud/sandbox", "TenkiSandbox", {
-              authToken: process.env.TENKI_API_KEY,
-            }),
-            "get",
-            [id],
-            nativeInfo,
-          );
+        case "tenki": {
+          const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
+          const tenki = new TenkiSandbox({ authToken: process.env.TENKI_API_KEY });
+
+          return nativeInfo.parse(await tenki.get(id));
+        }
+
         case "upstash": {
-          const box = await call(
-            member(await loadNative("@upstash/box"), "Box", nativeSchema),
-            "get",
-            [id],
-            nativeSchema,
-          );
+          const { Box } = await nativeModules.load("@upstash/box");
+          const box = await Box.get(id);
 
           if (box.id !== id) throw new Error("Native lookup ID mismatch");
 
-          const { status } = await call(box, "getStatus", [], z.object({ status: z.string() }));
+          const { status } = z.object({ status: z.string() }).parse(await box.getStatus());
 
           return { id, status };
         }
 
         case "e2b": {
-          const mod = await loadNative("e2b");
+          const { Sandbox, SandboxNotFoundError } = await nativeModules.load("e2b");
 
           try {
-            return await call(
-              member(mod, "Sandbox", nativeSchema),
-              "getInfo",
-              [id, { apiKey: process.env.E2B_API_KEY }],
-              nativeInfo,
-            );
+            return nativeInfo.parse(await Sandbox.getInfo(id, { apiKey: process.env.E2B_API_KEY }));
           } catch (error) {
-            const NotFound = member(mod, "SandboxNotFoundError", optionalNativeClass);
-
-            if (NotFound !== undefined && error instanceof NotFound)
+            if (error instanceof SandboxNotFoundError)
               throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
             throw error;
           }
         }
 
         case "daytona": {
-          // Daytona.get also hydrates the toolbox URL. A missing toolbox is not a missing sandbox.
-          const daytona = await client("@daytonaio/sdk", "Daytona");
-          const sandboxApi = member(daytona, "sandboxApi", nativeSchema);
-          const response = await call(sandboxApi, "getSandbox", [id], nativeSchema);
+          const { Daytona } = await nativeModules.load("@daytonaio/sdk");
+          const daytona = new Daytona();
 
-          return member(response, "data", nativeInfo);
+          // Daytona.get also hydrates the toolbox URL. A missing toolbox is not a missing sandbox.
+          const sandboxApi = "sandboxApi" in daytona ? daytona.sandboxApi : undefined;
+
+          if (!isDaytonaSandboxApi(sandboxApi)) throw new Error("Daytona sandbox API unavailable");
+
+          const response = z.object({ data: nativeInfo }).parse(await sandboxApi.getSandbox(id));
+
+          return response.data;
         }
 
         case "boxd": {
-          const boxd = await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY });
+          const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
+          const boxd = new Boxd({ apiKey: process.env.BOXD_API_KEY });
 
-          return call(member(boxd, "machines", nativeSchema), "get", [id], nativeInfo);
+          return nativeInfo.parse(await boxd.machines.get(id));
         }
 
         case "freestyle": {
-          const freestyle = await client("freestyle", "Freestyle", {
-            apiKey: process.env.FREESTYLE_API_KEY,
-          });
+          const { Freestyle } = await nativeModules.load("freestyle");
+          const freestyle = new Freestyle({ apiKey: process.env.FREESTYLE_API_KEY });
 
-          return call(member(freestyle, "vms", nativeSchema), "get", [id], nativeInfo);
+          return nativeInfo.parse(await freestyle.vms.get(id));
         }
 
         case "boat": {
-          const mod = await loadNative("@boatdev/sdk");
+          const { BoatApi, Configuration } = await nativeModules.load("@boatdev/sdk");
 
-          const config = construct(mod, "Configuration", {
+          const config = new Configuration({
             accessToken: process.env.BOAT_API_KEY,
             basePath: process.env.BOAT_API_BASE ?? "https://boat.dev/api/v1",
             fetchApi: (url: string, init?: RequestInit) => fetch(url, { ...init, signal }),
           });
 
-          const api = construct(mod, "BoatApi", config);
-          const response = await call(api, "get", [{ sandboxId: id }], nativeSchema);
+          const response = await new BoatApi(config).get({ sandboxId: id });
 
-          return member(response, "sandbox", nativeInfo);
+          return nativeInfo.parse(response.sandbox);
         }
 
         case "superserve": {
@@ -253,13 +328,14 @@ export async function lookupSandbox(
           return nativeInfo.parse(await response.json());
         }
 
-        case "local":
-          return call(
-            member(nativeSchema.parse(provider.native(id)), "client", nativeSchema),
-            "call",
-            ["GET", `/containers/${encodeURIComponent(id)}/json`],
-            nativeInfo,
+        case "local": {
+          const docker = localDocker(provider, id);
+
+          return nativeInfo.parse(
+            await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`),
           );
+        }
+
         default:
           throw new Error("Native lookup unavailable");
       }

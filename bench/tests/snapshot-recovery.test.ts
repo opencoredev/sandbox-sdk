@@ -6,7 +6,7 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import * as snapshots from "../src/snapshots.js";
-import { nativeModules } from "../src/existence.js";
+import { fakeNativeModules } from "./native-fakes.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 
@@ -146,13 +146,14 @@ it.each([400, 401, 503])("does not retry an unrelated HTTP %i error", async (sta
 it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
   "reads %s snapshot identity/source without a live parent",
   async (name) => {
-    const get = vi.fn(async () => ({
+    // One record carrying every provider's source field; each provider reads its own.
+    const get = vi.fn().mockResolvedValue({
       id: "snapshot",
       sourceSandboxId: "source",
       sessionId: "source",
       sourceVmId: "source",
       sandboxId: "source",
-    }));
+    });
 
     const provider = {
       ...memory(),
@@ -161,21 +162,40 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
       },
     };
 
-    const sdk = class {
-      snapshot = { get };
-      snapshots = { get };
-      vms = { snapshots: { get } };
-      getSnapshot = get;
+    const page = {
+      hasNext: false,
+      nextItems: vi.fn().mockResolvedValue([{ snapshotId: "snapshot" }]),
     };
 
-    const page = { hasNext: false, nextItems: async () => [{ snapshotId: "snapshot" }] };
-    vi.spyOn(nativeModules, "load").mockResolvedValue({
-      Daytona: sdk,
-      Boxd: sdk,
-      TenkiSandbox: sdk,
-      Freestyle: sdk,
-      Snapshot: { get },
-      Sandbox: { listSnapshots: () => page },
+    fakeNativeModules({
+      e2b: {
+        Sandbox: { listSnapshots: () => page, getInfo: vi.fn(), deleteSnapshot: vi.fn() },
+        SandboxNotFoundError: class extends Error {},
+      },
+      "@daytonaio/sdk": {
+        Daytona: class {
+          snapshot = { get, list: vi.fn(), delete: vi.fn() };
+        },
+      },
+      "@boxd-sh/sdk": {
+        Boxd: class {
+          machines = { get: vi.fn() };
+          snapshots = { get, delete: vi.fn() };
+        },
+      },
+      "@tenkicloud/sandbox": {
+        TenkiSandbox: class {
+          get = vi.fn();
+          getSnapshot = get;
+          deleteSnapshot = vi.fn();
+        },
+      },
+      freestyle: {
+        Freestyle: class {
+          vms = { get: vi.fn(), snapshots: { get, delete: vi.fn() } };
+        },
+      },
+      "@superserve/sdk": { Snapshot: { get, list: vi.fn(), deleteById: vi.fn() } },
     });
     expect(await snapshots.inspectSnapshot(name, provider, "source", "snapshot")).toEqual(
       name === "e2b" ? { exists: true } : { exists: true, sourceId: "source" },
@@ -184,8 +204,15 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
 );
 
 it("does not mistake a missing E2B list entry for definitive absence", async () => {
-  vi.spyOn(nativeModules, "load").mockResolvedValue({
-    Sandbox: { listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }) },
+  fakeNativeModules({
+    e2b: {
+      Sandbox: {
+        listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }),
+        getInfo: vi.fn(),
+        deleteSnapshot: vi.fn(),
+      },
+      SandboxNotFoundError: class extends Error {},
+    },
   });
   await expect(snapshots.inspectSnapshot("e2b", memory(), "source", "snapshot")).rejects.toThrow(
     "absence unproven",
@@ -197,7 +224,7 @@ it.each([true, false])(
   async (recorded) => {
     const out = await directory();
     const provider = memory();
-    const remove = vi.fn(async () => {});
+    const remove = vi.fn().mockResolvedValue(undefined);
 
     const inspect = vi
       .spyOn(snapshots.snapshotMetadata, "inspect")
@@ -205,7 +232,12 @@ it.each([true, false])(
 
     vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(remove);
     // Production cleanup uses the native loader; both paths share the same exact-ID guard.
-    vi.spyOn(nativeModules, "load").mockResolvedValue({ Sandbox: { deleteSnapshot: remove } });
+    fakeNativeModules({
+      e2b: {
+        Sandbox: { deleteSnapshot: remove, getInfo: vi.fn(), listSnapshots: vi.fn() },
+        SandboxNotFoundError: class extends Error {},
+      },
+    });
     await writeFile(
       join(out, "ownership.json"),
       JSON.stringify({
@@ -268,12 +300,19 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
     exists: true,
     sourceId: source.id,
   });
-  vi.spyOn(nativeModules, "load").mockResolvedValue({
-    Sandbox: {
-      deleteSnapshot: async () => {
-        expect((await backing.list({})).map((info) => info.id)).toEqual([source.id]);
-        events.push("snapshot");
+  fakeNativeModules({
+    e2b: {
+      Sandbox: {
+        deleteSnapshot: async () => {
+          expect((await backing.list({})).map((info) => info.id)).toEqual([source.id]);
+          events.push("snapshot");
+
+          return true;
+        },
+        getInfo: vi.fn(),
+        listSnapshots: vi.fn(),
       },
+      SandboxNotFoundError: class extends Error {},
     },
   });
   await writeFile(

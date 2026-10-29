@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { Json } from "../json.js";
-import { call, construct, member, nativeSchema } from "../native.js";
 import type { OwnedSandbox } from "./input.js";
 
 const money = z.number().finite().nonnegative();
@@ -321,20 +320,14 @@ type BoxdQuery = (
 async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
   const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
 
-  const module = nativeSchema.parse(
-    await import(pathToFileURL(require.resolve("@boxd-sh/sdk")).href),
+  const { Boxd }: typeof import("@boxd-sh/sdk") = await import(
+    pathToFileURL(require.resolve("@boxd-sh/sdk")).href
   );
 
-  const client = construct(module, "Boxd", {
-    apiKey: env.BOXD_API_KEY,
-    timeout: 15_000,
-    maxRetries: 0,
-  });
+  const { orgs } = new Boxd({ apiKey: env.BOXD_API_KEY, timeout: 15_000, maxRetries: 0 });
 
-  // Native SDK methods live on prototypes, so `call` keeps `orgs` as the receiver.
-  const orgs = member(client, "orgs", nativeSchema);
-
-  return (method, params) => call(orgs, method, [params], nativeSchema);
+  // Native SDK methods live on prototypes, so each call keeps `orgs` as the receiver.
+  return (method, params) => orgs[method](params);
 }
 
 export async function readBoxdAccount(

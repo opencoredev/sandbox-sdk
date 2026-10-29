@@ -1,29 +1,32 @@
 import { z } from "zod";
+import type { Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { loadNative, lookupError } from "./existence.js";
-import {
-  call,
-  construct,
-  member,
-  nativeSchema,
-  type Native,
-  type NativeArgument,
-} from "./native.js";
+import { localDocker, lookupError, nativeModules } from "./existence.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
-const ignored = z.unknown();
+async function daytonaSnapshots() {
+  const { Daytona } = await nativeModules.load("@daytonaio/sdk");
 
-async function client(moduleName: string, exportName: string, options: NativeArgument) {
-  return construct(await loadNative(moduleName), exportName, options);
+  return new Daytona().snapshot;
 }
 
-function nativeHandle(provider: Provider, sandboxId: string) {
-  return nativeSchema.parse(provider.native(sandboxId));
+async function boxdSnapshots() {
+  const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
+
+  return new Boxd({ apiKey: process.env.BOXD_API_KEY }).snapshots;
 }
 
-function child(target: Native, name: string) {
-  return member(target, name, nativeSchema);
+async function freestyleSnapshots() {
+  const { Freestyle } = await nativeModules.load("freestyle");
+
+  return new Freestyle({ apiKey: process.env.FREESTYLE_API_KEY }).vms.snapshots;
+}
+
+async function tenkiClient() {
+  const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
+
+  return new TenkiSandbox({ authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN });
 }
 
 export async function snapshotCleaner(
@@ -32,80 +35,84 @@ export async function snapshotCleaner(
   sandboxId: string,
 ): Promise<(id: string) => Promise<void>> {
   if (name === "superserve") {
-    const c = child(await loadNative("@superserve/sdk"), "Snapshot");
+    const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
     return async (id) => {
-      await call(c, "deleteById", [id], ignored);
+      await Snapshot.deleteById(id);
     };
   }
 
   if (name === "local") {
-    const c = child(nativeHandle(provider, sandboxId), "client");
+    const docker = localDocker(provider, sandboxId);
 
     return async (id) => {
-      await call(c, "call", ["DELETE", `/images/${encodeURIComponent(id)}`], ignored);
+      await docker.call("DELETE", `/images/${encodeURIComponent(id)}`);
     };
   }
 
   if (name === "boxd") {
     // A fresh client: cleanup can run after the source machine is gone, when the adapter's native handle is not.
-    const c = child(
-      await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY }),
-      "snapshots",
-    );
+    const snapshots = await boxdSnapshots();
 
     return async (id) => {
-      await call(c, "delete", [id], ignored);
+      await snapshots.delete(id);
     };
   }
 
   if (name === "upstash") {
-    const c = child(await loadNative("@upstash/box"), "Box");
+    const { Box } = await nativeModules.load("@upstash/box");
 
     return async (id) => {
-      await call(c, "deleteSnapshots", [{ snapshotIds: [id] }], ignored);
+      await Box.deleteSnapshots({ snapshotIds: [id] });
     };
   }
 
   if (name === "e2b") {
-    const c = child(await loadNative("e2b"), "Sandbox");
+    const { Sandbox } = await nativeModules.load("e2b");
 
     return async (id) => {
-      await call(c, "deleteSnapshot", [id], ignored);
+      await Sandbox.deleteSnapshot(id);
     };
   }
 
   if (name === "daytona") {
-    const c = child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
+    const snapshots = await daytonaSnapshots();
 
     return async (id) => {
-      await call(c, "delete", [id], ignored);
+      await snapshots.delete(id);
     };
   }
 
   if (name === "freestyle") {
-    const freestyle = await client("freestyle", "Freestyle", {
-      apiKey: process.env.FREESTYLE_API_KEY,
-    });
-
-    const c = child(child(freestyle, "vms"), "snapshots");
+    const snapshots = await freestyleSnapshots();
 
     return async (id) => {
-      await call(c, "delete", [id], ignored);
+      await snapshots.delete(id);
     };
   }
 
   if (name === "tenki") {
-    const c = await client("@tenkicloud/sandbox", "TenkiSandbox", {
-      authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN,
-    });
+    const tenki = await tenkiClient();
 
     return async (id) => {
-      await call(c, "deleteSnapshot", [id], ignored);
+      await tenki.deleteSnapshot(id);
     };
   }
 
   throw new Error("Snapshot cleanup not registered");
+}
+
+/** The Daytona adapter's native handle, as far as snapshot creation uses it. */
+type DaytonaHandle = Pick<DaytonaSandbox, "createSnapshot">;
+
+/** Whether a native handle can create a Daytona snapshot. `Provider` erases the handle's type. */
+function isDaytonaHandle(handle: unknown): handle is DaytonaHandle {
+  return (
+    typeof handle === "object" &&
+    handle !== null &&
+    "createSnapshot" in handle &&
+    typeof handle.createSnapshot === "function"
+  );
 }
 
 /** Name Daytona snapshots before creation for scoped timeout recovery; match the adapter's ten-minute completion budget. */
@@ -114,14 +121,18 @@ export async function createNamedDaytonaSnapshot(
   sandboxId: string,
   name: string,
 ) {
-  await call(nativeHandle(provider, sandboxId), "createSnapshot", [name, 600], ignored);
+  const handle = provider.native(sandboxId);
+
+  if (!isDaytonaHandle(handle)) throw new Error("Daytona native handle unavailable");
+
+  await handle.createSnapshot(name, 600);
 
   return { id: name };
 }
 
 /** Narrow recovery query for snapshots of a sandbox whose run ownership was already established. */
 export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
-  const c = child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot");
+  const snapshots = await daytonaSnapshots();
 
   const pageSchema = z.object({
     items: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -131,7 +142,7 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
   const items: { id: string; name: string }[] = [];
 
   for (let page = 1; page <= 100; page++) {
-    const data = await call(c, "list", [{ sourceSandboxId, page, limit: 100 }], pageSchema);
+    const data = pageSchema.parse(await snapshots.list({ sourceSandboxId, page, limit: 100 }));
     items.push(...data.items);
 
     if (page >= data.totalPages) return items;
@@ -144,12 +155,11 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
 export async function snapshotsFromSource(provider: string, sourceSandboxId: string) {
   if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
 
-  return call(
-    child(await loadNative("@superserve/sdk"), "Snapshot"),
-    "list",
-    [sourceSandboxId],
-    z.array(z.object({ id: z.string(), name: z.string().optional() })),
-  );
+  const { Snapshot } = await nativeModules.load("@superserve/sdk");
+
+  return z
+    .array(z.object({ id: z.string(), name: z.string().optional() }))
+    .parse(await Snapshot.list(sourceSandboxId));
 }
 
 const snapshotInfo = z.object({
@@ -176,20 +186,11 @@ export async function inspectSnapshot(
 
     switch (name) {
       case "e2b": {
-        const page = await call(
-          child(await loadNative("e2b"), "Sandbox"),
-          "listSnapshots",
-          [{ name: id, limit: 100 }],
-          nativeSchema,
-        );
+        const { Sandbox } = await nativeModules.load("e2b");
+        const page = Sandbox.listSnapshots({ name: id, limit: 100 });
 
         for (let index = 0; index < 100; index++) {
-          const items = await call(
-            page,
-            "nextItems",
-            [],
-            z.array(z.object({ snapshotId: z.string() })),
-          );
+          const items = z.array(z.object({ snapshotId: z.string() })).parse(await page.nextItems());
 
           if (items.some((item) => item.snapshotId === id)) return { exists: true };
 
@@ -200,52 +201,41 @@ export async function inspectSnapshot(
         throw new Error("Snapshot metadata pagination exhausted");
       }
 
-      case "daytona":
-        info = await call(
-          child(await client("@daytonaio/sdk", "Daytona", undefined), "snapshot"),
-          "get",
-          [id],
-          snapshotInfo,
-        );
-        break;
-      case "boxd":
-        info = await call(
-          child(
-            await client("@boxd-sh/sdk", "Boxd", { apiKey: process.env.BOXD_API_KEY }),
-            "snapshots",
-          ),
-          "get",
-          [id],
-          snapshotInfo,
-        );
-        break;
-      case "tenki":
-        info = await call(
-          await client("@tenkicloud/sandbox", "TenkiSandbox", {
-            authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN,
-          }),
-          "getSnapshot",
-          [id],
-          snapshotInfo,
-        );
-        break;
-      case "freestyle": {
-        const freestyle = await client("freestyle", "Freestyle", {
-          apiKey: process.env.FREESTYLE_API_KEY,
-        });
+      case "daytona": {
+        const snapshots = await daytonaSnapshots();
 
-        info = await call(child(child(freestyle, "vms"), "snapshots"), "get", [id], snapshotInfo);
+        info = snapshotInfo.parse(await snapshots.get(id));
         break;
       }
 
-      case "superserve":
-        info = await call(
-          child(await loadNative("@superserve/sdk"), "Snapshot"),
-          "get",
-          [id],
-          snapshotInfo,
-        );
+      case "boxd": {
+        const snapshots = await boxdSnapshots();
+
+        info = snapshotInfo.parse(await snapshots.get(id));
         break;
+      }
+
+      case "tenki": {
+        const tenki = await tenkiClient();
+
+        info = snapshotInfo.parse(await tenki.getSnapshot(id));
+        break;
+      }
+
+      case "freestyle": {
+        const snapshots = await freestyleSnapshots();
+
+        info = snapshotInfo.parse(await snapshots.get(id));
+        break;
+      }
+
+      case "superserve": {
+        const { Snapshot } = await nativeModules.load("@superserve/sdk");
+
+        info = snapshotInfo.parse(await Snapshot.get(id));
+        break;
+      }
+
       case "upstash": {
         const response = await fetch(
           `${process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com"}/v2/box/snapshots`,
@@ -265,11 +255,10 @@ export async function inspectSnapshot(
       }
 
       case "local": {
-        await call(
-          child(nativeHandle(provider, sourceId), "client"),
-          "call",
-          ["GET", `/images/${encodeURIComponent(id)}/json`],
-          z.object({ Id: z.string() }),
+        const docker = localDocker(provider, sourceId);
+
+        z.object({ Id: z.string() }).parse(
+          await docker.call("GET", `/images/${encodeURIComponent(id)}/json`),
         );
 
         return { exists: true };
