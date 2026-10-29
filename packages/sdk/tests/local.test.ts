@@ -202,3 +202,33 @@ describe("local native options (SBX-71)", () => {
     } finally { docker.restore(); }
   });
 });
+
+test.each([undefined, 5_000])("a restore from a snapshot does not inherit the source's deadline or idle timer (idleTimeoutMs %s)", async idleTimeoutMs => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  // Docker merges the image's labels into the container's, and the snapshot carries the source's activity file.
+  const image = { "sandbox-sdk": "1", "sandbox-sdk.local.deadline": String(Date.now() - 1000), "sandbox-sdk.local.idle-ms": "100", "sandbox-sdk.local.snapshot": "1" };
+  let labels: Record<string, string> = {}; const calls: string[] = [];
+  const call = vi.spyOn(Docker.prototype, "call").mockImplementation(async (method, path, body) => {
+    calls.push(`${method} ${path}`);
+    if (path.startsWith("/images/")) return { Os: "linux", Architecture: "amd64", Config: { Labels: image } };
+    if (path.startsWith("/containers/create")) { labels = { ...image, ...(body as { Labels: Record<string, string> }).Labels }; return { Id: "restored" }; }
+    return { Id: "restored", Created: new Date().toISOString(), Config: { Labels: labels }, State: { Running: true } };
+  });
+  // Run the real idle-check script against a guest with no runs and an activity file from a minute ago.
+  const fs = { existsSync: (path: string) => path === "/tmp/.sandbox-sdk-activity", statSync: () => ({ mtimeMs: Date.now() - 60_000 }), readdirSync: () => [] };
+  const exec = vi.spyOn(Docker.prototype, "exec").mockImplementation(async (_, command, options) => {
+    let text = "";
+    new Function("require", "process", command[2] ?? "")(() => fs, { stdout: { write: (value: string) => { text += value; } } });
+    options.onChunk({ stream: "stdout", text });
+    return 0;
+  });
+  try {
+    const provider = local();
+    const restored = await provider.create({ labels: {}, from: "sha256:snap", idleTimeoutMs });
+    expect(restored.labels).toEqual({ "sandbox-sdk": "1" });
+    await expect(provider.connect("restored")).resolves.toMatchObject({ id: "restored" });
+    await expect(local().connect("restored")).resolves.toMatchObject({ id: "restored" });
+    expect(calls.some(path => path.startsWith("DELETE"))).toBe(false);
+  } finally { call.mockRestore(); exec.mockRestore(); }
+});

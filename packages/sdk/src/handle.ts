@@ -37,7 +37,8 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
     redactor.add(Object.values(recovered));
     Object.assign(baseEnv, recovered, options.env, options.secrets);
   }
-  const guard = async () => { check(); await ready(); };
+  // Recovery can be slow, and close or destroy can land while it runs, so check again once it settles, even if it failed.
+  const guard = async () => { check(); await ready().finally(check); };
   const files = makeFiles(provider, info.id, redactor, check, ready);
   const namesPath = "/tmp/.sandbox-sdk/secret-names.json";
   if (created) {
@@ -59,18 +60,18 @@ export async function makeHandle<N>(provider: Provider<N>, info: SandboxInfo, cr
   const processes = makeProcesses(provider, info.id, makeFiles(provider, info.id, redactor), redactor, baseEnv);
   // direct skips recovery: lifecycle calls must work on a sandbox that cannot run commands.
   const direct = async <T>(action: () => Promise<T>) => { check(); try { return await action(); } catch (error) { throw redactor.error(error, provider.name, info.id); } };
-  const safe = <T>(action: () => Promise<T>) => direct(async () => { await ready(); return action(); });
+  const safe = <T>(action: () => Promise<T>) => direct(async () => { await guard(); return action(); });
   // Process handles read logs and env, so each call waits for recovery. One wrapper per handle keeps identity stable.
   const gated = new WeakMap<ProcessHandle, ProcessHandle>();
   const gate = (handle: ProcessHandle): ProcessHandle => {
     const known = gated.get(handle); if (known) return known;
     const wrapper: ProcessHandle = {
       get name() { return handle.name; }, get url() { return handle.url; }, get ready() { return handle.ready; }, get status() { return handle.status; },
-      logs: async options => { await direct(ready); return handle.logs(options); },
-      async *lines(options) { await direct(ready); yield* handle.lines(options); },
-      stop: async options => { await direct(ready); return handle.stop(options); },
-      restart: async () => { await direct(ready); return handle.restart(); },
-      wait: async () => { await direct(ready); return handle.wait(); },
+      logs: async options => { await direct(guard); return handle.logs(options); },
+      async *lines(options) { await direct(guard); yield* handle.lines(options); },
+      stop: async options => { await direct(guard); return handle.stop(options); },
+      restart: async () => { await direct(guard); return handle.restart(); },
+      wait: async () => { await direct(guard); return handle.wait(); },
     };
     gated.set(handle, wrapper); return wrapper;
   };

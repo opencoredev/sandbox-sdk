@@ -96,10 +96,11 @@ export class Redactor {
   get maxLength() { return Math.max(1, ...[...this.values].map(value => value.length)); }
   error(error: unknown, provider: string, sandboxId?: string): SandboxError {
     if (error instanceof SandboxError) {
-      return new SandboxError(this.text(error.message), {
-        code: error.code, retryable: error.retryable, hint: this.text(error.hint), provider, sandboxId,
+      // Adapters build these from native text, so scrub them too. Messages keep their lines and length: log tails live there.
+      return new SandboxError(scrubCredentials(this.text(error.message)), {
+        code: error.code, retryable: error.retryable, hint: scrubCredentials(this.text(error.hint)), provider, sandboxId,
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
-        cause: error.cause === undefined ? undefined : this.text(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+        cause: error.cause === undefined ? undefined : scrub(this.text(error.cause instanceof Error ? error.cause.message : String(error.cause))),
       });
     }
     // A raw failure reached the core, usually an SDK or adapter bug. Its scrubbed text is the only clue, so keep it in both places.
@@ -115,12 +116,14 @@ const credentialPatterns: [RegExp, string][] = [
   [/(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi, "$1[REDACTED]"],
   [/\bBearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]"],
   [/((?:["']?(?:api[-_]?key|access[-_]?token|token|password|secret)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, "$1[REDACTED]"],
-  [/\p{Cc}+/gu, " "],
 ];
+function scrubCredentials(text: string): string {
+  for (const [pattern, replacement] of credentialPatterns) text = text.replace(pattern, replacement);
+  return text;
+}
 /** @internal Removes credential-shaped text (URLs, auth headers, key=value secrets, control characters) and bounds the length. */
 export function scrub(text: string): string {
-  for (const [pattern, replacement] of credentialPatterns) text = text.replace(pattern, replacement);
-  return text.slice(0, 1000);
+  return scrubCredentials(text).replace(/\p{Cc}+/gu, " ").slice(0, 1000);
 }
 /**
  * @internal `Name: message` of a native failure, redacted, scrubbed and bounded, with up to two nested causes.

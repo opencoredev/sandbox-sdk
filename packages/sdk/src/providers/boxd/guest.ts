@@ -11,18 +11,22 @@ export const guestProcess = `def stdin_file():
   import tempfile
   return tempfile.TemporaryFile()
 class Process:
+ # A missing cwd fails the command, not the supervisor: the shell reports it on stderr and exits 2.
+ def argv(self,v):
+  try: os.chdir(v['cwd']); return ['sh','-c',v['command']]
+  except OSError: return ['sh','-c','cd "$1" || exit 2','sh',v['cwd']]
  def __init__(self,v,env,stdin,session=False):
   if not all(hasattr(os,name) for name in ['posix_spawn','waitstatus_to_exitcode']):
    self.legacy(v,env,stdin,session); return
   directory=os.open('.',os.O_RDONLY)
   r,w=os.pipe(); e,x=os.pipe()
   try:
-   os.chdir(v['cwd'])
+   argv=self.argv(v)
    error=FileNotFoundError(2,os.strerror(2),'sh')
    signals=[getattr(signal,s) for s in ['SIGPIPE','SIGXFZ','SIGXFSZ'] if hasattr(signal,s)]
    for path in os.get_exec_path(env):
     try:
-     self.pid=os.posix_spawn(os.path.join(path,'sh'),['sh','-c',v['command']],env,file_actions=[(os.POSIX_SPAWN_DUP2,stdin.fileno(),0),(os.POSIX_SPAWN_DUP2,w,1),(os.POSIX_SPAWN_DUP2,x,2)],setsid=session,setsigdef=signals)
+     self.pid=os.posix_spawn(os.path.join(path,'sh'),argv,env,file_actions=[(os.POSIX_SPAWN_DUP2,stdin.fileno(),0),(os.POSIX_SPAWN_DUP2,w,1),(os.POSIX_SPAWN_DUP2,x,2)],setsid=session,setsigdef=signals)
      break
     except (FileNotFoundError,NotADirectoryError): pass
     except OSError as failure:
@@ -40,7 +44,9 @@ class Process:
   self.code=None
  def legacy(self,v,env,stdin,session):
   import subprocess
-  self.child=subprocess.Popen(['sh','-c',v['command']],cwd=v['cwd'],env=env,stdin=stdin,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=session)
+  directory=os.open('.',os.O_RDONLY)
+  try: self.child=subprocess.Popen(self.argv(v),env=env,stdin=stdin,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=session)
+  finally: os.fchdir(directory); os.close(directory)
   self.pid=self.child.pid; self.stdout=self.child.stdout; self.stderr=self.child.stderr
  def poll(self):
   if hasattr(self,'child'): return self.child.poll()
