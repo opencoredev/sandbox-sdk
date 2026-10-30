@@ -171,9 +171,17 @@ export function makeProcesses(
   ): Promise<Preview> {
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       invalid("Port must be between 1 and 65535");
-    const access = await provider.previewUrl(id, port);
+    // Copy the provider's result: some adapters cache it, and a path must not leak into later calls.
+    const access = { ...(await provider.previewUrl(id, port)) };
 
-    if (options.path) access.url = new URL(options.path, access.url).toString();
+    if (options.path) {
+      const base = new URL(access.url);
+      const target = new URL(options.path, base);
+
+      // An absolute or protocol-relative path would hand the provider's headers to another host.
+      if (target.origin !== base.origin) invalid("Preview path must stay on the preview's origin");
+      access.url = target.toString();
+    }
 
     if (options.waitMs !== undefined) {
       const end = Date.now() + options.waitMs;
