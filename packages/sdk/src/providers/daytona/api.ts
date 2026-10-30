@@ -62,7 +62,7 @@ export interface DaytonaHttpOptions {
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const optional = <T>(value: unknown, test: (value: unknown) => value is T): T | undefined =>
+const optional = <T>(value: unknown, test: (cause: unknown) => cause is T): T | undefined =>
   test(value) ? value : undefined;
 
 const isString = (value: unknown): value is string => typeof value === "string";

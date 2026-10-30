@@ -344,7 +344,11 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
 
       return {
         client,
-        sandbox: isObject(response) ? Reflect.get(response, "sandbox") : undefined,
+        sandbox: isObject(response)
+          ? "sandbox" in response
+            ? response.sandbox
+            : undefined
+          : undefined,
       };
     },
   };

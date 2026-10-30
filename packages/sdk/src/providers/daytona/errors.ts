@@ -23,7 +23,8 @@ interface Evidence {
 }
 
 const isEvidence = (cause: unknown): cause is Error & Evidence =>
-  cause instanceof Error && typeof Reflect.get(cause, "operation") === "string";
+  cause instanceof Error &&
+  typeof ("operation" in cause ? cause.operation : undefined) === "string";
 
 /**
  * Maps a failure to a SandboxError with bounded evidence on its cause. `error` is an HTTP failure shaped by
@@ -152,7 +153,7 @@ export function isFileRequest(request: FailedRequest): boolean {
 function statusFailure(failed: Extract<HttpFailure, { kind: "status" }>) {
   const json = failed.body.json;
 
-  const source: unknown = isObject(json) ? Reflect.get(json, "source") : undefined;
+  const source: unknown = isObject(json) ? ("source" in json ? json.source : undefined) : undefined;
 
   const headers: Record<string, string> = {};
 

@@ -87,7 +87,7 @@ test("a stale hook that says no keeps the shared mapping and the parsed body", a
     json: { error: { code: "file_missing", message: "nope" } },
   });
   const { http, refreshes } = client({ stale: () => undefined });
-  const error = await http.json({ method: "GET", path: "/files" }).catch((e: unknown) => e);
+  const error = await http.json({ method: "GET", path: "/files" }).catch((cause: unknown) => cause);
   expect(error).toBeInstanceOf(SandboxError);
   expect(error).toMatchObject({ code: "not_found" });
   expect(httpStatus(error)).toEqual({ status: 404, code: "file_missing" });

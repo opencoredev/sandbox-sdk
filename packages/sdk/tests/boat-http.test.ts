@@ -534,7 +534,7 @@ describe("native API", () => {
     });
     const account = await provider.api.sdk(() => import("@boatdev/sdk"));
     expectTypeOf(account).toEqualTypeOf<BoatApi>();
-    expect(typeof account.sandboxes).toBe("function");
+    expect(account.sandboxes).toBeInstanceOf(Function);
   });
 
   test("sdk(load) with a module that is not @boatdev/sdk is invalid_argument", async () => {

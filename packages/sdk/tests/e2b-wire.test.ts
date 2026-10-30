@@ -524,10 +524,10 @@ describe("native API", () => {
     const sandbox = await provider.native("sb1").sdk(() => import("e2b"));
     expectTypeOf(sandbox).toEqualTypeOf<Sandbox>();
     expect(sandbox).toMatchObject({ sandboxId: "sb1", sandboxDomain: "e2b.test" });
-    expect(Reflect.get(sandbox, "envdAccessToken")).toBe(token);
+    expect(sandbox).toHaveProperty("envdAccessToken", token);
     const client = await provider.api.sdk(() => import("e2b"));
     expectTypeOf(client).toEqualTypeOf<E2B>();
-    expect(typeof client.Sandbox.create).toBe("function");
+    expect(client.Sandbox.create).toBeInstanceOf(Function);
     expect(server.requests.length).toBe(before);
   });
 

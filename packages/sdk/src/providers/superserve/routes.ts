@@ -117,7 +117,7 @@ export function hintExpiry(hint: string): number | undefined {
       atob((hint.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")),
     );
 
-    const expiry = isObject(payload) ? Reflect.get(payload, "e") : undefined;
+    const expiry = isObject(payload) ? ("e" in payload ? payload.e : undefined) : undefined;
 
     return isNumber(expiry) && Number.isFinite(expiry) ? expiry * 1000 : undefined;
   } catch {
@@ -138,9 +138,9 @@ export function parseRoute(
   sandboxId: string,
   operation: string,
 ): { token: string; hint?: string } {
-  const token = isObject(raw) ? Reflect.get(raw, "access_token") : undefined;
+  const token = isObject(raw) ? ("access_token" in raw ? raw.access_token : undefined) : undefined;
 
-  const hint = isObject(raw) ? Reflect.get(raw, "routing_hint") : undefined;
+  const hint = isObject(raw) ? ("routing_hint" in raw ? raw.routing_hint : undefined) : undefined;
 
   if (!isString(token) || !token)
     throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);

@@ -23,7 +23,7 @@ test("a create that never starts within createTimeoutMs deletes the sandbox and 
 
   const error = await createSandbox(daytona({ apiKey: "offline", createTimeoutMs: 300 }), {
     labels: { app: "timeout" },
-  }).catch((error: unknown) => error);
+  }).catch((cause: unknown) => cause);
 
   expect(error).toMatchObject({ code: "timeout", retryable: true });
   expect(mockState.creates).toHaveLength(1);
@@ -73,7 +73,7 @@ test("cleanup that hangs or fails does not hold the timeout back", async () => {
 
   const pending = daytona({ apiKey: "offline", createTimeoutMs: 300 })
     .create({ labels: {} })
-    .catch((error: unknown) => error);
+    .catch((cause: unknown) => cause);
 
   await vi.waitFor(() => expect(remove).toHaveBeenCalled(), { timeout: 10_000 });
   await vi.advanceTimersByTimeAsync(10_000);

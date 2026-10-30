@@ -695,7 +695,7 @@ test("polling gives up after five minutes of continuous failures", async () => {
 
   const settled = pending?.then(
     () => "resolved",
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   await vi.advanceTimersByTimeAsync(5 * 60_000 - 2_000);

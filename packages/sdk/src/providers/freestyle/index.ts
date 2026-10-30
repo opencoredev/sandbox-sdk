@@ -175,7 +175,7 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
 
       if (sandboxId === undefined) return sdk;
 
-      const vms: unknown = isObject(sdk) ? Reflect.get(sdk, "vms") : undefined;
+      const vms: unknown = isObject(sdk) ? ("vms" in sdk ? sdk.vms : undefined) : undefined;
 
       return await sdkCall(vms, "ref", [sandboxId], "freestyle");
     },

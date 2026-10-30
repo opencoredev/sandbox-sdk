@@ -195,12 +195,12 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
       }
 
       if (!isObject(frame) || frame === null) return;
-      const error: unknown = Reflect.get(frame, "error");
+      const error: unknown = "error" in frame ? frame.error : undefined;
 
       if (isString(error)) output.stderr += error;
 
-      if (Reflect.get(frame, "finished") === true) {
-        const code: unknown = Reflect.get(frame, "exit_code");
+      if (("finished" in frame ? frame.finished : undefined) === true) {
+        const code: unknown = "exit_code" in frame ? frame.exit_code : undefined;
         finish(isNumber(code) ? code : 0);
       }
 

@@ -482,16 +482,16 @@ export async function* connectEnvelopes(
   function end(value: unknown): ConnectFrame {
     if (!isObject(value) || value === null)
       throw fault("malformed", "The Connect end-of-stream frame is not an object", options);
-    const error: unknown = Reflect.get(value, "error");
-    const metadata: unknown = Reflect.get(value, "metadata");
+    const error: unknown = "error" in value ? value.error : undefined;
+    const metadata: unknown = "metadata" in value ? value.metadata : undefined;
     const frame: ConnectFrame = { kind: "end" };
 
     if (error !== undefined) {
       if (!isObject(error) || error === null)
         throw fault("malformed", "The Connect end-of-stream error is not an object", options);
-      const code: unknown = Reflect.get(error, "code");
-      const message: unknown = Reflect.get(error, "message");
-      const details: unknown = Reflect.get(error, "details");
+      const code: unknown = "code" in error ? error.code : undefined;
+      const message: unknown = "message" in error ? error.message : undefined;
+      const details: unknown = "details" in error ? error.details : undefined;
 
       if (!isString(code))
         throw fault("malformed", "The Connect end-of-stream error has no code", options);

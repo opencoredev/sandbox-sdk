@@ -602,7 +602,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
   const binding: NativeSdkBinding = {
     package: sdkPackage,
     async connect(module, sandboxId) {
-      const Sandbox: unknown = Reflect.get(module, "Sandbox");
+      const Sandbox: unknown = "Sandbox" in module ? module.Sandbox : undefined;
 
       if (typeof Sandbox !== "function")
         invalid(

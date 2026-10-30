@@ -142,7 +142,7 @@ describe("Daytona error evidence", () => {
 
     const error = await provider.api
       .request("GET", "/sandbox/{sandboxId}", { params: { sandboxId: "x" } })
-      .catch((error: unknown) => error);
+      .catch((cause: unknown) => cause);
 
     if (!(error instanceof SandboxError)) throw new Error("expected a SandboxError");
     expect(error).toMatchObject({ code: "auth", provider: "daytona" });

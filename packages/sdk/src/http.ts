@@ -381,7 +381,7 @@ export function parseErrorBody(text: string): ErrorBody {
     json = undefined;
   }
 
-  const nested = isObject(json) ? Reflect.get(json, "error") : undefined;
+  const nested = isObject(json) ? ("error" in json ? json.error : undefined) : undefined;
 
   const code =
     pick(json, ["code", "error_code", "errorCode", "type"]) ??
