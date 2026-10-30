@@ -15,7 +15,9 @@ import {
   state,
   tokenOf,
 } from "./superserve-fake.js";
+
 installSuperserveFake();
+
 import {
   superserve,
   type SuperserveNative,
@@ -24,15 +26,20 @@ import {
 import { superserveError } from "../src/providers/superserve/errors.js";
 import { createSandbox, connectSandbox, SandboxError } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+
 const factory = () => superserve({ apiKey: "mock" });
+
 runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+
 afterAll(async () => {
   await resetSuperserveFake();
   vi.unstubAllGlobals();
 });
+
 test("fails closed before allocation for unsupported creation settings", async () => {
   const p = factory(),
     before = state.creates;
+
   for (const options of [
     { size: "small" },
     { size: { cpu: 1, memoryMb: 1024, diskGb: 4 } },
@@ -46,6 +53,7 @@ test("fails closed before allocation for unsupported creation settings", async (
     });
   expect(state.creates).toBe(before);
 });
+
 test("maps statuses without retaining native secrets", () => {
   for (const [statusCode, code] of [
     [401, "auth"],
@@ -66,6 +74,7 @@ test("maps statuses without retaining native secrets", () => {
 
 test("transport failure confirms termination before a delayed side effect", async () => {
   const box = await createSandbox(factory());
+
   try {
     state.transportFailure = true;
     // The connection drops after the command started, so the run's outcome is unknown, never a plain failure.
@@ -78,12 +87,15 @@ test("transport failure confirms termination before a delayed side effect", asyn
     await box.destroy();
   }
 });
+
 test("creation defers bootstrap to the first execution", async () => {
   let calls = 0;
   state.bootstrap = async () => {
     calls++;
   };
+
   const box = await createSandbox(factory());
+
   try {
     expect(calls).toBe(0);
     expect((await box.run("true")).ok).toBe(true);
@@ -95,8 +107,10 @@ test("creation defers bootstrap to the first execution", async () => {
     await box.destroy();
   }
 });
+
 test("snapshot failures retain a safe idempotent recovery name", async () => {
   const box = await createSandbox(factory());
+
   try {
     expect(await box.snapshot()).toEqual({ id: "snapshot-1" });
     expect(state.snapshotOptions).toMatchObject({
@@ -116,6 +130,7 @@ test("snapshot failures retain a safe idempotent recovery name", async () => {
 
 test("stdin setup failure closes the native session", async () => {
   const box = await createSandbox(factory());
+
   try {
     const before = state.closes;
     state.stdinFailure = true;
@@ -128,12 +143,15 @@ test("stdin setup failure closes the native session", async () => {
     await box.destroy();
   }
 });
+
 test("a range read does not download the full native file", async () => {
   const provider = factory(),
     box = await createSandbox(provider);
+
   try {
     await box.files.write("range.bin", new Uint8Array([0, 1, 2, 3, 4, 5]));
     const guest = state.boxes.get(box.id)?.guest;
+
     if (!guest) throw new Error("missing guest");
     const before = guest.reads.length;
     expect(
@@ -152,6 +170,7 @@ test.each([
 ])("selects template %s without changing the provider default", async (template, expected) => {
   const provider = superserve({ apiKey: "mock", template });
   const box = await provider.create({ labels: {} });
+
   try {
     expect(state.createOptions).toMatchObject({ from_template: expected });
     expect(state.createOptions).not.toHaveProperty("from_snapshot");
@@ -163,6 +182,7 @@ test.each([
 test("snapshot restore takes precedence over a custom template", async () => {
   const provider = superserve({ apiKey: "mock", template: "sandbox-bench-node22-py311-1x1" });
   const box = await provider.create({ labels: {}, from: "snapshot-custom" });
+
   try {
     expect(state.createOptions).toMatchObject({ from_snapshot: "snapshot-custom" });
     expect(state.createOptions).not.toHaveProperty("from_template");
@@ -176,8 +196,10 @@ test("first execution prepares the environment and launcher in its single guest 
   const before = state.updates.length;
   const value = "literal'$(echo injected)";
   const box = await provider.create({ labels: {}, env: { LITERAL: value } });
+
   try {
     const guest = state.boxes.get(box.id)?.guest;
+
     if (!guest) throw new Error("missing guest");
     expect(guest.commands).toHaveLength(0);
     expect(guest.uploads).toHaveLength(0);
@@ -203,8 +225,10 @@ test("restores clear an inherited auto-pause timeout", async () => {
   const provider = factory();
   const before = state.updates.length;
   state.nativeTimeoutSeconds = 60;
+
   try {
     const box = await provider.create({ labels: {}, from: "external-snapshot" });
+
     try {
       expect(state.updates.slice(before)).toEqual([{ timeout_seconds: null }]);
     } finally {
@@ -220,6 +244,7 @@ test("missing Python fails on first use without running apt", async () => {
   state.bootstrapPath = path;
   const provider = factory();
   const box = await provider.create({ labels: {} });
+
   try {
     await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({
       code: "unsupported",
@@ -236,6 +261,7 @@ test("missing Python on a first run reports unsupported, not an unconfirmed canc
   const path = await mkdtemp(join(tmpdir(), "superserve-no-python-run-"));
   state.bootstrapPath = path;
   const box = await createSandbox(factory());
+
   try {
     await expect(box.run("echo ok")).rejects.toMatchObject({
       code: "unsupported",
@@ -251,6 +277,7 @@ test("missing Python on a first run reports unsupported, not an unconfirmed canc
 test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
   const path = await mkdtemp(join(tmpdir(), "superserve-opt-in-"));
   const log = join(path, "apt.log");
+
   for (const tool of ["git", "tar", "nohup"]) await symlink(`/usr/bin/${tool}`, join(path, tool));
   await writeFile(
     join(path, "apt-get"),
@@ -262,8 +289,10 @@ if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "
   );
   state.bootstrapPath = path;
   const provider = superserve({ apiKey: "mock", installPython: true });
+
   try {
     const box = await provider.create({ labels: {} });
+
     try {
       await provider.files.list(box.id, "/workspace");
       expect(await readFile(log, "utf8")).toBe(
@@ -280,12 +309,15 @@ if [ "$1" = install ]; then /usr/bin/ln -s /usr/bin/python3 ${quote(join(path, "
 
 test("one-shot execution keeps env values out of argv and preserves stdin sessions", async () => {
   const box = await createSandbox(factory());
+
   try {
     const secret = "private-command-secret";
+
     const probe = await box.run(
       'python3 -c \'import os; print(open("/proc/%s/cmdline" % os.getppid(), "rb").read().decode()); print(os.environ["TOKEN"])\'',
       { env: { TOKEN: secret } },
     );
+
     expect(probe.stdout.trim().split("\n").at(-1)).toBe(secret);
     expect(probe.stdout.slice(0, probe.stdout.lastIndexOf(secret))).not.toContain(secret);
     expect((await box.run("cat", { stdin: secret })).stdout).toBe(secret);
@@ -296,6 +328,7 @@ test("one-shot execution keeps env values out of argv and preserves stdin sessio
 
 test("quote-heavy commands use stdin transport before shell argument expansion exceeds its limit", async () => {
   const box = await createSandbox(factory());
+
   try {
     expect(await box.run(": #" + "'".repeat(40_000))).toMatchObject({ exitCode: 0 });
   } finally {
@@ -306,8 +339,10 @@ test("quote-heavy commands use stdin transport before shell argument expansion e
 test("fresh files prepare the workspace before execution", async () => {
   const provider = factory();
   const box = await createSandbox(provider);
+
   try {
     const guest = state.boxes.get(box.id)?.guest;
+
     if (!guest) throw new Error("Missing guest");
     expect(guest.commands).toHaveLength(0);
     expect(await box.files.list(".")).toEqual([]);
@@ -326,8 +361,10 @@ test("fresh files prepare the workspace before execution", async () => {
 
 test("an empty create environment clears an inherited snapshot env file", async () => {
   const box = await createSandbox(factory());
+
   try {
     const guest = state.boxes.get(box.id)?.guest;
+
     if (!guest) throw new Error("Missing guest");
     await guest.upload(
       "/var/lib/sandbox-sdk-env.json",
@@ -341,9 +378,11 @@ test("an empty create environment clears an inherited snapshot env file", async 
 
 test("first file operation persists create environment for a fresh client", async () => {
   const box = await createSandbox(factory(), { env: { FIRST_FILE_ENV: "persisted" } });
+
   try {
     await box.files.list(".");
     const reconnected = await connectSandbox(factory(), box.id);
+
     try {
       expect((await reconnected.run('printf %s "$FIRST_FILE_ENV"')).stdout).toBe("persisted");
     } finally {
@@ -362,7 +401,9 @@ test("native lifetime, secret and preview options reach POST /sandboxes in secon
     secretBindings: { OPENAI_API_KEY: "openai-prod" },
     previewAccess: "public",
   });
+
   const box = await provider.create({ labels: {} });
+
   try {
     expect(state.createOptions).toMatchObject({
       timeout_seconds: 91,
@@ -378,6 +419,7 @@ test("native lifetime, secret and preview options reach POST /sandboxes in secon
   } finally {
     await provider.destroy(box.id);
   }
+
   expect(() => superserve({ autoPauseMs: 0 })).toThrowError(
     expect.objectContaining({ code: "invalid_argument" }),
   );
@@ -385,9 +427,11 @@ test("native lifetime, secret and preview options reach POST /sandboxes in secon
     expect.objectContaining({ code: "invalid_argument" }),
   );
 });
+
 test("network policy maps to Superserve egress rules and is confirmed after create", async () => {
   const provider = factory();
   expect(provider.capabilities.has("network-policy")).toBe(true);
+
   const cases: [import("../src/provider.js").CreateInput["network"], unknown][] = [
     ["none", { allow_out: [], deny_out: ["0.0.0.0/0"] }],
     [
@@ -402,16 +446,20 @@ test("network policy maps to Superserve egress rules and is confirmed after crea
       },
     ],
   ];
+
   for (const [network, expected] of cases) {
     const box = await provider.create({ labels: {}, network });
+
     try {
       expect(state.createOptions).toMatchObject({ network: expected });
     } finally {
       await provider.destroy(box.id);
     }
   }
+
   state.dropNetwork = true;
   const before = state.boxes.size;
+
   try {
     await expect(provider.create({ labels: {}, network: "none" })).rejects.toMatchObject({
       code: "unsupported",
@@ -419,14 +467,18 @@ test("network policy maps to Superserve egress rules and is confirmed after crea
   } finally {
     state.dropNetwork = false;
   }
+
   expect(state.boxes.size).toBe(before);
 });
+
 test("restores apply the configured auto-pause instead of the inherited one", async () => {
   const provider = superserve({ apiKey: "mock", autoPauseMs: 30_000 });
   const before = state.updates.length;
   state.nativeTimeoutSeconds = 60;
+
   try {
     const box = await provider.create({ labels: {}, from: "external-snapshot" });
+
     try {
       expect(state.createOptions).toMatchObject({
         from_snapshot: "external-snapshot",
@@ -440,9 +492,11 @@ test("restores apply the configured auto-pause instead of the inherited one", as
     state.nativeTimeoutSeconds = 0;
   }
 });
+
 test("snapshot rejects expiresInMs because Superserve keeps snapshots until deleted", async () => {
   const provider = factory();
   const box = await provider.create({ labels: {} });
+
   try {
     state.snapshotOptions = undefined;
     await expect(provider.snapshot?.(box.id, { expiresInMs: 3_600_000 })).rejects.toMatchObject({
@@ -457,6 +511,7 @@ test("snapshot rejects expiresInMs because Superserve keeps snapshots until dele
 
 test("a missing cwd is a failed run with the shell error on stderr, and start reports it in the log", async () => {
   const box = await createSandbox(factory());
+
   try {
     expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({
       ok: false,
@@ -476,15 +531,19 @@ test("a missing cwd is a failed run with the shell error on stderr, and start re
 describe("data-plane routes", () => {
   const read = (provider: ReturnType<typeof factory>, id: string) =>
     provider.files.read(id, "/workspace/route.txt");
+
   async function created(provider = factory()) {
     const info = await provider.create({ labels: {} });
     await state.boxes
       .get(info.id)
       ?.guest.upload("/workspace/route.txt", new TextEncoder().encode("ok"));
+
     return { provider, id: info.id };
   }
+
   test("data-plane calls send the sandbox id, access token and routing hint only to the data host", async () => {
     const { provider, id } = await created();
+
     try {
       expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
       const [request] = dataRequests(id);
@@ -508,12 +567,15 @@ describe("data-plane routes", () => {
     state.hintSeconds = 10;
     const { provider, id } = await created();
     state.hintSeconds = 3600;
+
     try {
       const before = state.requests.length;
       await read(provider, id);
+
       const after = state.requests
         .slice(before)
         .map((r) => `${r.method} ${r.url.origin === api ? "api" : "data"}${r.url.pathname}`);
+
       expect(after).toEqual([`POST api/sandboxes/${id}/activate`, "GET data/files"]);
       // The fresh hint is good for an hour, so the next call needs no activation.
       await read(provider, id);
@@ -536,6 +598,7 @@ describe("data-plane routes", () => {
     ["the legacy plain-text paused 503", { status: 503, body: "sandbox is paused\n" }],
   ])("%s reactivates once and resends", async (_name, fault) => {
     const { provider, id } = await created();
+
     try {
       state.dataFaults.push(fault);
       expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
@@ -549,6 +612,7 @@ describe("data-plane routes", () => {
 
   test("a hinted 503 without sandbox_unavailable and a plain 404 do not reactivate", async () => {
     const { provider, id } = await created();
+
     try {
       state.dataFaults.push({
         status: 503,
@@ -569,6 +633,7 @@ describe("data-plane routes", () => {
   test("without a routing hint a bare 503 reactivates; a read is resent, an exec that may have run is not", async () => {
     state.noHints = true;
     const { provider, id } = await created();
+
     const execs = () =>
       state.requests.filter(
         (request) =>
@@ -576,6 +641,7 @@ describe("data-plane routes", () => {
           request.url.origin === dataHost &&
           request.url.pathname === "/exec",
       );
+
     try {
       expect(dataRequests(id).at(-1)?.headers.get("x-superserve-routing-hint") ?? null).toBeNull();
       state.dataFaults.push({
@@ -613,6 +679,7 @@ describe("data-plane routes", () => {
 
   test("a second refusal after reactivating fails instead of looping", async () => {
     const { provider, id } = await created();
+
     try {
       state.dataFaults.push({ status: 401, body: {} }, { status: 401, body: {} });
       await expect(read(provider, id)).rejects.toMatchObject({
@@ -628,6 +695,7 @@ describe("data-plane routes", () => {
 
   test("concurrent calls refused at once share one activation", async () => {
     const { provider, id } = await created();
+
     try {
       revoke(id);
       const held = gate();
@@ -649,6 +717,7 @@ describe("data-plane routes", () => {
 
   test("an activation that answers after a newer resume never replaces the resumed token", async () => {
     const { provider, id } = await created();
+
     try {
       revoke(id);
       const held = gate();
@@ -678,6 +747,7 @@ describe("data-plane routes", () => {
 
   test("a refusal sent with a token older than the current one resends without activating", async () => {
     const { provider, id } = await created();
+
     try {
       revoke(id);
       const held = gate();
@@ -703,17 +773,20 @@ describe("data-plane routes", () => {
 
   test("an aborted caller leaves the shared activation running for the others", async () => {
     const { provider, id } = await created();
+
     try {
       revoke(id);
       const held = gate();
       state.activateGate = held.promise;
       const controller = new AbortController();
       const native = provider.native(id);
+
       const abandoned = native.fetch("GET", "/files", {
         plane: "data",
         query: { path: "/workspace/route.txt" },
         signal: controller.signal,
       });
+
       const kept = read(provider, id);
       await vi.waitFor(() => expect(activations(id)).toBe(1));
       controller.abort();
@@ -731,6 +804,7 @@ describe("data-plane routes", () => {
 describe("exec/connect", () => {
   test("stdin runs dial the per-sandbox host with the token and hint as subprotocols", async () => {
     const box = await createSandbox(factory());
+
     try {
       const before = state.sockets.length;
       expect((await box.run("cat", { stdin: "über-stdin" })).stdout).toBe("über-stdin");
@@ -764,6 +838,7 @@ describe("exec/connect", () => {
 
   test("a refused dial reactivates once and dials again", async () => {
     const box = await createSandbox(factory());
+
     try {
       const before = state.sockets.length;
       state.refuseDials = 1;
@@ -782,6 +857,7 @@ describe("exec/connect", () => {
     state.hintSeconds = 5;
     const box = await createSandbox(factory());
     state.hintSeconds = 3600;
+
     try {
       const before = state.requests.length;
       expect((await box.run("cat", { stdin: "fresh" })).stdout).toBe("fresh");
@@ -794,6 +870,7 @@ describe("exec/connect", () => {
   test("an abort before the dial opens rejects without starting the command", async () => {
     const provider = factory();
     const box = await provider.create({ labels: {} });
+
     try {
       const controller = new AbortController();
       controller.abort();
@@ -817,16 +894,19 @@ describe("exec/connect", () => {
 describe("native API", () => {
   test("box.native fills {sandboxId} on the control plane and routes the data plane", async () => {
     const box = await createSandbox(factory());
+
     try {
       expect(box.native.sandboxId).toBe(box.id);
       expect(
         await box.native.request<{ id: string; status: string }>("GET", "/sandboxes/{sandboxId}"),
       ).toMatchObject({ id: box.id, status: "active" });
       await box.files.write("native.txt", "native");
+
       const response = await box.native.fetch("GET", "/files", {
         plane: "data",
         query: { path: "/workspace/native.txt" },
       });
+
       expect(await response.text()).toBe("native");
       await expect(box.native.request("GET", "/no/such/route")).rejects.toMatchObject({
         code: "not_found",
@@ -839,11 +919,14 @@ describe("native API", () => {
   test("provider.api is account scoped: no sandbox placeholder, no data plane", async () => {
     const provider = factory();
     const box = await provider.create({ labels: { native: "api" } });
+
     try {
       expect(provider.api.sandboxId).toBeUndefined();
+
       const list = await provider.api.request<{ id: string }[]>("GET", "/sandboxes", {
         query: { "metadata.sandbox-sdk": "1" },
       });
+
       expect(list.map((v) => v.id)).toContain(box.id);
       const before = state.requests.length;
       await expect(provider.api.request("GET", "/sandboxes/{sandboxId}")).rejects.toMatchObject({
@@ -860,13 +943,16 @@ describe("native API", () => {
 
   test("sdk(load) connects the caller's Sandbox class with this provider's credentials", async () => {
     const calls: unknown[][] = [];
+
     class Sandbox {
       constructor(readonly id: string) {}
       static async connect(id: string, options?: { apiKey?: string; baseUrl?: string }) {
         calls.push([id, options]);
+
         return new Sandbox(id);
       }
     }
+
     const provider = superserve({ apiKey: "mock" });
     const native = provider.native("sb-1");
     const connected = await native.sdk(async () => ({ Sandbox }));
@@ -876,10 +962,12 @@ describe("native API", () => {
     const account = await provider.api.sdk(async () => ({ Sandbox }));
     expectTypeOf(account).toEqualTypeOf<typeof Sandbox>();
     expect(account).toBe(Sandbox);
+
     // JavaScript callers can hand over anything; a module without Sandbox is invalid_argument.
     const wrong: Promise<unknown> = Reflect.apply(native.sdk, undefined, [
       async () => ({ Other: 1 }),
     ]);
+
     await expect(wrong).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(
       native.sdk(() =>
@@ -922,6 +1010,7 @@ describe("lifecycle and protocol faults", () => {
 
   test("a session that drops mid-command is cancelled and reported, and the sandbox stays usable", async () => {
     const box = await createSandbox(factory());
+
     try {
       state.dropSessions = 1;
       await expect(box.run("cat; sleep 5", { stdin: "x" })).rejects.toMatchObject({
@@ -938,6 +1027,7 @@ describe("lifecycle and protocol faults", () => {
   test("a cut exec response is a provider error, never a parsed result", async () => {
     const provider = factory();
     const box = await provider.create({ labels: {} });
+
     try {
       await provider.files.list(box.id, "/workspace");
       state.cutExec = 1;

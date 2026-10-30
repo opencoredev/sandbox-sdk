@@ -11,25 +11,32 @@ import {
 import { chunked, pieces } from "./http-fake.js";
 
 const options: StreamOptions = { provider: "fake", sandboxId: "sb" };
+
 async function collect<T>(
   frames: AsyncIterable<T>,
 ): Promise<{ frames: T[]; error?: SandboxError }> {
   const out: T[] = [];
+
   try {
     for await (const frame of frames) out.push(frame);
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return { frames: out, error: error as SandboxError };
   }
+
   return { frames: out };
 }
+
 const concat = (...parts: Uint8Array[]) => {
   const out = new Uint8Array(parts.reduce((n, part) => n + part.byteLength, 0));
   let at = 0;
+
   for (const part of parts) {
     out.set(part, at);
     at += part.byteLength;
   }
+
   return out;
 };
 
@@ -78,6 +85,7 @@ describe("ndjson", () => {
     const { frames, error } = await collect(
       ndjson(chunked(['{"a":1}\n'], { error: new TypeError("terminated") }), options),
     );
+
     expect(frames).toEqual([{ a: 1 }]);
     expect(streamFault(error)).toBe("disconnected");
     expect(String(error?.cause)).toContain("terminated");
@@ -85,10 +93,12 @@ describe("ndjson", () => {
 
   test("leaving the loop early cancels the body", async () => {
     const body = chunked(['{"a":1}\n', '{"a":2}\n', '{"a":3}\n']);
+
     for await (const frame of ndjson(body, options)) {
       expect(frame).toEqual({ a: 1 });
       break;
     }
+
     expect(body.cancelled()).toBe(true);
   });
 
@@ -97,6 +107,7 @@ describe("ndjson", () => {
     const body = chunked(['{"a":1}\n', '{"a":2}\n']);
     const seen: unknown[] = [];
     let caught: unknown;
+
     try {
       for await (const frame of ndjson(body, { ...options, signal: controller.signal })) {
         seen.push(frame);
@@ -105,6 +116,7 @@ describe("ndjson", () => {
     } catch (error) {
       caught = error;
     }
+
     expect(seen).toHaveLength(1);
     expect((caught as SandboxError).code).toBe("aborted");
     expect(body.cancelled()).toBe(true);
@@ -114,6 +126,7 @@ describe("ndjson", () => {
 describe("sse", () => {
   const stream =
     '﻿: comment\nevent: stdout\ndata: line 1\ndata: line 2 é\nid: 7\n\nretry: 1500\ndata:{"x":1}\r\n\r\nevent: only-name\n\ndata: after\rid: 8\r\r';
+
   test.each([1, 2, 3, 4, 9])(
     "parses fields, CR, LF and CRLF across %i-byte chunks",
     async (size) => {
@@ -142,6 +155,7 @@ describe("sse", () => {
     const { frames, error } = await collect(
       sse(chunked(["data: a\n\ndata: b"]), { ...options, lenientEnd: true }),
     );
+
     expect(error).toBeUndefined();
     expect(frames.map((frame) => frame.data)).toEqual(["a", "b"]);
   });
@@ -150,6 +164,7 @@ describe("sse", () => {
     const { error } = await collect(
       sse(chunked(["data: aaaaaaaaaa\n".repeat(10), "\n"]), { ...options, maxFrameBytes: 64 }),
     );
+
     expect(streamFault(error)).toBe("frame_too_large");
   });
 
@@ -181,6 +196,7 @@ describe("connect envelopes", () => {
     { event: { data: { stdout: Buffer.from("héllo\n").toString("base64") } } },
     { event: { end: { exitCode: 0 } } },
   ];
+
   const body = concat(
     ...messages.map((message) => connectEnvelope(message)),
     connectEnvelope({ metadata: { "x-trace": ["t1"] } }, true),
@@ -207,6 +223,7 @@ describe("connect envelopes", () => {
         options,
       ),
     );
+
     expect(frames).toEqual([
       { kind: "end", error: { code: "deadline_exceeded", message: "too slow" } },
     ]);
@@ -216,6 +233,7 @@ describe("connect envelopes", () => {
     const { frames, error } = await collect(
       connectEnvelopes(chunked([connectEnvelope({ a: 1 })]), options),
     );
+
     expect(frames).toHaveLength(1);
     expect(streamFault(error)).toBe("truncated");
   });
@@ -227,6 +245,7 @@ describe("connect envelopes", () => {
     const { error } = await collect(
       connectEnvelopes(chunked([connectEnvelope({ a: 1 }).subarray(0, cut)]), options),
     );
+
     expect(streamFault(error)).toBe("truncated");
   });
 
@@ -258,10 +277,12 @@ describe("connect envelopes", () => {
 
   test("leaving early cancels the body", async () => {
     const source = chunked(pieces(body, 4));
+
     for await (const frame of connectEnvelopes(source, options)) {
       expect(frame.kind).toBe("message");
       break;
     }
+
     expect(source.cancelled()).toBe(true);
   });
 });

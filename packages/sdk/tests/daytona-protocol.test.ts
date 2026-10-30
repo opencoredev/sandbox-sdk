@@ -9,28 +9,33 @@ import { fakeServer, pieces, type FakeServer } from "./http-fake.js";
 
 let api: FakeServer;
 let toolbox: FakeServer;
+
 beforeEach(async () => {
   api = await fakeServer();
   toolbox = await fakeServer();
 });
+
 afterEach(async () => {
   await api.close();
   await toolbox.close();
 });
 
 const multipart = { "content-type": "multipart/form-data; boundary=DAYTONA-FILE-BOUNDARY" };
+
 const part = (
   name: string,
   data: string | Uint8Array,
   headers = "Content-Type: application/octet-stream",
 ) => {
   const head = `--DAYTONA-FILE-BOUNDARY\r\nContent-Disposition: form-data; name="${name}"; filename="/tmp/a"\r\n${headers}\r\n\r\n`;
+
   return Buffer.concat([
     Buffer.from(head),
     Buffer.from(data),
     Buffer.from("\r\n--DAYTONA-FILE-BOUNDARY--\r\n"),
   ]);
 };
+
 const dto = (proxy = `${toolbox.url}/toolbox`) => ({
   id: "sb-1",
   state: "started",
@@ -38,6 +43,7 @@ const dto = (proxy = `${toolbox.url}/toolbox`) => ({
   createdAt: new Date().toISOString(),
   toolboxProxyUrl: proxy,
 });
+
 const client = () =>
   daytonaHttp({
     baseUrl: () => `${api.url}/api`,
@@ -45,13 +51,16 @@ const client = () =>
     requestTimeoutMs: 3_000,
     secrets: () => [],
   });
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
 
@@ -63,9 +72,11 @@ describe("file transfer", () => {
     await client().toolbox("sb-1").fs.upload(data, "/workspace/a b.bin");
     const [request] = toolbox.requests;
     expect(request?.headers.authorization).toBe("Bearer proto-key-123456");
+
     const form = await new Response(new Uint8Array(request?.body ?? []), {
       headers: { "content-type": request?.headers["content-type"] ?? "" },
     }).formData();
+
     expect(form.get("files[0].path")).toBe("/workspace/a b.bin");
     const file = form.get("files[0].file");
     expect(file).toBeInstanceOf(Blob);
@@ -77,6 +88,7 @@ describe("file transfer", () => {
     api.on("GET /api/sandbox/sb-1/toolbox-proxy-url", { json: { url: `${toolbox.url}/toolbox` } });
     const data = Uint8Array.from({ length: 400 }, (_, i) => (i * 7) % 256);
     const box = client().toolbox("sb-1");
+
     for (const size of [1, 2, 3, 5, 8, 13, 64, 4096]) {
       toolbox.on("POST /toolbox/sb-1/files/bulk-download", {
         headers: multipart,
@@ -85,6 +97,7 @@ describe("file transfer", () => {
       });
       expect(await box.fs.download("/tmp/a")).toEqual(data);
     }
+
     expect(JSON.parse(toolbox.requests[0]?.body.toString() ?? "")).toEqual({ paths: ["/tmp/a"] });
   });
 
@@ -164,9 +177,11 @@ describe("file transfer", () => {
       hold: true,
     });
     const controller = new AbortController();
+
     const stream = await client()
       .toolbox("sb-1")
       .fs.downloadStream("/tmp/a", { signal: controller.signal, timeoutMs: 10_000 });
+
     const closed = toolbox.closed();
     const reader = stream.getReader();
     await reader.read();
@@ -179,6 +194,7 @@ describe("file transfer", () => {
 describe("toolbox proxy URL", () => {
   test("a DTO without a proxy URL asks for one; a newer DTO's URL wins", async () => {
     const other = await fakeServer();
+
     try {
       api.on(
         "GET /api/sandbox/sb-1",
@@ -188,6 +204,7 @@ describe("toolbox proxy URL", () => {
       api.on("GET /api/sandbox/sb-1/toolbox-proxy-url", {
         json: { url: `${toolbox.url}/toolbox` },
       });
+
       for (const server of [toolbox, other])
         server.on("GET /toolbox/sb-1/files/info", { json: { name: "a", isDir: false, size: 1 } });
       const { control, toolbox: open } = client();
@@ -236,14 +253,17 @@ describe("session log stream", () => {
       .on("DELETE /toolbox/sb-1/files", { status: 200 })
       .on("POST /toolbox/sb-1/process/execute", { json: { exitCode: 0, result: "" } });
   }
+
   async function run(options: { timeoutMs?: number; signal?: AbortSignal } = {}) {
     const provider = daytona({
       apiKey: "proto-key-123456",
       baseUrl: `${api.url}/api`,
       requestTimeoutMs: 3_000,
     });
+
     await provider.connect("sb-1");
     const chunks: OutputChunk[] = [];
+
     const result = await provider.exec("sb-1", {
       command: "ignored",
       cwd: "/workspace",
@@ -253,17 +273,21 @@ describe("session log stream", () => {
       signal: options.signal,
       onChunk: (chunk) => chunks.push(chunk),
     });
+
     const text = (stream: string) =>
       chunks
         .filter((chunk) => chunk.stream === stream)
         .map((chunk) => chunk.text)
         .join("");
+
     return { result, stdout: text("stdout"), stderr: text("stderr") };
   }
+
   const frames = (text: string) => `O:${Buffer.from(text).toString("base64")}\n`;
 
   test("frames split at every boundary, including inside UTF-8 characters, give exact output", async () => {
     const output = `${frames("héllo ")}${`E:${Buffer.from("wärn").toString("base64")}\n`}${frames("wörld 🌍")}X:\n`;
+
     for (const size of [1, 2, 3, 7]) {
       script({ stream: pieces(output, size), intervalMs: 0 });
       expect(await run()).toMatchObject({
@@ -272,6 +296,7 @@ describe("session log stream", () => {
         stderr: "wärn",
       });
     }
+
     // The follow is a GET with follow=true, with credentials, on the toolbox plane.
     const follow = toolbox.calls("GET /toolbox/sb-1/process/session/{session}/command/c1/logs")[0];
     expect(follow?.url).toMatch(/\?follow=true$/);

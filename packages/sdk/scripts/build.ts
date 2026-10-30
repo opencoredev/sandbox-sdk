@@ -24,10 +24,12 @@ const entrypoints = Object.values(pkg.exports).flatMap((target) =>
 const unlisted = Object.keys(pkg.peerDependencies).filter(
   (name) => !externalPackages.includes(name),
 );
+
 if (unlisted.length) {
   console.error(`Add these peers to scripts/externals.ts: ${unlisted.join(", ")}`);
   process.exit(1);
 }
+
 const external = externalPackages.flatMap((name) => [name, `${name}/*`]);
 
 const result = await Bun.build({
@@ -46,10 +48,12 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
+
 // The SDK has zero runtime dependencies: nothing from node_modules may be bundled into dist.
 const bundled = Object.keys(result.metafile?.inputs ?? {}).filter((input) =>
   input.includes("node_modules"),
 );
+
 if (!result.metafile || bundled.length) {
   console.error(
     result.metafile

@@ -5,9 +5,11 @@ import { SandboxError } from "../src/errors.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
 
 let server: FakeServer;
+
 beforeEach(async () => {
   server = await fakeServer();
 });
+
 afterEach(async () => {
   await server.close();
 });
@@ -24,6 +26,7 @@ function client(
 ) {
   let token = "old-token-123456";
   let refreshes = 0;
+
   const http = createHttpClient({
     provider: "acme",
     label: "Acme",
@@ -49,6 +52,7 @@ function client(
       },
     },
   });
+
   return { http, refreshes: () => refreshes };
 }
 
@@ -59,12 +63,15 @@ test("a stale hook turns a non-401 failure into one refresh and a resend, reusin
     { json: { ok: true } },
   );
   const seen: unknown[] = [];
+
   const { http, refreshes } = client({
     stale: (status, code, credentials) => {
       seen.push([status, code, credentials["x-access-token"]]);
+
       return code === "route_stale" ? "refused" : undefined;
     },
   });
+
   expect(await http.json({ method: "GET", path: "/files" })).toEqual({ ok: true });
   expect(refreshes()).toBe(1);
   expect(seen).toEqual([[404, "route_stale", "old-token-123456"]]);
@@ -103,10 +110,13 @@ test("a waiter whose signal fires stops waiting on a shared refresh; the others 
     { json: { ok: 1 } },
   );
   let release = () => {};
+
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   let token = "old-token-123456";
+
   const http = createHttpClient({
     provider: "acme",
     label: "Acme",
@@ -123,9 +133,11 @@ test("a waiter whose signal fires stops waiting on a shared refresh; the others 
       },
     },
   });
+
   const controller = new AbortController();
   const aborted = http.json({ method: "GET", path: "/files", signal: controller.signal });
   const kept = http.json({ method: "GET", path: "/files" });
+
   while (server.requests.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
   controller.abort();
   await expect(aborted).rejects.toMatchObject({ code: "aborted" });

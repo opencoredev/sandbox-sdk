@@ -1,6 +1,7 @@
 // Boat and Sandboxer over plain HTTP: the command stream's protocol faults, lifecycle faults, the
 // idempotency key, the delete confirmation headers, and the native API. Everything runs against
 // http-fake, so each fault is scripted rather than timed.
+import { isString } from "../src/shared/narrow.js";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import type { BoatApi } from "@boatdev/sdk";
 import { SandboxError } from "../src/index.js";
@@ -16,18 +17,23 @@ import { boatHttp } from "../src/providers/boat-api/transport.js";
 import { fakeServer, pieces, type FakeServer } from "./http-fake.js";
 
 let server: FakeServer;
+
 beforeEach(async () => {
   server = await fakeServer();
 });
+
 afterEach(async () => {
   await server.close();
 });
 
 const line = (frame: object) => JSON.stringify(frame) + "\n";
+
 const attached = (stdoutOffset = 0, stderrOffset = 0) =>
   line({ type: "attached", processId: 7, stdoutOffset, stderrOffset });
+
 const out = (data: string, nextOffset: number, stream: "stdout" | "stderr" = "stdout") =>
   line({ type: stream, data, nextOffset });
+
 const exit = (exitCode = 0) => line({ type: "exit", status: "exited", exitCode, signal: null });
 const streamRoute = "GET /sandboxes/{id}/commands/{pid}/stream";
 const fast: FollowTiming = { idleMs: 2_000, retryWindowMs: 2_000, retryDelayMs: 10 };
@@ -44,28 +50,37 @@ function client() {
     retries: 0,
   });
 }
+
 async function follow(options: { timing?: FollowTiming; signal?: AbortSignal } = {}) {
   const frames: CommandFrame[] = [];
+
   for await (const frame of followCommand(client(), "bx_1", 7, {
     signal: options.signal ?? new AbortController().signal,
     timing: options.timing ?? fast,
   }))
     frames.push(frame);
+
   const text = (stream: "stdout" | "stderr") =>
     frames.flatMap((frame) => (frame.type === stream ? [frame.data] : [])).join("");
+
   return { frames, stdout: text("stdout"), stderr: text("stderr"), last: frames.at(-1) };
 }
+
 const offsets = (index: number) => {
   const url = new URL(server.calls(streamRoute)[index]?.url ?? "/", server.url);
+
   return [url.searchParams.get("stdoutOffset"), url.searchParams.get("stderrOffset")];
 };
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     if (error instanceof SandboxError) return error;
   }
+
   throw new Error("expected a SandboxError rejection");
 }
 
@@ -86,9 +101,11 @@ describe("command stream", () => {
       { stream: [attached(1, 1), out("b", 2), exit()] },
     );
     const started = Date.now();
+
     const result = await follow({
       timing: { idleMs: 5_000, retryWindowMs: 10_000, retryDelayMs: 5_000 },
     });
+
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(result).toMatchObject({
       stdout: "ab",
@@ -162,9 +179,11 @@ describe("command stream", () => {
       { stream: [attached()], hold: true },
       { stream: [attached(), out("x", 1), exit()] },
     );
+
     const result = await follow({
       timing: { idleMs: 150, retryWindowMs: 2_000, retryDelayMs: 10 },
     });
+
     expect(result.stdout).toBe("x");
     expect(server.calls(streamRoute)).toHaveLength(2);
   });
@@ -180,9 +199,11 @@ describe("command stream", () => {
       ],
       intervalMs: 80,
     });
+
     const result = await follow({
       timing: { idleMs: 150, retryWindowMs: 2_000, retryDelayMs: 10 },
     });
+
     expect(result.stdout).toBe("late");
     expect(server.calls(streamRoute)).toHaveLength(1);
   });
@@ -225,9 +246,11 @@ describe("command stream", () => {
 
   test("failing reconnects give up after the retry window", async () => {
     server.on(streamRoute, { stream: [attached(), out("a", 1)], cut: true }, { drop: true });
+
     const error = await failure(
       follow({ timing: { idleMs: 2_000, retryWindowMs: 200, retryDelayMs: 20 } }),
     );
+
     expect(error.code).toBe("unavailable");
     expect(server.calls(streamRoute).length).toBeGreaterThan(2);
   });
@@ -256,11 +279,13 @@ function boatApiRoutes() {
     state: "ready",
     createdAt: "2026-10-29T00:00:00Z",
   });
+
   let names = new Map<string, string>();
   server.on("PATCH /sandboxes/{id}", (request, response) => {
     const id = request.url.split("/")[2] ?? "";
     const name: unknown = JSON.parse(request.body.toString()).name;
-    if (typeof name === "string") names.set(id, name);
+
+    if (isString(name)) names.set(id, name);
     response
       .writeHead(200, { "content-type": "application/json" })
       .end(JSON.stringify({ ok: true, sandbox: sandbox(id, names.get(id)) }));
@@ -272,6 +297,7 @@ function boatApiRoutes() {
       operation: { id: "delete", kind: "sandbox", targetId: "bx_1", status: "completed" },
     },
   });
+
   return {
     sandbox,
     reset: () => {
@@ -279,6 +305,7 @@ function boatApiRoutes() {
     },
   };
 }
+
 const execInput = (overrides: Partial<ExecInput> = {}): ExecInput => ({
   command: "echo hi",
   cwd: "/workspace",
@@ -297,18 +324,22 @@ describe("adapter over HTTP", () => {
       { status: 500, json: { ok: false, code: "internal" } },
       { status: 202, json: { ok: true, sandbox: sandbox("bx_1") } },
     );
+
     const created = await boat({ apiKey: "k", baseUrl: server.url }).create({
       labels: { app: "x" },
     });
+
     expect(created).toMatchObject({ id: "bx_1", state: "running", labels: { app: "x" } });
     const posts = server.calls("POST /sandboxes");
     expect(posts).toHaveLength(3);
     const key = posts[0]?.headers["idempotency-key"];
     expect(key).toMatch(/^[0-9a-f-]{36}$/);
+
     for (const post of posts) {
       expect(post.headers["idempotency-key"]).toBe(key);
       expect(post.body.toString()).toBe(posts[0]?.body.toString());
     }
+
     expect(JSON.parse(posts[0]?.body.toString() ?? "")).toEqual({ noEnv: true });
   });
 
@@ -336,9 +367,11 @@ describe("adapter over HTTP", () => {
 
   test("a launched command whose response is lost is outcome_unknown", async () => {
     server.on("POST /sandboxes/{id}/commands", { drop: true });
+
     const error = await failure(
       boat({ apiKey: "k", baseUrl: server.url }).exec("bx_1", execInput()),
     );
+
     expect(error.code).toBe("outcome_unknown");
     expect(server.calls("POST /sandboxes/{id}/commands")).toHaveLength(1);
   });
@@ -369,10 +402,12 @@ describe("adapter over HTTP", () => {
       { stream: [attached(8, 0), out("two\n", 8), out("three\n", 14), exit()] },
     );
     const chunks: string[] = [];
+
     const result = await boat({ apiKey: "k", baseUrl: server.url }).exec(
       "bx_1",
       execInput({ onChunk: (chunk) => chunks.push(chunk.text) }),
     );
+
     expect(result).toEqual({ exitCode: 0, timedOut: false });
     expect(chunks.join("")).toBe("one\ntwo\nthree\n");
     expect([offsets(1), offsets(2)]).toEqual([
@@ -457,11 +492,13 @@ describe("native API", () => {
       json: { code: "not_found", message: "no route for boat-key-123456" },
     });
     const native = boat({ apiKey: "boat-key-123456", baseUrl: server.url }).native("bx_1");
+
     const response = await native.fetch(
       "GET",
       "/sandboxes/{sandboxId}/commands/{processId}/stream",
       { params: { processId: 7 } },
     );
+
     expect(await response.text()).toBe(attached() + exit());
     const error = await failure(native.request("GET", "/sandboxes/{sandboxId}/nope"));
     expect(error).toMatchObject({ code: "not_found", provider: "boat", sandboxId: "bx_1" });
@@ -472,6 +509,7 @@ describe("native API", () => {
   test("a missing key fails native calls with auth before any request", async () => {
     const previous = process.env.BOAT_API_KEY;
     delete process.env.BOAT_API_KEY;
+
     try {
       expect(
         (await failure(boat({ baseUrl: server.url }).api.request("GET", "/limits"))).code,
@@ -516,14 +554,17 @@ describe("native API", () => {
         operation: { id: "op_1", kind: "sandbox", targetId: "sb_1", status: "completed" },
       },
     });
+
     const { client } = await sandboxer({ apiKey: "k", baseUrl: server.url })
       .native("sb_1")
       .sdk(async () => {
         const module = await import("@boatdev/sdk");
         // native.sdk() fetches the sandbox first.
         server.on("GET /sandboxes/{id}", { json: { ok: true, sandbox: { id: "sb_1" } } });
+
         return module;
       });
+
     await client.deleteSandbox({ sandboxId: "sb_1", xAsciiConfirmDelete: "sb_1" });
     expect(server.calls("DELETE /sandboxes/{id}")[0]?.headers).toMatchObject({
       "x-sandboxer-confirm-delete": "sb_1",

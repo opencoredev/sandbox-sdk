@@ -6,6 +6,7 @@
  * https://docs.boat.dev/long-running-tasks/background-commands
  * https://docs.boat.dev/machines
  */
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
@@ -30,6 +31,7 @@ import {
   type BoatPlane,
   type BoatSandbox,
 } from "./transport.js";
+
 export interface BoatApiSettings {
   name: string;
   label: string;
@@ -51,6 +53,7 @@ export interface BoatApiSettings {
   /** Extra `Configuration` parameters for the client `native.sdk()` builds. */
   sdkConfiguration?: Readonly<Record<string, unknown>>;
 }
+
 const defaults: BoatApiSettings = {
   name: "boat",
   label: "Boat",
@@ -58,9 +61,11 @@ const defaults: BoatApiSettings = {
   baseEnv: "BOAT_API_BASE",
   baseUrl: "https://boat.dev/api/v1",
 };
+
 const sdkPackage = "@boatdev/sdk";
 const prefix = "sandbox-sdk:1:";
 const own = { "sandbox-sdk": "1" };
+
 const presets = { small: "small", medium: "default", large: "large" } satisfies Record<
   string,
   "small" | "default" | "large"
@@ -76,31 +81,40 @@ function metadataName(
   const labels = { ...input.labels };
   delete labels["sandbox-sdk"];
   const json = JSON.stringify([input.key ?? null, labels]);
+
   if (Buffer.byteLength(json) > 65_536)
     throw failure("Key and labels exceed the metadata size limit", "unsupported");
   const name = prefix + deflateRawSync(json).toString("base64url");
+
   if (name.length > 120)
     throw failure(
       `Key and labels exceed ${label}'s encoded name budget; shorten them`,
       "unsupported",
     );
+
   return name;
 }
+
 function metadata(name: string): { key?: string; labels: Labels } | undefined {
   if (!name.startsWith(prefix)) return;
+
   try {
     const value: unknown = JSON.parse(
       inflateRawSync(Buffer.from(name.slice(prefix.length), "base64url"), {
         maxOutputLength: 65_536,
       }).toString(),
     );
+
     if (!Array.isArray(value) || value.length !== 2) return;
     const [key, raw]: unknown[] = value;
-    if (key !== null && typeof key !== "string") return;
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+
+    if (key !== null && !isString(key)) return;
+
+    if (!isObject(raw) || raw === null || Array.isArray(raw)) return;
     const labels: Labels = {};
+
     for (const [key, value] of Object.entries(raw)) {
-      if (typeof value !== "string") return;
+      if (!isString(value)) return;
       Object.defineProperty(labels, key, {
         value,
         enumerable: true,
@@ -108,11 +122,13 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
         configurable: true,
       });
     }
+
     return { ...(key === null ? {} : { key }), labels: { ...labels, ...own } };
   } catch {
     return;
   }
 }
+
 function info(
   raw: BoatSandbox,
   failure: ReturnType<typeof errors>["failure"],
@@ -120,6 +136,7 @@ function info(
   pausedStates: readonly string[] = [],
 ): SandboxInfo {
   const data = metadata(raw.name);
+
   if (!data)
     throw failure(
       "Sandbox has no valid SDK metadata; connect an SDK-created sandbox",
@@ -127,8 +144,10 @@ function info(
       raw.id,
     );
   const createdAt = raw.createdAt;
+
   if (!Number.isFinite(createdAt))
     throw failure(`${label} returned no valid creation timestamp`, "provider", raw.id);
+
   return {
     id: raw.id,
     ...data,
@@ -140,28 +159,32 @@ function info(
         : "stopped",
   };
 }
+
 function fileInfo(
   value: unknown,
   failure: ReturnType<typeof errors>["failure"],
   label: string,
 ): FileInfo {
   if (
-    typeof value !== "object" ||
+    !isObject(value) ||
     value === null ||
     !("path" in value) ||
-    typeof value.path !== "string" ||
+    !isString(value.path) ||
     !("type" in value) ||
     !("size" in value) ||
-    typeof value.size !== "number" ||
+    !isNumber(value.size) ||
     !("modifiedAt" in value) ||
-    typeof value.modifiedAt !== "number"
+    !isNumber(value.modifiedAt)
   )
     throw failure(`Invalid file metadata from ${label}`);
   const type = value.type;
+
   if (type !== "file" && type !== "directory" && type !== "symlink")
     throw failure(`Invalid file type from ${label}`);
+
   return { path: value.path, type, size: value.size, modifiedAt: value.modifiedAt };
 }
+
 const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
 /** The adapter and the HTTP client it shares with `box.native`, `provider.api` and Sandboxer's extra calls. */
@@ -178,23 +201,29 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     settings.keyEnv,
     settings.name !== "boat",
   );
+
   const label = settings.label;
   const environmentFiles = new Map<string, Map<string, Promise<string>>>();
   const environments = new Map<string, Record<string, string>>();
   const timeoutMs = options.requestTimeoutMs ?? 90_000;
   const key = () => options.apiKey ?? process.env[settings.keyEnv];
+
   // Read on first use, not at construction, so a missing key or bad option fails the first call.
   function credentials() {
     const value = key();
+
     if (!value)
       throw failure(
         `${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`,
         "auth",
       );
+
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
+
     return value;
   }
+
   const transport = {
     provider: settings.name,
     label,
@@ -208,15 +237,19 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     secrets: () => [key()],
     timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 90_000,
   };
+
   const http = boatHttp(transport);
   // Create makes its own attempts, and the command follower its own reconnects, so their client never
   // retries underneath them. A first attach that fails then fails fast, so the command is stopped at once.
   const once = boatHttp({ ...transport, retries: 0 });
+
   const sandboxOf = (value: unknown) => {
     const sandbox = parseSandboxBody(value, settings.name, label);
     settings.observe?.(sandbox);
+
     return sandbox;
   };
+
   async function safe<T>(action: () => Promise<T>, id?: string): Promise<T> {
     try {
       return await action();
@@ -224,19 +257,23 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       throw boatError(error, id);
     }
   }
+
   async function raw(id: string, script: string, file = false, prepare = false) {
     const result = await command(http, id, {
       command: prepare ? `${workspace}; ${script}` : script,
       timeoutSeconds: 60,
     });
+
     if (result.kind !== "finished")
       throw failure(`${label} returned an unexpected detached result`, "outcome_unknown", id);
+
     if (result.truncated)
       throw failure(
         `${label} truncated operation output; no partial file data was returned`,
         "provider",
         id,
       );
+
     if (result.exitCode !== 0)
       throw failure(
         file && result.exitCode === 44
@@ -245,8 +282,10 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         file && result.exitCode === 44 ? "file_not_found" : "provider",
         id,
       );
+
     return result.stdout;
   }
+
   // Directory/stat operations use the documented command API, not invented endpoints.
   const node = (id: string, script: string, args: string[] = []) =>
     safe(
@@ -259,21 +298,28 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         ),
       id,
     );
+
   async function readRange(id: string, path: string, offset: number, length: number) {
     const chunks: Buffer[] = [];
+
     for (let position = 0; position < length; position += 16_384) {
       const count = Math.min(16_384, length - position);
+
       const text = await node(
         id,
         "const f=require('fs'),fd=f.openSync(process.argv[1],'r');try{const b=Buffer.alloc(Number(process.argv[3]));const n=f.readSync(fd,b,0,b.length,Number(process.argv[2]));process.stdout.write(b.subarray(0,n).toString('base64'))}finally{f.closeSync(fd)}",
         [path, String(offset + position), String(count)],
       );
+
       const chunk = Buffer.from(text, "base64");
       chunks.push(chunk);
+
       if (chunk.length < count) break;
     }
+
     return new Uint8Array(Buffer.concat(chunks));
   }
+
   // `native.sdk()` builds the caller's own BoatApi client against the same base URL and key.
   const binding: NativeSdkBinding = {
     package: sdkPackage,
@@ -290,18 +336,19 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         ],
         sdkPackage,
       );
+
       const client = sdkConstruct(module, "BoatApi", [configuration], sdkPackage);
+
       if (sandboxId === undefined) return client;
       const response = await sdkCall(client, "get", [{ sandboxId }], sdkPackage);
+
       return {
         client,
-        sandbox:
-          typeof response === "object" && response !== null
-            ? Reflect.get(response, "sandbox")
-            : undefined,
+        sandbox: isObject(response) ? Reflect.get(response, "sandbox") : undefined,
       };
     },
   };
+
   const provider: BoatCore["provider"] = {
     name: settings.name,
     keyMode: "best-effort",
@@ -310,19 +357,23 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       safe(async () => {
         if (input.network !== undefined && input.network !== "all")
           throw failure(`${label} network policy is unsupported by this adapter`, "unsupported");
-        if (input.size !== undefined && typeof input.size !== "string")
+
+        if (input.size !== undefined && !isString(input.size))
           throw failure(
             `${label} supports small, medium and large presets; custom sizes are unavailable`,
             "unsupported",
           );
+
         if (input.timeoutMs !== undefined)
           throw failure(
             `${label} auto-stop archives the VM and restarts while its agent works, so it is not a hard lifetime; timeoutMs is unsupported. Set the provider's ttlSeconds option instead`,
             "unsupported",
           );
+
         if (input.idleTimeoutMs !== undefined && !settings.idleStop)
           throw failure(`${label} has no idle timer; idleTimeoutMs is unsupported`, "unsupported");
         const { ttlSeconds, snapshots, monitoring, org } = options;
+
         if (
           ttlSeconds !== undefined &&
           ttlSeconds !== null &&
@@ -335,21 +386,27 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         // Idle pause wakes on the next API call. It needs snapshots, and the
         // API takes whole minutes up to a week.
         let idleStopMinutes: number | undefined;
+
         if (input.idleTimeoutMs !== undefined) {
           idleStopMinutes = Math.ceil(input.idleTimeoutMs / 60_000);
+
           if (idleStopMinutes > 10_080)
             throw failure(`${label} idle pause is at most 7 days`, "invalid_argument");
+
           if (snapshots === false)
             throw failure(
               `${label} idle pause needs snapshots; drop idleTimeoutMs or snapshots: false`,
               "invalid_argument",
             );
         }
+
         if (input.from !== undefined && !settings.createFrom)
           throw failure(`${label} snapshots are not supported by this adapter`, "unsupported");
         const name = metadataName(input, failure, label);
+
         if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
         const idempotencyKey = crypto.randomUUID();
+
         const body = {
           noEnv: true,
           ...(input.from === undefined ? {} : { from: input.from }),
@@ -362,17 +419,21 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           ...(idleStopMinutes === undefined ? {} : { idleStopMinutes }),
           ...settings.createFields,
         };
+
         // A response may be lost after Boat accepts the VM. Retry only with the
         // same documented idempotency key and identical body, including on abort,
         // so a late VM can be recovered and destroyed below. One deadline covers
         // every attempt, the backoff between them and the rename after.
         const deadline = createDeadline(transport.timeoutMs);
+
         const unknown = () =>
           failure(
             `${label} create outcome remains unknown; recover with idempotency key ${idempotencyKey} and the same request body within 24 hours`,
             "outcome_unknown",
           );
+
         let sandbox: BoatSandbox | undefined;
+
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             sandbox = sandboxOf(
@@ -387,19 +448,24 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             break;
           } catch (error) {
             const code = boatError(error).code;
+
             if (["auth", "invalid_argument", "quota", "not_found"].includes(code)) throw error;
             const delay = 250 * (attempt + 1);
+
             if (attempt === 2 || delay >= deadline.remaining()) throw unknown();
             await sleep(delay, deadline, settings.name).catch(() => {
               throw unknown();
             });
           }
         }
+
         if (!sandbox) throw failure(`${label} returned no sandbox after create`, "outcome_unknown");
         const id = sandbox.id;
         environments.set(id, { ...input.env });
+
         try {
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
+
           // Boat has no name at create. Preserve durable cross-client metadata;
           // its command API waits for provisioning when first use arrives early.
           const updated = sandboxOf(
@@ -412,8 +478,11 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
               deadline,
             }),
           );
+
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
+
           if (updated.name !== name) return await provider.connect(id);
+
           return {
             ...info(updated, failure, label, settings.pausedStates),
             state: "running",
@@ -446,26 +515,33 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         const values: SandboxInfo[] = [];
         let cursor: string | undefined;
         const visited = new Set<string>();
+
         do {
           const page = parseSandboxPage(
             await http.json({ method: "GET", path: "/sandboxes", query: { limit: 200, cursor } }),
             settings.name,
             label,
           );
+
           for (const sandbox of page.sandboxes) {
             settings.observe?.(sandbox);
+
             if (!metadata(sandbox.name)) continue;
             const value = info(sandbox, failure, label, settings.pausedStates);
+
             if (Object.entries(labels).every(([key, expected]) => value.labels[key] === expected))
               values.push(value);
           }
+
           if (!page.hasMore) break;
           const next = page.nextCursor;
+
           if (!next || visited.has(next))
             throw failure(`${label} returned an invalid pagination cursor`);
           visited.add(next);
           cursor = next;
         } while (cursor !== undefined);
+
         return values;
       }),
     async find(key) {
@@ -486,16 +562,19 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         } catch (error) {
           if (boatError(error).code !== "not_found") throw error;
         }
+
         environments.delete(id);
         environmentFiles.delete(id);
       }, id),
     exec: (id, input) =>
       safe(async () => {
         let files = environmentFiles.get(id);
+
         if (!files) {
           files = new Map();
           environmentFiles.set(id, files);
         }
+
         return execute(
           http,
           id,
@@ -518,25 +597,32 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           "const f=require('fs'),fd=f.openSync(process.argv[1],'r');try{const size=f.fstatSync(fd).size,b=Buffer.alloc(Math.min(size,16384)),n=f.readSync(fd,b,0,b.length,0);process.stdout.write(size+'\\n'+b.subarray(0,n).toString('base64'))}finally{f.closeSync(fd)}",
           [path],
         );
+
         const separator = text.indexOf("\n");
         const size = Number(text.slice(0, separator));
+
         if (separator < 0 || !Number.isSafeInteger(size) || size < 0)
           throw failure(`Invalid ${label} file size`);
         const first = Buffer.from(text.slice(separator + 1), "base64");
+
         if (size <= 16_384) return new Uint8Array(first);
+
         if (size <= 1024 * 1024)
           return new Uint8Array(
             Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]),
           );
+
         if (settings.downloadMaxBytes !== undefined && size > settings.downloadMaxBytes)
           return new Uint8Array(
             Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]),
           );
+
         return safe(async () => {
           // Signed downloads have no size limit, but only accept /tmp or
           // /home/user paths. Snapshot the file into private staging first.
           const dir = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}`;
           const staged = `${dir}/file`;
+
           try {
             const copiedSize = Number(
               await node(
@@ -545,14 +631,19 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
                 [path, dir],
               ),
             );
+
             if (!Number.isSafeInteger(copiedSize) || copiedSize < 0)
               throw failure("Invalid staged file size", "provider", id);
+
             if (settings.download) {
               const bytes = await settings.download(http, id, staged);
+
               if (bytes.length !== copiedSize)
                 throw failure("Incomplete artifact download", "provider", id);
+
               return bytes;
             }
+
             // Creating a link changes nothing, so a lost response is not an unknown outcome.
             const link: unknown = await http.json({
               method: "POST",
@@ -562,16 +653,16 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
               body: { path: staged, ttlSeconds: 300 },
               readOnly: true,
             });
+
             const url =
-              typeof link === "object" &&
-              link !== null &&
-              "url" in link &&
-              typeof link.url === "string"
+              isObject(link) && link !== null && "url" in link && isString(link.url)
                 ? link.url
                 : undefined;
+
             if (!url) throw failure(`${label} returned no signed download URL`, "provider", id);
             // The URL carries its own signature: no account credentials, and errors never show it.
             let bytes: Uint8Array;
+
             try {
               bytes = (
                 await http.request({
@@ -590,8 +681,10 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
                 id,
               );
             }
+
             if (bytes.length !== copiedSize)
               throw failure("Incomplete signed file download", "provider", id);
+
             return bytes;
           } finally {
             await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
@@ -603,9 +696,11 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       write: (id, path, data, options = {}) =>
         safe(async () => {
           const { mode } = options;
+
           if (mode !== undefined && (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o7777))
             throw failure("mode must be an integer from 0 to 0o7777", "invalid_argument", id);
           const normalized = posix.normalize(path);
+
           // The API creates parents, but canonical paths outside these roots
           // are rejected. It cannot set a mode, so a mode always takes the
           // staged path below, which applies it before any bytes land.
@@ -620,17 +715,20 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
                 content: Buffer.from(data).toString("base64"),
                 encoding: "base64",
               });
+
               return;
             } catch (error) {
               if (boatError(error).code !== "invalid_argument") throw error;
             }
           }
+
           // Stage the bytes in a fresh private directory through the file API,
           // then copy them into place. Writing through an opened descriptor
           // follows symlinks and keeps the target inode. Bytes never enter
           // command text. Copy and cleanup share a command.
           const dir = `/tmp/.sandbox-sdk/write-${crypto.randomUUID()}`;
           let cleaned = false;
+
           try {
             const parts = await stage(http, id, dir, data, failure);
             await node(
@@ -655,6 +753,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             [path],
           ),
         );
+
         return fileInfo(value, failure, label);
       },
       list: async (id, path) => {
@@ -666,7 +765,9 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
             [path],
           ),
         );
+
         if (!Array.isArray(value)) throw failure(`Invalid ${label} directory listing`);
+
         return value.map((value) => fileInfo(value, failure, label));
       },
       mkdir: async (id, path) => {
@@ -689,30 +790,36 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           sandboxId: id,
           body: { port },
         });
+
         if (
-          typeof result !== "object" ||
+          !isObject(result) ||
           result === null ||
           !("url" in result) ||
-          typeof result.url !== "string" ||
+          !isString(result.url) ||
           !result.url
         )
           throw failure(`${label} returned no preview URL`, "provider", id);
+
         if (settings.preview) return settings.preview(result.url);
         const url = new URL(result.url);
         const token = url.searchParams.get("_token");
+
         // Boat exchanges this token for an identically valued _port_auth cookie
         // through a redirect. Server fetch has no browser cookie jar.
         if (token) {
           if (!/^[A-Za-z0-9._~-]+$/.test(token))
             throw failure("Invalid preview token", "provider", id);
           url.searchParams.delete("_token");
+
           return { url: url.toString(), headers: { Cookie: `_port_auth=${token}` } };
         }
+
         if (
           ("isProtected" in result && result.isProtected === true) ||
           ("access" in result && result.access === "private")
         )
           throw failure("Protected preview returned no token", "provider", id);
+
         return { url: url.toString() };
       }, id),
     native: (id) =>
@@ -728,5 +835,6 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       sdk: binding,
     }),
   };
+
   return { provider, http };
 }

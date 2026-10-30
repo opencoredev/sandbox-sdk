@@ -53,6 +53,7 @@ function stubBoatFetch() {
 
     if (method !== "POST") {
       requests.push({ origin, method });
+
       return Response.json({ ok: true, sandboxes: [], pageInfo: { hasMore: false } });
     }
 

@@ -2,9 +2,12 @@ import { vi, test, expect, afterAll } from "vitest";
 import { fakeE2B } from "./e2b-fake.js";
 import { e2b } from "../src/providers/e2b/index.js";
 import { createSandbox } from "../src/index.js";
+
 const fake = await fakeE2B();
 const { calls } = fake;
+
 vi.stubGlobal("fetch", fake.fetch(globalThis.fetch));
+
 afterAll(async () => {
   await fake.close();
   vi.unstubAllGlobals();
@@ -14,6 +17,7 @@ test("volumes reach the create request and requestTimeoutMs bounds it", async ()
   const box = await createSandbox(
     e2b({ apiKey: "mock", requestTimeoutMs: 12_345, volumes: { "/data": "my-volume" } }),
   );
+
   try {
     expect(calls.at(-1)?.body).toMatchObject({
       volumeMounts: [{ name: "my-volume", path: "/data" }],
@@ -21,8 +25,10 @@ test("volumes reach the create request and requestTimeoutMs bounds it", async ()
   } finally {
     await box.destroy();
   }
+
   // A create slower than requestTimeoutMs fails; it may have happened remotely, so it is outcome_unknown.
   fake.createDelayMs = 300;
+
   try {
     await expect(
       createSandbox(e2b({ apiKey: "mock", requestTimeoutMs: 50 })),
@@ -31,10 +37,12 @@ test("volumes reach the create request and requestTimeoutMs bounds it", async ()
     fake.createDelayMs = 0;
   }
 });
+
 test("autoPause pauses on timeout and records no hard deadline", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock", autoPause: true, autoResume: true }), {
     timeoutMs: 600_000,
   });
+
   try {
     const body = calls.at(-1)?.body;
     expect(body).toMatchObject({ timeout: 600, autoPause: true, autoResume: { enabled: true } });
@@ -42,7 +50,9 @@ test("autoPause pauses on timeout and records no hard deadline", async () => {
   } finally {
     await box.destroy();
   }
+
   const plain = await createSandbox(e2b({ apiKey: "mock" }), { timeoutMs: 600_000 });
+
   try {
     expect(calls.at(-1)?.body).toMatchObject({
       autoPause: false,
@@ -53,6 +63,7 @@ test("autoPause pauses on timeout and records no hard deadline", async () => {
     await plain.destroy();
   }
 });
+
 test("autoResume without autoPause is rejected before creation", async () => {
   const before = calls.length;
   await expect(createSandbox(e2b({ apiKey: "mock", autoResume: true }))).rejects.toMatchObject({
@@ -61,10 +72,12 @@ test("autoResume without autoPause is rejected before creation", async () => {
   });
   expect(calls.length).toBe(before);
 });
+
 test("private previews send allowPublicTraffic: false and return the traffic token header", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock", public: false }), {
     network: { allow: ["registry.npmjs.org"] },
   });
+
   try {
     expect(calls.at(-1)?.body.network).toEqual({
       denyOut: ["0.0.0.0/0"],
@@ -78,7 +91,9 @@ test("private previews send allowPublicTraffic: false and return the traffic tok
   } finally {
     await box.destroy();
   }
+
   const open = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     expect(calls.at(-1)?.body).not.toHaveProperty("network");
     expect(await open.preview(3000)).toEqual({ url: `https://3000-${open.id}.e2b.test` });
@@ -86,8 +101,10 @@ test("private previews send allowPublicTraffic: false and return the traffic tok
     await open.destroy();
   }
 });
+
 test("snapshot expiry is unsupported, 0 keeps the snapshot", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     const before = fake.count("POST /sandboxes/{id}/snapshots");
     await expect(box.snapshot({ expiresInMs: 60_000 })).rejects.toMatchObject({
@@ -100,10 +117,13 @@ test("snapshot expiry is unsupported, 0 keeps the snapshot", async () => {
     await box.destroy();
   }
 });
+
 test("E2B domains route envd through the shared host with routing headers; others use the sandbox's own host", async () => {
   fake.sandboxDomain = "e2b.app";
+
   try {
     const box = await createSandbox(e2b({ apiKey: "mock" }));
+
     try {
       await box.files.write("routed", "yes");
       const write = fake.server.calls("POST /files").at(-1);
@@ -121,7 +141,9 @@ test("E2B domains route envd through the shared host with routing headers; other
   } finally {
     fake.sandboxDomain = "e2b.test";
   }
+
   const direct = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     await direct.files.write("routed", "yes");
     expect(fake.server.calls("POST /files").at(-1)?.headers).toMatchObject({
@@ -132,8 +154,10 @@ test("E2B domains route envd through the shared host with routing headers; other
     await direct.destroy();
   }
 });
+
 test("an envd older than the gates fails the way the SDK does", async () => {
   fake.envdVersion = "0.0.9";
+
   try {
     // Below 0.1.0 the sandbox is killed and creation fails.
     await expect(
@@ -143,7 +167,9 @@ test("an envd older than the gates fails the way the SDK does", async () => {
   } finally {
     fake.envdVersion = "0.10.0";
   }
+
   fake.envdVersion = "0.5.0";
+
   try {
     // stdin close needs 0.5.2: a command that reads stdin cannot get EOF, so the run fails and the sandbox goes.
     const box = await createSandbox(e2b({ apiKey: "mock" }));

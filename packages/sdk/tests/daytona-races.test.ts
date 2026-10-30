@@ -10,9 +10,11 @@ afterEach(async () => {
 
 function deferred() {
   let resolve = () => {};
+
   const promise = new Promise<void>((done) => {
     resolve = done;
   });
+
   return { promise, resolve };
 }
 
@@ -20,28 +22,35 @@ test("a fallback lookup captured before destroy cannot restore a deleted sandbox
   const provider = daytona({ apiKey: "offline" });
   const box = await createSandbox(provider);
   const native = mockState.boxes.get(box.id);
+
   if (!native) throw new Error("Expected the retained mock sandbox");
   vi.spyOn(MockDaytona.prototype, "list").mockImplementation(async function* () {});
+
   const started = deferred(),
     release = deferred();
+
   vi.spyOn(MockDaytona.prototype, "get").mockImplementationOnce(async () => {
     started.resolve();
     await release.promise;
+
     return native;
   });
   const listing = provider.list({});
   await started.promise;
+
   try {
     await provider.destroy(box.id);
   } finally {
     release.resolve();
   }
+
   expect((await listing).map((value) => value.id)).not.toContain(box.id);
   expect(() => provider.native(box.id)).toThrow();
 });
 
 // Stdin above the buffered inline limit forces the session transport.
 const sessionStdin = "x".repeat(64 * 1024);
+
 for (const chunks of [["X:\nO:eA=="], ["X:\n", "O:eA=="]]) {
   test(`session completion rejects a partial trailing record delivered in ${chunks.length} chunks`, async () => {
     const box = await createSandbox(daytona({ apiKey: "offline" }));

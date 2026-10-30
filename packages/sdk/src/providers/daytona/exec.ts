@@ -5,6 +5,7 @@ import { bufferedExecute } from "./buffered.js";
 import { SandboxError } from "../../errors.js";
 
 export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+
 // Session logs are line-normalized by the native transport, and the HTTP log stream merges stdout and
 // stderr without labels. Encode each pipe chunk so streams, terminal newlines and byte boundaries survive.
 const outputBridge = `import base64,os,selectors,subprocess,sys,shutil
@@ -26,6 +27,7 @@ if a: shutil.rmtree(a,ignore_errors=True)
 print("X:",flush=True)
 sys.exit(code if code>=0 else 128-code)
 `;
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Each call has a new session and process group. Stdin comes from a private file
@@ -34,6 +36,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  */
 export const workspaceCommand =
   'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace';
+
 export async function sessionProcess(
   box: Toolbox,
   input: Omit<ExecInput, "timeoutMs">,
@@ -51,33 +54,41 @@ export async function sessionProcess(
   let detached = false;
   let activityFinished = false;
   const persistent = timeoutMs === undefined;
+
   const abort = () => {
     cancelled = true;
   };
+
   // Stops the log stream once the result is settled; the daemon ends it itself when the command exits.
   const follow = new AbortController();
   const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
   input.signal?.addEventListener("abort", abort, { once: true });
+
   async function signal(kind: "TERM" | "KILL") {
     if (pid === undefined) return;
+
     const result = await box.process.executeCommand(
       `/bin/kill -${kind} -- -${pid} 2>/dev/null || ! /bin/kill -0 -- -${pid} 2>/dev/null`,
       "/",
       undefined,
       10,
     );
+
     if (result.exitCode !== 0)
       throw new SandboxError(
         "Remote process group could not be killed. Cancellation is unconfirmed. Destroy the sandbox before retrying.",
         { code: "outcome_unknown", provider: "daytona", sandboxId: box.id },
       );
   }
+
   async function cleanup() {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);
+
     if (input.activityPath && !activityFinished)
       await box.fs.deleteFile(input.activityPath, true).catch(() => {});
     follow.abort();
+
     if (created) {
       try {
         await box.process.deleteSession(session);
@@ -85,19 +96,23 @@ export async function sessionProcess(
         if (daytonaError(error).code !== "not_found") throw error;
       }
     }
+
     try {
       await box.fs.deleteFile(dir, true);
     } catch (error) {
       if (daytonaError(error, box.id, true).code !== "file_not_found") throw error;
     }
   }
+
   try {
     if (input.stdin !== undefined) {
       await box.fs.createFolder(dir, "700");
       await box.fs.upload(Buffer.from(input.stdin), `${dir}/stdin`);
     }
+
     if (cancelled) {
       await cleanup();
+
       return {
         pid: 0,
         wait: async () => ({ exitCode: null, signal: "SIGKILL" }),
@@ -105,18 +120,24 @@ export async function sessionProcess(
         detach() {},
       };
     }
+
     await box.process.createSession(session);
     created = true;
+
     const env = Object.entries(input.env)
       .map(([key, value]) => quote(`${key}=${value}`))
       .join(" ");
+
     const script = `umask 077; mkdir -p ${quote(dir)} || exit 1; echo $$ > ${quote(`${pidPath}.tmp`)}; mv ${quote(`${pidPath}.tmp`)} ${quote(pidPath)}; cd ${quote(input.cwd)} || exit 1; exec env ${env} python3 -u -c ${quote(outputBridge)} ${quote(input.command)} ${quote(input.stdin === undefined ? "/dev/null" : `${dir}/stdin`)} ${quote(input.activityPath ?? "")}`;
+
     const response = await box.process.executeSessionCommand(session, {
       command: `${prepare ? `${prepare} && ` : ""}setsid --wait sh -c ${quote(script)}`,
       runAsync: true,
       suppressInputEcho: true,
     });
+
     commandId = response.cmdId;
+
     if (!commandId)
       throw new SandboxError(
         "Session command has no ID. Daytona did not confirm launch. Inspect or destroy the sandbox.",
@@ -126,38 +147,50 @@ export async function sessionProcess(
     let pending = "";
     let logsError: unknown;
     let bridgeFinished = false;
+
     const decoders = {
       stdout: new TextDecoder("utf-8", { ignoreBOM: true }),
       stderr: new TextDecoder("utf-8", { ignoreBOM: true }),
     };
+
     const readFrames = (text: string) => {
       pending += text;
       let newline: number;
+
       while ((newline = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, newline).replace(/\r$/, "");
         pending = pending.slice(newline + 1);
+
         if (!line) continue;
+
         if (bridgeFinished)
           throw new SandboxError(
             "Session output continued after completion. Exact output could not be recovered. Retry the command.",
             { code: "provider", provider: "daytona", sandboxId: box.id },
           );
+
         if (line === "X:") {
           bridgeFinished = true;
           activityFinished = true;
+
           for (const stream of ["stdout", "stderr"] as const) {
             const text = decoders[stream].decode();
+
             if (!finished && text) input.onChunk({ stream, text });
           }
+
           continue;
         }
+
         // Only the bridge writes O:/E: frames. Anything else is the wrapper shell's own stderr (a failed
         // cd or workspace setup), which the merged log stream cannot label.
         if (!/^[OE]:/.test(line)) {
           if (!finished) input.onChunk({ stream: "stderr", text: `${line}\n` });
           continue;
         }
+
         const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
+
         if (
           !frame ||
           line.length > 5466 ||
@@ -168,22 +201,27 @@ export async function sessionProcess(
             { code: "provider", provider: "daytona", sandboxId: box.id },
           );
         const stream = frame[1] === "O" ? "stdout" : "stderr";
+
         const decoded = decoders[stream].decode(Buffer.from(frame[2] ?? "", "base64"), {
           stream: true,
         });
+
         if (!finished && decoded) input.onChunk({ stream, text: decoded });
       }
+
       if (bridgeFinished && pending.length)
         throw new SandboxError(
           "Session output continued after completion. Exact output could not be recovered. Retry the command.",
           { code: "provider", provider: "daytona", sandboxId: box.id },
         );
+
       if (pending.length > 5466)
         throw new SandboxError(
           "Session output frame is too large. Exact output could not be recovered. Retry the command.",
           { code: "provider", provider: "daytona", sandboxId: box.id },
         );
     };
+
     const acceptFrames = (text: string) => {
       try {
         if (logsError === undefined) readFrames(text);
@@ -191,6 +229,7 @@ export async function sessionProcess(
         logsError = error;
       }
     };
+
     const logs = persistent
       ? Promise.resolve()
       : box.process
@@ -205,16 +244,20 @@ export async function sessionProcess(
               if (!finished) input.onChunk({ stream: "stderr", text: pending });
               pending = "";
             }
+
             if (pending.trim())
               throw new SandboxError(
                 "Session output is incomplete. Exact output could not be recovered. Retry the command.",
                 { code: "provider", provider: "daytona", sandboxId: box.id },
               );
+
             for (const stream of ["stdout", "stderr"] as const) {
               const text = decoders[stream].decode();
+
               if (!finished && text) input.onChunk({ stream, text });
             }
           });
+
     let logsFinished = false;
     void logs.then(
       () => {
@@ -226,9 +269,11 @@ export async function sessionProcess(
       },
     );
     const started = Date.now();
+
     while (pid === undefined) {
       try {
         const value = Number(Buffer.from(await box.fs.download(pidPath)).toString());
+
         if (!Number.isSafeInteger(value) || value <= 1)
           throw new SandboxError(
             "Invalid process group ID. Remote launch was not confirmed. Destroy the sandbox.",
@@ -243,10 +288,12 @@ export async function sessionProcess(
         )
           throw error;
         const status = await box.process.getSessionCommand(session, commandId);
+
         if (status.exitCode !== undefined) {
           pid = 0;
           break;
         }
+
         if (Date.now() - started > 10_000)
           throw new SandboxError(
             "Process launch was not confirmed. No PID arrived in ten seconds. Destroy the sandbox.",
@@ -255,29 +302,39 @@ export async function sessionProcess(
         await sleep(10);
       }
     }
+
     const id = commandId;
+
     const wait = (async () => {
       try {
         let cancelDrainStarted: number | undefined;
+
         while (true) {
           // Detachment leaves the remote session and durable wrapper alive, with
           // no timer or WebSocket keeping the local client attached.
           if (detached) await new Promise<void>(() => {});
+
           if (logsError !== undefined && !cancelled) throw logsError;
+
           if (cancelled && pid) await signal("KILL");
           let status: Awaited<ReturnType<Toolbox["process"]["getSessionCommand"]>>;
+
           try {
             status = await box.process.getSessionCommand(session, id);
           } catch (error) {
             if (!persistent || cancelled) throw error;
+
             if (daytonaError(error).code === "not_found")
               return { exitCode: 137, signal: "SIGKILL" };
             await sleep(1000);
             continue;
           }
+
           if (logsError !== undefined && !cancelled) throw logsError;
+
           if (status.exitCode !== undefined) {
             if (cancelled) cancelDrainStarted ??= Date.now();
+
             if (
               logsFinished ||
               bridgeFinished ||
@@ -289,6 +346,7 @@ export async function sessionProcess(
               };
             }
           }
+
           await sleep(20);
         }
       } catch (error) {
@@ -301,9 +359,11 @@ export async function sessionProcess(
         await cleanup().catch(() => {});
       }
     })();
+
     // startProcess may be consumed later; attach a rejection observer immediately.
     void wait.catch(() => {});
     let stopped = false;
+
     return {
       pid,
       wait: () => wait,
@@ -312,8 +372,10 @@ export async function sessionProcess(
       },
       async stop({ graceMs }) {
         if (stopped) return;
+
         if (pid) await signal("TERM");
         await sleep(graceMs);
+
         // The leader may exit before TERM-ignoring children. Always kill the group.
         if (pid) await signal("KILL");
         await wait;
@@ -329,6 +391,7 @@ export async function sessionProcess(
     } finally {
       await cleanup();
     }
+
     throw error;
   }
 }
@@ -346,7 +409,9 @@ export async function execute(
   if (input.streaming !== true && input.stdin === undefined)
     return bufferedExecute(box, input, prepare, prepared);
   const process = await sessionProcess(box, input, input.timeoutMs, prepare);
+
   if (process.pid > 0) prepared?.();
   const result = await process.wait();
+
   return { exitCode: result.exitCode, timedOut: result.signal === "SIGKILL" };
 }

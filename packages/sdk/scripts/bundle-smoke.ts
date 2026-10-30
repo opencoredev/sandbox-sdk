@@ -134,6 +134,7 @@ const requireBanner = {
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
 const needsRequire = ["vercel", "tenki", "boxd", "boxd files"];
+
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
     label: "esm + splitting (Convex)",

@@ -9,6 +9,7 @@ const nativeFailure = () =>
     code: "QUOTA_EXCEEDED",
     headers: { "x-request-id": "3e01af1641ce491a" },
   });
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await cleanupMock();
@@ -26,6 +27,7 @@ describe("Daytona error evidence", () => {
       },
       body: { password: "secret" },
     });
+
     const error = daytonaError(native, undefined, false, "restore");
     expect(error.cause).toMatchObject({
       status: 400,
@@ -47,6 +49,7 @@ describe("Daytona error evidence", () => {
       headers: { "x-request-id": "SECRETKEY", "x-daytona-request-id": "https://private" },
       response: { data: "secret" },
     };
+
     const error = daytonaError(native, undefined, false, "https://private", "SECRETKEY");
     expect(JSON.parse(error.cause instanceof Error ? error.cause.message : "null")).toEqual({
       operation: "request",
@@ -55,6 +58,7 @@ describe("Daytona error evidence", () => {
   it("attributes native create and restore failures separately", async () => {
     vi.spyOn(MockDaytona.prototype, "create").mockRejectedValue(nativeFailure());
     const provider = daytona({ apiKey: "configured-key" });
+
     for (const from of [undefined, "snapshot-name"]) {
       const error = await provider.create({ labels: {}, from }).catch((error) => error);
       expect(error.cause).toMatchObject({
@@ -91,9 +95,11 @@ describe("Daytona error evidence", () => {
         code: "CUSTOMER_SECRET",
         headers: { "x-request-id": requestId },
       });
+
       expect(error.cause).not.toHaveProperty("requestId");
       expect(error.cause).not.toHaveProperty("providerCode");
     }
+
     const error = daytonaError(
       { code: "QUOTA_EXCEEDED", headers: { "x-request-id": "0123456789abcdef" } },
       undefined,
@@ -102,6 +108,7 @@ describe("Daytona error evidence", () => {
       "key",
       ["QUOTA_EXCEEDED", "456789ab"],
     );
+
     expect(error.cause).not.toHaveProperty("providerCode");
     expect(error.cause).not.toHaveProperty("requestId");
   });
@@ -132,9 +139,11 @@ describe("Daytona error evidence", () => {
     vi.spyOn(MockDaytona.prototype, "get").mockRejectedValue(
       failure(403, "key configured-key-123456 is not allowed"),
     );
+
     const error = await provider.api
       .request("GET", "/sandbox/{sandboxId}", { params: { sandboxId: "x" } })
       .catch((error: unknown) => error);
+
     if (!(error instanceof SandboxError)) throw new Error("expected a SandboxError");
     expect(error).toMatchObject({ code: "auth", provider: "daytona" });
     // Native calls keep the provider's message, scrubbed of the credential.

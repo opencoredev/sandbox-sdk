@@ -5,17 +5,21 @@ import { apiUrl, cleanupMock, guest, requests } from "./daytona-mock.js";
 import { fakeServer } from "./http-fake.js";
 
 vi.setConfig({ testTimeout: 30_000 });
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await cleanupMock();
 });
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
 
@@ -26,12 +30,14 @@ class FakeSandbox {
     readonly config: object,
   ) {}
 }
+
 class FakeDaytona {
   constructor(readonly config: { apiKey?: string; apiUrl?: string; target?: string }) {}
   async get(id: string) {
     return new FakeSandbox(id, this.config);
   }
 }
+
 const fakeModule = { Daytona: FakeDaytona, version: "0.0.0-test" };
 
 describe("box.native", () => {
@@ -43,10 +49,12 @@ describe("box.native", () => {
       await box.native.request<{ id: string; state: string }>("GET", "/sandbox/{sandboxId}"),
     ).toMatchObject({ id: box.id, state: "started" });
     await box.files.write("listed.txt", "x");
+
     const files = await box.native.request<{ name: string }[]>("GET", "/files", {
       plane: "toolbox",
       query: { path: "/workspace" },
     });
+
     expect(files.map((file) => file.name)).toContain("listed.txt");
     expect(requests.at(-1)?.url).toBe(`/toolbox/${box.id}/files?path=%2Fworkspace`);
     expect(requests.at(-1)?.headers.authorization).toBe("Bearer native-key");
@@ -59,10 +67,12 @@ describe("box.native", () => {
   test("fetch returns the raw Response: Daytona's multipart download, unparsed", async () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
     await box.files.write("raw.txt", "raw bytes");
+
     const response = await box.native.fetch("POST", "/files/bulk-download", {
       plane: "toolbox",
       body: { paths: ["/workspace/raw.txt"] },
     });
+
     expect(response.headers.get("content-type")).toContain("multipart/form-data");
     expect(await response.text()).toContain("raw bytes");
   });
@@ -70,9 +80,11 @@ describe("box.native", () => {
   test("other placeholders must be in params, before any request is sent", async () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
     const before = requests.length;
+
     const error = await failure(
       box.native.request("GET", "/sandbox/{sandboxId}/ports/{port}/preview-url"),
     );
+
     expect(error.code).toBe("invalid_argument");
     expect(requests).toHaveLength(before);
     expect(
@@ -84,9 +96,11 @@ describe("box.native", () => {
 
   test("an unknown endpoint is a SandboxError with the provider's scrubbed message", async () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
+
     const error = await failure(
       box.native.request("POST", "/no/such/endpoint", { body: { a: 1 } }),
     );
+
     expect(error).toMatchObject({ code: "not_found", provider: "daytona", sandboxId: box.id });
     expect(error.message).toContain("fake server has no route");
     expect(error.message).not.toContain("native-key");
@@ -94,6 +108,7 @@ describe("box.native", () => {
 
   test("credentials go only to Daytona's own origins, never to an absolute URL elsewhere", async () => {
     const elsewhere = await fakeServer();
+
     try {
       elsewhere.on("GET /probe", { json: { ok: true } });
       const box = await createSandbox(daytona({ apiKey: "native-key" }));
@@ -121,9 +136,11 @@ describe("box.native", () => {
     expect((await failure(box.native.sdk(() => Promise.resolve({ Other: class {} })))).code).toBe(
       "invalid_argument",
     );
+
     const missing = Object.assign(new Error("Cannot find package '@daytonaio/sdk'"), {
       code: "ERR_MODULE_NOT_FOUND",
     });
+
     expect(await failure(box.native.sdk(() => Promise.reject(missing)))).toMatchObject({
       code: "unavailable",
       hint: "npm i @daytonaio/sdk",
@@ -145,6 +162,7 @@ describe("box.native", () => {
       const client = await daytona().api.sdk(() => import("@daytonaio/sdk"));
       expectTypeOf(client).toEqualTypeOf<import("@daytonaio/sdk").Daytona>();
     };
+
     expect(typed).toBeTypeOf("function");
     // Any provider's native API fits the plain NativeApi.
     expectTypeOf<DaytonaNative>().toMatchTypeOf<NativeApi>();
@@ -157,9 +175,11 @@ describe("provider.api", () => {
     const provider = daytona({ apiKey: "native-key" });
     const box = await createSandbox(provider, { labels: { app: "api-list" } });
     expect(provider.api.sandboxId).toBeUndefined();
+
     const listed = await provider.api.request<{ items: { id: string }[] }>("GET", "/sandbox", {
       query: { labels: JSON.stringify({ app: "api-list" }) },
     });
+
     expect(listed.items.map((item) => item.id)).toEqual([box.id]);
     expect((await failure(provider.api.request("GET", "/sandbox/{sandboxId}"))).code).toBe(
       "invalid_argument",
@@ -177,6 +197,7 @@ describe("provider.api", () => {
     const client = await daytona({ apiKey: "native-key" }).api.sdk(() =>
       Promise.resolve(fakeModule),
     );
+
     expectTypeOf(client).toEqualTypeOf<FakeDaytona>();
     expect(client).toBeInstanceOf(FakeDaytona);
   });

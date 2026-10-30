@@ -18,6 +18,7 @@ function isConditionalExport(target: ExportTarget): target is Exclude<ExportTarg
 const sdkDir = resolve(import.meta.dir, "..");
 const packDir = process.env.PACK_DIR ?? "/tmp/sandbox-sdk-pack";
 const consumerDir = process.env.CONSUMER_DIR ?? "/tmp/sandbox-sdk-smoke-consumer";
+
 // e2b, the provider the app below runs, needs no peer since SBX-74.
 const installedPeers: string[] = [];
 const failures: string[] = [];

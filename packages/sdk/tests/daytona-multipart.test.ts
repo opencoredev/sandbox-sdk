@@ -5,25 +5,31 @@ import { chunked, pieces } from "./http-fake.js";
 
 const options = { provider: "daytona", sandboxId: "sb-1" };
 const bytes = Uint8Array.from({ length: 300 }, (_, i) => i % 256);
+
 /** Daytona's real bulk-download framing, as captured from the live daemon. */
 function body(part: Uint8Array, headers = "Content-Type: application/octet-stream", name = "file") {
   const head = new TextEncoder().encode(
     `--DAYTONA-FILE-BOUNDARY\r\nContent-Disposition: form-data; name="${name}"; filename="/tmp/a.bin"; filename*=utf-8''%2Ftmp%2Fa.bin\r\n${headers}\r\n\r\n`,
   );
+
   const tail = new TextEncoder().encode("\r\n--DAYTONA-FILE-BOUNDARY--\r\n");
   const out = new Uint8Array(head.length + part.length + tail.length);
   out.set(head);
   out.set(part, head.length);
   out.set(tail, head.length + part.length);
+
   return out;
 }
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
 
@@ -57,10 +63,12 @@ describe("firstPart", () => {
       ...new TextEncoder().encode("\r\n--DAYTONA-FILE-BOUNDARYxx\r\n--DAYTONA-FILE-BOUNDARY-"),
       ...bytes,
     ]);
+
     const whole = body(
       tricky,
       `Content-Length: ${tricky.length}\r\nContent-Type: text/plain; charset=utf-8`,
     );
+
     for (let size = 1; size <= 80; size++) {
       const part = await firstPart(chunked(pieces(whole, size)), "DAYTONA-FILE-BOUNDARY", options);
       expect(part).toMatchObject({
@@ -90,6 +98,7 @@ describe("firstPart", () => {
       "DAYTONA-FILE-BOUNDARY",
       options,
     );
+
     expect(await readAll(part.body)).toEqual(new Uint8Array());
   });
 
@@ -99,6 +108,7 @@ describe("firstPart", () => {
       message: "file not found: /tmp/a.bin",
       code: "FILE_NOT_FOUND",
     });
+
     const part = await firstPart(
       chunked(
         pieces(
@@ -113,24 +123,28 @@ describe("firstPart", () => {
       "DAYTONA-FILE-BOUNDARY",
       options,
     );
+
     expect(part.name).toBe("error");
     expect(new TextDecoder().decode(await readAll(part.body))).toBe(json);
   });
 
   test("a body that ends inside the part, or before its delimiter, is truncated (unavailable, retryable)", async () => {
     const whole = body(bytes);
+
     for (const cut of [whole.length - 3, whole.length - 30, whole.length - 200]) {
       const part = await firstPart(
         chunked(pieces(whole.subarray(0, cut), 16)),
         "DAYTONA-FILE-BOUNDARY",
         options,
       );
+
       expect(await failure(readAll(part.body))).toMatchObject({
         code: "unavailable",
         retryable: true,
         sandboxId: "sb-1",
       });
     }
+
     for (const cut of [10, 40])
       expect(
         await failure(
@@ -145,6 +159,7 @@ describe("firstPart", () => {
       "DAYTONA-FILE-BOUNDARY",
       options,
     );
+
     await expect(readAll(part.body)).rejects.toThrow();
   });
 
@@ -155,6 +170,7 @@ describe("firstPart", () => {
         "DAYTONA-FILE-BOUNDARY",
         options,
       );
+
       expect(await failure(readAll(part.body))).toMatchObject({ code: "provider" });
     }
   });

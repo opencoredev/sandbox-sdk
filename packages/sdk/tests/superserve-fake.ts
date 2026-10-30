@@ -3,6 +3,7 @@
  * protocol @superserve/sdk 0.11.4 speaks. Install it with `installSuperserveFake()`, which stubs the global
  * `fetch` and `WebSocket`. Guest commands and files run on Linux through MockGuest.
  */
+import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { vi } from "vitest";
 import { MockGuest } from "./cloud-guest-mock.js";
 import { quote } from "../src/shared/shell.js";
@@ -26,6 +27,7 @@ export function routingHint(expiresInSeconds: number, tag = crypto.randomUUID())
   const payload = Buffer.from(
     JSON.stringify({ s: tag, e: Math.floor(Date.now() / 1000) + expiresInSeconds }),
   ).toString("base64url");
+
   return `eyJhbGciOiJFZERTQSJ9.${payload}.sig-${tag.slice(0, 8)}`;
 }
 
@@ -35,6 +37,7 @@ export interface FakeRequest {
   headers: Headers;
   body: unknown;
 }
+
 export interface FakeSocket {
   url: string;
   protocols: string[];
@@ -44,9 +47,11 @@ export interface FakeSocket {
 /** A promise with its resolver, for holding a fake response until the test releases it. */
 export function gate() {
   let open = () => {};
+
   const promise = new Promise<void>((resolve) => {
     open = resolve;
   });
+
   return { promise, open };
 }
 
@@ -90,25 +95,31 @@ export const state = {
 
 let minted = 0;
 const mint = () => `tok${++minted}-${crypto.randomUUID().replaceAll("-", "")}`;
+
 const json = (status: number, body: unknown) =>
   new Response(body === undefined ? null : JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
+
 const missing = () => json(404, { error: { code: "not_found", message: "sandbox not found" } });
 
 /** Rotates a sandbox's token on the server, so the one a client holds is refused with a 401. */
 export function revoke(id: string) {
   const box = state.boxes.get(id);
+
   if (box) box.token = mint();
 }
+
 export function tokenOf(id: string) {
   return state.boxes.get(id)?.token;
 }
+
 export const activations = (id: string) =>
   state.requests.filter(
     (r) => r.method === "POST" && r.url.pathname === `/sandboxes/${id}/activate`,
   ).length;
+
 export const dataRequests = (id: string) =>
   state.requests.filter(
     (r) => r.url.origin === dataHost && r.headers.get("x-superserve-sandbox-id") === id,
@@ -139,6 +150,7 @@ def sdk_paths(value):
  if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
  return value
 v=sdk_paths(v)`;
+
   return command
     .replace(
       "else marshal.loads(bytes.fromhex(sys.stdin.read()))",
@@ -146,15 +158,19 @@ v=sdk_paths(v)`;
     )
     .replace("data.hex()", `data.replace(${JSON.stringify(g.root)}.encode(),bytes()).hex()`);
 }
+
 const normalize = (g: MockGuest, value: string) =>
   value.replace(
     "base64.b64encode(data)",
     `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
   );
+
 const record = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
+  isObject(value) ? Object.fromEntries(Object.entries(value)) : {};
+
 const list = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+
 const strings = (value: unknown): Record<string, string> =>
   Object.fromEntries(
     Object.entries(record(value)).filter((e): e is [string, string] => typeof e[1] === "string"),
@@ -162,6 +178,7 @@ const strings = (value: unknown): Record<string, string> =>
 
 async function control(method: string, url: URL, body: unknown): Promise<Response> {
   const parts = url.pathname.split("/").filter(Boolean);
+
   if (parts[0] === "snapshots")
     return json(200, {
       id: parts[1],
@@ -169,8 +186,10 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       status: "ready",
       created_at: new Date().toISOString(),
     });
+
   if (parts[0] !== "sandboxes") return json(404, { error: "no route" });
   const [, id, action, port, sub] = parts;
+
   if (id === undefined) {
     if (method === "GET")
       return json(
@@ -182,6 +201,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
     state.creates++;
     state.createOptions = options;
     const network = record(options.network);
+
     const box: Box = {
       guest,
       metadata: strings(options.metadata),
@@ -193,8 +213,11 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
         ? { network: { allow_out: list(network.allow_out), deny_out: list(network.deny_out) } }
         : {}),
     };
+
     state.boxes.set(guest.id, box);
+
     if (state.createGate) await state.createGate;
+
     return json(
       201,
       info(guest.id, box, {
@@ -203,40 +226,57 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       }),
     );
   }
+
   const box = state.boxes.get(id);
+
   if (method === "DELETE" && action === undefined) {
     if (!box) return missing();
     await box.guest.destroy();
     state.boxes.delete(id);
+
     return new Response(null, { status: 204 });
   }
+
   if (!box) return missing();
+
   if (method === "GET" && action === undefined) return json(200, info(id, box));
+
   if (method === "PATCH" && action === undefined) {
     state.updates.push(body);
+
     return new Response(null, { status: 204 });
   }
+
   if (action === "activate" || action === "resume") {
     // A resume rotates the token. An activate keeps a valid one, as the live service does.
     if (action === "resume") box.token = mint();
     box.status = "active";
     box.hint = routingHint(state.hintSeconds);
+
     const answer = info(id, box, {
       access_token: box.token,
       ...(state.noHints ? {} : { routing_hint: box.hint }),
     });
+
     const held = action === "activate" ? state.activateGate : state.resumeGate;
+
     if (held) await held;
+
     return json(200, answer);
   }
+
   if (action === "pause") {
     box.status = "paused";
+
     return json(200, { status: "paused" });
   }
+
   if (action === "snapshot") {
     state.snapshotOptions = body;
+
     if (state.snapshotFailure)
       return json(500, { error: { code: "internal", message: "private-native-token" } });
+
     return json(201, {
       id: "snapshot-1",
       sandbox_id: id,
@@ -244,11 +284,14 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       created_at: new Date().toISOString(),
     });
   }
+
   if (action === "preview-ports" && port === undefined) {
     state.previewAccess.push(body);
     const value = record(body);
+
     return json(200, { port: value.port, token_version: 1, access: value.access ?? "private" });
   }
+
   if (action === "preview-ports" && sub === "token")
     return json(200, {
       token: "mock",
@@ -258,6 +301,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       token_version: 1,
       access: "private",
     });
+
   return json(404, { error: "no route" });
 }
 
@@ -270,24 +314,31 @@ async function data(
 ): Promise<Response> {
   const id = headers.get("x-superserve-sandbox-id") ?? "";
   const box = state.boxes.get(id);
+
   if (!box) return json(404, { error: { code: "sandbox_not_found", message: "no sandbox" } });
   const fault = state.dataFaults.shift();
+
   if (fault)
-    return typeof fault.body === "string"
+    return isString(fault.body)
       ? new Response(fault.body, {
           status: fault.status,
           headers: { "content-type": "text/plain", "x-content-type-options": "nosniff" },
         })
       : json(fault.status, fault.body);
   const valid = headers.get("x-access-token") === box.token;
+
   if (state.dataGate) await state.dataGate;
+
   if (!valid) return new Response("invalid access token\n", { status: 401 });
   const g = box.guest;
   const path = url.searchParams.get("path") ?? "";
+
   if (url.pathname === "/files" && method === "POST") {
     await g.upload(path, raw ?? new Uint8Array());
+
     return new Response(null, { status: 200 });
   }
+
   if (url.pathname === "/files" && method === "GET") {
     try {
       return new Response(await g.read(path), { status: 200 });
@@ -295,30 +346,38 @@ async function data(
       return json(404, { error: "file not found" });
     }
   }
+
   if (url.pathname === "/exec" && method === "POST") {
     const options = record(body);
     const command = String(options.command);
     const env = strings(options.env);
+
     if (env.SANDBOX_SDK_BOOTSTRAP) await state.bootstrap?.();
+
     if (state.cutExec > 0) {
       state.cutExec--;
+
       return new Response('{"stdout":"partial', {
         status: 200,
         headers: { "content-type": "application/json" },
       });
     }
+
     if (state.transportFailure) {
       state.transportFailure = false;
       void g.raw(command).catch(() => {});
       throw new TypeError("fetch failed: private-native-token");
     }
+
     if (env.SANDBOX_SDK_BOOTSTRAP && state.bootstrapPath) env.PATH = state.bootstrapPath;
+
     const prefix = Object.entries(env)
       .map(
         ([key, value]) =>
           `export ${key}=${quote(key === "SANDBOX_SDK_BOOTSTRAP" ? normalize(g, value) : value)};`,
       )
       .join(" ");
+
     try {
       return json(200, {
         stdout: await g.raw(`${prefix} ${launch(g, command)}`),
@@ -327,39 +386,44 @@ async function data(
       });
     } catch (error) {
       const failed = record(error);
-      if (typeof failed.code === "number")
+
+      if (isNumber(failed.code))
         return json(200, {
-          stdout: typeof failed.stdout === "string" ? failed.stdout : "",
-          stderr: typeof failed.stderr === "string" ? failed.stderr : "",
+          stdout: isString(failed.stdout) ? failed.stdout : "",
+          stderr: isString(failed.stderr) ? failed.stderr : "",
           exit_code: failed.code,
         });
       throw error;
     }
   }
+
   return json(404, { error: "no route" });
 }
 
 async function fakeFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
-  const url = new URL(
-    typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
-  );
+  const url = new URL(isString(input) ? input : input instanceof URL ? input.href : input.url);
+
   const method = init.method ?? "GET";
   const headers = new Headers(init.headers);
   init.signal?.throwIfAborted();
   const raw = init.body instanceof Uint8Array ? init.body : undefined;
-  const text = typeof init.body === "string" ? init.body : undefined;
+  const text = isString(init.body) ? init.body : undefined;
   const body: unknown = text === undefined ? undefined : JSON.parse(text);
   state.requests.push({ method, url, headers, body });
+
   if (url.origin === api) {
     if (headers.get("x-api-key") !== "mock")
       return json(401, { error: { code: "unauthorized", message: "bad key" } });
+
     return control(method, url, body);
   }
+
   if (url.origin === dataHost) return data(method, url, headers, body, raw);
   throw new TypeError(`fetch failed: no fake host for ${url.origin}`);
 }
 
 type Listener = (event: never) => void;
+
 /** The subset of the WebSocket API session.ts uses, driving a MockGuest stream. */
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -383,7 +447,9 @@ class FakeWebSocket {
     queueMicrotask(() => {
       if (this.readyState !== FakeWebSocket.CONNECTING) return;
       const refused = state.refuseDials > 0;
+
       if (refused) state.refuseDials--;
+
       if (
         refused ||
         !box ||
@@ -393,8 +459,10 @@ class FakeWebSocket {
         // Like Node 22's WebSocket on a refused upgrade: an error event, and no close.
         this.readyState = FakeWebSocket.CLOSED;
         this.emit("error", {});
+
         return;
       }
+
       this.readyState = FakeWebSocket.OPEN;
       this.protocol = "superserve.exec.v1";
       this.emit("open", {});
@@ -404,6 +472,7 @@ class FakeWebSocket {
   private readonly box: Box | undefined;
   addEventListener(type: string, listener: Listener) {
     let set = this.listeners.get(type);
+
     if (!set) this.listeners.set(type, (set = new Set()));
     set.add(listener);
   }
@@ -424,30 +493,43 @@ class FakeWebSocket {
     if (this.readyState !== FakeWebSocket.OPEN) throw new Error("not open");
     this.record.sent.push(data);
     const g = this.box?.guest;
+
     if (!g) return;
-    if (typeof data !== "string") {
+
+    if (!isString(data)) {
       if (state.stdinFailure) {
         state.stdinFailure = false;
         throw new Error("private-input-error");
       }
+
       this.stream?.write(new TextDecoder().decode(data.subarray(1)));
+
       return;
     }
+
     const frame = record(JSON.parse(data));
+
     if (frame.type === "stdin_close") {
       this.stream?.end();
+
       return;
     }
+
     if (frame.type === "signal") {
       this.stream?.close();
+
       return;
     }
-    if (typeof frame.command !== "string") return;
+
+    if (!isString(frame.command)) return;
+
     const prefix = Object.entries(strings(frame.env))
       .map(([key, value]) => `export ${key}=${quote(normalize(g, value))};`)
       .join(" ");
+
     const stream = g.stream(`${prefix} ${launch(g, frame.command)}`);
     this.stream = stream;
+
     if (state.dropSessions > 0) {
       state.dropSessions--;
       queueMicrotask(() => {
@@ -455,6 +537,7 @@ class FakeWebSocket {
         this.emit("close", { code: 1006, reason: "" });
       });
     }
+
     stream.stdout.push = (bytes) => this.binary(1, Buffer.from(Buffer.from(bytes).toString()));
     stream.stderr.push = (bytes) => this.binary(2, Buffer.from(bytes));
     void stream.wait().then(
@@ -471,6 +554,7 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.CLOSED;
     state.closes++;
     this.stream?.close();
+
     if (wasOpen) queueMicrotask(() => this.emit("close", { code: 1000, reason: "" }));
   }
 }

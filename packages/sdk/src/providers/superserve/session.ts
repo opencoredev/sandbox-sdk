@@ -7,11 +7,13 @@
  * most), then `{"type":"stdin_close"}`. The server sends stdout and stderr as binary frames with channel byte
  * 1 or 2, and JSON lifecycle frames; `{"finished":true,"exit_code":n}` ends the command.
  */
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { failure } from "./errors.js";
 import type { Route } from "./routes.js";
 
 const subprotocol = "superserve.exec.v1";
 const stdinChunkBytes = 32 * 1024;
+
 // Bounded like the SDK's sync exec response; the supervisor prints a small page here.
 const maxOutputBytes = 10 * 1024 * 1024;
 const encoder = new TextEncoder();
@@ -57,9 +59,11 @@ export async function spawn(options: SpawnOptions): Promise<Session> {
       options.sandboxId,
     );
   const signal = options.startupSignal;
+
   if (signal?.aborted) throw aborted(options.sandboxId);
   let route = await options.route(signal);
   let ws: WebSocket;
+
   try {
     ws = await dial(options, route);
   } catch {
@@ -67,10 +71,12 @@ export async function spawn(options: SpawnOptions): Promise<Session> {
     route = await options.refresh(route, signal);
     ws = await dial(options, route);
   }
+
   if (signal?.aborted) {
     ws.close();
     throw aborted(options.sandboxId);
   }
+
   ws.send(
     JSON.stringify({
       command: options.command,
@@ -80,29 +86,36 @@ export async function spawn(options: SpawnOptions): Promise<Session> {
         : { timeout_s: Math.ceil(options.timeoutMs / 1000) }),
     }),
   );
+
   return session(ws, options);
 }
 
 function dial(options: SpawnOptions, route: Route): Promise<WebSocket> {
   const { sandboxId, startupSignal: signal } = options;
+
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(aborted(sandboxId));
+
     const ws = new WebSocket(options.url, [
       subprotocol,
       `token.${route.token}`,
       ...(route.hint ? [`route.${route.hint}`] : []),
     ]);
+
     ws.binaryType = "arraybuffer";
+
     const cleanup = () => {
       ws.removeEventListener("open", onOpen);
       ws.removeEventListener("error", onError);
       ws.removeEventListener("close", onClose);
       signal?.removeEventListener("abort", onAbort);
     };
+
     const onOpen = () => {
       cleanup();
       resolve(ws);
     };
+
     // Node 22 reports a refused upgrade (such as a stale token) with `error` and may never send `close`.
     const onError = () => {
       cleanup();
@@ -110,6 +123,7 @@ function dial(options: SpawnOptions, route: Route): Promise<WebSocket> {
         failure("Superserve exec/connect could not open the connection", "unavailable", sandboxId),
       );
     };
+
     const onClose = (event: CloseEvent) => {
       cleanup();
       reject(
@@ -120,12 +134,14 @@ function dial(options: SpawnOptions, route: Route): Promise<WebSocket> {
         ),
       );
     };
+
     const onAbort = () => {
       cleanup();
       ws.addEventListener("error", () => {});
       ws.close();
       reject(aborted(sandboxId));
     };
+
     ws.addEventListener("open", onOpen);
     ws.addEventListener("error", onError);
     ws.addEventListener("close", onClose);
@@ -138,50 +154,65 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
   const output = { stdout: "", stderr: "" };
   let received = 0;
   let settle: { resolve(result: SessionResult): void; reject(error: Error): void } | undefined;
+
   const result = new Promise<SessionResult>((resolve, reject) => {
     settle = { resolve, reject };
   });
+
   result.catch(() => {});
+
   const flush = () => {
     output.stdout += decoders.stdout.decode();
     output.stderr += decoders.stderr.decode();
   };
+
   const finish = (exitCode: number) => {
     const s = settle;
     settle = undefined;
     flush();
     s?.resolve({ exitCode, ...output });
   };
+
   const fail = (error: Error) => {
     const s = settle;
     settle = undefined;
     flush();
     s?.reject(error);
+
     if (ws.readyState <= WebSocket.OPEN) ws.close();
   };
+
   const open = () => ws.readyState === WebSocket.OPEN;
 
   ws.addEventListener("message", (event: MessageEvent) => {
-    if (typeof event.data === "string") {
+    if (isString(event.data)) {
       let frame: unknown;
+
       try {
         frame = JSON.parse(event.data);
       } catch {
         return;
       }
-      if (typeof frame !== "object" || frame === null) return;
+
+      if (!isObject(frame) || frame === null) return;
       const error: unknown = Reflect.get(frame, "error");
-      if (typeof error === "string") output.stderr += error;
+
+      if (isString(error)) output.stderr += error;
+
       if (Reflect.get(frame, "finished") === true) {
         const code: unknown = Reflect.get(frame, "exit_code");
-        finish(typeof code === "number" ? code : 0);
+        finish(isNumber(code) ? code : 0);
       }
+
       return;
     }
+
     if (!(event.data instanceof ArrayBuffer)) return;
     const view = new Uint8Array(event.data);
+
     if (!view.length) return;
     received += view.length;
+
     if (received > maxOutputBytes)
       return fail(
         failure(
@@ -191,6 +222,7 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
         ),
       );
     const channel = view[0] === 1 ? "stdout" : view[0] === 2 ? "stderr" : undefined;
+
     if (channel) output[channel] += decoders[channel].decode(view.subarray(1), { stream: true });
   });
   ws.addEventListener("close", (event: CloseEvent) => {
@@ -200,6 +232,7 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
         : event.reason
           ? options.redact(event.reason).slice(0, 200)
           : `close code ${event.code}`;
+
     fail(
       failure(
         `Superserve exec/connect closed before the command finished (${detail})`,
@@ -221,11 +254,13 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
   const kill = () => {
     if (open()) ws.send(JSON.stringify({ type: "signal", name: "SIGTERM" }));
   };
+
   return {
     stdin: {
       write(data) {
         if (!open()) return;
-        const bytes = typeof data === "string" ? encoder.encode(data) : data;
+        const bytes = isString(data) ? encoder.encode(data) : data;
+
         for (let offset = 0; offset < bytes.length; offset += stdinChunkBytes) {
           const chunk = bytes.subarray(offset, offset + stdinChunkBytes);
           const frame = new Uint8Array(chunk.length + 1);

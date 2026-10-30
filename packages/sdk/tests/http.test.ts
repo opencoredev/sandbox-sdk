@@ -11,16 +11,19 @@ import { fakeServer, type FakeServer } from "./http-fake.js";
 
 let server: FakeServer;
 let other: FakeServer;
+
 beforeEach(async () => {
   server = await fakeServer();
   other = await fakeServer();
 });
+
 afterEach(async () => {
   await server.close();
   await other.close();
 });
 
 const key = "sk-test-secret-123456";
+
 function client(overrides: Partial<HttpClientOptions<"api" | "data">> = {}) {
   return createHttpClient<"api" | "data">({
     provider: "fake",
@@ -40,21 +43,26 @@ function client(overrides: Partial<HttpClientOptions<"api" | "data">> = {}) {
     ...overrides,
   });
 }
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
+
 const text = (error: SandboxError) => `${error.message} ${error.hint} ${String(error.cause)}`;
 
 describe("requests", () => {
   test("joins the plane base URL, fills and encodes placeholders, adds query, auth and a JSON body", async () => {
     server.on("POST /v1/sandboxes/{id}/files", { json: { ok: true } });
     const http = client();
+
     const body = await http.json({
       method: "POST",
       path: "/sandboxes/{id}/files",
@@ -62,6 +70,7 @@ describe("requests", () => {
       query: { recursive: true, skip: undefined, n: 2 },
       body: { path: "/x" },
     });
+
     expect(body).toEqual({ ok: true });
     const [request] = server.requests;
     expect(request?.url).toBe("/v1/sandboxes/a%20b%2Fc/files?recursive=true&n=2");
@@ -179,6 +188,7 @@ describe("retries", () => {
 
   test("a streamed request body is sent with duplex half and never retried", async () => {
     server.on("PUT /v1/upload", { status: 503 });
+
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode("hello "));
@@ -186,6 +196,7 @@ describe("retries", () => {
         controller.close();
       },
     });
+
     expect((await failure(client().request({ method: "PUT", path: "/upload", body }))).code).toBe(
       "unavailable",
     );
@@ -196,12 +207,14 @@ describe("retries", () => {
   test("a streamed upload succeeds", async () => {
     server.on("PUT /v1/upload", { status: 201 });
     const parts = ["a".repeat(70_000), "b".repeat(70_000)];
+
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         for (const part of parts) controller.enqueue(new TextEncoder().encode(part));
         controller.close();
       },
     });
+
     expect((await client().request({ method: "PUT", path: "/upload", body })).status).toBe(201);
     expect(server.requests[0]?.body.toString()).toBe(parts.join(""));
   });
@@ -210,6 +223,7 @@ describe("retries", () => {
 describe("unknown outcomes", () => {
   test("a POST whose connection drops after sending is outcome_unknown and not retried", async () => {
     server.on("POST /v1/sandboxes", { drop: true });
+
     const error = await failure(
       client({ idempotencyHeader: undefined }).json({
         method: "POST",
@@ -217,6 +231,7 @@ describe("unknown outcomes", () => {
         body: {},
       }),
     );
+
     expect(error).toMatchObject({ code: "outcome_unknown", retryable: false });
     expect(server.requests).toHaveLength(1);
   });
@@ -231,6 +246,7 @@ describe("unknown outcomes", () => {
     const closed = await fakeServer();
     const url = closed.url;
     await closed.close();
+
     const http = createHttpClient({
       provider: "fake",
       label: "Fake",
@@ -238,6 +254,7 @@ describe("unknown outcomes", () => {
       defaultPlane: "api",
       backoffMs: 1,
     });
+
     expect((await failure(http.json({ method: "POST", path: "/x", body: {} }))).code).toBe(
       "unavailable",
     );
@@ -349,6 +366,7 @@ describe("credentials stay on their origin", () => {
         })
         .end("{}");
     });
+
     const http = createHttpClient({
       provider: "fake",
       label: "Fake",
@@ -366,6 +384,7 @@ describe("credentials stay on their origin", () => {
         },
       },
     });
+
     await Promise.all([1, 2, 3].map(() => http.json({ method: "GET", path: "/x" })));
     expect(refreshes).toBe(1);
   });
@@ -378,6 +397,7 @@ describe("errors are redacted and bounded", () => {
       json: { code: "sandbox_not_found", message: `echo ${key} private command text` },
       headers: { "x-request-id": "req_123" },
     });
+
     const error = await failure(
       client().json({
         method: "GET",
@@ -386,6 +406,7 @@ describe("errors are redacted and bounded", () => {
         sandboxId: "sb-1",
       }),
     );
+
     expect(error).toMatchObject({ code: "not_found", sandboxId: "sb-1", provider: "fake" });
     expect(error.message).toBe("Fake GET /sandboxes/{id} failed (HTTP 404 sandbox_not_found).");
     expect(error.cause).toBe("HTTP 404 sandbox_not_found (request req_123)");
@@ -402,9 +423,11 @@ describe("errors are redacted and bounded", () => {
         },
       },
     });
+
     const error = await failure(
       client().json({ method: "POST", path: "/x", body: {}, detail: "message" }),
     );
+
     expect(error.code).toBe("invalid_argument");
     expect(error.message).toContain("bad_input");
     expect(text(error)).not.toMatch(/sk-test|abc123|sig=zzz|qqq/);
@@ -423,6 +446,7 @@ describe("errors are redacted and bounded", () => {
         throw new TypeError(`fetch failed for ${key}`);
       },
     });
+
     const error = await failure(http.json({ method: "GET", path: "/x" }));
     expect(error.code).toBe("unavailable");
     expect(String(error.cause)).toContain("TypeError: fetch failed for [REDACTED]");
@@ -433,6 +457,7 @@ describe("errors are redacted and bounded", () => {
       status: 404,
       json: { message: "open /x: no such file or directory" },
     });
+
     const http = client({
       mapError: (failed, request) =>
         failed.kind === "status" &&
@@ -442,6 +467,7 @@ describe("errors are redacted and bounded", () => {
           ? "file_not_found"
           : undefined,
     });
+
     expect((await failure(http.json({ method: "GET", path: "/files" }))).code).toBe(
       "file_not_found",
     );
@@ -483,6 +509,7 @@ describe("streams", () => {
     server.on("POST /v1/exec", { stream: ['{"out":"h', 'é"}\n{"exit"', ":0}\n"] });
     const response = await client().stream({ method: "POST", path: "/exec", body: {} });
     const frames: unknown[] = [];
+
     for await (const frame of ndjson(response.body!, { provider: "fake" })) frames.push(frame);
     expect(frames).toEqual([{ out: "hé" }, { exit: 0 }]);
   });
@@ -494,18 +521,23 @@ describe("streams", () => {
         ...request,
         ...(request.method === "POST" ? { body: {} } : {}),
       });
+
       const frames: unknown[] = [];
       let caught: unknown;
+
       try {
         for await (const frame of ndjson(response.body!, { provider: "fake" })) frames.push(frame);
       } catch (error) {
         caught = error;
       }
+
       expect(frames).toEqual([{ out: 1 }]);
       expect(caught).toBeInstanceOf(SandboxError);
       expect(streamFault(caught)).toBe("disconnected");
+
       return caught as SandboxError;
     };
+
     server.on("POST /v1/exec", { stream: ['{"out":1}\n', '{"out"'], cut: true });
     server.on("GET /v1/exec", { stream: ['{"out":1}\n', '{"out"'], cut: true });
     // An exec whose headers arrived but whose result was cut off may or may not have finished.
@@ -523,16 +555,20 @@ describe("streams", () => {
   test("an idle timeout on a write stream is outcome_unknown; on a read it is a timeout", async () => {
     server.on("POST /v1/exec", { stream: ["a"], hold: true });
     server.on("GET /v1/logs", { stream: ["a"], hold: true });
+
     const idle = async (request: { method: "POST" | "GET"; path: string }) => {
       const response = await client().stream({
         ...request,
         ...(request.method === "POST" ? { body: {} } : {}),
         idleTimeoutMs: 100,
       });
+
       const reader = response.body!.getReader();
       await reader.read();
+
       return failure(reader.read());
     };
+
     expect(await idle({ method: "POST", path: "/exec" })).toMatchObject({
       code: "outcome_unknown",
       retryable: false,
@@ -558,15 +594,18 @@ describe("streams", () => {
     const reader = response.body!.getReader();
     const seen: string[] = [];
     let caught: unknown;
+
     try {
       for (;;) {
         const { done, value } = await reader.read();
+
         if (done) break;
         seen.push(new TextDecoder().decode(value));
       }
     } catch (error) {
       caught = error;
     }
+
     expect(seen.join("")).toBe("abc");
     expect((caught as SandboxError).code).toBe("timeout");
   });
@@ -584,11 +623,13 @@ describe("streams", () => {
   test("the caller's signal aborts a stream mid-body", async () => {
     server.on("GET /v1/logs", { stream: ["a"], hold: true });
     const controller = new AbortController();
+
     const response = await client().stream({
       method: "GET",
       path: "/logs",
       signal: controller.signal,
     });
+
     const reader = response.body!.getReader();
     await reader.read();
     setTimeout(() => controller.abort(), 20);

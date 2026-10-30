@@ -14,6 +14,7 @@
 //   bun scripts/consumer-smoke-nopeers.ts             build, pack and check
 //   SKIP_BUILD=1 bun scripts/consumer-smoke-nopeers.ts reuse dist
 //   NODE22="node" bun scripts/consumer-smoke-nopeers.ts use a local Node 22 instead of `npx -y node@22`
+import { isString } from "../src/shared/narrow.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -43,6 +44,7 @@ const sdkDir = resolve(import.meta.dir, "..");
 const workDir = mkdtempSync(join(tmpdir(), "sandbox-sdk-nopeers-"));
 const consumerDir = join(workDir, "app");
 const failures: string[] = [];
+
 function sh(command: string, args: string[], options: { cwd: string; timeoutMs: number }) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
@@ -50,43 +52,56 @@ function sh(command: string, args: string[], options: { cwd: string; timeoutMs: 
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+
   return {
     ok: result.status === 0,
     output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
     timedOut: result.error !== undefined,
   };
 }
+
 function must(command: string, args: string[], options: { cwd: string; timeoutMs: number }) {
   const result = sh(command, args, options);
+
   if (!result.ok) {
     console.error(result.output);
     throw new Error(`${command} ${args.join(" ")} failed${result.timedOut ? " (timed out)" : ""}`);
   }
+
   return result.output;
 }
+
 function check(label: string, ok: boolean, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"} ${label}${detail ? `: ${detail}` : ""}`);
+
   if (!ok) failures.push(label);
 }
 
 // Step 1: build and pack.
 if (process.env.SKIP_BUILD !== "1")
   must("bun", ["run", "build"], { cwd: sdkDir, timeoutMs: 300_000 });
+
 const packed: unknown = JSON.parse(
   must("npm", ["pack", "--json", "--pack-destination", workDir], {
     cwd: sdkDir,
     timeoutMs: 120_000,
   }),
 );
-if (!Array.isArray(packed) || typeof packed[0]?.filename !== "string")
+
+if (!Array.isArray(packed) || !isString(packed[0]?.filename))
   throw new Error("Unexpected npm pack --json output");
+
 const tarball = join(workDir, packed[0].filename);
+
 console.log(`Consumer: ${consumerDir}\nTarball: ${tarball}`);
 
 // Step 2: install the tarball alone, plus the TypeScript compiler for the type checks.
 mkdirSync(consumerDir);
+
 must("npm", ["init", "-y"], { cwd: consumerDir, timeoutMs: 30_000 });
+
 must("npm", ["pkg", "set", "type=module"], { cwd: consumerDir, timeoutMs: 30_000 });
+
 must(
   "npm",
   [
@@ -100,32 +115,41 @@ must(
   ],
   { cwd: consumerDir, timeoutMs: 300_000 },
 );
+
 check(
   "the consumer is outside the workspace",
   !resolve(consumerDir).startsWith(resolve(sdkDir, "../..")),
   consumerDir,
 );
+
 const installed = (name: string) =>
   existsSync(join(consumerDir, "node_modules", name, "package.json"));
+
 const present = externalPackages.filter(installed);
+
 check("no provider SDK, framework or peer is installed", present.length === 0, present.join(", "));
 
 // Step 3: the bundled dist must not contain a provider SDK. Their package names appear only as import specifiers.
 const distDir = join(consumerDir, "node_modules", pkg.name, "dist");
+
 const distFiles = readdirSync(distDir, { recursive: true, encoding: "utf8" }).filter((file) =>
   file.endsWith(".js"),
 );
+
 // The build's metafile check is the authority; this catches a tarball built some other way. Bundled packages
 // leave module paths or the license banners minifiers keep.
 const markers = [/node_modules\//, /@license\b/];
+
 const suspicious = distFiles.filter((file) =>
   markers.some((pattern) => pattern.test(readFileSync(join(distDir, file), "utf8"))),
 );
+
 check("dist contains no bundled dependency code", suspicious.length === 0, suspicious.join(", "));
 
 // Step 4: the provider fakes, bundled from the workspace into one file next to the app. Their `vitest` imports
 // resolve to a small shim, and the bundle must not contain any provider SDK: only the tarball serves the app.
 const { build } = await import("esbuild");
+
 const fakes = await build({
   entryPoints: [join(sdkDir, "tests/nopeer-fakes.ts")],
   absWorkingDir: sdkDir,
@@ -138,19 +162,24 @@ const fakes = await build({
   metafile: true,
   logLevel: "error",
 });
+
 const fakeInputs = Object.keys(fakes.metafile.inputs);
+
 // zod validates requests inside the Boat fake; it is no provider SDK and the app never imports it.
 const bundledSdks = externalPackages.filter(
   (name) => name !== "zod" && fakeInputs.some((input) => input.includes(`node_modules/${name}/`)),
 );
+
 check(
   "the provider fakes bundle no provider SDK",
   bundledSdks.length === 0,
   bundledSdks.join(", "),
 );
+
 const missingFakes = noPeerProviders.filter(
   (name) => !readFileSync(join(sdkDir, "tests/nopeer-fakes.ts"), "utf8").includes(`  ${name}: {`),
 );
+
 check("every no-peer provider has a fake", missingFakes.length === 0, missingFakes.join(", "));
 
 // Step 5: the consumer app. Plain ESM JavaScript so every runtime runs the same file.
@@ -258,26 +287,34 @@ ${noPeerProviders.map((subpath) => `  await drive("${subpath}", (await import("$
 }
 console.log("providers ok: ${noPeerProviders.join(", ")}");
 `;
+
 writeFileSync(join(consumerDir, "native.mjs"), app);
+
 const passed = (output: string) =>
   output.includes("native api ok") &&
   output.includes(`providers ok: ${noPeerProviders.join(", ")}`);
+
 function run(label: string, command: string, args: string[]) {
   const result = spawnSync(command, args, { cwd: consumerDir, timeout: 180_000, encoding: "utf8" });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   check(label, result.status === 0 && passed(output), output.split("\n").slice(-3).join(" | "));
 }
+
 const node22 = process.env.NODE22 ? [process.env.NODE22] : ["npx", "-y", "node@22"];
+
 run("Node 22 runs the consumer app", node22[0]!, [...node22.slice(1), "native.mjs"]);
+
 run(
   `current Node (${process.versions.node ? spawnSync("node", ["--version"], { encoding: "utf8" }).stdout.trim() : "?"}) runs the consumer app`,
   "node",
   ["native.mjs"],
 );
+
 run(`Bun ${Bun.version} runs the consumer app`, "bun", ["native.mjs"]);
 
 // Step 6: the same app bundled as split ESM, with the tarball as the only package in reach.
 const bundleDir = join(workDir, "bundle");
+
 await build({
   entryPoints: [join(consumerDir, "native.mjs")],
   absWorkingDir: consumerDir,
@@ -291,12 +328,15 @@ await build({
     js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
   },
 });
+
 writeFileSync(join(bundleDir, "package.json"), '{ "type": "module" }');
+
 const bundled = spawnSync("node", ["native.js"], {
   cwd: bundleDir,
   timeout: 120_000,
   encoding: "utf8",
 });
+
 check(
   "an esbuild split-ESM bundle runs the consumer app",
   bundled.status === 0 && passed(bundled.stdout),
@@ -338,19 +378,25 @@ export async function usage() {
   return { typed, response, sandbox };
 }
 `;
+
 writeFileSync(join(consumerDir, "native-types.ts"), types);
+
 const modes = [
   { name: "nodenext", module: "nodenext", moduleResolution: "nodenext" },
   { name: "bundler", module: "esnext", moduleResolution: "bundler" },
 ];
+
 const providerFiles = noPeerProviders.map((subpath) => {
   const file = `provider-${subpath}.ts`;
   writeFileSync(join(consumerDir, file), `export * from "${pkg.name}/${subpath}";\n`);
+
   return file;
 });
+
 for (const mode of modes) {
   for (const skipLibCheck of [true, false]) {
     const config = `tsconfig.${mode.name}.${skipLibCheck ? "skip" : "full"}.json`;
+
     const compilerOptions = {
       target: "es2022",
       module: mode.module,
@@ -361,14 +407,17 @@ for (const mode of modes) {
       types: ["node"],
       lib: ["es2022"],
     };
+
     writeFileSync(
       join(consumerDir, config),
       JSON.stringify({ compilerOptions, files: ["native-types.ts", ...providerFiles] }, null, 2),
     );
+
     const result = sh(join(consumerDir, "node_modules/.bin/tsc"), ["-p", config], {
       cwd: consumerDir,
       timeoutMs: 120_000,
     });
+
     check(
       `tsc ${mode.name} skipLibCheck=${skipLibCheck} with no peers`,
       result.ok,
@@ -383,5 +432,7 @@ if (failures.length > 0) {
   );
   process.exit(1);
 }
+
 rmSync(workDir, { recursive: true, force: true });
+
 console.log("\nNo-peer consumer smoke passed");

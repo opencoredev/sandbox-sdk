@@ -8,10 +8,12 @@ import { fakeServer, type FakeServer } from "./http-fake.js";
 
 let server: FakeServer;
 let other: FakeServer;
+
 beforeEach(async () => {
   server = await fakeServer();
   other = await fakeServer();
 });
+
 afterEach(async () => {
   await server.close();
   await other.close();
@@ -22,11 +24,15 @@ async function failure(promise: Promise<unknown>): Promise<SandboxError> {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
+
 const text = (error: SandboxError) => `${error.message} ${error.hint} ${String(error.cause)}`;
+
 const callerCredentials = {
   authorization: "Bearer caller-bearer-1111",
   cookie: "session=caller-cookie-2222",
@@ -66,6 +72,7 @@ describe("caller credential headers stay on the plane's origin", () => {
       })
     ).body?.cancel();
     const sent = other.requests[0]!.headers;
+
     for (const name of Object.keys(callerCredentials)) expect(sent[name], name).toBeUndefined();
     expect(sent["x-amz-acl"]).toBe("private");
     expect(sent["idempotency-key"]).toBe("k-1");
@@ -80,6 +87,7 @@ describe("caller credential headers stay on the plane's origin", () => {
     expect(await http.json({ method: "GET", path: "/x", headers: callerCredentials })).toEqual({
       moved: true,
     });
+
     for (const name of Object.keys(callerCredentials))
       expect(other.requests[0]!.headers[name], name).toBeUndefined();
     await http.json({ method: "GET", path: "/same", headers: callerCredentials });
@@ -102,6 +110,7 @@ describe("caller credentials are redacted", () => {
       },
     });
     const native = createNativeApi({ http: client(), placeholder: "sandboxId", sandboxId: "sb" });
+
     const error = await failure(
       native.request("POST", "/x", {
         body: {},
@@ -113,6 +122,7 @@ describe("caller credentials are redacted", () => {
         },
       }),
     );
+
     expect(error.message).toContain("bad_auth");
     expect(text(error)).not.toMatch(/caller-(bearer|custom|cookie|plane)/);
   });
@@ -122,6 +132,7 @@ describe("a stale-credential refresh never resends a write that may have run", (
   function stale(verdict: StaleVerdict) {
     let token = "old-token-123456";
     let refreshes = 0;
+
     const http = createHttpClient({
       provider: "acme",
       label: "Acme",
@@ -141,15 +152,18 @@ describe("a stale-credential refresh never resends a write that may have run", (
         },
       },
     });
+
     return { http, refreshes: () => refreshes };
   }
 
   test("an unsure 503 on a POST refreshes but is not resent: outcome_unknown", async () => {
     server.on("POST /exec", { status: 503, json: {} }, { json: { ran: "twice" } });
     const { http, refreshes } = stale("unsure");
+
     const error = await failure(
       http.json({ method: "POST", path: "/exec", body: { command: "rm -rf build" } }),
     );
+
     expect(error).toMatchObject({ code: "outcome_unknown", retryable: false });
     expect(server.calls("POST /exec")).toHaveLength(1);
     expect(refreshes()).toBe(1);
@@ -200,6 +214,7 @@ describe("plane callbacks are bounded by the deadline", () => {
       defaultPlane: "api",
       planes: { api: { baseUrl: server.url, auth: never } },
     });
+
     const started = Date.now();
     expect((await failure(http.json({ method: "GET", path: "/x", timeoutMs: 100 }))).code).toBe(
       "timeout",
@@ -215,6 +230,7 @@ describe("plane callbacks are bounded by the deadline", () => {
       defaultPlane: "api",
       planes: { api: { baseUrl: never } },
     });
+
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     expect(
@@ -234,6 +250,7 @@ describe("plane callbacks are bounded by the deadline", () => {
       defaultPlane: "api",
       planes: { api: { baseUrl: server.url, auth: never } },
     });
+
     expect(
       (await failure(http.stream({ method: "GET", path: "/logs", startupTimeoutMs: 100 }))).code,
     ).toBe("timeout");
@@ -242,6 +259,7 @@ describe("plane callbacks are bounded by the deadline", () => {
 
   test("a call cancelled while its credentials resolve is not sent", async () => {
     const controller = new AbortController();
+
     // The callback settles, but only after the caller gave up.
     const http = createHttpClient({
       provider: "fake",
@@ -252,11 +270,13 @@ describe("plane callbacks are bounded by the deadline", () => {
           baseUrl: server.url,
           auth: () => {
             controller.abort();
+
             return { authorization: "Bearer late-token-0000" };
           },
         },
       },
     });
+
     server.on("POST /x", { json: {} });
     expect(
       (

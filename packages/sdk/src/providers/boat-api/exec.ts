@@ -3,8 +3,10 @@ import { defaults } from "../../run.js";
 import { errors } from "./errors.js";
 import { followCommand, type FollowTiming } from "./follow.js";
 import { command as send, stopCommand, writeFile, type BoatHttp } from "./transport.js";
+
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
 /** Boat's file API accepts at most 5 MiB per write, after decoding, and only
  * under /home/user or /tmp. Keep a margin below that limit. */
 export const fileChunkBytes = 4 * 1024 * 1024;
@@ -24,12 +26,15 @@ export async function stage(
     { length: Math.max(1, Math.ceil(data.length / fileChunkBytes)) },
     (_, index) => `${dir}/part-${index}`,
   );
+
   const prepared = await send(http, id, {
     command: `mkdir -p /tmp/.sandbox-sdk && mkdir -m 700 -- ${quote(dir)} && (umask 077 && touch -- ${parts.map(quote).join(" ")})`,
     timeoutSeconds: 60,
   });
+
   if (prepared.kind !== "finished" || prepared.exitCode !== 0)
     throw failure("Boat could not prepare private staging", "provider", id);
+
   for (const [index, path] of parts.entries())
     await writeFile(http, id, {
       path,
@@ -38,6 +43,7 @@ export async function stage(
       ).toString("base64"),
       encoding: "base64",
     });
+
   return parts;
 }
 
@@ -54,16 +60,19 @@ export async function execute(
   follow: { http?: BoatHttp; timing?: FollowTiming } = {},
 ): Promise<ExecResult> {
   const { boatError, failure } = diagnostics;
+
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const stream = new AbortController();
   let cancelled = false;
   let cancel = () => {};
+
   const cancellation = new Promise<"cancelled">((resolve) => {
     cancel = () => {
       cancelled = true;
       resolve("cancelled");
     };
   });
+
   const timer = setTimeout(cancel, input.timeoutMs);
   input.signal?.addEventListener("abort", cancel, { once: true });
   let processId: number | undefined;
@@ -74,8 +83,10 @@ export async function execute(
   let stdinRemoved = false;
   let envDir: string | undefined;
   const setupError = `/tmp/.sandbox-sdk-setup-${crypto.randomUUID()}`;
+
   async function stop() {
     if (processId === undefined) return;
+
     try {
       if ((await stopCommand(http, id, processId)) !== false)
         throw failure("Boat did not confirm process-tree cancellation", "outcome_unknown", id);
@@ -87,6 +98,7 @@ export async function execute(
       );
     }
   }
+
   try {
     // Boat has no per-command env field. Transfer values through its files API,
     // inside a private directory, never through recorded command text or argv.
@@ -95,33 +107,43 @@ export async function execute(
         !Object.entries(defaults).some(([name, setting]) => key === name && value === setting) &&
         sandboxEnv[key] !== value,
     );
+
     const fixed = Object.entries(defaults).filter(([key, value]) => input.env[key] === value);
     let environment = fixed.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("; ");
+
     if (environment) environment += "; ";
     // Only the core's fixed, non-secret index path may bypass private env-file
     // transport. Arbitrary user values may be secrets, regardless of their size.
     const indexPath = "/tmp/.sandbox-sdk/changes.git/sdk.index";
+
     const inline = overrides.filter(
       ([key, value]) => key === "GIT_INDEX_FILE" && value === indexPath,
     );
+
     overrides = overrides.filter(([key, value]) => key !== "GIT_INDEX_FILE" || value !== indexPath);
+
     for (const [key, value] of inline) environment += `export ${quote(`${key}=${value}`)}; `;
+
     if (overrides.length) {
       const key = JSON.stringify(overrides);
       const cached = input.envMode === "sandbox" ? environmentFiles.get(key) : undefined;
+
       if (cached) {
         environment += `. ${quote(await cached)} || exit 1; `;
       } else {
         envDir = `/tmp/.sandbox-sdk/env-${crypto.randomUUID()}`;
         const envPath = `${envDir}/env`;
         const directory = envDir;
+
         const prepare = async () => {
           const script =
             "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
+
           const result = await send(http, id, {
             command: `node -e ${quote(script)} ${quote(directory)}`,
             timeoutSeconds: 60,
           });
+
           if (result.kind !== "finished" || result.exitCode !== 0)
             throw failure("Boat could not prepare command environment", "provider", id);
           await writeFile(http, id, {
@@ -131,16 +153,21 @@ export async function execute(
               "\n",
             encoding: "utf8",
           });
+
           return envPath;
         };
+
         const prepared = prepare();
+
         if (input.envMode === "sandbox") environmentFiles.set(key, prepared);
+
         try {
           await prepared;
         } catch (error) {
           if (input.envMode === "sandbox") environmentFiles.delete(key);
           throw error;
         }
+
         if (input.envMode === "sandbox") {
           // Retain the private file for this sandbox's stable handle env. Only
           // explicit per-run overrides need another upload and eager deletion.
@@ -151,6 +178,7 @@ export async function execute(
         }
       }
     }
+
     // stdin is a private file uploaded through the files API, never command
     // text. The shell opens it, removes the staging directory, then runs the
     // command, so the bytes leave the disk while the command reads them.
@@ -158,18 +186,22 @@ export async function execute(
     let stdin = "/dev/null";
     let unlink = "";
     let concat = "";
+
     if (bytes.length) {
       stdinDir = `/tmp/.sandbox-sdk/stdin-${crypto.randomUUID()}`;
       const parts = await stage(http, id, stdinDir, bytes, failure);
       stdin = parts.length === 1 ? `${stdinDir}/part-0` : `${stdinDir}/stdin`;
+
       if (parts.length > 1)
         concat = `(umask 077 && cat -- ${parts.map(quote).join(" ")} > ${quote(stdin)}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; `;
       unlink = `/bin/rm -rf -- ${quote(stdinDir)}; `;
     }
+
     if (cancelled) return { exitCode: null, timedOut: true };
     const command = `(${workspace}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; ${concat}{ ${unlink}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}); } < ${quote(stdin)}`;
     launchAttempted = true;
     const started = await send(http, id, { command, detached: true });
+
     if (
       started.kind !== "started" ||
       !Number.isSafeInteger(started.processId) ||
@@ -177,7 +209,9 @@ export async function execute(
     )
       throw failure("Boat did not confirm a detached process ID", "outcome_unknown", id);
     processId = started.processId;
+
     if (input.signal?.aborted) cancel();
+
     const completion = (async (): Promise<ExecResult> => {
       for await (const frame of followCommand(follow.http ?? http, id, started.processId, {
         signal: stream.signal,
@@ -189,27 +223,35 @@ export async function execute(
           finished = true;
           // Exit 125 may be a setup failure before the shell removed staging.
           stdinRemoved = frame.exitCode !== 125;
+
           return { exitCode: frame.exitCode, timedOut: frame.timedOut };
         } else if (frame.type === "error")
           throw failure("Boat command stream failed", "provider", id);
       }
+
       throw failure("Boat stream ended without an exit result", "outcome_unknown", id);
     })();
+
     void completion.catch(() => {});
     const result = await Promise.race([completion, cancellation]);
+
     if (result === "cancelled" || cancelled) {
       await stop();
       stream.abort();
       await completion.catch(() => {});
+
       return { exitCode: null, timedOut: true };
     }
+
     if (!result.timedOut && result.exitCode === 125) {
       const status = await send(http, id, {
         command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`,
         timeoutSeconds: 10,
       });
+
       if (status.kind !== "finished" || status.exitCode !== 0)
         throw failure("Boat could not confirm command initialization", "outcome_unknown", id);
+
       if (status.stdout.trim() === "setup-failed")
         throw failure(
           "Boat workspace initialization failed; the requested command did not run",
@@ -217,9 +259,11 @@ export async function execute(
           id,
         );
     }
+
     return result;
   } catch (error) {
     if (processId !== undefined && !finished) await stop();
+
     if (
       launchAttempted &&
       processId === undefined &&
@@ -235,6 +279,7 @@ export async function execute(
     stream.abort();
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
+
     // Cleanup runs even after an abort, each with its own short deadline.
     if (envDir)
       await send(
@@ -243,6 +288,7 @@ export async function execute(
         { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
         true,
       ).catch(() => {});
+
     if (stdinDir && !stdinRemoved)
       await send(
         http,

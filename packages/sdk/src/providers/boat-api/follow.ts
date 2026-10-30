@@ -15,6 +15,7 @@
  * says where this connection's output starts: the offset asked for, or 0 when Boat replaced the log.
  * Like the SDK, a lower `attached` offset is taken as is, so a replaced log's output is not dropped.
  */
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createDeadline, sleep } from "../../http.js";
 import { ndjson, streamFault } from "../../streams.js";
@@ -33,6 +34,7 @@ export interface FollowTiming {
   /** Pause between failing reconnects. */
   retryDelayMs: number;
 }
+
 export const followTiming: FollowTiming = {
   idleMs: 60_000,
   retryWindowMs: 60_000,
@@ -49,50 +51,54 @@ type WireFrame =
 
 const offset = (value: object, key: string): number | undefined => {
   const found: unknown = Reflect.get(value, key);
-  return typeof found === "number" && Number.isSafeInteger(found) && found >= 0 ? found : undefined;
+
+  return isNumber(found) && Number.isSafeInteger(found) && found >= 0 ? found : undefined;
 };
 
 function parseFrame(
   value: unknown,
   malformed: (what: string, code?: "outcome_unknown") => SandboxError,
 ): WireFrame {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("type" in value) ||
-    typeof value.type !== "string"
-  )
+  if (!isObject(value) || value === null || !("type" in value) || !isString(value.type))
     throw malformed("a frame has no type");
+
   switch (value.type) {
     case "stdout":
     case "stderr": {
-      if (!("data" in value) || typeof value.data !== "string")
+      if (!("data" in value) || !isString(value.data))
         throw malformed("an output frame has no data");
       const nextOffset = offset(value, "nextOffset");
+
       return {
         type: value.type,
         data: value.data,
         ...(nextOffset === undefined ? {} : { nextOffset }),
       };
     }
+
     case "attached":
     case "heartbeat":
     case "reconnect": {
       const stdoutOffset = offset(value, "stdoutOffset"),
         stderrOffset = offset(value, "stderrOffset");
+
       return {
         type: value.type,
         ...(stdoutOffset === undefined ? {} : { stdoutOffset }),
         ...(stderrOffset === undefined ? {} : { stderrOffset }),
       };
     }
+
     case "exit": {
       const exitCode: unknown = "exitCode" in value ? value.exitCode : undefined;
+
       // The command ended, but how is unknown.
-      if (exitCode !== null && typeof exitCode !== "number")
+      if (exitCode !== null && !isNumber(exitCode))
         throw malformed("the exit frame has no exit code", "outcome_unknown");
+
       return { type: "exit", exitCode, timedOut: "timedOut" in value && value.timedOut === true };
     }
+
     case "error":
       return { type: "error" };
     default:
@@ -103,7 +109,9 @@ function parseFrame(
 /** Whether a failure after a good connection is worth another attach. */
 function resumable(error: unknown): boolean {
   const fault = streamFault(error);
+
   if (fault) return fault === "disconnected" || fault === "truncated";
+
   return (
     error instanceof SandboxError && (error.code === "unavailable" || error.code === "timeout")
   );
@@ -118,23 +126,28 @@ export async function* followCommand(
   const { signal } = options;
   const timing = options.timing ?? followTiming;
   const label = http.label;
+
   const aborted = () =>
     new SandboxError(`${label} command stream aborted. The signal was cancelled.`, {
       code: "aborted",
       provider: http.provider,
       sandboxId: id,
     });
+
   const malformed = (what: string, code: "provider" | "outcome_unknown" = "provider") =>
     new SandboxError(
       `${label} command stream is invalid: ${what}. Check the ${label} service and retry.`,
       { code, provider: http.provider, sandboxId: id },
     );
+
   const offsets = { stdout: 0, stderr: 0 };
   let connected = false;
   // Set at the first failure after a good connection; a connection that delivers a frame clears it.
   let failingSince: number | undefined;
+
   for (;;) {
     if (signal.aborted) throw aborted();
+
     try {
       const response = await http.stream({
         method: "GET",
@@ -146,13 +159,16 @@ export async function* followCommand(
         startupTimeoutMs: timing.idleMs,
         idleTimeoutMs: timing.idleMs,
       });
+
       connected = true;
+
       if (!response.body)
         throw new SandboxError(
           `${label} command stream has no body. The connection will be retried.`,
           { code: "unavailable", provider: http.provider, sandboxId: id, retryable: true },
         );
       let rotated = false;
+
       for await (const value of ndjson(response.body, {
         provider: http.provider,
         sandboxId: id,
@@ -160,6 +176,7 @@ export async function* followCommand(
       })) {
         failingSince = undefined;
         const frame = parseFrame(value, malformed);
+
         switch (frame.type) {
           case "stdout":
           case "stderr":
@@ -168,11 +185,13 @@ export async function* followCommand(
               if (frame.nextOffset <= offsets[frame.type]) break;
               offsets[frame.type] = frame.nextOffset;
             }
+
             if (frame.data) yield { type: frame.type, data: frame.data };
             break;
           case "exit":
           case "error":
             yield frame;
+
             return;
           case "attached":
             offsets.stdout = frame.stdoutOffset ?? offsets.stdout;
@@ -188,11 +207,14 @@ export async function* followCommand(
             break;
           default: {
             const _exhaustive: never = frame;
+
             return _exhaustive;
           }
         }
+
         if (rotated) break;
       }
+
       // The scheduled rotation: open the stream again right away.
       if (rotated) continue;
       throw new SandboxError(
@@ -202,8 +224,10 @@ export async function* followCommand(
     } catch (error) {
       if (signal.aborted) throw aborted();
       failingSince ??= Date.now();
+
       if (!connected || !resumable(error) || Date.now() - failingSince >= timing.retryWindowMs)
         throw error;
+
       try {
         await sleep(
           timing.retryDelayMs,

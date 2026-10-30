@@ -11,6 +11,7 @@
  * activation or resume takes a revision when it starts; a response older than the route in use is dropped,
  * so a slow activation never overwrites a newer resume.
  */
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { failure } from "./errors.js";
 
 export interface SuperserveConfig {
@@ -23,11 +24,14 @@ export interface SuperserveConfig {
 
 const defaultBaseUrl = "https://api.superserve.ai";
 const defaultSandboxHost = "sandbox.superserve.ai";
+
 const regions = new Map([
   ["use", { baseUrl: "https://api.superserve.ai", sandboxHost: "sandbox.superserve.ai" }],
   ["usw", { baseUrl: "https://api-usw.superserve.ai", sandboxHost: "usw-sandbox.superserve.ai" }],
 ]);
+
 const regionKey = /^ss_live_([a-z0-9]{1,17})_[A-Za-z0-9_-]{32}$/;
+
 // Hosts that route by the X-Superserve-Sandbox-Id header; any other host is per sandbox (boxd-<id>.<host>).
 const sharedHosts = new Set([
   "sandbox.superserve.ai",
@@ -38,27 +42,33 @@ const sharedHosts = new Set([
 function sandboxHostFor(baseUrl: string): string {
   try {
     const host = new URL(baseUrl).hostname;
+
     if (host === "api-staging.superserve.ai") return "staging-sandbox.superserve.ai";
+
     for (const region of regions.values())
       if (new URL(region.baseUrl).hostname === host) return region.sandboxHost;
   } catch {
     // An unparseable override fails later, on the control-plane request itself.
   }
+
   return defaultSandboxHost;
 }
 
 /** Reads the key and endpoints: an explicit base URL wins, then the key's region (`ss_live_<region>_`), then the default. */
 export function resolveConfig(options: { apiKey?: string; baseUrl?: string }): SuperserveConfig {
   const apiKey = options.apiKey ?? process.env.SUPERSERVE_API_KEY;
+
   if (!apiKey?.trim())
     throw failure(
       "Superserve API key is missing. Authentication is required. Set SUPERSERVE_API_KEY or pass apiKey.",
       "auth",
     );
   const override = (options.baseUrl ?? process.env.SUPERSERVE_BASE_URL)?.trim() || undefined;
+
   if (override !== undefined)
     return { apiKey, baseUrl: override, sandboxHost: sandboxHostFor(override) };
   const region = regions.get(regionKey.exec(apiKey)?.[1] ?? "");
+
   return {
     apiKey,
     baseUrl: region?.baseUrl ?? defaultBaseUrl,
@@ -76,6 +86,7 @@ export function dataPlane(
   sandboxHost: string,
 ): { url: string; headers: Record<string, string> } {
   const host = sandboxHost.toLowerCase();
+
   return sharedHosts.has(host)
     ? { url: `https://${host}`, headers: { [sandboxIdHeader]: sandboxId } }
     : { url: `https://boxd-${sandboxId}.${host}`, headers: {} };
@@ -95,6 +106,7 @@ export function previewUrl(sandboxId: string, sandboxHost: string, port: number)
         : "Preview ports must be integers from 1024 to 65535",
       "invalid_argument",
     );
+
   return `https://${port}-${sandboxId}.${sandboxHost}`;
 }
 
@@ -104,9 +116,10 @@ export function hintExpiry(hint: string): number | undefined {
     const payload: unknown = JSON.parse(
       atob((hint.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")),
     );
-    const expiry =
-      typeof payload === "object" && payload !== null ? Reflect.get(payload, "e") : undefined;
-    return typeof expiry === "number" && Number.isFinite(expiry) ? expiry * 1000 : undefined;
+
+    const expiry = isObject(payload) ? Reflect.get(payload, "e") : undefined;
+
+    return isNumber(expiry) && Number.isFinite(expiry) ? expiry * 1000 : undefined;
   } catch {
     return undefined;
   }
@@ -125,13 +138,14 @@ export function parseRoute(
   sandboxId: string,
   operation: string,
 ): { token: string; hint?: string } {
-  const token =
-    typeof raw === "object" && raw !== null ? Reflect.get(raw, "access_token") : undefined;
-  const hint =
-    typeof raw === "object" && raw !== null ? Reflect.get(raw, "routing_hint") : undefined;
-  if (typeof token !== "string" || !token)
+  const token = isObject(raw) ? Reflect.get(raw, "access_token") : undefined;
+
+  const hint = isObject(raw) ? Reflect.get(raw, "routing_hint") : undefined;
+
+  if (!isString(token) || !token)
     throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);
-  return { token, ...(typeof hint === "string" && hint ? { hint } : {}) };
+
+  return { token, ...(isString(hint) && hint ? { hint } : {}) };
 }
 
 export type RotateEndpoint = "activate" | "resume";
@@ -173,9 +187,11 @@ interface RouteState {
 /** Waits for `promise` unless `signal` fires first. The shared promise keeps running for other callers. */
 function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return promise;
+
   return new Promise((resolve, reject) => {
     // A plain Error: the HTTP client turns an abort it sees during `auth` into its own `aborted` or `timeout`.
     const onAbort = () => reject(new Error("Superserve route activation abandoned by its caller"));
+
     if (signal.aborted) return onAbort();
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
@@ -185,11 +201,15 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pro
 export function createRouteBook(options: RouteBookOptions): RouteBook {
   const refreshBeforeMs = options.refreshBeforeMs ?? 30_000;
   const states = new Map<string, RouteState>();
+
   const stateOf = (id: string) => {
     let state = states.get(id);
+
     if (!state) states.set(id, (state = { issued: 0 }));
+
     return state;
   };
+
   /** Keeps the newer of the applied route and this response. Always returns the route now in use. */
   function apply(
     state: RouteState,
@@ -197,49 +217,65 @@ export function createRouteBook(options: RouteBookOptions): RouteBook {
     route: { token: string; hint?: string },
   ): Route {
     if (!state.current || revision > state.current.revision) state.current = { ...route, revision };
+
     return state.current;
   }
+
   async function rotate(id: string, state: RouteState, endpoint: RotateEndpoint): Promise<Route> {
     const revision = ++state.issued;
+
     return apply(
       state,
       revision,
       parseRoute(await options.rotate(id, endpoint), id, `POST /sandboxes/{id}/${endpoint}`),
     );
   }
+
   function activate(id: string, signal?: AbortSignal): Promise<Route> {
     const state = stateOf(id);
+
     if (!state.activating) {
       const pending = rotate(id, state, "activate");
+
       const settle = () => {
         if (state.activating === pending) state.activating = undefined;
       };
+
       pending.then(settle, settle);
       state.activating = pending;
     }
+
     return abortable(state.activating, signal);
   }
+
   const expiring = (route: Route) => {
     const expiry = route.hint === undefined ? undefined : hintExpiry(route.hint);
+
     return expiry !== undefined && expiry - Date.now() <= refreshBeforeMs;
   };
+
   return {
     async current(id, signal) {
       const route = states.get(id)?.current;
+
       return route && !expiring(route) ? route : activate(id, signal);
     },
     async refresh(id, used, signal) {
       const route = states.get(id)?.current;
+
       if (route && used !== undefined && route.revision > used && !expiring(route)) return route;
+
       return activate(id, signal);
     },
     activate,
     resume: (id) => {
       const state = stateOf(id);
+
       return rotate(id, state, "resume");
     },
     seed(id, raw) {
       const state = stateOf(id);
+
       return apply(state, ++state.issued, parseRoute(raw, id, "POST /sandboxes"));
     },
     forget: (id) => {

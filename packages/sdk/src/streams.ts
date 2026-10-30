@@ -12,6 +12,7 @@
  * - `frame_too_large`: a frame is larger than `maxFrameBytes`.
  * - `malformed`: a frame is not valid for the protocol.
  */
+import { isObject, isString } from "./shared/narrow.js";
 import { SandboxError, nativeDetail } from "./errors.js";
 
 export type StreamFault = "disconnected" | "truncated" | "frame_too_large" | "malformed";
@@ -27,16 +28,19 @@ export interface StreamOptions {
 }
 
 const faults = new WeakMap<SandboxError, StreamFault>();
+
 /** The protocol fault behind a stream error, or `undefined` for any other error. */
 export function streamFault(error: unknown): StreamFault | undefined {
   return error instanceof SandboxError ? faults.get(error) : undefined;
 }
+
 const faultCodes = {
   disconnected: "unavailable",
   truncated: "unavailable",
   frame_too_large: "unsupported",
   malformed: "provider",
 } as const;
+
 function fault(
   kind: StreamFault,
   message: string,
@@ -53,7 +57,9 @@ function fault(
       ...(cause === undefined ? {} : { cause: nativeDetail(cause) ?? kind }),
     },
   );
+
   faults.set(error, kind);
+
   return error;
 }
 
@@ -71,43 +77,53 @@ class Bytes {
   /** Index of the first byte matching `test` at or after `from`, or -1. */
   find(test: (byte: number) => boolean, from = 0): number {
     let base = 0;
+
     for (let c = 0; c < this.chunks.length; c++) {
       const chunk = this.chunks[c]!;
       const start = c === 0 ? this.head : 0;
       const size = chunk.byteLength - start;
+
       if (from < base + size)
         for (let i = Math.max(start, start + from - base); i < chunk.byteLength; i++)
           if (test(chunk[i]!)) return base + i - start;
       base += size;
     }
+
     return -1;
   }
   at(index: number): number | undefined {
     let rest = index;
+
     for (let c = 0; c < this.chunks.length; c++) {
       const chunk = this.chunks[c]!;
       const start = c === 0 ? this.head : 0;
+
       if (rest < chunk.byteLength - start) return chunk[start + rest];
       rest -= chunk.byteLength - start;
     }
+
     return undefined;
   }
   /** Removes and returns the first `count` bytes. */
   take(count: number): Uint8Array {
     const out = new Uint8Array(count);
     let filled = 0;
+
     while (filled < count) {
       const chunk = this.chunks[0]!;
       const n = Math.min(count - filled, chunk.byteLength - this.head);
       out.set(chunk.subarray(this.head, this.head + n), filled);
       filled += n;
       this.head += n;
+
       if (this.head === chunk.byteLength) {
         this.chunks.shift();
         this.head = 0;
       }
     }
+
     this.length -= count;
+
     return out;
   }
 }
@@ -120,19 +136,26 @@ async function* chunks(
   const reader = body.getReader();
   const { signal } = options;
   let finished = false;
+
   const abort = () => {
     void reader.cancel(signal?.reason).catch(() => {});
   };
+
   signal?.addEventListener("abort", abort, { once: true });
+
   try {
     if (signal?.aborted) throw aborted(options);
+
     for (;;) {
       let result: ReadableStreamReadResult<Uint8Array>;
+
       try {
         result = await reader.read();
       } catch (error) {
         finished = true;
+
         if (signal?.aborted) throw aborted(options);
+
         // The HTTP client already mapped it (timeout, aborted, lost connection); keep its code, mark the fault.
         // A write's lost connection is `outcome_unknown` rather than `unavailable`, but the stream dropped all the same.
         if (error instanceof SandboxError) {
@@ -140,24 +163,31 @@ async function* chunks(
             faults.set(error, "disconnected");
           throw error;
         }
+
         throw fault("disconnected", "The connection dropped mid-stream", options, error);
       }
+
       if (signal?.aborted) {
         finished = true;
         throw aborted(options);
       }
+
       if (result.done) {
         finished = true;
+
         return;
       }
+
       yield result.value;
     }
   } finally {
     signal?.removeEventListener("abort", abort);
+
     if (!finished) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
+
 function aborted(options: StreamOptions) {
   return new SandboxError("Stream aborted. The signal was cancelled.", {
     code: "aborted",
@@ -165,12 +195,16 @@ function aborted(options: StreamOptions) {
     sandboxId: options.sandboxId,
   });
 }
+
 const utf8 = new TextDecoder();
+
 /** The UTF-8 length of `text` in bytes, without encoding it. A lone surrogate counts as U+FFFD (3 bytes). */
 function utf8Length(text: string): number {
   let bytes = 0;
+
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
+
     if (unit < 0x80) bytes += 1;
     else if (unit < 0x800) bytes += 2;
     else if (
@@ -183,8 +217,10 @@ function utf8Length(text: string): number {
       i++;
     } else bytes += 3;
   }
+
   return bytes;
 }
+
 const defaultMax = 16 * 1024 * 1024;
 
 /**
@@ -197,8 +233,10 @@ export async function* ndjson(
 ): AsyncGenerator<unknown, void, undefined> {
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
+
   const parse = (line: Uint8Array, last: boolean): unknown => {
     const text = utf8.decode(line).replace(/\r$/, "");
+
     try {
       return JSON.parse(text);
     } catch {
@@ -207,9 +245,11 @@ export async function* ndjson(
         : fault("malformed", "A line is not valid JSON", options);
     }
   };
+
   for await (const chunk of chunks(body, options)) {
     const from = buffer.length;
     buffer.push(chunk);
+
     for (
       let end = buffer.find((byte) => byte === 10, from);
       end >= 0;
@@ -217,13 +257,17 @@ export async function* ndjson(
     ) {
       if (end > max) throw fault("frame_too_large", `A JSON line exceeds ${max} bytes`, options);
       const line = buffer.take(end + 1).subarray(0, end);
+
       if (line.some((byte) => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, false);
     }
+
     if (buffer.length > max)
       throw fault("frame_too_large", `A JSON line exceeds ${max} bytes`, options);
   }
+
   if (buffer.length) {
     const line = buffer.take(buffer.length);
+
     if (line.some((byte) => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, true);
   }
 }
@@ -259,6 +303,7 @@ export async function* sse(
   let dataBytes = 0;
   let retry: number | undefined;
   let pending = false;
+
   const dispatch = (): ServerSentEvent | undefined => {
     const out = data.length
       ? {
@@ -268,22 +313,27 @@ export async function* sse(
           ...(retry === undefined ? {} : { retry }),
         }
       : undefined;
+
     event = "";
     data = [];
     dataBytes = 0;
     retry = undefined;
     pending = false;
+
     return out;
   };
+
   const field = (line: string) => {
     if (line.startsWith(":")) return;
     pending = true;
     const colon = line.indexOf(":");
     const name = colon < 0 ? line : line.slice(0, colon);
     const value = colon < 0 ? "" : line.slice(colon + (line[colon + 1] === " " ? 2 : 1));
+
     if (name === "data") {
       // The event's data is the lines joined with "\n": count its UTF-8 bytes, separators included.
       dataBytes += utf8Length(value) + (data.length ? 1 : 0);
+
       if (dataBytes > max) throw fault("frame_too_large", `An event exceeds ${max} bytes`, options);
       data.push(value);
     } else if (name === "event") event = value;
@@ -293,35 +343,48 @@ export async function* sse(
       if (/^\d+$/.test(value)) retry = Number(value);
     }
   };
+
   for await (const chunk of chunks(body, options)) {
     buffer.push(chunk);
+
     for (;;) {
       if (skipLf && buffer.length) {
         if (buffer.at(0) === 10) buffer.take(1);
         skipLf = false;
       }
+
       const end = buffer.find((byte) => byte === 10 || byte === 13);
+
       if (end < 0) break;
+
       if (end > max) throw fault("frame_too_large", `An event line exceeds ${max} bytes`, options);
       const raw = buffer.take(end + 1);
+
       if (raw[end] === 13) skipLf = true;
       let line = utf8.decode(raw.subarray(0, end));
+
       if (first) {
         line = line.replace(/^﻿/, "");
         first = false;
       }
+
       if (line === "") {
         const out = dispatch();
+
         if (out) yield out;
       } else field(line);
     }
+
     if (buffer.length > max)
       throw fault("frame_too_large", `An event line exceeds ${max} bytes`, options);
   }
+
   if (buffer.length || pending) {
     if (!options.lenientEnd) throw fault("truncated", "The stream ended inside an event", options);
+
     if (buffer.length) field(utf8.decode(buffer.take(buffer.length)));
     const out = dispatch();
+
     if (out) yield out;
   }
 }
@@ -347,45 +410,57 @@ export async function* connectEnvelopes(
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
   const source = chunks(body, options);
+
   /** Reads until `size` bytes are buffered. False when the body ended first. */
   const fill = async (size: number): Promise<boolean> => {
     while (buffer.length < size) {
       const next = await source.next();
+
       if (next.done) return false;
       buffer.push(next.value);
     }
+
     return true;
   };
+
   try {
     for (let ended = false; ;) {
       if (!(await fill(5))) {
         if (buffer.length)
           throw fault("truncated", "The stream ended inside a Connect frame header", options);
+
         if (!ended)
           throw fault(
             "truncated",
             "The stream ended before the Connect end-of-stream frame",
             options,
           );
+
         return;
       }
+
       if (ended)
         throw fault("malformed", "A Connect frame followed the end-of-stream frame", options);
       const header = buffer.take(5);
       const flags = header[0]!;
       const size = new DataView(header.buffer, header.byteOffset, 5).getUint32(1);
+
       if (flags & 0x01)
         throw fault(
           "malformed",
           "A Connect frame is compressed, but no compression was negotiated",
           options,
         );
+
       if (flags & ~0x03) throw fault("malformed", "A Connect frame has unknown flags", options);
+
       if (size > max)
         throw fault("frame_too_large", `A Connect frame exceeds ${max} bytes`, options);
+
       if (!(await fill(size)))
         throw fault("truncated", "The stream ended inside a Connect frame", options);
       const payload = json(buffer.take(size));
+
       if (flags & 0x02) {
         ended = true;
         yield end(payload);
@@ -403,33 +478,39 @@ export async function* connectEnvelopes(
       throw fault("malformed", "A Connect frame is not valid JSON", options);
     }
   }
+
   function end(value: unknown): ConnectFrame {
-    if (typeof value !== "object" || value === null)
+    if (!isObject(value) || value === null)
       throw fault("malformed", "The Connect end-of-stream frame is not an object", options);
     const error: unknown = Reflect.get(value, "error");
     const metadata: unknown = Reflect.get(value, "metadata");
     const frame: ConnectFrame = { kind: "end" };
+
     if (error !== undefined) {
-      if (typeof error !== "object" || error === null)
+      if (!isObject(error) || error === null)
         throw fault("malformed", "The Connect end-of-stream error is not an object", options);
       const code: unknown = Reflect.get(error, "code");
       const message: unknown = Reflect.get(error, "message");
       const details: unknown = Reflect.get(error, "details");
-      if (typeof code !== "string")
+
+      if (!isString(code))
         throw fault("malformed", "The Connect end-of-stream error has no code", options);
       frame.error = {
         code,
-        ...(typeof message === "string" ? { message } : {}),
+        ...(isString(message) ? { message } : {}),
         ...(Array.isArray(details) ? { details } : {}),
       };
     }
-    if (typeof metadata === "object" && metadata !== null) {
+
+    if (isObject(metadata)) {
       const entries = Object.entries(metadata).filter(
         (entry): entry is [string, string[]] =>
-          Array.isArray(entry[1]) && entry[1].every((item) => typeof item === "string"),
+          Array.isArray(entry[1]) && entry[1].every((item) => isString(item)),
       );
+
       frame.metadata = Object.fromEntries(entries);
     }
+
     return frame;
   }
 }
@@ -441,5 +522,6 @@ export function connectEnvelope(message: unknown, end = false): Uint8Array {
   out[0] = end ? 0x02 : 0x00;
   new DataView(out.buffer).setUint32(1, payload.byteLength);
   out.set(payload, 5);
+
   return out;
 }

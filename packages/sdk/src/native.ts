@@ -1,3 +1,4 @@
+import { isObject, isString } from "./shared/narrow.js";
 import { SandboxError, invalid, nativeDetail } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import { peerModule } from "./peer.js";
@@ -135,18 +136,20 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
   options: NativeApiOptions<Plane>,
 ): NativeApi<Plane, Sdk> {
   const { http, placeholder, sandboxId, sdk: binding } = options;
-  const names: readonly string[] = typeof placeholder === "string" ? [placeholder] : placeholder;
+  const names: readonly string[] = isString(placeholder) ? [placeholder] : placeholder;
+
   function call(method: HttpMethod, path: string, request: NativeRequestOptions<Plane> = {}) {
-    if (typeof method !== "string" || !methods.has(method))
-      invalid(
-        `Unsupported HTTP method ${typeof method === "string" ? method.slice(0, 16) : typeof method}`,
-      );
-    if (typeof path !== "string") invalid("The path must be a string");
+    if (!isString(method) || !methods.has(method))
+      invalid(`Unsupported HTTP method ${isString(method) ? method.slice(0, 16) : typeof method}`);
+
+    if (!isString(path)) invalid("The path must be a string");
     let params = request.params;
+
     if (sandboxId !== undefined)
       for (const name of names)
         if (path.includes(`{${name}}`) && params?.[name] === undefined)
           params = { ...params, [name]: sandboxId };
+
     return {
       method,
       path,
@@ -161,17 +164,20 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       detail: "message" as const,
     };
   }
+
   async function connect(load: () => Promise<unknown>): Promise<unknown> {
     if (!binding)
       throw new SandboxError(
         `${http.label} has no official SDK binding. Use native.request or native.fetch.`,
         { code: "unsupported", provider: http.provider, sandboxId },
       );
+
     if (typeof load !== "function")
       invalid(
         `Pass a function that imports the SDK: native.sdk(() => import("${binding.package}"))`,
       );
     let module: unknown;
+
     try {
       module = peerModule(await load());
     } catch (error) {
@@ -180,6 +186,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
         (("code" in error &&
           (error.code === "ERR_MODULE_NOT_FOUND" || error.code === "MODULE_NOT_FOUND")) ||
           /Cannot find (?:package|module)/.test(error.message));
+
       if (missing)
         throw new SandboxError(
           `${binding.package} could not be imported. Install it next to @opencoredev/sandbox-sdk to use native.sdk().`,
@@ -196,8 +203,10 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
         { code: "provider", provider: http.provider, sandboxId },
       );
     }
-    if (typeof module !== "object" || module === null)
+
+    if (!isObject(module) || module === null)
       invalid(`native.sdk() needs the module object. Pass () => import("${binding.package}")`);
+
     try {
       return await binding.connect(module, sandboxId);
     } catch (error) {
@@ -214,9 +223,11 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       );
     }
   }
+
   // `Sdk` is the adapter's narrowed signature for this one runtime function; its result type is derived from
   // the caller's module type, which no runtime check can produce, so this is the single place it is asserted.
   const sdk = connect as unknown as Sdk;
+
   return {
     sandboxId,
     async request<T = unknown>(
@@ -245,10 +256,12 @@ export function sdkConstruct(
   packageName: string,
 ): unknown {
   const value: unknown = Reflect.get(module, name);
+
   if (typeof value !== "function")
     invalid(
       `The module passed to native.sdk() has no ${name} export. Pass () => import("${packageName}")`,
     );
+
   try {
     return Reflect.construct(value, args);
   } catch (error) {
@@ -271,12 +284,12 @@ export async function sdkCall(
   packageName: string,
 ): Promise<unknown> {
   const method: unknown =
-    (typeof target === "object" && target !== null) || typeof target === "function"
-      ? Reflect.get(target, name)
-      : undefined;
+    isObject(target) || typeof target === "function" ? Reflect.get(target, name) : undefined;
+
   if (typeof method !== "function")
     invalid(
       `The ${packageName} object has no ${name} method. Install a supported version of ${packageName}`,
     );
+
   return await Reflect.apply(method, target, args);
 }

@@ -2,11 +2,13 @@
  * https://sandboxer.com/api/v1/openapi.yaml. Routes, headers and bodies follow
  * @boatdev/sdk 1.9.9 (`src/apis/BoatApi.ts`), which no longer loads at runtime.
  */
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createHttpClient, type Fetch, type HttpClient, type HttpRequest } from "../../http.js";
 
 /** Boat has one API surface: the control plane, which also runs commands and moves files. */
 export type BoatPlane = "api";
+
 export type BoatHttp = HttpClient<BoatPlane>;
 
 export interface BoatHttpOptions {
@@ -70,28 +72,23 @@ function invalidResponse(
 
 /** Parses one sandbox object. */
 export function parseSandbox(value: unknown, provider: string, label: string): BoatSandbox {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("id" in value) ||
-    typeof value.id !== "string" ||
-    !value.id
-  )
+  if (!isObject(value) || value === null || !("id" in value) || !isString(value.id) || !value.id)
     throw invalidResponse(provider, label, "sandbox");
-  const name = "name" in value && typeof value.name === "string" ? value.name : "";
-  const state = "state" in value && typeof value.state === "string" ? value.state : "";
+  const name = "name" in value && isString(value.name) ? value.name : "";
+  const state = "state" in value && isString(value.state) ? value.state : "";
+
   const created =
-    "createdAt" in value &&
-    (typeof value.createdAt === "string" || typeof value.createdAt === "number")
+    "createdAt" in value && (isString(value.createdAt) || isNumber(value.createdAt))
       ? new Date(value.createdAt).getTime()
       : Number.NaN;
+
   return { id: value.id, name, state, createdAt: created, raw: value };
 }
 
 /** `{ sandbox }`, the body of create, get and update. */
 export function parseSandboxBody(value: unknown, provider: string, label: string): BoatSandbox {
   return parseSandbox(
-    typeof value === "object" && value !== null && "sandbox" in value ? value.sandbox : undefined,
+    isObject(value) && "sandbox" in value ? value.sandbox : undefined,
     provider,
     label,
   );
@@ -104,7 +101,7 @@ export function parseSandboxPage(
   label: string,
 ): { sandboxes: BoatSandbox[]; hasMore: boolean; nextCursor?: string } {
   if (
-    typeof value !== "object" ||
+    !isObject(value) ||
     value === null ||
     !("sandboxes" in value) ||
     !Array.isArray(value.sandboxes)
@@ -112,15 +109,14 @@ export function parseSandboxPage(
     throw invalidResponse(provider, label, "sandbox list");
   const sandboxes = value.sandboxes.map((item: unknown) => parseSandbox(item, provider, label));
   const page: unknown = "pageInfo" in value ? value.pageInfo : undefined;
-  const hasMore =
-    typeof page === "object" && page !== null && "hasMore" in page && page.hasMore === true;
+
+  const hasMore = isObject(page) && "hasMore" in page && page.hasMore === true;
+
   const next =
-    typeof page === "object" &&
-    page !== null &&
-    "nextCursor" in page &&
-    typeof page.nextCursor === "string"
+    isObject(page) && page !== null && "nextCursor" in page && isString(page.nextCursor)
       ? page.nextCursor
       : undefined;
+
   return { sandboxes, hasMore, ...(next === undefined ? {} : { nextCursor: next }) };
 }
 
@@ -137,18 +133,20 @@ export type CommandOutcome =
   | { kind: "unknown" };
 
 export function parseCommand(value: unknown): CommandOutcome {
-  if (typeof value !== "object" || value === null) return { kind: "unknown" };
+  if (!isObject(value) || value === null) return { kind: "unknown" };
+
   if (
     "stdout" in value &&
-    typeof value.stdout === "string" &&
+    isString(value.stdout) &&
     "stderr" in value &&
-    typeof value.stderr === "string" &&
+    isString(value.stderr) &&
     "exitCode" in value &&
-    (value.exitCode === null || typeof value.exitCode === "number")
+    (value.exitCode === null || isNumber(value.exitCode))
   ) {
     const truncated =
       ("stdoutTruncated" in value && value.stdoutTruncated === true) ||
       ("stderrTruncated" in value && value.stderrTruncated === true);
+
     return {
       kind: "finished",
       stdout: value.stdout,
@@ -157,8 +155,10 @@ export function parseCommand(value: unknown): CommandOutcome {
       truncated,
     };
   }
-  if ("processId" in value && typeof value.processId === "number")
+
+  if ("processId" in value && isNumber(value.processId))
     return { kind: "started", processId: value.processId };
+
   return { kind: "unknown" };
 }
 
@@ -183,6 +183,7 @@ export async function command(
     sandboxId: id,
     body,
   };
+
   return parseCommand((await (cleanup ? http.cleanup(request) : http.request(request))).json());
 }
 
@@ -209,7 +210,6 @@ export async function stopCommand(http: BoatHttp, id: string, processId: number)
     params: { sandboxId: id, processId },
     sandboxId: id,
   });
-  return typeof value === "object" && value !== null && "running" in value
-    ? value.running
-    : undefined;
+
+  return isObject(value) && "running" in value ? value.running : undefined;
 }

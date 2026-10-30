@@ -1,6 +1,7 @@
 // The E2B adapter on the wire, against a scripted server: error mapping, retries, the native API, sdk(load),
 // and the Connect stream faults (truncation, missing end frame, split frames, disconnect and reconnect,
 // cancellation during startup). E2B_API_URL and E2B_SANDBOX_URL point both planes at the server.
+import { isObject } from "../src/shared/narrow.js";
 import {
   afterAll,
   afterEach,
@@ -20,18 +21,22 @@ import { fakeServer, pieces, type FakeServer, type RecordedRequest } from "./htt
 
 let server: FakeServer;
 const saved = { api: process.env.E2B_API_URL, sandbox: process.env.E2B_SANDBOX_URL };
+
 beforeAll(() => {
   delete process.env.E2B_API_URL;
   delete process.env.E2B_SANDBOX_URL;
 });
+
 beforeEach(async () => {
   server = await fakeServer();
   process.env.E2B_API_URL = server.url;
   process.env.E2B_SANDBOX_URL = server.url;
 });
+
 afterEach(async () => {
   await server.close();
 });
+
 afterAll(() => {
   for (const [name, value] of [
     ["E2B_API_URL", saved.api],
@@ -45,27 +50,32 @@ const key = "e2b_secret_key_123456";
 const token = "envd-token-abcdef123456";
 const frame = (message: unknown, end = false) => connectEnvelope(message, end);
 const start = (pid: number) => frame({ event: { start: { pid } } });
+
 const out = (text: string, stream: "stdout" | "stderr" = "stdout") =>
   frame({ event: { data: { [stream]: Buffer.from(text).toString("base64") } } });
+
 const exit = (code?: number) =>
   frame({ event: { end: code ? { exitCode: code, exited: true } : { exited: true } } });
+
 const done = frame({}, true);
 const concat = (...parts: Uint8Array[]) => Buffer.concat(parts);
+
 const connectStream = (
   parts: (string | Uint8Array)[],
   extra: { cut?: boolean; hold?: boolean; intervalMs?: number } = {},
 ) => ({ stream: parts, headers: { "content-type": "application/connect+json" }, ...extra });
+
 const envelopeOf = (request: RecordedRequest): Record<string, unknown> =>
   JSON.parse(request.body.subarray(5).toString());
+
 const scriptOf = (request: RecordedRequest) => {
   const process = envelopeOf(request).process;
-  return typeof process === "object" &&
-    process !== null &&
-    "args" in process &&
-    Array.isArray(process.args)
+
+  return isObject(process) && process !== null && "args" in process && Array.isArray(process.args)
     ? String(process.args[2])
     : "";
 };
+
 const tagOf = (request: RecordedRequest) => String(envelopeOf(request).tag);
 
 /** Scripts the calls `connect()` makes and returns a provider attached to sandbox `sb1`. */
@@ -101,17 +111,22 @@ async function attached(options: Parameters<typeof e2b>[0] = {}) {
     });
   const provider = e2b({ apiKey: key, ...options });
   await provider.connect("sb1");
+
   return provider;
 }
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
+
 const exec = (provider: ReturnType<typeof e2b>, chunks: string[] = [], timeoutMs = 5_000) =>
   provider.exec("sb1", {
     command: "work",
@@ -131,18 +146,22 @@ describe("errors", () => {
       headers: new Headers(),
       body: { text: "", json: undefined, ...(code === undefined ? {} : { code }) },
     });
+
     const api = { method: "GET" as const, plane: "api", operation: "GET /sandboxes/{id}" };
     const files = { method: "GET" as const, plane: "envd", operation: "GET /files" };
+
     const stat = {
       method: "POST" as const,
       plane: "envd",
       operation: "POST /filesystem.Filesystem/Stat",
     };
+
     const signal = {
       method: "POST" as const,
       plane: "envd",
       operation: "POST /process.Process/SendSignal",
     };
+
     expect(mapE2BError(status(507), api)).toBe("quota");
     expect(mapE2BError(status(404), api)).toBeUndefined();
     expect(mapE2BError(status(404), files)).toBe("file_not_found");
@@ -359,6 +378,7 @@ describe("command streams", () => {
         connectStream([concat(start(42), out("after\n"), exit(5), done)]),
       );
     const chunks: string[] = [];
+
     const process = await provider.startProcess!("sb1", {
       command: "work",
       cwd: "/workspace",
@@ -367,6 +387,7 @@ describe("command streams", () => {
         chunks.push(chunk.text);
       },
     });
+
     expect(process.pid).toBe(42);
     expect(await process.wait()).toEqual({ exitCode: 5, signal: null });
     expect(chunks).toEqual(["before\n"]);
@@ -384,8 +405,10 @@ describe("command streams", () => {
           response
             .writeHead(200, { "content-type": "application/connect+json" })
             .end(concat(start(99), exit(), done));
+
           return;
         }
+
         tag = tagOf(request); // envd started it, but the start event never arrives
       })
       .on("POST /process.Process/SendSignal", { json: {} });
@@ -450,20 +473,24 @@ describe("native API", () => {
       body: new Uint8Array([0, 1, 2, 255]),
       headers: { "content-type": "application/octet-stream" },
     });
+
     const response = await provider
       .native("sb1")
       .fetch("GET", "/files", { plane: "envd", query: { path: "/bin/x", username: "root" } });
+
     expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0, 1, 2, 255]);
     server.on("POST /process.Process/SendSignal", {
       status: 404,
       json: { code: "not_found", message: `process 9 not found (token ${token})` },
     });
+
     const error = await failure(
       provider.native("sb1").request("POST", "/process.Process/SendSignal", {
         plane: "envd",
         body: { process: { pid: 9 } },
       }),
     );
+
     expect(error).toMatchObject({ code: "not_found", sandboxId: "sb1" });
     expect(error.message).toContain("process 9 not found");
     expect(error.message).not.toContain(token);

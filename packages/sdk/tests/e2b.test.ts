@@ -1,27 +1,34 @@
+import { isString } from "../src/shared/narrow.js";
 import { vi, test, expect, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fakeE2B } from "./e2b-fake.js";
 import { e2b } from "../src/providers/e2b/index.js";
 import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
+
 // A local E2B (control plane and envd) behind a fetch stub. This suite never contacts E2B, even if keys are present.
 const fake = await fakeE2B();
 const { calls, listQueries, reconnects, starts } = fake;
+
 vi.stubGlobal("fetch", fake.fetch(globalThis.fetch));
+
 afterAll(async () => {
   await fake.close();
   vi.unstubAllGlobals();
 });
+
 // live:true enables the Linux/git/HTTP tests against the local fixture.
 runConformance(() => e2b({ apiKey: "mock" }), { live: true });
 
 test("metadata lookup paginates, labels survive and native is the sandbox", async () => {
   const provider = e2b({ apiKey: "mock", template: "custom", domain: "example.test" });
+
   const box = await createSandbox(provider, {
     key: "key",
     labels: { app: "test" },
     env: { HELLO: "world" },
   });
+
   try {
     expect(box.native.sandboxId).toBe(box.id);
     expect(calls.at(-1)).toMatchObject({
@@ -46,11 +53,13 @@ test("metadata lookup paginates, labels survive and native is the sandbox", asyn
     await box.destroy();
   }
 });
+
 test("network rules are enforced at creation and sizes/idle fail closed", async () => {
   for (const network of ["none", { allow: ["registry.npmjs.org"] }] as const) {
     const box = await createSandbox(e2b({ apiKey: "mock" }), {
-      network: typeof network === "string" ? network : { allow: [...network.allow] },
+      network: isString(network) ? network : { allow: [...network.allow] },
     });
+
     expect(calls.at(-1)?.body).toMatchObject(
       network === "none"
         ? { allow_internet_access: false }
@@ -58,6 +67,7 @@ test("network rules are enforced at creation and sizes/idle fail closed", async 
     );
     await box.destroy();
   }
+
   for (const size of ["small", "medium", "large", { cpu: 2, memoryMb: 512, diskGb: 1 }] as const)
     await expect(createSandbox(e2b({ apiKey: "mock" }), { size })).rejects.toMatchObject({
       code: "unsupported",
@@ -66,9 +76,11 @@ test("network rules are enforced at creation and sizes/idle fail closed", async 
     createSandbox(e2b({ apiKey: "mock" }), { idleTimeoutMs: 1000 }),
   ).rejects.toMatchObject({ code: "unsupported" });
 });
+
 test("pause/resume and snapshot restore files through a new adapter", async () => {
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider);
+
   try {
     await box.files.write("state", "saved");
     const snapshot = await box.snapshot();
@@ -77,6 +89,7 @@ test("pause/resume and snapshot restore files through a new adapter", async () =
     await box.resume();
     expect(await box.files.read("state")).toBe("saved");
     const restored = await createSandbox(e2b({ apiKey: "mock" }), { from: snapshot.id });
+
     try {
       expect(await restored.files.read("state")).toBe("saved");
     } finally {
@@ -86,16 +99,20 @@ test("pause/resume and snapshot restore files through a new adapter", async () =
     await box.destroy();
   }
 });
+
 test("timeout and abort kill descendants before delayed writes", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     expect(
       await box.run("(sleep .25; echo survived > child) & wait", { timeoutMs: 30 }),
     ).toMatchObject({ timedOut: true });
     const controller = new AbortController();
+
     const run = Promise.resolve(
       box.run("(sleep .25; echo survived > aborted-child) & wait", { signal: controller.signal }),
     );
+
     setTimeout(() => controller.abort(), 30);
     expect(await run).toMatchObject({ timedOut: true });
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -105,6 +122,7 @@ test("timeout and abort kill descendants before delayed writes", async () => {
     await box.destroy();
   }
 });
+
 test("native failures become safe structured errors", async () => {
   await expect(createSandbox(e2b({ apiKey: "invalid" }))).rejects.toMatchObject({
     code: "auth",
@@ -117,13 +135,16 @@ test("native failures become safe structured errors", async () => {
     code: "not_found",
   });
 });
+
 test("late creation after abort is destroyed", async () => {
   fake.createDelayMs = 60;
   const controller = new AbortController();
+
   const promise = createSandbox(e2b({ apiKey: "mock" }), {
     labels: { late: "yes" },
     signal: controller.signal,
   });
+
   setTimeout(() => controller.abort(), 10);
   await expect(promise).rejects.toMatchObject({ code: "aborted" });
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -134,6 +155,7 @@ test("late creation after abort is destroyed", async () => {
 test("native process wait reconnects after the local stream closes", async () => {
   const provider = e2b({ apiKey: "mock" });
   const info = await provider.create({ labels: {} });
+
   try {
     const process = await provider.startProcess?.(info.id, {
       command: "sleep .2; exit 7",
@@ -141,6 +163,7 @@ test("native process wait reconnects after the local stream closes", async () =>
       env: {},
       onChunk() {},
     });
+
     expect(process).toBeDefined();
     await provider.close?.(info.id);
     await provider.connect(info.id);
@@ -150,6 +173,7 @@ test("native process wait reconnects after the local stream closes", async () =>
     await provider.destroy(info.id);
   }
 });
+
 test("hard lifetime is retained across pause and fresh-client resume", async () => {
   const provider = e2b({ apiKey: "mock" });
   const info = await provider.create({ labels: {}, timeoutMs: 200 });
@@ -163,6 +187,7 @@ test("hard lifetime is retained across pause and fresh-client resume", async () 
 
 test("unconfirmed network policy destroys the sandbox and fails closed", async () => {
   fake.infoOnce = ({ allowInternetAccess: _allow, network: _network, ...info }) => info;
+
   try {
     await expect(
       e2b({ apiKey: "mock" }).create({ labels: { unconfirmed: "yes" }, network: "none" }),
@@ -170,6 +195,7 @@ test("unconfirmed network policy destroys the sandbox and fails closed", async (
   } finally {
     fake.infoOnce = undefined;
   }
+
   expect(await e2b({ apiKey: "mock" }).list({ unconfirmed: "yes" })).toEqual([]);
 });
 
@@ -177,6 +203,7 @@ test("cancellation wins when a completed command handle arrives late", async () 
   const provider = e2b({ apiKey: "mock" });
   const info = await provider.create({ labels: {} });
   fake.startDelayMs = 60;
+
   try {
     expect(
       await provider.exec(info.id, {
@@ -197,11 +224,13 @@ test("launch preserves fragmented stdout and uses no marker file requests", asyn
   const box = await createSandbox(e2b({ apiKey: "mock" }));
   // Force a boundary in user stdout: each output chunk arrives as two data events.
   fake.fragment = "split3";
+
   const before = {
     start: fake.count("POST /process.Process/Start"),
     read: fake.count("GET /files"),
     remove: fake.count("POST /filesystem.Filesystem/Remove"),
   };
+
   try {
     const result = await box.run("printf 'hello\\n'; printf error >&2; exit 7");
     expect(result).toMatchObject({ stdout: "hello\n", stderr: "error", exitCode: 7 });
@@ -216,10 +245,12 @@ test("launch preserves fragmented stdout and uses no marker file requests", asyn
 
 test("file writes create missing parents without mkdir requests", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   const before = {
     mkdir: fake.count("POST /filesystem.Filesystem/MakeDir"),
     write: fake.count("POST /files"),
   };
+
   try {
     await box.files.write("new/nested/file", "saved");
     expect(await box.files.read("new/nested/file")).toBe("saved");
@@ -238,6 +269,7 @@ test("custom hardware templates accept both names and IDs", async () => {
     "jwj8b58bmst9azjl2iim",
   ]) {
     const box = await createSandbox(e2b({ apiKey: "mock", template }));
+
     try {
       expect(calls.at(-1)?.template).toBe(template);
     } finally {
@@ -248,6 +280,7 @@ test("custom hardware templates accept both names and IDs", async () => {
 
 test("shell startup stdout before the control frame is preserved", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     for (const script of ["echo banner", "printf banner"]) {
       await box.files.write("banner.sh", script);
@@ -264,10 +297,12 @@ test("shell startup stdout before the control frame is preserved", async () => {
 
 test("startup command disclosure cannot poison launch confirmation", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     await box.files.write("disclose.sh", 'printf "%s\\n" "$BASH_EXECUTION_STRING"');
     fake.fragment = "chars";
     const first = starts.length;
+
     try {
       const result = await box.run("printf done", { env: { BASH_ENV: "/workspace/disclose.sh" } });
       expect(result.exitCode).toBe(0);
@@ -276,6 +311,7 @@ test("startup command disclosure cannot poison launch confirmation", async () =>
     } finally {
       fake.fragment = undefined;
     }
+
     expect((await box.run("true")).ok).toBe(true);
   } finally {
     await box.destroy();
@@ -285,12 +321,14 @@ test("startup command disclosure cannot poison launch confirmation", async () =>
 test("startup output cannot forge the cancellation process group", async () => {
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider);
+
   try {
     await box.files.write(
       "forge.sh",
       'if [[ "$BASH_EXECUTION_STRING" =~ (sandbox-sdk-pgid-[^:]+:) ]]; then printf "%s424242\\n" "${BASH_REMATCH[1]}"; fi; printf "hook\\n"',
     );
     let stdout = "";
+
     const process = await provider.startProcess?.(box.id, {
       command: "printf done",
       cwd: "/workspace",
@@ -299,6 +337,7 @@ test("startup output cannot forge the cancellation process group", async () => {
         stdout += chunk.text;
       },
     });
+
     expect(process?.pid).not.toBe(424242);
     expect(await process?.wait()).toMatchObject({ exitCode: 0 });
     expect(stdout).toBe("hook\ndone");
@@ -310,6 +349,7 @@ test("startup output cannot forge the cancellation process group", async () => {
 test("frame-like user output survives every chunk boundary unchanged", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
   fake.fragment = "chars";
+
   try {
     const output = "sandbox-sdk-pgid-user:bad\nsandbox-sdk-pgid-user:424242\nend";
     await box.files.write("output", output);
@@ -325,8 +365,10 @@ test("trusted native PID remains the group leader with and without an existing g
     fake.launchGroupLeader = existing;
     const provider = e2b({ apiKey: "mock" });
     const box = await createSandbox(provider);
+
     try {
       let stdout = "";
+
       const process = await provider.startProcess?.(box.id, {
         command: "printf '%s' $$",
         cwd: "/workspace",
@@ -335,6 +377,7 @@ test("trusted native PID remains the group leader with and without an existing g
           stdout += chunk.text;
         },
       });
+
       expect(await process?.wait()).toMatchObject({ exitCode: 0 });
       expect(Number(stdout)).toBe(process?.pid);
       const result = await box.run("(sleep .3; echo survived > escaped) & wait", { timeoutMs: 30 });
@@ -350,10 +393,12 @@ test("trusted native PID remains the group leader with and without an existing g
 
 test("launch bookkeeping preserves caller environment variables", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     const result = await box.run('printf \'%s:%s\' "$stat" "$pgid"', {
       env: { stat: "original-stat", pgid: "original-pgid" },
     });
+
     expect(result.stdout).toBe("original-stat:original-pgid");
   } finally {
     await box.destroy();
@@ -372,9 +417,12 @@ test.each(["timeout", "stop"] as const)(
         const proc = await run(
           `while [ ! -f /workspace/launch-gate ]; do sleep .005; done; ${command}`,
         );
+
         leader = proc.pid;
+
         return proc;
       }
+
       if (command.startsWith("kill -KILL")) {
         // Model the adverse schedule: an early group signal sees ESRCH, then
         // bootstrap runs before the separate native-PID kill can arrive.
@@ -382,17 +430,22 @@ test.each(["timeout", "stop"] as const)(
         await early?.exited;
         await mkdir(machine.mapped("/workspace"), { recursive: true });
         await writeFile(machine.mapped("/workspace/launch-gate"), "open");
+
         if (!leaderKilled())
           await expect
             .poll(async () => box.files.exists("child-started"), { timeout: 1000, interval: 5 })
             .toBe(true);
+
         return early ?? run(command);
       }
+
       return run(command);
     };
+
     try {
       const command =
         "(echo started > child-started; sleep .25; echo survived > escaped-bootstrap) & wait";
+
       if (mode === "timeout")
         expect((await box.run(command, { timeoutMs: 30 })).timedOut).toBe(true);
       else {
@@ -402,9 +455,11 @@ test.each(["timeout", "stop"] as const)(
           env: {},
           onChunk() {},
         });
+
         expect(process).toBeDefined();
         await process?.stop({ graceMs: 0 });
       }
+
       await new Promise((resolve) => setTimeout(resolve, 350));
       expect(await box.files.exists("escaped-bootstrap")).toBe(false);
     } finally {
@@ -419,8 +474,10 @@ test("create uses one native acquisition and operations reuse its connection", a
     create: fake.count("POST /v2/sandboxes"),
     connect: fake.count("POST /v2/sandboxes/{id}/connect"),
   };
+
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider, { labels: { verification: "sbx57" } });
+
   try {
     const native = box.native;
     await box.run("printf reused");
@@ -439,8 +496,10 @@ test("plain create makes no metadata, deadline or workspace request after acquis
     info: fake.count("GET /sandboxes/{id}"),
     timeout: fake.count("POST /sandboxes/{id}/timeout"),
   };
+
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider, { timeoutMs: 60_000 });
+
   try {
     expect(fake.count("GET /sandboxes/{id}")).toBe(before.info);
     // The create request carries the timeout; nothing sets it again.
@@ -459,33 +518,41 @@ test.each(["write", "mkdir", "remove", "connect", "snapshot"] as const)(
   async (operation) => {
     const provider = e2b({ apiKey: "mock" });
     const box = await createSandbox(provider);
+
     try {
       if (operation === "write") {
         await box.files.write("nested/first", "ok");
         expect(await box.files.read("nested/first")).toBe("ok");
       }
+
       if (operation === "mkdir") {
         await provider.files.mkdir(box.id, "/workspace/nested");
         expect(await box.files.list("/workspace")).toHaveLength(1);
       }
+
       if (operation === "remove") {
         await box.files.remove("/workspace");
         expect(await box.files.exists("/workspace")).toBe(false);
+
         return;
       }
+
       if (operation === "connect") {
         const fresh = await connectSandbox(e2b({ apiKey: "mock" }), box.id);
         expect((await fresh.run("pwd")).stdout.trim()).toBe("/workspace");
       }
+
       if (operation === "snapshot") {
         const saved = await box.snapshot();
         const restored = await createSandbox(e2b({ apiKey: "mock" }), { from: saved.id });
+
         try {
           expect(await restored.files.list("/workspace")).toEqual([]);
         } finally {
           await restored.destroy();
         }
       }
+
       expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
       await box.run("rmdir /workspace/nested 2>/dev/null; rm -rf /workspace");
       expect(await box.files.exists("/workspace")).toBe(false);
@@ -497,6 +564,7 @@ test.each(["write", "mkdir", "remove", "connect", "snapshot"] as const)(
 
 test("fresh root lists the workspace and cannot replace it with a file", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     expect((await box.files.list("/")).filter((file) => file.path === "/workspace")).toHaveLength(
       1,
@@ -515,6 +583,7 @@ test("fresh overlapping launches keep setup until completion, including cancelle
   const box = await createSandbox(provider);
   fake.startHook = (command, run) =>
     run(command.startsWith("set --") ? `sleep .05; ${command}` : command);
+
   try {
     const first = Promise.resolve(box.run("echo first", { timeoutMs: 10 }));
     const second = Promise.resolve(box.run("pwd"));
@@ -531,12 +600,14 @@ test.each(["exec", "write", "remove"] as const)(
   "reconnect preserves workspace removal after first %s",
   async (first) => {
     const box = await createSandbox(e2b({ apiKey: "mock" }));
+
     try {
       if (first === "exec") await box.run("rm -rf /workspace");
       else {
         if (first === "write") await box.files.write("file", "ok");
         await box.files.remove("/workspace", { recursive: true });
       }
+
       const fresh = e2b({ apiKey: "mock" });
       await fresh.connect(box.id);
       await expect(fresh.files.stat(box.id, "/workspace")).rejects.toMatchObject({
@@ -564,20 +635,25 @@ test.each(["exit", "abort"] as const)(
   "first %s after deleting workspace does not leave a synthetic directory",
   async (mode) => {
     const box = await createSandbox(e2b({ apiKey: "mock" }));
+
     try {
       if (mode === "exit")
         expect((await box.run("rm -rf /workspace; exit 130")).exitCode).toBe(130);
       else {
         const controller = new AbortController();
+
         const run = box.run("rm -rf /workspace; echo removed; sleep 5", {
           signal: controller.signal,
         });
+
         const output = (async () => {
           for await (const chunk of run) if (chunk.text.includes("removed")) controller.abort();
         })();
+
         await output;
         expect((await run).timedOut).toBe(true);
       }
+
       expect(await box.files.exists("/workspace")).toBe(false);
       expect((await box.files.list("/")).some((file) => file.path === "/workspace")).toBe(false);
       await box.files.write("/workspace", "replacement");
@@ -591,6 +667,7 @@ test.each(["exit", "abort"] as const)(
 test("adopting a markerless existing workspace preserves later removal", async () => {
   const first = e2b({ apiKey: "mock" });
   const box = await createSandbox(first);
+
   try {
     await box.native.request("POST", "/filesystem.Filesystem/MakeDir", {
       plane: "envd",
@@ -614,8 +691,10 @@ test("concurrent workspace initialization cannot recreate a directory removed by
   let launch = 0;
   fake.startHook = (command, run) => {
     const delay = launch++ === 0 ? ".03" : ".1";
+
     return run(command.replaceAll("mkdir -p /workspace", `sleep ${delay}; mkdir -p /workspace`));
   };
+
   try {
     const [first, second] = await Promise.all([
       box.run("rm -rf /workspace; touch /tmp/.sandbox-sdk-deleted"),
@@ -624,6 +703,7 @@ test("concurrent workspace initialization cannot recreate a directory removed by
         { cwd: "/" },
       ),
     ]);
+
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
     expect(await box.files.exists("/workspace")).toBe(false);
@@ -636,6 +716,7 @@ test("concurrent workspace initialization cannot recreate a directory removed by
 test("paused SDK sandboxes are listed and reaped; E2B has no other stopped state", async () => {
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider, { labels: { app: "paused-e2b" } });
+
   try {
     fake.pause(box.id);
     expect(await listSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toEqual(
@@ -656,26 +737,33 @@ test("paused SDK sandboxes are listed and reaped; E2B has no other stopped state
     await box.destroy().catch(() => {});
   }
 });
+
 test("native process exits match other providers: 143 after stop, null when killed otherwise", async () => {
   const provider = e2b({ apiKey: "mock" });
   const info = await provider.create({ labels: {} });
+
   try {
     const startProcess = provider.startProcess;
+
     if (!startProcess) throw new Error("e2b has native processes");
+
     const stopped = await startProcess.call(provider, info.id, {
       command: "sleep 30",
       cwd: "/workspace",
       env: {},
       onChunk() {},
     });
+
     await stopped.stop({ graceMs: 50 });
     expect(await stopped.wait()).toEqual({ exitCode: 143, signal: null });
+
     const killed = await startProcess.call(provider, info.id, {
       command: "sleep 30",
       cwd: "/workspace",
       env: {},
       onChunk() {},
     });
+
     // The mock's PID is a real local process; killing it is a signal death without stop().
     process.kill(killed.pid, "SIGKILL");
     expect(await killed.wait()).toEqual({ exitCode: null, signal: null });
@@ -683,8 +771,10 @@ test("native process exits match other providers: 143 after stop, null when kill
     await provider.destroy(info.id);
   }
 });
+
 test("a missing cwd is a failed run with the shell error on stderr, not a request error", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
+
   try {
     await box.run("true");
     expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({

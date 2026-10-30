@@ -2,8 +2,10 @@ import { boatApi } from "../boat-api/index.js";
 import type { BoatPlane } from "../boat-api/transport.js";
 import type { NativeApi } from "../../native.js";
 import type { Provider } from "../../provider.js";
+
 /** Boat machine types: 2 CPU/4 GB, 4 CPU/8 GB, 8 CPU/16 GB, 16 CPU/32 GB. */
 export type BoatMachine = "small" | "default" | "large" | "xlarge";
+
 /** Native create fields shared by Boat and Sandboxer. */
 export interface BoatCreateOptions {
   /** Seconds until the VM auto-stops; `null` turns auto-stop off. Default: 3600.
@@ -19,6 +21,7 @@ export interface BoatCreateOptions {
   /** Organization to bill, by id or name. Default: your active wallet. */
   org?: string;
 }
+
 export interface BoatOptions extends BoatCreateOptions {
   /** Defaults to BOAT_API_KEY; required on first use. */
   apiKey?: string;
@@ -41,6 +44,7 @@ export interface BoatSdkModule {
     get(request: { sandboxId: string }): Promise<{ sandbox: unknown }>;
   };
 }
+
 /** `box.native.sdk(() => import("@boatdev/sdk"))`: a `BoatApi` client with this adapter's base URL and key, and the sandbox's metadata from `client.get`. */
 export type BoatSandboxSdk = <M extends BoatSdkModule>(
   load: () => Promise<M>,
@@ -48,6 +52,7 @@ export type BoatSandboxSdk = <M extends BoatSdkModule>(
   client: InstanceType<M["BoatApi"]>;
   sandbox: Awaited<ReturnType<InstanceType<M["BoatApi"]>["get"]>>["sandbox"];
 }>;
+
 /** `provider.api.sdk(() => import("@boatdev/sdk"))`: the `BoatApi` client. */
 export type BoatClientSdk = <M extends BoatSdkModule>(
   load: () => Promise<M>,
@@ -58,6 +63,7 @@ export type BoatClientSdk = <M extends BoatSdkModule>(
  * `"api"`, and `{sandboxId}` in a path fills from the sandbox.
  */
 export type BoatNative = NativeApi<BoatPlane, BoatSandboxSdk>;
+
 export type BoatProvider = Provider<BoatNative, "size"> & {
   /** Boat's API with no sandbox bound, for account calls such as `GET /limits`. */
   readonly api: NativeApi<BoatPlane, BoatClientSdk>;

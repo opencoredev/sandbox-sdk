@@ -6,6 +6,7 @@
  *   const e2b = await fakeE2B();
  *   vi.stubGlobal("fetch", e2b.fetch(globalThis.fetch));   // routes api.*, sandbox.*, 49983-* and 3000-* hosts here
  */
+import { isBoolean, isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { createServer } from "node:net";
@@ -21,10 +22,12 @@ export interface CreateCall {
   body: Record<string, unknown>;
   host: string;
 }
+
 export interface ListQuery {
   metadata: Record<string, string>;
   state: string[];
 }
+
 export interface Info {
   sandboxID: string;
   templateID: string;
@@ -38,25 +41,35 @@ export interface Info {
   allowInternetAccess?: boolean;
   network?: { allowOut?: string[]; denyOut?: string[]; allowPublicTraffic?: boolean };
 }
+
 /** Spawns the script the adapter sent (after path rewriting); a start hook may change it or run others first. */
 export type Spawn = (script: string) => Promise<FakeProcess>;
+
 export type StartHook = (script: string, spawn: Spawn, machine: Machine) => Promise<FakeProcess>;
 
 type Message = Record<string, unknown>;
+
 const json = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 };
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function parse(body: Buffer): Message {
   const value: unknown = body.length ? JSON.parse(body.toString()) : {};
+
   if (!isRecord(value)) throw new Error("fake e2b: body is not an object");
+
   return value;
 }
+
 function unenvelope(body: Buffer): Message {
   if (body.length < 5 || body[0] !== 0)
     throw new Error("fake e2b: request is not one Connect envelope");
+
   return parse(body.subarray(5, 5 + body.readUInt32BE(1)));
 }
 
@@ -76,26 +89,33 @@ export class FakeProcess {
   ) {
     if (!child.pid) throw new Error("fake e2b: command did not start");
     this.pid = child.pid;
+
     const push = (message: Message) => {
       this.log.push(message);
+
       for (const listener of this.listeners) listener(message);
     };
+
     for (const stream of ["stdout", "stderr"] as const) {
       const decoder = new StringDecoder("utf8");
       child[stream]?.on("data", (data: Buffer) => {
         const text = decoder.write(data).split(machine.root).join("");
+
         if (!text) return;
         const mode = fragment();
+
         const parts =
           mode === "chars"
             ? [...text]
             : mode === "split3"
               ? [text.slice(0, 3), text.slice(3)].filter(Boolean)
               : [text];
+
         for (const part of parts)
           push({ event: { data: { [stream]: Buffer.from(part).toString("base64") } } });
       });
     }
+
     this.exited = new Promise((resolve) =>
       child.on("close", (code, signal) => {
         // proto3 JSON leaves the default out: a clean exit has no exitCode. A signal death is -1, not exited.
@@ -104,6 +124,7 @@ export class FakeProcess {
           : code === 0
             ? { exited: true, status: "exit status 0" }
             : { exitCode: code, exited: true, status: `exit status ${code}` };
+
         this.done = true;
         push({ event: { end } });
         resolve();
@@ -172,11 +193,13 @@ export async function fakeE2B(): Promise<FakeE2B> {
   const server = await fakeServer();
   const machines = new Map<string, Machine>();
   const snapshots = new Map<string, string>();
+
   const calls: CreateCall[] = [],
     listQueries: ListQuery[] = [],
     nativeKills: number[] = [],
     reconnects: number[] = [],
     starts: string[] = [];
+
   const connectionOf = (machine: Machine) => ({
     sandboxID: machine.sandboxId,
     templateID: machine.info.templateID,
@@ -185,6 +208,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
     ...(machine.trafficToken ? { trafficAccessToken: machine.trafficToken } : {}),
     domain: fake.sandboxDomain,
   });
+
   function setTimer(machine: Machine, seconds: number) {
     clearTimeout(machine.timer);
     machine.info.endAt = new Date(Date.now() + seconds * 1000).toISOString();
@@ -193,22 +217,30 @@ export async function fakeE2B(): Promise<FakeE2B> {
     }, seconds * 1000);
     machine.timer.unref();
   }
+
   async function kill(id: string) {
     const machine = machines.get(id);
+
     if (!machine) return false;
     machines.delete(id);
     clearTimeout(machine.timer);
+
     for (const proc of machine.processes.values()) {
       try {
         process.kill(-proc.pid, "SIGKILL");
       } catch {}
+
       proc.child.kill("SIGKILL");
     }
+
     await fs.rm(machine.root, { recursive: true, force: true });
+
     return true;
   }
+
   const authorized = (request: RecordedRequest) =>
     request.headers["x-api-key"] === "mock" || request.headers["x-api-key"] === "valid";
+
   /** The control plane: a missing or wrong key is 401, whose message must never reach a SandboxError. */
   function control(
     handler: (request: RecordedRequest, response: ServerResponse) => void | Promise<void>,
@@ -216,14 +248,18 @@ export async function fakeE2B(): Promise<FakeE2B> {
     return async (request: RecordedRequest, response: ServerResponse) => {
       if (!authorized(request)) {
         json(response, 401, { code: 401, message: "secret-key-do-not-leak" });
+
         return;
       }
+
       await handler(request, response);
     };
   }
+
   const idOf = (request: RecordedRequest) =>
     request.url.split("?")[0]!.split("/").filter(Boolean)[request.url.startsWith("/v2/") ? 2 : 1] ??
     "";
+
   /** envd behind the proxy: a gone sandbox is the proxy's 502, a wrong token envd's 401. */
   function envd(
     handler: (
@@ -234,20 +270,27 @@ export async function fakeE2B(): Promise<FakeE2B> {
   ) {
     return async (request: RecordedRequest, response: ServerResponse) => {
       const header = request.headers["e2b-sandbox-id"];
-      const machine = typeof header === "string" ? machines.get(header) : undefined;
+      const machine = isString(header) ? machines.get(header) : undefined;
+
       if (!machine || machine.info.state === "paused") {
         response.writeHead(502, { "content-type": "text/plain" }).end("The sandbox was not found");
+
         return;
       }
+
       if (request.headers["x-access-token"] !== machine.accessToken) {
         json(response, 401, { code: "unauthenticated", message: "invalid access token" });
+
         return;
       }
+
       await handler(machine, request, response);
     };
   }
+
   async function entry(machine: Machine, path: string) {
     const stat = await fs.lstat(machine.mapped(path));
+
     return {
       name: posix.basename(path),
       path,
@@ -264,34 +307,45 @@ export async function fakeE2B(): Promise<FakeE2B> {
       group: "root",
     };
   }
+
   const notFound = (response: ServerResponse, what: string) =>
     json(response, 404, { code: "not_found", message: `${what} not found` });
 
   function spawnIn(machine: Machine, message: Message): Spawn {
     const config = isRecord(message.process) ? message.process : {};
+
     const envs = isRecord(config.envs)
       ? Object.fromEntries(Object.entries(config.envs).map(([key, value]) => [key, String(value)]))
       : {};
-    const cwd = typeof config.cwd === "string" ? config.cwd : "/";
-    const tag = typeof message.tag === "string" ? message.tag : undefined;
+
+    const cwd = isString(config.cwd) ? config.cwd : "/";
+    const tag = isString(message.tag) ? message.tag : undefined;
+
     return async (script) => {
       const env: Record<string, string | undefined> = { ...process.env, ...machine.env, ...envs };
+
       for (const name of ["GIT_INDEX_FILE", "BASH_ENV"]) {
         const value = env[name];
+
         if (value) env[name] = machine.rewrite(value);
       }
+
       const child = spawn("/bin/bash", ["-l", "-c", machine.rewrite(script)], {
         cwd: machine.mapped(cwd),
         env,
         detached: fake.launchGroupLeader,
         stdio: ["pipe", "pipe", "pipe"],
       });
+
       const proc = new FakeProcess(child, tag, ["-l", "-c", script], machine, () => fake.fragment);
       machine.processes.set(proc.pid, proc);
+
       if (message.stdin !== true) child.stdin?.end();
+
       return proc;
     };
   }
+
   /** Writes a Connect stream: the start event, then events (replayed from `from`), then the end frame. */
   async function stream(
     proc: FakeProcess,
@@ -302,21 +356,27 @@ export async function fakeE2B(): Promise<FakeE2B> {
     response.writeHead(200, { "content-type": "application/connect+json" });
     response.write(connectEnvelope({ event: { start: { pid: proc.pid } } }));
     let finish = () => {};
+
     const finished = new Promise<void>((resolve) => {
       finish = resolve;
     });
+
     let deadline: ReturnType<typeof setTimeout> | undefined;
+
     const write = (message: Message) => {
       if (response.destroyed) return;
       response.write(connectEnvelope(message));
+
       if (isRecord(message.event) && "end" in message.event) finish();
     };
+
     for (const message of proc.log.slice(from)) write(message);
     proc.listeners.add(write);
     response.on("close", () => {
       proc.listeners.delete(write);
       finish();
     });
+
     if (deadlineMs > 0 && !proc.done)
       deadline = setTimeout(() => {
         proc.child.kill("SIGKILL");
@@ -328,15 +388,20 @@ export async function fakeE2B(): Promise<FakeE2B> {
         );
         finish();
       }, deadlineMs);
+
     if (proc.done) finish();
     await finished;
     clearTimeout(deadline);
     proc.listeners.delete(write);
+
     if (!response.destroyed && !response.writableEnded) response.end(connectEnvelope({}, true));
   }
+
   const target = (machine: Machine, message: Message) => {
     const selector = isRecord(message.process) ? message.process : {};
-    if (typeof selector.pid === "number") return machine.processes.get(selector.pid);
+
+    if (isNumber(selector.pid)) return machine.processes.get(selector.pid);
+
     return [...machine.processes.values()].find(
       (proc) => !proc.done && proc.tag !== undefined && proc.tag === selector.tag,
     );
@@ -347,26 +412,29 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /v2/sandboxes",
       control(async (request, response) => {
         const body = parse(request.body);
-        const template = typeof body.templateID === "string" ? body.templateID : "base";
+        const template = isString(body.templateID) ? body.templateID : "base";
         calls.push({ template, body, host: String(request.headers["x-fake-host"] ?? "") });
+
         if (fake.createDelayMs) await sleep(fake.createDelayMs);
+
         const port = await new Promise<number>((resolve, reject) => {
           const probe = createServer();
           probe.listen(0, "127.0.0.1", () => {
             const address = probe.address();
             probe.close(() =>
-              typeof address === "object" && address
-                ? resolve(address.port)
-                : reject(new Error("no port")),
+              isObject(address) && address ? resolve(address.port) : reject(new Error("no port")),
             );
           });
         });
+
         const root = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-"));
         await fs.mkdir(join(root, "tmp"));
         const snapshot = snapshots.get(template);
+
         if (snapshot) await fs.cp(snapshot, root, { recursive: true });
         const network = isRecord(body.network) ? body.network : undefined;
         const list = (value: unknown) => (Array.isArray(value) ? value.map(String) : undefined);
+
         const info: Info = {
           sandboxID: "",
           templateID: template,
@@ -381,7 +449,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
           envdVersion: fake.envdVersion,
           cpuCount: 2,
           memoryMB: 512,
-          ...(typeof body.allow_internet_access === "boolean"
+          ...(isBoolean(body.allow_internet_access)
             ? { allowInternetAccess: body.allow_internet_access }
             : {}),
           ...(network
@@ -389,22 +457,24 @@ export async function fakeE2B(): Promise<FakeE2B> {
                 network: {
                   allowOut: list(network.allowOut),
                   denyOut: list(network.denyOut),
-                  ...(typeof network.allowPublicTraffic === "boolean"
+                  ...(isBoolean(network.allowPublicTraffic)
                     ? { allowPublicTraffic: network.allowPublicTraffic }
                     : {}),
                 },
               }
             : {}),
         };
+
         const env = isRecord(body.envVars)
           ? Object.fromEntries(
               Object.entries(body.envVars).map(([key, value]) => [key, String(value)]),
             )
           : {};
+
         const machine = new Machine(root, info, port, env);
         info.sandboxID = machine.sandboxId;
         machines.set(machine.sandboxId, machine);
-        setTimer(machine, typeof body.timeout === "number" ? body.timeout : 300);
+        setTimer(machine, isNumber(body.timeout) ? body.timeout : 300);
         json(response, 201, connectionOf(machine));
       }),
     )
@@ -412,19 +482,23 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "GET /v2/sandboxes",
       control((request, response) => {
         const query = new URL(request.url, "http://fake").searchParams;
+
         const metadata = Object.fromEntries(
           [...new URLSearchParams(query.get("metadata") ?? "")].map(([key, value]) => [
             decodeURIComponent(key),
             decodeURIComponent(value),
           ]),
         );
+
         const state = (query.get("state") ?? "running,paused").split(",");
         listQueries.push({ metadata, state });
+
         const found = [...machines.values()].filter(
           (machine) =>
             state.includes(machine.info.state) &&
             Object.entries(metadata).every(([key, value]) => machine.info.metadata[key] === value),
         );
+
         // An empty first page, then one item per page, to exercise pagination.
         const page = Number(query.get("nextToken") ?? "0");
         const items = page === 0 ? [] : found.slice(page - 1, page);
@@ -444,10 +518,13 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "GET /sandboxes/{id}",
       control((request, response) => {
         const machine = machines.get(idOf(request));
+
         if (!machine) {
           json(response, 404, { code: 404, message: "sandbox not found" });
+
           return;
         }
+
         const info = { ...machine.info, metadata: { ...machine.info.metadata } };
         const rewrite = fake.infoOnce;
         fake.infoOnce = undefined;
@@ -465,13 +542,17 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /v2/sandboxes/{id}/connect",
       control((request, response) => {
         const machine = machines.get(idOf(request));
+
         if (!machine) {
           json(response, 404, { code: 404, message: "sandbox not found" });
+
           return;
         }
+
         const body = parse(request.body);
         machine.info.state = "running";
-        if (typeof body.timeout === "number") setTimer(machine, body.timeout);
+
+        if (isNumber(body.timeout)) setTimer(machine, body.timeout);
         json(response, 200, connectionOf(machine));
       }),
     )
@@ -479,12 +560,15 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /sandboxes/{id}/timeout",
       control((request, response) => {
         const machine = machines.get(idOf(request));
+
         if (!machine) {
           json(response, 404, { code: 404, message: "sandbox not found" });
+
           return;
         }
+
         const body = parse(request.body);
-        setTimer(machine, typeof body.timeout === "number" ? body.timeout : 300);
+        setTimer(machine, isNumber(body.timeout) ? body.timeout : 300);
         response.writeHead(204).end();
       }),
     )
@@ -492,14 +576,19 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /sandboxes/{id}/pause",
       control((request, response) => {
         const machine = machines.get(idOf(request));
+
         if (!machine) {
           json(response, 404, { code: 404, message: "sandbox not found" });
+
           return;
         }
+
         if (machine.info.state === "paused") {
           json(response, 409, { code: 409, message: "already paused" });
+
           return;
         }
+
         fake.pause(machine.sandboxId);
         response.writeHead(204).end();
       }),
@@ -508,10 +597,13 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /sandboxes/{id}/snapshots",
       control(async (request, response) => {
         const machine = machines.get(idOf(request));
+
         if (!machine) {
           json(response, 404, { code: 404, message: "sandbox not found" });
+
           return;
         }
+
         const id = `snap-${crypto.randomUUID()}`;
         const path = await fs.mkdtemp(join(tmpdir(), "sdk-e2b-snapshot-"));
         await fs.cp(machine.root, path, { recursive: true });
@@ -529,6 +621,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "GET /files",
       envd(async (machine, request, response) => {
         const path = new URL(request.url, "http://fake").searchParams.get("path") ?? "";
+
         try {
           const data = await fs.readFile(machine.mapped(path));
           response.writeHead(200, { "content-type": "application/octet-stream" }).end(data);
@@ -541,17 +634,21 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /files",
       envd(async (machine, request, response) => {
         const single = new URL(request.url, "http://fake").searchParams.get("path");
+
         const form = await new Response(new Uint8Array(request.body), {
           headers: { "content-type": String(request.headers["content-type"]) },
         }).formData();
+
         const written: unknown[] = [];
+
         for (const value of form.getAll("file")) {
-          if (typeof value === "string") throw new Error("fake e2b: file field is not a file");
+          if (isString(value)) throw new Error("fake e2b: file field is not a file");
           const path = single ?? value.name;
           await fs.mkdir(posix.dirname(machine.mapped(path)), { recursive: true });
           await fs.writeFile(machine.mapped(path), new Uint8Array(await value.arrayBuffer()));
           written.push({ name: posix.basename(path), type: "file", path });
         }
+
         json(response, 200, written);
       }),
     )
@@ -560,27 +657,37 @@ export async function fakeE2B(): Promise<FakeE2B> {
       envd(async (machine, request, response) => {
         const method = request.url.split("/").at(-1);
         const { path } = parse(request.body);
-        if (typeof path !== "string") {
+
+        if (!isString(path)) {
           json(response, 400, { code: "invalid_argument", message: "path is required" });
+
           return;
         }
+
         const exists = await fs.lstat(machine.mapped(path)).then(
           () => true,
           () => false,
         );
+
         if (method === "MakeDir") {
           if (exists) {
             json(response, 409, { code: "already_exists", message: "directory exists" });
+
             return;
           }
+
           await fs.mkdir(machine.mapped(path), { recursive: true });
           json(response, 200, { entry: await entry(machine, path) });
+
           return;
         }
+
         if (!exists) {
           notFound(response, "path");
+
           return;
         }
+
         if (method === "Stat") json(response, 200, { entry: await entry(machine, path) });
         else if (method === "ListDir") {
           const entries = await Promise.all(
@@ -588,6 +695,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
               entry(machine, posix.join(path, name)),
             ),
           );
+
           // proto3 JSON leaves an empty repeated field out.
           json(response, 200, entries.length ? { entries } : {});
         } else if (method === "Remove") {
@@ -601,6 +709,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
       envd(async (machine, request, response) => {
         const method = request.url.split("/").at(-1);
         const deadline = Number(request.headers["connect-timeout-ms"] ?? 0);
+
         if (method === "Start") {
           const message = unenvelope(request.body);
           const config = isRecord(message.process) ? message.process : {};
@@ -608,6 +717,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
           starts.push(script);
           const run = spawnIn(machine, message);
           let proc: FakeProcess;
+
           try {
             proc = fake.startHook ? await fake.startHook(script, run, machine) : await run(script);
           } catch (error) {
@@ -615,14 +725,19 @@ export async function fakeE2B(): Promise<FakeE2B> {
               code: "internal",
               message: `fake start hook failed: ${String(error)}`,
             });
+
             return;
           }
+
           if (fake.startDelayMs) await sleep(fake.startDelayMs);
           await stream(proc, response, 0, deadline);
+
           return;
         }
+
         if (method === "Connect") {
           const proc = target(machine, unenvelope(request.body));
+
           if (!proc) {
             response
               .writeHead(200, { "content-type": "application/connect+json" })
@@ -632,14 +747,19 @@ export async function fakeE2B(): Promise<FakeE2B> {
                   true,
                 ),
               );
+
             return;
           }
+
           reconnects.push(proc.pid);
           // envd does not replay output; an exited process still reports its end, as the SDK mock did.
           await stream(proc, response, proc.done ? proc.log.length - 1 : proc.log.length, deadline);
+
           return;
         }
+
         const message = parse(request.body);
+
         if (method === "List") {
           json(response, 200, {
             processes: [...machine.processes.values()]
@@ -650,13 +770,18 @@ export async function fakeE2B(): Promise<FakeE2B> {
                 config: { cmd: "/bin/bash", args: proc.args },
               })),
           });
+
           return;
         }
+
         const proc = target(machine, message);
+
         if (!proc || proc.done) {
           notFound(response, "process");
+
           return;
         }
+
         if (method === "SendSignal") {
           if (message.signal === "SIGNAL_SIGKILL" || message.signal === 9) {
             nativeKills.push(proc.pid);
@@ -668,8 +793,10 @@ export async function fakeE2B(): Promise<FakeE2B> {
         } else if (method === "CloseStdin") proc.child.stdin?.end();
         else {
           json(response, 404, { code: "unimplemented", message: "no such method" });
+
           return;
         }
+
         json(response, 200, {});
       }),
     );
@@ -690,6 +817,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
     count: (route) => server.calls(route).length,
     pause(id) {
       const machine = machines.get(id);
+
       if (!machine) throw new Error("fake e2b: no such sandbox");
       machine.info.state = "paused";
       clearTimeout(machine.timer);
@@ -698,26 +826,34 @@ export async function fakeE2B(): Promise<FakeE2B> {
     fetch(original) {
       return async (input, init) => {
         const url = new URL(
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+          isString(input) ? input : input instanceof URL ? input.href : input.url,
         );
+
         const port = /^(\d+)-([^.]+)\./.exec(url.hostname);
+
         if (port?.[1] && port[1] !== "49983") {
           const machine = machines.get(port[2] ?? "");
+
           if (!machine) throw new TypeError("fetch failed");
+
           return original(`http://127.0.0.1:${machine.port}${url.pathname}${url.search}`, init);
         }
+
         if (!port && !/^(api|sandbox)\./.test(url.hostname)) return original(input, init);
         const headers = new Headers(init?.headers);
         headers.set("x-fake-host", url.host);
+
         return original(`${server.url}${url.pathname}${url.search}`, { ...init, headers });
       };
     },
     async close() {
       await Promise.all([...machines.keys()].map(kill));
+
       for (const path of snapshots.values()) await fs.rm(path, { recursive: true, force: true });
       snapshots.clear();
       await server.close();
     },
   };
+
   return fake;
 }

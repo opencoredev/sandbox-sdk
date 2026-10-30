@@ -5,6 +5,7 @@
 // - Daytona: tests/daytona-mock.ts (a local HTTP server, reached through DAYTONA_API_URL).
 // - Freestyle: tests/freestyle-mock.ts and Superserve: tests/superserve-fake.ts, behind the same fetch router.
 // - Boat and Sandboxer: tests/boat-mock.ts (local HTTP servers).
+import { isString } from "../src/shared/narrow.js";
 import { afterAll, runAfterAll } from "./vitest-shim.js";
 import { boatMock } from "./boat-mock.js";
 import { apiUrl as daytonaApiUrl, cleanupMock } from "./daytona-mock.js";
@@ -33,19 +34,22 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
   const e2bFetch = e2b.fetch(original.fetch);
   // E2B's fake claims every api.* and sandbox.* host, so the hosts the others own are matched first.
   globalThis.fetch = (input, init) => {
-    const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
-    );
+    const url = new URL(isString(input) ? input : input instanceof URL ? input.href : input.url);
+
     if (url.hostname === "superserve.ai" || url.hostname.endsWith(".superserve.ai"))
       return superserveFetch(input, init);
+
     if (url.origin === "https://api.freestyle.sh") return freestyleFetch(input, init);
+
     return e2bFetch(input, init);
   };
+
   afterAll(async () => {
     await cleanupMock();
     await cleanupFreestyle();
     await resetSuperserveFake();
   });
+
   return {
     options: {
       e2b: { apiKey: "mock" },

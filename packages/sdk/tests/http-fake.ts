@@ -7,6 +7,7 @@
 //   ... point the client at server.url ...
 //   expect(server.requests).toHaveLength(2);
 //   await server.close();
+import { isString } from "../src/shared/narrow.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
@@ -67,8 +68,10 @@ export interface FakeServer {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function matcher(route: string) {
   const [method, path = "/"] = route.split(" ");
+
   const pattern = new RegExp(
     `^${path
       .split("?")[0]!
@@ -78,6 +81,7 @@ function matcher(route: string) {
       )
       .join("/")}$`,
   );
+
   return (request: { method?: string; url?: string }) =>
     request.method === method && pattern.test((request.url ?? "").split("?")[0]!);
 }
@@ -87,17 +91,22 @@ export async function fakeServer(): Promise<FakeServer> {
   const requests: RecordedRequest[] = [];
   const sockets = new Set<Socket>();
   let onClosed: (() => void)[] = [];
+
   const server = createServer(async (incoming, response) => {
     const chunks: Buffer[] = [];
+
     for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+
     const recorded: RecordedRequest = {
       method: incoming.method ?? "",
       url: incoming.url ?? "",
       headers: incoming.headers,
       body: Buffer.concat(chunks),
     };
+
     requests.push(recorded);
     const route = routes.find((candidate) => candidate.match(incoming));
+
     if (!route) {
       response.writeHead(404, { "content-type": "application/json" }).end(
         JSON.stringify({
@@ -105,45 +114,61 @@ export async function fakeServer(): Promise<FakeServer> {
           message: `fake server has no route for ${recorded.method} ${recorded.url}`,
         }),
       );
+
       return;
     }
+
     const reply = route.replies.length > 1 ? route.replies.shift()! : route.replies[0]!;
     response.on("close", () => {
       if (!response.writableFinished) {
         const waiting = onClosed;
         onClosed = [];
+
         for (const done of waiting) done();
       }
     });
+
     if (typeof reply === "function") {
       await reply(recorded, response);
+
       return;
     }
+
     if ("drop" in reply) {
       incoming.socket.destroy();
+
       return;
     }
+
     if ("hang" in reply) return;
+
     if (reply.delayMs) await sleep(reply.delayMs);
+
     if ("stream" in reply) {
       response.writeHead(reply.status ?? 200, {
         "content-type": "application/octet-stream",
         ...reply.headers,
       });
       response.flushHeaders();
+
       for (const part of reply.stream) {
         if (response.destroyed) return;
         response.write(part);
         await sleep(reply.intervalMs ?? 5);
       }
+
       if (reply.cut) {
         incoming.socket.destroy();
+
         return;
       }
+
       if (reply.hold) return;
       response.end();
+
       return;
     }
+
     const body = reply.json !== undefined ? JSON.stringify(reply.json) : (reply.body ?? "");
     response.writeHead(reply.status ?? 200, {
       ...(reply.json !== undefined ? { "content-type": "application/json" } : {}),
@@ -151,6 +176,7 @@ export async function fakeServer(): Promise<FakeServer> {
     });
     response.end(body);
   });
+
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -158,6 +184,7 @@ export async function fakeServer(): Promise<FakeServer> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const origin = `http://127.0.0.1:${port}`;
+
   const fake: FakeServer = {
     url: origin,
     origin,
@@ -165,10 +192,12 @@ export async function fakeServer(): Promise<FakeServer> {
     on(route, ...replies) {
       if (!replies.length) throw new Error("fakeServer.on needs at least one reply");
       routes.unshift({ match: matcher(route), replies });
+
       return fake;
     },
     calls(route) {
       const match = matcher(route);
+
       return requests.filter((request) => match(request));
     },
     closed() {
@@ -179,6 +208,7 @@ export async function fakeServer(): Promise<FakeServer> {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+
   return fake;
 }
 
@@ -190,14 +220,17 @@ export function chunked(
   const encoder = new TextEncoder();
   let index = 0;
   let cancelled = false;
+
   const stream = new ReadableStream<Uint8Array>(
     {
       pull(controller) {
         if (index < parts.length) {
           const part = parts[index++]!;
-          controller.enqueue(typeof part === "string" ? encoder.encode(part) : part);
+          controller.enqueue(isString(part) ? encoder.encode(part) : part);
+
           return;
         }
+
         if (options.error) controller.error(options.error);
         else controller.close();
       },
@@ -207,13 +240,16 @@ export function chunked(
     },
     { highWaterMark: 0 },
   );
+
   return Object.assign(stream, { cancelled: () => cancelled });
 }
 
 /** Splits `bytes` into pieces of `size` bytes, to put frame and UTF-8 boundaries inside chunks. */
 export function pieces(bytes: Uint8Array | string, size: number): Uint8Array[] {
-  const data = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+  const data = isString(bytes) ? new TextEncoder().encode(bytes) : bytes;
   const out: Uint8Array[] = [];
+
   for (let i = 0; i < data.byteLength; i += size) out.push(data.subarray(i, i + size));
+
   return out;
 }

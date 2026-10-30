@@ -1,3 +1,4 @@
+import { isObject, isString } from "../../shared/narrow.js";
 import { posix } from "node:path";
 import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
@@ -63,6 +64,7 @@ export interface DaytonaOptions {
   /** Route the sandbox's HTTP(S) traffic through this proxy with HTTP(S)_PROXY. Not a security boundary on its own. */
   outboundProxyUrl?: string;
 }
+
 export type DaytonaCapability = "snapshot" | "size" | "network-policy";
 
 /** What `native.sdk(load)` needs from `@daytonaio/sdk`: the `Daytona` client class and its `get`. */
@@ -75,42 +77,54 @@ export interface DaytonaSdkModule {
     target?: string;
   }) => { get(sandboxIdOrName: string): Promise<unknown> };
 }
+
 /** `box.native.sdk`: the `Sandbox` of the `@daytonaio/sdk` you imported. */
 export type DaytonaSandboxSdk = <M extends DaytonaSdkModule>(
   load: () => Promise<M>,
 ) => Promise<Awaited<ReturnType<InstanceType<M["Daytona"]>["get"]>>>;
+
 /** `provider.api.sdk`: a `Daytona` client of the `@daytonaio/sdk` you imported. */
 export type DaytonaClientSdk = <M extends DaytonaSdkModule>(
   load: () => Promise<M>,
 ) => Promise<InstanceType<M["Daytona"]>>;
+
 /**
  * `box.native` for Daytona. Planes: `"api"` (default), the control plane at `baseUrl`, and `"toolbox"`, the
  * sandbox's file and process daemon. `{sandboxId}` fills itself from the sandbox; toolbox paths are already
  * scoped to it (`"/files"`, `"/process/execute"`).
  */
 export type DaytonaNative = NativeApi<DaytonaPlane, DaytonaSandboxSdk>;
+
 export type DaytonaProvider = Provider<DaytonaNative, DaytonaCapability> & {
   /** Account-level calls to Daytona's control plane, bound to no sandbox. `api.sdk(load)` returns a `Daytona` client. */
   readonly api: NativeApi<DaytonaPlane, DaytonaClientSdk>;
 };
+
 const sdkLabel = { "sandbox-sdk": "1" };
 const keyLabel = "sandbox-sdk-key";
+
 /** Finds a sandbox whose create request was lost before Daytona answered. */
 const createLabel = "sandbox-sdk-create";
+
 /** Daytona's code runner reads this; the official SDK always sets it. */
 const languageLabel = "code-toolbox-language";
+
 /** SDK bookkeeping and Daytona's language label. Labels show only the caller's labels and `sandbox-sdk`. */
 const internal = new Set([keyLabel, createLabel, languageLabel]);
+
 /** How long a failed create may spend deleting what it left behind before the error reaches the caller. */
 const abandonMs = 10_000;
+
 const presets = {
   small: { cpu: 1, memoryMb: 1024, diskGb: 10 },
   medium: { cpu: 2, memoryMb: 4096, diskGb: 10 },
   large: { cpu: 4, memoryMb: 8192, diskGb: 10 },
 };
+
 function resources(size: NonNullable<CreateInput["size"]>) {
-  const value = typeof size === "string" ? presets[size] : size;
+  const value = isString(size) ? presets[size] : size;
   const diskGb = value?.diskGb ?? 10;
+
   if (
     !value ||
     !Number.isInteger(value.cpu) ||
@@ -124,19 +138,25 @@ function resources(size: NonNullable<CreateInput["size"]>) {
     unsupported(
       "Size requires positive integer CPUs, whole GiB memory (memoryMb divisible by 1024), and integer diskGb",
     );
+
   return { cpu: value.cpu, memory: value.memoryMb / 1024, disk: diskGb };
 }
+
 function minutes(ms: number, allowZero = false) {
   if (!Number.isFinite(ms) || ms < 0 || (ms === 0 && !allowZero))
     throw new SandboxError(
       `Timeout must be ${allowZero ? "zero or positive" : "positive"}. Invalid milliseconds supplied. Use a ${allowZero ? "non-negative" : "positive"} finite duration.`,
       { code: "invalid_argument", provider: "daytona" },
     );
+
   return Math.ceil(ms / 60_000);
 }
+
 function network(input: CreateInput["network"]) {
-  if (typeof input !== "object") return { networkBlockAll: input === "none" };
+  if (!isObject(input)) return { networkBlockAll: input === "none" };
+
   if (!input.allow.length) return { networkBlockAll: true };
+
   if (
     input.allow.some(
       (domain) =>
@@ -148,15 +168,19 @@ function network(input: CreateInput["network"]) {
     unsupported(
       "Network allow entries must be DNS hostnames without schemes, ports, commas, or wildcards",
     );
+
   return { networkBlockAll: false, domainAllowList: input.allow.join(",") };
 }
+
 function info(box: SandboxDto, fallbackCreatedAt?: number): SandboxInfo {
   const createdAt = Date.parse(box.createdAt ?? "") || fallbackCreatedAt;
+
   if (createdAt === undefined || !Number.isFinite(createdAt))
     throw new SandboxError(
       "Sandbox creation time is missing. Daytona returned incomplete metadata. Refresh the sandbox metadata.",
       { code: "provider", provider: "daytona", sandboxId: box.id },
     );
+
   return {
     id: box.id,
     key: box.labels[keyLabel],
@@ -165,6 +189,7 @@ function info(box: SandboxDto, fallbackCreatedAt?: number): SandboxInfo {
     state: box.state === "started" ? "running" : box.state === "paused" ? "paused" : "stopped",
   };
 }
+
 /** Races `work` against the abandon bound, so cleanup never holds a create error back for long. */
 async function bounded(work: Promise<unknown>) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -177,6 +202,7 @@ async function bounded(work: Promise<unknown>) {
   ]);
   clearTimeout(timer);
 }
+
 /**
  * A create whose request was lost (`outcome_unknown`) may still have made a sandbox. Look for it by its
  * per-request label, best effort and bounded: Daytona's list can lag behind create by a few seconds.
@@ -190,15 +216,19 @@ async function abandonLost(control: DaytonaControl, nonce: string): Promise<bool
         for await (const value of control.list({ [createLabel]: nonce })) {
           await control.cleanup(value.id);
           deleted = true;
+
           return;
         }
+
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     })(),
   );
   stop = true;
+
   return deleted;
 }
+
 function fileInfo(path: string, file: FileDto): FileInfo {
   return {
     path,
@@ -218,9 +248,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   // Connect-time core secrets are not exposed at this boundary; only values the
   // adapter sees can be denied here. Strict evidence shapes also apply below.
   const knownSecrets = new Set<string>();
+
   const rememberEnv = (env: Record<string, string> = {}) => {
     for (const value of Object.values(env)) if (value) knownSecrets.add(value);
   };
+
   const boxes = new Map<string, SandboxDto>();
   const natives = new Map<string, DaytonaNative>();
   const unprepared = new Set<string>();
@@ -228,6 +260,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   const recentCreates = new Map<string, { expiresAt: number }>();
   const deletions = new Map<string, Promise<void>>();
   const monitors = new Map<string, Set<() => void>>();
+
   for (const secret of [options.jwtToken, process.env.DAYTONA_JWT_TOKEN])
     if (secret) knownSecrets.add(secret);
 
@@ -237,36 +270,45 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     process.env.DAYTONA_API_URL ??
     process.env.DAYTONA_SERVER_URL ??
     "https://app.daytona.io/api";
+
   const target = () => options.target ?? process.env.DAYTONA_TARGET ?? "us";
   let resolved: Credentials | undefined;
+
   /** Read once, on first use. An explicit jwtToken wins over the API key environment variable. */
   function credentials(): Credentials {
     if (resolved) return resolved;
     const apiKey = options.apiKey ?? (options.jwtToken ? undefined : process.env.DAYTONA_API_KEY);
     const jwtToken = apiKey ? undefined : (options.jwtToken ?? process.env.DAYTONA_JWT_TOKEN);
     const organizationId = options.organizationId ?? process.env.DAYTONA_ORGANIZATION_ID;
+
     if (jwtToken && !organizationId)
       throw new SandboxError(
         "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId.",
         { code: "auth", provider: "daytona" },
       );
+
     if (!apiKey && !jwtToken)
       throw new SandboxError(
         "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.",
         { code: "auth", provider: "daytona" },
       );
+
     return (resolved = apiKey ? { apiKey } : { jwtToken, organizationId });
   }
+
   const { http, control, toolbox } = daytonaHttp({
     baseUrl,
     credentials,
     requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     secrets: () => knownSecrets,
   });
+
   let checked = false;
+
   /** Validates options and credentials before the first adapter operation. */
   function ready() {
     if (checked) return;
+
     if (
       !Number.isSafeInteger(options.snapshotTimeoutMs ?? 600_000) ||
       (options.snapshotTimeoutMs ?? 600_000) <= 0 ||
@@ -276,6 +318,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         code: "invalid_argument",
         provider: "daytona",
       });
+
     if (
       options.createTimeoutMs !== undefined &&
       (!Number.isSafeInteger(options.createTimeoutMs) || options.createTimeoutMs <= 0)
@@ -287,10 +330,12 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     credentials();
     checked = true;
   }
+
   const sdk: NativeSdkBinding = {
     package: "@daytonaio/sdk",
     async connect(module, sandboxId) {
       const { apiKey, jwtToken, organizationId } = credentials();
+
       const client = sdkConstruct(
         module,
         "Daytona",
@@ -303,11 +348,13 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         ],
         "@daytonaio/sdk",
       );
+
       return sandboxId === undefined
         ? client
         : await sdkCall(client, "get", [sandboxId], "@daytonaio/sdk");
     },
   };
+
   async function safe<T>(
     action: () => Promise<T>,
     id?: string,
@@ -316,6 +363,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   ): Promise<T> {
     try {
       ready();
+
       return await action();
     } catch (error) {
       throw daytonaError(
@@ -328,23 +376,29 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       );
     }
   }
+
   async function box(id: string) {
     const cached = boxes.get(id);
+
     if (cached) return cached;
     const value = await control.get(id);
     boxes.set(id, value);
     unprepared.add(id);
+
     return value;
   }
+
   const onFile = <T>(id: string, action: (value: ReturnType<typeof toolbox>) => Promise<T>) =>
     safe(
       async () => {
         await box(id);
+
         return action(toolbox(id));
       },
       id,
       true,
     );
+
   const provider: DaytonaProvider = {
     name: "daytona",
     inlineActivity: true,
@@ -353,11 +407,13 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     api: createNativeApi<DaytonaPlane, DaytonaClientSdk>({ http, placeholder: "sandboxId", sdk }),
     async create(input) {
       rememberEnv(input.env);
+
       return safe(
         async () => {
           if (options.image && options.snapshot) unsupported("Choose either image or snapshot");
           const image = input.from === undefined ? options.image : undefined;
           const allocation = input.size === undefined ? undefined : resources(input.size);
+
           // Never round a hard maximum upward. Daytona cannot enforce sub-minute TTLs.
           if (
             input.timeoutMs !== undefined &&
@@ -367,9 +423,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           const nonce = crypto.randomUUID();
           const labels: Labels = { ...input.labels, ...sdkLabel };
           delete labels[keyLabel];
+
           if (input.key !== undefined) labels[keyLabel] = input.key;
           labels[createLabel] = nonce;
           labels[languageLabel] = "python";
+
           const snapshot = image
             ? undefined
             : (input.from ??
@@ -377,6 +435,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               (allocation?.cpu === 4 && allocation.memory === 8 && allocation.disk === 10
                 ? "daytona-large"
                 : undefined));
+
           // The official SDK's request body for the same parameters.
           const body = {
             ...(snapshot === undefined ? {} : { snapshot }),
@@ -404,12 +463,14 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
             ttlMinutes:
               input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
           };
+
           const createdAt = Date.now();
           const budgetMs = options.createTimeoutMs ?? 60_000;
           // The create request ignores the caller's signal: aborting it mid-flight could leave a sandbox nobody
           // knows about. An abort is honoured once Daytona answers, by deleting what it made.
           const deadline = createDeadline(budgetMs);
           let value: SandboxDto;
+
           try {
             value = await control.create(body, deadline);
           } catch (error) {
@@ -425,6 +486,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               { code: "timeout", provider: "daytona", retryable: true },
             );
           }
+
           try {
             if (value.state !== "started") {
               try {
@@ -443,11 +505,13 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
                 );
               }
             }
+
             if (input.signal?.aborted)
               throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
                 code: "aborted",
                 provider: "daytona",
               });
+
             if (
               allocation &&
               !image &&
@@ -464,9 +528,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               await control.start(value.id);
               value = await control.get(value.id);
             }
+
             boxes.set(value.id, value);
             unprepared.add(value.id);
             recentCreates.set(value.id, { expiresAt: Date.now() + 30_000 });
+
             return info(value, createdAt);
           } catch (error) {
             // Daytona made the sandbox, so a failed create must not leave it running.
@@ -485,9 +551,12 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       return safe(
         async () => {
           const requested = { ...labels, ...sdkLabel };
+
           const matches = (value: SandboxDto) =>
             Object.entries(requested).every(([key, expected]) => value.labels[key] === expected);
+
           const values = new Map<string, SandboxInfo>();
+
           for await (const value of control.list(requested)) {
             if (matches(value)) {
               if (!boxes.has(value.id)) unprepared.add(value.id);
@@ -496,6 +565,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               recentCreates.delete(value.id);
             }
           }
+
           // Native list can lag behind create/get. Verify only recent local creates
           // omitted by the index; never resurrect a sandbox from stale cached data.
           for (const [id, creation] of recentCreates) {
@@ -503,10 +573,14 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               recentCreates.delete(id);
               continue;
             }
+
             const cached = boxes.get(id);
+
             if (!cached || !matches(cached)) continue;
+
             try {
               const value = await control.get(id);
+
               // Each creation record is an eligibility token. Destroy removes it,
               // so invalidation survives removal of the in-flight deletion entry.
               if (
@@ -515,6 +589,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
                 Date.now() >= creation.expiresAt
               )
                 continue;
+
               if (matches(value)) {
                 boxes.set(id, value);
                 values.set(id, info(value));
@@ -525,6 +600,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               boxes.delete(id);
             }
           }
+
           return [...values.values()];
         },
         undefined,
@@ -541,6 +617,7 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
           const value = await control.get(id);
           boxes.set(id, value);
           unprepared.add(id);
+
           return info(value);
         },
         id,
@@ -550,7 +627,9 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     },
     async destroy(id) {
       const existing = deletions.get(id);
+
       if (existing) return existing;
+
       const deletion = safe(
         async () => {
           try {
@@ -568,7 +647,9 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
         false,
         "destroy",
       );
+
       deletions.set(id, deletion);
+
       try {
         await deletion;
       } finally {
@@ -577,9 +658,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     },
     exec: (id, input) => {
       rememberEnv(input.env);
+
       return safe(
         async () => {
           await box(id);
+
           return execute(toolbox(id), input, unprepared.has(id) ? workspace : "", () =>
             unprepared.delete(id),
           );
@@ -591,26 +674,32 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
     },
     startProcess: (id, input) => {
       rememberEnv(input.env);
+
       return safe(
         async () => {
           await box(id);
+
           const hook = await sessionProcess(
             toolbox(id),
             input,
             undefined,
             unprepared.has(id) ? workspace : "",
           );
+
           if (hook.pid > 0) unprepared.delete(id);
           let active = monitors.get(id);
+
           if (!active) {
             active = new Set();
             monitors.set(id, active);
           }
+
           active.add(hook.detach);
           void hook
             .wait()
             .finally(() => active.delete(hook.detach))
             .catch(() => {});
+
           return {
             pid: hook.pid,
             wait: () => safe(hook.wait, id, false, "process"),
@@ -633,11 +722,15 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
       write: (id, path, data, settings) =>
         onFile(id, async (value) => {
           const mode = settings?.mode;
+
           if (!unprepared.has(id)) {
             await value.fs.upload(data, path);
+
             if (mode !== undefined) await value.fs.setFilePermissions(path, mode.toString(8));
+
             return;
           }
+
           // Code is a request body, so even a large first write avoids argv limits.
           const result = await value.process.codeRun(
             `import os,base64,subprocess
@@ -653,6 +746,7 @@ os.fchmod(fd,${mode})`
 with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.from(data).toString("base64"))}))`,
             120,
           );
+
           if (result.exitCode !== 0)
             throw new SandboxError(
               "File write failed. Workspace setup or the native code operation failed. Check guest permissions.",
@@ -673,6 +767,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
               daytonaError(error, id, true).code !== "file_not_found"
             )
               throw error;
+
             return [];
           }
         }),
@@ -687,6 +782,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
               daytonaError(error, id, true).code !== "file_not_found"
             )
               throw error;
+
             return {
               path,
               type: "directory",
@@ -707,17 +803,20 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
             )
               throw error;
           }
+
           if (path === "/workspace") unprepared.delete(id);
         }),
       mkdir: (id, path) =>
         onFile(id, async (value) => {
           if (!unprepared.has(id)) return value.fs.createFolder(path, "755");
+
           const result = await value.process.executeCommand(
             `${workspace} && mkdir -p ${quote(path)}`,
             "/",
             undefined,
             10,
           );
+
           if (result.exitCode !== 0)
             throw new SandboxError("Directory creation failed. Check guest permissions.", {
               code: "provider",
@@ -732,6 +831,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
         async () => {
           const value = await box(id);
           const link = await control.previewLink(id, port);
+
           return {
             url: link.url,
             ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }),
@@ -750,6 +850,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
             );
           const name = `sdk-${crypto.randomUUID()}`;
           await box(id);
+
           try {
             await control.snapshot(id, name, options.snapshotTimeoutMs ?? 600_000);
           } catch (error) {
@@ -761,6 +862,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
               options.apiKey ?? process.env.DAYTONA_API_KEY,
               knownSecrets,
             );
+
             throw new SandboxError(
               `Snapshot ${name} did not complete. It may still be creating. Inspect or delete this name with the native snapshot API before retrying.`,
               {
@@ -773,6 +875,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
               },
             );
           }
+
           return { id: name };
         },
         id,
@@ -786,6 +889,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
           { code: "not_found", provider: "daytona", sandboxId: id },
         );
       let value = natives.get(id);
+
       if (!value) {
         value = createNativeApi<DaytonaPlane, DaytonaSandboxSdk>({
           http,
@@ -795,8 +899,10 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
         });
         natives.set(id, value);
       }
+
       return value;
     },
   };
+
   return provider;
 }

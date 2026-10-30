@@ -17,6 +17,7 @@
  *   Response text is kept only for native calls (`detail: "message"`), scrubbed; adapter calls keep the
  *   status and the provider's error code.
  */
+import { isObject, isString } from "./shared/narrow.js";
 import {
   SandboxError,
   nativeDetail,
@@ -221,6 +222,7 @@ export interface Deadline {
 export function createDeadline(timeoutMs: number, parent?: AbortSignal): Deadline {
   const at = Date.now() + timeoutMs;
   const timeout = AbortSignal.timeout(Math.max(0, timeoutMs));
+
   return {
     signal: parent ? AbortSignal.any([parent, timeout]) : timeout,
     timeout,
@@ -236,27 +238,33 @@ export function sleep(ms: number, deadline: Deadline, provider: string): Promise
       clearTimeout(timer);
       deadline.signal.removeEventListener("abort", fire);
     };
+
     const fire = () => {
       done();
       reject(stopped(deadline, provider));
     };
+
     const timer = setTimeout(() => {
       done();
       resolve();
     }, ms);
+
     if (deadline.signal.aborted) fire();
     else deadline.signal.addEventListener("abort", fire, { once: true });
   });
 }
+
 /** `promise`, or a rejection as soon as `signal` fires. The promise itself is not cancelled. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
+
   return new Promise((resolve, reject) => {
     const fire = () => reject(signal.reason);
     signal.addEventListener("abort", fire, { once: true });
     promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", fire));
   });
 }
+
 function stopped(deadline: Deadline, provider: string, sandboxId?: string): SandboxError {
   return deadline.parent?.aborted && !deadline.timeout.aborted
     ? new SandboxError("Request aborted. The signal was cancelled.", {
@@ -273,6 +281,7 @@ function stopped(deadline: Deadline, provider: string, sandboxId?: string): Sand
 }
 
 const statuses = new WeakMap<SandboxError, { status: number; code?: string }>();
+
 /**
  * The HTTP status and provider error code (when it is a safe token) behind a client error, or `undefined`
  * for errors that are not a non-2xx response. For adapters that branch on a status, such as a 409 retry.
@@ -289,6 +298,7 @@ const maxRedirects = 5;
 const retryStatuses = new Set([429, 502, 503, 504]);
 const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const idempotentMethods = new Set<HttpMethod>(["GET", "HEAD", "PUT", "DELETE"]);
+
 // Failure codes (undici, Node and Bun) that mean the request never left this process: no server saw it.
 const unsentCodes = new Set([
   "ECONNREFUSED",
@@ -305,10 +315,13 @@ const unsentCodes = new Set([
   "DEPTH_ZERO_SELF_SIGNED_CERT",
   "CERT_HAS_EXPIRED",
 ]);
+
 // Header names that carry credentials, besides each plane's own auth headers. Never sent off the plane's origin.
 const credentialHeader =
   /^(?:authorization|proxy-authorization|cookie|x-api-key|api-key|apikey)$|[-_](?:token|key|secret|password)$/;
+
 const notCredential = /^(?:x-)?idempotency-key$/;
+
 // `Bearer <token>` and friends: the bare token is registered for redaction too, since errors may echo it alone.
 const authScheme = /^\s*(?:bearer|basic|token|bot|digest)\s+(\S.*?)\s*$/i;
 const placeholderPattern = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -316,10 +329,12 @@ const safeCode = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 const safeRequestId = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 function errorCodes(error: unknown, depth = 0): string[] {
-  if (typeof error !== "object" || error === null || depth > 3) return [];
-  const own = "code" in error && typeof error.code === "string" ? [error.code] : [];
+  if (!isObject(error) || error === null || depth > 3) return [];
+  const own = "code" in error && isString(error.code) ? [error.code] : [];
+
   return [...own, ...errorCodes("cause" in error ? error.cause : undefined, depth + 1)];
 }
+
 function isBodyInit(value: unknown): value is BodyInit {
   return (
     typeof value === "string" ||
@@ -332,39 +347,53 @@ function isBodyInit(value: unknown): value is BodyInit {
     value instanceof ReadableStream
   );
 }
+
 function retryAfter(headers: Headers): number | undefined {
   const value = headers.get("retry-after");
+
   if (value === null) return undefined;
+
   if (/^\d+$/.test(value.trim())) return Number(value.trim()) * 1000;
   const at = Date.parse(value);
+
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
+
 function pick(value: unknown, keys: readonly string[]): string | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
+  if (!isObject(value) || value === null) return undefined;
+
   for (const key of keys) {
     const found: unknown = Reflect.get(value, key);
-    if (typeof found === "string" && found) return found;
+
+    if (isString(found) && found) return found;
   }
+
   return undefined;
 }
+
 /** Pulls the code and message out of the error shapes providers use: `{ code, message }`, `{ error: { code, message } }`, `{ error: "text" }`, RFC 7807. */
 export function parseErrorBody(text: string): ErrorBody {
   let json: unknown;
+
   try {
     json = text ? JSON.parse(text) : undefined;
   } catch {
     json = undefined;
   }
-  const nested = typeof json === "object" && json !== null ? Reflect.get(json, "error") : undefined;
+
+  const nested = isObject(json) ? Reflect.get(json, "error") : undefined;
+
   const code =
     pick(json, ["code", "error_code", "errorCode", "type"]) ??
     pick(nested, ["code", "type"]) ??
-    (typeof nested === "string" && safeCode.test(nested) ? nested : undefined);
+    (isString(nested) && safeCode.test(nested) ? nested : undefined);
+
   const message =
     pick(json, ["message", "detail", "error_description", "title"]) ??
     pick(nested, ["message"]) ??
-    (typeof nested === "string" ? nested : undefined) ??
+    (isString(nested) ? nested : undefined) ??
     (json === undefined && text.trim() ? text.trim() : undefined);
+
   return {
     text,
     json,
@@ -372,6 +401,7 @@ export function parseErrorBody(text: string): ErrorBody {
     ...(message === undefined ? {} : { message }),
   };
 }
+
 /** Reads at most `limit` bytes. `onOverflow: "truncate"` stops there and cancels; `"throw"` throws. */
 async function readBody(
   body: ReadableStream<Uint8Array> | null,
@@ -382,33 +412,43 @@ async function readBody(
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
+
       if (done) break;
+
       if (size + value.byteLength > limit) {
         const error = onOverflow();
         chunks.push(value.subarray(0, limit - size));
         size = limit;
         await reader.cancel().catch(() => {});
+
         if (error) throw error;
         break;
       }
+
       chunks.push(value);
       size += value.byteLength;
     }
   } finally {
     reader.releaseLock();
   }
+
   const out = new Uint8Array(size);
   let offset = 0;
+
   for (const chunk of chunks) {
     out.set(chunk, offset);
     offset += chunk.byteLength;
   }
+
   return out;
 }
+
 const utf8 = new TextDecoder();
+
 function buffered(
   status: number,
   headers: Headers,
@@ -422,7 +462,9 @@ function buffered(
     text: () => utf8.decode(body),
     json() {
       const text = utf8.decode(body);
+
       if (!text.trim()) return undefined;
+
       try {
         return JSON.parse(text);
       } catch {
@@ -442,64 +484,81 @@ export function createHttpClient<Plane extends string>(
   const backoffMs = options.backoffMs ?? 250;
   // Credential values the client has sent. They are redacted from every later error too.
   const sent = new Set<string>();
+
   const remember = (value: string) => {
     sent.delete(value);
     sent.add(value);
+
     // Rotating tokens add a value per refresh; keep the newest 256.
     for (const old of sent) {
       if (sent.size <= 256) break;
       sent.delete(old);
     }
   };
+
   /** Remembers a credential header value, and the bare token behind an auth scheme. */
   const rememberCredential = (value: string) => {
     if (!value) return;
     remember(value);
     const bare = authScheme.exec(value)?.[1];
+
     if (bare) remember(bare);
   };
+
   const redact = (text: string) =>
     scrub(redacting([...sent, ...(options.secrets?.() ?? [])])(text));
+
   // Header names each plane's `auth` returned, lowercase: credentials even when the shared pattern misses them.
   const authNames = new Map<string, Set<string>>();
+
   const isCredential = (plane: string, name: string) => {
     const lower = name.toLowerCase();
+
     return (
       authNames.get(plane)?.has(lower) === true ||
       (credentialHeader.test(lower) && !notCredential.test(lower))
     );
   };
+
   // Single-flight credential refresh per plane and sandbox. `generation` tells a request that got a 401 with
   // credentials older than the latest refresh to just resend, instead of refreshing again.
   const refreshes = new Map<string, { generation: number; pending?: Promise<void> }>();
 
   const planes: Readonly<Record<string, HttpPlane>> = options.planes;
+
   function planeOf(name: string | undefined): { name: string; plane: HttpPlane } {
     const key = name ?? options.defaultPlane;
     // Native callers pass any string at runtime, so look the plane up as an own key only.
     const plane = Object.hasOwn(planes, key) ? planes[key] : undefined;
+
     if (!plane)
       throw invalidRequest(
         `Unknown plane "${String(key).slice(0, 32)}". Use one of: ${Object.keys(planes).join(", ")}`,
       );
+
     return { name: key, plane };
   }
+
   function invalidRequest(message: string, sandboxId?: string) {
     return new SandboxError(
       `${redact(message)}. The request is invalid. Check the supplied options.`,
       { code: "invalid_argument", provider, sandboxId },
     );
   }
+
   /** `METHOD /template`, with no query or filled values: safe to show. */
   function operationOf(request: HttpRequest<string>) {
     const path = /^[a-z][a-z0-9+.-]*:/i.test(request.path)
       ? "[absolute URL]"
       : (request.path.split("?")[0] ?? "").slice(0, 200);
+
     return `${request.method} ${scrub(path)}`;
   }
+
   function fillPath(request: HttpRequest<string>): string {
     const params = request.params ?? {};
     const used = new Set<string>();
+
     const filled = request.path.replace(placeholderPattern, (_, name: string) => {
       if (!Object.hasOwn(params, name))
         throw invalidRequest(
@@ -507,28 +566,36 @@ export function createHttpClient<Plane extends string>(
           request.sandboxId,
         );
       const value = String(params[name]);
+
       if (value === "" || value === "." || value === "..")
         throw invalidRequest(`params.${name} must not be empty, "." or ".."`, request.sandboxId);
       used.add(name);
+
       return encodeURIComponent(value);
     });
+
     const unused = Object.keys(params).filter((name) => !used.has(name));
+
     if (unused.length)
       throw invalidRequest(
         `params.${unused[0]} has no {${unused[0]}} placeholder in the path`,
         request.sandboxId,
       );
+
     return filled;
   }
+
   function buildUrl(base: string, request: HttpRequest<string>): URL {
     const path = fillPath(request);
     let url: URL;
+
     if (/^[a-z][a-z0-9+.-]*:/i.test(path)) {
       try {
         url = new URL(path);
       } catch {
         throw invalidRequest("The path is not a valid URL", request.sandboxId);
       }
+
       if (url.protocol !== "https:" && url.protocol !== "http:")
         throw invalidRequest("Only http and https URLs are supported", request.sandboxId);
     } else {
@@ -537,6 +604,7 @@ export function createHttpClient<Plane extends string>(
           `The path must start with "/" or be an absolute URL`,
           request.sandboxId,
         );
+
       if (
         path
           .split("?")[0]
@@ -546,8 +614,10 @@ export function createHttpClient<Plane extends string>(
         throw invalidRequest(`The path must not contain "." or ".." segments`, request.sandboxId);
       url = new URL(base.replace(/\/+$/, "") + path);
     }
+
     for (const [name, value] of Object.entries(request.query ?? {}))
       if (value !== undefined) url.searchParams.append(name, String(value));
+
     return url;
   }
 
@@ -559,6 +629,7 @@ export function createHttpClient<Plane extends string>(
     retryable = code === "unavailable" || code === "quota",
   ) {
     const hint = code === "auth" ? options.authHint : undefined;
+
     return new SandboxError(redact(`${label} ${operationOf(request)} failed${what}`), {
       code,
       provider,
@@ -568,6 +639,7 @@ export function createHttpClient<Plane extends string>(
       ...(cause === undefined ? {} : { cause: redact(cause) }),
     });
   }
+
   /** Maps a failure with the provider hook first, then the shared rules. */
   function mapFailure(
     failed: HttpFailure,
@@ -576,13 +648,16 @@ export function createHttpClient<Plane extends string>(
     unconfirmed = false,
   ): SandboxError {
     const error = mapDefault(failed, request, plane, unconfirmed);
+
     const cause = options.cause?.(failed, {
       method: request.method,
       plane,
       operation: operationOf(request),
       sandboxId: request.sandboxId,
     });
+
     if (cause === undefined) return error;
+
     return new SandboxError(error.message, {
       code: error.code,
       provider,
@@ -592,6 +667,7 @@ export function createHttpClient<Plane extends string>(
       cause,
     });
   }
+
   /** `unconfirmed`: a failed response that does not prove the request did nothing, so a write is `outcome_unknown`. */
   function mapDefault(
     failed: HttpFailure,
@@ -600,29 +676,38 @@ export function createHttpClient<Plane extends string>(
     unconfirmed: boolean,
   ): SandboxError {
     const unsafe = !idempotentMethods.has(request.method) && !request.readOnly;
+
     const hooked = options.mapError?.(failed, {
       method: request.method,
       plane,
       operation: operationOf(request),
       sandboxId: request.sandboxId,
     });
+
     switch (failed.kind) {
       case "status": {
         let code = hooked ?? statusCode(failed.status);
+
         if (unsafe && (code === "timeout" || unconfirmed)) code = "outcome_unknown";
+
         const apiCode =
           failed.body.code !== undefined && safeCode.test(failed.body.code)
             ? ` ${failed.body.code}`
             : "";
+
         const id = ["x-request-id", "request-id", "x-amzn-requestid", "cf-ray"]
           .map((name) => failed.headers.get(name))
           .find((value) => value !== null && safeRequestId.test(value));
+
         const status = `HTTP ${failed.status}${apiCode}`;
+
         const message =
           request.detail === "message" && failed.body.message
             ? `: ${scrub(redact(failed.body.message)).slice(0, 300)}`
             : "";
+
         const cause = `${status}${id ? ` (request ${id})` : ""}${message}`;
+
         const error = failure(
           code,
           request,
@@ -630,14 +715,18 @@ export function createHttpClient<Plane extends string>(
           cause,
           code === "unavailable" || code === "quota" || code === "timeout",
         );
+
         statuses.set(error, {
           status: failed.status,
           ...(apiCode ? { code: apiCode.trim() } : {}),
         });
+
         return error;
       }
+
       case "network": {
         const detail = nativeDetail(failed.error, redact);
+
         if (unsafe && failed.sent)
           return failure(
             hooked ?? "outcome_unknown",
@@ -646,6 +735,7 @@ export function createHttpClient<Plane extends string>(
             detail,
             false,
           );
+
         return failure(
           hooked ?? "unavailable",
           request,
@@ -654,6 +744,7 @@ export function createHttpClient<Plane extends string>(
           true,
         );
       }
+
       case "timeout":
         if (unsafe && failed.sent)
           return failure(
@@ -663,6 +754,7 @@ export function createHttpClient<Plane extends string>(
             undefined,
             false,
           );
+
         return failure(
           hooked ?? "timeout",
           request,
@@ -680,6 +772,7 @@ export function createHttpClient<Plane extends string>(
         );
       default: {
         const _exhaustive: never = failed;
+
         return _exhaustive;
       }
     }
@@ -691,10 +784,13 @@ export function createHttpClient<Plane extends string>(
     replayable: boolean;
   } {
     if (request.body === undefined) return { body: undefined, replayable: true };
+
     if (request.method === "GET" || request.method === "HEAD")
       throw invalidRequest(`A ${request.method} request cannot have a body`, request.sandboxId);
+
     if (isBodyInit(request.body))
       return { body: request.body, replayable: !(request.body instanceof ReadableStream) };
+
     return {
       body: JSON.stringify(request.body),
       contentType: "application/json",
@@ -709,13 +805,16 @@ export function createHttpClient<Plane extends string>(
     const unsafe = !idempotentMethods.has(request.method);
     const canRetry = replayable && (!unsafe || request.idempotencyKey !== undefined);
     const { signal } = deadline;
+
     const context: PlaneContext = {
       signal,
       ...(request.sandboxId === undefined ? {} : { sandboxId: request.sandboxId }),
     };
+
     const fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     const refreshKey = `${planeName}\0${request.sandboxId ?? ""}`;
     let refreshed = false;
+
     /** Which deadline fired: the caller's signal is an abort, anything else (overall, stream startup) a timeout. */
     const halted = (): HttpFailure | undefined =>
       deadline.parent?.aborted && !deadline.timeout.aborted
@@ -726,19 +825,20 @@ export function createHttpClient<Plane extends string>(
 
     for (let attempt = 0; ; attempt++) {
       const stop = halted();
+
       if (stop) throw mapFailure(stop, request, planeName);
       let base: string;
       let credentials: Record<string, string>;
       const { baseUrl: resolveBase, auth } = plane;
+
       try {
         // Callbacks may never settle (a hung token endpoint); the deadline and the caller's signal still stop the call.
-        base =
-          typeof resolveBase === "string"
-            ? resolveBase
-            : await untilAborted(
-                Promise.resolve().then(() => resolveBase(context)),
-                signal,
-              );
+        base = isString(resolveBase)
+          ? resolveBase
+          : await untilAborted(
+              Promise.resolve().then(() => resolveBase(context)),
+              signal,
+            );
         credentials =
           request.auth === false || !auth
             ? {}
@@ -749,6 +849,7 @@ export function createHttpClient<Plane extends string>(
       } catch (error) {
         if (error instanceof SandboxError) throw error;
         const halt = halted();
+
         if (halt) throw mapFailure(halt, request, planeName);
         throw failure(
           "auth",
@@ -758,43 +859,57 @@ export function createHttpClient<Plane extends string>(
           false,
         );
       }
+
       const halt = halted();
+
       if (halt) throw mapFailure(halt, request, planeName);
       let names = authNames.get(planeName);
+
       if (!names) authNames.set(planeName, (names = new Set()));
+
       for (const [name, value] of Object.entries(credentials)) {
         names.add(name.toLowerCase());
         rememberCredential(value);
       }
+
       const generation = refreshes.get(refreshKey)?.generation ?? 0;
       let origin: string;
+
       try {
         origin = new URL(base).origin;
       } catch {
         throw failure("provider", request, `: the ${label} base URL is invalid.`, undefined, false);
       }
+
       let url = buildUrl(base, request);
       let method: HttpMethod = request.method;
       let sendBody = body;
       let response: Response | undefined;
       let failed: HttpFailure | undefined;
+
       for (let hop = 0; ; hop++) {
         const headers = new Headers({
           ...plane.headers,
           ...(contentType && sendBody !== undefined ? { "content-type": contentType } : {}),
         });
+
         if (request.idempotencyKey !== undefined && options.idempotencyHeader)
           headers.set(options.idempotencyHeader, request.idempotencyKey);
+
         if (url.origin === origin)
           for (const [name, value] of Object.entries(credentials)) headers.set(name, value);
+
         for (const [name, value] of Object.entries(request.headers ?? {})) headers.set(name, value);
+
         // Credentials stay on the plane's origin, whoever set them: a redirect or an absolute URL elsewhere gets none.
         if (url.origin !== origin)
           for (const name of Array.from(headers.keys()))
             if (isCredential(planeName, name)) headers.delete(name);
+
         // Register what is sent, so an error that echoes a caller's credential is redacted too.
         for (const [name, value] of headers)
           if (isCredential(planeName, name)) rememberCredential(value);
+
         const init: RequestInit & { duplex?: "half" } = {
           method,
           headers,
@@ -802,7 +917,9 @@ export function createHttpClient<Plane extends string>(
           signal,
           redirect: "manual",
         };
+
         if (sendBody instanceof ReadableStream) init.duplex = "half";
+
         try {
           response = await fetcher(url.href, init);
         } catch (error) {
@@ -819,9 +936,12 @@ export function createHttpClient<Plane extends string>(
                 });
           break;
         }
+
         const location = response.headers.get("location");
+
         if (!redirectStatuses.has(response.status) || location === null) break;
         await response.body?.cancel().catch(() => {});
+
         if (hop >= maxRedirects)
           throw failure(
             "provider",
@@ -830,6 +950,7 @@ export function createHttpClient<Plane extends string>(
             undefined,
             false,
           );
+
         try {
           url = new URL(location, url);
         } catch {
@@ -841,6 +962,7 @@ export function createHttpClient<Plane extends string>(
             false,
           );
         }
+
         if (url.protocol !== "https:" && url.protocol !== "http:")
           throw failure(
             "provider",
@@ -849,6 +971,7 @@ export function createHttpClient<Plane extends string>(
             undefined,
             false,
           );
+
         if (
           response.status === 303 ||
           ((response.status === 301 || response.status === 302) && method === "POST")
@@ -872,8 +995,10 @@ export function createHttpClient<Plane extends string>(
         replayable &&
         request.auth !== false &&
         url.origin === origin;
+
       // A `stale` hook needs the error body, so read it (bounded) once here and reuse it for the failure below.
       let errorBody: ErrorBody | undefined;
+
       if (
         refreshable &&
         plane.stale &&
@@ -888,6 +1013,7 @@ export function createHttpClient<Plane extends string>(
             ),
           ),
         );
+
       const verdict: StaleVerdict | undefined =
         !refreshable || !response
           ? undefined
@@ -896,11 +1022,13 @@ export function createHttpClient<Plane extends string>(
             : errorBody !== undefined
               ? plane.stale?.({ status: response.status, body: errorBody, credentials }, context)
               : undefined;
+
       if (verdict !== undefined && plane.refresh && response) {
         if (errorBody === undefined) await response.body?.cancel().catch(() => {});
         refreshed = true;
         const state = refreshes.get(refreshKey) ?? { generation: 0 };
         refreshes.set(refreshKey, state);
+
         if (state.generation === generation) {
           state.pending ??= plane
             .refresh(context)
@@ -910,12 +1038,15 @@ export function createHttpClient<Plane extends string>(
             .finally(() => {
               state.pending = undefined;
             });
+
           // Each waiter stops on its own signal; the shared refresh keeps going for the others.
           try {
             await untilAborted(state.pending, signal);
           } catch (error) {
             const halt = halted();
+
             if (halt) throw mapFailure(halt, request, planeName);
+
             if (error instanceof SandboxError) throw error;
             throw failure(
               "auth",
@@ -926,11 +1057,13 @@ export function createHttpClient<Plane extends string>(
             );
           }
         }
+
         // A request that may have run is sent again only when it may be retried; the next call gets the fresh credentials.
         if (verdict === "refused" || canRetry) {
           attempt--;
           continue;
         }
+
         throw mapFailure(
           {
             kind: "status",
@@ -945,7 +1078,9 @@ export function createHttpClient<Plane extends string>(
       }
 
       let wait: number | undefined;
+
       if (response && response.status >= 200 && response.status < 300) return response;
+
       if (response) {
         const body =
           errorBody ??
@@ -956,23 +1091,30 @@ export function createHttpClient<Plane extends string>(
               ),
             ),
           );
+
         failed = { kind: "status", status: response.status, headers: response.headers, body };
+
         if (retryStatuses.has(response.status)) {
           const after = retryAfter(response.headers);
           wait = after === undefined ? undefined : after <= maxRetryAfterMs ? after : Infinity;
         }
+
         if (!retryStatuses.has(response.status)) throw mapFailure(failed, request, planeName);
       }
+
       if (!failed)
         throw new SandboxError(`${label} request produced no response`, {
           code: "provider",
           provider,
         });
+
       if (failed.kind === "aborted" || failed.kind === "timeout")
         throw mapFailure(failed, request, planeName);
       const delay = wait ?? backoffMs * 2 ** attempt * (0.5 + Math.random() / 2);
+
       if (!canRetry || attempt >= retries || delay === Infinity || delay >= deadline.remaining())
         throw mapFailure(failed, request, planeName);
+
       try {
         await sleep(delay, deadline, provider);
       } catch {
@@ -984,9 +1126,11 @@ export function createHttpClient<Plane extends string>(
   async function request(request: HttpRequest<Plane>): Promise<HttpResponse> {
     const deadline =
       request.deadline ?? createDeadline(request.timeoutMs ?? timeoutMs, request.signal);
+
     const response = await exchange(request, deadline);
     const limit = request.maxBytes ?? defaultMaxBytes;
     let body: Uint8Array;
+
     try {
       body = await readBody(response.body, limit, () =>
         failure(
@@ -1000,6 +1144,7 @@ export function createHttpClient<Plane extends string>(
     } catch (error) {
       if (error instanceof SandboxError) throw error;
       const { name } = planeOf(request.plane);
+
       if (deadline.parent?.aborted && !deadline.timeout.aborted)
         throw mapFailure({ kind: "aborted" }, request, name);
       // The server answered 2xx, so a write took effect; only its result is lost.
@@ -1011,6 +1156,7 @@ export function createHttpClient<Plane extends string>(
         name,
       );
     }
+
     return buffered(response.status, response.headers, body, (what) =>
       failure(
         "provider",
@@ -1028,24 +1174,29 @@ export function createHttpClient<Plane extends string>(
       (request.timeoutMs === undefined
         ? createDeadline(2 ** 31 - 1, request.signal)
         : createDeadline(request.timeoutMs, request.signal));
+
     const startup = createDeadline(request.startupTimeoutMs ?? timeoutMs);
     // `startup` must not abort the body once headers are in, so the fetch follows its own controller.
     const controller = new AbortController();
     const relay = () => controller.abort();
     const combined = AbortSignal.any([overall.signal, startup.signal]);
     combined.addEventListener("abort", relay, { once: true });
+
     const gate: Deadline = {
       signal: controller.signal,
       timeout: overall.timeout,
       parent: overall.parent,
       remaining: () => Math.min(overall.remaining(), startup.remaining()),
     };
+
     let response: Response;
+
     try {
       response = await exchange(request, gate);
     } finally {
       combined.removeEventListener("abort", relay);
     }
+
     // Bodiless statuses cannot be rebuilt with a stream; there is nothing to time out.
     if (!response.body || response.status === 204 || response.status === 205) return response;
     overall.signal.addEventListener("abort", relay, { once: true });
@@ -1053,10 +1204,12 @@ export function createHttpClient<Plane extends string>(
     const reader = response.body.getReader();
     let idle: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
+
     const finish = () => {
       clearTimeout(idle);
       overall.signal.removeEventListener("abort", relay);
     };
+
     const body = new ReadableStream<Uint8Array>(
       {
         async pull(output) {
@@ -1066,24 +1219,31 @@ export function createHttpClient<Plane extends string>(
               void reader.cancel().catch(() => {});
               controller.abort();
             }, request.idleTimeoutMs);
+
           try {
             const { done, value } = await reader.read();
             clearTimeout(idle);
+
             if (timedOut) throw new Error("idle");
+
             if (done) {
               finish();
               output.close();
+
               return;
             }
+
             output.enqueue(value);
           } catch (error) {
             finish();
+
             const failed: HttpFailure =
               overall.parent?.aborted && !overall.timeout.aborted
                 ? { kind: "aborted" }
                 : timedOut || overall.timeout.aborted
                   ? { kind: "timeout", sent: true }
                   : { kind: "network", sent: true, error };
+
             // Headers arrived with a 2xx, so a write started, but its result never fully arrived: a read may retry,
             // a write (create, exec) is `outcome_unknown` unless the request is marked `readOnly`.
             const unsafe = !idempotentMethods.has(request.method) && !request.readOnly;
@@ -1108,6 +1268,7 @@ export function createHttpClient<Plane extends string>(
       },
       { highWaterMark: 0 },
     );
+
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,
@@ -1126,6 +1287,7 @@ export function createHttpClient<Plane extends string>(
     stream,
     cleanup(input) {
       const { signal: _signal, deadline: _deadline, ...rest } = input;
+
       return request({
         ...rest,
         timeoutMs: Math.min(input.timeoutMs ?? cleanupTimeoutMs, cleanupTimeoutMs),

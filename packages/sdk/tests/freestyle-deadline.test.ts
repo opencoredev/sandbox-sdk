@@ -1,8 +1,11 @@
+import { isObject, isString } from "../src/shared/narrow.js";
 import { afterEach, expect, test, vi } from "vitest";
+
 // The adapter speaks HTTP itself; loading the SDK would be a regression.
 vi.mock("freestyle", () => {
   throw new Error("The freestyle SDK must not be loaded");
 });
+
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { background, freestyleClient } from "../src/providers/freestyle/client.js";
 
@@ -10,8 +13,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+
 const pathOf = (url: string | URL | Request) =>
   new URL(url instanceof Request ? url.url : url).pathname;
+
 const headerOf = (init: RequestInit | undefined, name: string) =>
   new Headers(init?.headers).get(name);
 
@@ -21,18 +26,22 @@ test("the overall deadline stops HTTP 202 polling without another network reques
     "fetch",
     vi.fn(async () => {
       requests++;
+
       if (requests > 1) return new Response(JSON.stringify({ vms: [], totalCount: 0 }));
+
       return new Response(
         JSON.stringify({ requestId: "offline", resultUrl: "/v5/background-requests/offline" }),
         { status: 202 },
       );
     }),
   );
+
   const provider = freestyle({
     baseUrl: "http://offline.invalid",
     apiKey: "mock",
     requestTimeoutMs: 20,
   });
+
   const start = Date.now();
   await expect(provider.list({})).rejects.toMatchObject({ code: "timeout" });
   expect(Date.now() - start).toBeLessThan(500);
@@ -50,15 +59,18 @@ test("every awaited native operation is bounded and aborts its fetch", async () 
       (_url: unknown, init?: RequestInit) =>
         new Promise((_resolve, reject) => {
           const signal = init?.signal;
+
           if (!signal) throw new Error("Missing deadline signal");
           signals.push(signal);
           const abort = () => reject(new DOMException("stopped", "AbortError"));
           signal.addEventListener("abort", abort, { once: true });
+
           if (signal.aborted) abort();
         }),
     ),
   );
   const p = freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock", requestTimeoutMs: 20 });
+
   const operations = [
     () => p.create({ labels: {} }),
     () => p.connect("offline"),
@@ -76,6 +88,7 @@ test("every awaited native operation is bounded and aborts its fetch", async () 
     () => p.files.mkdir("offline", "/workspace/dir"),
     () => p.files.remove("offline", "/workspace/file", { recursive: false }),
   ];
+
   for (const [i, operation] of operations.entries()) {
     const start = Date.now();
     await expect(operation()).rejects.toMatchObject({
@@ -95,18 +108,22 @@ test("caller abort rejects a pending create at once, and a VM that lands afterwa
     "fetch",
     vi.fn((url: string, init?: RequestInit) => {
       requests.push(`${init?.method} ${pathOf(url)}`);
+
       if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
       createSignal = init?.signal ?? undefined;
+
       return new Promise<Response>((resolve) => {
         land = resolve;
       });
     }),
   );
+
   const pending = freestyle({
     baseUrl: "http://offline.invalid",
     apiKey: "mock",
     requestTimeoutMs: 5000,
   }).create({ labels: {}, signal: c.signal });
+
   await vi.waitFor(() => expect(requests).toEqual(["POST /v5/vms"]));
   c.abort();
   await expect(pending).rejects.toMatchObject({ code: "aborted" });
@@ -151,11 +168,13 @@ test.each(["running", "starting"])(
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const path = new URL(url instanceof Request ? url.url : url).pathname;
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
         requests.push({ method: init?.method, path, body });
+
         if (path === "/v5/vms" && init?.method === "POST") {
-          if (!body || typeof body !== "object" || !("metadata" in body))
+          if (!body || !isObject(body) || !("metadata" in body))
             throw new Error("Missing metadata");
+
           return Response.json({
             id: "offline",
             state,
@@ -170,16 +189,19 @@ test.each(["running", "starting"])(
             tlsRules: [],
           });
         }
+
         if (path === "/v5/vms/offline/exec-await")
           return Response.json({ statusCode: 0, stdout: "", stderr: "" });
         throw new Error("Unexpected cold setup request");
       }),
     );
+
     const result = await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).create({
       labels: { test: "cold" },
       network: "none",
       env: { TOKEN: "private-test-value" },
     });
+
     expect(result).toMatchObject({ id: "offline", labels: { test: "cold" }, state: "running" });
     expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual([
       "POST /v5/vms",
@@ -192,12 +214,13 @@ test.each(["running", "starting"])(
       vpcs: [],
     });
     const setup = requests[1]?.body;
+
     if (
       !setup ||
-      typeof setup !== "object" ||
+      !isObject(setup) ||
       !("command" in setup) ||
       !("stdin" in setup) ||
-      typeof setup.stdin !== "string"
+      !isString(setup.stdin)
     )
       throw new Error("Missing setup exec");
     expect(String(setup.command)).not.toContain("private-test-value");
@@ -231,6 +254,7 @@ test("HTTP failures retain status, code, request ID and operation through public
       operation: "GET /v5/vms/:id/fs/read",
     },
   });
+
   try {
     await createSandbox(p);
     throw new Error("Expected failure");
@@ -254,7 +278,9 @@ test("concurrent failures keep their own request IDs and reject unsafe header va
     vi.fn(async (url: string | URL | Request) => {
       const path = new URL(url instanceof Request ? url.url : url).pathname;
       const first = path.includes("first");
+
       if (first) await new Promise((resolve) => setTimeout(resolve, 20));
+
       return Response.json(
         { code: first ? "FIRST_ERROR" : "SECOND_ERROR", message: "private" },
         {
@@ -265,14 +291,18 @@ test("concurrent failures keep their own request IDs and reject unsafe header va
     }),
   );
   const provider = freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" });
+
   const results = await Promise.allSettled([
     provider.files.read("first", "/one"),
     provider.files.read("second", "/two"),
   ]);
+
   const errors = results.map((r) => {
     if (r.status !== "rejected") throw new Error("Expected failure");
+
     return r.reason;
   });
+
   expect(errors[0]).toMatchObject({
     cause: { requestId: "req-first", providerCode: "FIRST_ERROR" },
   });
@@ -293,6 +323,7 @@ test("configured credentials are excluded even from otherwise valid diagnostic i
       ),
     ),
   );
+
   try {
     await freestyle({ baseUrl: "http://offline.invalid", apiKey: "PRIVATE_TOKEN" }).files.read(
       "offline",
@@ -348,12 +379,16 @@ test.each(["vpc", "tls", "firewall", "limits", "setup"])(
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const path = new URL(url instanceof Request ? url.url : url).pathname;
         requests.push(`${init?.method} ${path}`);
+
         if (init?.method === "DELETE") return new Response(null, { status: 204 });
+
         if (path.endsWith("/exec-await"))
           return Response.json({ statusCode: 1, stdout: "", stderr: "private" });
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-        if (!body || typeof body !== "object" || !("metadata" in body))
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
+
+        if (!body || !isObject(body) || !("metadata" in body))
           throw new Error("Missing create metadata");
+
         return Response.json({
           id: "offline",
           state: "running",
@@ -391,19 +426,24 @@ test("a later setup failure never inherits the allocation's background request I
     "fetch",
     vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(url instanceof Request ? url.url : url).pathname;
+
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+
       if (path.endsWith("/exec-await"))
         return Response.json({ code: "SETUP_FAILED", message: "private" }, { status: 413 });
+
       if (path === "/v5/vms") {
-        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-        if (!body || typeof body !== "object" || !("metadata" in body))
-          throw new Error("Missing metadata");
+        const body: unknown = isString(init?.body) ? JSON.parse(init.body) : undefined;
+
+        if (!body || !isObject(body) || !("metadata" in body)) throw new Error("Missing metadata");
         metadata = body.metadata;
+
         return Response.json(
           { resultUrl: "/v5/background-requests/allocation" },
           { status: 202, headers: { "x-freestyle-background-request-id": "allocation" } },
         );
       }
+
       return Response.json({
         id: "offline",
         state: "running",
@@ -414,6 +454,7 @@ test("a later setup failure never inherits the allocation's background request I
       });
     }),
   );
+
   try {
     await freestyle({
       baseUrl: "http://offline.invalid",
@@ -436,6 +477,7 @@ test("requests go to global fetch with the key, the background window and the op
   const fetch = vi.fn(async (_url: string, _init?: RequestInit) =>
     Response.json({ vms: [], totalCount: 0 }),
   );
+
   vi.stubGlobal("fetch", fetch);
   expect(await freestyle({ apiKey: "mock" }).list({})).toEqual([]);
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -449,6 +491,7 @@ test("requests go to global fetch with the key, the background window and the op
 /** A VM record the adapter accepts on connect, with native SDK metadata. */
 function vmRecord(id: string) {
   const info = Buffer.from(JSON.stringify({ key: null, labels: {} })).toString("base64url");
+
   return {
     id,
     state: "running",
@@ -465,13 +508,16 @@ test("a 202 is polled at its resultUrl every interval until the stored result ar
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       requests.push({ method: init?.method, path: pathOf(url), init });
+
       if (pathOf(url) === "/v5/vms/vm-1/pause")
         return Response.json(
           { requestId: "bg-1", resultUrl: "/v5/background-requests/bg-1" },
           { status: 202 },
         );
+
       if (++polls < 3)
         return Response.json({ requestId: "bg-1", status: "pending" }, { status: 202 });
+
       return Response.json(vmRecord("vm-1"), {
         headers: { "x-freestyle-background-request-id": "bg-1" },
       });
@@ -479,6 +525,7 @@ test("a 202 is polled at its resultUrl every interval until the stored result ar
   );
   const saved = background.pollMs;
   background.pollMs = 10;
+
   try {
     const start = Date.now();
     await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).pause?.("vm-1");
@@ -486,6 +533,7 @@ test("a 202 is polled at its resultUrl every interval until the stored result ar
   } finally {
     background.pollMs = saved;
   }
+
   expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual([
     "POST /v5/vms/vm-1/pause",
     ...Array(3).fill("GET /v5/background-requests/bg-1"),
@@ -508,16 +556,19 @@ test("a 202 with only the request ID header polls the background-requests route"
     "fetch",
     vi.fn(async (url: string) => {
       paths.push(pathOf(url));
+
       if (paths.length === 1)
         return new Response(null, {
           status: 202,
           headers: { "x-freestyle-background-request-id": "bg/2" },
         });
+
       return Response.json({ snapshotId: "snap-1" });
     }),
   );
   const saved = background.pollMs;
   background.pollMs = 1;
+
   try {
     expect(
       await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).snapshot?.("vm-1"),
@@ -525,6 +576,7 @@ test("a 202 with only the request ID header polls the background-requests route"
   } finally {
     background.pollMs = saved;
   }
+
   expect(paths).toEqual(["/v5/vms/vm-1/snapshot", "/v5/background-requests/bg%2F2"]);
 });
 
@@ -534,16 +586,19 @@ test("a resultUrl on another origin is polled without the API key", async () => 
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       requests.push({ url, authorization: headerOf(init, "authorization") });
+
       if (requests.length === 1)
         return Response.json(
           { requestId: "bg-6", resultUrl: "https://results.elsewhere.test/bg-6" },
           { status: 202 },
         );
+
       return Response.json({ snapshotId: "snap-6" });
     }),
   );
   const saved = background.pollMs;
   background.pollMs = 1;
+
   try {
     expect(
       await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).snapshot?.("vm-1"),
@@ -551,6 +606,7 @@ test("a resultUrl on another origin is polled without the API key", async () => 
   } finally {
     background.pollMs = saved;
   }
+
   expect(requests).toEqual([
     { url: "http://offline.invalid/v5/vms/vm-1/snapshot", authorization: "Bearer mock" },
     { url: "https://results.elsewhere.test/bg-6", authorization: null },
@@ -578,8 +634,11 @@ test("transient poll failures are retried; a stored error with the request ID is
       if (pathOf(url) === "/v5/vms/vm-1/start")
         return Response.json({ requestId: "bg-3" }, { status: 202 });
       polls++;
+
       if (polls === 1) throw new TypeError("fetch failed");
+
       if (polls === 2) return new Response("bad gateway", { status: 408 });
+
       return Response.json(
         { code: "VM_BROKEN", message: "private" },
         { status: 503, headers: { "x-freestyle-background-request-id": "bg-3" } },
@@ -588,6 +647,7 @@ test("transient poll failures are retried; a stored error with the request ID is
   );
   const saved = background.pollMs;
   background.pollMs = 1;
+
   try {
     await expect(
       freestyle({
@@ -607,6 +667,7 @@ test("transient poll failures are retried; a stored error with the request ID is
   } finally {
     background.pollMs = saved;
   }
+
   // The network error and the bare 408 were retried by the poller. The stored 503 is a GET answer, so the client
   // reread it twice before the poller saw it as terminal; it never polled again after that.
   expect(polls).toBe(5);
@@ -621,18 +682,22 @@ test("polling gives up after five minutes of continuous failures", async () => {
       if (pathOf(url) === "/v5/vms/vm-1/pause")
         return Response.json({ requestId: "bg-4" }, { status: 202 });
       polls++;
+
       return new Response(null, { status: 408 });
     }),
   );
+
   const pending = freestyle({
     baseUrl: "http://offline.invalid",
     apiKey: "mock",
     requestTimeoutMs: 60 * 60_000,
   }).pause?.("vm-1");
+
   const settled = pending?.then(
     () => "resolved",
     (error: unknown) => error,
   );
+
   await vi.advanceTimersByTimeAsync(5 * 60_000 - 2_000);
   expect(polls).toBe(149);
   await vi.advanceTimersByTimeAsync(4_000);
@@ -648,18 +713,22 @@ test("a GET whose background result was too large to store is fetched once direc
       const path = pathOf(url);
       const backgrounded = headerOf(init, "x-freestyle-background-after-secs") !== null;
       calls.push({ path, backgrounded });
+
       if (path === "/v5/vms" && backgrounded)
         return Response.json({ requestId: "bg-5" }, { status: 202 });
+
       if (path.startsWith("/v5/background-requests/"))
         return Response.json(
           { code: "BACKGROUND_RESULT_UNSTORABLE", message: "too large" },
           { status: 413, headers: { "x-freestyle-background-request-id": "bg-5" } },
         );
+
       return Response.json({ vms: [], totalCount: 0 });
     }),
   );
   const saved = background.pollMs;
   background.pollMs = 1;
+
   try {
     expect(await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).list({})).toEqual(
       [],
@@ -667,6 +736,7 @@ test("a GET whose background result was too large to store is fetched once direc
   } finally {
     background.pollMs = saved;
   }
+
   expect(calls).toEqual([
     { path: "/v5/vms", backgrounded: true },
     { path: "/v5/background-requests/bg-5", backgrounded: false },
@@ -679,6 +749,7 @@ test("file reads are never backgrounded and send a byte range", async () => {
     async (_url: string, _init?: RequestInit) =>
       new Response(new Uint8Array([1, 2, 3]), { status: 206 }),
   );
+
   vi.stubGlobal("fetch", fetch);
   expect([
     ...(await freestyle({ baseUrl: "http://offline.invalid", apiKey: "mock" }).files.readRange!(
@@ -706,6 +777,7 @@ test("writes over 8 MiB use an upload session, resume a chunk that landed, and c
       calls.push(
         `${init?.method} ${parsed.pathname}${parsed.searchParams.has("offset") ? `?offset=${parsed.searchParams.get("offset")}` : ""}`,
       );
+
       if (parsed.pathname === "/v5/vms/vm-1/fs/uploads") {
         expect(JSON.parse(String(init?.body))).toMatchObject({
           path: "/workspace/big",
@@ -713,17 +785,22 @@ test("writes over 8 MiB use an upload session, resume a chunk that landed, and c
           mode: 0o600,
           sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         });
+
         return Response.json({ uploadId: "up-1", path: "/workspace/big", size, receivedBytes: 0 });
       }
+
       if (parsed.pathname === "/v5/vms/vm-1/fs/uploads/up-1" && init?.method === "PUT") {
         const chunk = new Uint8Array(await new Response(init.body).arrayBuffer());
         expect(Number(parsed.searchParams.get("offset"))).toBe(received);
         received += chunk.byteLength;
+
         // The first chunk is stored, but its answer is lost.
         if (!failedOnce) {
           failedOnce = true;
+
           return new Response("lost", { status: 500 });
         }
+
         return Response.json({
           uploadId: "up-1",
           path: "/workspace/big",
@@ -731,6 +808,7 @@ test("writes over 8 MiB use an upload session, resume a chunk that landed, and c
           receivedBytes: received,
         });
       }
+
       if (parsed.pathname === "/v5/vms/vm-1/fs/uploads/up-1" && init?.method === "GET")
         return Response.json({
           uploadId: "up-1",
@@ -738,17 +816,20 @@ test("writes over 8 MiB use an upload session, resume a chunk that landed, and c
           size,
           receivedBytes: received,
         });
+
       if (parsed.pathname === "/v5/vms/vm-1/fs/uploads/up-1/commit")
         return new Response(null, { status: 204 });
       throw new Error(`Unexpected ${init?.method} ${parsed.pathname}`);
     }),
   );
+
   // files.write reaches this after the VM's first command; the client is the part under test.
   const client = freestyleClient({
     baseUrl: "http://offline.invalid",
     apiKey: () => "mock",
     requestTimeoutMs: 20_000,
   });
+
   await client.writeFile("vm-1", "/workspace/big", bytes, 0o600);
   expect(calls).toEqual([
     "POST /v5/vms/vm-1/fs/uploads",
@@ -767,6 +848,7 @@ test("a failed upload session is deleted and the original error is reported", as
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = pathOf(url);
       calls.push(`${init?.method} ${path}`);
+
       if (path === "/v5/vms/vm-1/fs/uploads")
         return Response.json({
           uploadId: "up-2",
@@ -774,15 +856,19 @@ test("a failed upload session is deleted and the original error is reported", as
           size: 9 * 1024 * 1024,
           receivedBytes: 0,
         });
+
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+
       return Response.json({ code: "TOO_BIG", message: "private" }, { status: 413 });
     }),
   );
+
   const client = freestyleClient({
     baseUrl: "http://offline.invalid",
     apiKey: () => "mock",
     requestTimeoutMs: 5_000,
   });
+
   await expect(
     client.writeFile("vm-1", "/workspace/big", new Uint8Array(9 * 1024 * 1024)),
   ).rejects.toMatchObject({ status: 413, code: "TOO_BIG" });

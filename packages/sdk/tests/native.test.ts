@@ -20,17 +20,22 @@ interface AcmeConfig {
   apiKey?: string;
   apiUrl?: string;
 }
+
 /** What the adapter needs from the module: a client class whose `get(id)` resolves to the SDK's sandbox. */
 type AcmeModule = { Acme: new (config: AcmeConfig) => { get(id: string): Promise<unknown> } };
+
 /** `box.native.sdk`: the module's own sandbox type comes back. */
 type AcmeSandboxSdk = <M extends AcmeModule>(
   load: () => Promise<M>,
 ) => Promise<Awaited<ReturnType<InstanceType<M["Acme"]>["get"]>>>;
+
 /** `provider.api.sdk`: the module's client instance comes back. */
 type AcmeClientSdk = <M extends AcmeModule>(
   load: () => Promise<M>,
 ) => Promise<InstanceType<M["Acme"]>>;
+
 type AcmePlane = "api" | "toolbox";
+
 type AcmeNative = NativeApi<AcmePlane, AcmeSandboxSdk>;
 
 // A stand-in for the official SDK, as a user would import it.
@@ -43,20 +48,24 @@ class AcmeSandbox {
     return `ran ${command}`;
   }
 }
+
 class Acme {
   constructor(readonly config: AcmeConfig) {}
   async get(id: string) {
     return new AcmeSandbox(id, this.config.apiKey);
   }
 }
+
 const acmeModule = { Acme, version: "1.2.3" };
 
 let server: FakeServer;
 let toolbox: FakeServer;
+
 beforeEach(async () => {
   server = await fakeServer();
   toolbox = await fakeServer();
 });
+
 afterEach(async () => {
   await server.close();
   await toolbox.close();
@@ -82,12 +91,14 @@ function acme() {
               code: "invalid_argument",
               provider: "acme",
             });
+
           return `${toolbox.url}/proxy/${sandboxId}`;
         },
         auth: () => ({ authorization: "Bearer acme-key-123456" }),
       },
     },
   });
+
   const sdk: NativeSdkBinding = {
     package: "@acme/sdk",
     async connect(module, sandboxId) {
@@ -97,11 +108,13 @@ function acme() {
         [{ apiKey: "acme-key-123456", apiUrl: `${server.url}/api` }],
         "@acme/sdk",
       );
+
       return sandboxId === undefined
         ? client
         : await sdkCall(client, "get", [sandboxId], "@acme/sdk");
     },
   };
+
   return {
     native: (id: string) =>
       createNativeApi<AcmePlane, AcmeSandboxSdk>({
@@ -119,13 +132,16 @@ function acme() {
       createNativeApi<AcmePlane>({ http, placeholder: ["vmId", "vmIdOrSlug"], sandboxId: id, sdk }),
   };
 }
+
 async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   try {
     await promise;
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
+
     return error as SandboxError;
   }
+
   throw new Error("expected a rejection");
 }
 
@@ -234,6 +250,7 @@ describe("sdk(load)", () => {
     const sandbox = await acme()
       .native("sb-1")
       .sdk(async () => acmeModule);
+
     expectTypeOf(sandbox).toEqualTypeOf<AcmeSandbox>();
     expect(sandbox).toBeInstanceOf(AcmeSandbox);
     expect(sandbox.id).toBe("sb-1");
@@ -250,6 +267,7 @@ describe("sdk(load)", () => {
     const sandbox = await acme()
       .native("sb-1")
       .sdk(async () => ({ default: acmeModule, Acme }));
+
     expect(sandbox.id).toBe("sb-1");
   });
 
@@ -259,6 +277,7 @@ describe("sdk(load)", () => {
         .loose("sb-1")
         .sdk(async () => ({ Other: Acme })),
     );
+
     expect(error.code).toBe("invalid_argument");
     expect(error.message).toContain('import("@acme/sdk")');
   });
@@ -275,6 +294,7 @@ describe("sdk(load)", () => {
           ),
         ),
     );
+
     expect(error).toMatchObject({ code: "unavailable", hint: "npm i @acme/sdk" });
   });
 
@@ -284,11 +304,13 @@ describe("sdk(load)", () => {
         throw new Error("401 for key acme-key-123456");
       }
     }
+
     const error = await failure(
       acme()
         .native("sb-1")
         .sdk(async () => ({ Acme: Broken })),
     );
+
     expect(error.code).toBe("provider");
     expect(error.message).not.toContain("acme-key-123456");
   });
@@ -300,6 +322,7 @@ describe("sdk(load)", () => {
       planes: { api: { baseUrl: server.url } },
       defaultPlane: "api",
     });
+
     expect(
       (
         await failure(
@@ -329,6 +352,7 @@ describe("types", () => {
       native(id: string): AcmeNative;
       readonly api: NativeApi<AcmePlane, AcmeClientSdk>;
     };
+
     expectTypeOf<ReturnType<Factory>["api"]["sdk"]>().toEqualTypeOf<AcmeClientSdk>();
   });
 
@@ -339,7 +363,9 @@ describe("types", () => {
       defaultPlane: "api",
       planes: { api: { baseUrl: "https://a.test" }, toolbox: { baseUrl: "https://b.test" } },
     });
+
     expectTypeOf(http).toEqualTypeOf<HttpClient<"api" | "toolbox">>();
+
     // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
     if (false) {
       createHttpClient({
@@ -354,6 +380,7 @@ describe("types", () => {
 
   test("misuse is a compile error", () => {
     const box: AcmeNative = acme().native("sb-1");
+
     // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
     if (false) {
       // @ts-expect-error the module lacks the Acme class
@@ -379,6 +406,7 @@ describe("types", () => {
       // @ts-expect-error sandboxId is read-only
       box.sandboxId = "other";
     }
+
     expect(box.sandboxId).toBe("sb-1");
   });
 
@@ -387,6 +415,7 @@ describe("types", () => {
     const accounts: NativeApi<string> = acme().api;
     expect(any.sandboxId).toBe("sb-1");
     expect(accounts.sandboxId).toBeUndefined();
+
     // oxlint-disable-next-line no-constant-condition -- compile-time negative API checks never execute.
     if (false) {
       // @ts-expect-error a plain NativeApi does not know which module its provider needs
@@ -401,11 +430,13 @@ describe("types", () => {
       planes: { api: { baseUrl: server.url } },
       defaultPlane: "api",
     });
+
     const plain = createNativeApi({
       http,
       placeholder: "id",
       sdk: { package: "plain", connect: (module) => module },
     });
+
     const result = await plain.sdk(async () => ({ anything: 1 }));
     expectTypeOf(result).toEqualTypeOf<unknown>();
     expect(result).toEqual({ anything: 1 });
