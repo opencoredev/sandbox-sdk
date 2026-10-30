@@ -700,15 +700,22 @@ export function createEnvd(options: {
           envs: Record<string, string>;
           user: string;
           onPty(text: string): void;
+          /** Stops a shell whose start outcome is unknown, found by its tag, as for `start`. */
+          abandon(tag: string): Promise<void>;
         },
       ): Promise<Command> {
+        const tag = `sandbox-sdk-${crypto.randomUUID()}`;
+
         const message = {
           process: { cmd: "/bin/bash", args: ["-i", "-l"], envs: options.envs, cwd: options.cwd },
           pty: { size: { cols: options.cols, rows: options.rows } },
+          tag,
         };
 
         return open(sandboxId, "Start", message, {
           timeoutMs: 0,
+          tag,
+          abandon: options.abandon,
           onPty: options.onPty,
           headers: basic(options.user),
         });

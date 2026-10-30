@@ -497,6 +497,12 @@ export async function makeHandle<N>(
           });
 
           const cleanups = new Set<() => void>();
+          // Text a redaction filter holds back as a possible secret prefix. Flushed when the shell exits too.
+          const filters = new Set<{ flush(): void }>();
+
+          const flushAll = () => {
+            for (const filter of filters) filter.flush();
+          };
 
           const handle: Terminal = {
             write: (data) =>
@@ -511,10 +517,12 @@ export async function makeHandle<N>(
               check();
               const filter = chunkRedactor(redactor, (chunk) => callback(chunk.text));
               const off = raw.onData((data) => filter.push({ stream: "stdout", text: data }));
+              filters.add(filter);
 
               const cleanup = () => {
                 off();
                 filter.flush();
+                filters.delete(filter);
                 cleanups.delete(cleanup);
               };
 
@@ -531,7 +539,19 @@ export async function makeHandle<N>(
 
           const wait = raw.wait;
 
-          if (wait) handle.wait = () => direct(() => wait.call(raw));
+          if (wait) {
+            // The shell's last output reaches subscribers before wait() resolves.
+            const exited = wait.call(raw);
+            void exited.then(flushAll, flushAll);
+
+            handle.wait = () =>
+              direct(async () => {
+                const exit = await exited;
+                flushAll();
+
+                return exit;
+              });
+          }
 
           return handle;
         }),

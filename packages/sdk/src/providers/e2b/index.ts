@@ -622,9 +622,16 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
 
     if (!Array.isArray(body)) throw invalidResponse("metrics that are not an array", id);
 
+    // E2B takes whole seconds, so the request is widened; keep only samples inside the window asked for.
+    const from = range.startMs ?? Number.NEGATIVE_INFINITY;
+    const to = range.endMs ?? Number.POSITIVE_INFINITY;
+
     return body
-      .map(parseMetric)
-      .filter((metric) => metric !== undefined)
+      .flatMap((value) => {
+        const metric = parseMetric(value);
+
+        return metric && metric.timestamp >= from && metric.timestamp <= to ? [metric] : [];
+      })
       .sort((a, b) => a.timestamp - b.timestamp);
   }
 
@@ -649,6 +656,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
       cwd,
       envs: { TERM: "xterm-256color", LANG: "C.UTF-8", LC_ALL: "C.UTF-8", ...options.env },
       user: "root",
+      abandon: (tag) => abandon(id, tag),
       onPty(text) {
         if (listeners.size) {
           for (const listener of listeners) listener(text);
@@ -686,6 +694,14 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
       close: () =>
         call(id, async () => {
           try {
+            // Bash gives each job its own process group, so stop the whole PTY session (envd makes the
+            // shell its leader), then the shell. Children outlive a shell that already exited, too.
+            await runToEnd(
+              id,
+              `pkill -KILL -s ${command.pid} 2>/dev/null || kill -KILL -- -${command.pid} 2>/dev/null; true`,
+              10_000,
+            );
+
             if (command.exitCode === undefined) await command.kill();
             // The end event normally follows the kill at once; do not hang on a stalled stream.
             await Promise.race([exited.catch(() => {}), sleep(5_000)]);

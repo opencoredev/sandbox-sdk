@@ -1,10 +1,12 @@
 // E2B's optional features on the wire, against a scripted server: the User-Agent, snapshot deletion,
 // template builds, metrics in usage() and box.ext.e2b, the PTY terminal and WatchDir file events.
 import { readFileSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { buildTemplate, connectSandbox, deleteSnapshot } from "../src/index.js";
 import type { FileEvent } from "../src/provider.js";
 import type { JsonObject, JsonValue } from "../src/shared/json.js";
+import { createHttpClient } from "../src/http.js";
 import { connectEnvelope } from "../src/streams.js";
 import { e2b } from "../src/providers/e2b/index.js";
 import { userAgent, version } from "../src/version.js";
@@ -59,7 +61,56 @@ const envelopeOf = (request: RecordedRequest | undefined): JsonObject =>
   JSON.parse(request?.body.subarray(5).toString() ?? "{}");
 
 /** Scripts the calls `connect()` makes and returns a provider attached to sandbox `sb1`. */
-async function attached(envdVersion = "0.10.0") {
+const isRecord = (value: JsonValue | undefined): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** One PTY shell's reply: frames, then held open, ended, or never answered. */
+type Shell = { frames: Uint8Array[]; hold?: boolean } | { hang: true };
+
+/**
+ * `POST /process.Process/Start` for terminal tests: PTY starts take `shells` in order; any other Start is a
+ * short command (the session kill, a group signal) that exits 0, and its script is recorded.
+ */
+function starts(shells: Shell[]) {
+  const commands: string[] = [];
+  let closed = 0;
+
+  const handler = (request: RecordedRequest, response: ServerResponse) => {
+    const message = envelopeOf(request);
+
+    if (!isRecord(message.pty)) {
+      const process = message.process;
+      commands.push(
+        isRecord(process) && Array.isArray(process.args) ? String(process.args[2]) : "",
+      );
+      response
+        .writeHead(200, { "content-type": "application/connect+json" })
+        .end(
+          Buffer.concat([
+            frame({ event: { start: { pid: 900 } } }),
+            frame({ event: { end: { exited: true } } }),
+            done,
+          ]),
+        );
+
+      return;
+    }
+
+    const shell = shells.shift();
+
+    if (!shell || "hang" in shell) return;
+    response.writeHead(200, { "content-type": "application/connect+json" });
+    response.on("close", () => closed++);
+
+    for (const part of shell.frames) response.write(part);
+
+    if (!shell.hold) response.end();
+  };
+
+  return { handler, commands, closed: () => closed };
+}
+
+async function attached(envdVersion = "0.10.0", options: Parameters<typeof e2b>[0] = {}) {
   server
     .on("GET /sandboxes/{id}", {
       json: {
@@ -78,7 +129,7 @@ async function attached(envdVersion = "0.10.0") {
       json: { entry: { name: "workspace", path: "/workspace", type: "FILE_TYPE_DIRECTORY" } },
     })
     .on("POST /files", { json: [] });
-  const provider = e2b({ apiKey: key });
+  const provider = e2b({ apiKey: key, ...options });
   await provider.connect("sb1");
 
   return provider;
@@ -95,6 +146,20 @@ test("every request names the SDK in User-Agent, and the version matches package
   expect(server.requests.length).toBeGreaterThan(2);
 
   for (const request of server.requests) expect(request.headers["user-agent"]).toBe(userAgent);
+});
+
+test("a plane's own User-Agent replaces the SDK's in any casing, instead of joining it", async () => {
+  server.on("GET /ping", { json: {} });
+
+  const http = createHttpClient({
+    provider: "test",
+    label: "Test",
+    defaultPlane: "api",
+    planes: { api: { baseUrl: () => server.url, headers: { "User-Agent": "custom/1" } } },
+  });
+
+  await http.request({ method: "GET", path: "/ping" });
+  expect(server.requests[0]?.headers["user-agent"]).toBe("custom/1");
 });
 
 describe("snapshots and templates", () => {
@@ -281,14 +346,17 @@ describe("metrics", () => {
     server.on("GET /sandboxes/{id}/metrics", { json: samples });
     const box = await connectSandbox(provider, "sb1", { recoverSecrets: false });
 
-    const history = await box.ext.e2b.metrics({
-      startMs: 1_700_000_000_500,
-      endMs: 1_700_000_100_200,
+    expect((await box.ext.e2b.metrics()).map((sample) => sample.cpuUsedPct)).toEqual([10, 40.5]);
+
+    // E2B takes whole seconds: the request widens to them, and samples outside the exact window are dropped.
+    const window = await box.ext.e2b.metrics({
+      startMs: Date.parse("2026-10-30T10:00:00.500Z"),
+      endMs: Date.parse("2026-10-30T10:00:05.200Z"),
     });
 
-    expect(history.map((sample) => sample.cpuUsedPct)).toEqual([10, 40.5]);
-    expect(server.calls("GET /sandboxes/{id}/metrics")[0]?.url).toBe(
-      "/sandboxes/sb1/metrics?start=1700000000&end=1700000101",
+    expect(window.map((sample) => sample.cpuUsedPct)).toEqual([40.5]);
+    expect(server.calls("GET /sandboxes/{id}/metrics")[1]?.url).toBe(
+      `/sandboxes/sb1/metrics?start=${Date.parse("2026-10-30T10:00:00Z") / 1000}&end=${Date.parse("2026-10-30T10:00:06Z") / 1000}`,
     );
 
     server.on("GET /sandboxes/{id}/metrics", { status: 404, json: { code: 404 } });
@@ -331,6 +399,7 @@ describe("terminal", () => {
         envs: { TERM: "xterm-256color", LANG: "C.UTF-8", LC_ALL: "C.UTF-8", SECRET_NAME: "x" },
       },
       pty: { size: { cols: 120, rows: 40 } },
+      tag: expect.stringMatching(/^sandbox-sdk-[0-9a-f-]{36}$/),
     });
     expect(server.calls("POST /process.Process/Start")[0]?.headers["connect-timeout-ms"]).toBe(
       undefined,
@@ -353,29 +422,39 @@ describe("terminal", () => {
     });
   });
 
-  test("wait reports the shell's exit, and close kills a running shell", async () => {
+  test("wait reports the shell's exit, and close stops the whole PTY session, then the shell", async () => {
     const provider = await attached();
 
-    server
-      .on(
-        "POST /process.Process/Start",
-        connectStream([
+    const shells = starts([
+      {
+        frames: [
           frame({ event: { start: { pid: 7 } } }),
           frame({ event: { end: { exitCode: 3 } } }),
           done,
-        ]),
-        connectStream([frame({ event: { start: { pid: 8 } } })], { hold: true }),
-      )
+        ],
+      },
+      { frames: [frame({ event: { start: { pid: 8 } } })], hold: true },
+    ]);
+
+    server
+      .on("POST /process.Process/Start", shells.handler)
       .on("POST /process.Process/SendSignal", { json: {} });
 
     const exited = await provider.terminal("sb1", { cols: 80, rows: 24 });
     expect(await exited.wait?.()).toEqual({ exitCode: 3 });
     await exited.close();
+    // Background jobs outlive their shell, so the session is still stopped; the shell needs no kill.
+    expect(shells.commands).toEqual([
+      "pkill -KILL -s 7 2>/dev/null || kill -KILL -- -7 2>/dev/null; true",
+    ]);
     expect(server.calls("POST /process.Process/SendSignal")).toHaveLength(0);
 
     const running = await provider.terminal("sb1", { cols: 80, rows: 24 });
     const closing = running.close();
     await expect.poll(() => server.calls("POST /process.Process/SendSignal").length).toBe(1);
+    expect(shells.commands[1]).toBe(
+      "pkill -KILL -s 8 2>/dev/null || kill -KILL -- -8 2>/dev/null; true",
+    );
     expect(bodyOf(server.calls("POST /process.Process/SendSignal")[0])).toEqual({
       process: { pid: 8 },
       signal: "SIGNAL_SIGKILL",
@@ -385,21 +464,46 @@ describe("terminal", () => {
 
   test("close stops reading even when the kill fails", async () => {
     const provider = await attached();
+    const shells = starts([{ frames: [frame({ event: { start: { pid: 11 } } })], hold: true }]);
 
     server
-      .on(
-        "POST /process.Process/Start",
-        connectStream([frame({ event: { start: { pid: 11 } } })], { hold: true }),
-      )
+      .on("POST /process.Process/Start", shells.handler)
       .on("POST /process.Process/SendSignal", {
         status: 403,
         json: { code: "permission_denied", message: "no" },
       });
 
     const terminal = await provider.terminal("sb1", { cols: 80, rows: 24 });
-    const released = server.closed();
     await expect(terminal.close()).rejects.toMatchObject({ code: "auth" });
-    await released;
+    await expect.poll(() => shells.closed()).toBe(1);
+  });
+
+  test("a shell whose start event never arrives is found by its tag and stopped", async () => {
+    const provider = await attached("0.10.0", { requestTimeoutMs: 300 });
+    const shells = starts([{ hang: true }]);
+
+    server
+      .on("POST /process.Process/Start", shells.handler)
+      .on("POST /process.Process/List", (request, response) => {
+        const pty = server
+          .calls("POST /process.Process/Start")
+          .map(envelopeOf)
+          .find((message) => isRecord(message.pty));
+
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ processes: [{ pid: 55, tag: pty?.tag }] }));
+      })
+      .on("POST /process.Process/SendSignal", { json: {} });
+
+    await expect(provider.terminal("sb1", { cols: 80, rows: 24 })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(bodyOf(server.calls("POST /process.Process/SendSignal")[0])).toEqual({
+      process: { pid: 55 },
+      signal: "SIGNAL_SIGKILL",
+    });
+    expect(shells.commands).toEqual(["kill -KILL -- -55 2>/dev/null || true"]);
   });
 
   test("box.terminal goes through the core: redacted output, sandbox env and /workspace", async () => {

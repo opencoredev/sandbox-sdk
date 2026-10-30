@@ -299,7 +299,11 @@ describe("terminal", () => {
       },
     };
 
-    return { provider, opened, written, exit: (code: number) => exit(code) };
+    const emit = (text: string) => {
+      for (const listener of listeners) listener(text);
+    };
+
+    return { provider, opened, written, emit, exit: (code: number) => exit(code) };
   }
 
   test("opens with an absolute cwd and the handle env, and redacts output", async () => {
@@ -330,6 +334,20 @@ describe("terminal", () => {
     const waiting = terminal.wait?.();
     await terminal.close();
     expect(await waiting).toEqual({ exitCode: 0 });
+    await box.destroy();
+  });
+
+  test("output held back as a possible secret prefix arrives when the shell exits", async () => {
+    const { provider, emit, exit } = terminalProvider();
+    const box = await createSandbox(provider, { secrets: { TOKEN: "abcdef" } });
+    const terminal = await box.terminal({ cols: 80, rows: 24 });
+    const seen: string[] = [];
+    terminal.onData((data) => seen.push(data));
+
+    emit("done abc");
+    exit(0);
+    expect(await terminal.wait?.()).toEqual({ exitCode: 0 });
+    expect(seen.join("")).toBe("done abc");
     await box.destroy();
   });
 

@@ -953,12 +953,13 @@ export function createHttpClient<Plane extends string>(
       let failed: HttpFailure | undefined;
 
       for (let hop = 0; ; hop++) {
-        // The SDK names itself first, so a plane or request header can still override it.
-        const headers = new Headers(
-          contentType && sendBody !== undefined
-            ? { "user-agent": userAgent, ...plane.headers, "content-type": contentType }
-            : { "user-agent": userAgent, ...plane.headers },
-        );
+        // The SDK names itself first. Plane headers are set one by one, so a plane's `User-Agent` in any
+        // casing replaces it rather than joining it.
+        const headers = new Headers({ "user-agent": userAgent });
+
+        for (const [name, value] of Object.entries(plane.headers ?? {})) headers.set(name, value);
+
+        if (contentType && sendBody !== undefined) headers.set("content-type", contentType);
 
         if (request.idempotencyKey !== undefined && options.idempotencyHeader)
           headers.set(options.idempotencyHeader, request.idempotencyKey);
