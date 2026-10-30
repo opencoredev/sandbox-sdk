@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createRequire } from "node:module";
 import type { BoatApi, Configuration } from "@boatdev/sdk";
 import type { Boxd } from "@boxd-sh/sdk";
-import type { Daytona } from "@daytonaio/sdk";
+import type { Daytona, Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
 import type { LocalNative } from "@opencoredev/sandbox-sdk/local";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Snapshot } from "@superserve/sdk";
@@ -103,6 +103,7 @@ export interface NativeModules {
   "@daytonaio/sdk": {
     Daytona: new (...args: ConstructorParameters<typeof Daytona>) => {
       readonly snapshot: Pick<Daytona["snapshot"], "get" | "list" | "delete">;
+      get(...args: Parameters<Daytona["get"]>): Promise<Pick<DaytonaSandbox, "createSnapshot">>;
     };
   };
   "@upstash/box": { Box: Pick<typeof Box, "get" | "deleteSnapshots"> };
