@@ -81,8 +81,9 @@ function check(label: string, ok: boolean, detail = "") {
 if (process.env.SKIP_BUILD !== "1")
   must("bun", ["run", "build"], { cwd: sdkDir, timeoutMs: 300_000 });
 
+// Step 1 already built, and the prepack build would print into the JSON output.
 const packed: unknown = JSON.parse(
-  must("npm", ["pack", "--json", "--pack-destination", workDir], {
+  must("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", workDir], {
     cwd: sdkDir,
     timeoutMs: 120_000,
   }),
