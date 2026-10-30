@@ -525,6 +525,50 @@ describe("pagination security", () => {
     expect(events.join("")).toBe("[REDACTED]");
   });
 
+  it("pages background logs past the first megabyte", async () => {
+    await using box = await createSandbox(
+      memory({
+        handlers: {
+          // Writes in bursts so the log writer keeps every byte, about 2 MiB in all.
+          async chatty({ stdout }) {
+            for (let i = 0; i < 2048; i++) {
+              stdout(`${String(i).padStart(4, "0")} ${"y".repeat(1018)}\n`);
+
+              if (i % 128 === 127) await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+
+            stdout("END-OF-LOG\n");
+
+            return 0;
+          },
+        },
+      }),
+    );
+
+    const tools = createSandboxTools(box, {
+      limits: { process_logs: { maxOutputBytes: 524_288 } },
+    });
+
+    await box.start("chatty", { name: "chatty" });
+    await box.process("chatty").wait();
+
+    let cursor = "0",
+      output = "",
+      finished = false;
+
+    for (let i = 0; i < 12 && !finished; i++) {
+      const page = await invoke(tools, "process_logs", { name: "chatty", cursor });
+      output += page.text;
+      cursor = /cursor=(\d+)/.exec(page.text)?.[1] ?? "0";
+      finished = page.text.includes("more=false");
+    }
+
+    expect(finished).toBe(true);
+    expect(output).toContain("0000 yyy");
+    expect(output).toContain("2047 yyy");
+    expect(output).toContain("END-OF-LOG");
+  });
+
   it("refuses an oversized file before downloading it", async () => {
     const backing = memory();
     const downloads: string[] = [];
