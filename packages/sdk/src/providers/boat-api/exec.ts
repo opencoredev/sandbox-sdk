@@ -1,19 +1,11 @@
-import type { BoatApi, CommandFrame } from "@boatdev/sdk";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { defaults } from "../../run.js";
-import { quote } from "../../shared/shell.js";
-import { loadPeer } from "../../peer.js";
 import { errors } from "./errors.js";
-
-function hasText<F extends CommandFrame>(frame: F): frame is F & { data: string } {
-  return typeof frame.data === "string";
-}
-
-function hasExitCode<F extends CommandFrame>(frame: F): frame is F & { exitCode: number | null } {
-  return typeof frame.exitCode === "number" || frame.exitCode === null;
-}
+import { followCommand, type FollowTiming } from "./follow.js";
+import { command as send, stopCommand, writeFile, type BoatHttp } from "./transport.js";
 
 export const workspace = `flock -x /tmp/.sandbox-sdk-workspace-ready.lock sh -c 'if [ ! -f /tmp/.sandbox-sdk/prepared-workspace ]; then sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace && command -v node git tar setsid nohup mkfifo sed base64 >/dev/null && mkdir -p /tmp/.sandbox-sdk && touch /tmp/.sandbox-sdk/prepared-workspace || exit 1; fi' || exit 1`;
+export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** Boat's file API accepts at most 5 MiB per write, after decoding, and only
  * under /home/user or /tmp. Keep a margin below that limit. */
@@ -24,7 +16,7 @@ export const fileChunkBytes = 4 * 1024 * 1024;
  * Bytes travel only through the file API, never through command text. The
  * caller owns `dir` and removes it, including after a failure. */
 export async function stage(
-  api: BoatApi,
+  http: BoatHttp,
   id: string,
   dir: string,
   data: Uint8Array,
@@ -35,27 +27,21 @@ export async function stage(
     (_, index) => `${dir}/part-${index}`,
   );
 
-  const prepared = await api.command({
-    sandboxId: id,
-    commandRequest: {
-      command: `mkdir -p /tmp/.sandbox-sdk && mkdir -m 700 -- ${quote(dir)} && (umask 077 && touch -- ${parts.map(quote).join(" ")})`,
-      timeoutSeconds: 60,
-    },
+  const prepared = await send(http, id, {
+    command: `mkdir -p /tmp/.sandbox-sdk && mkdir -m 700 -- ${quote(dir)} && (umask 077 && touch -- ${parts.map(quote).join(" ")})`,
+    timeoutSeconds: 60,
   });
 
-  if (!("exitCode" in prepared) || prepared.exitCode !== 0)
+  if (prepared.kind !== "finished" || prepared.exitCode !== 0)
     throw failure("Boat could not prepare private staging", "provider", id);
 
   for (const [index, path] of parts.entries())
-    await api.writeFile({
-      sandboxId: id,
-      fileWriteRequest: {
-        path,
-        content: Buffer.from(
-          data.subarray(index * fileChunkBytes, (index + 1) * fileChunkBytes),
-        ).toString("base64"),
-        encoding: "base64",
-      },
+    await writeFile(http, id, {
+      path,
+      content: Buffer.from(
+        data.subarray(index * fileChunkBytes, (index + 1) * fileChunkBytes),
+      ).toString("base64"),
+      encoding: "base64",
     });
 
   return parts;
@@ -65,17 +51,17 @@ export async function stage(
  * command and all descendants. Aborting a stream alone does not stop remote work.
  */
 export async function execute(
-  api: BoatApi,
+  http: BoatHttp,
   id: string,
   input: ExecInput,
   sandboxEnv: Record<string, string> = {},
   environmentFiles = new Map<string, Promise<string>>(),
   diagnostics = errors(),
+  follow: { http?: BoatHttp; timing?: FollowTiming } = {},
 ): Promise<ExecResult> {
   const { boatError, failure } = diagnostics;
 
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
-  const { followCommand } = await loadPeer("@boatdev/sdk", "boat", () => import("@boatdev/sdk"));
   const stream = new AbortController();
   let cancelled = false;
   let cancel = () => {};
@@ -102,9 +88,7 @@ export async function execute(
     if (processId === undefined) return;
 
     try {
-      const result = await api.stopCommand({ sandboxId: id, processId });
-
-      if (result.running !== false)
+      if ((await stopCommand(http, id, processId)) !== false)
         throw failure("Boat did not confirm process-tree cancellation", "outcome_unknown", id);
     } catch {
       throw failure(
@@ -155,25 +139,19 @@ export async function execute(
           const script =
             "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
 
-          const result = await api.command({
-            sandboxId: id,
-            commandRequest: {
-              command: `node -e ${quote(script)} ${quote(directory)}`,
-              timeoutSeconds: 60,
-            },
+          const result = await send(http, id, {
+            command: `node -e ${quote(script)} ${quote(directory)}`,
+            timeoutSeconds: 60,
           });
 
-          if (!("exitCode" in result) || result.exitCode !== 0)
+          if (result.kind !== "finished" || result.exitCode !== 0)
             throw failure("Boat could not prepare command environment", "provider", id);
-          await api.writeFile({
-            sandboxId: id,
-            fileWriteRequest: {
-              path: envPath,
-              content:
-                overrides.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("\n") +
-                "\n",
-              encoding: "utf8",
-            },
+          await writeFile(http, id, {
+            path: envPath,
+            content:
+              overrides.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("\n") +
+              "\n",
+            encoding: "utf8",
           });
 
           return envPath;
@@ -211,7 +189,7 @@ export async function execute(
 
     if (bytes.length) {
       stdinDir = `/tmp/.sandbox-sdk/stdin-${crypto.randomUUID()}`;
-      const parts = await stage(api, id, stdinDir, bytes, failure);
+      const parts = await stage(http, id, stdinDir, bytes, failure);
       stdin = parts.length === 1 ? `${stdinDir}/part-0` : `${stdinDir}/stdin`;
 
       if (parts.length > 1)
@@ -222,14 +200,10 @@ export async function execute(
     if (cancelled) return { exitCode: null, timedOut: true };
     const command = `(${workspace}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; ${concat}{ ${unlink}(${environment}cd ${quote(input.cwd)} && exec sh -c ${quote(input.command)}); } < ${quote(stdin)}`;
     launchAttempted = true;
-
-    const started = await api.command({
-      sandboxId: id,
-      commandRequest: { command, detached: true },
-    });
+    const started = await send(http, id, { command, detached: true });
 
     if (
-      !("processId" in started) ||
+      started.kind !== "started" ||
       !Number.isSafeInteger(started.processId) ||
       started.processId < 1
     )
@@ -239,20 +213,18 @@ export async function execute(
     if (input.signal?.aborted) cancel();
 
     const completion = (async (): Promise<ExecResult> => {
-      for await (const frame of followCommand(api, id, started.processId, {
+      for await (const frame of followCommand(follow.http ?? http, id, started.processId, {
         signal: stream.signal,
+        ...(follow.timing === undefined ? undefined : { timing: follow.timing }),
       })) {
         if (frame.type === "stdout" || frame.type === "stderr") {
-          if (!hasText(frame)) throw failure("Invalid Boat output frame", "provider", id);
           input.onChunk({ stream: frame.type, text: frame.data });
         } else if (frame.type === "exit") {
-          if (!hasExitCode(frame))
-            throw failure("Boat returned no command exit code", "outcome_unknown", id);
           finished = true;
           // Exit 125 may be a setup failure before the shell removed staging.
           stdinRemoved = frame.exitCode !== 125;
 
-          return { exitCode: frame.exitCode, timedOut: frame.timedOut === true };
+          return { exitCode: frame.exitCode, timedOut: frame.timedOut };
         } else if (frame.type === "error")
           throw failure("Boat command stream failed", "provider", id);
       }
@@ -260,27 +232,24 @@ export async function execute(
       throw failure("Boat stream ended without an exit result", "outcome_unknown", id);
     })();
 
+    void completion.catch(() => {});
     const result = await Promise.race([completion, cancellation]);
 
     if (result === "cancelled" || cancelled) {
       await stop();
       stream.abort();
-      // The aborted stream rejects; the command is stopped and reports as timed out.
       await completion.catch(() => {});
 
       return { exitCode: null, timedOut: true };
     }
 
     if (!result.timedOut && result.exitCode === 125) {
-      const status = await api.command({
-        sandboxId: id,
-        commandRequest: {
-          command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`,
-          timeoutSeconds: 10,
-        },
+      const status = await send(http, id, {
+        command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`,
+        timeoutSeconds: 10,
       });
 
-      if (!("stdout" in status) || status.exitCode !== 0)
+      if (status.kind !== "finished" || status.exitCode !== 0)
         throw failure("Boat could not confirm command initialization", "outcome_unknown", id);
 
       if (status.stdout.trim() === "setup-failed")
@@ -311,21 +280,21 @@ export async function execute(
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
 
-    // Staging cleanup is best effort: the command's result or error stands either way.
+    // Cleanup runs even after an abort, each with its own short deadline.
     if (envDir)
-      await api
-        .command({
-          sandboxId: id,
-          commandRequest: { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
-        })
-        .catch(() => {});
+      await send(
+        http,
+        id,
+        { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
+        true,
+      ).catch(() => {});
 
     if (stdinDir && !stdinRemoved)
-      await api
-        .command({
-          sandboxId: id,
-          commandRequest: { command: `rm -rf -- ${quote(stdinDir)}`, timeoutSeconds: 10 },
-        })
-        .catch(() => {});
+      await send(
+        http,
+        id,
+        { command: `rm -rf -- ${quote(stdinDir)}`, timeoutSeconds: 10 },
+        true,
+      ).catch(() => {});
   }
 }

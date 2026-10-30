@@ -35,11 +35,11 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, and Freestyle without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
-It is not a hosted service: it calls each provider's own SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
+It is not a hosted service: it calls each provider's HTTP API or SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk@next\` or \`bun add @opencoredev/sandbox-sdk@next\` (1.0 is in beta on the \`next\` tag). Install a provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, \`@upstash/box\`, \`railway\`, \`@boatdev/sdk\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, \`freestyle\`, \`@superserve/sdk\`, or \`@rivet-dev/agentos-core\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk@next\` or \`bun add @opencoredev/sandbox-sdk@next\` (1.0 is in beta on the \`next\` tag). E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else. For Vercel, Upstash Box, Railway, Tenki, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`@upstash/box\`, \`railway\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -218,6 +218,7 @@ export default defineConfig({
           icon: "library",
           items: [
             { label: "Sandbox API", root: "/reference/sandbox", icon: "box" },
+            { label: "Native API", root: "/reference/native", icon: "plug" },
             { label: "Agent tools", root: "/reference/agent-tools", icon: "wrench" },
             { label: "Errors", root: "/reference/errors", icon: "triangle-alert" },
             { label: "Capabilities", root: "/reference/capabilities", icon: "list-checks" },

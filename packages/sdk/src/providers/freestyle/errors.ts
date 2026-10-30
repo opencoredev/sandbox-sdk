@@ -1,17 +1,8 @@
+import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import {
-  SandboxError,
-  describeNative,
-  evidenceCause,
-  reason,
-  redacting,
-  type ErrorCode,
-  type NativeEvidence,
-} from "../../errors.js";
-import { decodeNative } from "../../shared/native-error.js";
-import { isString } from "../../shared/narrow.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
-type RequestEvidence = Pick<NativeEvidence, "status" | "requestId" | "operation">;
+type RequestEvidence = { status?: number; requestId?: string; operation?: string };
 
 export const requestEvidence = new AsyncLocalStorage<
   RequestEvidence & { deniedValues?: string[]; backgroundRequestId?: string }
@@ -106,7 +97,21 @@ export function failure(
   );
 }
 
-const codes = new Map<number, ErrorCode>([
+/** A non-2xx Freestyle answer: its status and the error body's `code`, `message`. The message is classified, never kept. */
+export class FreestyleApiError extends Error {
+  override readonly name = "FreestyleApiError";
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string | undefined,
+    readonly path: string,
+    readonly backgroundRequestId?: string,
+  ) {
+    super(message || `Freestyle API error: ${code ?? status}`);
+  }
+}
+
+const codes: ReadonlyMap<number, ErrorCode> = new Map<number, ErrorCode>([
   [400, "invalid_argument"],
   [401, "auth"],
   [403, "auth"],
@@ -120,48 +125,49 @@ const codes = new Map<number, ErrorCode>([
   [504, "timeout"],
 ]);
 
-/** Failures without an HTTP status, by native name. */
-const names = new Map<string, ErrorCode>([
-  ["TimeoutError", "timeout"],
-  ["AbortError", "aborted"],
-  ["FreestyleTransportError", "unavailable"],
-]);
+/** The filesystem API answers a missing guest path with 404 NOT_FOUND too; only its message tells it from a missing VM. */
+export const missingPath = (status: number, message: string | undefined) =>
+  status === 404 && /no such file or directory|\bos error 2\b/i.test(message ?? "");
+
+/** The code for a Freestyle status, as adapter errors and native calls report it. */
+export const statusCode = (status: number, message?: string): ErrorCode =>
+  missingPath(status, message) ? "file_not_found" : (codes.get(status) ?? "provider");
 
 export function freestyleError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;
-  const native = decodeNative(cause);
-  const status = native.status;
-  const providerCode = native.code;
+
+  const status = isObject(cause) && "status" in cause ? cause.status : undefined;
 
   const context = requestEvidence.getStore();
-  const evidence: NativeEvidence = {};
+  const evidence: RequestEvidence & { providerCode?: string; native?: string } = {};
 
-  if (status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599)
+  if (isNumber(status) && Number.isInteger(status) && status >= 100 && status <= 599)
     evidence.status = status;
 
-  if (
-    isString(providerCode) &&
-    /^[A-Z][A-Z0-9_]{0,63}$/.test(providerCode) &&
-    !context?.deniedValues?.some((value) => providerCode.includes(value))
-  )
-    evidence.providerCode = providerCode;
+  if (isObject(cause)) {
+    if ("code" in cause && isString(cause.code) && /^[A-Z][A-Z0-9_]{0,63}$/.test(cause.code)) {
+      const code = cause.code;
 
-  if (native.path !== undefined) evidence.operation = operation(native.path);
+      if (!context?.deniedValues?.some((value) => code.includes(value)))
+        evidence.providerCode = code;
+    }
+
+    if ("path" in cause && isString(cause.path)) evidence.operation = operation(cause.path);
+  }
 
   if (context?.operation) evidence.operation = context.operation;
 
   if (context?.status === status && context?.requestId) evidence.requestId = context.requestId;
 
-  // The filesystem API answers a missing guest path with 404 NOT_FOUND too. Its message (classified,
-  // never kept) tells it apart from a missing VM.
-  const missingFile =
-    status === 404 && /no such file or directory|\bos error 2\b/i.test(native.message);
-
-  const code: ErrorCode = missingFile
-    ? "file_not_found"
-    : status === undefined
-      ? (names.get(native.name) ?? "provider")
-      : (codes.get(status) ?? "provider");
+  const code: ErrorCode = isNumber(status)
+    ? statusCode(status, cause instanceof Error ? cause.message : undefined)
+    : cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError")
+      ? cause.name === "TimeoutError"
+        ? "timeout"
+        : "aborted"
+      : cause instanceof Error && cause.name === "FreestyleTransportError"
+        ? "unavailable"
+        : "provider";
 
   // An unrecognized failure without a status keeps its scrubbed message (see describeNative).
   // A response's message, body and headers never are kept.
@@ -173,13 +179,17 @@ export function freestyleError(cause: unknown, sandboxId?: string): SandboxError
 
   if (detail !== undefined) evidence.native = detail;
 
-  // Never a response's message, body, headers, URL or native cause.
-  const details = Object.keys(evidence).length ? evidenceCause(evidence) : undefined;
+  // Core's redactor preserves Error.message rather than arbitrary cause objects.
+  // JSON in the message keeps these fields available there, too, without ever
+  // copying a response's message, body, headers, URL or native cause.
+  const reported = Object.keys(evidence).length
+    ? Object.assign(new Error(JSON.stringify(evidence)), evidence)
+    : undefined;
 
   return failure(
     `Freestyle request failed: ${reason(code, evidence.native)}`,
     code,
     sandboxId,
-    details,
+    reported,
   );
 }

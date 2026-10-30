@@ -1,14 +1,13 @@
-import { setTimeout as sleep } from "node:timers/promises";
-import type { DaytonaBox } from "./native.js";
 import type { ExecInput, ExecResult, NativeProcess } from "../../provider.js";
+import type { Toolbox } from "./api.js";
 import { daytonaError } from "./errors.js";
 import { bufferedExecute } from "./buffered.js";
-import { download, upload } from "./transfer.js";
 import { SandboxError } from "../../errors.js";
-import { quote } from "../../shared/shell.js";
 
-// Session logs are line-normalized by the native transport. Encode each pipe
-// chunk so terminal newlines and byte boundaries survive that normalization.
+export const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+
+// Session logs are line-normalized by the native transport, and the HTTP log stream merges stdout and
+// stderr without labels. Encode each pipe chunk so streams, terminal newlines and byte boundaries survive.
 const outputBridge = `import base64,os,selectors,subprocess,sys,shutil
 a=sys.argv[3]
 if a:
@@ -29,6 +28,8 @@ print("X:",flush=True)
 sys.exit(code if code>=0 else 128-code)
 `;
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** Each call has a new session and process group. Stdin comes from a private file
  * because session input has no documented EOF operation. Native process hooks
  * run core's durable wrapper unchanged, so logs survive client detachment.
@@ -37,7 +38,7 @@ export const workspaceCommand =
   'if [ ! -w /workspace ]; then sudo -n install -d -o "$(id -u)" -g "$(id -g)" -m 755 /workspace; fi; test -w /workspace';
 
 export async function sessionProcess(
-  box: DaytonaBox,
+  box: Toolbox,
   input: Omit<ExecInput, "timeoutMs">,
   timeoutMs?: number,
   prepare = workspaceCommand,
@@ -58,6 +59,8 @@ export async function sessionProcess(
     cancelled = true;
   };
 
+  // Stops the log stream once the result is settled; the daemon ends it itself when the command exits.
+  const follow = new AbortController();
   const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
   input.signal?.addEventListener("abort", abort, { once: true });
 
@@ -82,9 +85,9 @@ export async function sessionProcess(
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);
 
-    // A leftover activity marker only delays idle detection; it must not fail the command.
     if (input.activityPath && !activityFinished)
       await box.fs.deleteFile(input.activityPath, true).catch(() => {});
+    follow.abort();
 
     if (created) {
       try {
@@ -104,7 +107,7 @@ export async function sessionProcess(
   try {
     if (input.stdin !== undefined) {
       await box.fs.createFolder(dir, "700");
-      await upload(box, Buffer.from(input.stdin), `${dir}/stdin`);
+      await box.fs.upload(Buffer.from(input.stdin), `${dir}/stdin`);
     }
 
     if (cancelled) {
@@ -179,6 +182,13 @@ export async function sessionProcess(
           continue;
         }
 
+        // Only the bridge writes O:/E: frames. Anything else is the wrapper shell's own stderr (a failed
+        // cd or workspace setup), which the merged log stream cannot label.
+        if (!/^[OE]:/.test(line)) {
+          if (!finished) input.onChunk({ stream: "stderr", text: `${line}\n` });
+          continue;
+        }
+
         const frame = /^(O|E):([A-Za-z0-9+/]*={0,2})$/.exec(line);
 
         if (
@@ -223,10 +233,18 @@ export async function sessionProcess(
     const logs = persistent
       ? Promise.resolve()
       : box.process
-          .getSessionCommandLogs(session, commandId, acceptFrames, (text) => {
-            if (!finished) input.onChunk({ stream: "stderr", text });
-          })
+          .followSessionCommandLogs(session, commandId, acceptFrames, follow.signal)
           .then(() => {
+            if (
+              logsError === undefined &&
+              pending.trim() &&
+              !bridgeFinished &&
+              !/^[OEX]/.test(pending)
+            ) {
+              if (!finished) input.onChunk({ stream: "stderr", text: pending });
+              pending = "";
+            }
+
             if (pending.trim())
               throw new SandboxError(
                 "Session output is incomplete. Exact output could not be recovered. Retry the command.",
@@ -254,7 +272,7 @@ export async function sessionProcess(
 
     while (pid === undefined) {
       try {
-        const value = Number(Buffer.from(await download(box, pidPath)).toString());
+        const value = Number(Buffer.from(await box.fs.download(pidPath)).toString());
 
         if (!Number.isSafeInteger(value) || value <= 1)
           throw new SandboxError(
@@ -263,7 +281,12 @@ export async function sessionProcess(
           );
         pid = value;
       } catch (error) {
-        if (error instanceof SandboxError && error.code !== "file_not_found") throw error;
+        // Not there yet, or a lost read (the download is a POST, so it is never retried): ask the session.
+        if (
+          !(error instanceof SandboxError) ||
+          (error.code !== "file_not_found" && error.code !== "unavailable")
+        )
+          throw error;
         const status = await box.process.getSessionCommand(session, commandId);
 
         if (status.exitCode !== undefined) {
@@ -294,7 +317,7 @@ export async function sessionProcess(
           if (logsError !== undefined && !cancelled) throw logsError;
 
           if (cancelled && pid) await signal("KILL");
-          let status: Awaited<ReturnType<DaytonaBox["process"]["getSessionCommand"]>>;
+          let status: Awaited<ReturnType<Toolbox["process"]["getSessionCommand"]>>;
 
           try {
             status = await box.process.getSessionCommand(session, id);
@@ -374,7 +397,7 @@ export async function sessionProcess(
 }
 
 export async function execute(
-  box: DaytonaBox,
+  box: Toolbox,
   input: ExecInput & { streaming?: boolean },
   prepare = workspaceCommand,
   prepared?: () => void,

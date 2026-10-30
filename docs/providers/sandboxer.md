@@ -1,6 +1,6 @@
 # Sandboxer provider
 
-Install `@boatdev/sdk` and import `sandboxer` from `@opencoredev/sandbox-sdk/sandboxer`. Set `SANDBOXER_API_KEY` or pass `apiKey`. The SDK loads on first use, and a missing key fails then with `auth`.
+Import `sandboxer` from `@opencoredev/sandbox-sdk/sandboxer`; no other package is needed, because the adapter calls Sandboxer's API over HTTP. Set `SANDBOXER_API_KEY` or pass `apiKey`. A missing key fails with `auth` on the first operation.
 
 `sandboxer({ apiKey, baseUrl, machine, region, requestTimeoutMs })` talks to Sandboxer's Boat-compatible API. `baseUrl` defaults to `https://sandboxer.com/api/v1`. `machine` defaults to Sandboxer's `default` size (4 vCPU and 8 GiB); a per-create `size` takes precedence. Control requests and lifecycle polls default to a 90-second deadline.
 

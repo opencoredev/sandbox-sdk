@@ -14,7 +14,7 @@ export function parseProviderName(value: string | undefined): ProviderName {
   return match;
 }
 
-/** Each adapter is imported on demand, so only the provider you pick needs its SDK installed. */
+/** Each adapter is imported on demand. Only Vercel needs its own SDK installed; E2B and Daytona call their APIs directly. */
 export async function loadProvider(name: ProviderName): Promise<Provider> {
   switch (name) {
     case "local":

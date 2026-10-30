@@ -1,32 +1,23 @@
+import { isString } from "../src/shared/narrow.js";
 import { vi, test, expect, afterAll } from "vitest";
-
-import * as mock from "./e2b-sdk-mock.js";
-import { e2b } from "./e2b-sdk-mock.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { fakeE2B } from "./e2b-fake.js";
+import { e2b } from "../src/providers/e2b/index.js";
 import { createSandbox, connectSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 
-const {
-  calls,
-  cleanupMock,
-  mockFetch,
-  listQueries,
-  delayCreation,
-  MockSandbox,
-  reconnects,
-  delayCommandStart,
-} = mock;
+// A local E2B (control plane and envd) behind a fetch stub. This suite never contacts E2B, even if keys are present.
+const fake = await fakeE2B();
+const { calls, listQueries, reconnects, starts } = fake;
 
-const originalFetch = globalThis.fetch;
-
-vi.stubGlobal("fetch", mockFetch(originalFetch));
+vi.stubGlobal("fetch", fake.fetch(globalThis.fetch));
 
 afterAll(async () => {
-  await cleanupMock();
+  await fake.close();
   vi.unstubAllGlobals();
 });
 
-// live:true enables the Linux/git/HTTP tests. The fixture confines all E2B I/O to
-// the local fixture; this suite never contacts E2B, even if keys are present.
+// live:true enables the Linux/git/HTTP tests against the local fixture.
 runConformance(() => e2b({ apiKey: "mock" }), { live: true });
 
 test("metadata lookup paginates, labels survive and native is the sandbox", async () => {
@@ -39,20 +30,20 @@ test("metadata lookup paginates, labels survive and native is the sandbox", asyn
   });
 
   try {
-    expect(box.native).toBeInstanceOf(MockSandbox);
+    expect(box.native.sandboxId).toBe(box.id);
     expect(calls.at(-1)).toMatchObject({
       template: "custom",
-      options: {
-        apiKey: "mock",
-        domain: "example.test",
-        envs: { HELLO: "world" },
+      host: "api.example.test",
+      body: {
+        envVars: { HELLO: "world" },
         metadata: { "sandbox-sdk": "1", "sandbox-sdk-key": "key", app: "test" },
       },
     });
+    expect(fake.server.calls("POST /v2/sandboxes").at(-1)?.headers["x-api-key"]).toBe("mock");
     const fresh = e2b({ apiKey: "mock" });
     expect((await createSandbox(fresh, { key: "key" })).id).toBe(box.id);
     expect(listQueries.at(-1)).toMatchObject({
-      query: { metadata: { "sandbox-sdk": "1", "sandbox-sdk-key": "key" } },
+      metadata: { "sandbox-sdk": "1", "sandbox-sdk-key": "key" },
     });
     expect((await listSandboxes(fresh, { labels: { app: "test" } }))[0]?.labels).toEqual({
       "sandbox-sdk": "1",
@@ -66,12 +57,12 @@ test("metadata lookup paginates, labels survive and native is the sandbox", asyn
 test("network rules are enforced at creation and sizes/idle fail closed", async () => {
   for (const network of ["none", { allow: ["registry.npmjs.org"] }] as const) {
     const box = await createSandbox(e2b({ apiKey: "mock" }), {
-      network: network === "none" ? network : { allow: [...network.allow] },
+      network: isString(network) ? network : { allow: [...network.allow] },
     });
 
-    expect(calls.at(-1)?.options).toMatchObject(
+    expect(calls.at(-1)?.body).toMatchObject(
       network === "none"
-        ? { allowInternetAccess: false }
+        ? { allow_internet_access: false }
         : { network: { denyOut: ["0.0.0.0/0"], allowOut: ["registry.npmjs.org"] } },
     );
     await box.destroy();
@@ -146,7 +137,7 @@ test("native failures become safe structured errors", async () => {
 });
 
 test("late creation after abort is destroyed", async () => {
-  delayCreation(60);
+  fake.createDelayMs = 60;
   const controller = new AbortController();
 
   const promise = createSandbox(e2b({ apiKey: "mock" }), {
@@ -157,7 +148,7 @@ test("late creation after abort is destroyed", async () => {
   setTimeout(() => controller.abort(), 10);
   await expect(promise).rejects.toMatchObject({ code: "aborted" });
   await new Promise((resolve) => setTimeout(resolve, 150));
-  delayCreation(0);
+  fake.createDelayMs = 0;
   expect(await e2b({ apiKey: "mock" }).list({ late: "yes" })).toEqual([]);
 });
 
@@ -195,22 +186,14 @@ test("hard lifetime is retained across pause and fresh-client resume", async () 
 });
 
 test("unconfirmed network policy destroys the sandbox and fails closed", async () => {
-  const original = MockSandbox.prototype.getInfo;
-
-  const spy = vi
-    .spyOn(MockSandbox.prototype, "getInfo")
-    .mockImplementationOnce(async function (this: Awaited<ReturnType<typeof MockSandbox.lookup>>) {
-      const info = await original.call(this);
-
-      return { ...info, allowInternetAccess: undefined, network: undefined };
-    });
+  fake.infoOnce = ({ allowInternetAccess: _allow, network: _network, ...info }) => info;
 
   try {
     await expect(
       e2b({ apiKey: "mock" }).create({ labels: { unconfirmed: "yes" }, network: "none" }),
     ).rejects.toMatchObject({ code: "unsupported" });
   } finally {
-    spy.mockRestore();
+    fake.infoOnce = undefined;
   }
 
   expect(await e2b({ apiKey: "mock" }).list({ unconfirmed: "yes" })).toEqual([]);
@@ -219,7 +202,7 @@ test("unconfirmed network policy destroys the sandbox and fails closed", async (
 test("cancellation wins when a completed command handle arrives late", async () => {
   const provider = e2b({ apiKey: "mock" });
   const info = await provider.create({ labels: {} });
-  delayCommandStart(60);
+  fake.startDelayMs = 60;
 
   try {
     expect(
@@ -232,58 +215,48 @@ test("cancellation wins when a completed command handle arrives late", async () 
       }),
     ).toEqual({ exitCode: null, timedOut: true });
   } finally {
-    delayCommandStart(0);
+    fake.startDelayMs = 0;
     await provider.destroy(info.id);
   }
 });
 
 test("launch preserves fragmented stdout and uses no marker file requests", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
-  const run = box.native.commands.run.bind(box.native.commands);
+  // Force a boundary in user stdout: each output chunk arrives as two data events.
+  fake.fragment = "split3";
 
-  const command = vi.spyOn(box.native.commands, "run").mockImplementation((text, options) => {
-    const stdout = options?.onStdout;
-
-    return run(text, {
-      ...options,
-      onStdout: async (chunk) => {
-        // Force a boundary in user stdout.
-        await stdout?.(chunk.slice(0, 3));
-        await stdout?.(chunk.slice(3));
-      },
-    });
-  });
-
-  const read = vi.spyOn(box.native.files, "read");
-  const remove = vi.spyOn(box.native.files, "remove");
+  const before = {
+    start: fake.count("POST /process.Process/Start"),
+    read: fake.count("GET /files"),
+    remove: fake.count("POST /filesystem.Filesystem/Remove"),
+  };
 
   try {
     const result = await box.run("printf 'hello\\n'; printf error >&2; exit 7");
     expect(result).toMatchObject({ stdout: "hello\n", stderr: "error", exitCode: 7 });
-    expect(command).toHaveBeenCalledTimes(1);
-    expect(read).not.toHaveBeenCalled();
-    expect(remove).not.toHaveBeenCalled();
+    expect(fake.count("POST /process.Process/Start") - before.start).toBe(1);
+    expect(fake.count("GET /files")).toBe(before.read);
+    expect(fake.count("POST /filesystem.Filesystem/Remove")).toBe(before.remove);
   } finally {
-    command.mockRestore();
-    read.mockRestore();
-    remove.mockRestore();
+    fake.fragment = undefined;
     await box.destroy();
   }
 });
 
 test("file writes create missing parents without mkdir requests", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
-  const mkdir = vi.spyOn(box.native.files, "makeDir");
-  const write = vi.spyOn(box.native.files, "write");
+
+  const before = {
+    mkdir: fake.count("POST /filesystem.Filesystem/MakeDir"),
+    write: fake.count("POST /files"),
+  };
 
   try {
     await box.files.write("new/nested/file", "saved");
     expect(await box.files.read("new/nested/file")).toBe("saved");
-    expect(mkdir).not.toHaveBeenCalled();
-    expect(write).toHaveBeenCalledTimes(1);
+    expect(fake.count("POST /filesystem.Filesystem/MakeDir")).toBe(before.mkdir);
+    expect(fake.count("POST /files") - before.write).toBe(1);
   } finally {
-    mkdir.mockRestore();
-    write.mockRestore();
     await box.destroy();
   }
 });
@@ -327,23 +300,16 @@ test("startup command disclosure cannot poison launch confirmation", async () =>
 
   try {
     await box.files.write("disclose.sh", 'printf "%s\\n" "$BASH_EXECUTION_STRING"');
-    const nativeRun = box.native.commands.run.bind(box.native.commands);
-
-    const run = vi.spyOn(box.native.commands, "run").mockImplementation((command, options) =>
-      nativeRun(command, {
-        ...options,
-        onStdout: async (text) => {
-          for (const character of text) await options?.onStdout?.(character);
-        },
-      }),
-    );
+    fake.fragment = "chars";
+    const first = starts.length;
 
     try {
       const result = await box.run("printf done", { env: { BASH_ENV: "/workspace/disclose.sh" } });
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe(`${run.mock.calls[0]?.[0]}\ndone`);
+      expect(starts.length - first).toBe(1);
+      expect(result.stdout).toBe(`${starts[first]}\ndone`);
     } finally {
-      run.mockRestore();
+      fake.fragment = undefined;
     }
 
     expect((await box.run("true")).ok).toBe(true);
@@ -382,30 +348,21 @@ test("startup output cannot forge the cancellation process group", async () => {
 
 test("frame-like user output survives every chunk boundary unchanged", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
-  const run = box.native.commands.run.bind(box.native.commands);
-
-  const spy = vi.spyOn(box.native.commands, "run").mockImplementation((command, options) =>
-    run(command, {
-      ...options,
-      onStdout: async (text) => {
-        for (const character of text) await options?.onStdout?.(character);
-      },
-    }),
-  );
+  fake.fragment = "chars";
 
   try {
     const output = "sandbox-sdk-pgid-user:bad\nsandbox-sdk-pgid-user:424242\nend";
     await box.files.write("output", output);
     expect((await box.run("cat output")).stdout).toBe(output);
   } finally {
-    spy.mockRestore();
+    fake.fragment = undefined;
     await box.destroy();
   }
 });
 
 test("trusted native PID remains the group leader with and without an existing group", async () => {
   for (const existing of [false, true]) {
-    mock.makeLaunchGroupLeader(existing);
+    fake.launchGroupLeader = existing;
     const provider = e2b({ apiKey: "mock" });
     const box = await createSandbox(provider);
 
@@ -429,7 +386,7 @@ test("trusted native PID remains the group leader with and without an existing g
       expect(await box.files.exists("escaped")).toBe(false);
     } finally {
       await box.destroy();
-      mock.makeLaunchGroupLeader(false);
+      fake.launchGroupLeader = false;
     }
   }
 });
@@ -453,47 +410,37 @@ test.each(["timeout", "stop"] as const)(
   async (mode) => {
     const provider = e2b({ apiKey: "mock" });
     const box = await createSandbox(provider);
-    const run = box.native.commands.run.bind(box.native.commands);
-    let leaderKilled = false;
+    let leader: number | undefined;
+    const leaderKilled = () => leader !== undefined && fake.nativeKills.includes(leader);
+    fake.startHook = async (command, run, machine) => {
+      if (command.startsWith("set --")) {
+        const proc = await run(
+          `while [ ! -f /workspace/launch-gate ]; do sleep .005; done; ${command}`,
+        );
 
-    const spy = vi
-      .spyOn(box.native.commands, "run")
-      .mockImplementation(async (command, options) => {
-        if (command.startsWith("set --")) {
-          const handle = await run(
-            `while [ ! -f /workspace/launch-gate ]; do sleep .005; done; ${command}`,
-            options,
-          );
+        leader = proc.pid;
 
-          if ("kill" in handle) {
-            const kill = handle.kill.bind(handle);
-            vi.spyOn(handle, "kill").mockImplementation(async () => {
-              const result = await kill();
-              leaderKilled = true;
+        return proc;
+      }
 
-              return result;
-            });
-          }
+      if (command.startsWith("kill -KILL")) {
+        // Model the adverse schedule: an early group signal sees ESRCH, then
+        // bootstrap runs before the separate native-PID kill can arrive.
+        const early = leaderKilled() ? undefined : await run(command);
+        await early?.exited;
+        await mkdir(machine.mapped("/workspace"), { recursive: true });
+        await writeFile(machine.mapped("/workspace/launch-gate"), "open");
 
-          return handle;
-        }
+        if (!leaderKilled())
+          await expect
+            .poll(async () => box.files.exists("child-started"), { timeout: 1000, interval: 5 })
+            .toBe(true);
 
-        if (command.startsWith("kill -KILL")) {
-          // Model the adverse schedule: an early group signal sees ESRCH, then
-          // bootstrap runs before the separate native-PID kill can arrive.
-          const early = leaderKilled ? undefined : await run(command, options);
-          await box.native.files.write("/workspace/launch-gate", "open");
+        return early ?? run(command);
+      }
 
-          if (!leaderKilled)
-            await expect
-              .poll(async () => box.files.exists("child-started"), { timeout: 1000, interval: 5 })
-              .toBe(true);
-
-          return early ?? run(command, options);
-        }
-
-        return run(command, options);
-      });
+      return run(command);
+    };
 
     try {
       const command =
@@ -516,15 +463,18 @@ test.each(["timeout", "stop"] as const)(
       await new Promise((resolve) => setTimeout(resolve, 350));
       expect(await box.files.exists("escaped-bootstrap")).toBe(false);
     } finally {
-      spy.mockRestore();
+      fake.startHook = undefined;
       await box.destroy();
     }
   },
 );
 
 test("create uses one native acquisition and operations reuse its connection", async () => {
-  const create = vi.spyOn(MockSandbox, "create");
-  const connect = vi.spyOn(MockSandbox, "connect");
+  const before = {
+    create: fake.count("POST /v2/sandboxes"),
+    connect: fake.count("POST /v2/sandboxes/{id}/connect"),
+  };
+
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider, { labels: { verification: "sbx57" } });
 
@@ -534,32 +484,32 @@ test("create uses one native acquisition and operations reuse its connection", a
     await box.files.write("nested/reused", "bytes");
     expect(await box.files.read("nested/reused")).toBe("bytes");
     expect(box.native).toBe(native);
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(connect).not.toHaveBeenCalled();
+    expect(fake.count("POST /v2/sandboxes") - before.create).toBe(1);
+    expect(fake.count("POST /v2/sandboxes/{id}/connect")).toBe(before.connect);
   } finally {
     await box.destroy();
-    create.mockRestore();
-    connect.mockRestore();
   }
 });
 
 test("plain create makes no metadata, deadline or workspace request after acquisition", async () => {
-  const getInfo = vi.spyOn(MockSandbox.prototype, "getInfo");
-  const setTimeout = vi.spyOn(MockSandbox.prototype, "setTimeout");
+  const before = {
+    info: fake.count("GET /sandboxes/{id}"),
+    timeout: fake.count("POST /sandboxes/{id}/timeout"),
+  };
+
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider, { timeoutMs: 60_000 });
 
   try {
-    expect(getInfo).not.toHaveBeenCalled();
-    // The fixture's native create applies its timeout once.
-    expect(setTimeout).toHaveBeenCalledTimes(1);
+    expect(fake.count("GET /sandboxes/{id}")).toBe(before.info);
+    // The create request carries the timeout; nothing sets it again.
+    expect(calls.at(-1)?.body.timeout).toBe(60);
+    expect(fake.count("POST /sandboxes/{id}/timeout")).toBe(before.timeout);
     expect(await box.files.list("/workspace")).toEqual([]);
     expect(await box.files.stat("/workspace")).toMatchObject({ type: "directory" });
     expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
   } finally {
     await box.destroy();
-    getInfo.mockRestore();
-    setTimeout.mockRestore();
   }
 });
 
@@ -631,13 +581,8 @@ test("fresh root lists the workspace and cannot replace it with a file", async (
 test("fresh overlapping launches keep setup until completion, including cancelled bootstrap", async () => {
   const provider = e2b({ apiKey: "mock" });
   const box = await createSandbox(provider);
-  const original = box.native.commands.run.bind(box.native.commands);
-
-  const spy = vi
-    .spyOn(box.native.commands, "run")
-    .mockImplementation((command, options) =>
-      original(command.startsWith("set --") ? `sleep .05; ${command}` : command, options),
-    );
+  fake.startHook = (command, run) =>
+    run(command.startsWith("set --") ? `sleep .05; ${command}` : command);
 
   try {
     const first = Promise.resolve(box.run("echo first", { timeoutMs: 10 }));
@@ -646,7 +591,7 @@ test("fresh overlapping launches keep setup until completion, including cancelle
     expect((await second).stdout.trim()).toBe("/workspace");
     expect((await box.run("pwd")).stdout.trim()).toBe("/workspace");
   } finally {
-    spy.mockRestore();
+    fake.startHook = undefined;
     await box.destroy();
   }
 });
@@ -724,7 +669,10 @@ test("adopting a markerless existing workspace preserves later removal", async (
   const box = await createSandbox(first);
 
   try {
-    await box.native.files.makeDir("/workspace");
+    await box.native.request("POST", "/filesystem.Filesystem/MakeDir", {
+      plane: "envd",
+      body: { path: "/workspace" },
+    });
     const adopted = e2b({ apiKey: "mock" });
     await adopted.connect(box.id);
     await adopted.files.remove(box.id, "/workspace", { recursive: true });
@@ -740,17 +688,12 @@ test("adopting a markerless existing workspace preserves later removal", async (
 
 test("concurrent workspace initialization cannot recreate a directory removed by the first user", async () => {
   const box = await createSandbox(e2b({ apiKey: "mock" }));
-  const original = box.native.commands.run.bind(box.native.commands);
   let launch = 0;
-
-  const spy = vi.spyOn(box.native.commands, "run").mockImplementation((command, options) => {
+  fake.startHook = (command, run) => {
     const delay = launch++ === 0 ? ".03" : ".1";
 
-    return original(
-      command.replaceAll("mkdir -p /workspace", `sleep ${delay}; mkdir -p /workspace`),
-      options,
-    );
-  });
+    return run(command.replaceAll("mkdir -p /workspace", `sleep ${delay}; mkdir -p /workspace`));
+  };
 
   try {
     const [first, second] = await Promise.all([
@@ -765,7 +708,7 @@ test("concurrent workspace initialization cannot recreate a directory removed by
     expect(second.ok).toBe(true);
     expect(await box.files.exists("/workspace")).toBe(false);
   } finally {
-    spy.mockRestore();
+    fake.startHook = undefined;
     await box.destroy();
   }
 });
@@ -775,7 +718,7 @@ test("paused SDK sandboxes are listed and reaped; E2B has no other stopped state
   const box = await createSandbox(provider, { labels: { app: "paused-e2b" } });
 
   try {
-    await MockSandbox.pause(box.id);
+    fake.pause(box.id);
     expect(await listSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toEqual(
       [
         expect.objectContaining({
@@ -785,7 +728,7 @@ test("paused SDK sandboxes are listed and reaped; E2B has no other stopped state
         }),
       ],
     );
-    expect(listQueries.at(-1)).toMatchObject({ query: { state: ["running", "paused"] } });
+    expect(listQueries.at(-1)).toMatchObject({ state: ["running", "paused"] });
     expect(await reapSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toBe(1);
     expect(await listSandboxes(e2b({ apiKey: "mock" }), { labels: { app: "paused-e2b" } })).toEqual(
       [],

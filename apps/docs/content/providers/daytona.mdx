@@ -3,7 +3,7 @@ title: Daytona
 description: Run sandboxes on Daytona. Exact machine sizes, idle auto-stop, wall-clock lifetimes, network allow lists, snapshots, and token-protected previews.
 ---
 
-`daytona()` runs each sandbox on [Daytona](https://daytona.io) through the official `@daytonaio/sdk`.
+`daytona()` runs each sandbox on [Daytona](https://daytona.io). It calls Daytona's HTTP API directly, so it needs no other package.
 
 ## Install
 
@@ -11,34 +11,34 @@ description: Run sandboxes on Daytona. Exact machine sizes, idle auto-stop, wall
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next @daytonaio/sdk
+npm install @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next @daytonaio/sdk
+pnpm add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next @daytonaio/sdk
+yarn add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next @daytonaio/sdk
+bun add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `@daytonaio/sdk` 0.225 or a later 0.x release. Set `DAYTONA_API_KEY` on your server, and keep it out of browser bundles. Your Daytona organization needs a default region, set in the Daytona Dashboard.
+Set `DAYTONA_API_KEY` on your server, and keep it out of browser bundles. Your Daytona organization needs a default region, set in the Daytona Dashboard.
 
 ## Quickstart
 
@@ -200,7 +200,70 @@ To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/d
 | `volumes`           | `{ volumeId, mountPath }[]` |                              |                           |
 | `outboundProxyUrl`  | `string`                    |                              |                           |
 
-Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. Use either `apiKey` or `jwtToken` with `organizationId`. `createTimeoutMs` covers the whole create call, including an image build. `outboundProxyUrl` routes the sandbox's HTTP(S) traffic through your proxy with `HTTP_PROXY` and `HTTPS_PROXY`. Daytona refuses it on tiers with restricted networking, and the create fails with `invalid_argument`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, and passwordless `sudo -n`. `box.native` is the Daytona SDK's `Sandbox` object.
+Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. Use either `apiKey` or `jwtToken` with `organizationId`. `createTimeoutMs` covers the whole create call, including an image build. `outboundProxyUrl` routes the sandbox's HTTP(S) traffic through your proxy with `HTTP_PROXY` and `HTTPS_PROXY`. Daytona refuses it on tiers with restricted networking, and the create fails with `invalid_argument`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, `python3`, and passwordless `sudo -n`.
+
+## Call the API directly
+
+`box.native` calls any Daytona endpoint the adapter doesn't wrap, with the adapter's credentials, retries, and error mapping. It has two planes:
+
+| Plane             | Base URL                                     | What it serves                                                                                                      |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `"api"` (default) | `baseUrl`, `https://app.daytona.io/api`      | Sandboxes, snapshots, volumes, previews. `{sandboxId}` fills itself from the sandbox.                               |
+| `"toolbox"`       | The sandbox's toolbox proxy URL, plus its ID | The sandbox's files and processes. Paths are already scoped to the sandbox, such as `/files` or `/process/execute`. |
+
+`request` returns the JSON body. `fetch` returns the raw `Response`, for file bytes and streams.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+const sandbox = await box.native.request<{ state: string; cpu: number }>(
+  "GET",
+  "/sandbox/{sandboxId}",
+);
+console.log(sandbox.state, sandbox.cpu);
+
+const files = await box.native.request<{ name: string; isDir: boolean }[]>("GET", "/files", {
+  plane: "toolbox",
+  query: { path: "/workspace" },
+});
+console.log(files.map((file) => file.name));
+
+const response = await box.native.fetch("GET", "/files/download", {
+  plane: "toolbox",
+  query: { path: "/workspace/report.csv" },
+});
+const bytes = new Uint8Array(await response.arrayBuffer());
+```
+
+For calls that aren't about one sandbox, use the factory's `api`. It has no sandbox bound, so pass `sandboxId` in `params` when a path needs one.
+
+```ts
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const provider = daytona();
+const snapshots = await provider.api.request<{ items: { name: string; state: string }[] }>(
+  "GET",
+  "/snapshots",
+  { query: { limit: 20 } },
+);
+console.log(snapshots.items.map((snapshot) => snapshot.name));
+```
+
+To use the official SDK for something, install `@daytonaio/sdk` yourself and hand it to `sdk`. You get its `Sandbox` for this sandbox, or its `Daytona` client from `provider.api.sdk`, built with the adapter's credentials, `baseUrl`, and `target`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona());
+const sandbox = await box.native.sdk(() => import("@daytonaio/sdk"));
+const status = await sandbox.git.status("/workspace");
+console.log(status.currentBranch);
+```
+
+In earlier betas, `box.native` was the SDK's `Sandbox` object. Replace `box.native.fs.listFiles(path)` and similar calls with `(await box.native.sdk(() => import("@daytonaio/sdk"))).fs.listFiles(path)`, or with `box.native.request`. See the [native API reference](/reference/native).
 
 ## Limitations
 
@@ -208,13 +271,14 @@ Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a depr
 - No pause, resume, or terminals.
 - Timeouts are whole minutes.
 - Previews need a header, so they can't go straight into an iframe.
-- When create times out, `@daytonaio/sdk` 0.227 and later report the new sandbox's ID, and the SDK deletes it. Older versions don't, so run [`reapSandboxes`](/reference/sandbox) after a create timeout. A create that fails with `build_failed` can also leave a sandbox behind; delete it from the dashboard.
+- When a create fails after Daytona made the sandbox, such as a timeout while it starts or a `build_failed` image, the adapter deletes it before it reports the error. If the create request itself got no answer, the adapter looks for the sandbox by an internal label for about five seconds and deletes it. When it can't find it, the error is `outcome_unknown`: run [`reapSandboxes`](/reference/sandbox) to clean up anything Daytona made late.
 
 ## How it works
 
 - Keys and your `labels` become Daytona labels, so you can filter by them in the dashboard.
-- With `image`, Daytona allocates the size at creation. From a snapshot, the SDK creates the sandbox, then stops, resizes, and restarts it before returning, which takes longer.
+- With `image`, Daytona allocates the size at creation. From a snapshot, the adapter creates the sandbox, then stops, resizes, and restarts it before returning, which takes longer.
 - Daytona's auto-pause is turned off, so an idle sandbox always stops.
+- File reads and writes use the toolbox's multipart `bulk-download` and `bulk-upload` endpoints. Command output streams over plain HTTP from the session log endpoint.
 - `DAYTONA_TARGET` picks a target. It doesn't set the organization's default region.
 
 ## Next steps

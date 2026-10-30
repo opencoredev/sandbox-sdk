@@ -1,7 +1,5 @@
-import * as Daytona from "@daytonaio/sdk";
 import * as Railway from "railway";
 import { expect, test } from "vitest";
-import { daytonaError, rememberDaytonaErrors } from "../src/providers/daytona/errors.js";
 import { railwayError, rememberRailwayErrors } from "../src/providers/railway/errors.js";
 
 // A bundled copy of an SDK: the same classes, renamed so their names match nothing.
@@ -22,15 +20,6 @@ function railwayCopy() {
   };
 }
 
-function daytonaCopy() {
-  return {
-    DaytonaTimeoutError: renamed(Daytona.DaytonaTimeoutError),
-    DaytonaConnectionTimeoutError: renamed(Daytona.DaytonaConnectionTimeoutError),
-    DaytonaConnectionError: renamed(Daytona.DaytonaConnectionError),
-    DaytonaInvalidArgumentError: renamed(Daytona.DaytonaInvalidArgumentError),
-  };
-}
-
 test("railway errors from an earlier loaded SDK copy still map after another copy loads", () => {
   const first = railwayCopy();
   const second = railwayCopy();
@@ -47,15 +36,4 @@ test("railway errors from an earlier loaded SDK copy still map after another cop
   expect(railwayError(new second.SandboxNotFoundError({ id, environmentId })).code).toBe(
     "not_found",
   );
-});
-
-test("daytona errors from an earlier loaded SDK copy still map after another copy loads", () => {
-  const first = daytonaCopy();
-  const second = daytonaCopy();
-
-  rememberDaytonaErrors(first);
-  rememberDaytonaErrors(second);
-
-  expect(daytonaError(new first.DaytonaTimeoutError("slow")).code).toBe("timeout");
-  expect(daytonaError(new second.DaytonaTimeoutError("slow")).code).toBe("timeout");
 });

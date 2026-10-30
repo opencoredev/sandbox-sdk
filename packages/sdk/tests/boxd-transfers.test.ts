@@ -308,7 +308,8 @@ test("lifecycle cleanup waits for a cancellation already terminating its worker"
 for (const kind of ["upload", "download"] as const) {
   test(`${kind} preserves machine identity when translating SDK errors`, async () => {
     const server = await fixture("missing");
-    const client = transfers(server.baseURL);
+    // These check error mapping, not deadlines: leave a loaded host time to start the worker.
+    const client = transfers(server.baseURL, undefined, 5000);
 
     const pending =
       kind === "upload"
@@ -324,7 +325,8 @@ for (const kind of ["upload", "download"] as const) {
 for (const kind of ["upload", "download"] as const) {
   test(`${kind} of a missing guest path is file_not_found without its path`, async () => {
     const server = await fixture("nofile");
-    const client = transfers(server.baseURL);
+    // These check error mapping, not deadlines: leave a loaded host time to start the worker.
+    const client = transfers(server.baseURL, undefined, 5000);
 
     const pending =
       kind === "upload"

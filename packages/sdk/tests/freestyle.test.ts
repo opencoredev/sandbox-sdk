@@ -1,33 +1,30 @@
+import { isString } from "../src/shared/narrow.js";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { freestyle, freestyleState, cleanupFreestyle } from "./freestyle-mock.js";
+import { freestyleFetch, freestyleState, cleanupFreestyle } from "./freestyle-mock.js";
+import { freestyle } from "../src/providers/freestyle/index.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
-import { isString } from "../src/shared/narrow.js";
 
 const factory = () => freestyle({ apiKey: "mock-key" });
 
-vi.stubGlobal(
-  "fetch",
-  vi.fn(() => {
-    throw new Error("Cloud HTTP is forbidden in offline provider tests");
-  }),
-);
+// The fake serves only the Freestyle API origin; anything else throws.
+vi.stubGlobal("fetch", vi.fn(freestyleFetch));
 
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
-// Only Linux mock transports are used. The name admits the offline transport
-// through conformance's live:false cloud guard and skips real cloud HTTP/git.
+// live: true authorizes the fake: every request goes to the local Freestyle API above.
 runConformance(factory, {
   live: true,
   unsupported: {
     httpProbe: "Mock freestyle preview URLs point at an unreachable host",
+    gitPush: "The HTTP fake's guest has no git identity; the live smoke covers git on freestyle",
   },
 });
 
 afterAll(cleanupFreestyle);
 
-describe("Freestyle official SDK contract", () => {
+describe("Freestyle API contract", () => {
   test("default-deny has no rules; all grants public outbound only", async () => {
     for (const network of ["none", "all", { allow: [] }] as const) {
       const policy = isString(network) ? network : { allow: [] };
@@ -252,6 +249,31 @@ test("unconfirmed process cancellation reports uncertainty without deleting a VM
   }
 });
 
+test("an exec accepted before its response was lost is outcome_unknown, after confirmed cancellation", async () => {
+  const box = await createSandbox(factory());
+  const native = freestyleState.boxes.get(box.id);
+
+  if (!native) throw new Error("Missing mock VM");
+  await box.run("true");
+
+  const exec = vi
+    .spyOn(native, "exec")
+    .mockRejectedValueOnce(new Error("connection reset after the request was sent"));
+
+  try {
+    await expect(box.run("echo once")).rejects.toMatchObject({
+      code: "outcome_unknown",
+      provider: "freestyle",
+    });
+    // The cancellation RPC ran and confirmed; the VM is kept.
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(freestyleState.boxes.has(box.id)).toBe(true);
+  } finally {
+    exec.mockRestore();
+    await box.destroy();
+  }
+});
+
 test("abort during native output paging stops all further reads", async () => {
   const box = await createSandbox(factory());
   const native = freestyleState.boxes.get(box.id);
@@ -373,11 +395,11 @@ test.each(["missing", "outdated"])(
       const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
       await fs.writeFile(
         path,
-        JSON.stringify(
-          version === "outdated"
-            ? { key: null, labels: box.labels, supervisorHash: "old-version" }
-            : { key: null, labels: box.labels },
-        ),
+        JSON.stringify({
+          key: null,
+          labels: box.labels,
+          ...(version === "outdated" ? { supervisorHash: "old-version" } : undefined),
+        }),
       );
       await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
       const provider = factory();
@@ -404,8 +426,9 @@ test("cancellation recovers a bounded tail and applies public output caps", asyn
 
   try {
     const result = await box.run(
-      "head -c 2000000 /dev/zero | tr '\\0' x; echo TAIL; echo ERROR >&2; sleep 5",
-      { timeoutMs: 2000, maxOutputBytes: 128 },
+      "head -c 2000000 /dev/zero | tr '\\0' x; echo TAIL; echo ERROR >&2; sleep 30",
+      // Room for 2 MB of output before the timeout on a loaded machine.
+      { timeoutMs: 6000, maxOutputBytes: 128 },
     );
 
     expect(result).toMatchObject({ timedOut: true, truncated: true });
@@ -530,7 +553,10 @@ describe("Freestyle resilient discovery", () => {
       delete damagedVm.record.metadata["sandbox-sdk-info"];
 
       for (const body of ["{", JSON.stringify({ key: null, labels: { bad: 2 } })]) {
-        const read = vi.spyOn(damaged.native.fs, "readTextFile").mockResolvedValue(body);
+        const read = vi
+          .spyOn(damagedVm.fs, "readFile")
+          .mockResolvedValue(new TextEncoder().encode(body));
+
         expect((await factory().list({})).map((v) => v.id)).toContain(healthy.id);
         expect((await factory().list({})).map((v) => v.id)).not.toContain(damaged.id);
         read.mockRestore();
@@ -538,7 +564,7 @@ describe("Freestyle resilient discovery", () => {
 
       for (const status of [404, 401, 503, 429]) {
         const read = vi
-          .spyOn(damaged.native.fs, "readTextFile")
+          .spyOn(damagedVm.fs, "readFile")
           .mockRejectedValue(Object.assign(new Error("native read"), { status }));
 
         if (status === 404)
@@ -578,9 +604,12 @@ describe("Freestyle resilient discovery", () => {
     try {
       const params = freestyleState.creates.at(-1);
       expect(params?.metadata?.["sandbox-sdk-info"]).toBeDefined();
+      const vm = freestyleState.boxes.get(box.id);
+
+      if (!vm) throw new Error("Missing mock VM");
 
       const read = vi
-        .spyOn(box.native.fs, "readTextFile")
+        .spyOn(vm.fs, "readFile")
         .mockRejectedValue(Object.assign(new Error("missing marker"), { status: 404 }));
 
       const { listSandboxes, reapSandboxes } = await import("../src/index.js");
@@ -852,7 +881,8 @@ describe("freestyle native options (SBX-71)", () => {
       await box.snapshot({ expiresInMs: 90_500 });
       await box.snapshot({ expiresInMs: 0 });
       await box.snapshot();
-      expect(freestyleState.snapshotOptions).toEqual([{ ttlSeconds: 91 }, undefined, undefined]);
+      // The SDK posted {} without a TTL too.
+      expect(freestyleState.snapshotOptions).toEqual([{ ttlSeconds: 91 }, {}, {}]);
       await expect(box.snapshot({ expiresInMs: -1 })).rejects.toMatchObject({
         code: "invalid_argument",
       });

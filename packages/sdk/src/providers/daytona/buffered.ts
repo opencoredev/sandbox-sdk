@@ -1,13 +1,10 @@
-import type { Readable } from "node:stream";
-import type { DaytonaBox } from "./native.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
-import { quote } from "../../shared/shell.js";
-import { workspaceCommand } from "./exec.js";
-import { downloadStream as openDownload } from "./transfer.js";
+import type { Toolbox } from "./api.js";
+import { quote, workspaceCommand } from "./exec.js";
 
 // A single native command returns at most 64 KiB of frames. Larger output is
-// spooled in the guest and downloaded as a stream, never buffered by the SDK.
+// spooled in the guest and downloaded as a stream, never buffered whole.
 // The child owns a separate process group, including inherited output pipes.
 const bridge = `import base64,os,selectors,signal,subprocess,sys,time,shutil,fcntl
 command,directory,cwd,limit,activity=sys.argv[1:]
@@ -76,7 +73,7 @@ for attempt in range(3):
 `;
 
 export async function bufferedExecute(
-  box: DaytonaBox,
+  box: Toolbox,
   input: ExecInput,
   prepare = workspaceCommand,
   prepared?: () => void,
@@ -84,7 +81,7 @@ export async function bufferedExecute(
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const deadline = Date.now() + input.timeoutMs;
   const transferController = new AbortController();
-  let downloadStream: Readable | undefined;
+  let download: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancelled = false;
   let wakeTransfer = () => {};
 
@@ -102,7 +99,7 @@ export async function bufferedExecute(
     cancelled = true;
     wakeTransfer();
     transferController.abort();
-    downloadStream?.destroy();
+    void download?.cancel().catch(() => {});
 
     if (confirmed) return;
     cancellation ??= box.process
@@ -169,27 +166,30 @@ export async function bufferedExecute(
 
       if (!cancelled) {
         const drain = async () => {
-          const stream = await openDownload(box, `${dir}/output`, {
+          const stream = await box.fs.downloadStream(`${dir}/output`, {
             signal: transferController.signal,
-            timeout: Math.max(1, Math.ceil(remainingMs / 1000)),
+            timeoutMs: Math.max(1, remainingMs),
           });
 
-          downloadStream = stream;
+          const reader = stream.getReader();
+          download = reader;
 
           // A pending native download can resolve after cancellation won the race.
           if (cancelled) {
-            stream.destroy();
+            await reader.cancel().catch(() => {});
 
             return;
           }
 
           let pending = "";
 
-          for await (const data of stream) {
-            if (cancelled) return;
+          for (;;) {
+            const { done, value } = await reader.read();
 
-            if (!(data instanceof Uint8Array)) throw malformed();
-            pending += Buffer.from(data).toString("ascii");
+            if (done) break;
+
+            if (cancelled) return;
+            pending += Buffer.from(value).toString("ascii");
             let newline: number;
 
             while ((newline = pending.indexOf("\n")) >= 0) {
@@ -203,7 +203,10 @@ export async function bufferedExecute(
           if (pending) throw malformed();
         };
 
-        await Promise.race([drain(), transferCancelled]);
+        const draining = drain();
+        // Cancellation wins the race; the aborted download then rejects with nobody waiting on it.
+        draining.catch(() => {});
+        await Promise.race([draining, transferCancelled]);
       }
 
       if (cancelled) return { exitCode: null, timedOut: true };
@@ -244,8 +247,7 @@ export async function bufferedExecute(
     await cancellation;
 
     // Small successful commands already removed their directory in the guest.
-    // Spill files and cancellation markers require one cleanup request, which is
-    // best effort: it must not replace the command's result.
+    // Spill files and cancellation markers require one cleanup request.
     if (cancellation || cleanupNeeded) await box.fs.deleteFile(dir, true).catch(() => {});
 
     if (input.activityPath && cancellation)
