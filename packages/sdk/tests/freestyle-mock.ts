@@ -12,10 +12,12 @@ const jsonObject = z.record(z.string(), z.json());
 const createVmOptions = z.looseObject({
   snapshotId: z.string().optional(),
   metadata: z.record(z.string(), z.string()).optional(),
-  firewall: z.object({
-    rules: z.array(z.object({ action: z.string(), source: jsonObject, destination: jsonObject })),
+  firewall: z.looseObject({
+    rules: z.array(
+      z.looseObject({ action: z.string(), source: jsonObject, destination: jsonObject }),
+    ),
   }),
-  tls: z.object({ rules: z.array(z.unknown()) }).optional(),
+  tls: z.looseObject({ rules: z.array(z.unknown()) }).optional(),
   vpcs: z.array(z.string()).optional(),
   idleTimeoutSeconds: z.number().optional(),
   ttlSeconds: z.number().optional(),

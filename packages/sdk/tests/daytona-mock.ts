@@ -41,7 +41,7 @@ const stringMap = z.record(z.string(), z.string());
 /** `POST /api/sandbox`. Unknown fields are kept, so tests can check what else the adapter sent. */
 const createBody = z.looseObject({
   snapshot: z.string().optional(),
-  buildInfo: z.object({ dockerfileContent: z.string() }).optional(),
+  buildInfo: z.looseObject({ dockerfileContent: z.string() }).optional(),
   env: stringMap.optional(),
   labels: stringMap.optional(),
   public: z.boolean().optional(),

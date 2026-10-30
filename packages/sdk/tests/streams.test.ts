@@ -140,6 +140,16 @@ describe("sse", () => {
     },
   );
 
+  test("an event without id or retry has no id or retry field", async () => {
+    const { frames } = await collect(
+      sse(chunked(["data: a\n\nid: 7\nretry: 50\ndata: b\n\n"]), options),
+    );
+
+    expect(frames[0]).toEqual({ event: "message", data: "a" });
+    expect(Object.keys(frames[0] ?? {})).toEqual(["event", "data"]);
+    expect(frames[1]).toEqual({ event: "message", data: "b", id: "7", retry: 50 });
+  });
+
   test("a CRLF split between chunks is one line end", async () => {
     const { frames } = await collect(sse(chunked(["data: a\r", "\n\r", "\ndata: b\n\n"]), options));
     expect(frames.map((frame) => frame.data)).toEqual(["a", "b"]);

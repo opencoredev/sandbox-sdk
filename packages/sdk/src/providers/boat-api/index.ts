@@ -137,7 +137,10 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
       });
     }
 
-    return { key: key ?? undefined, labels: { ...labels, ...own } };
+    // An unkeyed sandbox has no `key` field at all, as before.
+    return key === null
+      ? { labels: { ...labels, ...own } }
+      : { key, labels: { ...labels, ...own } };
   } catch {
     return;
   }
