@@ -1,4 +1,5 @@
 import { defineConfig } from "blume";
+import { posthog } from "blume/analytics";
 
 import site from "../../vercel.json" with { type: "json" };
 import { providerTabsMarkdown } from "./components/providers.ts";
@@ -66,6 +67,24 @@ export default defineConfig({
     dir: "apps/docs",
   },
   redirects: docsRedirects,
+  // The same PostHog project and settings as the landing page (apps/web/src/lib/posthog.ts),
+  // so a visitor keeps one ID from / into /docs. Blume loads it in production builds only.
+  analytics: [
+    posthog({
+      key: "phc_zxoHDZFt8NiXpZyfWXpHQnhxSd4h7xqgHkkpiyHgwPbq",
+      defaults: "2026-08-30",
+      capture_pageview: "history_change",
+      capture_pageleave: true,
+      capture_performance: { web_vitals: true, network_timing: false },
+      autocapture: { capture_copied_text: false },
+      disable_session_recording: true,
+      disable_surveys: true,
+      enable_heatmaps: false,
+      capture_dead_clicks: false,
+      respect_dnt: true,
+      person_profiles: "identified_only",
+    }),
+  ],
   navigation: {
     cta: { href: "https://github.com/opencoredev/sandbox-sdk", label: "GitHub" },
     // The repo link is the only thing in Blume's site footer, so hiding it drops

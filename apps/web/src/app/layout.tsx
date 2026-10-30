@@ -3,6 +3,7 @@ import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 
 import { fontVariables } from "@/lib/fonts";
+import { PostHogProvider } from "@/lib/posthog-provider";
 import { socialImage } from "@/lib/shared";
 
 import "./global.css";
@@ -103,6 +104,7 @@ export default function Layout({ children }: LayoutProps<"/">) {
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
         {children}
         <Analytics />
+        <PostHogProvider />
       </body>
     </html>
   );

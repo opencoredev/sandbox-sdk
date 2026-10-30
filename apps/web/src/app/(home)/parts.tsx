@@ -5,6 +5,8 @@
 import Link from "next/link";
 import { useCallback, useState, type ReactNode } from "react";
 
+import { track } from "@/lib/posthog";
+
 import { logo, marks } from "../../../brand/marks";
 
 import styles from "./landing.module.css";
@@ -70,6 +72,7 @@ export function CopyCommand({ command }: { command: string }) {
     try {
       await navigator.clipboard.writeText(command);
       setState("copied");
+      track("install_command_copied", { command });
     } catch {
       // no clipboard access: say so, the command stays selectable
       setState("failed");
