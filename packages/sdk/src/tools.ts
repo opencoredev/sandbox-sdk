@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Sandbox, OutputChunk } from "./types.js";
 import { SandboxError, invalid } from "./errors.js";
 import { BufferCap } from "./run.js";
+import { readAtMost } from "./files.js";
 import { isString } from "./shared/narrow.js";
 import { redactToolText, toolOutputFilter } from "./tool-security.js";
 import type { JsonValue } from "./shared/json.js";
@@ -333,16 +334,24 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
             case "read_file": {
               const p = parsed.input;
               const path = await safePath(p.path);
-              const bytes = await box.files.read(path, { as: "bytes" });
-              const sha = hash(bytes);
               const max = limits.maxReadBytes ?? 1_048_576;
+              const size = (await box.files.stat(path)).size;
+
+              // Checked before the download, and the read stops one byte past the limit where the
+              // adapter allows, so an oversized file never costs its full transfer.
+              if (size > max)
+                return result(
+                  false,
+                  `File is ${size} bytes, above maxReadBytes=${max}. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
+                );
+              const bytes = await readAtMost(box.files, path, max);
 
               if (bytes.length > max)
                 return result(
                   false,
-                  `File is ${bytes.length} bytes, above maxReadBytes=${max}. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
-                  `sha=${sha}`,
+                  `File grew above maxReadBytes=${max} while being read. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
                 );
+              const sha = hash(bytes);
               let content: string;
 
               try {
