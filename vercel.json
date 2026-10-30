@@ -1,0 +1,107 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "bun run --cwd apps/web build && bun run --cwd apps/docs build && rm -rf apps/web/out/docs && cp -R apps/docs/dist apps/web/out/docs",
+  "outputDirectory": "apps/web/out",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "redirects": [
+    { "source": "/providers", "destination": "/docs/providers", "permanent": true },
+    {
+      "source": "/compatibility",
+      "destination": "/docs/reference/capabilities",
+      "permanent": true
+    },
+    { "source": "/security", "destination": "/docs/reference/security", "permanent": true },
+    { "source": "/partners", "destination": "/docs/providers", "permanent": true },
+    {
+      "source": "/sponsors",
+      "destination": "https://github.com/sponsors/opencoredev",
+      "permanent": true
+    },
+    { "source": "/llms.txt", "destination": "/docs/llms.txt", "permanent": true },
+    { "source": "/llms-full.txt", "destination": "/docs/llms-full.txt", "permanent": true },
+    {
+      "source": "/docs/quickstart",
+      "destination": "/docs/getting-started/quickstart",
+      "permanent": true
+    },
+    {
+      "source": "/docs/installation",
+      "destination": "/docs/getting-started/installation",
+      "permanent": true
+    },
+    { "source": "/docs/providers/compare", "destination": "/docs/providers", "permanent": true },
+    { "source": "/docs/providers/box", "destination": "/docs/providers", "permanent": true },
+    { "source": "/docs/agent-skill", "destination": "/docs", "permanent": true },
+    {
+      "source": "/docs/api/commands",
+      "destination": "/docs/concepts/running-commands",
+      "permanent": true
+    },
+    {
+      "source": "/docs/api/files",
+      "destination": "/docs/concepts/files-and-git",
+      "permanent": true
+    },
+    {
+      "source": "/docs/api/ports",
+      "destination": "/docs/concepts/processes-and-previews",
+      "permanent": true
+    },
+    {
+      "source": "/docs/api/processes",
+      "destination": "/docs/concepts/processes-and-previews",
+      "permanent": true
+    },
+    {
+      "source": "/docs/api/sandboxes",
+      "destination": "/docs/reference/sandbox",
+      "permanent": true
+    },
+    {
+      "source": "/docs/api/snapshots",
+      "destination": "/docs/concepts/lifecycle-and-cleanup",
+      "permanent": true
+    },
+    {
+      "source": "/docs/integrations/ai-sdk-harness",
+      "destination": "/docs/integrations/ai-sdk",
+      "permanent": true
+    },
+    {
+      "source": "/docs/integrations/eve",
+      "destination": "/docs/upgrade-from-0-2",
+      "permanent": true
+    },
+    {
+      "source": "/docs/reference/compatibility",
+      "destination": "/docs/reference/capabilities",
+      "permanent": true
+    },
+    {
+      "source": "/docs/reference/package-exports",
+      "destination": "/docs/getting-started/installation",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "missing": [{ "type": "host", "value": "sandbox-sdk.app" }],
+      "headers": [{ "key": "X-Robots-Tag", "value": "noindex" }]
+    },
+    {
+      "source": "/docs/(.*).md",
+      "headers": [{ "key": "Content-Type", "value": "text/markdown; charset=utf-8" }]
+    },
+    {
+      "source": "/docs/(.*).mdx",
+      "headers": [{ "key": "Content-Type", "value": "text/markdown; charset=utf-8" }]
+    },
+    {
+      "source": "/docs/(.*).txt",
+      "headers": [{ "key": "Content-Type", "value": "text/plain; charset=utf-8" }]
+    }
+  ]
+}

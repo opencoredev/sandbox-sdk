@@ -2,7 +2,7 @@ import { PHASE_DEVELOPMENT_SERVER } from "next/constants.js";
 
 /**
  * The docs are a separate Blume app (apps/docs) served under /docs. In
- * production the host routes /docs to it. In development, set DOCS_ORIGIN to
+ * production the root vercel.json copies its build into out/docs. In development, set DOCS_ORIGIN to
  * the Blume dev server (for example http://localhost:4000) and this app
  * proxies /docs to it, so links from the landing page work locally.
  */
