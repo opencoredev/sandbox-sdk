@@ -76,7 +76,12 @@ import { local } from "@opencoredev/sandbox-sdk/local";
 import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
 
 await using box = await createSandbox(local());
-await box.git.clone("https://github.com/acme/web.git", { dir: "app", depth: 1 });
+// Replace with your own repository.
+const clone = await box.git.clone("https://github.com/your-org/your-app.git", {
+  dir: "app",
+  depth: 1,
+});
+if (!clone.ok) throw new Error(`clone failed: ${clone.stderr}`);
 
 const { text } = await generateText({
   model: "anthropic/claude-opus-5-5",
@@ -87,6 +92,8 @@ const { text } = await generateText({
 
 console.log(text);
 ```
+
+The model string goes through the Vercel AI Gateway, so set `AI_GATEWAY_API_KEY` on your server, or pass any other AI SDK provider's model instead. Like a command, a failed clone returns `ok: false` rather than throwing, so check it before handing the directory to the model.
 
 The model gets seven tools by default: `run`, `read_file`, `write_file`, `edit_file`, `start_process`, `process_logs` and `stop_process`. It runs the tests with `run`, reads the failure with `read_file`, and changes the code with `edit_file`, all inside the container. `stopWhen` caps the number of steps so a confused model can't loop forever.
 

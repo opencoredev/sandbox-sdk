@@ -42,11 +42,18 @@ const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseDate({ value, field, file }: { value: string; field: string; file: string }) {
-  if (!DATE.test(value) || Number.isNaN(Date.parse(value))) {
-    throw new Error(`${file}: ${field} must be a yyyy-mm-dd date, got "${value}"`);
+  const parsed = new Date(`${value}T00:00:00Z`);
+
+  // The round trip rejects dates JavaScript rolls over, such as 2026-02-31.
+  if (
+    !DATE.test(value) ||
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== value
+  ) {
+    throw new Error(`${file}: ${field} must be a real yyyy-mm-dd date, got "${value}"`);
   }
 
-  // SAFETY: the check above proved value is a real yyyy-mm-dd date.
+  // SAFETY: the checks above proved value is a real calendar date in yyyy-mm-dd form.
   return value as PostDate;
 }
 
