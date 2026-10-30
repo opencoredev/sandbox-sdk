@@ -90,6 +90,12 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly processMode?: "shell" | "unsupported";
   /** Exec creates/removes input.activityPath without separate file RPCs. */
   readonly inlineActivity?: boolean;
+  /**
+   * Every exec from every client shares one Linux PID namespace with `/proc` mounted, and the exec user
+   * can read each process's environ (directly, or through passwordless sudo for root-owned ones). The
+   * core then runs commands without a marker and idle reaping scans `/proc` for the SDK's env tag.
+   */
+  readonly procActivity?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */

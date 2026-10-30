@@ -101,15 +101,23 @@ export async function listSandboxes(provider: Provider, options: ListOptions = {
 }
 export async function reapSandboxes(provider: Provider, options: ReapOptions = {}): Promise<number> {
   if (options.olderThanMs !== undefined && (!Number.isFinite(options.olderThanMs) || options.olderThanMs < 0)) invalid("olderThanMs must be non-negative");
-  const isActive = options.idleOnly ? (await import("./run.js")).isRunActive : () => false;
+  const { isRunActive, activityScanCommand } = await import("./run.js");
+  const isActive = options.idleOnly ? isRunActive : () => false;
+  // Fail safe: a scan that cannot prove every process untagged, or that fails at all, means busy.
+  const scanBusy = async (id: string) => {
+    if (!provider.procActivity) return false;
+    try { const result = await provider.exec(id, { command: activityScanCommand, cwd: "/", env: {}, timeoutMs: 30_000, onChunk() {} }); return result.timedOut || result.exitCode !== 0; }
+    catch { return true; }
+  };
   let count = 0;
   try { for (const info of await listSandboxes(provider, options)) if (Date.now() - info.createdAt >= (options.olderThanMs ?? 0)) { if (options.idleOnly) {
       if (isActive(provider.name, info.id)) continue;
       let box;
       try { const connected = await provider.connect(info.id); const { makeHandle } = await import("./handle.js"); box = await makeHandle(provider, connected, false, {}, new Redactor(), false); } catch (error) { if (error instanceof SandboxError && error.code === "not_found") { count++; continue; } throw error; }
       try {
-        const [processes, runs] = await Promise.all([box.processes(), box.files.list("/tmp/.sandbox-sdk/runs").catch(async error => { if (error instanceof SandboxError && (["file_not_found", "not_found"].includes(error.code) || error.code === "provider" && !(await box.files.exists("/tmp/.sandbox-sdk/runs")))) return []; throw error; })]);
-        if (processes.some(process => process.status === "running" || process.status === "starting") || runs.length > 0) continue;
+        // Markers still count on procActivity adapters: an older client may have written one.
+        const [processes, runs, scanned] = await Promise.all([box.processes(), box.files.list("/tmp/.sandbox-sdk/runs").catch(async error => { if (error instanceof SandboxError && (["file_not_found", "not_found"].includes(error.code) || error.code === "provider" && !(await box.files.exists("/tmp/.sandbox-sdk/runs")))) return []; throw error; }), scanBusy(info.id)]);
+        if (processes.some(process => process.status === "running" || process.status === "starting") || runs.length > 0 || scanned) continue;
       }
       finally { await box.close(); }
     }

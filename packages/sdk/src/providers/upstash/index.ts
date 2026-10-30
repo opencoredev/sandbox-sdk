@@ -237,6 +237,8 @@ export function upstash(options: UpstashOptions = {}): UpstashProvider | Upstash
   const provider: UpstashProvider = {
     name: "upstash",
     keyMode: "best-effort",
+    // Sessions share the container's PID namespace as boxuser; root-owned init processes are read through sudo.
+    procActivity: true,
     capabilities: new Set<UpstashCapability>(
       ttl === undefined ? ["pause", "snapshot", "size", "network-policy"] : ["snapshot", "size", "network-policy"],
     ),

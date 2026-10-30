@@ -45,7 +45,11 @@ export interface ListOptions {
 export interface ReapOptions extends ListOptions {
   /** Only destroy sandboxes at least this old, in milliseconds. Default: 0. */
   olderThanMs?: number;
-  /** Skip sandboxes with an active SDK command or a running background process. */
+  /**
+   * Skip sandboxes with an active SDK command or a running background process. On adapters that scan `/proc`
+   * (E2B, Upstash), a process an SDK command left running also counts until it exits, and so does a process
+   * whose environment cannot be read.
+   */
   idleOnly?: boolean;
 }
 /** Per-command options for `box.run`. */

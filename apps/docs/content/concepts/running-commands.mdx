@@ -43,7 +43,7 @@ Every command gets these, so a command can't hang on a prompt or flood your serv
 - **Timeout.** 120 seconds. Change it with `timeoutMs`.
 - **Output cap.** 1 MB per stream. Past that, the result keeps the start and the end, puts a marker in the middle, and sets `truncated: true`. Change it with `maxOutputBytes`.
 - **No stdin.** stdin is closed unless you pass `stdin`.
-- **Non-interactive env.** `CI=1`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `DEBIAN_FRONTEND=noninteractive`, `TERM=dumb`, and `NO_COLOR=1` are always set.
+- **Non-interactive env.** `CI=1`, `PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `DEBIAN_FRONTEND=noninteractive`, `TERM=dumb`, and `NO_COLOR=1` are always set. `SANDBOX_SDK_RUN=1` is set too, so idle reaping can tell SDK commands apart from other processes.
 - **Working directory.** `/workspace`. A relative `cwd` resolves against it.
 - **No carried state.** Each call is a fresh shell. A `cd` or `export` in one call does not affect the next. Pass `cwd` and `env` instead.
 
