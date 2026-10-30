@@ -84,6 +84,8 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
+  // Names this client is starting on a stream provider, whose records have no atomic guest check.
+  const starting = new Set<string>();
   // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
   const streams = provider.processMode === "stream";
 
@@ -171,9 +173,17 @@ export function makeProcesses(
   ): Promise<Preview> {
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       invalid("Port must be between 1 and 65535");
-    const access = await provider.previewUrl(id, port);
+    // Copy the provider's result: some adapters cache it, and a path must not leak into later calls.
+    const access = { ...(await provider.previewUrl(id, port)) };
 
-    if (options.path) access.url = new URL(options.path, access.url).toString();
+    if (options.path) {
+      const base = new URL(access.url);
+      const target = new URL(options.path, base);
+
+      // An absolute or protocol-relative path would hand the provider's headers to another host.
+      if (target.origin !== base.origin) invalid("Preview path must stay on the preview's origin");
+      access.url = target.toString();
+    }
 
     if (options.waitMs !== undefined) {
       const end = Date.now() + options.waitMs;
@@ -477,6 +487,23 @@ export function makeProcesses(
   >();
 
   async function start(command: string, input: StartOptions = {}): Promise<ProcessHandle> {
+    const name = input.name ?? defaultProcessName(command);
+
+    // Shell setup reserves the name in the guest. Stream records are separate file calls, so
+    // two concurrent starts could both pass the running check before either writes spec.json.
+    if (!streams || !provider.startProcess) return startRecord(command, input);
+
+    if (starting.has(name)) return safe(() => invalid(`Process ${name} is already running`));
+    starting.add(name);
+
+    try {
+      return await startRecord(command, input);
+    } finally {
+      starting.delete(name);
+    }
+  }
+
+  async function startRecord(command: string, input: StartOptions): Promise<ProcessHandle> {
     return safe(async () => {
       const options = { ...input, name: input.name ?? defaultProcessName(command) };
 

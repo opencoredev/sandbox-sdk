@@ -76,3 +76,65 @@ test("preview probes never forward provider headers to a redirect on another ori
     );
   }
 });
+
+test("preview paths cannot move provider headers to another origin", async () => {
+  const provider = await shellProvider();
+  const requested: string[] = [];
+
+  const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    requested.push(String(url));
+
+    return new Response("ok");
+  });
+
+  const box = await createSandbox({
+    ...provider,
+    previewUrl: async () => ({
+      url: "https://preview.example/app/",
+      headers: { "X-Preview-Token": "private-preview-token" },
+    }),
+  });
+
+  try {
+    for (const path of [
+      "https://attacker.example/collect",
+      "/\\attacker.example/collect",
+      "//attacker.example/collect",
+    ]) {
+      await expect(box.preview(3000, { path, waitMs: 100 })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      await expect(box.preview(3000, { path })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+    }
+
+    expect(requested).toEqual([]);
+    expect((await box.preview(3000, { path: "health" })).url).toBe(
+      "https://preview.example/app/health",
+    );
+  } finally {
+    fetcher.mockRestore();
+    await box.destroy();
+  }
+});
+
+test("preview paths leave the provider's cached preview untouched", async () => {
+  const provider = await shellProvider();
+  const cached = { url: "https://preview.example/app/", headers: { "X-Preview-Token": "t" } };
+
+  const box = await createSandbox({ ...provider, previewUrl: async () => cached });
+
+  try {
+    expect((await box.preview(3000, { path: "/health" })).url).toBe(
+      "https://preview.example/health",
+    );
+    expect((await box.preview(3000)).url).toBe("https://preview.example/app/");
+    expect((await box.preview(3000, { path: "status" })).url).toBe(
+      "https://preview.example/app/status",
+    );
+    expect(cached.url).toBe("https://preview.example/app/");
+  } finally {
+    await box.destroy();
+  }
+});
