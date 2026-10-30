@@ -97,10 +97,11 @@ def loop(code,z,base,q,lock,mine):
   if not ready:
    # Stop when replaced, cleared by a client or removed with the sandbox's files.
    if not mine(): break
-   # A claim matters only while its client waits; drop ones nobody removed.
+   # A claim matters while its client waits or its worker runs. Age alone never
+   # releases one: only proof that both are gone, or a claim from another boot.
    for entry in os.scandir(z):
     try:
-     if entry.name.startswith('c-') and time.time()-entry.stat().st_mtime>600: os.unlink(entry.path)
+     if entry.name.startswith('c-') and released(entry.path): os.unlink(entry.path)
     except FileNotFoundError: pass
    if time.monotonic()<idle: continue
    # Idle: stop advertising, then serve whatever was already queued.
@@ -122,20 +123,41 @@ def loop(code,z,base,q,lock,mine):
     finally: os._exit(0)
   if not ready: break
   idle=time.monotonic()+30
+def birth(pid):
+ # A process's start time: with the boot ID, a PID that was reused is not the same process.
+ try:
+  with open('/proc/%d/stat'%pid,'rb') as f: return f.read().rsplit(b')',1)[1].split()[19].decode()
+ except (OSError,IndexError,ValueError): return None
+def released(path):
+ # Claim line 1: worker PID and start, client PID and start, boot ID; '-' when unknown.
+ # The client writes '- - pid - boot' when it runs a request itself. A claim still
+ # being written, or in a form this code cannot read, stays.
+ try:
+  with open(path) as f: fields=f.readline().split()
+  with open('/proc/sys/kernel/random/boot_id') as f: boot=f.read().strip()
+ except OSError: return False
+ if len(fields)!=5: return False
+ if fields[4]!=boot: return True
+ for pid,start in ((fields[0],fields[1]),(fields[2],fields[3])):
+  if pid=='-': continue
+  try: now=birth(int(pid))
+  except ValueError: return False
+  if now is not None and start in ('-',now): return False
+ return True
 def handle(code,z,c,root,claim):
  import _signal as signal
  signal.signal(signal.SIGCHLD,signal.SIG_DFL)
- # Whoever creates the claim owns the request: this child, or the client giving up.
- try: fd=os.open(claim,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
- except OSError: return
- os.write(fd,b'%d\\n'%os.getpid())
- def started():
-  try:
-   with open('/proc/%d/stat'%c,'rb') as f: return f.read().rsplit(b')',1)[1].split()[19]
-  except (OSError,IndexError): return None
+ def started(): return birth(c)
  start=started()
  # A client that is gone has no one to run the command for.
  if start is None: return
+ try:
+  with open('/proc/sys/kernel/random/boot_id') as f: boot=f.read().strip()
+ except OSError: return
+ # Whoever creates the claim owns the request: this child, or the client giving up.
+ try: fd=os.open(claim,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ except OSError: return
+ os.write(fd,('%d %s %d %s %s\\n'%(os.getpid(),birth(os.getpid()) or '-',c,start,boot)).encode())
  try:
   # The client keeps its own stdio on fds 7-9, which it never redirects.
   fds=[os.open('/proc/%d/fd/%d'%(c,7+n),os.O_RDONLY if n==0 else os.O_WRONLY) for n in range(3)]
@@ -179,11 +201,9 @@ def handle(code,z,c,root,claim):
 def gone(c,start,claim):
  import time
  # The claim is only needed while its client can still decide; drop it after.
+ # A client still alive after 2 s leaves the claim to the zygote's liveness sweep.
  for _ in range(2000):
-  try:
-   with open('/proc/%d/stat'%c,'rb') as f: alive=f.read().rsplit(b')',1)[1].split()[19]==start
-  except (OSError,IndexError): alive=False
-  if not alive:
+  if birth(c)!=start:
    os.unlink(claim); return
   time.sleep(.001)
 `;
@@ -225,7 +245,9 @@ else: exec(c,{'__name__':'__main__','__builtins__':__builtins__})`,
  * client when the zygote has died, or after 3 s from a zygote that is alive but
  * stalled; the client then clears the zygote record so later commands skip it.
  * A claimed request whose child died exits 70, like a supervisor that died. The
- * claim file is created exclusively, so exactly one side runs each request.
+ * claim file is created exclusively, so exactly one side runs each request,
+ * and it names its owners: it stays until both the client and the worker that
+ * claimed it have exited (by PID, start time and boot ID), never by age alone.
  * Without a usable zygote, the client runs the program itself. From the
  * sandbox's second such command on, it then starts a zygote for later ones: a
  * sandbox that runs one command never pays for a zygote, and on a one-CPU
@@ -247,8 +269,8 @@ wait "$w"
 [ "$n" = 0 ] || break
 t=$((t+1))
 if [ -s "$f" ]; then
-{ read -r o <"$f" && kill -0 "$o"; } 2>/dev/null || exit 70
-elif { ! kill -0 "$k" || [ "$t" -ge 3 ]; } 2>/dev/null && (set -C; : >"$f") 2>/dev/null; then
+{ read -r o _ <"$f" && kill -0 "$o"; } 2>/dev/null || exit 70
+elif { ! kill -0 "$k" || [ "$t" -ge 3 ]; } 2>/dev/null && (set -C; printf '%s\\n' "- - $$ - $b" >"$f") 2>/dev/null; then
 : >"$z/pid"; n=1; break
 fi
 sleep 1 </dev/null >/dev/null 2>&1 7<&- 8>&- 9>&- & w=$!

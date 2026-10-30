@@ -4,7 +4,7 @@
 // zygote refuses, so provider tests cover the fallback.
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zygoteSupervisor } from "../src/shared/guest.js";
@@ -255,6 +255,57 @@ test("a zygote record from another boot is ignored", async () => {
   await exited(pid);
   await request("true");
   await zygotePid(pid);
+});
+
+test("an old claim stays while its command runs, so the command runs exactly once", async () => {
+  // The second one-shot starts a zygote when none is running yet.
+  await request("true");
+  await request("true");
+  const { dir } = await zygotePid();
+  const counter = join(base, `runs-${crypto.randomUUID()}`);
+  // Longer than the zygote's 5 s sweep tick, so a sweep runs while the claim is live.
+  const running = request(`echo x >> ${counter}; ${parent}; sleep 7; echo done`);
+  let claim: string | undefined;
+
+  for (let attempt = 0; attempt < 200 && !claim; attempt++) {
+    claim = (await readdir(dir)).find((entry) => entry.startsWith("c-"));
+
+    if (!claim) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  expect(claim).toBeDefined();
+  // Older than any age limit: only the client's and the worker's liveness may release it.
+  const old = Date.now() / 1000 - 3600;
+  await utimes(join(dir, claim ?? ""), old, old);
+  // Past the zygote's next sweep tick, the worker that took the request still owns it.
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  const owner = (await readFile(join(dir, claim ?? ""), "utf8")).split(/\s/)[0];
+  expect(owner).toMatch(/^\d+$/);
+
+  expect(await running).toMatchObject({ exitCode: 0, stdout: "z-\ndone\n" });
+  expect(await readFile(counter, "utf8")).toBe("x\n");
+});
+
+test("the sweep drops claims whose client and worker are gone, and keeps live ones", async () => {
+  await request("true");
+  const { dir } = await zygotePid();
+  const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+  const claim = (owners: string) => writeFile(join(dir, `c-${crypto.randomUUID()}`), `${owners}\n`);
+  // PIDs past the kernel's pid_max cannot be live.
+  await claim(`9999999 - 9999998 - ${boot}`);
+  await claim(`- - 9999998 - 00000000-0000-0000-0000-000000000000`);
+  await claim(`- - ${process.pid} - ${boot}`);
+  await claim("");
+  // Past the zygote's next 5 s sweep tick.
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+
+  const left = await Promise.all(
+    (await readdir(dir))
+      .filter((entry) => entry.startsWith("c-"))
+      .map((entry) => readFile(join(dir, entry), "utf8")),
+  );
+
+  expect(left.sort()).toEqual(["\n", `- - ${process.pid} - ${boot}\n`]);
 });
 
 test("a stalled zygote cannot hold a request, and stops being used", async () => {
