@@ -1,0 +1,96 @@
+/* Pixel-art diagrams for /v2: a scaled-up canvas with real text labels laid over it. */
+
+.pixel {
+  padding: 40px 34px 48px;
+}
+/* only the canvas and its labels, so label percentages map onto the canvas */
+.stage {
+  position: relative;
+}
+.pixelCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.tag {
+  position: absolute;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* provider logos sit over the canvas as real SVGs, so they stay sharp */
+.logo {
+  position: absolute;
+  height: auto;
+  opacity: 0.3;
+  transition: opacity 300ms ease;
+  pointer-events: none;
+}
+.logoLit {
+  opacity: 1;
+}
+.lit {
+  color: var(--text);
+  font-size: 14px;
+}
+.ok {
+  color: #8fbf8a;
+}
+.fail {
+  color: #c98585;
+}
+
+.swap {
+  padding: 8px 64px 88px;
+}
+.tests {
+  align-self: center;
+  margin: 56px 64px;
+  padding: 0;
+}
+
+.timeline {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 18px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.now {
+  color: var(--amber);
+}
+
+@media (max-width: 600px) {
+  .minor {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .pixel {
+    padding: 28px 24px 36px;
+  }
+  .swap {
+    padding: 0 24px 48px;
+  }
+  .tests {
+    margin: 0 24px 48px;
+  }
+  .tag {
+    font-size: 11px;
+  }
+  .lit {
+    font-size: 12px;
+  }
+  .timeline {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+}
