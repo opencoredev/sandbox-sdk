@@ -16,6 +16,7 @@
     "check-types": "bun run typecheck",
     "test": "turbo run test",
     "test:ci": "turbo run test --concurrency=1",
+    "smoke:package": "bun run --cwd packages/sdk smoke:bundle && bun run --cwd packages/sdk smoke:consumer",
     "test:live": "turbo run test:live",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
