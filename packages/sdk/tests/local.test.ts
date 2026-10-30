@@ -467,6 +467,8 @@ test.each([undefined, 5_000])(
     const exec = vi
       .spyOn(Docker.prototype, "exec")
       .mockImplementation(async (_, command, options) => {
+        // The restore's record cleanup is shell; a separate test runs it.
+        if (command[0] !== "node") return 0;
         let text = "";
         new Function("require", "process", command[2] ?? "")(() => fs, {
           stdout: {
@@ -493,3 +495,49 @@ test.each([undefined, 5_000])(
     }
   },
 );
+
+test("a restore from a snapshot marks inherited processes exited and clears their markers", async () => {
+  const { vi } = await import("vitest");
+  const { Docker } = await import("../src/providers/local/docker.js");
+  const { promises: fs } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawn } = await import("node:child_process");
+
+  // The snapshot's filesystem: one process recorded as running, one finished, one active run.
+  const root = await fs.mkdtemp(join(tmpdir(), "sdk-restore-"));
+  const records = join(root, "tmp/.sandbox-sdk");
+  await fs.mkdir(join(records, "procs/web/lock/4242"), { recursive: true });
+  await fs.writeFile(join(records, "procs/web/spec.json"), "{}");
+  await fs.writeFile(join(records, "procs/web/pid"), "4242");
+  await fs.mkdir(join(records, "procs/done"), { recursive: true });
+  await fs.writeFile(join(records, "procs/done/spec.json"), "{}");
+  await fs.writeFile(join(records, "procs/done/exit"), "0");
+  await fs.mkdir(join(records, "runs/0b7c"), { recursive: true });
+
+  const call = vi
+    .spyOn(Docker.prototype, "call")
+    .mockImplementation(async (_, path) =>
+      path.startsWith("/containers/create") ? { Id: "restored" } : { Os: "linux" },
+    );
+
+  // Run each guest command on this host with the guest's /tmp mapped into the snapshot copy.
+  const exec = vi.spyOn(Docker.prototype, "exec").mockImplementation(async (_, command) => {
+    const [program = "", ...args] = command.map((part) => part.replaceAll("/tmp/", `${root}/tmp/`));
+    const child = spawn(program, args, { stdio: "ignore" });
+
+    return new Promise<number>((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
+  });
+
+  try {
+    await local().create({ labels: {}, from: "sha256:snap" });
+    expect(await fs.readFile(join(records, "procs/web/exit"), "utf8")).toBe("137");
+    await expect(fs.stat(join(records, "procs/web/lock"))).rejects.toThrow();
+    expect(await fs.readFile(join(records, "procs/done/exit"), "utf8")).toBe("0");
+    await expect(fs.readdir(join(records, "runs"))).resolves.toEqual([]);
+  } finally {
+    call.mockRestore();
+    exec.mockRestore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

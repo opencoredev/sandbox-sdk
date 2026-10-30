@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import pkg from "../package.json" with { type: "json" };
 
@@ -34,5 +35,20 @@ const result = await Bun.build({
 
 if (!result.success) {
   for (const log of result.logs) console.error(log);
+  process.exit(1);
+}
+
+// Some Bun versions hoist a `require` shim, `createRequire(import.meta.url)`, to the top of a
+// shared chunk. A CommonJS bundle of the SDK has no import.meta.url, so it throws on load.
+const requireShim = /\bcreateRequire\b[^;]{0,40};\s*var\s+[\w$]+\s*=\s*[\w$]+\(import\.meta\.url\)/;
+
+const shimmed = result.outputs.filter((output) =>
+  requireShim.test(readFileSync(output.path, "utf8")),
+);
+
+if (shimmed.length > 0) {
+  console.error(
+    `Build emitted a top-level createRequire(import.meta.url), which breaks CommonJS bundles:\n${shimmed.map((output) => `  ${output.path}`).join("\n")}\nUse the Bun version in package.json's packageManager.`,
+  );
   process.exit(1);
 }

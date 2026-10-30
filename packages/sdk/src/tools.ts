@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Sandbox, OutputChunk } from "./types.js";
 import { SandboxError, invalid } from "./errors.js";
 import { BufferCap } from "./run.js";
+import { readAtMost } from "./files.js";
 import { isString } from "./shared/narrow.js";
 import { redactToolText, toolOutputFilter } from "./tool-security.js";
 import type { JsonValue } from "./shared/json.js";
@@ -165,6 +166,124 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
       const oldest = runLogs.keys().next().value;
 
       if (oldest) runLogs.delete(oldest);
+    }
+  }
+
+  // Background logs normalized so far, one view per process. Each call continues from the saved
+  // SDK cursor rather than rereading from the start, so every retained byte stays reachable.
+  interface LogView {
+    /** SDK cursor of the next unread page. */
+    after: string | undefined;
+    /** Whether the SDK had output past `after` at the last read. */
+    more: boolean;
+    /** Normalized offset of `buffer[0]`; bytes before it were dropped once read past. */
+    base: number;
+    buffer: Buffer;
+    /** Normalized output not yet joined onto `buffer`, and the offset just past it. */
+    pending: Buffer[];
+    end: number;
+    filter: ReturnType<typeof toolOutputFilter>;
+  }
+
+  const logViews = new Map<string, LogView>();
+  // Calls for one process take turns, so each SDK page is appended once.
+  const logTurns = new Map<string, Promise<unknown>>();
+
+  function logView(name: string, cursor: number) {
+    const known = logViews.get(name);
+    logViews.delete(name);
+
+    // A cursor before the kept bytes replays the log from its start.
+    if (known && cursor >= known.base) {
+      logViews.set(name, known);
+
+      return known;
+    }
+
+    // Normalize before paginating, so a secret split across SDK pages is still redacted.
+    const view: LogView = {
+      after: undefined,
+      more: true,
+      base: 0,
+      buffer: Buffer.alloc(0),
+      pending: [],
+      end: 0,
+      filter: toolOutputFilter(box, (chunk) => {
+        const data = Buffer.from(chunk.text);
+        view.pending.push(data);
+        view.end += data.length;
+      }),
+    };
+
+    logViews.set(name, view);
+
+    while (logViews.size > 8) {
+      const oldest = logViews.keys().next().value;
+
+      if (oldest) logViews.delete(oldest);
+    }
+
+    return view;
+  }
+
+  async function readBackgroundLogs(name: string, cursor: number, pageBytes: number) {
+    const view = logView(name, cursor);
+    const proc = box.process(name);
+
+    // Read only as far as this page needs; the next call resumes from view.after.
+    while (view.end < cursor + pageBytes) {
+      const raw = await proc.logs({ after: view.after, maxBytes: 1_048_576 });
+      view.filter.push({ stream: "stdout", text: raw.text });
+      view.more = raw.truncated && raw.nextCursor !== view.after;
+      view.after = raw.nextCursor;
+
+      if (!view.more) break;
+    }
+
+    // Withhold an ambiguous secret prefix at the live edge until more output arrives.
+    if (!view.more && (proc.status === "exited" || proc.status === "failed")) view.filter.flush();
+
+    if (view.pending.length) {
+      view.buffer = Buffer.concat([view.buffer, ...view.pending]);
+      view.pending = [];
+    }
+
+    if (cursor > view.end)
+      invalid(
+        "Log cursor is invalid or expired after rotation. The retained log view changed. Use cursor=0 to replay",
+      );
+    const buffer = view.buffer;
+    const continuation = (at: number) => ((buffer[at - view.base] ?? 0) & 0xc0) === 0x80;
+
+    let start = cursor,
+      end = Math.min(view.end, cursor + pageBytes);
+
+    while (start < view.end && continuation(start)) start++;
+
+    while (end > start && end < view.end && continuation(end)) end--;
+    const text = buffer.subarray(start - view.base, end - view.base).toString();
+    // Keep a window behind the reader for short rewinds; older cursors reread the log.
+    const keep = Math.max(view.base, start - 1_048_576);
+
+    if (keep > view.base) {
+      view.buffer = Buffer.from(buffer.subarray(keep - view.base));
+      view.base = keep;
+    }
+
+    return { text, end, more: end < view.end || view.more };
+  }
+
+  async function backgroundLogs(name: string, cursor: number, pageBytes: number) {
+    const turn = (logTurns.get(name) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => readBackgroundLogs(name, cursor, pageBytes));
+
+    logTurns.set(name, turn);
+
+    try {
+      return await turn;
+    } finally {
+      if (logTurns.get(name) === turn) logTurns.delete(name);
     }
   }
 
@@ -333,16 +452,24 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
             case "read_file": {
               const p = parsed.input;
               const path = await safePath(p.path);
-              const bytes = await box.files.read(path, { as: "bytes" });
-              const sha = hash(bytes);
               const max = limits.maxReadBytes ?? 1_048_576;
+              const size = (await box.files.stat(path)).size;
+
+              // Checked before the download, and the read stops one byte past the limit where the
+              // adapter allows, so an oversized file never costs its full transfer.
+              if (size > max)
+                return result(
+                  false,
+                  `File is ${size} bytes, above maxReadBytes=${max}. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
+                );
+              const bytes = await readAtMost(box.files, path, max);
 
               if (bytes.length > max)
                 return result(
                   false,
-                  `File is ${bytes.length} bytes, above maxReadBytes=${max}. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
-                  `sha=${sha}`,
+                  `File grew above maxReadBytes=${max} while being read. Raise read_file's maxReadBytes or use run to extract a smaller file.`,
                 );
+              const sha = hash(bytes);
               let content: string;
 
               try {
@@ -476,50 +603,21 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
                 );
               }
 
-              // Normalize retained durable output before paginating to avoid splitting secrets.
-              const proc = box.process(p.name);
-              const normalized = new BufferCap(10_485_760);
-              const filter = toolOutputFilter(box, (chunk) => normalized.add(chunk.text));
-
-              let after: string | undefined,
-                more = false;
-
-              for (let page = 0; page < 16; page++) {
-                const raw = await proc.logs({ after, maxBytes: 1_048_576 });
-                filter.push({ stream: "stdout", text: raw.text });
-                more = raw.truncated && raw.nextCursor !== after;
-                after = raw.nextCursor;
-
-                if (!more) break;
-              }
-
-              // Withhold an ambiguous secret prefix at the live edge until more output arrives.
-              if (proc.status === "exited" || proc.status === "failed") filter.flush();
-              const buffer = Buffer.from(normalized.text());
               const cursor = p.cursor === undefined ? 0 : Number(p.cursor);
 
-              if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > buffer.length)
+              if (!Number.isSafeInteger(cursor) || cursor < 0)
                 invalid(
                   "Log cursor is invalid or expired after rotation. The retained log view changed. Use cursor=0 to replay",
                 );
-
-              let start = cursor,
-                end = Math.min(buffer.length, cursor + Math.max(32, maxOutputBytes - 512));
-
-              const continuation = (at: number) => ((buffer[at] ?? 0) & 0xc0) === 0x80;
-
-              while (start < buffer.length && continuation(start)) start++;
-
-              while (end > start && end < buffer.length && continuation(end)) end--;
-              const text = buffer.subarray(start, end).toString();
-              notify({ tool, kind: "output", stream: "stdout", text });
+              const page = await backgroundLogs(p.name, cursor, Math.max(32, maxOutputBytes - 512));
+              notify({ tool, kind: "output", stream: "stdout", text: page.text });
 
               return result(
                 true,
-                `${text}${end < buffer.length || more ? "\n[more output; use process_logs with cursor]" : ""}`,
+                `${page.text}${page.more ? "\n[more output; use process_logs with cursor]" : ""}`,
                 "",
                 undefined,
-                `cursor=${end} more=${end < buffer.length || more}\n`,
+                `cursor=${page.end} more=${page.more}\n`,
               );
             }
 

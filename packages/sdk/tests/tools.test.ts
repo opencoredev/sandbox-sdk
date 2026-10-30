@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createSandbox } from "../src/index.js";
 import { SandboxError } from "../src/errors.js";
 import { memory } from "../src/memory.js";
+import type { Provider } from "../src/provider.js";
 import { createSandboxTools, toolSchemas, type ToolName, type ToolResult } from "../src/tools.js";
 import { sandboxTools as aiTools } from "../src/ai.js";
 import { sandboxTools as mastraTools } from "../src/mastra.js";
@@ -522,6 +523,88 @@ describe("pagination security", () => {
     events.length = 0;
     await invoke(tools, "run", { command: "merged" });
     expect(events.join("")).toBe("[REDACTED]");
+  });
+
+  it("pages background logs past the first megabyte", async () => {
+    await using box = await createSandbox(
+      memory({
+        handlers: {
+          // Writes in bursts so the log writer keeps every byte, about 2 MiB in all.
+          async chatty({ stdout }) {
+            for (let i = 0; i < 2048; i++) {
+              stdout(`${String(i).padStart(4, "0")} ${"y".repeat(1018)}\n`);
+
+              if (i % 128 === 127) await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+
+            stdout("END-OF-LOG\n");
+
+            return 0;
+          },
+        },
+      }),
+    );
+
+    const tools = createSandboxTools(box, {
+      limits: { process_logs: { maxOutputBytes: 524_288 } },
+    });
+
+    await box.start("chatty", { name: "chatty" });
+    await box.process("chatty").wait();
+
+    let cursor = "0",
+      output = "",
+      finished = false;
+
+    for (let i = 0; i < 12 && !finished; i++) {
+      const page = await invoke(tools, "process_logs", { name: "chatty", cursor });
+      output += page.text;
+      cursor = /cursor=(\d+)/.exec(page.text)?.[1] ?? "0";
+      finished = page.text.includes("more=false");
+    }
+
+    expect(finished).toBe(true);
+    expect(output).toContain("0000 yyy");
+    expect(output).toContain("2047 yyy");
+    expect(output).toContain("END-OF-LOG");
+  });
+
+  it("refuses an oversized file before downloading it", async () => {
+    const backing = memory();
+    const downloads: string[] = [];
+    let reportedSize: number | undefined;
+
+    const provider: Provider = {
+      ...backing,
+      files: {
+        ...backing.files,
+        async stat(id, path) {
+          const info = await backing.files.stat(id, path);
+
+          return reportedSize === undefined ? info : { ...info, size: reportedSize };
+        },
+        async read(id, path) {
+          downloads.push(path);
+
+          return backing.files.read(id, path);
+        },
+      },
+    };
+
+    await using box = await createSandbox(provider);
+    await box.files.write("big", "z".repeat(4096));
+    const tools = createSandboxTools(box, { limits: { read_file: { maxReadBytes: 1024 } } });
+    const refused = await invoke(tools, "read_file", { path: "big" });
+    expect(refused.text).toMatch(/^FAILED/);
+    expect(refused.text).toContain("4096 bytes, above maxReadBytes=1024");
+    expect(downloads).toEqual([]);
+
+    // A file that grows after its size check is still read only up to the limit.
+    reportedSize = 10;
+    const grown = await invoke(tools, "read_file", { path: "big" });
+    expect(grown.text).toMatch(/^FAILED/);
+    expect(grown.text).toContain("above maxReadBytes=1024");
+    expect(downloads).toEqual([]);
   });
 
   it("keeps replay metadata intact with the minimum accepted cap", async () => {

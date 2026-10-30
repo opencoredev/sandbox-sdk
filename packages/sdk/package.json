@@ -130,6 +130,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src tests scripts",
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",

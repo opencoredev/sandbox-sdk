@@ -33,7 +33,8 @@ bump.
 
 4. Preview the npm artifact from the pushed commit. Check that the file list
    holds `dist`, `README.md`, `LICENSE`, `CHANGELOG.md`, and `package.json`
-   and nothing else:
+   and nothing else. `npm pack` and `npm publish` run the `prepack` script,
+   which rebuilds `dist` from source first, so the artifact is never stale:
 
    ```bash
    cd packages/sdk

@@ -9,7 +9,7 @@ import type {
   SandboxBase,
 } from "./types.js";
 import { SandboxError, Redactor, invalid, isNotFound } from "./errors.js";
-import { forgetKey, forgetSandbox, knownKey, rememberKey } from "./keys.js";
+import { forgetKey, forgetSandbox, knownKey, rememberKey, withKeyLock } from "./keys.js";
 
 export { SandboxError } from "./errors.js";
 
@@ -60,10 +60,6 @@ export function hasCapability<B extends SandboxBase<unknown>, K extends Capabili
 }
 
 const sdkLabel = { "sandbox-sdk": "1" };
-
-// Serializes same-key callers in this JS realm, including locator read/create/write.
-// Cross-host exactness requires the provider's unique native key (see provider keyMode).
-const queues = new WeakMap<Provider, Map<string, Promise<unknown>>>();
 
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets }))
@@ -263,33 +259,8 @@ export async function createSandbox(
   }
 
   if (!options.key) return acquire();
-  let queue = queues.get(provider);
 
-  if (!queue) {
-    queue = new Map();
-    queues.set(provider, queue);
-  }
-
-  const previous = queue.get(options.key) ?? Promise.resolve();
-  const key = options.key;
-  const locator = options.locator;
-
-  // The previous call's failure belongs to its own caller; this one only waits its turn.
-  const task = previous
-    .catch(() => {})
-    .then(() =>
-      options.keyMode === "exact" && provider.keyMode === "best-effort" && locator?.withLock
-        ? locator.withLock(key, acquire)
-        : acquire(),
-    );
-
-  queue.set(options.key, task);
-
-  try {
-    return await task;
-  } finally {
-    if (queue.get(options.key) === task) queue.delete(options.key);
-  }
+  return withKeyLock(provider, options.key, options, acquire);
 }
 
 export function connectSandbox<P extends Provider>(

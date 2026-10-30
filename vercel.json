@@ -62,7 +62,7 @@
     },
     {
       "source": "/docs/api/sandboxes",
-      "destination": "/docs/reference/sandbox",
+      "destination": "/docs/concepts/sandboxes-and-keys",
       "permanent": true
     },
     {
