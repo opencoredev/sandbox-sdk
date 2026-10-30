@@ -33,12 +33,19 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
   const e2bFetch = e2b.fetch(original.fetch);
   // E2B's fake claims every api.* and sandbox.* host, so the hosts the others own are matched first.
   globalThis.fetch = (input, init) => {
-    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.hostname === "superserve.ai" || url.hostname.endsWith(".superserve.ai")) return superserveFetch(input, init);
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    if (url.hostname === "superserve.ai" || url.hostname.endsWith(".superserve.ai"))
+      return superserveFetch(input, init);
     if (url.origin === "https://api.freestyle.sh") return freestyleFetch(input, init);
     return e2bFetch(input, init);
   };
-  afterAll(async () => { await cleanupMock(); await cleanupFreestyle(); await resetSuperserveFake(); });
+  afterAll(async () => {
+    await cleanupMock();
+    await cleanupFreestyle();
+    await resetSuperserveFake();
+  });
   return {
     options: {
       e2b: { apiKey: "mock" },

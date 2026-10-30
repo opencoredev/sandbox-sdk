@@ -2,15 +2,38 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
 
 type RequestEvidence = { status?: number; requestId?: string; operation?: string };
-export const requestEvidence = new AsyncLocalStorage<RequestEvidence & { deniedValues?: string[]; backgroundRequestId?: string }>();
+export const requestEvidence = new AsyncLocalStorage<
+  RequestEvidence & { deniedValues?: string[]; backgroundRequestId?: string }
+>();
 const routes = new Set([
-  "v5", "vms", "fs", "read", "write", "uploads", "commit", "dir", "mkdir", "remove",
-  "exists", "stat", "exec-await", "firewall", "rules", "tls", "pause", "start", "snapshot",
-  "snapshots", "background-requests",
+  "v5",
+  "vms",
+  "fs",
+  "read",
+  "write",
+  "uploads",
+  "commit",
+  "dir",
+  "mkdir",
+  "remove",
+  "exists",
+  "stat",
+  "exec-await",
+  "firewall",
+  "rules",
+  "tls",
+  "pause",
+  "start",
+  "snapshot",
+  "snapshots",
+  "background-requests",
 ]);
 function operation(path: string): string {
   // Retain route names only. IDs, file paths, query strings and URLs are private.
-  return (path.split("?")[0] ?? "").split("/").map(part => routes.has(part) ? part : part ? ":id" : "").join("/");
+  return (path.split("?")[0] ?? "")
+    .split("/")
+    .map((part) => (routes.has(part) ? part : part ? ":id" : ""))
+    .join("/");
 }
 export function recordRequest(url: string | URL | Request, method = "GET", apiKey?: string) {
   const context = requestEvidence.getStore();
@@ -31,24 +54,44 @@ export function recordResponse(response: Response, apiKey: string) {
   context.status = response.status;
   const backgroundId = response.headers.get("x-freestyle-background-request-id");
   const safeId = (id: string | null | undefined) =>
-    id && /^[A-Za-z0-9_-]{1,128}$/.test(id) && !id.includes(apiKey) &&
-    !context.deniedValues?.some(value => id.includes(value)) ? id : undefined;
+    id &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(id) &&
+    !id.includes(apiKey) &&
+    !context.deniedValues?.some((value) => id.includes(value))
+      ? id
+      : undefined;
   if (safeId(backgroundId)) context.backgroundRequestId = safeId(backgroundId);
-  context.requestId = safeId(response.headers.get("x-request-id")) ??
-    safeId(response.headers.get("x-freestyle-request-id")) ?? context.backgroundRequestId;
+  context.requestId =
+    safeId(response.headers.get("x-request-id")) ??
+    safeId(response.headers.get("x-freestyle-request-id")) ??
+    context.backgroundRequestId;
 }
-export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string, cause?: unknown) {
-  return new SandboxError(code === "auth" ? message : `${message}. Check Freestyle configuration and retry.`, {
-    code,
-    provider: "freestyle",
-    sandboxId,
-    cause,
-  });
+export function failure(
+  message: string,
+  code: ErrorCode = "provider",
+  sandboxId?: string,
+  cause?: unknown,
+) {
+  return new SandboxError(
+    code === "auth" ? message : `${message}. Check Freestyle configuration and retry.`,
+    {
+      code,
+      provider: "freestyle",
+      sandboxId,
+      cause,
+    },
+  );
 }
 /** A non-2xx Freestyle answer: its status and the error body's `code`, `message`. The message is classified, never kept. */
 export class FreestyleApiError extends Error {
   override readonly name = "FreestyleApiError";
-  constructor(readonly status: number, readonly code: string | undefined, message: string | undefined, readonly path: string, readonly backgroundRequestId?: string) {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string | undefined,
+    readonly path: string,
+    readonly backgroundRequestId?: string,
+  ) {
     super(message || `Freestyle API error: ${code ?? status}`);
   }
 }
@@ -66,22 +109,31 @@ const codes: Record<number, ErrorCode> = {
   504: "timeout",
 };
 /** The filesystem API answers a missing guest path with 404 NOT_FOUND too; only its message tells it from a missing VM. */
-export const missingPath = (status: number, message: string | undefined) => status === 404 && /no such file or directory|\bos error 2\b/i.test(message ?? "");
+export const missingPath = (status: number, message: string | undefined) =>
+  status === 404 && /no such file or directory|\bos error 2\b/i.test(message ?? "");
 /** The code for a Freestyle status, as adapter errors and native calls report it. */
-export const statusCode = (status: number, message?: string): ErrorCode => missingPath(status, message) ? "file_not_found" : codes[status] ?? "provider";
+export const statusCode = (status: number, message?: string): ErrorCode =>
+  missingPath(status, message) ? "file_not_found" : (codes[status] ?? "provider");
 export function freestyleError(error: unknown, sandboxId?: string): SandboxError {
   if (error instanceof SandboxError) return error;
   const status =
     typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
   const context = requestEvidence.getStore();
   const evidence: RequestEvidence & { providerCode?: string; native?: string } = {};
-  if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) evidence.status = status;
+  if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599)
+    evidence.status = status;
   if (typeof error === "object" && error !== null) {
-    if ("code" in error && typeof error.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)) {
+    if (
+      "code" in error &&
+      typeof error.code === "string" &&
+      /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+    ) {
       const code = error.code;
-      if (!context?.deniedValues?.some(value => code.includes(value))) evidence.providerCode = code;
+      if (!context?.deniedValues?.some((value) => code.includes(value)))
+        evidence.providerCode = code;
     }
-    if ("path" in error && typeof error.path === "string") evidence.operation = operation(error.path);
+    if ("path" in error && typeof error.path === "string")
+      evidence.operation = operation(error.path);
   }
   if (context?.operation) evidence.operation = context.operation;
   if (context?.status === status && context?.requestId) evidence.requestId = context.requestId;
@@ -97,7 +149,11 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
           : "provider";
   // An unrecognized failure without a status keeps its scrubbed message (see describeNative).
   // A response's message, body and headers never are kept.
-  const { detail } = describeNative(error, { code, status: status === undefined ? undefined : String(status), redact: redacting([process.env.FREESTYLE_API_KEY, ...(context?.deniedValues ?? [])]) });
+  const { detail } = describeNative(error, {
+    code,
+    status: status === undefined ? undefined : String(status),
+    redact: redacting([process.env.FREESTYLE_API_KEY, ...(context?.deniedValues ?? [])]),
+  });
   if (detail !== undefined) evidence.native = detail;
   // Core's redactor preserves Error.message rather than arbitrary cause objects.
   // JSON in the message keeps these fields available there, too, without ever
@@ -105,5 +161,10 @@ export function freestyleError(error: unknown, sandboxId?: string): SandboxError
   const cause = Object.keys(evidence).length
     ? Object.assign(new Error(JSON.stringify(evidence)), evidence)
     : undefined;
-  return failure(`Freestyle request failed: ${reason(code, evidence.native)}`, code, sandboxId, cause);
+  return failure(
+    `Freestyle request failed: ${reason(code, evidence.native)}`,
+    code,
+    sandboxId,
+    cause,
+  );
 }

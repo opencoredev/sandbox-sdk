@@ -37,15 +37,21 @@ export interface BoatOptions extends BoatCreateOptions {
 /** What `native.sdk()` needs from `@boatdev/sdk`: its `Configuration` and `BoatApi` classes. */
 export interface BoatSdkModule {
   Configuration: new (parameters: { basePath?: string; accessToken?: string }) => object;
-  BoatApi: new (configuration: never) => { get(request: { sandboxId: string }): Promise<{ sandbox: unknown }> };
+  BoatApi: new (configuration: never) => {
+    get(request: { sandboxId: string }): Promise<{ sandbox: unknown }>;
+  };
 }
 /** `box.native.sdk(() => import("@boatdev/sdk"))`: a `BoatApi` client with this adapter's base URL and key, and the sandbox's metadata from `client.get`. */
-export type BoatSandboxSdk = <M extends BoatSdkModule>(load: () => Promise<M>) => Promise<{
+export type BoatSandboxSdk = <M extends BoatSdkModule>(
+  load: () => Promise<M>,
+) => Promise<{
   client: InstanceType<M["BoatApi"]>;
   sandbox: Awaited<ReturnType<InstanceType<M["BoatApi"]>["get"]>>["sandbox"];
 }>;
 /** `provider.api.sdk(() => import("@boatdev/sdk"))`: the `BoatApi` client. */
-export type BoatClientSdk = <M extends BoatSdkModule>(load: () => Promise<M>) => Promise<InstanceType<M["BoatApi"]>>;
+export type BoatClientSdk = <M extends BoatSdkModule>(
+  load: () => Promise<M>,
+) => Promise<InstanceType<M["BoatApi"]>>;
 
 /**
  * `box.native`: Boat's HTTP API with this adapter's base URL, key, retries and redaction. Its one plane is

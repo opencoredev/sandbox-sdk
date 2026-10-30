@@ -35,23 +35,27 @@ Calls an endpoint and resolves with the raw `Response`, for file bytes, logs, an
 import type { NativeApi } from "@opencoredev/sandbox-sdk";
 
 export async function printLogs(native: NativeApi, signal: AbortSignal) {
-  const response = await native.fetch("GET", "/sandboxes/{sandboxId}/logs", { query: { follow: true }, signal });
+  const response = await native.fetch("GET", "/sandboxes/{sandboxId}/logs", {
+    query: { follow: true },
+    signal,
+  });
   const decoder = new TextDecoder();
-  for await (const chunk of response.body ?? []) process.stdout.write(decoder.decode(chunk, { stream: true }));
+  for await (const chunk of response.body ?? [])
+    process.stdout.write(decoder.decode(chunk, { stream: true }));
 }
 ```
 
 ## Options
 
-| Option | Type | Meaning |
-| --- | --- | --- |
-| `plane` | provider-specific string | Which of the provider's APIs to call, such as a control plane and a per-sandbox toolbox. Default: the control plane. |
-| `params` | `Record<string, string \| number>` | Values for `{name}` placeholders in the path, URI-encoded. |
-| `query` | `Record<string, string \| number \| boolean \| undefined>` | Query string values. `undefined` values are left out. |
-| `body` | `unknown` | Sent as is when it is a `string`, `Uint8Array`, `ArrayBuffer`, `Blob`, `FormData`, `URLSearchParams`, or `ReadableStream`. Anything else is sent as JSON. |
-| `headers` | `Record<string, string>` | Extra headers. |
-| `signal` | `AbortSignal` | Rejects with `aborted`. |
-| `timeoutMs` | `number` | `request` counts the whole call, body included. `fetch` counts until the response headers arrive. Default: the provider's request timeout. |
+| Option      | Type                                                       | Meaning                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plane`     | provider-specific string                                   | Which of the provider's APIs to call, such as a control plane and a per-sandbox toolbox. Default: the control plane.                                      |
+| `params`    | `Record<string, string \| number>`                         | Values for `{name}` placeholders in the path, URI-encoded.                                                                                                |
+| `query`     | `Record<string, string \| number \| boolean \| undefined>` | Query string values. `undefined` values are left out.                                                                                                     |
+| `body`      | `unknown`                                                  | Sent as is when it is a `string`, `Uint8Array`, `ArrayBuffer`, `Blob`, `FormData`, `URLSearchParams`, or `ReadableStream`. Anything else is sent as JSON. |
+| `headers`   | `Record<string, string>`                                   | Extra headers.                                                                                                                                            |
+| `signal`    | `AbortSignal`                                              | Rejects with `aborted`.                                                                                                                                   |
+| `timeoutMs` | `number`                                                   | `request` counts the whole call, body included. `fetch` counts until the response headers arrive. Default: the provider's request timeout.                |
 
 ### Placeholders
 
@@ -61,7 +65,9 @@ On `box.native`, the provider's sandbox placeholder, such as `{sandboxId}`, fill
 import type { NativeApi } from "@opencoredev/sandbox-sdk";
 
 export async function previewUrl(native: NativeApi, port: number) {
-  return native.request<{ url: string }>("GET", "/sandboxes/{sandboxId}/ports/{port}/preview-url", { params: { port } });
+  return native.request<{ url: string }>("GET", "/sandboxes/{sandboxId}/ports/{port}/preview-url", {
+    params: { port },
+  });
 }
 ```
 

@@ -197,7 +197,9 @@ const history = await box.native.request<{ commands: { command: string; status: 
 );
 console.log(history.commands.map((entry) => entry.status));
 
-const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", { query: { path: "/tmp/report.txt" } });
+const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", {
+  query: { path: "/tmp/report.txt" },
+});
 console.log(await file.text());
 ```
 

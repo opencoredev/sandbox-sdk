@@ -206,10 +206,10 @@ Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a depr
 
 `box.native` calls any Daytona endpoint the adapter doesn't wrap, with the adapter's credentials, retries, and error mapping. It has two planes:
 
-| Plane | Base URL | What it serves |
-| --- | --- | --- |
-| `"api"` (default) | `baseUrl`, `https://app.daytona.io/api` | Sandboxes, snapshots, volumes, previews. `{sandboxId}` fills itself from the sandbox. |
-| `"toolbox"` | The sandbox's toolbox proxy URL, plus its ID | The sandbox's files and processes. Paths are already scoped to the sandbox, such as `/files` or `/process/execute`. |
+| Plane             | Base URL                                     | What it serves                                                                                                      |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `"api"` (default) | `baseUrl`, `https://app.daytona.io/api`      | Sandboxes, snapshots, volumes, previews. `{sandboxId}` fills itself from the sandbox.                               |
+| `"toolbox"`       | The sandbox's toolbox proxy URL, plus its ID | The sandbox's files and processes. Paths are already scoped to the sandbox, such as `/files` or `/process/execute`. |
 
 `request` returns the JSON body. `fetch` returns the raw `Response`, for file bytes and streams.
 
@@ -218,16 +218,22 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
 await using box = await createSandbox(daytona());
-const sandbox = await box.native.request<{ state: string; cpu: number }>("GET", "/sandbox/{sandboxId}");
+const sandbox = await box.native.request<{ state: string; cpu: number }>(
+  "GET",
+  "/sandbox/{sandboxId}",
+);
 console.log(sandbox.state, sandbox.cpu);
 
 const files = await box.native.request<{ name: string; isDir: boolean }[]>("GET", "/files", {
   plane: "toolbox",
   query: { path: "/workspace" },
 });
-console.log(files.map(file => file.name));
+console.log(files.map((file) => file.name));
 
-const response = await box.native.fetch("GET", "/files/download", { plane: "toolbox", query: { path: "/workspace/report.csv" } });
+const response = await box.native.fetch("GET", "/files/download", {
+  plane: "toolbox",
+  query: { path: "/workspace/report.csv" },
+});
 const bytes = new Uint8Array(await response.arrayBuffer());
 ```
 
@@ -237,8 +243,12 @@ For calls that aren't about one sandbox, use the factory's `api`. It has no sand
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 
 const provider = daytona();
-const snapshots = await provider.api.request<{ items: { name: string; state: string }[] }>("GET", "/snapshots", { query: { limit: 20 } });
-console.log(snapshots.items.map(snapshot => snapshot.name));
+const snapshots = await provider.api.request<{ items: { name: string; state: string }[] }>(
+  "GET",
+  "/snapshots",
+  { query: { limit: 20 } },
+);
+console.log(snapshots.items.map((snapshot) => snapshot.name));
 ```
 
 To use the official SDK for something, install `@daytonaio/sdk` yourself and hand it to `sdk`. You get its `Sandbox` for this sandbox, or its `Daytona` client from `provider.api.sdk`, built with the adapter's credentials, `baseUrl`, and `target`.

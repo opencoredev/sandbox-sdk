@@ -200,7 +200,10 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
 await using box = await createSandbox(freestyle());
-const vm = await box.native.request<{ state: string; resources: { cpu: number; memory: number } }>("GET", "/v5/vms/{vmId}");
+const vm = await box.native.request<{ state: string; resources: { cpu: number; memory: number } }>(
+  "GET",
+  "/v5/vms/{vmId}",
+);
 console.log(vm.state, vm.resources);
 ```
 
@@ -211,7 +214,9 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
 await using box = await createSandbox(freestyle());
-const response = await box.native.fetch("GET", "/v5/vms/{vmId}/fs/read", { query: { path: "/etc/os-release" } });
+const response = await box.native.fetch("GET", "/v5/vms/{vmId}/fs/read", {
+  query: { path: "/etc/os-release" },
+});
 console.log(await response.text());
 ```
 
@@ -223,7 +228,10 @@ The adapter's own calls ask Freestyle to finish slow requests in the background 
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 
 const provider = freestyle();
-const { snapshots } = await provider.api.request<{ snapshots: { id: string }[]; totalCount: number }>("GET", "/v5/snapshots", {
+const { snapshots } = await provider.api.request<{
+  snapshots: { id: string }[];
+  totalCount: number;
+}>("GET", "/v5/snapshots", {
   query: { limit: 10 },
 });
 console.log(snapshots.map((snapshot) => snapshot.id));

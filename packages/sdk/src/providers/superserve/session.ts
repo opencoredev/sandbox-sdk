@@ -50,7 +50,12 @@ const aborted = (sandboxId: string) => failure("Command startup aborted", "abort
 
 /** Opens a session. A dial that fails is retried once with a fresh route, like the SDK's `dialWithResume`. */
 export async function spawn(options: SpawnOptions): Promise<Session> {
-  if (typeof WebSocket === "undefined") throw failure("Superserve commands with stdin need a global WebSocket (Node 22 or later, or Bun)", "unsupported", options.sandboxId);
+  if (typeof WebSocket === "undefined")
+    throw failure(
+      "Superserve commands with stdin need a global WebSocket (Node 22 or later, or Bun)",
+      "unsupported",
+      options.sandboxId,
+    );
   const signal = options.startupSignal;
   if (signal?.aborted) throw aborted(options.sandboxId);
   let route = await options.route(signal);
@@ -66,11 +71,15 @@ export async function spawn(options: SpawnOptions): Promise<Session> {
     ws.close();
     throw aborted(options.sandboxId);
   }
-  ws.send(JSON.stringify({
-    command: options.command,
-    ...(options.env === undefined ? {} : { env: options.env }),
-    ...(options.timeoutMs === undefined ? {} : { timeout_s: Math.ceil(options.timeoutMs / 1000) }),
-  }));
+  ws.send(
+    JSON.stringify({
+      command: options.command,
+      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { timeout_s: Math.ceil(options.timeoutMs / 1000) }),
+    }),
+  );
   return session(ws, options);
 }
 
@@ -78,7 +87,11 @@ function dial(options: SpawnOptions, route: Route): Promise<WebSocket> {
   const { sandboxId, startupSignal: signal } = options;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(aborted(sandboxId));
-    const ws = new WebSocket(options.url, [subprotocol, `token.${route.token}`, ...(route.hint ? [`route.${route.hint}`] : [])]);
+    const ws = new WebSocket(options.url, [
+      subprotocol,
+      `token.${route.token}`,
+      ...(route.hint ? [`route.${route.hint}`] : []),
+    ]);
     ws.binaryType = "arraybuffer";
     const cleanup = () => {
       ws.removeEventListener("open", onOpen);
@@ -86,10 +99,27 @@ function dial(options: SpawnOptions, route: Route): Promise<WebSocket> {
       ws.removeEventListener("close", onClose);
       signal?.removeEventListener("abort", onAbort);
     };
-    const onOpen = () => { cleanup(); resolve(ws); };
+    const onOpen = () => {
+      cleanup();
+      resolve(ws);
+    };
     // Node 22 reports a refused upgrade (such as a stale token) with `error` and may never send `close`.
-    const onError = () => { cleanup(); reject(failure("Superserve exec/connect could not open the connection", "unavailable", sandboxId)); };
-    const onClose = (event: CloseEvent) => { cleanup(); reject(failure(`Superserve exec/connect closed before it opened (code ${event.code})`, "unavailable", sandboxId)); };
+    const onError = () => {
+      cleanup();
+      reject(
+        failure("Superserve exec/connect could not open the connection", "unavailable", sandboxId),
+      );
+    };
+    const onClose = (event: CloseEvent) => {
+      cleanup();
+      reject(
+        failure(
+          `Superserve exec/connect closed before it opened (code ${event.code})`,
+          "unavailable",
+          sandboxId,
+        ),
+      );
+    };
     const onAbort = () => {
       cleanup();
       ws.addEventListener("error", () => {});
@@ -108,17 +138,37 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
   const output = { stdout: "", stderr: "" };
   let received = 0;
   let settle: { resolve(result: SessionResult): void; reject(error: Error): void } | undefined;
-  const result = new Promise<SessionResult>((resolve, reject) => { settle = { resolve, reject }; });
+  const result = new Promise<SessionResult>((resolve, reject) => {
+    settle = { resolve, reject };
+  });
   result.catch(() => {});
-  const flush = () => { output.stdout += decoders.stdout.decode(); output.stderr += decoders.stderr.decode(); };
-  const finish = (exitCode: number) => { const s = settle; settle = undefined; flush(); s?.resolve({ exitCode, ...output }); };
-  const fail = (error: Error) => { const s = settle; settle = undefined; flush(); s?.reject(error); if (ws.readyState <= WebSocket.OPEN) ws.close(); };
+  const flush = () => {
+    output.stdout += decoders.stdout.decode();
+    output.stderr += decoders.stderr.decode();
+  };
+  const finish = (exitCode: number) => {
+    const s = settle;
+    settle = undefined;
+    flush();
+    s?.resolve({ exitCode, ...output });
+  };
+  const fail = (error: Error) => {
+    const s = settle;
+    settle = undefined;
+    flush();
+    s?.reject(error);
+    if (ws.readyState <= WebSocket.OPEN) ws.close();
+  };
   const open = () => ws.readyState === WebSocket.OPEN;
 
   ws.addEventListener("message", (event: MessageEvent) => {
     if (typeof event.data === "string") {
       let frame: unknown;
-      try { frame = JSON.parse(event.data); } catch { return; }
+      try {
+        frame = JSON.parse(event.data);
+      } catch {
+        return;
+      }
       if (typeof frame !== "object" || frame === null) return;
       const error: unknown = Reflect.get(frame, "error");
       if (typeof error === "string") output.stderr += error;
@@ -132,17 +182,45 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
     const view = new Uint8Array(event.data);
     if (!view.length) return;
     received += view.length;
-    if (received > maxOutputBytes) return fail(failure(`Superserve exec/connect sent more than ${maxOutputBytes} bytes of output`, "unsupported", options.sandboxId));
+    if (received > maxOutputBytes)
+      return fail(
+        failure(
+          `Superserve exec/connect sent more than ${maxOutputBytes} bytes of output`,
+          "unsupported",
+          options.sandboxId,
+        ),
+      );
     const channel = view[0] === 1 ? "stdout" : view[0] === 2 ? "stderr" : undefined;
     if (channel) output[channel] += decoders[channel].decode(view.subarray(1), { stream: true });
   });
   ws.addEventListener("close", (event: CloseEvent) => {
-    const detail = event.code === 1009 ? "a frame exceeded the server's size limit" : event.reason ? options.redact(event.reason).slice(0, 200) : `close code ${event.code}`;
-    fail(failure(`Superserve exec/connect closed before the command finished (${detail})`, "provider", options.sandboxId));
+    const detail =
+      event.code === 1009
+        ? "a frame exceeded the server's size limit"
+        : event.reason
+          ? options.redact(event.reason).slice(0, 200)
+          : `close code ${event.code}`;
+    fail(
+      failure(
+        `Superserve exec/connect closed before the command finished (${detail})`,
+        "provider",
+        options.sandboxId,
+      ),
+    );
   });
-  ws.addEventListener("error", () => fail(failure("Superserve exec/connect failed before the command finished", "provider", options.sandboxId)));
+  ws.addEventListener("error", () =>
+    fail(
+      failure(
+        "Superserve exec/connect failed before the command finished",
+        "provider",
+        options.sandboxId,
+      ),
+    ),
+  );
 
-  const kill = () => { if (open()) ws.send(JSON.stringify({ type: "signal", name: "SIGTERM" })); };
+  const kill = () => {
+    if (open()) ws.send(JSON.stringify({ type: "signal", name: "SIGTERM" }));
+  };
   return {
     stdin: {
       write(data) {
@@ -155,14 +233,25 @@ function session(ws: WebSocket, options: SpawnOptions): Session {
           ws.send(frame);
         }
       },
-      close() { if (open()) ws.send(JSON.stringify({ type: "stdin_close" })); },
+      close() {
+        if (open()) ws.send(JSON.stringify({ type: "stdin_close" }));
+      },
     },
     wait: () => result,
     async close() {
       kill();
       // Settle now: a socket that never reports `close` must not hold the caller.
-      fail(failure("Superserve exec/connect session closed by the client", "aborted", options.sandboxId));
-      await result.then(() => {}, () => {});
+      fail(
+        failure(
+          "Superserve exec/connect session closed by the client",
+          "aborted",
+          options.sandboxId,
+        ),
+      );
+      await result.then(
+        () => {},
+        () => {},
+      );
     },
   };
 }

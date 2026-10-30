@@ -202,10 +202,10 @@ A custom template needs `sh`, `bash`, `setsid`, and `git`.
 
 `box.native` calls any E2B endpoint with the adapter's credentials, retries, error mapping, and redaction. It has two planes:
 
-| Plane | Base URL | Credentials | What is there |
-| --- | --- | --- | --- |
-| `"api"` (default) | `https://api.{domain}` | `X-API-KEY` | The [E2B REST API](https://e2b.dev/docs/api-reference): sandboxes, snapshots, templates |
-| `"envd"` | The sandbox's envd daemon | The sandbox's access token | `GET /health`, `GET` and `POST /files`, and the `filesystem.Filesystem` and `process.Process` RPCs as Connect JSON |
+| Plane             | Base URL                  | Credentials                | What is there                                                                                                      |
+| ----------------- | ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `"api"` (default) | `https://api.{domain}`    | `X-API-KEY`                | The [E2B REST API](https://e2b.dev/docs/api-reference): sandboxes, snapshots, templates                            |
+| `"envd"`          | The sandbox's envd daemon | The sandbox's access token | `GET /health`, `GET` and `POST /files`, and the `filesystem.Filesystem` and `process.Process` RPCs as Connect JSON |
 
 `{sandboxId}` in a path fills itself from the sandbox. An envd RPC is a `POST` to `/{service}/{method}` with the request message as the JSON body.
 
@@ -215,17 +215,27 @@ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
 await using box = await createSandbox(e2b());
 
-const info = await box.native.request<{ state: string; endAt: string }>("GET", "/sandboxes/{sandboxId}");
+const info = await box.native.request<{ state: string; endAt: string }>(
+  "GET",
+  "/sandboxes/{sandboxId}",
+);
 console.log(info.state, info.endAt);
 
-const { processes = [] } = await box.native.request<{ processes?: { pid: number }[] }>("POST", "/process.Process/List", {
-  plane: "envd",
-  body: {},
-});
+const { processes = [] } = await box.native.request<{ processes?: { pid: number }[] }>(
+  "POST",
+  "/process.Process/List",
+  {
+    plane: "envd",
+    body: {},
+  },
+);
 console.log(processes.length);
 
 await box.files.write("/tmp/data.bin", new Uint8Array([0, 1, 2]));
-const response = await box.native.fetch("GET", "/files", { plane: "envd", query: { path: "/tmp/data.bin", username: "root" } });
+const response = await box.native.fetch("GET", "/files", {
+  plane: "envd",
+  query: { path: "/tmp/data.bin", username: "root" },
+});
 console.log(new Uint8Array(await response.arrayBuffer()));
 ```
 
@@ -238,7 +248,7 @@ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
 const provider = e2b();
 const templates = await provider.api.request<{ templateID: string }[]>("GET", "/templates");
-console.log(templates.map(template => template.templateID));
+console.log(templates.map((template) => template.templateID));
 
 // A snapshot ID from box.snapshot() is a template ID.
 await provider.api.request("DELETE", "/templates/{id}", { params: { id: "snapshot-id" } });

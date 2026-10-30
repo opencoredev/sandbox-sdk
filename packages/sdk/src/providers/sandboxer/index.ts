@@ -2,7 +2,12 @@
 import type { Provider } from "../../provider.js";
 import type { NativeApi } from "../../native.js";
 import { createDeadline, sleep, type HttpRequest } from "../../http.js";
-import type { BoatClientSdk, BoatCreateOptions, BoatMachine, BoatSandboxSdk } from "../boat/index.js";
+import type {
+  BoatClientSdk,
+  BoatCreateOptions,
+  BoatMachine,
+  BoatSandboxSdk,
+} from "../boat/index.js";
 import { boatApi } from "../boat-api/index.js";
 import { errors } from "../boat-api/errors.js";
 import type { BoatPlane } from "../boat-api/transport.js";
@@ -47,101 +52,191 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   const timeout = options.requestTimeoutMs ?? 90_000;
   const deletions = new Map<string, string>();
   const region = options.region ?? process.env.SANDBOXER_REGION;
-  if (region !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(region)) throw failure("Invalid Sandboxer region", "invalid_argument");
+  if (region !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(region))
+    throw failure("Invalid Sandboxer region", "invalid_argument");
   const placements = new Map<string, Pick<SandboxerNative, "region" | "regionSource">>();
   function place(value: object) {
     if (!("id" in value) || typeof value.id !== "string" || !("region" in value)) return;
     const name = typeof value.region === "string" ? value.region : null;
-    const source = "regionSource" in value ? regionSources.find(source => source === value.regionSource) ?? null : null;
+    const source =
+      "regionSource" in value
+        ? (regionSources.find((source) => source === value.regionSource) ?? null)
+        : null;
     placements.set(value.id, { region: name, regionSource: source });
   }
   /** Polls `path` until `ready`, inside one deadline for the whole operation. */
-  async function poll(path: string, params: Record<string, string>, ready: (value: unknown) => boolean) {
+  async function poll(
+    path: string,
+    params: Record<string, string>,
+    ready: (value: unknown) => boolean,
+  ) {
     const deadline = createDeadline(timeout);
     for (;;) {
       if (ready(await http.json({ method: "GET", path, params, deadline }))) return;
       if (deadline.remaining() <= 0) break;
-      try { await sleep(Math.min(250, deadline.remaining()), deadline, "sandboxer"); } catch { break; }
+      try {
+        await sleep(Math.min(250, deadline.remaining()), deadline, "sandboxer");
+      } catch {
+        break;
+      }
     }
     throw failure("Sandboxer operation did not finish before its deadline", "timeout");
   }
   async function createSnapshot(id: string, name: string) {
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) throw failure("Invalid snapshot name", "invalid_argument", id);
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
+      throw failure("Invalid snapshot name", "invalid_argument", id);
     try {
-      await http.json({ method: "POST", path: "/named-snapshots", body: { sandboxId: id, name }, sandboxId: id });
-      await poll("/named-snapshots/{name}", { name }, value => {
-        if (typeof value !== "object" || value === null || !("snapshot" in value)) throw failure("Invalid snapshot response");
+      await http.json({
+        method: "POST",
+        path: "/named-snapshots",
+        body: { sandboxId: id, name },
+        sandboxId: id,
+      });
+      await poll("/named-snapshots/{name}", { name }, (value) => {
+        if (typeof value !== "object" || value === null || !("snapshot" in value))
+          throw failure("Invalid snapshot response");
         const snapshot = value.snapshot;
-        if (typeof snapshot !== "object" || snapshot === null || !("status" in snapshot) || !("name" in snapshot) || snapshot.name !== name || !("sourceSandboxId" in snapshot) || snapshot.sourceSandboxId !== id) throw failure("Invalid snapshot metadata");
-        if (snapshot.status === "failed") throw failure("Sandboxer snapshot failed", "provider", id);
+        if (
+          typeof snapshot !== "object" ||
+          snapshot === null ||
+          !("status" in snapshot) ||
+          !("name" in snapshot) ||
+          snapshot.name !== name ||
+          !("sourceSandboxId" in snapshot) ||
+          snapshot.sourceSandboxId !== id
+        )
+          throw failure("Invalid snapshot metadata");
+        if (snapshot.status === "failed")
+          throw failure("Sandboxer snapshot failed", "provider", id);
         return snapshot.status === "ready";
       });
       return { id: name };
     } catch (error) {
-      throw failure(`Sandboxer snapshot ${name} did not complete; inspect this name before retrying`, boatError(error, id).code, id);
+      throw failure(
+        `Sandboxer snapshot ${name} did not complete; inspect this name before retrying`,
+        boatError(error, id).code,
+        id,
+      );
     }
   }
   const { provider: core, http } = boatApi(options, {
-    name: "sandboxer", label: "Sandboxer", keyEnv: "SANDBOXER_API_KEY", baseUrl, createFrom: true, idleStop: true, pausedStates: ["archived", "stopped"],
+    name: "sandboxer",
+    label: "Sandboxer",
+    keyEnv: "SANDBOXER_API_KEY",
+    baseUrl,
+    createFrom: true,
+    idleStop: true,
+    pausedStates: ["archived", "stopped"],
     ...(region === undefined ? {} : { createFields: { region } }),
-    observe: sandbox => place(sandbox.raw),
+    observe: (sandbox) => place(sandbox.raw),
     downloadMaxBytes: 50 * 1024 * 1024,
     destroy: async (http, id) => {
       let operationId = deletions.get(id);
       if (!operationId) {
         // The spec's ConfirmDelete header must equal the sandbox ID, else 409. Boat's header rides along, as the SDK sent it.
-        const value: unknown = await http.json({ method: "DELETE", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, headers: { [confirmHeader]: id, "X-Ascii-Confirm-Delete": id } });
-        const operation = typeof value === "object" && value !== null && "operation" in value ? value.operation : undefined;
-        if (typeof operation !== "object" || operation === null || !("targetId" in operation) || operation.targetId !== id || !("kind" in operation) || operation.kind !== "sandbox" || !("status" in operation))
+        const value: unknown = await http.json({
+          method: "DELETE",
+          path: "/sandboxes/{sandboxId}",
+          params: { sandboxId: id },
+          sandboxId: id,
+          headers: { [confirmHeader]: id, "X-Ascii-Confirm-Delete": id },
+        });
+        const operation =
+          typeof value === "object" && value !== null && "operation" in value
+            ? value.operation
+            : undefined;
+        if (
+          typeof operation !== "object" ||
+          operation === null ||
+          !("targetId" in operation) ||
+          operation.targetId !== id ||
+          !("kind" in operation) ||
+          operation.kind !== "sandbox" ||
+          !("status" in operation)
+        )
           throw failure("Invalid deletion operation", "outcome_unknown", id);
         if (operation.status === "completed") return;
-        if (!("id" in operation) || typeof operation.id !== "string" || !operation.id) throw failure("Invalid deletion operation", "outcome_unknown", id);
+        if (!("id" in operation) || typeof operation.id !== "string" || !operation.id)
+          throw failure("Invalid deletion operation", "outcome_unknown", id);
         operationId = operation.id;
         deletions.set(id, operationId);
       }
-      await poll("/deletion-operations/{operationId}", { operationId }, value => {
-        if (typeof value !== "object" || value === null || !("operation" in value)) throw failure("Invalid deletion response");
+      await poll("/deletion-operations/{operationId}", { operationId }, (value) => {
+        if (typeof value !== "object" || value === null || !("operation" in value))
+          throw failure("Invalid deletion response");
         const next = value.operation;
-        if (typeof next !== "object" || next === null || !("targetId" in next) || next.targetId !== id || !("status" in next)) throw failure("Invalid deletion metadata");
+        if (
+          typeof next !== "object" ||
+          next === null ||
+          !("targetId" in next) ||
+          next.targetId !== id ||
+          !("status" in next)
+        )
+          throw failure("Invalid deletion metadata");
         return next.status === "completed";
       });
       deletions.delete(id);
     },
     download: async (http, id, path) =>
-      (await http.request({ method: "GET", path: "/sandboxes/{sandboxId}/artifacts", params: { sandboxId: id }, query: { path }, sandboxId: id, maxBytes: 50 * 1024 * 1024 + 1 })).body,
+      (
+        await http.request({
+          method: "GET",
+          path: "/sandboxes/{sandboxId}/artifacts",
+          params: { sandboxId: id },
+          query: { path },
+          sandboxId: id,
+          maxBytes: 50 * 1024 * 1024 + 1,
+        })
+      ).body,
     // The proxy accepts its __sbx_auth cookie, whose value is the URL token.
     // Exchanging the token over HTTP fails until the port listens, and a
     // tokened URL adds a redirect to every request, so build the cookie here.
-    preview: async url => {
-      const value = new URL(url), token = value.searchParams.get("_token");
-      if (token === null) return {url};
+    preview: async (url) => {
+      const value = new URL(url),
+        token = value.searchParams.get("_token");
+      if (token === null) return { url };
       if (!/^[A-Za-z0-9._~-]+$/.test(token)) throw failure("Invalid preview token");
       value.searchParams.delete("_token");
-      return {url: value.toString(), headers: {Cookie: `__sbx_auth=${token}`}};
+      return { url: value.toString(), headers: { Cookie: `__sbx_auth=${token}` } };
     },
     // The BoatApi client native.sdk() builds sends Boat's delete header; Sandboxer needs its own too.
     sdkConfiguration: {
-      middleware: [{
-        async pre({ url, init }: { url: string; init: RequestInit }) {
-          const path = new URL(url).pathname;
-          if (init.method !== "DELETE" || !/\/sandboxes\/[^/]+$/.test(path)) return undefined;
-          const headers = new Headers(init.headers);
-          headers.set(confirmHeader, decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)));
-          return { url, init: { ...init, headers } };
+      middleware: [
+        {
+          async pre({ url, init }: { url: string; init: RequestInit }) {
+            const path = new URL(url).pathname;
+            if (init.method !== "DELETE" || !/\/sandboxes\/[^/]+$/.test(path)) return undefined;
+            const headers = new Headers(init.headers);
+            headers.set(confirmHeader, decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)));
+            return { url, init: { ...init, headers } };
+          },
         },
-      }],
+      ],
     },
   });
-  const lifecycle = (id: string, action: "stop" | "resume"): HttpRequest<BoatPlane> => ({ method: "POST", path: `/sandboxes/{sandboxId}/${action}`, params: { sandboxId: id }, sandboxId: id });
+  const lifecycle = (id: string, action: "stop" | "resume"): HttpRequest<BoatPlane> => ({
+    method: "POST",
+    path: `/sandboxes/{sandboxId}/${action}`,
+    params: { sandboxId: id },
+    sandboxId: id,
+  });
   return {
     ...core,
     capabilities: new Set(["size", "pause", "snapshot"]),
     async pause(id) {
       await http.json(lifecycle(id, "stop"));
-      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, value => {
-        if (typeof value !== "object" || value === null || !("sandbox" in value)) throw failure("Invalid stop response");
+      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, (value) => {
+        if (typeof value !== "object" || value === null || !("sandbox" in value))
+          throw failure("Invalid stop response");
         const box = value.sandbox;
-        if (typeof box !== "object" || box === null || !("id" in box) || box.id !== id || !("stop" in box)) throw failure("Invalid stop metadata");
+        if (
+          typeof box !== "object" ||
+          box === null ||
+          !("id" in box) ||
+          box.id !== id ||
+          !("stop" in box)
+        )
+          throw failure("Invalid stop metadata");
         const stop = box.stop;
         if (typeof stop !== "object" || stop === null || !("status" in stop)) return false;
         return stop.status === "completed";
@@ -149,10 +244,18 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     },
     async resume(id) {
       await http.json(lifecycle(id, "resume"));
-      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, value => {
-        if (typeof value !== "object" || value === null || !("sandbox" in value)) throw failure("Invalid resume response");
+      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, (value) => {
+        if (typeof value !== "object" || value === null || !("sandbox" in value))
+          throw failure("Invalid resume response");
         const box = value.sandbox;
-        if (typeof box !== "object" || box === null || !("id" in box) || box.id !== id || !("state" in box)) throw failure("Invalid resume metadata");
+        if (
+          typeof box !== "object" ||
+          box === null ||
+          !("id" in box) ||
+          box.id !== id ||
+          !("state" in box)
+        )
+          throw failure("Invalid resume metadata");
         return box.state === "ready";
       });
       await core.connect(id);
@@ -160,9 +263,19 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     async snapshot(id, settings = {}) {
       // Named snapshots live until deleted; 0 asks for exactly that.
       if (settings.expiresInMs !== undefined && settings.expiresInMs !== 0)
-        throw failure("Sandboxer named snapshots never expire; expiresInMs is unsupported. Delete the snapshot yourself", "unsupported", id);
+        throw failure(
+          "Sandboxer named snapshots never expire; expiresInMs is unsupported. Delete the snapshot yourself",
+          "unsupported",
+          id,
+        );
       return createSnapshot(id, `sdk-${crypto.randomUUID()}`);
     },
-    native: id => Object.assign(core.native(id), { region: null, regionSource: null, ...placements.get(id), createSnapshot: (name: string) => createSnapshot(id, name) }),
+    native: (id) =>
+      Object.assign(core.native(id), {
+        region: null,
+        regionSource: null,
+        ...placements.get(id),
+        createSnapshot: (name: string) => createSnapshot(id, name),
+      }),
   };
 }

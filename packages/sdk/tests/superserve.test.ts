@@ -2,10 +2,25 @@ import { afterAll, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { quote } from "../src/providers/boxd/guest.js";
-import { activations, api, dataHost, dataRequests, gate, installSuperserveFake, resetSuperserveFake, revoke, state, tokenOf } from "./superserve-fake.js";
+import { quote } from "../src/shared/shell.js";
+import {
+  activations,
+  api,
+  dataHost,
+  dataRequests,
+  gate,
+  installSuperserveFake,
+  resetSuperserveFake,
+  revoke,
+  state,
+  tokenOf,
+} from "./superserve-fake.js";
 installSuperserveFake();
-import { superserve, type SuperserveNative, type SuperserveProvider } from "../src/providers/superserve/index.js";
+import {
+  superserve,
+  type SuperserveNative,
+  type SuperserveProvider,
+} from "../src/providers/superserve/index.js";
 import { superserveError } from "../src/providers/superserve/errors.js";
 import { createSandbox, connectSandbox, SandboxError } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
@@ -65,7 +80,9 @@ test("transport failure confirms termination before a delayed side effect", asyn
 });
 test("creation defers bootstrap to the first execution", async () => {
   let calls = 0;
-  state.bootstrap = async () => { calls++; };
+  state.bootstrap = async () => {
+    calls++;
+  };
   const box = await createSandbox(factory());
   try {
     expect(calls).toBe(0);
@@ -73,7 +90,10 @@ test("creation defers bootstrap to the first execution", async () => {
     expect(calls).toBe(1);
     expect((await box.run("true")).ok).toBe(true);
     expect(calls).toBe(1);
-  } finally { state.bootstrap = undefined; await box.destroy(); }
+  } finally {
+    state.bootstrap = undefined;
+    await box.destroy();
+  }
 });
 test("snapshot failures retain a safe idempotent recovery name", async () => {
   const box = await createSandbox(factory());
@@ -99,7 +119,9 @@ test("stdin setup failure closes the native session", async () => {
   try {
     const before = state.closes;
     state.stdinFailure = true;
-    await expect(box.run("cat", { stdin: "private-input" })).rejects.toMatchObject({ code: "provider" });
+    await expect(box.run("cat", { stdin: "private-input" })).rejects.toMatchObject({
+      code: "provider",
+    });
     expect(state.closes).toBeGreaterThan(before);
   } finally {
     state.stdinFailure = false;
@@ -199,8 +221,15 @@ test("missing Python fails on first use without running apt", async () => {
   const provider = factory();
   const box = await provider.create({ labels: {} });
   try {
-    await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("explicitly set installPython: true") });
-  } finally { state.bootstrapPath = ""; await provider.destroy(box.id); await rm(path, { recursive: true, force: true }); }
+    await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("explicitly set installPython: true"),
+    });
+  } finally {
+    state.bootstrapPath = "";
+    await provider.destroy(box.id);
+    await rm(path, { recursive: true, force: true });
+  }
 });
 
 test("missing Python on a first run reports unsupported, not an unconfirmed cancellation", async () => {
@@ -208,8 +237,15 @@ test("missing Python on a first run reports unsupported, not an unconfirmed canc
   state.bootstrapPath = path;
   const box = await createSandbox(factory());
   try {
-    await expect(box.run("echo ok")).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("explicitly set installPython: true") });
-  } finally { state.bootstrapPath = ""; await box.destroy(); await rm(path, { recursive: true, force: true }); }
+    await expect(box.run("echo ok")).rejects.toMatchObject({
+      code: "unsupported",
+      message: expect.stringContaining("explicitly set installPython: true"),
+    });
+  } finally {
+    state.bootstrapPath = "";
+    await box.destroy();
+    await rm(path, { recursive: true, force: true });
+  }
 });
 
 test("only an explicit installPython opt-in runs apt when Python is absent", async () => {
@@ -246,17 +282,25 @@ test("one-shot execution keeps env values out of argv and preserves stdin sessio
   const box = await createSandbox(factory());
   try {
     const secret = "private-command-secret";
-    const probe = await box.run("python3 -c 'import os; print(open(\"/proc/%s/cmdline\" % os.getppid(), \"rb\").read().decode()); print(os.environ[\"TOKEN\"])'", { env: { TOKEN: secret } });
+    const probe = await box.run(
+      'python3 -c \'import os; print(open("/proc/%s/cmdline" % os.getppid(), "rb").read().decode()); print(os.environ["TOKEN"])\'',
+      { env: { TOKEN: secret } },
+    );
     expect(probe.stdout.trim().split("\n").at(-1)).toBe(secret);
     expect(probe.stdout.slice(0, probe.stdout.lastIndexOf(secret))).not.toContain(secret);
     expect((await box.run("cat", { stdin: secret })).stdout).toBe(secret);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("quote-heavy commands use stdin transport before shell argument expansion exceeds its limit", async () => {
   const box = await createSandbox(factory());
-  try { expect(await box.run(": #" + "'".repeat(40_000))).toMatchObject({ exitCode: 0 }); }
-  finally { await box.destroy(); }
+  try {
+    expect(await box.run(": #" + "'".repeat(40_000))).toMatchObject({ exitCode: 0 });
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("fresh files prepare the workspace before execution", async () => {
@@ -269,9 +313,15 @@ test("fresh files prepare the workspace before execution", async () => {
     expect(await box.files.list(".")).toEqual([]);
     expect((await box.files.stat(".")).type).toBe("directory");
     await box.files.write("nested/first.bin", new Uint8Array([0, 255, 10]));
-    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(new Uint8Array([0, 255, 10]));
-    expect((await Promise.all([box.run("echo one"), box.run("echo two")])).map(x => x.stdout)).toEqual(["one\n", "two\n"]);
-  } finally { await box.destroy(); }
+    expect(await box.files.read("nested/first.bin", { as: "bytes" })).toEqual(
+      new Uint8Array([0, 255, 10]),
+    );
+    expect(
+      (await Promise.all([box.run("echo one"), box.run("echo two")])).map((x) => x.stdout),
+    ).toEqual(["one\n", "two\n"]);
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("an empty create environment clears an inherited snapshot env file", async () => {
@@ -279,9 +329,14 @@ test("an empty create environment clears an inherited snapshot env file", async 
   try {
     const guest = state.boxes.get(box.id)?.guest;
     if (!guest) throw new Error("Missing guest");
-    await guest.upload("/var/lib/sandbox-sdk-env.json", Buffer.from('{"STALE_SNAPSHOT_ENV":"stale"}'));
+    await guest.upload(
+      "/var/lib/sandbox-sdk-env.json",
+      Buffer.from('{"STALE_SNAPSHOT_ENV":"stale"}'),
+    );
     expect((await box.run('printf %s "$STALE_SNAPSHOT_ENV"')).stdout).toBe("");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("first file operation persists create environment for a fresh client", async () => {
@@ -289,40 +344,81 @@ test("first file operation persists create environment for a fresh client", asyn
   try {
     await box.files.list(".");
     const reconnected = await connectSandbox(factory(), box.id);
-    try { expect((await reconnected.run('printf %s "$FIRST_FILE_ENV"')).stdout).toBe("persisted"); }
-    finally { await reconnected.close(); }
-  } finally { await box.destroy(); }
+    try {
+      expect((await reconnected.run('printf %s "$FIRST_FILE_ENV"')).stdout).toBe("persisted");
+    } finally {
+      await reconnected.close();
+    }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("native lifetime, secret and preview options reach POST /sandboxes in seconds", async () => {
-  const provider = superserve({ apiKey: "mock", autoPauseMs: 90_500, autoDeleteMs: 0, secretBindings: { OPENAI_API_KEY: "openai-prod" }, previewAccess: "public" });
+  const provider = superserve({
+    apiKey: "mock",
+    autoPauseMs: 90_500,
+    autoDeleteMs: 0,
+    secretBindings: { OPENAI_API_KEY: "openai-prod" },
+    previewAccess: "public",
+  });
   const box = await provider.create({ labels: {} });
   try {
-    expect(state.createOptions).toMatchObject({ timeout_seconds: 91, auto_delete_seconds: 0, secrets: { OPENAI_API_KEY: "openai-prod" }, preview_access: "public" });
+    expect(state.createOptions).toMatchObject({
+      timeout_seconds: 91,
+      auto_delete_seconds: 0,
+      secrets: { OPENAI_API_KEY: "openai-prod" },
+      preview_access: "public",
+    });
     expect(state.createOptions).not.toHaveProperty("network");
-    expect(await provider.previewUrl(box.id, 3000)).toEqual({ url: `https://3000-${box.id}.sandbox.superserve.ai` });
+    expect(await provider.previewUrl(box.id, 3000)).toEqual({
+      url: `https://3000-${box.id}.sandbox.superserve.ai`,
+    });
     expect(state.previewAccess.at(-1)).toEqual({ port: 3000, access: "public" });
-  } finally { await provider.destroy(box.id); }
-  expect(() => superserve({ autoPauseMs: 0 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
-  expect(() => superserve({ autoDeleteMs: -1 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
+  } finally {
+    await provider.destroy(box.id);
+  }
+  expect(() => superserve({ autoPauseMs: 0 })).toThrowError(
+    expect.objectContaining({ code: "invalid_argument" }),
+  );
+  expect(() => superserve({ autoDeleteMs: -1 })).toThrowError(
+    expect.objectContaining({ code: "invalid_argument" }),
+  );
 });
 test("network policy maps to Superserve egress rules and is confirmed after create", async () => {
   const provider = factory();
   expect(provider.capabilities.has("network-policy")).toBe(true);
   const cases: [import("../src/provider.js").CreateInput["network"], unknown][] = [
     ["none", { allow_out: [], deny_out: ["0.0.0.0/0"] }],
-    [{ allow: ["10.0.0.0/8", "1.2.3.4"] }, { allow_out: ["10.0.0.0/8", "1.2.3.4/32"], deny_out: ["0.0.0.0/0"] }],
-    [{ allow: ["registry.npmjs.org", "*.github.com"] }, { allow_out: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"], deny_out: ["0.0.0.0/0"] }],
+    [
+      { allow: ["10.0.0.0/8", "1.2.3.4"] },
+      { allow_out: ["10.0.0.0/8", "1.2.3.4/32"], deny_out: ["0.0.0.0/0"] },
+    ],
+    [
+      { allow: ["registry.npmjs.org", "*.github.com"] },
+      {
+        allow_out: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"],
+        deny_out: ["0.0.0.0/0"],
+      },
+    ],
   ];
   for (const [network, expected] of cases) {
     const box = await provider.create({ labels: {}, network });
-    try { expect(state.createOptions).toMatchObject({ network: expected }); }
-    finally { await provider.destroy(box.id); }
+    try {
+      expect(state.createOptions).toMatchObject({ network: expected });
+    } finally {
+      await provider.destroy(box.id);
+    }
   }
   state.dropNetwork = true;
   const before = state.boxes.size;
-  try { await expect(provider.create({ labels: {}, network: "none" })).rejects.toMatchObject({ code: "unsupported" }); }
-  finally { state.dropNetwork = false; }
+  try {
+    await expect(provider.create({ labels: {}, network: "none" })).rejects.toMatchObject({
+      code: "unsupported",
+    });
+  } finally {
+    state.dropNetwork = false;
+  }
   expect(state.boxes.size).toBe(before);
 });
 test("restores apply the configured auto-pause instead of the inherited one", async () => {
@@ -332,38 +428,59 @@ test("restores apply the configured auto-pause instead of the inherited one", as
   try {
     const box = await provider.create({ labels: {}, from: "external-snapshot" });
     try {
-      expect(state.createOptions).toMatchObject({ from_snapshot: "external-snapshot", timeout_seconds: 30 });
+      expect(state.createOptions).toMatchObject({
+        from_snapshot: "external-snapshot",
+        timeout_seconds: 30,
+      });
       expect(state.updates.slice(before)).toEqual([{ timeout_seconds: 30 }]);
-    } finally { await provider.destroy(box.id); }
-  } finally { state.nativeTimeoutSeconds = 0; }
+    } finally {
+      await provider.destroy(box.id);
+    }
+  } finally {
+    state.nativeTimeoutSeconds = 0;
+  }
 });
 test("snapshot rejects expiresInMs because Superserve keeps snapshots until deleted", async () => {
   const provider = factory();
   const box = await provider.create({ labels: {} });
   try {
     state.snapshotOptions = undefined;
-    await expect(provider.snapshot?.(box.id, { expiresInMs: 3_600_000 })).rejects.toMatchObject({ code: "unsupported" });
+    await expect(provider.snapshot?.(box.id, { expiresInMs: 3_600_000 })).rejects.toMatchObject({
+      code: "unsupported",
+    });
     expect(state.snapshotOptions).toBeUndefined();
     expect(await provider.snapshot?.(box.id, { expiresInMs: 0 })).toEqual({ id: "snapshot-1" });
-  } finally { await provider.destroy(box.id); }
+  } finally {
+    await provider.destroy(box.id);
+  }
 });
 
 test("a missing cwd is a failed run with the shell error on stderr, and start reports it in the log", async () => {
   const box = await createSandbox(factory());
   try {
-    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({ ok: false, exitCode: 2, stdout: "", stderr: expect.stringMatching(/cd.*nope/) });
+    expect(await box.run("pwd", { cwd: "nope" })).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      stdout: "",
+      stderr: expect.stringMatching(/cd.*nope/),
+    });
     const started = await box.start("sleep 30", { name: "bad-cwd", cwd: "nope" });
     await expect(started.wait()).resolves.toMatchObject({ exitCode: 2 });
     expect((await started.logs()).text).toMatch(/cd.*nope/);
     expect((await box.run("echo alive")).stdout).toBe("alive\n");
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 describe("data-plane routes", () => {
-  const read = (provider: ReturnType<typeof factory>, id: string) => provider.files.read(id, "/workspace/route.txt");
+  const read = (provider: ReturnType<typeof factory>, id: string) =>
+    provider.files.read(id, "/workspace/route.txt");
   async function created(provider = factory()) {
     const info = await provider.create({ labels: {} });
-    await state.boxes.get(info.id)?.guest.upload("/workspace/route.txt", new TextEncoder().encode("ok"));
+    await state.boxes
+      .get(info.id)
+      ?.guest.upload("/workspace/route.txt", new TextEncoder().encode("ok"));
     return { provider, id: info.id };
   }
   test("data-plane calls send the sandbox id, access token and routing hint only to the data host", async () => {
@@ -375,10 +492,16 @@ describe("data-plane routes", () => {
       expect(request?.headers.get("x-access-token")).toBe(tokenOf(id));
       expect(request?.headers.get("x-superserve-routing-hint")).toMatch(/^eyJ/);
       expect(request?.headers.get("x-api-key")).toBeNull();
-      const control = state.requests.filter(r => r.url.origin === api);
-      expect(control.every(r => r.headers.get("x-access-token") === null && r.headers.get("x-api-key") === "mock")).toBe(true);
+      const control = state.requests.filter((r) => r.url.origin === api);
+      expect(
+        control.every(
+          (r) => r.headers.get("x-access-token") === null && r.headers.get("x-api-key") === "mock",
+        ),
+      ).toBe(true);
       expect(activations(id)).toBe(0);
-    } finally { await provider.destroy(id); }
+    } finally {
+      await provider.destroy(id);
+    }
   });
 
   test("a routing hint about to expire is replaced before the call, not after a failure", async () => {
@@ -388,18 +511,28 @@ describe("data-plane routes", () => {
     try {
       const before = state.requests.length;
       await read(provider, id);
-      const after = state.requests.slice(before).map(r => `${r.method} ${r.url.origin === api ? "api" : "data"}${r.url.pathname}`);
+      const after = state.requests
+        .slice(before)
+        .map((r) => `${r.method} ${r.url.origin === api ? "api" : "data"}${r.url.pathname}`);
       expect(after).toEqual([`POST api/sandboxes/${id}/activate`, "GET data/files"]);
       // The fresh hint is good for an hour, so the next call needs no activation.
       await read(provider, id);
       expect(activations(id)).toBe(1);
-    } finally { await provider.destroy(id); }
+    } finally {
+      await provider.destroy(id);
+    }
   });
 
   test.each([
     ["a 401", { status: 401, body: { error: "invalid access token" } }],
-    ["a stale-route 404", { status: 404, body: { error: { code: "sandbox_route_stale", message: "moved" } } }],
-    ["a 503 sandbox_unavailable", { status: 503, body: { error: { code: "sandbox_unavailable", message: "paused" } } }],
+    [
+      "a stale-route 404",
+      { status: 404, body: { error: { code: "sandbox_route_stale", message: "moved" } } },
+    ],
+    [
+      "a 503 sandbox_unavailable",
+      { status: 503, body: { error: { code: "sandbox_unavailable", message: "paused" } } },
+    ],
     ["the legacy plain-text paused 503", { status: 503, body: "sandbox is paused\n" }],
   ])("%s reactivates once and resends", async (_name, fault) => {
     const { provider, id } = await created();
@@ -408,49 +541,89 @@ describe("data-plane routes", () => {
       expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
       expect(activations(id)).toBe(1);
       expect(dataRequests(id)).toHaveLength(2);
-    } finally { state.dataFaults = []; await provider.destroy(id); }
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
   });
 
   test("a hinted 503 without sandbox_unavailable and a plain 404 do not reactivate", async () => {
     const { provider, id } = await created();
     try {
-      state.dataFaults.push({ status: 503, body: { error: { code: "overloaded", message: "busy" } } });
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
       expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
       expect(activations(id)).toBe(0);
-      await expect(provider.files.read(id, "/workspace/missing")).rejects.toMatchObject({ code: "file_not_found" });
+      await expect(provider.files.read(id, "/workspace/missing")).rejects.toMatchObject({
+        code: "file_not_found",
+      });
       expect(activations(id)).toBe(0);
-    } finally { state.dataFaults = []; await provider.destroy(id); }
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
   });
 
   test("without a routing hint a bare 503 reactivates; a read is resent, an exec that may have run is not", async () => {
     state.noHints = true;
     const { provider, id } = await created();
-    const execs = () => state.requests.filter(request => request.method === "POST" && request.url.origin === dataHost && request.url.pathname === "/exec");
+    const execs = () =>
+      state.requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          request.url.origin === dataHost &&
+          request.url.pathname === "/exec",
+      );
     try {
       expect(dataRequests(id).at(-1)?.headers.get("x-superserve-routing-hint") ?? null).toBeNull();
-      state.dataFaults.push({ status: 503, body: { error: { code: "overloaded", message: "busy" } } });
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
       expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
       expect(activations(id)).toBe(1);
       expect(dataRequests(id)).toHaveLength(2);
       const box = await connectSandbox(provider, id);
       const before = execs().length;
-      state.dataFaults.push({ status: 503, body: { error: { code: "overloaded", message: "busy" } } });
-      await expect(box.run("echo once >> ran.txt")).rejects.toMatchObject({ code: "outcome_unknown", provider: "superserve" });
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
+      await expect(box.run("echo once >> ran.txt")).rejects.toMatchObject({
+        code: "outcome_unknown",
+        provider: "superserve",
+      });
       // The refused launch went out once: a second copy could run the command twice. (A later /exec is the
       // supervisor's own recovery check, a different command.) The route was still refreshed for the next call.
       const launch = JSON.stringify(execs()[before]?.body);
-      expect(execs().slice(before).filter(request => JSON.stringify(request.body) === launch)).toHaveLength(1);
+      expect(
+        execs()
+          .slice(before)
+          .filter((request) => JSON.stringify(request.body) === launch),
+      ).toHaveLength(1);
       expect(activations(id)).toBe(2);
-    } finally { state.noHints = false; state.dataFaults = []; await provider.destroy(id); }
+    } finally {
+      state.noHints = false;
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
   });
 
   test("a second refusal after reactivating fails instead of looping", async () => {
     const { provider, id } = await created();
     try {
       state.dataFaults.push({ status: 401, body: {} }, { status: 401, body: {} });
-      await expect(read(provider, id)).rejects.toMatchObject({ code: "auth", provider: "superserve" });
+      await expect(read(provider, id)).rejects.toMatchObject({
+        code: "auth",
+        provider: "superserve",
+      });
       expect(activations(id)).toBe(1);
-    } finally { state.dataFaults = []; await provider.destroy(id); }
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
   });
 
   test("concurrent calls refused at once share one activation", async () => {
@@ -464,9 +637,14 @@ describe("data-plane routes", () => {
       await vi.waitFor(() => expect(dataRequests(id)).toHaveLength(6));
       await vi.waitFor(() => expect(activations(id)).toBe(1));
       held.open();
-      expect((await Promise.all(reads)).map(bytes => new TextDecoder().decode(bytes))).toEqual(Array(6).fill("ok"));
+      expect((await Promise.all(reads)).map((bytes) => new TextDecoder().decode(bytes))).toEqual(
+        Array(6).fill("ok"),
+      );
       expect(activations(id)).toBe(1);
-    } finally { state.activateGate = undefined; await provider.destroy(id); }
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
   });
 
   test("an activation that answers after a newer resume never replaces the resumed token", async () => {
@@ -486,9 +664,16 @@ describe("data-plane routes", () => {
       // The refused read was resent with the resumed token, and so is the next read: the held answer was dropped.
       expect(dataRequests(id).at(-1)?.headers.get("x-access-token")).toBe(resumed);
       await read(provider, id);
-      expect(dataRequests(id).map(r => r.headers.get("x-access-token") === resumed)).toEqual([false, true, true]);
+      expect(dataRequests(id).map((r) => r.headers.get("x-access-token") === resumed)).toEqual([
+        false,
+        true,
+        true,
+      ]);
       expect(activations(id)).toBe(1);
-    } finally { state.activateGate = undefined; await provider.destroy(id); }
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
   });
 
   test("a refusal sent with a token older than the current one resends without activating", async () => {
@@ -506,8 +691,14 @@ describe("data-plane routes", () => {
       held.open();
       expect(new TextDecoder().decode(await pending)).toBe("ok");
       expect(activations(id)).toBe(0);
-      expect(dataRequests(id).map(r => r.headers.get("x-access-token") === tokenOf(id))).toEqual([false, true]);
-    } finally { state.dataGate = undefined; await provider.destroy(id); }
+      expect(dataRequests(id).map((r) => r.headers.get("x-access-token") === tokenOf(id))).toEqual([
+        false,
+        true,
+      ]);
+    } finally {
+      state.dataGate = undefined;
+      await provider.destroy(id);
+    }
   });
 
   test("an aborted caller leaves the shared activation running for the others", async () => {
@@ -518,7 +709,11 @@ describe("data-plane routes", () => {
       state.activateGate = held.promise;
       const controller = new AbortController();
       const native = provider.native(id);
-      const abandoned = native.fetch("GET", "/files", { plane: "data", query: { path: "/workspace/route.txt" }, signal: controller.signal });
+      const abandoned = native.fetch("GET", "/files", {
+        plane: "data",
+        query: { path: "/workspace/route.txt" },
+        signal: controller.signal,
+      });
       const kept = read(provider, id);
       await vi.waitFor(() => expect(activations(id)).toBe(1));
       controller.abort();
@@ -526,7 +721,10 @@ describe("data-plane routes", () => {
       held.open();
       expect(new TextDecoder().decode(await kept)).toBe("ok");
       expect(activations(id)).toBe(1);
-    } finally { state.activateGate = undefined; await provider.destroy(id); }
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
   });
 });
 
@@ -538,15 +736,30 @@ describe("exec/connect", () => {
       expect((await box.run("cat", { stdin: "über-stdin" })).stdout).toBe("über-stdin");
       const socket = state.sockets[before];
       expect(socket?.url).toBe(`wss://boxd-${box.id}.sandbox.superserve.ai/exec/connect`);
-      expect(socket?.protocols).toEqual(["superserve.exec.v1", `token.${tokenOf(box.id)}`, expect.stringMatching(/^route\.eyJ/)]);
+      expect(socket?.protocols).toEqual([
+        "superserve.exec.v1",
+        `token.${tokenOf(box.id)}`,
+        expect.stringMatching(/^route\.eyJ/),
+      ]);
       const start = JSON.parse(String(socket?.sent[0]));
       expect(start).toMatchObject({ command: expect.any(String), timeout_s: expect.any(Number) });
       // Start, stdin frames on channel 0, stdin_close, then the SIGTERM that closing a finished session sends.
       const close = socket?.sent.indexOf(JSON.stringify({ type: "stdin_close" })) ?? -1;
       expect(close).toBeGreaterThan(1);
-      expect(socket?.sent.slice(1, close).every(frame => frame instanceof Uint8Array && frame[0] === 0 && frame.length <= 32 * 1024 + 1)).toBe(true);
-      expect(socket?.sent.slice(close + 1)).toEqual([JSON.stringify({ type: "signal", name: "SIGTERM" })]);
-    } finally { await box.destroy(); }
+      expect(
+        socket?.sent
+          .slice(1, close)
+          .every(
+            (frame) =>
+              frame instanceof Uint8Array && frame[0] === 0 && frame.length <= 32 * 1024 + 1,
+          ),
+      ).toBe(true);
+      expect(socket?.sent.slice(close + 1)).toEqual([
+        JSON.stringify({ type: "signal", name: "SIGTERM" }),
+      ]);
+    } finally {
+      await box.destroy();
+    }
   });
 
   test("a refused dial reactivates once and dials again", async () => {
@@ -559,7 +772,10 @@ describe("exec/connect", () => {
       expect(activations(box.id)).toBe(1);
       state.refuseDials = 2;
       await expect(box.run("cat", { stdin: "never" })).rejects.toBeInstanceOf(SandboxError);
-    } finally { state.refuseDials = 0; await box.destroy(); }
+    } finally {
+      state.refuseDials = 0;
+      await box.destroy();
+    }
   });
 
   test("an expiring hint is replaced before dialling", async () => {
@@ -570,7 +786,9 @@ describe("exec/connect", () => {
       const before = state.requests.length;
       expect((await box.run("cat", { stdin: "fresh" })).stdout).toBe("fresh");
       expect(state.requests.slice(before)[0]?.url.pathname).toBe(`/sandboxes/${box.id}/activate`);
-    } finally { await box.destroy(); }
+    } finally {
+      await box.destroy();
+    }
   });
 
   test("an abort before the dial opens rejects without starting the command", async () => {
@@ -579,8 +797,20 @@ describe("exec/connect", () => {
     try {
       const controller = new AbortController();
       controller.abort();
-      expect(await provider.exec(box.id, { command: "echo never", cwd: "/workspace", env: {}, stdin: "x", timeoutMs: 5000, signal: controller.signal, onChunk: () => {} })).toEqual({ exitCode: null, timedOut: true });
-    } finally { await provider.destroy(box.id); }
+      expect(
+        await provider.exec(box.id, {
+          command: "echo never",
+          cwd: "/workspace",
+          env: {},
+          stdin: "x",
+          timeoutMs: 5000,
+          signal: controller.signal,
+          onChunk: () => {},
+        }),
+      ).toEqual({ exitCode: null, timedOut: true });
+    } finally {
+      await provider.destroy(box.id);
+    }
   });
 });
 
@@ -589,12 +819,21 @@ describe("native API", () => {
     const box = await createSandbox(factory());
     try {
       expect(box.native.sandboxId).toBe(box.id);
-      expect(await box.native.request<{ id: string; status: string }>("GET", "/sandboxes/{sandboxId}")).toMatchObject({ id: box.id, status: "active" });
+      expect(
+        await box.native.request<{ id: string; status: string }>("GET", "/sandboxes/{sandboxId}"),
+      ).toMatchObject({ id: box.id, status: "active" });
       await box.files.write("native.txt", "native");
-      const response = await box.native.fetch("GET", "/files", { plane: "data", query: { path: "/workspace/native.txt" } });
+      const response = await box.native.fetch("GET", "/files", {
+        plane: "data",
+        query: { path: "/workspace/native.txt" },
+      });
       expect(await response.text()).toBe("native");
-      await expect(box.native.request("GET", "/no/such/route")).rejects.toMatchObject({ code: "not_found" });
-    } finally { await box.destroy(); }
+      await expect(box.native.request("GET", "/no/such/route")).rejects.toMatchObject({
+        code: "not_found",
+      });
+    } finally {
+      await box.destroy();
+    }
   });
 
   test("provider.api is account scoped: no sandbox placeholder, no data plane", async () => {
@@ -602,20 +841,31 @@ describe("native API", () => {
     const box = await provider.create({ labels: { native: "api" } });
     try {
       expect(provider.api.sandboxId).toBeUndefined();
-      const list = await provider.api.request<{ id: string }[]>("GET", "/sandboxes", { query: { "metadata.sandbox-sdk": "1" } });
-      expect(list.map(v => v.id)).toContain(box.id);
+      const list = await provider.api.request<{ id: string }[]>("GET", "/sandboxes", {
+        query: { "metadata.sandbox-sdk": "1" },
+      });
+      expect(list.map((v) => v.id)).toContain(box.id);
       const before = state.requests.length;
-      await expect(provider.api.request("GET", "/sandboxes/{sandboxId}")).rejects.toMatchObject({ code: "invalid_argument" });
-      await expect(provider.api.request("GET", "/files", { plane: "data" })).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(provider.api.request("GET", "/sandboxes/{sandboxId}")).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      await expect(provider.api.request("GET", "/files", { plane: "data" })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
       expect(state.requests.length).toBe(before);
-    } finally { await provider.destroy(box.id); }
+    } finally {
+      await provider.destroy(box.id);
+    }
   });
 
   test("sdk(load) connects the caller's Sandbox class with this provider's credentials", async () => {
     const calls: unknown[][] = [];
     class Sandbox {
       constructor(readonly id: string) {}
-      static async connect(id: string, options?: { apiKey?: string; baseUrl?: string }) { calls.push([id, options]); return new Sandbox(id); }
+      static async connect(id: string, options?: { apiKey?: string; baseUrl?: string }) {
+        calls.push([id, options]);
+        return new Sandbox(id);
+      }
     }
     const provider = superserve({ apiKey: "mock" });
     const native = provider.native("sb-1");
@@ -627,16 +877,30 @@ describe("native API", () => {
     expectTypeOf(account).toEqualTypeOf<typeof Sandbox>();
     expect(account).toBe(Sandbox);
     // JavaScript callers can hand over anything; a module without Sandbox is invalid_argument.
-    const wrong: Promise<unknown> = Reflect.apply(native.sdk, undefined, [async () => ({ Other: 1 })]);
+    const wrong: Promise<unknown> = Reflect.apply(native.sdk, undefined, [
+      async () => ({ Other: 1 }),
+    ]);
     await expect(wrong).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(native.sdk(() => Promise.reject(Object.assign(new Error("Cannot find package '@superserve/sdk'"), { code: "ERR_MODULE_NOT_FOUND" })))).rejects.toMatchObject({ code: "unavailable" });
+    await expect(
+      native.sdk(() =>
+        Promise.reject(
+          Object.assign(new Error("Cannot find package '@superserve/sdk'"), {
+            code: "ERR_MODULE_NOT_FOUND",
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "unavailable" });
   });
 
   test("the official SDK's module satisfies the sdk(load) constraint", () => {
     const connect = (native: SuperserveNative) => native.sdk(() => import("@superserve/sdk"));
     const account = (api: SuperserveProvider["api"]) => api.sdk(() => import("@superserve/sdk"));
-    expectTypeOf<Awaited<ReturnType<typeof connect>>>().toEqualTypeOf<import("@superserve/sdk").Sandbox>();
-    expectTypeOf<Awaited<ReturnType<typeof account>>>().toEqualTypeOf<typeof import("@superserve/sdk").Sandbox>();
+    expectTypeOf<Awaited<ReturnType<typeof connect>>>().toEqualTypeOf<
+      import("@superserve/sdk").Sandbox
+    >();
+    expectTypeOf<Awaited<ReturnType<typeof account>>>().toEqualTypeOf<
+      typeof import("@superserve/sdk").Sandbox
+    >();
   });
 });
 
@@ -660,9 +924,15 @@ describe("lifecycle and protocol faults", () => {
     const box = await createSandbox(factory());
     try {
       state.dropSessions = 1;
-      await expect(box.run("cat; sleep 5", { stdin: "x" })).rejects.toMatchObject({ code: "provider", message: expect.stringContaining("closed before the command finished") });
+      await expect(box.run("cat; sleep 5", { stdin: "x" })).rejects.toMatchObject({
+        code: "provider",
+        message: expect.stringContaining("closed before the command finished"),
+      });
       expect((await box.run("cat", { stdin: "after" })).stdout).toBe("after");
-    } finally { state.dropSessions = 0; await box.destroy(); }
+    } finally {
+      state.dropSessions = 0;
+      await box.destroy();
+    }
   });
 
   test("a cut exec response is a provider error, never a parsed result", async () => {
@@ -671,7 +941,13 @@ describe("lifecycle and protocol faults", () => {
     try {
       await provider.files.list(box.id, "/workspace");
       state.cutExec = 1;
-      await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({ code: "provider", provider: "superserve" });
-    } finally { state.cutExec = 0; await provider.destroy(box.id); }
+      await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({
+        code: "provider",
+        provider: "superserve",
+      });
+    } finally {
+      state.cutExec = 0;
+      await provider.destroy(box.id);
+    }
   });
 });

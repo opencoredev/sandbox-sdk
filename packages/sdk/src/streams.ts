@@ -31,12 +31,28 @@ const faults = new WeakMap<SandboxError, StreamFault>();
 export function streamFault(error: unknown): StreamFault | undefined {
   return error instanceof SandboxError ? faults.get(error) : undefined;
 }
-const faultCodes = { disconnected: "unavailable", truncated: "unavailable", frame_too_large: "unsupported", malformed: "provider" } as const;
-function fault(kind: StreamFault, message: string, options: StreamOptions, cause?: unknown): SandboxError {
-  const error = new SandboxError(`${message}. The stream from ${options.provider} cannot be read further.`, {
-    code: faultCodes[kind], provider: options.provider, sandboxId: options.sandboxId, retryable: kind === "disconnected" || kind === "truncated",
-    ...(cause === undefined ? {} : { cause: nativeDetail(cause) ?? kind }),
-  });
+const faultCodes = {
+  disconnected: "unavailable",
+  truncated: "unavailable",
+  frame_too_large: "unsupported",
+  malformed: "provider",
+} as const;
+function fault(
+  kind: StreamFault,
+  message: string,
+  options: StreamOptions,
+  cause?: unknown,
+): SandboxError {
+  const error = new SandboxError(
+    `${message}. The stream from ${options.provider} cannot be read further.`,
+    {
+      code: faultCodes[kind],
+      provider: options.provider,
+      sandboxId: options.sandboxId,
+      retryable: kind === "disconnected" || kind === "truncated",
+      ...(cause === undefined ? {} : { cause: nativeDetail(cause) ?? kind }),
+    },
+  );
   faults.set(error, kind);
   return error;
 }
@@ -46,7 +62,12 @@ class Bytes {
   private chunks: Uint8Array[] = [];
   private head = 0;
   length = 0;
-  push(chunk: Uint8Array) { if (chunk.byteLength) { this.chunks.push(chunk); this.length += chunk.byteLength; } }
+  push(chunk: Uint8Array) {
+    if (chunk.byteLength) {
+      this.chunks.push(chunk);
+      this.length += chunk.byteLength;
+    }
+  }
   /** Index of the first byte matching `test` at or after `from`, or -1. */
   find(test: (byte: number) => boolean, from = 0): number {
     let base = 0;
@@ -54,7 +75,9 @@ class Bytes {
       const chunk = this.chunks[c]!;
       const start = c === 0 ? this.head : 0;
       const size = chunk.byteLength - start;
-      if (from < base + size) for (let i = Math.max(start, start + from - base); i < chunk.byteLength; i++) if (test(chunk[i]!)) return base + i - start;
+      if (from < base + size)
+        for (let i = Math.max(start, start + from - base); i < chunk.byteLength; i++)
+          if (test(chunk[i]!)) return base + i - start;
       base += size;
     }
     return -1;
@@ -77,8 +100,12 @@ class Bytes {
       const chunk = this.chunks[0]!;
       const n = Math.min(count - filled, chunk.byteLength - this.head);
       out.set(chunk.subarray(this.head, this.head + n), filled);
-      filled += n; this.head += n;
-      if (this.head === chunk.byteLength) { this.chunks.shift(); this.head = 0; }
+      filled += n;
+      this.head += n;
+      if (this.head === chunk.byteLength) {
+        this.chunks.shift();
+        this.head = 0;
+      }
     }
     this.length -= count;
     return out;
@@ -86,27 +113,43 @@ class Bytes {
 }
 
 /** Reads chunks with abort and cancel-on-exit. */
-async function* chunks(body: ReadableStream<Uint8Array>, options: StreamOptions): AsyncGenerator<Uint8Array, void, undefined> {
+async function* chunks(
+  body: ReadableStream<Uint8Array>,
+  options: StreamOptions,
+): AsyncGenerator<Uint8Array, void, undefined> {
   const reader = body.getReader();
   const { signal } = options;
   let finished = false;
-  const abort = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+  const abort = () => {
+    void reader.cancel(signal?.reason).catch(() => {});
+  };
   signal?.addEventListener("abort", abort, { once: true });
   try {
     if (signal?.aborted) throw aborted(options);
     for (;;) {
       let result: ReadableStreamReadResult<Uint8Array>;
-      try { result = await reader.read(); }
-      catch (error) {
+      try {
+        result = await reader.read();
+      } catch (error) {
         finished = true;
         if (signal?.aborted) throw aborted(options);
         // The HTTP client already mapped it (timeout, aborted, lost connection); keep its code, mark the fault.
         // A write's lost connection is `outcome_unknown` rather than `unavailable`, but the stream dropped all the same.
-        if (error instanceof SandboxError) { if (error.code === "unavailable" || error.code === "outcome_unknown") faults.set(error, "disconnected"); throw error; }
+        if (error instanceof SandboxError) {
+          if (error.code === "unavailable" || error.code === "outcome_unknown")
+            faults.set(error, "disconnected");
+          throw error;
+        }
         throw fault("disconnected", "The connection dropped mid-stream", options, error);
       }
-      if (signal?.aborted) { finished = true; throw aborted(options); }
-      if (result.done) { finished = true; return; }
+      if (signal?.aborted) {
+        finished = true;
+        throw aborted(options);
+      }
+      if (result.done) {
+        finished = true;
+        return;
+      }
       yield result.value;
     }
   } finally {
@@ -116,7 +159,11 @@ async function* chunks(body: ReadableStream<Uint8Array>, options: StreamOptions)
   }
 }
 function aborted(options: StreamOptions) {
-  return new SandboxError("Stream aborted. The signal was cancelled.", { code: "aborted", provider: options.provider, sandboxId: options.sandboxId });
+  return new SandboxError("Stream aborted. The signal was cancelled.", {
+    code: "aborted",
+    provider: options.provider,
+    sandboxId: options.sandboxId,
+  });
 }
 const utf8 = new TextDecoder();
 /** The UTF-8 length of `text` in bytes, without encoding it. A lone surrogate counts as U+FFFD (3 bytes). */
@@ -126,8 +173,15 @@ function utf8Length(text: string): number {
     const unit = text.charCodeAt(i);
     if (unit < 0x80) bytes += 1;
     else if (unit < 0x800) bytes += 2;
-    else if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++; }
-    else bytes += 3;
+    else if (
+      unit >= 0xd800 &&
+      unit < 0xdc00 &&
+      i + 1 < text.length &&
+      (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00
+    ) {
+      bytes += 4;
+      i++;
+    } else bytes += 3;
   }
   return bytes;
 }
@@ -137,27 +191,40 @@ const defaultMax = 16 * 1024 * 1024;
  * Newline-delimited JSON: one value per `\n`-terminated line (`\r\n` too). Blank lines are skipped. A last line
  * without a newline is accepted when it parses as JSON; otherwise it is `truncated`.
  */
-export async function* ndjson(body: ReadableStream<Uint8Array>, options: StreamOptions): AsyncGenerator<unknown, void, undefined> {
+export async function* ndjson(
+  body: ReadableStream<Uint8Array>,
+  options: StreamOptions,
+): AsyncGenerator<unknown, void, undefined> {
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
   const parse = (line: Uint8Array, last: boolean): unknown => {
     const text = utf8.decode(line).replace(/\r$/, "");
-    try { return JSON.parse(text); }
-    catch { throw last ? fault("truncated", "The stream ended inside a JSON line", options) : fault("malformed", "A line is not valid JSON", options); }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw last
+        ? fault("truncated", "The stream ended inside a JSON line", options)
+        : fault("malformed", "A line is not valid JSON", options);
+    }
   };
   for await (const chunk of chunks(body, options)) {
     const from = buffer.length;
     buffer.push(chunk);
-    for (let end = buffer.find(byte => byte === 10, from); end >= 0; end = buffer.find(byte => byte === 10)) {
+    for (
+      let end = buffer.find((byte) => byte === 10, from);
+      end >= 0;
+      end = buffer.find((byte) => byte === 10)
+    ) {
       if (end > max) throw fault("frame_too_large", `A JSON line exceeds ${max} bytes`, options);
       const line = buffer.take(end + 1).subarray(0, end);
-      if (line.some(byte => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, false);
+      if (line.some((byte) => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, false);
     }
-    if (buffer.length > max) throw fault("frame_too_large", `A JSON line exceeds ${max} bytes`, options);
+    if (buffer.length > max)
+      throw fault("frame_too_large", `A JSON line exceeds ${max} bytes`, options);
   }
   if (buffer.length) {
     const line = buffer.take(buffer.length);
-    if (line.some(byte => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, true);
+    if (line.some((byte) => byte !== 13 && byte !== 32 && byte !== 9)) yield parse(line, true);
   }
 }
 
@@ -178,7 +245,10 @@ export interface ServerSentEvent {
  * multi-line `data`, and `id` that persists. Events with no `data` line are not dispatched, as in browsers.
  * A body that ends inside an event (no blank line after it) is `truncated`, unless `lenientEnd` dispatches it.
  */
-export async function* sse(body: ReadableStream<Uint8Array>, options: StreamOptions & { lenientEnd?: boolean }): AsyncGenerator<ServerSentEvent, void, undefined> {
+export async function* sse(
+  body: ReadableStream<Uint8Array>,
+  options: StreamOptions & { lenientEnd?: boolean },
+): AsyncGenerator<ServerSentEvent, void, undefined> {
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
   let first = true;
@@ -190,8 +260,19 @@ export async function* sse(body: ReadableStream<Uint8Array>, options: StreamOpti
   let retry: number | undefined;
   let pending = false;
   const dispatch = (): ServerSentEvent | undefined => {
-    const out = data.length ? { event: event || "message", data: data.join("\n"), ...(lastId === undefined ? {} : { id: lastId }), ...(retry === undefined ? {} : { retry }) } : undefined;
-    event = ""; data = []; dataBytes = 0; retry = undefined; pending = false;
+    const out = data.length
+      ? {
+          event: event || "message",
+          data: data.join("\n"),
+          ...(lastId === undefined ? {} : { id: lastId }),
+          ...(retry === undefined ? {} : { retry }),
+        }
+      : undefined;
+    event = "";
+    data = [];
+    dataBytes = 0;
+    retry = undefined;
+    pending = false;
     return out;
   };
   const field = (line: string) => {
@@ -206,24 +287,36 @@ export async function* sse(body: ReadableStream<Uint8Array>, options: StreamOpti
       if (dataBytes > max) throw fault("frame_too_large", `An event exceeds ${max} bytes`, options);
       data.push(value);
     } else if (name === "event") event = value;
-    else if (name === "id") { if (!value.includes("\0")) lastId = value; }
-    else if (name === "retry") { if (/^\d+$/.test(value)) retry = Number(value); }
+    else if (name === "id") {
+      if (!value.includes("\0")) lastId = value;
+    } else if (name === "retry") {
+      if (/^\d+$/.test(value)) retry = Number(value);
+    }
   };
   for await (const chunk of chunks(body, options)) {
     buffer.push(chunk);
     for (;;) {
-      if (skipLf && buffer.length) { if (buffer.at(0) === 10) buffer.take(1); skipLf = false; }
-      const end = buffer.find(byte => byte === 10 || byte === 13);
+      if (skipLf && buffer.length) {
+        if (buffer.at(0) === 10) buffer.take(1);
+        skipLf = false;
+      }
+      const end = buffer.find((byte) => byte === 10 || byte === 13);
       if (end < 0) break;
       if (end > max) throw fault("frame_too_large", `An event line exceeds ${max} bytes`, options);
       const raw = buffer.take(end + 1);
       if (raw[end] === 13) skipLf = true;
       let line = utf8.decode(raw.subarray(0, end));
-      if (first) { line = line.replace(/^﻿/, ""); first = false; }
-      if (line === "") { const out = dispatch(); if (out) yield out; }
-      else field(line);
+      if (first) {
+        line = line.replace(/^﻿/, "");
+        first = false;
+      }
+      if (line === "") {
+        const out = dispatch();
+        if (out) yield out;
+      } else field(line);
     }
-    if (buffer.length > max) throw fault("frame_too_large", `An event line exceeds ${max} bytes`, options);
+    if (buffer.length > max)
+      throw fault("frame_too_large", `An event line exceeds ${max} bytes`, options);
   }
   if (buffer.length || pending) {
     if (!options.lenientEnd) throw fault("truncated", "The stream ended inside an event", options);
@@ -236,14 +329,21 @@ export async function* sse(body: ReadableStream<Uint8Array>, options: StreamOpti
 /** A Connect streaming frame: a message, or the end-of-stream frame with the outcome. */
 export type ConnectFrame =
   | { kind: "message"; message: unknown }
-  | { kind: "end"; error?: { code: string; message?: string; details?: unknown[] }; metadata?: Record<string, string[]> };
+  | {
+      kind: "end";
+      error?: { code: string; message?: string; details?: unknown[] };
+      metadata?: Record<string, string[]>;
+    };
 
 /**
  * Connect protocol server-stream envelopes (JSON codec): a flags byte, a 4-byte big-endian length, then the
  * payload. Flag `0x02` marks the end-of-stream frame (`{ error?, metadata? }`), which must come last. A body
  * that ends without it is `truncated`; compressed frames (`0x01`) are `malformed`, since none is negotiated.
  */
-export async function* connectEnvelopes(body: ReadableStream<Uint8Array>, options: StreamOptions): AsyncGenerator<ConnectFrame, void, undefined> {
+export async function* connectEnvelopes(
+  body: ReadableStream<Uint8Array>,
+  options: StreamOptions,
+): AsyncGenerator<ConnectFrame, void, undefined> {
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
   const source = chunks(body, options);
@@ -258,22 +358,38 @@ export async function* connectEnvelopes(body: ReadableStream<Uint8Array>, option
   };
   try {
     for (let ended = false; ;) {
-      if (!await fill(5)) {
-        if (buffer.length) throw fault("truncated", "The stream ended inside a Connect frame header", options);
-        if (!ended) throw fault("truncated", "The stream ended before the Connect end-of-stream frame", options);
+      if (!(await fill(5))) {
+        if (buffer.length)
+          throw fault("truncated", "The stream ended inside a Connect frame header", options);
+        if (!ended)
+          throw fault(
+            "truncated",
+            "The stream ended before the Connect end-of-stream frame",
+            options,
+          );
         return;
       }
-      if (ended) throw fault("malformed", "A Connect frame followed the end-of-stream frame", options);
+      if (ended)
+        throw fault("malformed", "A Connect frame followed the end-of-stream frame", options);
       const header = buffer.take(5);
       const flags = header[0]!;
       const size = new DataView(header.buffer, header.byteOffset, 5).getUint32(1);
-      if (flags & 0x01) throw fault("malformed", "A Connect frame is compressed, but no compression was negotiated", options);
+      if (flags & 0x01)
+        throw fault(
+          "malformed",
+          "A Connect frame is compressed, but no compression was negotiated",
+          options,
+        );
       if (flags & ~0x03) throw fault("malformed", "A Connect frame has unknown flags", options);
-      if (size > max) throw fault("frame_too_large", `A Connect frame exceeds ${max} bytes`, options);
-      if (!await fill(size)) throw fault("truncated", "The stream ended inside a Connect frame", options);
+      if (size > max)
+        throw fault("frame_too_large", `A Connect frame exceeds ${max} bytes`, options);
+      if (!(await fill(size)))
+        throw fault("truncated", "The stream ended inside a Connect frame", options);
       const payload = json(buffer.take(size));
-      if (flags & 0x02) { ended = true; yield end(payload); }
-      else yield { kind: "message", message: payload };
+      if (flags & 0x02) {
+        ended = true;
+        yield end(payload);
+      } else yield { kind: "message", message: payload };
     }
   } finally {
     // Cancels the body when the caller stops early or a frame is bad.
@@ -281,23 +397,37 @@ export async function* connectEnvelopes(body: ReadableStream<Uint8Array>, option
   }
 
   function json(bytes: Uint8Array): unknown {
-    try { return JSON.parse(utf8.decode(bytes)); } catch { throw fault("malformed", "A Connect frame is not valid JSON", options); }
+    try {
+      return JSON.parse(utf8.decode(bytes));
+    } catch {
+      throw fault("malformed", "A Connect frame is not valid JSON", options);
+    }
   }
   function end(value: unknown): ConnectFrame {
-    if (typeof value !== "object" || value === null) throw fault("malformed", "The Connect end-of-stream frame is not an object", options);
+    if (typeof value !== "object" || value === null)
+      throw fault("malformed", "The Connect end-of-stream frame is not an object", options);
     const error: unknown = Reflect.get(value, "error");
     const metadata: unknown = Reflect.get(value, "metadata");
     const frame: ConnectFrame = { kind: "end" };
     if (error !== undefined) {
-      if (typeof error !== "object" || error === null) throw fault("malformed", "The Connect end-of-stream error is not an object", options);
+      if (typeof error !== "object" || error === null)
+        throw fault("malformed", "The Connect end-of-stream error is not an object", options);
       const code: unknown = Reflect.get(error, "code");
       const message: unknown = Reflect.get(error, "message");
       const details: unknown = Reflect.get(error, "details");
-      if (typeof code !== "string") throw fault("malformed", "The Connect end-of-stream error has no code", options);
-      frame.error = { code, ...(typeof message === "string" ? { message } : {}), ...(Array.isArray(details) ? { details } : {}) };
+      if (typeof code !== "string")
+        throw fault("malformed", "The Connect end-of-stream error has no code", options);
+      frame.error = {
+        code,
+        ...(typeof message === "string" ? { message } : {}),
+        ...(Array.isArray(details) ? { details } : {}),
+      };
     }
     if (typeof metadata === "object" && metadata !== null) {
-      const entries = Object.entries(metadata).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(item => typeof item === "string"));
+      const entries = Object.entries(metadata).filter(
+        (entry): entry is [string, string[]] =>
+          Array.isArray(entry[1]) && entry[1].every((item) => typeof item === "string"),
+      );
       frame.metadata = Object.fromEntries(entries);
     }
     return frame;

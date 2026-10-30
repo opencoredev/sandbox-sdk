@@ -203,7 +203,9 @@ const stats = await box.native.request("GET", "/sandboxes/{sandboxId}/stats");
 console.log(stats);
 
 await box.run("echo report > /tmp/report.txt");
-const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", { query: { path: "/tmp/report.txt" } });
+const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", {
+  query: { path: "/tmp/report.txt" },
+});
 console.log(await file.text());
 ```
 

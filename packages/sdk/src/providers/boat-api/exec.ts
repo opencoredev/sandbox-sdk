@@ -13,8 +13,17 @@ export const fileChunkBytes = 4 * 1024 * 1024;
  * is 0700 and every part exists as an empty 0600 file before its bytes arrive.
  * Bytes travel only through the file API, never through command text. The
  * caller owns `dir` and removes it, including after a failure. */
-export async function stage(http: BoatHttp, id: string, dir: string, data: Uint8Array, failure: ReturnType<typeof errors>["failure"]): Promise<string[]> {
-  const parts = Array.from({ length: Math.max(1, Math.ceil(data.length / fileChunkBytes)) }, (_, index) => `${dir}/part-${index}`);
+export async function stage(
+  http: BoatHttp,
+  id: string,
+  dir: string,
+  data: Uint8Array,
+  failure: ReturnType<typeof errors>["failure"],
+): Promise<string[]> {
+  const parts = Array.from(
+    { length: Math.max(1, Math.ceil(data.length / fileChunkBytes)) },
+    (_, index) => `${dir}/part-${index}`,
+  );
   const prepared = await send(http, id, {
     command: `mkdir -p /tmp/.sandbox-sdk && mkdir -m 700 -- ${quote(dir)} && (umask 077 && touch -- ${parts.map(quote).join(" ")})`,
     timeoutSeconds: 60,
@@ -24,7 +33,9 @@ export async function stage(http: BoatHttp, id: string, dir: string, data: Uint8
   for (const [index, path] of parts.entries())
     await writeFile(http, id, {
       path,
-      content: Buffer.from(data.subarray(index * fileChunkBytes, (index + 1) * fileChunkBytes)).toString("base64"),
+      content: Buffer.from(
+        data.subarray(index * fileChunkBytes, (index + 1) * fileChunkBytes),
+      ).toString("base64"),
       encoding: "base64",
     });
   return parts;
@@ -33,7 +44,15 @@ export async function stage(http: BoatHttp, id: string, dir: string, data: Uint8
 /** Detached commands have no 600-second limit. Boat's stopCommand kills the
  * command and all descendants. Aborting a stream alone does not stop remote work.
  */
-export async function execute(http: BoatHttp, id: string, input: ExecInput, sandboxEnv: Record<string, string> = {}, environmentFiles = new Map<string, Promise<string>>(), diagnostics = errors(), follow: { http?: BoatHttp; timing?: FollowTiming } = {}): Promise<ExecResult> {
+export async function execute(
+  http: BoatHttp,
+  id: string,
+  input: ExecInput,
+  sandboxEnv: Record<string, string> = {},
+  environmentFiles = new Map<string, Promise<string>>(),
+  diagnostics = errors(),
+  follow: { http?: BoatHttp; timing?: FollowTiming } = {},
+): Promise<ExecResult> {
   const { boatError, failure } = diagnostics;
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const stream = new AbortController();
@@ -58,7 +77,7 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
   async function stop() {
     if (processId === undefined) return;
     try {
-      if (await stopCommand(http, id, processId) !== false)
+      if ((await stopCommand(http, id, processId)) !== false)
         throw failure("Boat did not confirm process-tree cancellation", "outcome_unknown", id);
     } catch {
       throw failure(
@@ -71,15 +90,20 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
   try {
     // Boat has no per-command env field. Transfer values through its files API,
     // inside a private directory, never through recorded command text or argv.
-    let overrides = Object.entries(input.env).filter(([key, value]) =>
-      !Object.entries(defaults).some(([name, setting]) => key === name && value === setting) && sandboxEnv[key] !== value);
+    let overrides = Object.entries(input.env).filter(
+      ([key, value]) =>
+        !Object.entries(defaults).some(([name, setting]) => key === name && value === setting) &&
+        sandboxEnv[key] !== value,
+    );
     const fixed = Object.entries(defaults).filter(([key, value]) => input.env[key] === value);
     let environment = fixed.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("; ");
     if (environment) environment += "; ";
     // Only the core's fixed, non-secret index path may bypass private env-file
     // transport. Arbitrary user values may be secrets, regardless of their size.
     const indexPath = "/tmp/.sandbox-sdk/changes.git/sdk.index";
-    const inline = overrides.filter(([key, value]) => key === "GIT_INDEX_FILE" && value === indexPath);
+    const inline = overrides.filter(
+      ([key, value]) => key === "GIT_INDEX_FILE" && value === indexPath,
+    );
     overrides = overrides.filter(([key, value]) => key !== "GIT_INDEX_FILE" || value !== indexPath);
     for (const [key, value] of inline) environment += `export ${quote(`${key}=${value}`)}; `;
     if (overrides.length) {
@@ -92,21 +116,31 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
         const envPath = `${envDir}/env`;
         const directory = envDir;
         const prepare = async () => {
-          const script = "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
+          const script =
+            "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[1],{mode:0o700});f.writeFileSync(process.argv[1]+'/env','',{flag:'wx',mode:0o600})";
           const result = await send(http, id, {
-            command: `node -e ${quote(script)} ${quote(directory)}`, timeoutSeconds: 60,
+            command: `node -e ${quote(script)} ${quote(directory)}`,
+            timeoutSeconds: 60,
           });
           if (result.kind !== "finished" || result.exitCode !== 0)
             throw failure("Boat could not prepare command environment", "provider", id);
           await writeFile(http, id, {
-            path: envPath, content: overrides.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("\n") + "\n", encoding: "utf8",
+            path: envPath,
+            content:
+              overrides.map(([key, value]) => `export ${quote(`${key}=${value}`)}`).join("\n") +
+              "\n",
+            encoding: "utf8",
           });
           return envPath;
         };
         const prepared = prepare();
         if (input.envMode === "sandbox") environmentFiles.set(key, prepared);
-        try { await prepared; }
-        catch (error) { if (input.envMode === "sandbox") environmentFiles.delete(key); throw error; }
+        try {
+          await prepared;
+        } catch (error) {
+          if (input.envMode === "sandbox") environmentFiles.delete(key);
+          throw error;
+        }
         if (input.envMode === "sandbox") {
           // Retain the private file for this sandbox's stable handle env. Only
           // explicit per-run overrides need another upload and eager deletion.
@@ -128,7 +162,8 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
       stdinDir = `/tmp/.sandbox-sdk/stdin-${crypto.randomUUID()}`;
       const parts = await stage(http, id, stdinDir, bytes, failure);
       stdin = parts.length === 1 ? `${stdinDir}/part-0` : `${stdinDir}/stdin`;
-      if (parts.length > 1) concat = `(umask 077 && cat -- ${parts.map(quote).join(" ")} > ${quote(stdin)}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; `;
+      if (parts.length > 1)
+        concat = `(umask 077 && cat -- ${parts.map(quote).join(" ")} > ${quote(stdin)}) || { echo setup-failed > ${quote(setupError)}; exit 125; }; `;
       unlink = `/bin/rm -rf -- ${quote(stdinDir)}; `;
     }
     if (cancelled) return { exitCode: null, timedOut: true };
@@ -145,7 +180,8 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
     if (input.signal?.aborted) cancel();
     const completion = (async (): Promise<ExecResult> => {
       for await (const frame of followCommand(follow.http ?? http, id, started.processId, {
-        signal: stream.signal, ...(follow.timing === undefined ? {} : { timing: follow.timing }),
+        signal: stream.signal,
+        ...(follow.timing === undefined ? {} : { timing: follow.timing }),
       })) {
         if (frame.type === "stdout" || frame.type === "stderr") {
           input.onChunk({ stream: frame.type, text: frame.data });
@@ -169,10 +205,17 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
     }
     if (!result.timedOut && result.exitCode === 125) {
       const status = await send(http, id, {
-        command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`, timeoutSeconds: 10,
+        command: `if [ -f ${quote(setupError)} ]; then cat ${quote(setupError)}; rm -f -- ${quote(setupError)}; fi`,
+        timeoutSeconds: 10,
       });
-      if (status.kind !== "finished" || status.exitCode !== 0) throw failure("Boat could not confirm command initialization", "outcome_unknown", id);
-      if (status.stdout.trim() === "setup-failed") throw failure("Boat workspace initialization failed; the requested command did not run", "provider", id);
+      if (status.kind !== "finished" || status.exitCode !== 0)
+        throw failure("Boat could not confirm command initialization", "outcome_unknown", id);
+      if (status.stdout.trim() === "setup-failed")
+        throw failure(
+          "Boat workspace initialization failed; the requested command did not run",
+          "provider",
+          id,
+        );
     }
     return result;
   } catch (error) {
@@ -193,7 +236,19 @@ export async function execute(http: BoatHttp, id: string, input: ExecInput, sand
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", cancel);
     // Cleanup runs even after an abort, each with its own short deadline.
-    if (envDir) await send(http, id, { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 }, true).catch(() => {});
-    if (stdinDir && !stdinRemoved) await send(http, id, { command: `rm -rf -- ${quote(stdinDir)}`, timeoutSeconds: 10 }, true).catch(() => {});
+    if (envDir)
+      await send(
+        http,
+        id,
+        { command: `rm -rf -- ${quote(envDir)}`, timeoutSeconds: 10 },
+        true,
+      ).catch(() => {});
+    if (stdinDir && !stdinRemoved)
+      await send(
+        http,
+        id,
+        { command: `rm -rf -- ${quote(stdinDir)}`, timeoutSeconds: 10 },
+        true,
+      ).catch(() => {});
   }
 }

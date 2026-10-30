@@ -23,7 +23,9 @@ export function isFileOperation(operation: string): boolean {
 
 /** Maps a Connect error code. `file` turns `not_found` into `file_not_found`. */
 export function connectCode(code: string, file: boolean): ErrorCode {
-  const mapped = Object.hasOwn(connectCodes, code) ? connectCodes[code] ?? "provider" : "provider";
+  const mapped = Object.hasOwn(connectCodes, code)
+    ? (connectCodes[code] ?? "provider")
+    : "provider";
   return mapped === "not_found" && file ? "file_not_found" : mapped;
 }
 
@@ -35,23 +37,41 @@ export function mapE2BError(failure: HttpFailure, request: FailedRequest): Error
   if (failure.kind !== "status") return undefined;
   const file = request.plane === "envd" && isFileOperation(request.operation);
   const code = failure.body.code;
-  if (request.plane === "envd" && code !== undefined && Object.hasOwn(connectCodes, code)) return connectCode(code, file);
+  if (request.plane === "envd" && code !== undefined && Object.hasOwn(connectCodes, code))
+    return connectCode(code, file);
   if (failure.status === 507) return "quota";
   if (failure.status === 404 && file) return "file_not_found";
   return undefined;
 }
 
 /** A Connect error from a stream end frame, which arrives inside an HTTP 200. Keeps only the code, never envd's text. */
-export function rpcError(options: { code: string; method: string; sandboxId: string; file?: boolean }): SandboxError {
+export function rpcError(options: {
+  code: string;
+  method: string;
+  sandboxId: string;
+  file?: boolean;
+}): SandboxError {
   const code = connectCode(options.code, options.file ?? false);
   const safe = /^[a-z_]{1,32}$/.test(options.code) ? options.code : "unknown";
-  return new SandboxError(`E2B ${options.method} failed (rpc ${safe}).`, { code, provider: "e2b", sandboxId: options.sandboxId, retryable: ["quota", "unavailable", "timeout"].includes(code), cause: `rpc ${safe}` });
+  return new SandboxError(`E2B ${options.method} failed (rpc ${safe}).`, {
+    code,
+    provider: "e2b",
+    sandboxId: options.sandboxId,
+    retryable: ["quota", "unavailable", "timeout"].includes(code),
+    cause: `rpc ${safe}`,
+  });
 }
 
 /** Wraps anything that is not already a SandboxError. Only an unrecognized local failure keeps its scrubbed text. */
 export function e2bError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;
-  const code: ErrorCode = typeof cause === "object" && cause !== null && "name" in cause && cause.name === "AbortError" ? "aborted" : "provider";
+  const code: ErrorCode =
+    typeof cause === "object" && cause !== null && "name" in cause && cause.name === "AbortError"
+      ? "aborted"
+      : "provider";
   const native = describeNative(cause, { code, redact: redacting([process.env.E2B_API_KEY]) });
-  return new SandboxError(`E2B request failed: ${reason(code, native.detail)}. Check the sandbox, template and E2B service, then retry.`, { code, provider: "e2b", sandboxId, cause: native.cause });
+  return new SandboxError(
+    `E2B request failed: ${reason(code, native.detail)}. Check the sandbox, template and E2B service, then retry.`,
+    { code, provider: "e2b", sandboxId, cause: native.cause },
+  );
 }

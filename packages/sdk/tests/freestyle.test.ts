@@ -184,12 +184,19 @@ describe("Freestyle API contract", () => {
 });
 
 import { cloudRegressions } from "./cloud-regressions.js";
-cloudRegressions(() => {
-  const provider = factory();
-  const create = provider.create;
-  provider.create = async input => { const info = await create(input); await provider.files.list(info.id, "/workspace"); return info; };
-  return provider;
-}, (id) => freestyleState.boxes.get(id)?.guest);
+cloudRegressions(
+  () => {
+    const provider = factory();
+    const create = provider.create;
+    provider.create = async (input) => {
+      const info = await create(input);
+      await provider.files.list(info.id, "/workspace");
+      return info;
+    };
+    return provider;
+  },
+  (id) => freestyleState.boxes.get(id)?.guest,
+);
 
 test("unconfirmed process cancellation reports uncertainty without deleting a VM", async () => {
   const box = await createSandbox(factory());
@@ -213,9 +220,14 @@ test("an exec accepted before its response was lost is outcome_unknown, after co
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   await box.run("true");
-  const exec = vi.spyOn(native, "exec").mockRejectedValueOnce(new Error("connection reset after the request was sent"));
+  const exec = vi
+    .spyOn(native, "exec")
+    .mockRejectedValueOnce(new Error("connection reset after the request was sent"));
   try {
-    await expect(box.run("echo once")).rejects.toMatchObject({ code: "outcome_unknown", provider: "freestyle" });
+    await expect(box.run("echo once")).rejects.toMatchObject({
+      code: "outcome_unknown",
+      provider: "freestyle",
+    });
     // The cancellation RPC ran and confirmed; the VM is kept.
     expect(exec).toHaveBeenCalledTimes(2);
     expect(freestyleState.boxes.has(box.id)).toBe(true);
@@ -321,29 +333,39 @@ for (const kind of ["timeout", "abort"] as const)
     }
   });
 
-test.each(["missing", "outdated"])("legacy %s-version reconnects run inline without helper installation", async version => {
-  const { promises: fs } = await import("node:fs");
-  const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
-  const box = await createSandbox(factory());
-  await box.run("true");
-  const native = freestyleState.boxes.get(box.id);
-  if (!native) throw new Error("Missing mock VM");
-  try {
-    const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
-    await fs.writeFile(path, JSON.stringify({ key: null, labels: box.labels, ...(version === "outdated" ? { supervisorHash: "old-version" } : {}) }));
-    await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
-    const provider = factory();
-    const before = native.guest.commands.length;
-    await Promise.all(Array.from({ length: 8 }, () => provider.connect(box.id)));
-    expect(native.guest.commands.length - before).toBe(0);
-    await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
-    const clients = Array.from({ length: 8 }, () => factory());
-    await Promise.all(clients.map((client) => client.connect(box.id)));
-    expect((await box.run("echo ready")).stdout).toBe("ready\n");
-  } finally {
-    await box.destroy();
-  }
-});
+test.each(["missing", "outdated"])(
+  "legacy %s-version reconnects run inline without helper installation",
+  async (version) => {
+    const { promises: fs } = await import("node:fs");
+    const { supervisorPath } = await import("../src/providers/freestyle/execute.js");
+    const box = await createSandbox(factory());
+    await box.run("true");
+    const native = freestyleState.boxes.get(box.id);
+    if (!native) throw new Error("Missing mock VM");
+    try {
+      const path = native.guest.rewrite("/var/lib/sandbox-sdk.json");
+      await fs.writeFile(
+        path,
+        JSON.stringify({
+          key: null,
+          labels: box.labels,
+          ...(version === "outdated" ? { supervisorHash: "old-version" } : {}),
+        }),
+      );
+      await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
+      const provider = factory();
+      const before = native.guest.commands.length;
+      await Promise.all(Array.from({ length: 8 }, () => provider.connect(box.id)));
+      expect(native.guest.commands.length - before).toBe(0);
+      await fs.rm(native.guest.rewrite(supervisorPath), { force: true });
+      const clients = Array.from({ length: 8 }, () => factory());
+      await Promise.all(clients.map((client) => client.connect(box.id)));
+      expect((await box.run("echo ready")).stdout).toBe("ready\n");
+    } finally {
+      await box.destroy();
+    }
+  },
+);
 
 test("cancellation recovers a bounded tail and applies public output caps", async () => {
   const box = await createSandbox(factory());
@@ -463,28 +485,45 @@ describe("Freestyle resilient discovery", () => {
       if (!damagedVm) throw new Error("Missing mock VM");
       delete damagedVm.record.metadata["sandbox-sdk-info"];
       for (const body of ["{", JSON.stringify({ key: null, labels: { bad: 2 } })]) {
-        const read = vi.spyOn(damagedVm.fs, "readFile").mockResolvedValue(new TextEncoder().encode(body));
-        expect((await factory().list({})).map(v => v.id)).toContain(healthy.id);
-        expect((await factory().list({})).map(v => v.id)).not.toContain(damaged.id);
+        const read = vi
+          .spyOn(damagedVm.fs, "readFile")
+          .mockResolvedValue(new TextEncoder().encode(body));
+        expect((await factory().list({})).map((v) => v.id)).toContain(healthy.id);
+        expect((await factory().list({})).map((v) => v.id)).not.toContain(damaged.id);
         read.mockRestore();
       }
       for (const status of [404, 401, 503, 429]) {
-        const read = vi.spyOn(damagedVm.fs, "readFile").mockRejectedValue(Object.assign(new Error("native read"), { status }));
-        if (status === 404) expect((await factory().list({})).map(v => v.id)).toEqual([healthy.id]);
-        else await expect(factory().list({})).rejects.toMatchObject({ code: status === 401 ? "auth" : status === 503 ? "unavailable" : "quota" });
+        const read = vi
+          .spyOn(damagedVm.fs, "readFile")
+          .mockRejectedValue(Object.assign(new Error("native read"), { status }));
+        if (status === 404)
+          expect((await factory().list({})).map((v) => v.id)).toEqual([healthy.id]);
+        else
+          await expect(factory().list({})).rejects.toMatchObject({
+            code: status === 401 ? "auth" : status === 503 ? "unavailable" : "quota",
+          });
         read.mockRestore();
       }
       damagedVm.record.metadata = {};
-      expect((await factory().list({})).map(v => v.id)).toEqual([healthy.id]);
-    } finally { await damaged.destroy(); await healthy.destroy(); }
+      expect((await factory().list({})).map((v) => v.id)).toEqual([healthy.id]);
+    } finally {
+      await damaged.destroy();
+      await healthy.destroy();
+    }
   });
   test("surfaces native list failures even with an empty account", async () => {
     try {
-      for (const [status, code] of [[401, "auth"], [503, "unavailable"], [429, "quota"]] as const) {
+      for (const [status, code] of [
+        [401, "auth"],
+        [503, "unavailable"],
+        [429, "quota"],
+      ] as const) {
         freestyleState.listError = status;
         await expect(factory().list({})).rejects.toMatchObject({ code });
       }
-    } finally { freestyleState.listError = 0; }
+    } finally {
+      freestyleState.listError = 0;
+    }
   });
   test("native create metadata makes a pre-setup orphan reapable only by its own run", async () => {
     const run = "orphan-run-43";
@@ -494,34 +533,53 @@ describe("Freestyle resilient discovery", () => {
       expect(params?.metadata?.["sandbox-sdk-info"]).toBeDefined();
       const vm = freestyleState.boxes.get(box.id);
       if (!vm) throw new Error("Missing mock VM");
-      const read = vi.spyOn(vm.fs, "readFile").mockRejectedValue(Object.assign(new Error("missing marker"), { status: 404 }));
+      const read = vi
+        .spyOn(vm.fs, "readFile")
+        .mockRejectedValue(Object.assign(new Error("missing marker"), { status: 404 }));
       const { listSandboxes, reapSandboxes } = await import("../src/index.js");
-      expect((await listSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).map(v => v.id)).toEqual([box.id]);
+      expect(
+        (await listSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).map((v) => v.id),
+      ).toEqual([box.id]);
       const connected = await connectSandbox(factory(), box.id);
       expect(connected.id).toBe(box.id);
       await connected.close();
-      expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": "another-run" } })).toBe(0);
+      expect(
+        await reapSandboxes(factory(), { labels: { "sandbox-bench-run": "another-run" } }),
+      ).toBe(0);
       expect(await reapSandboxes(factory(), { labels: { "sandbox-bench-run": run } })).toBe(1);
       read.mockRestore();
-    } finally { await box.destroy(); }
+    } finally {
+      await box.destroy();
+    }
   });
 });
 
 test("Freestyle native ownership fits the documented limits and rejects overflow before allocation", async () => {
   const provider = factory();
-  const labels = { "sandbox-sdk": "1", unicode: "雪".repeat(200), "sandbox-bench-run": "chunked-run" };
+  const labels = {
+    "sandbox-sdk": "1",
+    unicode: "雪".repeat(200),
+    "sandbox-bench-run": "chunked-run",
+  };
   const box = await createSandbox(provider, { labels });
   try {
     const metadata = freestyleState.creates.at(-1)?.metadata ?? {};
     expect(Object.keys(metadata).length).toBeLessThanOrEqual(64);
-    expect(Object.entries(metadata).every(([key, value]) => key.length <= 63 && value.length <= 63)).toBe(true);
-    expect((await factory().list({ unicode: labels.unicode })).find(v => v.id === box.id)?.labels).toEqual(labels);
+    expect(
+      Object.entries(metadata).every(([key, value]) => key.length <= 63 && value.length <= 63),
+    ).toBe(true);
+    expect(
+      (await factory().list({ unicode: labels.unicode })).find((v) => v.id === box.id)?.labels,
+    ).toEqual(labels);
     const before = freestyleState.creates.length;
-    await expect(provider.create({ labels: { oversized: "x".repeat(4000) } })).rejects.toMatchObject({ code: "unsupported" });
+    await expect(
+      provider.create({ labels: { oversized: "x".repeat(4000) } }),
+    ).rejects.toMatchObject({ code: "unsupported" });
     expect(freestyleState.creates.length).toBe(before);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
-
 
 test("current-version reconnect trusts the recorded supervisor without a guest RPC", async () => {
   const box = await createSandbox(factory());
@@ -532,7 +590,9 @@ test("current-version reconnect trusts the recorded supervisor without a guest R
     const info = await factory().connect(box.id);
     expect(info.id).toBe(box.id);
     expect(native.guest.commands.length - before).toBe(0);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("a missing installed helper does not add requests or replay the user command", async () => {
@@ -549,14 +609,32 @@ test("a missing installed helper does not add requests or replay the user comman
     await client.connect(box.id);
     expect(native.guest.commands.length - before).toBe(0);
     const chunks: string[] = [];
-    expect(await client.exec(box.id, { command: "echo once >> executions; echo ready", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk: c => chunks.push(c.text) })).toMatchObject({ exitCode: 0 });
+    expect(
+      await client.exec(box.id, {
+        command: "echo once >> executions; echo ready",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5000,
+        onChunk: (c) => chunks.push(c.text),
+      }),
+    ).toMatchObject({ exitCode: 0 });
     expect(chunks.join("")).toBe("ready\n");
     expect(await fs.readFile(native.guest.rewrite("/workspace/executions"), "utf8")).toBe("once\n");
     expect(native.guest.commands.length - before).toBe(1);
     const next = native.guest.commands.length;
-    expect(await client.exec(box.id, { command: "exit 2", cwd: "/workspace", env: {}, timeoutMs: 5000, onChunk() {} })).toMatchObject({ exitCode: 2 });
+    expect(
+      await client.exec(box.id, {
+        command: "exit 2",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5000,
+        onChunk() {},
+      }),
+    ).toMatchObject({ exitCode: 2 });
     expect(native.guest.commands.length - next).toBe(1);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("other supervisor failures never trigger installation or replay", async () => {
@@ -564,29 +642,42 @@ test("other supervisor failures never trigger installation or replay", async () 
   const native = freestyleState.boxes.get(box.id);
   if (!native) throw new Error("Missing mock VM");
   const exec = vi.spyOn(native, "exec").mockResolvedValueOnce({
-    statusCode: 2, stdout: "", stderr: "python3: can't open file '/var/lib/sandbox-sdk-exec-v2.py': [Errno 13] Permission denied",
+    statusCode: 2,
+    stdout: "",
+    stderr:
+      "python3: can't open file '/var/lib/sandbox-sdk-exec-v2.py': [Errno 13] Permission denied",
   });
   try {
     await expect(box.run("echo should-not-run")).rejects.toMatchObject({ code: "provider" });
     // One failed exec plus the existing cancellation/recovery RPC, no install.
     expect(exec).toHaveBeenCalledTimes(2);
-  } finally { exec.mockRestore(); await box.destroy(); }
+  } finally {
+    exec.mockRestore();
+    await box.destroy();
+  }
 });
-
 
 test("command shells restore SIGPIPE and use the supplied PATH", async () => {
   const box = await createSandbox(factory());
   try {
-    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({ exitCode: 141, stdout: "" });
+    expect(await box.run("kill -PIPE $$; echo survived")).toMatchObject({
+      exitCode: 141,
+      stdout: "",
+    });
     const pipe = await box.run("yes | head -n 1");
     expect(pipe.stderr).toBe("");
     await box.files.write("shell-path/sh", '#!/bin/sh\nprintf selected >&2\nexec /bin/sh "$@"\n');
     await box.files.write("blocked-path/sh", "not executable");
     await box.run("chmod +x shell-path/sh");
-    expect(await box.run("printf command", { env: { PATH: "/workspace/blocked-path:/workspace/shell-path" } })).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
-  } finally { await box.destroy(); }
+    expect(
+      await box.run("printf command", {
+        env: { PATH: "/workspace/blocked-path:/workspace/shell-path" },
+      }),
+    ).toMatchObject({ stdout: "command", stderr: "selected", exitCode: 0 });
+  } finally {
+    await box.destroy();
+  }
 });
-
 
 test("plain create has no guest call and first list prepares in one request", async () => {
   const box = await createSandbox(factory());
@@ -598,7 +689,9 @@ test("plain create has no guest call and first list prepares in one request", as
     expect(guest.commands).toHaveLength(1);
     await box.run("rm -rf /workspace", { cwd: "/" });
     expect(await box.files.exists("/workspace")).toBe(false);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 test("fresh client prepares a sandbox closed before first use", async () => {
@@ -606,13 +699,18 @@ test("fresh client prepares a sandbox closed before first use", async () => {
   const id = box.id;
   await box.close();
   const connected = await connectSandbox(factory(), id);
-  try { expect(await connected.run("pwd")).toMatchObject({ stdout: "/workspace\n", exitCode: 0 }); }
-  finally { await connected.destroy(); }
+  try {
+    expect(await connected.run("pwd")).toMatchObject({ stdout: "/workspace\n", exitCode: 0 });
+  } finally {
+    await connected.destroy();
+  }
 });
 
-
 test("configured snapshots replace inherited identity and environment before reconnect", async () => {
-  const source = await createSandbox(factory(), { key: "source", env: { SOURCE_ONLY: "source-value" } });
+  const source = await createSandbox(factory(), {
+    key: "source",
+    env: { SOURCE_ONLY: "source-value" },
+  });
   try {
     const snapshot = await source.snapshot();
     const provider = freestyle({ apiKey: "mock-key", snapshotId: snapshot.id });
@@ -623,8 +721,12 @@ test("configured snapshots replace inherited identity and environment before rec
       expect(connected.key).toBeUndefined();
       expect(connected.labels).toMatchObject({ identity: "fresh" });
       expect((await connected.run('printf %s "$SOURCE_ONLY"')).stdout).toBe("");
-    } finally { await connected.destroy(); }
-  } finally { await source.destroy(); }
+    } finally {
+      await connected.destroy();
+    }
+  } finally {
+    await source.destroy();
+  }
 });
 
 test("first execution preserves the inherited umask", async () => {
@@ -633,7 +735,9 @@ test("first execution preserves the inherited umask", async () => {
     const first = await box.run("umask");
     const second = await box.run("umask");
     expect(first.stdout).toBe(second.stdout);
-  } finally { await box.destroy(); }
+  } finally {
+    await box.destroy();
+  }
 });
 
 describe("freestyle native options (SBX-71)", () => {
@@ -651,7 +755,9 @@ describe("freestyle native options (SBX-71)", () => {
       expect(write.mock.calls[0]?.[2]).toMatchObject({ mode: 0o640 });
       expect(write.mock.calls[1]?.[2]).not.toHaveProperty("mode");
       write.mockRestore();
-    } finally { await box.destroy(); }
+    } finally {
+      await box.destroy();
+    }
   });
   test("the first-use write path applies mode in the guest", async () => {
     const box = await createSandbox(factory());
@@ -665,7 +771,9 @@ describe("freestyle native options (SBX-71)", () => {
       write.mockRestore();
       const { promises: fs } = await import("node:fs");
       expect((await fs.stat(native.guest.rewrite("/workspace/first"))).mode & 0o777).toBe(0o751);
-    } finally { await box.destroy(); }
+    } finally {
+      await box.destroy();
+    }
   });
   test("snapshot expiresInMs maps to ttlSeconds; 0 keeps the snapshot", async () => {
     const provider = factory();
@@ -677,19 +785,31 @@ describe("freestyle native options (SBX-71)", () => {
       await box.snapshot();
       // The SDK posted {} without a TTL too.
       expect(freestyleState.snapshotOptions).toEqual([{ ttlSeconds: 91 }, {}, {}]);
-      await expect(box.snapshot({ expiresInMs: -1 })).rejects.toMatchObject({ code: "invalid_argument" });
-    } finally { await box.destroy(); }
+      await expect(box.snapshot({ expiresInMs: -1 })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+    } finally {
+      await box.destroy();
+    }
   });
   test("autoDeleteMs reaches vms.create in seconds and is confirmed", async () => {
     const provider = freestyle({ apiKey: "mock-key", autoDeleteMs: 0 });
     const box = await provider.create({ labels: {} });
-    try { expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 0 }); }
-    finally { await provider.destroy(box.id); }
+    try {
+      expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 0 });
+    } finally {
+      await provider.destroy(box.id);
+    }
     const later = freestyle({ apiKey: "mock-key", autoDeleteMs: 3_600_001 });
     const second = await later.create({ labels: {} });
-    try { expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 3601 }); }
-    finally { await later.destroy(second.id); }
-    expect(() => freestyle({ autoDeleteMs: -1 })).toThrowError(expect.objectContaining({ code: "invalid_argument" }));
+    try {
+      expect(freestyleState.creates.at(-1)).toMatchObject({ autoDeleteSeconds: 3601 });
+    } finally {
+      await later.destroy(second.id);
+    }
+    expect(() => freestyle({ autoDeleteMs: -1 })).toThrowError(
+      expect.objectContaining({ code: "invalid_argument" }),
+    );
   });
 });
 
@@ -697,7 +817,16 @@ test("a missing file is file_not_found for read, edit and remove, like the other
   const box = await createSandbox(factory());
   try {
     await box.run("true");
-    for (const action of [() => box.files.read("missing.txt"), () => box.files.edit("missing.txt", { find: "a", replace: "b" }), () => box.files.remove("missing.txt")])
-      await expect(action()).rejects.toMatchObject({ code: "file_not_found", provider: "freestyle" });
-  } finally { await box.destroy(); }
+    for (const action of [
+      () => box.files.read("missing.txt"),
+      () => box.files.edit("missing.txt", { find: "a", replace: "b" }),
+      () => box.files.remove("missing.txt"),
+    ])
+      await expect(action()).rejects.toMatchObject({
+        code: "file_not_found",
+        provider: "freestyle",
+      });
+  } finally {
+    await box.destroy();
+  }
 });

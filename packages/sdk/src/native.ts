@@ -65,7 +65,10 @@ export type AnyNativeSdk = <M extends object>(load: () => Promise<M>) => Promise
  * const sdkSandbox = await box.native.sdk(() => import("@daytonaio/sdk"));
  * ```
  */
-export interface NativeApi<Plane extends string = string, Sdk extends NativeSdkLoader = NativeSdkLoader> {
+export interface NativeApi<
+  Plane extends string = string,
+  Sdk extends NativeSdkLoader = NativeSdkLoader,
+> {
   /** The sandbox this client is bound to. `undefined` on `provider.api`. */
   readonly sandboxId?: string;
   /**
@@ -73,7 +76,11 @@ export interface NativeApi<Plane extends string = string, Sdk extends NativeSdkL
    * not checked at runtime. A non-2xx response rejects with a `SandboxError`. A `GET`, `HEAD`, `PUT` or
    * `DELETE` is retried on 429, 502, 503, 504 and network errors; other methods are never retried.
    */
-  request<T = unknown>(method: HttpMethod, path: string, options?: NativeRequestOptions<Plane>): Promise<T>;
+  request<T = unknown>(
+    method: HttpMethod,
+    path: string,
+    options?: NativeRequestOptions<Plane>,
+  ): Promise<T>;
   /**
    * Call an endpoint and return the raw `Response`, for bytes and streams. A non-2xx response still
    * rejects with a `SandboxError`. You own the body: read it or call `response.body?.cancel()`.
@@ -111,38 +118,100 @@ export interface NativeApiOptions<Plane extends string> {
   sdk?: NativeSdkBinding;
 }
 
-const methods: ReadonlySet<string> = new Set<HttpMethod>(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+const methods: ReadonlySet<string> = new Set<HttpMethod>([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+]);
 
 /**
  * Builds `box.native` (with `sandboxId`) or `provider.api` (without) on top of an adapter's HTTP client.
  * `Sdk` is the provider's loader type; the runtime binding checks the module's shape.
  */
-export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoader = AnyNativeSdk>(options: NativeApiOptions<Plane>): NativeApi<Plane, Sdk> {
+export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoader = AnyNativeSdk>(
+  options: NativeApiOptions<Plane>,
+): NativeApi<Plane, Sdk> {
   const { http, placeholder, sandboxId, sdk: binding } = options;
   const names: readonly string[] = typeof placeholder === "string" ? [placeholder] : placeholder;
   function call(method: HttpMethod, path: string, request: NativeRequestOptions<Plane> = {}) {
-    if (typeof method !== "string" || !methods.has(method)) invalid(`Unsupported HTTP method ${typeof method === "string" ? method.slice(0, 16) : typeof method}`);
+    if (typeof method !== "string" || !methods.has(method))
+      invalid(
+        `Unsupported HTTP method ${typeof method === "string" ? method.slice(0, 16) : typeof method}`,
+      );
     if (typeof path !== "string") invalid("The path must be a string");
     let params = request.params;
-    if (sandboxId !== undefined) for (const name of names) if (path.includes(`{${name}}`) && params?.[name] === undefined) params = { ...params, [name]: sandboxId };
-    return { method, path, plane: request.plane, sandboxId, params, query: request.query, body: request.body, headers: request.headers, signal: request.signal, timeoutMs: request.timeoutMs, detail: "message" as const };
+    if (sandboxId !== undefined)
+      for (const name of names)
+        if (path.includes(`{${name}}`) && params?.[name] === undefined)
+          params = { ...params, [name]: sandboxId };
+    return {
+      method,
+      path,
+      plane: request.plane,
+      sandboxId,
+      params,
+      query: request.query,
+      body: request.body,
+      headers: request.headers,
+      signal: request.signal,
+      timeoutMs: request.timeoutMs,
+      detail: "message" as const,
+    };
   }
   async function connect(load: () => Promise<unknown>): Promise<unknown> {
-    if (!binding) throw new SandboxError(`${http.label} has no official SDK binding. Use native.request or native.fetch.`, { code: "unsupported", provider: http.provider, sandboxId });
-    if (typeof load !== "function") invalid(`Pass a function that imports the SDK: native.sdk(() => import("${binding.package}"))`);
+    if (!binding)
+      throw new SandboxError(
+        `${http.label} has no official SDK binding. Use native.request or native.fetch.`,
+        { code: "unsupported", provider: http.provider, sandboxId },
+      );
+    if (typeof load !== "function")
+      invalid(
+        `Pass a function that imports the SDK: native.sdk(() => import("${binding.package}"))`,
+      );
     let module: unknown;
-    try { module = peerModule(await load()); }
-    catch (error) {
-      const missing = error instanceof Error && (("code" in error && (error.code === "ERR_MODULE_NOT_FOUND" || error.code === "MODULE_NOT_FOUND")) || /Cannot find (?:package|module)/.test(error.message));
-      if (missing) throw new SandboxError(`${binding.package} could not be imported. Install it next to @opencoredev/sandbox-sdk to use native.sdk().`, { code: "unavailable", provider: http.provider, sandboxId, hint: `npm i ${binding.package}`, cause: nativeDetail(error, http.redact) });
-      throw new SandboxError(`Loading ${binding.package} failed: ${nativeDetail(error, http.redact) ?? "a non-Error value was thrown"}. Check the import passed to native.sdk().`, { code: "provider", provider: http.provider, sandboxId });
+    try {
+      module = peerModule(await load());
+    } catch (error) {
+      const missing =
+        error instanceof Error &&
+        (("code" in error &&
+          (error.code === "ERR_MODULE_NOT_FOUND" || error.code === "MODULE_NOT_FOUND")) ||
+          /Cannot find (?:package|module)/.test(error.message));
+      if (missing)
+        throw new SandboxError(
+          `${binding.package} could not be imported. Install it next to @opencoredev/sandbox-sdk to use native.sdk().`,
+          {
+            code: "unavailable",
+            provider: http.provider,
+            sandboxId,
+            hint: `npm i ${binding.package}`,
+            cause: nativeDetail(error, http.redact),
+          },
+        );
+      throw new SandboxError(
+        `Loading ${binding.package} failed: ${nativeDetail(error, http.redact) ?? "a non-Error value was thrown"}. Check the import passed to native.sdk().`,
+        { code: "provider", provider: http.provider, sandboxId },
+      );
     }
-    if (typeof module !== "object" || module === null) invalid(`native.sdk() needs the module object. Pass () => import("${binding.package}")`);
-    try { return await binding.connect(module, sandboxId); }
-    catch (error) {
+    if (typeof module !== "object" || module === null)
+      invalid(`native.sdk() needs the module object. Pass () => import("${binding.package}")`);
+    try {
+      return await binding.connect(module, sandboxId);
+    } catch (error) {
       if (error instanceof SandboxError) throw error;
       // The caller's SDK threw. Its text is the only clue; keep it scrubbed and redacted, as for any unrecognized failure.
-      throw new SandboxError(`${binding.package} failed in native.sdk(): ${nativeDetail(error, http.redact) ?? "a non-Error value was thrown"}. Check the SDK version and the sandbox.`, { code: "provider", provider: http.provider, sandboxId, cause: nativeDetail(error, http.redact) });
+      throw new SandboxError(
+        `${binding.package} failed in native.sdk(): ${nativeDetail(error, http.redact) ?? "a non-Error value was thrown"}. Check the SDK version and the sandbox.`,
+        {
+          code: "provider",
+          provider: http.provider,
+          sandboxId,
+          cause: nativeDetail(error, http.redact),
+        },
+      );
     }
   }
   // `Sdk` is the adapter's narrowed signature for this one runtime function; its result type is derived from
@@ -150,11 +219,17 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
   const sdk = connect as unknown as Sdk;
   return {
     sandboxId,
-    async request<T = unknown>(method: HttpMethod, path: string, request?: NativeRequestOptions<Plane>): Promise<T> {
+    async request<T = unknown>(
+      method: HttpMethod,
+      path: string,
+      request?: NativeRequestOptions<Plane>,
+    ): Promise<T> {
       // `T` is the caller's claim about the body, as with `Response.json()`; it is documented as unchecked.
-      return await http.json(call(method, path, request)) as T;
+      return (await http.json(call(method, path, request))) as T;
     },
-    fetch(method, path, request) { return http.stream(call(method, path, request)); },
+    fetch(method, path, request) {
+      return http.stream(call(method, path, request));
+    },
     sdk,
   };
 }
@@ -163,12 +238,24 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
  * `new module[name](...args)` for a module handed to `native.sdk()`. Throws `invalid_argument` naming
  * the package when the export is missing or is not a class.
  */
-export function sdkConstruct(module: object, name: string, args: unknown[], packageName: string): unknown {
+export function sdkConstruct(
+  module: object,
+  name: string,
+  args: unknown[],
+  packageName: string,
+): unknown {
   const value: unknown = Reflect.get(module, name);
-  if (typeof value !== "function") invalid(`The module passed to native.sdk() has no ${name} export. Pass () => import("${packageName}")`);
-  try { return Reflect.construct(value, args); }
-  catch (error) {
-    if (error instanceof TypeError && /constructor/i.test(error.message)) invalid(`${name} from the module passed to native.sdk() is not a class. Pass () => import("${packageName}")`);
+  if (typeof value !== "function")
+    invalid(
+      `The module passed to native.sdk() has no ${name} export. Pass () => import("${packageName}")`,
+    );
+  try {
+    return Reflect.construct(value, args);
+  } catch (error) {
+    if (error instanceof TypeError && /constructor/i.test(error.message))
+      invalid(
+        `${name} from the module passed to native.sdk() is not a class. Pass () => import("${packageName}")`,
+      );
     throw error;
   }
 }
@@ -177,8 +264,19 @@ export function sdkConstruct(module: object, name: string, args: unknown[], pack
  * `target[name](...args)` on an object from the caller's SDK, awaited. Throws `invalid_argument` naming
  * the package when the method is missing, which means the installed SDK version does not match.
  */
-export async function sdkCall(target: unknown, name: string, args: unknown[], packageName: string): Promise<unknown> {
-  const method: unknown = typeof target === "object" && target !== null || typeof target === "function" ? Reflect.get(target, name) : undefined;
-  if (typeof method !== "function") invalid(`The ${packageName} object has no ${name} method. Install a supported version of ${packageName}`);
+export async function sdkCall(
+  target: unknown,
+  name: string,
+  args: unknown[],
+  packageName: string,
+): Promise<unknown> {
+  const method: unknown =
+    (typeof target === "object" && target !== null) || typeof target === "function"
+      ? Reflect.get(target, name)
+      : undefined;
+  if (typeof method !== "function")
+    invalid(
+      `The ${packageName} object has no ${name} method. Install a supported version of ${packageName}`,
+    );
   return await Reflect.apply(method, target, args);
 }

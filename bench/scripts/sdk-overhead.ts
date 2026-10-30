@@ -105,9 +105,7 @@ const providers = {
       provider,
       floor: (id) => {
         const box = once(() =>
-          provider
-            .native(id)
-            .sdk((): Promise<typeof import("e2b")> => import(nativeUrl("e2b"))),
+          provider.native(id).sdk((): Promise<typeof import("e2b")> => import(nativeUrl("e2b"))),
         );
 
         return {
@@ -135,7 +133,9 @@ const providers = {
         const box = once(() =>
           provider
             .native(id)
-            .sdk((): Promise<typeof import("@daytonaio/sdk")> => import(nativeUrl("@daytonaio/sdk"))),
+            .sdk(
+              (): Promise<typeof import("@daytonaio/sdk")> => import(nativeUrl("@daytonaio/sdk")),
+            ),
         );
 
         return {
@@ -268,7 +268,9 @@ const providers = {
         const box = once(() =>
           provider
             .native(id)
-            .sdk((): Promise<typeof import("@superserve/sdk")> => import(nativeUrl("@superserve/sdk"))),
+            .sdk(
+              (): Promise<typeof import("@superserve/sdk")> => import(nativeUrl("@superserve/sdk")),
+            ),
         );
 
         return {

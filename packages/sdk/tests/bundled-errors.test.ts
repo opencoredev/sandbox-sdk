@@ -43,8 +43,6 @@ test("railway matches the classes the adapter loaded, whatever they are named", 
       "box",
     ).code,
   ).toBe("outcome_unknown");
-    "unavailable",
-  );
   expect(railwayError(renamed(new Error("x"), "Pce"), "box").code).toBe("provider");
 });
 

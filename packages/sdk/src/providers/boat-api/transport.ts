@@ -30,7 +30,12 @@ export function boatHttp(options: BoatHttpOptions): BoatHttp {
     provider: options.provider,
     label: options.label,
     defaultPlane: "api",
-    planes: { api: { baseUrl: options.baseUrl, auth: () => ({ authorization: `Bearer ${options.credentials()}` }) } },
+    planes: {
+      api: {
+        baseUrl: options.baseUrl,
+        auth: () => ({ authorization: `Bearer ${options.credentials()}` }),
+      },
+    },
     timeoutMs: options.timeoutMs,
     secrets: options.secrets,
     idempotencyHeader: "Idempotency-Key",
@@ -51,50 +56,109 @@ export interface BoatSandbox {
   raw: object;
 }
 
-function invalidResponse(provider: string, label: string, what: string, sandboxId?: string): SandboxError {
-  return new SandboxError(`${label} returned an invalid ${what}. Check the ${label} provider configuration and retry.`, { code: "provider", provider, sandboxId });
+function invalidResponse(
+  provider: string,
+  label: string,
+  what: string,
+  sandboxId?: string,
+): SandboxError {
+  return new SandboxError(
+    `${label} returned an invalid ${what}. Check the ${label} provider configuration and retry.`,
+    { code: "provider", provider, sandboxId },
+  );
 }
 
 /** Parses one sandbox object. */
 export function parseSandbox(value: unknown, provider: string, label: string): BoatSandbox {
-  if (typeof value !== "object" || value === null || !("id" in value) || typeof value.id !== "string" || !value.id)
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !value.id
+  )
     throw invalidResponse(provider, label, "sandbox");
   const name = "name" in value && typeof value.name === "string" ? value.name : "";
   const state = "state" in value && typeof value.state === "string" ? value.state : "";
-  const created = "createdAt" in value && (typeof value.createdAt === "string" || typeof value.createdAt === "number") ? new Date(value.createdAt).getTime() : Number.NaN;
+  const created =
+    "createdAt" in value &&
+    (typeof value.createdAt === "string" || typeof value.createdAt === "number")
+      ? new Date(value.createdAt).getTime()
+      : Number.NaN;
   return { id: value.id, name, state, createdAt: created, raw: value };
 }
 
 /** `{ sandbox }`, the body of create, get and update. */
 export function parseSandboxBody(value: unknown, provider: string, label: string): BoatSandbox {
-  return parseSandbox(typeof value === "object" && value !== null && "sandbox" in value ? value.sandbox : undefined, provider, label);
+  return parseSandbox(
+    typeof value === "object" && value !== null && "sandbox" in value ? value.sandbox : undefined,
+    provider,
+    label,
+  );
 }
 
 /** `{ sandboxes, pageInfo }` from `GET /sandboxes`. */
-export function parseSandboxPage(value: unknown, provider: string, label: string): { sandboxes: BoatSandbox[]; hasMore: boolean; nextCursor?: string } {
-  if (typeof value !== "object" || value === null || !("sandboxes" in value) || !Array.isArray(value.sandboxes))
+export function parseSandboxPage(
+  value: unknown,
+  provider: string,
+  label: string,
+): { sandboxes: BoatSandbox[]; hasMore: boolean; nextCursor?: string } {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("sandboxes" in value) ||
+    !Array.isArray(value.sandboxes)
+  )
     throw invalidResponse(provider, label, "sandbox list");
   const sandboxes = value.sandboxes.map((item: unknown) => parseSandbox(item, provider, label));
   const page: unknown = "pageInfo" in value ? value.pageInfo : undefined;
-  const hasMore = typeof page === "object" && page !== null && "hasMore" in page && page.hasMore === true;
-  const next = typeof page === "object" && page !== null && "nextCursor" in page && typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+  const hasMore =
+    typeof page === "object" && page !== null && "hasMore" in page && page.hasMore === true;
+  const next =
+    typeof page === "object" &&
+    page !== null &&
+    "nextCursor" in page &&
+    typeof page.nextCursor === "string"
+      ? page.nextCursor
+      : undefined;
   return { sandboxes, hasMore, ...(next === undefined ? {} : { nextCursor: next }) };
 }
 
 /** What `POST /sandboxes/{sandboxId}/commands` returned. */
 export type CommandOutcome =
-  | { kind: "finished"; stdout: string; stderr: string; exitCode: number | null; truncated: boolean }
+  | {
+      kind: "finished";
+      stdout: string;
+      stderr: string;
+      exitCode: number | null;
+      truncated: boolean;
+    }
   | { kind: "started"; processId: number }
   | { kind: "unknown" };
 
 export function parseCommand(value: unknown): CommandOutcome {
   if (typeof value !== "object" || value === null) return { kind: "unknown" };
-  if ("stdout" in value && typeof value.stdout === "string" && "stderr" in value && typeof value.stderr === "string" &&
-      "exitCode" in value && (value.exitCode === null || typeof value.exitCode === "number")) {
-    const truncated = ("stdoutTruncated" in value && value.stdoutTruncated === true) || ("stderrTruncated" in value && value.stderrTruncated === true);
-    return { kind: "finished", stdout: value.stdout, stderr: value.stderr, exitCode: value.exitCode, truncated };
+  if (
+    "stdout" in value &&
+    typeof value.stdout === "string" &&
+    "stderr" in value &&
+    typeof value.stderr === "string" &&
+    "exitCode" in value &&
+    (value.exitCode === null || typeof value.exitCode === "number")
+  ) {
+    const truncated =
+      ("stdoutTruncated" in value && value.stdoutTruncated === true) ||
+      ("stderrTruncated" in value && value.stderrTruncated === true);
+    return {
+      kind: "finished",
+      stdout: value.stdout,
+      stderr: value.stderr,
+      exitCode: value.exitCode,
+      truncated,
+    };
   }
-  if ("processId" in value && typeof value.processId === "number") return { kind: "started", processId: value.processId };
+  if ("processId" in value && typeof value.processId === "number")
+    return { kind: "started", processId: value.processId };
   return { kind: "unknown" };
 }
 
@@ -106,18 +170,46 @@ export interface CommandBody {
 
 /** Runs a command, or starts it with `detached`. Never retried: it is a POST without an idempotency key.
  * `cleanup` sends it after an abort, with its own short deadline. */
-export async function command(http: BoatHttp, id: string, body: CommandBody, cleanup = false): Promise<CommandOutcome> {
-  const request: HttpRequest<BoatPlane> = { method: "POST", path: "/sandboxes/{sandboxId}/commands", params: { sandboxId: id }, sandboxId: id, body };
+export async function command(
+  http: BoatHttp,
+  id: string,
+  body: CommandBody,
+  cleanup = false,
+): Promise<CommandOutcome> {
+  const request: HttpRequest<BoatPlane> = {
+    method: "POST",
+    path: "/sandboxes/{sandboxId}/commands",
+    params: { sandboxId: id },
+    sandboxId: id,
+    body,
+  };
   return parseCommand((await (cleanup ? http.cleanup(request) : http.request(request))).json());
 }
 
 /** `PUT /files`: at most 5 MiB decoded, only under /home/user or /tmp, parents created. */
-export async function writeFile(http: BoatHttp, id: string, body: { path: string; content: string; encoding: "utf8" | "base64" }): Promise<void> {
-  await http.request({ method: "PUT", path: "/sandboxes/{sandboxId}/files", params: { sandboxId: id }, sandboxId: id, body });
+export async function writeFile(
+  http: BoatHttp,
+  id: string,
+  body: { path: string; content: string; encoding: "utf8" | "base64" },
+): Promise<void> {
+  await http.request({
+    method: "PUT",
+    path: "/sandboxes/{sandboxId}/files",
+    params: { sandboxId: id },
+    sandboxId: id,
+    body,
+  });
 }
 
 /** Kills a detached command and its descendants. Resolves with the reported `running` value. */
 export async function stopCommand(http: BoatHttp, id: string, processId: number): Promise<unknown> {
-  const value = await http.json({ method: "DELETE", path: "/sandboxes/{sandboxId}/commands/{processId}", params: { sandboxId: id, processId }, sandboxId: id });
-  return typeof value === "object" && value !== null && "running" in value ? value.running : undefined;
+  const value = await http.json({
+    method: "DELETE",
+    path: "/sandboxes/{sandboxId}/commands/{processId}",
+    params: { sandboxId: id, processId },
+    sandboxId: id,
+  });
+  return typeof value === "object" && value !== null && "running" in value
+    ? value.running
+    : undefined;
 }

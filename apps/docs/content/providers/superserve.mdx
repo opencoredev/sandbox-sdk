@@ -215,11 +215,17 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 
 await using box = await createSandbox(superserve({ installPython: true }));
-const ports = await box.native.request<{ ports: { port: number }[] }>("GET", "/sandboxes/{sandboxId}/preview-ports");
+const ports = await box.native.request<{ ports: { port: number }[] }>(
+  "GET",
+  "/sandboxes/{sandboxId}/preview-ports",
+);
 console.log(ports.ports);
 
 await box.files.write("report.txt", "done\n");
-const file = await box.native.fetch("GET", "/files", { plane: "data", query: { path: "/workspace/report.txt" } });
+const file = await box.native.fetch("GET", "/files", {
+  plane: "data",
+  query: { path: "/workspace/report.txt" },
+});
 console.log(await file.text());
 ```
 

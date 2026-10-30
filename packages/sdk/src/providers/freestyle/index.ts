@@ -4,10 +4,22 @@
  * https://www.freestyle.sh/docs/vms/network/tls-inbound
  */
 import { createHash } from "node:crypto";
-import { createNativeApi, sdkCall, sdkConstruct, type NativeApi, type NativeSdkBinding } from "../../native.js";
+import {
+  createNativeApi,
+  sdkCall,
+  sdkConstruct,
+  type NativeApi,
+  type NativeSdkBinding,
+} from "../../native.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
-import { files, python, type Guest } from "../boxd/guest.js";
-import { defaultBaseUrl, freestyleClient, type ExecResponse, type FreestylePlane, type VmData } from "./client.js";
+import { files, python, type Guest } from "../../shared/guest.js";
+import {
+  defaultBaseUrl,
+  freestyleClient,
+  type ExecResponse,
+  type FreestylePlane,
+  type VmData,
+} from "./client.js";
 import { failure, freestyleError, requestEvidence } from "./errors.js";
 import { execute, supervisor } from "./execute.js";
 import { deadline, operationSignal } from "./deadline.js";
@@ -24,17 +36,28 @@ export interface FreestyleOptions {
   autoDeleteMs?: number;
 }
 /** What `native.sdk(load)` needs from the module: the `Freestyle` client class and its `vms.ref(id)`. */
-type FreestyleModule = { Freestyle: new (options: { apiKey: string; baseUrl: string }) => { vms: { ref(vmIdOrSlug: string): unknown } } };
+type FreestyleModule = {
+  Freestyle: new (options: { apiKey: string; baseUrl: string }) => {
+    vms: { ref(vmIdOrSlug: string): unknown };
+  };
+};
 /** `box.native.sdk`: the SDK's `Vm` handle for this VM, typed from the module you import. */
-export type FreestyleVmSdk = <M extends FreestyleModule>(load: () => Promise<M>) => Promise<ReturnType<InstanceType<M["Freestyle"]>["vms"]["ref"]>>;
+export type FreestyleVmSdk = <M extends FreestyleModule>(
+  load: () => Promise<M>,
+) => Promise<ReturnType<InstanceType<M["Freestyle"]>["vms"]["ref"]>>;
 /** `provider.api.sdk`: the SDK's `Freestyle` client. */
-export type FreestyleClientSdk = <M extends FreestyleModule>(load: () => Promise<M>) => Promise<InstanceType<M["Freestyle"]>>;
+export type FreestyleClientSdk = <M extends FreestyleModule>(
+  load: () => Promise<M>,
+) => Promise<InstanceType<M["Freestyle"]>>;
 export type { FreestylePlane };
 /** `box.native`: Freestyle's API with `{vmId}` bound to the sandbox. Paths include `/v5`. */
 export type FreestyleNative = NativeApi<FreestylePlane, FreestyleVmSdk>;
 /** `provider.api`: Freestyle's API with no VM bound. */
 export type FreestyleApi = NativeApi<FreestylePlane, FreestyleClientSdk>;
-export type FreestyleProvider = Provider<FreestyleNative, "pause" | "snapshot" | "network-policy"> & {
+export type FreestyleProvider = Provider<
+  FreestyleNative,
+  "pause" | "snapshot" | "network-policy"
+> & {
   /** Account-level calls, such as `api.request("GET", "/v5/snapshots")`. */
   readonly api: FreestyleApi;
 };
@@ -44,10 +67,17 @@ const supervisorHash = createHash("sha256").update(supervisor).digest("hex");
 // interrupted. Freestyle allows 64 entries with at most 63 characters each.
 const nativeInfo = "sandbox-sdk-info";
 function creationMetadata(input: CreateInput): Record<string, string> {
-  const encoded = Buffer.from(JSON.stringify({ key: input.key ?? null, labels: input.labels })).toString("base64url");
+  const encoded = Buffer.from(
+    JSON.stringify({ key: input.key ?? null, labels: input.labels }),
+  ).toString("base64url");
   const chunks = encoded.match(/.{1,63}/g) ?? [];
-  if (chunks.length > 62) throw failure("Key and labels exceed Freestyle's native metadata budget", "unsupported");
-  return { "sandbox-sdk": "1", [nativeInfo]: String(chunks.length), ...Object.fromEntries(chunks.map((chunk, i) => [`${nativeInfo}-${i}`, chunk])) };
+  if (chunks.length > 62)
+    throw failure("Key and labels exceed Freestyle's native metadata budget", "unsupported");
+  return {
+    "sandbox-sdk": "1",
+    [nativeInfo]: String(chunks.length),
+    ...Object.fromEntries(chunks.map((chunk, i) => [`${nativeInfo}-${i}`, chunk])),
+  };
 }
 const envFile = "/var/lib/sandbox-sdk-env.json";
 function seconds(value: number | undefined, hard: boolean) {
@@ -58,7 +88,11 @@ function seconds(value: number | undefined, hard: boolean) {
     throw failure("Hard lifetime requires at least one second", "unsupported");
   return hard ? Math.floor(value / 1000) : Math.ceil(value / 1000);
 }
-type InlineFirewallRule = { action: "allow"; source: Record<string, never>; destination: { public: true } };
+type InlineFirewallRule = {
+  action: "allow";
+  source: Record<string, never>;
+  destination: { public: true };
+};
 function rules(input: CreateInput): InlineFirewallRule[] {
   if (
     input.network === "none" ||
@@ -75,46 +109,76 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   const previews = new Map<string, string>();
   const natives = new Map<string, FreestyleNative>();
   const requestTimeoutMs = options.requestTimeoutMs ?? 30000;
-  if (options.autoDeleteMs !== undefined && (!Number.isSafeInteger(options.autoDeleteMs) || options.autoDeleteMs < 0))
-    throw failure("autoDeleteMs must be a non-negative integer of milliseconds", "invalid_argument");
-  const autoDeleteSeconds = options.autoDeleteMs === undefined ? undefined : Math.ceil(options.autoDeleteMs / 1000);
+  if (
+    options.autoDeleteMs !== undefined &&
+    (!Number.isSafeInteger(options.autoDeleteMs) || options.autoDeleteMs < 0)
+  )
+    throw failure(
+      "autoDeleteMs must be a non-negative integer of milliseconds",
+      "invalid_argument",
+    );
+  const autoDeleteSeconds =
+    options.autoDeleteMs === undefined ? undefined : Math.ceil(options.autoDeleteMs / 1000);
   const baseUrl = options.baseUrl ?? defaultBaseUrl;
   /** Checks the configuration on first use, so the factory constructs freely. */
   function apiKey(): string {
     if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
       throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
     const key = options.apiKey ?? process.env.FREESTYLE_API_KEY;
-    if (!key?.trim()) throw failure("Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.", "auth");
+    if (!key?.trim())
+      throw failure(
+        "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.",
+        "auth",
+      );
     return key;
   }
-  const client = freestyleClient({ baseUrl, apiKey, requestTimeoutMs: Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs > 0 ? requestTimeoutMs : 30000 });
+  const client = freestyleClient({
+    baseUrl,
+    apiKey,
+    requestTimeoutMs:
+      Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs > 0 ? requestTimeoutMs : 30000,
+  });
   const binding: NativeSdkBinding = {
     package: "freestyle",
     async connect(module, sandboxId) {
       const sdk = sdkConstruct(module, "Freestyle", [{ apiKey: apiKey(), baseUrl }], "freestyle");
       if (sandboxId === undefined) return sdk;
-      const vms: unknown = typeof sdk === "object" && sdk !== null ? Reflect.get(sdk, "vms") : undefined;
+      const vms: unknown =
+        typeof sdk === "object" && sdk !== null ? Reflect.get(sdk, "vms") : undefined;
       return await sdkCall(vms, "ref", [sandboxId], "freestyle");
     },
   };
-  const api = createNativeApi<FreestylePlane, FreestyleClientSdk>({ http: client.http, placeholder: ["vmId", "vmIdOrSlug"], sdk: binding });
+  const api = createNativeApi<FreestylePlane, FreestyleClientSdk>({
+    http: client.http,
+    placeholder: ["vmId", "vmIdOrSlug"],
+    sdk: binding,
+  });
   async function safe<T>(
     id: string | undefined,
     action: () => Promise<T>,
     signal?: AbortSignal,
     timeoutMs = requestTimeoutMs,
   ): Promise<T> {
-    return requestEvidence.run({ deniedValues: requestEvidence.getStore()?.deniedValues }, async () => {
-      try {
-        return await deadline(action, timeoutMs, signal ?? operationSignal.getStore()?.signal);
-      } catch (error) {
-        throw freestyleError(error, id);
-      }
-    });
+    return requestEvidence.run(
+      { deniedValues: requestEvidence.getStore()?.deniedValues },
+      async () => {
+        try {
+          return await deadline(action, timeoutMs, signal ?? operationSignal.getStore()?.signal);
+        } catch (error) {
+          throw freestyleError(error, id);
+        }
+      },
+    );
   }
-  async function run(id: string, command: string, stdin: string | undefined, timeoutMs: number): Promise<ExecResponse> {
+  async function run(
+    id: string,
+    command: string,
+    stdin: string | undefined,
+    timeoutMs: number,
+  ): Promise<ExecResponse> {
     const contents = pending.get(id);
-    if (!contents) return client.exec(id, { command, ...(stdin === undefined ? {} : { stdin }), timeoutMs });
+    if (!contents)
+      return client.exec(id, { command, ...(stdin === undefined ? {} : { stdin }), timeoutMs });
     const result = await client.exec(id, {
       command: python(`import os,sys,json,tempfile,base64
 v=json.load(sys.stdin)
@@ -145,9 +209,7 @@ with tempfile.TemporaryFile() as f:
     return {
       name: "freestyle",
       raw: async (command) => {
-        const r = await safe(id, () =>
-          run(id, command, undefined, requestTimeoutMs),
-        );
+        const r = await safe(id, () => run(id, command, undefined, requestTimeoutMs));
         if (r.statusCode !== 0)
           throw failure(
             "Guest operation failed",
@@ -157,32 +219,50 @@ with tempfile.TemporaryFile() as f:
         return r.stdout ?? "";
       },
       // Without a mode both paths keep an existing file's mode; new files get the guest default (0644 live).
-      upload: (path, bytes, mode) => safe(id, async () => {
-        if (pending.has(id)) {
-          const result = await run(id, python("import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)", path, mode === undefined ? "" : mode.toString(8)), Buffer.from(bytes).toString("base64"), requestTimeoutMs);
-          if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
-        } else await client.writeFile(id, path, bytes, mode);
-      }),
+      upload: (path, bytes, mode) =>
+        safe(id, async () => {
+          if (pending.has(id)) {
+            const result = await run(
+              id,
+              python(
+                "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); m=int(sys.argv[2],8) if sys.argv[2] else None; f=open(p,'wb'); f.write(sys.stdin.buffer.read()); f.close()\nif m is not None: os.chmod(p,m)",
+                path,
+                mode === undefined ? "" : mode.toString(8),
+              ),
+              Buffer.from(bytes).toString("base64"),
+              requestTimeoutMs,
+            );
+            if (result.statusCode !== 0) throw failure("File upload failed", "provider", id);
+          } else await client.writeFile(id, path, bytes, mode);
+        }),
       read: (path, range) => safe(id, () => client.readFile(id, path, range)),
     };
   }
-  async function readInfo(data: VmData, nativeOwnership = false): Promise<{ info: SandboxInfo; supervisorHash?: string }> {
+  async function readInfo(
+    data: VmData,
+    nativeOwnership = false,
+  ): Promise<{ info: SandboxInfo; supervisorHash?: string }> {
     if (data.metadata["sandbox-sdk"] !== "1") throw failure("Not an SDK VM", "not_found", data.id);
     let text: string;
     if (nativeOwnership && data.metadata[nativeInfo] !== undefined) {
       const count = Number(data.metadata[nativeInfo]);
-      if (!Number.isInteger(count) || count < 1 || count > 62) throw failure("Invalid SDK metadata", "not_found", data.id);
+      if (!Number.isInteger(count) || count < 1 || count > 62)
+        throw failure("Invalid SDK metadata", "not_found", data.id);
       let encoded = "";
       for (let i = 0; i < count; i++) {
         const chunk = data.metadata[`${nativeInfo}-${i}`];
-        if (!chunk || !/^[A-Za-z0-9_-]{1,63}$/.test(chunk)) throw failure("Invalid SDK metadata", "not_found", data.id);
+        if (!chunk || !/^[A-Za-z0-9_-]{1,63}$/.test(chunk))
+          throw failure("Invalid SDK metadata", "not_found", data.id);
         encoded += chunk;
       }
       text = Buffer.from(encoded, "base64url").toString();
     } else text = new TextDecoder().decode(await client.readFile(data.id, marker));
     let value: unknown;
-    try { value = JSON.parse(text); }
-    catch { throw failure("Invalid SDK metadata", "not_found", data.id); }
+    try {
+      value = JSON.parse(text);
+    } catch {
+      throw failure("Invalid SDK metadata", "not_found", data.id);
+    }
     if (
       !value ||
       typeof value !== "object" ||
@@ -190,7 +270,8 @@ with tempfile.TemporaryFile() as f:
       (value.key !== null && typeof value.key !== "string") ||
       !("labels" in value) ||
       !value.labels ||
-      (typeof value.labels !== "object" || Array.isArray(value.labels))
+      typeof value.labels !== "object" ||
+      Array.isArray(value.labels)
     )
       throw failure("Invalid SDK metadata", "not_found", data.id);
     const labels: Record<string, string> = {};
@@ -201,7 +282,10 @@ with tempfile.TemporaryFile() as f:
     const createdAt = Date.parse(data.createdAt);
     if (!Number.isFinite(createdAt)) throw failure("Invalid VM creation time", "provider", data.id);
     return {
-      supervisorHash: "supervisorHash" in value && typeof value.supervisorHash === "string" ? value.supervisorHash : undefined,
+      supervisorHash:
+        "supervisorHash" in value && typeof value.supervisorHash === "string"
+          ? value.supervisorHash
+          : undefined,
       info: {
         id: data.id,
         key: value.key ?? undefined,
@@ -262,7 +346,14 @@ with tempfile.TemporaryFile() as f:
             // a VM that lands after an abort.
             const operation = operationSignal.getStore();
             result = operation
-              ? await operationSignal.run({ signal: operation.timeout, timeout: operation.timeout, remaining: operation.remaining }, () => client.createVm(params))
+              ? await operationSignal.run(
+                  {
+                    signal: operation.timeout,
+                    timeout: operation.timeout,
+                    remaining: operation.remaining,
+                  },
+                  () => client.createVm(params),
+                )
               : await client.createVm(params);
           } catch (error) {
             const mapped = freestyleError(error);
@@ -290,7 +381,8 @@ with tempfile.TemporaryFile() as f:
               throw failure("Freestyle did not confirm requested limits", "unsupported", id);
             // No VPCs or inherited network grants may widen a restricted VM.
             if (
-              !Array.isArray(data.vpcs) || data.vpcs.length ||
+              !Array.isArray(data.vpcs) ||
+              data.vpcs.length ||
               actual.length !== firewall.length ||
               actual.some(
                 (r) =>
@@ -302,19 +394,38 @@ with tempfile.TemporaryFile() as f:
               )
             )
               throw failure("Freestyle did not confirm the requested firewall", "unsupported", id);
-            if (tls.length)
-              throw failure("Unexpected TLS egress grants", "unsupported", id);
-            const contents: [string, string][] = [[marker, JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash })]];
-            if (Object.keys(input.env ?? {}).length || input.from !== undefined || options.snapshotId !== undefined)
+            if (tls.length) throw failure("Unexpected TLS egress grants", "unsupported", id);
+            const contents: [string, string][] = [
+              [
+                marker,
+                JSON.stringify({ key: input.key ?? null, labels: input.labels, supervisorHash }),
+              ],
+            ];
+            if (
+              Object.keys(input.env ?? {}).length ||
+              input.from !== undefined ||
+              options.snapshotId !== undefined
+            )
               contents.push([envFile, JSON.stringify(input.env ?? {})]);
             pending.set(id, contents);
             // Private create-time env must survive reconnects before first use.
-            if (Object.keys(input.env ?? {}).length || input.from !== undefined || options.snapshotId !== undefined) {
+            if (
+              Object.keys(input.env ?? {}).length ||
+              input.from !== undefined ||
+              options.snapshotId !== undefined
+            ) {
               const setup = await run(id, "true", undefined, requestTimeoutMs);
               if (setup.statusCode !== 0) throw failure("Guest setup failed", "provider", id);
             }
             // Successful guest execution supersedes the allocation-time state.
-            return await info({ ...data, createdAt: data.createdAt || new Date(createdAt).toISOString(), state: "running" }, true);
+            return await info(
+              {
+                ...data,
+                createdAt: data.createdAt || new Date(createdAt).toISOString(),
+                state: "running",
+              },
+              true,
+            );
           } catch (error) {
             await operationSignal.exit(() => provider.destroy(id));
             throw error;
@@ -356,19 +467,34 @@ with tempfile.TemporaryFile() as f:
     async find(key) {
       const v = (await provider.list({})).find((v) => v.key === key);
       if (!v) return undefined;
-      try { return await provider.connect(v.id); }
-      catch (error) { if (freestyleError(error, v.id).code !== "not_found") throw error; return undefined; }
+      try {
+        return await provider.connect(v.id);
+      } catch (error) {
+        if (freestyleError(error, v.id).code !== "not_found") throw error;
+        return undefined;
+      }
     },
     connect: (id) =>
       safe(id, async () => {
         const data = await client.getVm(id);
         known.add(id);
         let stored: Awaited<ReturnType<typeof readInfo>>;
-        try { stored = await readInfo(data); }
-        catch (error) {
-          if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code)) throw error;
+        try {
+          stored = await readInfo(data);
+        } catch (error) {
+          if (!["file_not_found", "not_found"].includes(freestyleError(error, id).code))
+            throw error;
           stored = await readInfo(data, true);
-          pending.set(id, [[marker, JSON.stringify({ key: stored.info.key ?? null, labels: stored.info.labels, supervisorHash })]]);
+          pending.set(id, [
+            [
+              marker,
+              JSON.stringify({
+                key: stored.info.key ?? null,
+                labels: stored.info.labels,
+                supervisorHash,
+              }),
+            ],
+          ]);
         }
         return stored.info;
       }),
@@ -396,17 +522,16 @@ with tempfile.TemporaryFile() as f:
         const result = await execute(
           {
             raw: g.raw,
-            read: (path, range, signal) =>
-              safe(
-                id,
-                () => client.readFile(id, path, range),
-                signal,
-              ),
+            read: (path, range, signal) => safe(id, () => client.readFile(id, path, range), signal),
             exec: (command, stdin, timeoutMs, signal) =>
               safe(
                 id,
                 async () => {
-                  const result = await client.exec(id, { command, stdin: Buffer.from(stdin).toString("base64"), timeoutMs });
+                  const result = await client.exec(id, {
+                    command,
+                    stdin: Buffer.from(stdin).toString("base64"),
+                    timeoutMs,
+                  });
                   if (result.statusCode !== 0 || !result.stdout)
                     throw failure("Guest execution failed", "provider", id);
                   return result.stdout;
@@ -451,18 +576,29 @@ with tempfile.TemporaryFile() as f:
       safe(id, async () => {
         await client.lifecycle(id, "start");
       }),
-    snapshot: (id, snapshotOptions) => safe(id, async () => {
-      const expiresInMs = snapshotOptions?.expiresInMs;
-      if (expiresInMs !== undefined && (!Number.isSafeInteger(expiresInMs) || expiresInMs < 0))
-        throw failure("expiresInMs must be a non-negative integer", "invalid_argument", id);
-      // 0 keeps the snapshot until deleted (or until the plan's cap).
-      return { id: await client.snapshot(id, expiresInMs ? { ttlSeconds: Math.ceil(expiresInMs / 1000) } : {}) };
-    }),
+    snapshot: (id, snapshotOptions) =>
+      safe(id, async () => {
+        const expiresInMs = snapshotOptions?.expiresInMs;
+        if (expiresInMs !== undefined && (!Number.isSafeInteger(expiresInMs) || expiresInMs < 0))
+          throw failure("expiresInMs must be a non-negative integer", "invalid_argument", id);
+        // 0 keeps the snapshot until deleted (or until the plan's cap).
+        return {
+          id: await client.snapshot(
+            id,
+            expiresInMs ? { ttlSeconds: Math.ceil(expiresInMs / 1000) } : {},
+          ),
+        };
+      }),
     native(id) {
       if (!known.has(id)) throw failure("Connect the VM first", "not_found", id);
       let value = natives.get(id);
       if (!value) {
-        value = createNativeApi<FreestylePlane, FreestyleVmSdk>({ http: client.http, placeholder: ["vmId", "vmIdOrSlug"], sandboxId: id, sdk: binding });
+        value = createNativeApi<FreestylePlane, FreestyleVmSdk>({
+          http: client.http,
+          placeholder: ["vmId", "vmIdOrSlug"],
+          sandboxId: id,
+          sdk: binding,
+        });
         natives.set(id, value);
       }
       return value;

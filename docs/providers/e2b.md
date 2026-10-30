@@ -1,6 +1,5 @@
 # E2B provider
 
-
 No package besides `@opencoredev/sandbox-sdk` is needed: the adapter calls E2B's API and each sandbox's envd daemon over HTTP. Set `E2B_API_KEY`, or pass `apiKey` to the factory:
 
 ```ts

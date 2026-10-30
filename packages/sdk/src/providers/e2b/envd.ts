@@ -12,7 +12,12 @@
  */
 import { SandboxError } from "../../errors.js";
 import type { HttpClient } from "../../http.js";
-import { connectEnvelope, connectEnvelopes, streamFault, type ConnectFrame } from "../../streams.js";
+import {
+  connectEnvelope,
+  connectEnvelopes,
+  streamFault,
+  type ConnectFrame,
+} from "../../streams.js";
 import { rpcError } from "./errors.js";
 
 export type E2BPlane = "api" | "envd";
@@ -32,14 +37,19 @@ export function versionAtLeast(version: string, minimum: string): boolean {
   const have = version.split(/[.+-]/).map(Number);
   const want = minimum.split(".").map(Number);
   for (let i = 0; i < want.length; i++) {
-    const a = Number.isFinite(have[i]) ? have[i] ?? 0 : 0;
+    const a = Number.isFinite(have[i]) ? (have[i] ?? 0) : 0;
     const b = want[i] ?? 0;
     if (a !== b) return a > b;
   }
   return true;
 }
 /** The envd versions the SDK checks before it uses a feature. */
-export const envdGates = { minimum: "0.1.0", stdinFlag: "0.3.0", defaultUser: "0.4.0", closeStdin: "0.5.2" } as const;
+export const envdGates = {
+  minimum: "0.1.0",
+  stdinFlag: "0.3.0",
+  defaultUser: "0.4.0",
+  closeStdin: "0.5.2",
+} as const;
 
 export interface EntryInfo {
   path: string;
@@ -85,10 +95,18 @@ export interface Command {
   disconnect(): void;
 }
 
-export interface ProcessEntry { pid: number; tag?: string }
+export interface ProcessEntry {
+  pid: number;
+  tag?: string;
+}
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const fileTypes: Readonly<Record<string, EntryInfo["type"]>> = { FILE_TYPE_FILE: "file", FILE_TYPE_DIRECTORY: "dir", FILE_TYPE_SYMLINK: "symlink" };
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const fileTypes: Readonly<Record<string, EntryInfo["type"]>> = {
+  FILE_TYPE_FILE: "file",
+  FILE_TYPE_DIRECTORY: "dir",
+  FILE_TYPE_SYMLINK: "symlink",
+};
 const base64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
 const connectJson = "application/connect+json";
 
@@ -101,10 +119,21 @@ function decodeInt(value: unknown): number | undefined {
 /** An EntryInfo from envd, or undefined for a type the SDK skips too. */
 function parseEntry(value: unknown): EntryInfo | undefined {
   if (!isRecord(value) || typeof value.path !== "string") return undefined;
-  const type = value.isSymlink === true ? "symlink" : typeof value.type === "string" ? fileTypes[value.type] : undefined;
+  const type =
+    value.isSymlink === true
+      ? "symlink"
+      : typeof value.type === "string"
+        ? fileTypes[value.type]
+        : undefined;
   if (type === undefined) return undefined;
-  const modified = typeof value.modifiedTime === "string" ? Date.parse(value.modifiedTime) : Number.NaN;
-  return { path: value.path, type, size: decodeInt(value.size) ?? 0, ...(Number.isFinite(modified) ? { modifiedTime: modified } : {}) };
+  const modified =
+    typeof value.modifiedTime === "string" ? Date.parse(value.modifiedTime) : Number.NaN;
+  return {
+    path: value.path,
+    type,
+    size: decodeInt(value.size) ?? 0,
+    ...(Number.isFinite(modified) ? { modifiedTime: modified } : {}),
+  };
 }
 
 type ProcessEvent =
@@ -119,7 +148,10 @@ function parseEvent(message: unknown): ProcessEvent | undefined {
   const event = isRecord(message) ? message.event : undefined;
   if (!isRecord(event)) return undefined;
   const { start, data, end } = event;
-  if (isRecord(start)) { const pid = decodeInt(start.pid); return pid === undefined || pid <= 0 ? undefined : { kind: "start", pid }; }
+  if (isRecord(start)) {
+    const pid = decodeInt(start.pid);
+    return pid === undefined || pid <= 0 ? undefined : { kind: "start", pid };
+  }
   if (isRecord(data)) {
     for (const stream of ["stdout", "stderr"] as const) {
       const value = data[stream];
@@ -129,73 +161,160 @@ function parseEvent(message: unknown): ProcessEvent | undefined {
     }
     return { kind: "other" };
   }
-  if (isRecord(end)) { const exitCode = decodeInt(end.exitCode); return exitCode === undefined ? undefined : { kind: "end", exitCode }; }
+  if (isRecord(end)) {
+    const exitCode = decodeInt(end.exitCode);
+    return exitCode === undefined ? undefined : { kind: "end", exitCode };
+  }
   return { kind: "other" };
 }
 
 function malformed(sandboxId: string, what: string): SandboxError {
-  return new SandboxError(`E2B envd sent ${what}. The command stream cannot be read further.`, { code: "provider", provider: "e2b", sandboxId });
+  return new SandboxError(`E2B envd sent ${what}. The command stream cannot be read further.`, {
+    code: "provider",
+    provider: "e2b",
+    sandboxId,
+  });
 }
 
 /** The envd calls the adapter uses, on the client's `envd` plane. */
-export function createEnvd(options: { http: HttpClient<E2BPlane>; connection: (sandboxId: string) => Connection; startupTimeoutMs: number }) {
+export function createEnvd(options: {
+  http: HttpClient<E2BPlane>;
+  connection: (sandboxId: string) => Connection;
+  startupTimeoutMs: number;
+}) {
   const { http, connection, startupTimeoutMs: startupMs } = options;
-  const basic = (user: string) => ({ authorization: `Basic ${Buffer.from(`${user}:`).toString("base64")}` });
+  const basic = (user: string) => ({
+    authorization: `Basic ${Buffer.from(`${user}:`).toString("base64")}`,
+  });
   /** Before envd 0.4.0 an omitted user meant "user"; the adapter always names one, so only the header form matters. */
-  async function unary(sandboxId: string, method: string, message: unknown, options: { user?: string; readOnly?: boolean } = {}): Promise<unknown> {
+  async function unary(
+    sandboxId: string,
+    method: string,
+    message: unknown,
+    options: { user?: string; readOnly?: boolean } = {},
+  ): Promise<unknown> {
     return http.json({
-      method: "POST", plane: "envd", path: `/${method}`, sandboxId, body: message,
+      method: "POST",
+      plane: "envd",
+      path: `/${method}`,
+      sandboxId,
+      body: message,
       ...(options.user === undefined ? {} : { headers: basic(options.user) }),
       ...(options.readOnly ? { readOnly: true } : {}),
     });
   }
-  const signal = (sandboxId: string, target: { pid: number } | { tag: string }, name: "SIGNAL_SIGKILL" | "SIGNAL_SIGTERM") =>
-    unary(sandboxId, "process.Process/SendSignal", { process: target, signal: name });
+  const signal = (
+    sandboxId: string,
+    target: { pid: number } | { tag: string },
+    name: "SIGNAL_SIGKILL" | "SIGNAL_SIGTERM",
+  ) => unary(sandboxId, "process.Process/SendSignal", { process: target, signal: name });
 
   /** Opens Start or Connect and reads up to the start event; the rest is read in the background. */
-  async function open(sandboxId: string, rpc: "Start" | "Connect", message: unknown, options: Omit<StartOptions, "command" | "cwd" | "envs" | "user" | "stdin"> & { headers?: Record<string, string>; tag?: string }): Promise<Command> {
+  async function open(
+    sandboxId: string,
+    rpc: "Start" | "Connect",
+    message: unknown,
+    options: Omit<StartOptions, "command" | "cwd" | "envs" | "user" | "stdin"> & {
+      headers?: Record<string, string>;
+      tag?: string;
+    },
+  ): Promise<Command> {
     const method = `process.Process/${rpc}`;
     const controller = new AbortController();
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, startupMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, startupMs);
     const cancel = () => controller.abort();
-    if (options.signal?.aborted) cancel(); else options.signal?.addEventListener("abort", cancel, { once: true });
-    const settleStartup = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", cancel); };
+    if (options.signal?.aborted) cancel();
+    else options.signal?.addEventListener("abort", cancel, { once: true });
+    const settleStartup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+    };
     /** Sends the call and reads its first frame, which must be the start event. */
-    const startup = async (): Promise<{ frames: AsyncGenerator<ConnectFrame, void, undefined>; pid: number }> => {
+    const startup = async (): Promise<{
+      frames: AsyncGenerator<ConnectFrame, void, undefined>;
+      pid: number;
+    }> => {
       const response = await http.stream({
         // Connect reattaches to a running process and changes nothing, so a broken stream is a lost read, not an unknown outcome.
-        method: "POST", plane: "envd", path: `/${method}`, sandboxId, body: connectEnvelope(message), signal: controller.signal, startupTimeoutMs: startupMs, readOnly: rpc === "Connect",
-        headers: { "content-type": connectJson, "keepalive-ping-interval": "50", ...(options.timeoutMs > 0 ? { "connect-timeout-ms": String(options.timeoutMs) } : {}), ...options.headers },
+        method: "POST",
+        plane: "envd",
+        path: `/${method}`,
+        sandboxId,
+        body: connectEnvelope(message),
+        signal: controller.signal,
+        startupTimeoutMs: startupMs,
+        readOnly: rpc === "Connect",
+        headers: {
+          "content-type": connectJson,
+          "keepalive-ping-interval": "50",
+          ...(options.timeoutMs > 0 ? { "connect-timeout-ms": String(options.timeoutMs) } : {}),
+          ...options.headers,
+        },
       });
       if (!(response.headers.get("content-type") ?? "").startsWith(connectJson) || !response.body) {
         await response.body?.cancel().catch(() => {});
         throw malformed(sandboxId, "a response that is not a Connect stream");
       }
-      const frames = connectEnvelopes(response.body, { provider: "e2b", sandboxId, signal: controller.signal });
+      const frames = connectEnvelopes(response.body, {
+        provider: "e2b",
+        sandboxId,
+        signal: controller.signal,
+      });
       try {
         const first = await frames.next();
         if (first.done) throw malformed(sandboxId, "an empty stream");
         if (first.value.kind === "end") {
           // envd rejected the call (bad cwd, unknown user, unknown pid): nothing started.
-          if (first.value.error) throw rpcError({ code: first.value.error.code, method, sandboxId });
+          if (first.value.error)
+            throw rpcError({ code: first.value.error.code, method, sandboxId });
           throw malformed(sandboxId, "an end frame before the start event");
         }
         const event = parseEvent(first.value.message);
         if (event?.kind !== "start") throw malformed(sandboxId, "no start event first");
         return { frames, pid: event.pid };
-      } catch (error) { await frames.return(); throw error; }
+      } catch (error) {
+        await frames.return();
+        throw error;
+      }
     };
     let started: Awaited<ReturnType<typeof startup>>;
-    try { started = await startup(); }
-    catch (error) {
+    try {
+      started = await startup();
+    } catch (error) {
       settleStartup();
-      const unknown = timedOut || streamFault(error) !== undefined || (error instanceof SandboxError && ["aborted", "timeout", "outcome_unknown"].includes(error.code));
+      const unknown =
+        timedOut ||
+        streamFault(error) !== undefined ||
+        (error instanceof SandboxError &&
+          ["aborted", "timeout", "outcome_unknown"].includes(error.code));
       const tag = options.tag;
-      const cleaned = unknown && tag !== undefined && options.abandon ? await options.abandon(tag).then(() => true, () => false) : true;
-      if (!cleaned) throw new SandboxError(`E2B ${method} failed before its start event, and stopping a command that may have started failed too. It may still be running.`, { code: "outcome_unknown", provider: "e2b", sandboxId });
-      if (timedOut) throw new SandboxError(`E2B ${method} sent no start event within ${startupMs} ms, so the command may or may not have started. It was stopped if it did.`, { code: "outcome_unknown", provider: "e2b", sandboxId });
-      if (options.signal?.aborted) throw new SandboxError("Command start aborted. The signal was cancelled.", { code: "aborted", provider: "e2b", sandboxId });
+      const cleaned =
+        unknown && tag !== undefined && options.abandon
+          ? await options.abandon(tag).then(
+              () => true,
+              () => false,
+            )
+          : true;
+      if (!cleaned)
+        throw new SandboxError(
+          `E2B ${method} failed before its start event, and stopping a command that may have started failed too. It may still be running.`,
+          { code: "outcome_unknown", provider: "e2b", sandboxId },
+        );
+      if (timedOut)
+        throw new SandboxError(
+          `E2B ${method} sent no start event within ${startupMs} ms, so the command may or may not have started. It was stopped if it did.`,
+          { code: "outcome_unknown", provider: "e2b", sandboxId },
+        );
+      if (options.signal?.aborted)
+        throw new SandboxError("Command start aborted. The signal was cancelled.", {
+          code: "aborted",
+          provider: "e2b",
+          sandboxId,
+        });
       throw error;
     }
     const { frames, pid } = started;
@@ -206,7 +325,8 @@ export function createEnvd(options: { http: HttpClient<E2BPlane>; connection: (s
     let exitCode: number | undefined;
     const emit = (stream: "stdout" | "stderr", text: string) => {
       if (!text || disconnected) return;
-      if (stream === "stdout") options.onStdout?.(text); else options.onStderr?.(text);
+      if (stream === "stdout") options.onStdout?.(text);
+      else options.onStderr?.(text);
     };
     const reading = (async (): Promise<number> => {
       try {
@@ -217,75 +337,162 @@ export function createEnvd(options: { http: HttpClient<E2BPlane>; connection: (s
           }
           const event = parseEvent(frame.message);
           if (event === undefined) throw malformed(sandboxId, "a malformed process event");
-          if (event.kind === "data") emit(event.stream, decoders[event.stream].decode(event.bytes, { stream: true }));
-          else if (event.kind === "end") { exitCode = event.exitCode; for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode()); }
+          if (event.kind === "data")
+            emit(event.stream, decoders[event.stream].decode(event.bytes, { stream: true }));
+          else if (event.kind === "end") {
+            exitCode = event.exitCode;
+            for (const stream of ["stdout", "stderr"] as const)
+              emit(stream, decoders[stream].decode());
+          }
         }
       } catch (error) {
         for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
-        if (disconnected) throw new SandboxError("Disconnected from the E2B command. It keeps running; reconnect to wait for it.", { code: "aborted", provider: "e2b", sandboxId });
+        if (disconnected)
+          throw new SandboxError(
+            "Disconnected from the E2B command. It keeps running; reconnect to wait for it.",
+            { code: "aborted", provider: "e2b", sandboxId },
+          );
         throw error;
       }
-      if (exitCode === undefined) throw new SandboxError("The E2B command stream ended without the command's result.", { code: "provider", provider: "e2b", sandboxId });
+      if (exitCode === undefined)
+        throw new SandboxError("The E2B command stream ended without the command's result.", {
+          code: "provider",
+          provider: "e2b",
+          sandboxId,
+        });
       return exitCode;
     })();
     reading.catch(() => {});
     return {
       pid,
-      get exitCode() { return exitCode; },
+      get exitCode() {
+        return exitCode;
+      },
       wait: () => reading,
       async kill() {
-        try { await signal(sandboxId, { pid }, "SIGNAL_SIGKILL"); return true; }
-        catch (error) { if (error instanceof SandboxError && error.code === "not_found") return false; throw error; }
+        try {
+          await signal(sandboxId, { pid }, "SIGNAL_SIGKILL");
+          return true;
+        } catch (error) {
+          if (error instanceof SandboxError && error.code === "not_found") return false;
+          throw error;
+        }
       },
-      async sendStdin(data) { await unary(sandboxId, "process.Process/SendInput", { process: { pid }, input: { stdin: Buffer.from(data).toString("base64") } }); },
+      async sendStdin(data) {
+        await unary(sandboxId, "process.Process/SendInput", {
+          process: { pid },
+          input: { stdin: Buffer.from(data).toString("base64") },
+        });
+      },
       async closeStdin() {
         const { envdVersion } = connection(sandboxId);
-        if (!versionAtLeast(envdVersion, envdGates.closeStdin)) throw new SandboxError(`envd ${envdVersion.slice(0, 16)} cannot close stdin. Rebuild the template to pick up a newer envd.`, { code: "unsupported", provider: "e2b", sandboxId });
+        if (!versionAtLeast(envdVersion, envdGates.closeStdin))
+          throw new SandboxError(
+            `envd ${envdVersion.slice(0, 16)} cannot close stdin. Rebuild the template to pick up a newer envd.`,
+            { code: "unsupported", provider: "e2b", sandboxId },
+          );
         await unary(sandboxId, "process.Process/CloseStdin", { process: { pid } });
       },
-      disconnect() { disconnected = true; controller.abort(); },
+      disconnect() {
+        disconnected = true;
+        controller.abort();
+      },
     };
   }
 
   return {
     files: {
       async read(sandboxId: string, path: string, user: string): Promise<Uint8Array> {
-        return (await http.request({ method: "GET", plane: "envd", path: "/files", sandboxId, query: { path, username: user }, maxBytes: Number.POSITIVE_INFINITY })).body;
+        return (
+          await http.request({
+            method: "GET",
+            plane: "envd",
+            path: "/files",
+            sandboxId,
+            query: { path, username: user },
+            maxBytes: Number.POSITIVE_INFINITY,
+          })
+        ).body;
       },
       /** One multipart request, as the SDK sends buffered data. A single file also names its path in the query. */
-      async write(sandboxId: string, files: readonly { path: string; data: Uint8Array | string }[], user: string): Promise<void> {
+      async write(
+        sandboxId: string,
+        files: readonly { path: string; data: Uint8Array | string }[],
+        user: string,
+      ): Promise<void> {
         const form = new FormData();
-        for (const file of files) form.append("file", new Blob([typeof file.data === "string" ? file.data : new Uint8Array(file.data)]), file.path);
+        for (const file of files)
+          form.append(
+            "file",
+            new Blob([typeof file.data === "string" ? file.data : new Uint8Array(file.data)]),
+            file.path,
+          );
         const single = files.length === 1 ? files[0]?.path : undefined;
-        await http.request({ method: "POST", plane: "envd", path: "/files", sandboxId, body: form, query: { ...(single === undefined ? {} : { path: single }), username: user } });
+        await http.request({
+          method: "POST",
+          plane: "envd",
+          path: "/files",
+          sandboxId,
+          body: form,
+          query: { ...(single === undefined ? {} : { path: single }), username: user },
+        });
       },
     },
     fs: {
       async stat(sandboxId: string, path: string, user: string): Promise<EntryInfo> {
-        const body = await unary(sandboxId, "filesystem.Filesystem/Stat", { path }, { user, readOnly: true });
+        const body = await unary(
+          sandboxId,
+          "filesystem.Filesystem/Stat",
+          { path },
+          { user, readOnly: true },
+        );
         const entry = parseEntry(isRecord(body) ? body.entry : undefined);
         if (!entry) throw malformed(sandboxId, "a Stat answer without a known entry");
         return entry;
       },
       async list(sandboxId: string, path: string, user: string): Promise<EntryInfo[]> {
-        const body = await unary(sandboxId, "filesystem.Filesystem/ListDir", { path, depth: 1 }, { user, readOnly: true });
+        const body = await unary(
+          sandboxId,
+          "filesystem.Filesystem/ListDir",
+          { path, depth: 1 },
+          { user, readOnly: true },
+        );
         const entries = isRecord(body) && Array.isArray(body.entries) ? body.entries : [];
-        return entries.map(parseEntry).filter(entry => entry !== undefined);
+        return entries.map(parseEntry).filter((entry) => entry !== undefined);
       },
       /** Creates parents too. An existing directory is not an error, as in the SDK. */
       async mkdir(sandboxId: string, path: string, user: string): Promise<void> {
-        try { await unary(sandboxId, "filesystem.Filesystem/MakeDir", { path }, { user }); }
-        catch (error) { if (!(error instanceof SandboxError && /\balready_exists\b/.test(error.message))) throw error; }
+        try {
+          await unary(sandboxId, "filesystem.Filesystem/MakeDir", { path }, { user });
+        } catch (error) {
+          if (!(error instanceof SandboxError && /\balready_exists\b/.test(error.message)))
+            throw error;
+        }
       },
-      async remove(sandboxId: string, path: string, user: string): Promise<void> { await unary(sandboxId, "filesystem.Filesystem/Remove", { path }, { user }); },
+      async remove(sandboxId: string, path: string, user: string): Promise<void> {
+        await unary(sandboxId, "filesystem.Filesystem/Remove", { path }, { user });
+      },
     },
     process: {
       /** Every Start carries a fresh tag, so a start whose outcome is unknown can still be found and stopped. */
       async start(sandboxId: string, options: StartOptions): Promise<Command> {
         const { envdVersion } = connection(sandboxId);
-        if (!options.stdin && !versionAtLeast(envdVersion, envdGates.stdinFlag)) throw new SandboxError(`envd ${envdVersion.slice(0, 16)} always opens stdin. Rebuild the template to pick up a newer envd.`, { code: "unsupported", provider: "e2b", sandboxId });
+        if (!options.stdin && !versionAtLeast(envdVersion, envdGates.stdinFlag))
+          throw new SandboxError(
+            `envd ${envdVersion.slice(0, 16)} always opens stdin. Rebuild the template to pick up a newer envd.`,
+            { code: "unsupported", provider: "e2b", sandboxId },
+          );
         const tag = `sandbox-sdk-${crypto.randomUUID()}`;
-        const message = { process: { cmd: "/bin/bash", args: ["-l", "-c", options.command], envs: options.envs ?? {}, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) }, stdin: options.stdin, tag };
+        const message = {
+          process: {
+            cmd: "/bin/bash",
+            args: ["-l", "-c", options.command],
+            envs: options.envs ?? {},
+            ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+          },
+          stdin: options.stdin,
+          tag,
+        };
         return open(sandboxId, "Start", message, { ...options, tag, headers: basic(options.user) });
       },
       /** Reattach to a running process. Output printed while detached is lost: envd does not buffer it. */
@@ -295,9 +502,11 @@ export function createEnvd(options: { http: HttpClient<E2BPlane>; connection: (s
       async list(sandboxId: string): Promise<ProcessEntry[]> {
         const body = await unary(sandboxId, "process.Process/List", {}, { readOnly: true });
         const processes = isRecord(body) && Array.isArray(body.processes) ? body.processes : [];
-        return processes.filter(isRecord).flatMap(item => {
+        return processes.filter(isRecord).flatMap((item) => {
           const pid = decodeInt(item.pid);
-          return pid === undefined ? [] : [{ pid, ...(typeof item.tag === "string" ? { tag: item.tag } : {}) }];
+          return pid === undefined
+            ? []
+            : [{ pid, ...(typeof item.tag === "string" ? { tag: item.tag } : {}) }];
         });
       },
       signal,

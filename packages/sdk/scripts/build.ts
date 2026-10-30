@@ -21,7 +21,9 @@ const entrypoints = Object.values(pkg.exports).flatMap((target) =>
 
 // Every peer must be on the explicit list. The list, not peerDependencies, decides what stays external, so
 // dropping a provider SDK from the peers can never bundle the copy installed for development.
-const unlisted = Object.keys(pkg.peerDependencies).filter((name) => !externalPackages.includes(name));
+const unlisted = Object.keys(pkg.peerDependencies).filter(
+  (name) => !externalPackages.includes(name),
+);
 if (unlisted.length) {
   console.error(`Add these peers to scripts/externals.ts: ${unlisted.join(", ")}`);
   process.exit(1);
@@ -45,8 +47,14 @@ if (!result.success) {
   process.exit(1);
 }
 // The SDK has zero runtime dependencies: nothing from node_modules may be bundled into dist.
-const bundled = Object.keys(result.metafile?.inputs ?? {}).filter((input) => input.includes("node_modules"));
+const bundled = Object.keys(result.metafile?.inputs ?? {}).filter((input) =>
+  input.includes("node_modules"),
+);
 if (!result.metafile || bundled.length) {
-  console.error(result.metafile ? `dist bundles code from node_modules:\n  ${bundled.slice(0, 20).join("\n  ")}` : "Bun.build returned no metafile; cannot check for bundled dependencies");
+  console.error(
+    result.metafile
+      ? `dist bundles code from node_modules:\n  ${bundled.slice(0, 20).join("\n  ")}`
+      : "Bun.build returned no metafile; cannot check for bundled dependencies",
+  );
   process.exit(1);
 }

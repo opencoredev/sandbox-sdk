@@ -10,11 +10,26 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
 import type { Provider, CreateInput, SandboxInfo, Labels, FileInfo } from "../../provider.js";
 import { createDeadline, sleep } from "../../http.js";
-import { createNativeApi, sdkCall, sdkConstruct, type NativeApi, type NativeSdkBinding } from "../../native.js";
+import {
+  createNativeApi,
+  sdkCall,
+  sdkConstruct,
+  type NativeApi,
+  type NativeSdkBinding,
+} from "../../native.js";
 import { execute, fileChunkBytes, quote, stage, workspace } from "./exec.js";
 import type { BoatOptions, BoatNative, BoatClientSdk, BoatSandboxSdk } from "../boat/index.js";
 import { errors } from "./errors.js";
-import { boatHttp, command, parseSandboxBody, parseSandboxPage, writeFile, type BoatHttp, type BoatPlane, type BoatSandbox } from "./transport.js";
+import {
+  boatHttp,
+  command,
+  parseSandboxBody,
+  parseSandboxPage,
+  writeFile,
+  type BoatHttp,
+  type BoatPlane,
+  type BoatSandbox,
+} from "./transport.js";
 export interface BoatApiSettings {
   name: string;
   label: string;
@@ -36,7 +51,13 @@ export interface BoatApiSettings {
   /** Extra `Configuration` parameters for the client `native.sdk()` builds. */
   sdkConfiguration?: Readonly<Record<string, unknown>>;
 }
-const defaults: BoatApiSettings = { name: "boat", label: "Boat", keyEnv: "BOAT_API_KEY", baseEnv: "BOAT_API_BASE", baseUrl: "https://boat.dev/api/v1" };
+const defaults: BoatApiSettings = {
+  name: "boat",
+  label: "Boat",
+  keyEnv: "BOAT_API_KEY",
+  baseEnv: "BOAT_API_BASE",
+  baseUrl: "https://boat.dev/api/v1",
+};
 const sdkPackage = "@boatdev/sdk";
 const prefix = "sandbox-sdk:1:";
 const own = { "sandbox-sdk": "1" };
@@ -47,7 +68,11 @@ const presets = { small: "small", medium: "default", large: "large" } satisfies 
 
 // Boat has no labels. Keep metadata in its display name so stopped VMs remain
 // discoverable. Never allow the API's silent 120-character truncation.
-function metadataName(input: CreateInput, failure: ReturnType<typeof errors>["failure"], label: string) {
+function metadataName(
+  input: CreateInput,
+  failure: ReturnType<typeof errors>["failure"],
+  label: string,
+) {
   const labels = { ...input.labels };
   delete labels["sandbox-sdk"];
   const json = JSON.stringify([input.key ?? null, labels]);
@@ -55,7 +80,10 @@ function metadataName(input: CreateInput, failure: ReturnType<typeof errors>["fa
     throw failure("Key and labels exceed the metadata size limit", "unsupported");
   const name = prefix + deflateRawSync(json).toString("base64url");
   if (name.length > 120)
-    throw failure(`Key and labels exceed ${label}'s encoded name budget; shorten them`, "unsupported");
+    throw failure(
+      `Key and labels exceed ${label}'s encoded name budget; shorten them`,
+      "unsupported",
+    );
   return name;
 }
 function metadata(name: string): { key?: string; labels: Labels } | undefined {
@@ -85,7 +113,12 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
     return;
   }
 }
-function info(raw: BoatSandbox, failure: ReturnType<typeof errors>["failure"], label: string, pausedStates: readonly string[] = []): SandboxInfo {
+function info(
+  raw: BoatSandbox,
+  failure: ReturnType<typeof errors>["failure"],
+  label: string,
+  pausedStates: readonly string[] = [],
+): SandboxInfo {
   const data = metadata(raw.name);
   if (!data)
     throw failure(
@@ -100,10 +133,18 @@ function info(raw: BoatSandbox, failure: ReturnType<typeof errors>["failure"], l
     id: raw.id,
     ...data,
     createdAt,
-    state: pausedStates.includes(raw.state) ? "paused" : ["ready", "idle", "running"].includes(raw.state) ? "running" : "stopped",
+    state: pausedStates.includes(raw.state)
+      ? "paused"
+      : ["ready", "idle", "running"].includes(raw.state)
+        ? "running"
+        : "stopped",
   };
 }
-function fileInfo(value: unknown, failure: ReturnType<typeof errors>["failure"], label: string): FileInfo {
+function fileInfo(
+  value: unknown,
+  failure: ReturnType<typeof errors>["failure"],
+  label: string,
+): FileInfo {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -123,7 +164,6 @@ function fileInfo(value: unknown, failure: ReturnType<typeof errors>["failure"],
 }
 const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
-
 /** The adapter and the HTTP client it shares with `box.native`, `provider.api` and Sandboxer's extra calls. */
 export interface BoatCore {
   provider: Provider<BoatNative, "size"> & { readonly api: NativeApi<BoatPlane, BoatClientSdk> };
@@ -132,7 +172,12 @@ export interface BoatCore {
 
 /** Boat API v1 over plain HTTP, with no installed remote agent or local daemon. */
 export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = defaults): BoatCore {
-  const { failure, boatError } = errors(settings.name, settings.label, settings.keyEnv, settings.name !== "boat");
+  const { failure, boatError } = errors(
+    settings.name,
+    settings.label,
+    settings.keyEnv,
+    settings.name !== "boat",
+  );
   const label = settings.label;
   const environmentFiles = new Map<string, Map<string, Promise<string>>>();
   const environments = new Map<string, Record<string, string>>();
@@ -141,15 +186,26 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
   // Read on first use, not at construction, so a missing key or bad option fails the first call.
   function credentials() {
     const value = key();
-    if (!value) throw failure(`${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`, "auth");
+    if (!value)
+      throw failure(
+        `${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`,
+        "auth",
+      );
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
     return value;
   }
   const transport = {
-    provider: settings.name, label, keyEnv: settings.keyEnv,
-    baseUrl: () => options.baseUrl ?? options.apiUrl ?? (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ?? settings.baseUrl,
-    credentials, secrets: () => [key()],
+    provider: settings.name,
+    label,
+    keyEnv: settings.keyEnv,
+    baseUrl: () =>
+      options.baseUrl ??
+      options.apiUrl ??
+      (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ??
+      settings.baseUrl,
+    credentials,
+    secrets: () => [key()],
     timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 90_000,
   };
   const http = boatHttp(transport);
@@ -169,7 +225,10 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     }
   }
   async function raw(id: string, script: string, file = false, prepare = false) {
-    const result = await command(http, id, { command: prepare ? `${workspace}; ${script}` : script, timeoutSeconds: 60 });
+    const result = await command(http, id, {
+      command: prepare ? `${workspace}; ${script}` : script,
+      timeoutSeconds: 60,
+    });
     if (result.kind !== "finished")
       throw failure(`${label} returned an unexpected detached result`, "outcome_unknown", id);
     if (result.truncated)
@@ -196,7 +255,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           id,
           `node -e ${quote(`try {${script}} catch(e) {process.exit(e.code==='ENOENT'?44:45)}`)} ${args.map(quote).join(" ")}`,
           true,
-          args.some(path => path === "/workspace" || path.startsWith("/workspace/")),
+          args.some((path) => path === "/workspace" || path.startsWith("/workspace/")),
         ),
       id,
     );
@@ -219,11 +278,28 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
   const binding: NativeSdkBinding = {
     package: sdkPackage,
     async connect(module, sandboxId) {
-      const configuration = sdkConstruct(module, "Configuration", [{ ...settings.sdkConfiguration, basePath: transport.baseUrl(), accessToken: credentials() }], sdkPackage);
+      const configuration = sdkConstruct(
+        module,
+        "Configuration",
+        [
+          {
+            ...settings.sdkConfiguration,
+            basePath: transport.baseUrl(),
+            accessToken: credentials(),
+          },
+        ],
+        sdkPackage,
+      );
       const client = sdkConstruct(module, "BoatApi", [configuration], sdkPackage);
       if (sandboxId === undefined) return client;
       const response = await sdkCall(client, "get", [{ sandboxId }], sdkPackage);
-      return { client, sandbox: typeof response === "object" && response !== null ? Reflect.get(response, "sandbox") : undefined };
+      return {
+        client,
+        sandbox:
+          typeof response === "object" && response !== null
+            ? Reflect.get(response, "sandbox")
+            : undefined,
+      };
     },
   };
   const provider: BoatCore["provider"] = {
@@ -247,15 +323,27 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         if (input.idleTimeoutMs !== undefined && !settings.idleStop)
           throw failure(`${label} has no idle timer; idleTimeoutMs is unsupported`, "unsupported");
         const { ttlSeconds, snapshots, monitoring, org } = options;
-        if (ttlSeconds !== undefined && ttlSeconds !== null && (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 2_592_000))
-          throw failure("ttlSeconds must be null or an integer from 1 to 2592000", "invalid_argument");
+        if (
+          ttlSeconds !== undefined &&
+          ttlSeconds !== null &&
+          (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 2_592_000)
+        )
+          throw failure(
+            "ttlSeconds must be null or an integer from 1 to 2592000",
+            "invalid_argument",
+          );
         // Idle pause wakes on the next API call. It needs snapshots, and the
         // API takes whole minutes up to a week.
         let idleStopMinutes: number | undefined;
         if (input.idleTimeoutMs !== undefined) {
           idleStopMinutes = Math.ceil(input.idleTimeoutMs / 60_000);
-          if (idleStopMinutes > 10_080) throw failure(`${label} idle pause is at most 7 days`, "invalid_argument");
-          if (snapshots === false) throw failure(`${label} idle pause needs snapshots; drop idleTimeoutMs or snapshots: false`, "invalid_argument");
+          if (idleStopMinutes > 10_080)
+            throw failure(`${label} idle pause is at most 7 days`, "invalid_argument");
+          if (snapshots === false)
+            throw failure(
+              `${label} idle pause needs snapshots; drop idleTimeoutMs or snapshots: false`,
+              "invalid_argument",
+            );
         }
         if (input.from !== undefined && !settings.createFrom)
           throw failure(`${label} snapshots are not supported by this adapter`, "unsupported");
@@ -287,14 +375,24 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         let sandbox: BoatSandbox | undefined;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            sandbox = sandboxOf(await once.json({ method: "POST", path: "/sandboxes", body, idempotencyKey, deadline }));
+            sandbox = sandboxOf(
+              await once.json({
+                method: "POST",
+                path: "/sandboxes",
+                body,
+                idempotencyKey,
+                deadline,
+              }),
+            );
             break;
           } catch (error) {
             const code = boatError(error).code;
             if (["auth", "invalid_argument", "quota", "not_found"].includes(code)) throw error;
             const delay = 250 * (attempt + 1);
             if (attempt === 2 || delay >= deadline.remaining()) throw unknown();
-            await sleep(delay, deadline, settings.name).catch(() => { throw unknown(); });
+            await sleep(delay, deadline, settings.name).catch(() => {
+              throw unknown();
+            });
           }
         }
         if (!sandbox) throw failure(`${label} returned no sandbox after create`, "outcome_unknown");
@@ -304,29 +402,62 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           // Boat has no name at create. Preserve durable cross-client metadata;
           // its command API waits for provisioning when first use arrives early.
-          const updated = sandboxOf(await http.json({ method: "PATCH", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, body: { name }, deadline }));
+          const updated = sandboxOf(
+            await http.json({
+              method: "PATCH",
+              path: "/sandboxes/{sandboxId}",
+              params: { sandboxId: id },
+              sandboxId: id,
+              body: { name },
+              deadline,
+            }),
+          );
           if (input.signal?.aborted) throw failure("Creation was aborted", "aborted");
           if (updated.name !== name) return await provider.connect(id);
-          return { ...info(updated, failure, label, settings.pausedStates), state: "running" } satisfies SandboxInfo;
+          return {
+            ...info(updated, failure, label, settings.pausedStates),
+            state: "running",
+          } satisfies SandboxInfo;
         } catch (error) {
           await provider.destroy(id);
           throw error;
         }
       }),
     connect: (id) =>
-      safe(async () => info(sandboxOf(await http.json({ method: "GET", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id })), failure, label, settings.pausedStates), id),
+      safe(
+        async () =>
+          info(
+            sandboxOf(
+              await http.json({
+                method: "GET",
+                path: "/sandboxes/{sandboxId}",
+                params: { sandboxId: id },
+                sandboxId: id,
+              }),
+            ),
+            failure,
+            label,
+            settings.pausedStates,
+          ),
+        id,
+      ),
     list: (labels) =>
       safe(async () => {
         const values: SandboxInfo[] = [];
         let cursor: string | undefined;
         const visited = new Set<string>();
         do {
-          const page = parseSandboxPage(await http.json({ method: "GET", path: "/sandboxes", query: { limit: 200, cursor } }), settings.name, label);
+          const page = parseSandboxPage(
+            await http.json({ method: "GET", path: "/sandboxes", query: { limit: 200, cursor } }),
+            settings.name,
+            label,
+          );
           for (const sandbox of page.sandboxes) {
             settings.observe?.(sandbox);
             if (!metadata(sandbox.name)) continue;
             const value = info(sandbox, failure, label, settings.pausedStates);
-            if (Object.entries(labels).every(([key, expected]) => value.labels[key] === expected)) values.push(value);
+            if (Object.entries(labels).every(([key, expected]) => value.labels[key] === expected))
+              values.push(value);
           }
           if (!page.hasMore) break;
           const next = page.nextCursor;
@@ -344,18 +475,37 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       safe(async () => {
         try {
           if (settings.destroy) await settings.destroy(http, id);
-          else await http.request({ method: "DELETE", path: "/sandboxes/{sandboxId}", params: { sandboxId: id }, sandboxId: id, headers: { "X-Ascii-Confirm-Delete": id } });
+          else
+            await http.request({
+              method: "DELETE",
+              path: "/sandboxes/{sandboxId}",
+              params: { sandboxId: id },
+              sandboxId: id,
+              headers: { "X-Ascii-Confirm-Delete": id },
+            });
         } catch (error) {
           if (boatError(error).code !== "not_found") throw error;
         }
         environments.delete(id);
         environmentFiles.delete(id);
       }, id),
-    exec: (id, input) => safe(async () => {
-      let files = environmentFiles.get(id);
-      if (!files) { files = new Map(); environmentFiles.set(id, files); }
-      return execute(http, id, input, environments.get(id), files, { failure, boatError }, { http: once });
-    }, id),
+    exec: (id, input) =>
+      safe(async () => {
+        let files = environmentFiles.get(id);
+        if (!files) {
+          files = new Map();
+          environmentFiles.set(id, files);
+        }
+        return execute(
+          http,
+          id,
+          input,
+          environments.get(id),
+          files,
+          { failure, boatError },
+          { http: once },
+        );
+      }, id),
     files: {
       writeCreatesParents: true,
       writeSupportsMode: true,
@@ -363,7 +513,8 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
       read: async (id, path) => {
         // Open, measure and read small files in one guest operation. Following
         // the same fd preserves symlink behavior and bounds command output.
-        const text = await node(id,
+        const text = await node(
+          id,
           "const f=require('fs'),fd=f.openSync(process.argv[1],'r');try{const size=f.fstatSync(fd).size,b=Buffer.alloc(Math.min(size,16384)),n=f.readSync(fd,b,0,b.length,0);process.stdout.write(size+'\\n'+b.subarray(0,n).toString('base64'))}finally{f.closeSync(fd)}",
           [path],
         );
@@ -374,41 +525,78 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         const first = Buffer.from(text.slice(separator + 1), "base64");
         if (size <= 16_384) return new Uint8Array(first);
         if (size <= 1024 * 1024)
-          return new Uint8Array(Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]));
+          return new Uint8Array(
+            Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]),
+          );
         if (settings.downloadMaxBytes !== undefined && size > settings.downloadMaxBytes)
-          return new Uint8Array(Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]));
+          return new Uint8Array(
+            Buffer.concat([first, await readRange(id, path, first.length, size - first.length)]),
+          );
         return safe(async () => {
           // Signed downloads have no size limit, but only accept /tmp or
           // /home/user paths. Snapshot the file into private staging first.
           const dir = `/tmp/.sandbox-sdk/download-${crypto.randomUUID()}`;
           const staged = `${dir}/file`;
           try {
-            const copiedSize = Number(await node(id,
-              "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[2],{mode:0o700});f.copyFileSync(process.argv[1],process.argv[2]+'/file');process.stdout.write(String(f.statSync(process.argv[2]+'/file').size))",
-              [path, dir],
-            ));
-            if (!Number.isSafeInteger(copiedSize) || copiedSize < 0) throw failure("Invalid staged file size", "provider", id);
+            const copiedSize = Number(
+              await node(
+                id,
+                "const f=require('fs');f.mkdirSync('/tmp/.sandbox-sdk',{recursive:true});f.mkdirSync(process.argv[2],{mode:0o700});f.copyFileSync(process.argv[1],process.argv[2]+'/file');process.stdout.write(String(f.statSync(process.argv[2]+'/file').size))",
+                [path, dir],
+              ),
+            );
+            if (!Number.isSafeInteger(copiedSize) || copiedSize < 0)
+              throw failure("Invalid staged file size", "provider", id);
             if (settings.download) {
               const bytes = await settings.download(http, id, staged);
-              if (bytes.length !== copiedSize) throw failure("Incomplete artifact download", "provider", id);
+              if (bytes.length !== copiedSize)
+                throw failure("Incomplete artifact download", "provider", id);
               return bytes;
             }
             // Creating a link changes nothing, so a lost response is not an unknown outcome.
-            const link: unknown = await http.json({ method: "POST", path: "/sandboxes/{sandboxId}/files/download-url", params: { sandboxId: id }, sandboxId: id, body: { path: staged, ttlSeconds: 300 }, readOnly: true });
-            const url = typeof link === "object" && link !== null && "url" in link && typeof link.url === "string" ? link.url : undefined;
+            const link: unknown = await http.json({
+              method: "POST",
+              path: "/sandboxes/{sandboxId}/files/download-url",
+              params: { sandboxId: id },
+              sandboxId: id,
+              body: { path: staged, ttlSeconds: 300 },
+              readOnly: true,
+            });
+            const url =
+              typeof link === "object" &&
+              link !== null &&
+              "url" in link &&
+              typeof link.url === "string"
+                ? link.url
+                : undefined;
             if (!url) throw failure(`${label} returned no signed download URL`, "provider", id);
             // The URL carries its own signature: no account credentials, and errors never show it.
             let bytes: Uint8Array;
             try {
-              bytes = (await http.request({ method: "GET", path: url, auth: false, sandboxId: id, maxBytes: copiedSize + 1 })).body;
+              bytes = (
+                await http.request({
+                  method: "GET",
+                  path: url,
+                  auth: false,
+                  sandboxId: id,
+                  maxBytes: copiedSize + 1,
+                })
+              ).body;
             } catch (error) {
               const code = boatError(error, id).code;
-              throw failure("Signed file download failed", code === "aborted" || code === "timeout" ? code : "unavailable", id);
+              throw failure(
+                "Signed file download failed",
+                code === "aborted" || code === "timeout" ? code : "unavailable",
+                id,
+              );
             }
-            if (bytes.length !== copiedSize) throw failure("Incomplete signed file download", "provider", id);
+            if (bytes.length !== copiedSize)
+              throw failure("Incomplete signed file download", "provider", id);
             return bytes;
           } finally {
-            await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [dir]).catch(() => {});
+            await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
+              dir,
+            ]).catch(() => {});
           }
         }, id);
       },
@@ -421,10 +609,17 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           // The API creates parents, but canonical paths outside these roots
           // are rejected. It cannot set a mode, so a mode always takes the
           // staged path below, which applies it before any bytes land.
-          if (mode === undefined && data.length <= fileChunkBytes &&
-              (normalized.startsWith("/home/user/") || normalized.startsWith("/tmp/"))) {
+          if (
+            mode === undefined &&
+            data.length <= fileChunkBytes &&
+            (normalized.startsWith("/home/user/") || normalized.startsWith("/tmp/"))
+          ) {
             try {
-              await writeFile(http, id, { path, content: Buffer.from(data).toString("base64"), encoding: "base64" });
+              await writeFile(http, id, {
+                path,
+                content: Buffer.from(data).toString("base64"),
+                encoding: "base64",
+              });
               return;
             } catch (error) {
               if (boatError(error).code !== "invalid_argument") throw error;
@@ -438,14 +633,18 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           let cleaned = false;
           try {
             const parts = await stage(http, id, dir, data, failure);
-            await node(id,
+            await node(
+              id,
               "const f=require('fs'),[d,dir,n,m]=process.argv.slice(1);try{f.mkdirSync(require('path').dirname(d),{recursive:true});const fd=f.openSync(d,'w',m?0o600:0o666);try{if(m)f.fchmodSync(fd,Number(m));for(let i=0;i<Number(n);i++)f.writeFileSync(fd,f.readFileSync(dir+'/part-'+i))}finally{f.closeSync(fd)}}finally{f.rmSync(dir,{recursive:true,force:true})}",
               [path, dir, String(parts.length), mode === undefined ? "" : String(mode)],
             );
             cleaned = true;
           } finally {
             // Includes unknown upload outcomes (response lost after remote write).
-            if (!cleaned) await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [dir]).catch(() => {});
+            if (!cleaned)
+              await node(id, "require('fs').rmSync(process.argv[1],{recursive:true,force:true})", [
+                dir,
+              ]).catch(() => {});
           }
         }, id),
       stat: async (id, path) => {
@@ -468,7 +667,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           ),
         );
         if (!Array.isArray(value)) throw failure(`Invalid ${label} directory listing`);
-        return value.map(value => fileInfo(value, failure, label));
+        return value.map((value) => fileInfo(value, failure, label));
       },
       mkdir: async (id, path) => {
         await node(id, "require('fs').mkdirSync(process.argv[1],{recursive:true})", [path]);
@@ -483,8 +682,20 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     },
     previewUrl: (id, port) =>
       safe(async () => {
-        const result: unknown = await http.json({ method: "POST", path: "/sandboxes/{sandboxId}/host", params: { sandboxId: id }, sandboxId: id, body: { port } });
-        if (typeof result !== "object" || result === null || !("url" in result) || typeof result.url !== "string" || !result.url)
+        const result: unknown = await http.json({
+          method: "POST",
+          path: "/sandboxes/{sandboxId}/host",
+          params: { sandboxId: id },
+          sandboxId: id,
+          body: { port },
+        });
+        if (
+          typeof result !== "object" ||
+          result === null ||
+          !("url" in result) ||
+          typeof result.url !== "string" ||
+          !result.url
+        )
           throw failure(`${label} returned no preview URL`, "provider", id);
         if (settings.preview) return settings.preview(result.url);
         const url = new URL(result.url);
@@ -492,16 +703,30 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         // Boat exchanges this token for an identically valued _port_auth cookie
         // through a redirect. Server fetch has no browser cookie jar.
         if (token) {
-          if (!/^[A-Za-z0-9._~-]+$/.test(token)) throw failure("Invalid preview token", "provider", id);
+          if (!/^[A-Za-z0-9._~-]+$/.test(token))
+            throw failure("Invalid preview token", "provider", id);
           url.searchParams.delete("_token");
           return { url: url.toString(), headers: { Cookie: `_port_auth=${token}` } };
         }
-        if (("isProtected" in result && result.isProtected === true) || ("access" in result && result.access === "private"))
+        if (
+          ("isProtected" in result && result.isProtected === true) ||
+          ("access" in result && result.access === "private")
+        )
           throw failure("Protected preview returned no token", "provider", id);
         return { url: url.toString() };
       }, id),
-    native: (id) => createNativeApi<BoatPlane, BoatSandboxSdk>({ http, placeholder: "sandboxId", sandboxId: id, sdk: binding }),
-    api: createNativeApi<BoatPlane, BoatClientSdk>({ http, placeholder: "sandboxId", sdk: binding }),
+    native: (id) =>
+      createNativeApi<BoatPlane, BoatSandboxSdk>({
+        http,
+        placeholder: "sandboxId",
+        sandboxId: id,
+        sdk: binding,
+      }),
+    api: createNativeApi<BoatPlane, BoatClientSdk>({
+      http,
+      placeholder: "sandboxId",
+      sdk: binding,
+    }),
   };
   return { provider, http };
 }

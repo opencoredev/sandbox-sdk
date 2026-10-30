@@ -1,6 +1,5 @@
 # Daytona provider
 
-
 Import `daytona` from `@opencoredev/sandbox-sdk/daytona`; no other package is needed, because the adapter calls Daytona's API and toolbox over HTTP. It reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`; `daytona({ apiKey, baseUrl, target })` overrides those values. `requestTimeoutMs` defaults to 30 seconds for control-plane requests. Use `image` for a container image or `snapshot` for an existing Daytona snapshot name. A per-call `from` overrides the configured image or snapshot.
 
 Keys use the `sandbox-sdk-key` label and are best effort. Lists filter by `sandbox-sdk=1`. The adapter does not declare `pause`; an idle timeout stops the sandbox, preserving disk while ending running processes. Snapshots capture the filesystem and return a name accepted by `from`. `box.native` is a `NativeApi` with the `"api"` and `"toolbox"` planes; `box.native.sdk(() => import("@daytonaio/sdk"))` returns the SDK's `Sandbox` if you install `@daytonaio/sdk` yourself. Terminal support is not exposed.

@@ -29,13 +29,18 @@ const regions = new Map([
 ]);
 const regionKey = /^ss_live_([a-z0-9]{1,17})_[A-Za-z0-9_-]{32}$/;
 // Hosts that route by the X-Superserve-Sandbox-Id header; any other host is per sandbox (boxd-<id>.<host>).
-const sharedHosts = new Set(["sandbox.superserve.ai", "staging-sandbox.superserve.ai", "usw-sandbox.superserve.ai"]);
+const sharedHosts = new Set([
+  "sandbox.superserve.ai",
+  "staging-sandbox.superserve.ai",
+  "usw-sandbox.superserve.ai",
+]);
 
 function sandboxHostFor(baseUrl: string): string {
   try {
     const host = new URL(baseUrl).hostname;
     if (host === "api-staging.superserve.ai") return "staging-sandbox.superserve.ai";
-    for (const region of regions.values()) if (new URL(region.baseUrl).hostname === host) return region.sandboxHost;
+    for (const region of regions.values())
+      if (new URL(region.baseUrl).hostname === host) return region.sandboxHost;
   } catch {
     // An unparseable override fails later, on the control-plane request itself.
   }
@@ -45,11 +50,20 @@ function sandboxHostFor(baseUrl: string): string {
 /** Reads the key and endpoints: an explicit base URL wins, then the key's region (`ss_live_<region>_`), then the default. */
 export function resolveConfig(options: { apiKey?: string; baseUrl?: string }): SuperserveConfig {
   const apiKey = options.apiKey ?? process.env.SUPERSERVE_API_KEY;
-  if (!apiKey?.trim()) throw failure("Superserve API key is missing. Authentication is required. Set SUPERSERVE_API_KEY or pass apiKey.", "auth");
+  if (!apiKey?.trim())
+    throw failure(
+      "Superserve API key is missing. Authentication is required. Set SUPERSERVE_API_KEY or pass apiKey.",
+      "auth",
+    );
   const override = (options.baseUrl ?? process.env.SUPERSERVE_BASE_URL)?.trim() || undefined;
-  if (override !== undefined) return { apiKey, baseUrl: override, sandboxHost: sandboxHostFor(override) };
+  if (override !== undefined)
+    return { apiKey, baseUrl: override, sandboxHost: sandboxHostFor(override) };
   const region = regions.get(regionKey.exec(apiKey)?.[1] ?? "");
-  return { apiKey, baseUrl: region?.baseUrl ?? defaultBaseUrl, sandboxHost: region?.sandboxHost ?? defaultSandboxHost };
+  return {
+    apiKey,
+    baseUrl: region?.baseUrl ?? defaultBaseUrl,
+    sandboxHost: region?.sandboxHost ?? defaultSandboxHost,
+  };
 }
 
 export const sandboxIdHeader = "X-Superserve-Sandbox-Id";
@@ -57,9 +71,14 @@ export const routingHintHeader = "X-Superserve-Routing-Hint";
 export const accessTokenHeader = "X-Access-Token";
 
 /** Where data-plane HTTP for a sandbox goes, and the header a shared host routes by. */
-export function dataPlane(sandboxId: string, sandboxHost: string): { url: string; headers: Record<string, string> } {
+export function dataPlane(
+  sandboxId: string,
+  sandboxHost: string,
+): { url: string; headers: Record<string, string> } {
   const host = sandboxHost.toLowerCase();
-  return sharedHosts.has(host) ? { url: `https://${host}`, headers: { [sandboxIdHeader]: sandboxId } } : { url: `https://boxd-${sandboxId}.${host}`, headers: {} };
+  return sharedHosts.has(host)
+    ? { url: `https://${host}`, headers: { [sandboxIdHeader]: sandboxId } }
+    : { url: `https://boxd-${sandboxId}.${host}`, headers: {} };
 }
 
 /** `exec/connect` always dials the per-sandbox host; the route travels in the subprotocols. */
@@ -70,15 +89,23 @@ export function execConnectUrl(sandboxId: string, sandboxHost: string): string {
 /** Preview ports Superserve proxies: 1024 to 65535, except its control port 49983. */
 export function previewUrl(sandboxId: string, sandboxHost: string, port: number): string {
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 49983)
-    throw failure(port === 49983 ? "Preview port 49983 is reserved for sandbox control traffic" : "Preview ports must be integers from 1024 to 65535", "invalid_argument");
+    throw failure(
+      port === 49983
+        ? "Preview port 49983 is reserved for sandbox control traffic"
+        : "Preview ports must be integers from 1024 to 65535",
+      "invalid_argument",
+    );
   return `https://${port}-${sandboxId}.${sandboxHost}`;
 }
 
 /** The expiry of a routing hint in ms since the epoch: its payload's `e`, in seconds. `undefined` when it has none. */
 export function hintExpiry(hint: string): number | undefined {
   try {
-    const payload: unknown = JSON.parse(atob((hint.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")));
-    const expiry = typeof payload === "object" && payload !== null ? Reflect.get(payload, "e") : undefined;
+    const payload: unknown = JSON.parse(
+      atob((hint.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    const expiry =
+      typeof payload === "object" && payload !== null ? Reflect.get(payload, "e") : undefined;
     return typeof expiry === "number" && Number.isFinite(expiry) ? expiry * 1000 : undefined;
   } catch {
     return undefined;
@@ -93,10 +120,17 @@ export interface Route {
 }
 
 /** Reads `access_token` and `routing_hint` from a create, activate or resume response. */
-export function parseRoute(raw: unknown, sandboxId: string, operation: string): { token: string; hint?: string } {
-  const token = typeof raw === "object" && raw !== null ? Reflect.get(raw, "access_token") : undefined;
-  const hint = typeof raw === "object" && raw !== null ? Reflect.get(raw, "routing_hint") : undefined;
-  if (typeof token !== "string" || !token) throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);
+export function parseRoute(
+  raw: unknown,
+  sandboxId: string,
+  operation: string,
+): { token: string; hint?: string } {
+  const token =
+    typeof raw === "object" && raw !== null ? Reflect.get(raw, "access_token") : undefined;
+  const hint =
+    typeof raw === "object" && raw !== null ? Reflect.get(raw, "routing_hint") : undefined;
+  if (typeof token !== "string" || !token)
+    throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);
   return { token, ...(typeof hint === "string" && hint ? { hint } : {}) };
 }
 
@@ -157,19 +191,29 @@ export function createRouteBook(options: RouteBookOptions): RouteBook {
     return state;
   };
   /** Keeps the newer of the applied route and this response. Always returns the route now in use. */
-  function apply(state: RouteState, revision: number, route: { token: string; hint?: string }): Route {
+  function apply(
+    state: RouteState,
+    revision: number,
+    route: { token: string; hint?: string },
+  ): Route {
     if (!state.current || revision > state.current.revision) state.current = { ...route, revision };
     return state.current;
   }
   async function rotate(id: string, state: RouteState, endpoint: RotateEndpoint): Promise<Route> {
     const revision = ++state.issued;
-    return apply(state, revision, parseRoute(await options.rotate(id, endpoint), id, `POST /sandboxes/{id}/${endpoint}`));
+    return apply(
+      state,
+      revision,
+      parseRoute(await options.rotate(id, endpoint), id, `POST /sandboxes/{id}/${endpoint}`),
+    );
   }
   function activate(id: string, signal?: AbortSignal): Promise<Route> {
     const state = stateOf(id);
     if (!state.activating) {
       const pending = rotate(id, state, "activate");
-      const settle = () => { if (state.activating === pending) state.activating = undefined; };
+      const settle = () => {
+        if (state.activating === pending) state.activating = undefined;
+      };
       pending.then(settle, settle);
       state.activating = pending;
     }
@@ -190,9 +234,22 @@ export function createRouteBook(options: RouteBookOptions): RouteBook {
       return activate(id, signal);
     },
     activate,
-    resume: id => { const state = stateOf(id); return rotate(id, state, "resume"); },
-    seed(id, raw) { const state = stateOf(id); return apply(state, ++state.issued, parseRoute(raw, id, "POST /sandboxes")); },
-    forget: id => { states.delete(id); },
-    secrets: () => [...states.values()].flatMap(state => state.current ? [state.current.token, ...(state.current.hint ? [state.current.hint] : [])] : []),
+    resume: (id) => {
+      const state = stateOf(id);
+      return rotate(id, state, "resume");
+    },
+    seed(id, raw) {
+      const state = stateOf(id);
+      return apply(state, ++state.issued, parseRoute(raw, id, "POST /sandboxes"));
+    },
+    forget: (id) => {
+      states.delete(id);
+    },
+    secrets: () =>
+      [...states.values()].flatMap((state) =>
+        state.current
+          ? [state.current.token, ...(state.current.hint ? [state.current.hint] : [])]
+          : [],
+      ),
   };
 }
