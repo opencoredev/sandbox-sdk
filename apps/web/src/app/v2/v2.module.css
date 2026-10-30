@@ -1,0 +1,420 @@
+/* The Paper "Landing Page" artboard. Shared chrome (nav, frame, carousel, closing, footer) comes from landing.module.css; this file holds the sections that differ. */
+
+.page {
+  --ink: #0a0a0c;
+  --panel: #111216;
+  --chip: #17181c;
+  --line: rgb(255 255 255 / 9%);
+  --line-soft: rgb(255 255 255 / 4.5%);
+  --text: #e6eaf0;
+  --body: #c7cdd6;
+  --muted: #9aa3b0;
+  --faint: #697180;
+  --amber: #efa43b;
+  --frame: 1154px;
+}
+
+/* ---------- type ---------- */
+
+.display,
+.title {
+  font-family: var(--pixel);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.display {
+  font-size: clamp(38px, 5vw, 64px);
+  line-height: 1.06;
+}
+.title {
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.12;
+}
+.lede {
+  max-width: 58ch;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+.eyebrow {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ---------- hero ---------- */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  padding: 100px 24px 92px;
+  text-align: center;
+}
+.intro {
+  display: inline-flex;
+  max-width: 100%;
+  white-space: nowrap;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  color: var(--muted);
+  background: rgb(255 255 255 / 3%);
+  font-family: var(--mono);
+  font-size: 13px;
+  transition: border-color 150ms ease;
+}
+.intro:hover {
+  border-color: rgb(255 255 255 / 28%);
+}
+.introDot {
+  width: 6px;
+  height: 6px;
+  background: var(--amber);
+}
+.heroLede {
+  max-width: 520px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.6;
+  text-wrap: balance;
+}
+
+/* the copy-prompt button: agent marks stacked in front of the label, as on the SMS SDK site */
+.prompt {
+  display: inline-flex;
+  align-items: center;
+  /* centred when the hero stretches it full width on a phone */
+  justify-content: center;
+  gap: 14px;
+  height: 48px;
+  padding: 0 20px 0 12px;
+  border: 1px solid #34363c;
+  color: var(--text);
+  background: #111214;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    transform 120ms ease;
+}
+.prompt:hover {
+  border-color: #4a4c52;
+}
+.prompt:active {
+  transform: scale(0.98);
+}
+.agents {
+  display: flex;
+}
+.agent {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  box-shadow: 0 0 0 2px #111214;
+}
+.agent + .agent {
+  margin-left: -7px;
+}
+/* each mark is drawn in currentColor and masked onto its brand tile */
+.agent::after {
+  position: absolute;
+  inset: 6px;
+  background: currentColor;
+  mask: var(--mark) center / contain no-repeat;
+  content: "";
+}
+.claude {
+  --mark: url("/agents/claude.svg");
+  color: #fff;
+  background: #d97757;
+}
+.chatgpt {
+  --mark: url("/agents/chatgpt.svg");
+  color: #0d0d0d;
+  background: #f2f1ee;
+}
+.grok {
+  --mark: url("/agents/grok.svg");
+  color: #fff;
+  background: #000;
+  box-shadow:
+    0 0 0 2px #111214,
+    inset 0 0 0 1px #3a3733;
+}
+.cursor {
+  --mark: url("/agents/cursor.svg");
+  color: #edecec;
+  background: #26251f;
+}
+.promptLabel {
+  position: relative;
+  white-space: nowrap;
+}
+.promptLabel > span {
+  transition: opacity 150ms ease;
+}
+.promptDone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: #8fbf8a;
+  opacity: 0;
+}
+.prompt[data-copied] .promptLabel > span:first-child {
+  opacity: 0;
+}
+.prompt[data-copied] .promptDone {
+  opacity: 1;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .prompt,
+  .promptLabel > span {
+    transition: none;
+  }
+  .prompt:active {
+    transform: none;
+  }
+}
+
+/* ---------- crosshair joints where a section meets the frame ---------- */
+
+.steps,
+.cell,
+.trio,
+.split {
+  position: relative;
+  border-top: 1px solid var(--line);
+}
+.steps::before,
+.steps::after,
+.cell::before,
+.cell::after,
+.trio::before,
+.trio::after,
+.split::before,
+.split::after {
+  position: absolute;
+  top: -6px;
+  width: 11px;
+  height: 11px;
+  background:
+    linear-gradient(rgb(255 255 255 / 40%), rgb(255 255 255 / 40%)) center / 1px 100% no-repeat,
+    linear-gradient(rgb(255 255 255 / 40%), rgb(255 255 255 / 40%)) center / 100% 1px no-repeat;
+  content: "";
+}
+.steps::before,
+.cell::before,
+.trio::before,
+.split::before {
+  left: -6px;
+}
+.steps::after,
+.cell::after,
+.trio::after,
+.split::after {
+  right: -6px;
+}
+
+/* ---------- install, create, run ---------- */
+
+.steps {
+  display: grid;
+  /* the create line is the longest, so its column gets the most room */
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr) minmax(0, 5fr);
+}
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  padding: 28px 28px 30px;
+}
+.step + .step {
+  border-left: 1px solid var(--line);
+}
+.step .eyebrow {
+  margin-bottom: 4px;
+}
+.chip {
+  /* plain block text, not flex: the highlighted tokens keep the spaces between them */
+  display: block;
+  max-width: 100%;
+  padding: 0 16px;
+  line-height: 38px;
+  overflow-x: auto;
+  border: 1px solid rgb(255 255 255 / 12%);
+  color: var(--text);
+  background: var(--chip);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.note {
+  color: var(--faint);
+  font-size: 14px;
+}
+.kw {
+  color: #d6a86c;
+}
+.fn {
+  color: #9cb8e6;
+}
+.str {
+  color: #8fbf8a;
+}
+.punct {
+  color: var(--faint);
+}
+.plain {
+  color: var(--text);
+}
+
+/* ---------- section heads ---------- */
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 64px 64px 40px;
+}
+
+/* ---------- features ---------- */
+
+.trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: auto 1fr;
+}
+/* subgrid rows, so the three heads share one height and their rules line up */
+.feature {
+  display: grid;
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+}
+.feature + .feature {
+  border-left: 1px solid var(--line);
+}
+.featureHead {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 36px 34px 32px;
+  border-bottom: 1px solid var(--line);
+}
+.featureHead h3 {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.featureHead p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ---------- tests ---------- */
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.splitText {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 64px 64px 72px;
+}
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--body);
+  font-size: 15px;
+}
+.checks li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.check {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  color: #231503;
+  background: var(--amber);
+}
+.check svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (max-width: 1240px) {
+  .step {
+    padding-inline: 22px;
+  }
+  .chip {
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 1100px) {
+  /* too narrow for the commands on one line: let them wrap inside their boxes */
+  .chip {
+    padding-block: 9px;
+    line-height: 20px;
+    white-space: normal;
+  }
+}
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 900px) {
+  .steps,
+  .trio,
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .intro {
+    font-size: 12px;
+  }
+
+  .step + .step,
+  .feature + .feature {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+  .head,
+  .splitText {
+    padding: 48px 24px 32px;
+  }
+  .trio {
+    grid-template-rows: none;
+  }
+  .featureHead {
+    padding: 28px 24px;
+  }
+}

@@ -9,6 +9,10 @@
  *   Boat     boats: a lighthouse sweeping a dashed-line sea, sailboats and barrels
  *   Railway  a train crossing under Railway's purple night sky
  *   Tenki    their isometric cube, built from sandboxes that snap in fast and lift away
+ *   boxd     a rack of machines; one at a time pauses to an outline holding its memory
+ *   Freestyle default-deny networking: a shield turns packets away, lets allowed ones in
+ *   Superserve their sunburst, microVMs riding out along the spokes and back
+ *   Sandboxer a dotted globe, sandboxes hopping between two regions
  * Drawn in a 480 by 400 frame; the wrapper zooms so the subject, around y 170,
  * fills the top of the card above its caption.
  */
@@ -740,6 +744,243 @@ const tenki = scene((ctx, t) => {
   }
 });
 
+/* boxd: persistent machines with memory pause. A rack of machines; one at a time freezes to an outline holding its memory, then wakes exactly where it was. */
+const boxd = scene((ctx, t) => {
+  fill(
+    ctx,
+    [
+      [0, "#06070a"],
+      [1, "#121419"],
+    ],
+    -60,
+    460,
+  );
+  glow(ctx, 240, 160, 260, "rgba(220,228,240,1)", 0.12);
+  const a = 30;
+  const kx = 0.87 * a;
+  const ky = a / 2;
+
+  const slots = [
+    [0, 0],
+    [1, 0],
+    [2, 0],
+    [0, 1],
+    [1, 1],
+    [2, 1],
+  ];
+
+  const CYCLE = 2.4;
+  const paused = Math.floor(t / CYCLE) % slots.length;
+  const c = (t % CYCLE) / CYCLE;
+  // a held breath: freeze in, hold, wake out
+  const freeze = smooth(c / 0.2) * (1 - smooth((c - 0.75) / 0.2));
+  // back to front, so nearer machines draw over farther ones
+  slots.forEach(([i, j], n) => {
+    const x = 240 + (i - j) * kx * 2.1;
+    const y = 130 + (i + j) * ky * 2.1;
+    const f = n === paused ? freeze : 0;
+    // the machine: solid when running, an outline when paused
+    isoCube(ctx, x, y, a, ["#f4f4f5", "#a1a1aa", "#52525b"], 1 - f * 0.88, "#06070a");
+
+    if (f > 0) {
+      ctx.strokeStyle = `rgba(190,215,255,${f})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - kx, y - a, kx * 2, a * 2);
+
+      // its memory, kept: a grid of cells glowing inside
+      for (let m = 0; m < 9; m++) {
+        const mx = x - 14 + (m % 3) * 10;
+        const my = y - 14 + Math.floor(m / 3) * 10;
+        ctx.fillStyle = `rgba(160,200,255,${f * (0.5 + 0.5 * Math.sin(t * 5 + m))})`;
+        ctx.fillRect(mx, my, 6, 6);
+      }
+
+      glow(ctx, x, y, 70, "rgba(150,190,255,1)", f * 0.5);
+    }
+
+    // a status light on the front corner
+    ctx.fillStyle = n === paused && f > 0.5 ? "#9cc0ff" : "#4ade80";
+    ctx.fillRect(x + kx - 9, y + a / 2 - 2, 4, 4);
+  });
+});
+
+/* Freestyle: default-deny networking. Packets fly at a sandbox; the shield turns most of them away and lets the allowed ones through. */
+const freestyle = scene((ctx, t) => {
+  fill(
+    ctx,
+    [
+      [0, "#04050a"],
+      [1, "#0b0f1c"],
+    ],
+    -60,
+    460,
+  );
+  glow(ctx, 240, 160, 220, "rgba(120,140,255,1)", 0.16);
+  const cx = 240;
+  const cy = 160;
+  const R = 92;
+  // the shield: a dashed ring that slowly turns
+  const n = 48;
+
+  for (let i = 0; i < n; i++) {
+    if (i % 2) continue;
+    const a = (i / n) * Math.PI * 2 + t * 0.15;
+    ctx.fillStyle = "rgba(220,226,255,0.75)";
+    ctx.fillRect(cx + Math.cos(a) * R - 3, cy + Math.sin(a) * R - 3, 6, 6);
+  }
+
+  isoCube(ctx, cx, cy + 6, 30, ["#ffffff", "#c8cede", "#7d869c"], 1, "#04050a");
+  glow(ctx, cx, cy, 60, "rgba(255,255,255,1)", 0.25);
+  ctx.globalCompositeOperation = "lighter";
+
+  for (let i = 0; i < 9; i++) {
+    const period = 2.2 + hash(i) * 1.4;
+    const k = ((t + hash(i + 7) * period) % period) / period;
+    const a = hash(i + 3) * Math.PI * 2;
+    const allowed = i % 4 === 0;
+    const far = 300;
+    // denied packets stop at the ring and burst; allowed ones reach the sandbox
+    const stop = allowed ? 0 : R;
+    const travel = Math.min(k / 0.6, 1);
+    const r = far - (far - stop) * travel;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+
+    if (travel < 1) {
+      ctx.fillStyle = allowed ? "#86efac" : "#fca5a5";
+      ctx.fillRect(x - 5, y - 5, 10, 10);
+      ctx.strokeStyle = allowed ? "rgba(134,239,172,0.35)" : "rgba(252,165,165,0.35)";
+      ctx.lineWidth = 3;
+      line(ctx, x, y, x + Math.cos(a) * 28, y + Math.sin(a) * 28);
+    } else {
+      const b = (k - 0.6) / 0.4;
+      glow(ctx, x, y, 40, allowed ? "rgba(134,239,172,1)" : "rgba(248,113,113,1)", 1 - b);
+    }
+  }
+
+  ctx.globalCompositeOperation = "source-over";
+});
+
+/* Superserve: Firecracker microVMs served from one core. Their sunburst turns slowly while microVMs shoot out along the spokes, pause at the rim and come back. */
+const superserve = scene((ctx, t) => {
+  fill(
+    ctx,
+    [
+      [0, "#020604"],
+      [1, "#08140c"],
+    ],
+    -60,
+    460,
+  );
+  glow(ctx, 240, 160, 240, "rgba(120,240,140,1)", 0.18);
+  const cx = 240;
+  const cy = 160;
+  const spokes = 16;
+
+  for (let i = 0; i < spokes; i++) {
+    const a = (i / spokes) * Math.PI * 2 + t * 0.12;
+    ctx.strokeStyle = "rgba(178,250,180,0.85)";
+    ctx.lineWidth = 6;
+    line(
+      ctx,
+      cx + Math.cos(a) * 64,
+      cy + Math.sin(a) * 64,
+      cx + Math.cos(a) * 84,
+      cy + Math.sin(a) * 84,
+    );
+
+    // a microVM rides out along every other spoke, rests at the rim, and returns
+    if (i % 2 === 0) {
+      const k = (t * 0.45 + hash(i)) % 1;
+      const out = k < 0.4 ? smooth(k / 0.4) : k < 0.6 ? 1 : 1 - smooth((k - 0.6) / 0.4);
+      const r = 92 + out * 70;
+      const s = 10;
+      ctx.fillStyle = k > 0.4 && k < 0.6 ? "#e7ffe8" : "#b2fab4";
+      ctx.fillRect(cx + Math.cos(a) * r - s / 2, cy + Math.sin(a) * r - s / 2, s, s);
+    }
+  }
+
+  const pulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+  glow(ctx, cx, cy, 70, "rgba(178,250,180,1)", 0.4 + pulse * 0.4);
+  ctx.fillStyle = "#e7ffe8";
+  ctx.fillRect(cx - 14, cy - 14, 28, 28);
+});
+
+/* Sandboxer: microVMs in two regions. A dotted globe with US East and EU Central lit; sandboxes hop between them and snapshots stack up beside each. */
+const sandboxer = scene((ctx, t) => {
+  fill(
+    ctx,
+    [
+      [0, "#0a0703"],
+      [1, "#17110a"],
+    ],
+    -60,
+    460,
+  );
+  const cx = 240;
+  const cy = 170;
+  const R = 120;
+  glow(ctx, cx, cy, 200, "rgba(242,180,82,1)", 0.14);
+
+  // the globe: dots on a sphere, turning slowly
+  for (let lat = -75; lat <= 75; lat += 15) {
+    const ry = Math.sin((lat * Math.PI) / 180);
+    const rr = Math.cos((lat * Math.PI) / 180);
+
+    for (let lon = 0; lon < 360; lon += 12) {
+      const a = ((lon + t * 8) * Math.PI) / 180;
+      const z = Math.cos(a) * rr;
+
+      if (z < 0) continue;
+      ctx.fillStyle = `rgba(238,236,231,${0.3 + z * 0.6})`;
+      ctx.fillRect(cx + Math.sin(a) * rr * R - 2, cy - ry * R - 2, 4, 4);
+    }
+  }
+
+  const regions = [
+    { x: cx - 58, y: cy - 30 },
+    { x: cx + 54, y: cy - 46 },
+  ];
+
+  regions.forEach((p, i) => {
+    glow(ctx, p.x, p.y, 40, "rgba(242,180,82,1)", 0.7);
+    // snapshots stacked beside the region
+    const stack = 1 + (Math.floor(t / 1.6 + i) % 3);
+
+    for (let s = 0; s < stack; s++)
+      isoCube(
+        ctx,
+        p.x + (i ? 30 : -30),
+        p.y + 30 - s * 12,
+        7,
+        ["#eeece7", "#f2b452", "#b07a2a"],
+        0.9,
+      );
+    isoCube(ctx, p.x, p.y + 4, 12, ["#ffe2b0", "#f2b452", "#b07a2a"], 1, "#0a0703");
+  });
+  // a sandbox hopping between the regions on an arc
+  const k = (t * 0.35) % 1;
+  const [from, to] = Math.floor(t * 0.35) % 2 ? [regions[1], regions[0]] : [regions[0], regions[1]];
+  const e = smooth(k);
+  const hx = from.x + (to.x - from.x) * e;
+  const hy = from.y + (to.y - from.y) * e - Math.sin(e * Math.PI) * 70;
+  ctx.strokeStyle = "rgba(242,180,82,0.35)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  for (let q = 0; q <= 20; q++) {
+    const u = q / 20;
+    const x = from.x + (to.x - from.x) * u;
+    const y = from.y + (to.y - from.y) * u - Math.sin(u * Math.PI) * 70;
+
+    if (q) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  }
+
+  ctx.stroke();
+  isoCube(ctx, hx, hy, 9, ["#ffffff", "#f2b452", "#b07a2a"], 1);
+});
+
 export const providerScenes = {
   local,
   e2b,
@@ -749,4 +990,8 @@ export const providerScenes = {
   boat,
   railway,
   tenki,
+  boxd,
+  freestyle,
+  superserve,
+  sandboxer,
 } satisfies Record<string, Painter>;

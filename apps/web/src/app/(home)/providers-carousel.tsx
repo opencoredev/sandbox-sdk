@@ -15,7 +15,6 @@ const N = providerArt.length;
 // when a scroll settles in an outer copy the track jumps back by one set
 const COPIES = 3;
 const SLIDES = Array.from({ length: N * COPIES }, (_, i) => i);
-const DOT_PITCH = 28;
 
 interface Props {
   dots: HalftoneDots;
@@ -93,12 +92,16 @@ export function ProvidersCarousel({ dots, brackets, arrow }: Props) {
         if (c instanceof HTMLElement)
           c.style.setProperty("--d", Math.min(1, Math.abs(i - pos)).toFixed(3));
       });
+      const bar = indicator.current;
 
-      if (indicator.current) {
+      if (bar) {
         const wrapped = ((pos % N) + N) % N;
         // past the last dot, slide back toward the first instead of overshooting
         const x = wrapped > N - 1 ? (N - 1) * (N - wrapped) : wrapped;
-        indicator.current.style.transform = `translateX(${(x * DOT_PITCH).toFixed(1)}px)`;
+        // measured, since the dots tighten on narrow screens
+        const dots = bar.parentElement?.querySelectorAll("button");
+        const pitch = dots && dots.length > 1 ? dots[1].offsetLeft - dots[0].offsetLeft : 0;
+        bar.style.transform = `translateX(${(x * pitch).toFixed(1)}px)`;
       }
 
       const nearest = Math.round(pos);
