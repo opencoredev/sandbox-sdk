@@ -1,63 +1,40 @@
 # Releasing Sandbox SDK
 
-Releases are published manually. The only publishable workspace package is
-`@opencoredev/sandbox-sdk` in `packages/sdk`.
+`@opencoredev/sandbox-sdk` in `packages/sdk` is the only published package. Releases go out from GitHub Actions through [changesets](https://github.com/changesets/changesets) and npm trusted publishing. Nobody publishes from a laptop, and no npm token is stored anywhere.
 
-## Versions and dist-tags
+## Add a changeset
 
-1.0 ships as prereleases first: `1.0.0-beta.0`, `1.0.0-beta.1`, and so on, while
-the API can still change. Prereleases go to the `next` dist-tag, so
-`npm install @opencoredev/sandbox-sdk` keeps resolving to 0.2.0 on `latest`.
-`packages/sdk/package.json` sets `publishConfig.tag` to `next`, so a plain
-`npm publish` cannot move `latest` by accident.
+Every PR that changes the package adds a changeset, and CI fails without one:
 
-When the API is frozen, publish `1.0.0-rc.0`. For the final `1.0.0`, remove
-`publishConfig.tag` (or set it to `latest`) in the same commit as the version
-bump.
+```bash
+bun run changeset
+```
 
-## Publish a release
+Pick the bump (`patch`, `minor` or `major`) and write one line for the changelog. A PR with no user-facing change can add `bun run changeset --empty` instead.
 
-1. Set the version in `packages/sdk/package.json` and add release notes to
-   `packages/sdk/CHANGELOG.md`.
-2. Install and verify from the repository root:
+## How a release goes out
 
-   ```bash
-   bun install --frozen-lockfile
-   bun run lint
-   bun run typecheck
-   bun run test
-   bun run build
-   ```
+1. A PR with a changeset merges into `main`.
+2. The Release workflow (`.github/workflows/release.yml`) opens or updates a PR titled "chore: version packages". It bumps `packages/sdk/package.json` and writes `packages/sdk/CHANGELOG.md` from the pending changesets.
+3. Merging that PR runs the workflow again. `changeset publish` publishes the new version to npm with provenance, then the workflow pushes the git tag and creates the GitHub release.
 
-3. Commit and push the version and changelog to `main`.
+`changeset publish` skips a version that is already on npm, so rerunning the workflow is safe.
 
-4. Preview the npm artifact from the pushed commit. Check that the file list
-   holds `dist`, `README.md`, `LICENSE`, `CHANGELOG.md`, and `package.json`
-   and nothing else. `npm pack` and `npm publish` run the `prepack` script,
-   which rebuilds `dist` from source first, so the artifact is never stale:
+## Switches and setup
 
-   ```bash
-   cd packages/sdk
-   npm pack --dry-run
-   npm publish --dry-run
-   ```
+- **Release switch:** the workflow only runs when the repository variable `SANDBOX_SDK_RELEASE_ENABLED` is `true` (Settings → Secrets and variables → Actions → Variables). Unset or `false`, merging to `main` neither opens a version PR nor publishes.
+- **Trusted publisher:** npm trusts `opencoredev/sandbox-sdk` with workflow `release.yml` and no environment, under the package's settings on npmjs.com. Renaming the workflow file breaks publishing until the trusted publisher is updated to match.
+- **npm version:** trusted publishing needs npm 11.5.1 or later. The workflow installs npm 11 before publishing.
 
-5. Authenticate with the OpenCore npm account and publish:
+## Before merging the version PR
 
-   ```bash
-   npm login
-   npm publish
-   ```
+The workflow builds the package, and `npm publish` runs `prepack`, which rebuilds `dist` from source, so the artifact is never stale. CI on `main` has already run lint, typecheck, tests, the bundle smoke and the packed-tarball consumer smoke. To check the tarball by hand:
 
-   `publishConfig` supplies `--access public` and the dist-tag. Check the result
-   with `npm view @opencoredev/sandbox-sdk dist-tags`.
+```bash
+cd packages/sdk
+npm pack --dry-run
+```
 
-6. Tag the published commit and push the tag:
+It should list only `dist`, `README.md`, `LICENSE`, `CHANGELOG.md` and `package.json`.
 
-   ```bash
-   git tag v1.0.0-beta.0
-   git push origin v1.0.0-beta.0
-   ```
-
-Replace `v1.0.0-beta.0` with the version being published. Never commit npm
-credentials or environment files.
+After a release, `npm view @opencoredev/sandbox-sdk dist-tags` shows the new version on `latest`.
