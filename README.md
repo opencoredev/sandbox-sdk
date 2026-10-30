@@ -54,7 +54,7 @@ const result = await box.run("python3 hello.py");
 console.log(result.stdout); // "hello from the sandbox\n"
 ```
 
-`await using` deletes the sandbox when the scope ends, even if your code throws. A command that exits non-zero resolves with `ok: false` instead of throwing.
+When the scope ends, `await using` deletes the sandbox, even if your code throws. A sandbox created with a `key` is detached instead and keeps running, so the next request can find it. A command that exits non-zero resolves with `ok: false` instead of throwing.
 
 ## What a sandbox can do
 
