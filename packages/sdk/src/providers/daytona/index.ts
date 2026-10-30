@@ -1,6 +1,13 @@
 import { isObject, isString } from "../../shared/narrow.js";
 import { posix } from "node:path";
-import type { Provider, CreateInput, SandboxInfo, FileInfo, Labels } from "../../provider.js";
+import type {
+  Provider,
+  CreateInput,
+  SandboxInfo,
+  FileInfo,
+  Labels,
+  Preview,
+} from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { createDeadline } from "../../http.js";
 import {
@@ -441,12 +448,16 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
                 ? "daytona-large"
                 : undefined));
 
+          // Resources go with an image build; a snapshot brings its own.
+          const sized = image ? allocation : undefined;
+
           // The official SDK's request body for the same parameters.
           const body = {
-            ...(snapshot === undefined ? undefined : { snapshot }),
-            ...(image
-              ? { buildInfo: { dockerfileContent: `FROM ${image}\n` }, ...allocation }
-              : undefined),
+            snapshot,
+            buildInfo: image ? { dockerfileContent: `FROM ${image}\n` } : undefined,
+            cpu: sized?.cpu,
+            memory: sized?.memory,
+            disk: sized?.disk,
             env: input.env ?? {},
             labels,
             public: options.public ?? false,
@@ -455,16 +466,12 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
             autoStopInterval:
               input.idleTimeoutMs === undefined ? undefined : minutes(input.idleTimeoutMs),
             autoPauseInterval: 0,
-            ...(options.autoArchiveMs === undefined
-              ? undefined
-              : { autoArchiveInterval: minutes(options.autoArchiveMs) }),
-            ...(options.autoDeleteMs === undefined
-              ? undefined
-              : { autoDeleteInterval: minutes(options.autoDeleteMs, true) }),
-            ...(options.volumes === undefined ? undefined : { volumes: options.volumes }),
-            ...(options.outboundProxyUrl === undefined
-              ? undefined
-              : { outboundProxyUrl: options.outboundProxyUrl }),
+            autoArchiveInterval:
+              options.autoArchiveMs === undefined ? undefined : minutes(options.autoArchiveMs),
+            autoDeleteInterval:
+              options.autoDeleteMs === undefined ? undefined : minutes(options.autoDeleteMs, true),
+            volumes: options.volumes,
+            outboundProxyUrl: options.outboundProxyUrl,
             ttlMinutes:
               input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
           };
@@ -837,10 +844,11 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
           const value = await box(id);
           const link = await control.previewLink(id, port);
 
-          return {
-            url: link.url,
-            ...(value.public ? undefined : { headers: { "X-Daytona-Preview-Token": link.token } }),
-          };
+          const preview: Preview = { url: link.url };
+
+          if (!value.public) preview.headers = { "X-Daytona-Preview-Token": link.token };
+
+          return preview;
         },
         id,
         false,

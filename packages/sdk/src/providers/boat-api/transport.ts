@@ -43,8 +43,8 @@ export function boatHttp(options: BoatHttpOptions): BoatHttp {
     secrets: options.secrets,
     idempotencyHeader: "Idempotency-Key",
     authHint: `Set ${options.keyEnv} to a valid ${options.label} API key.`,
-    ...(options.retries === undefined ? undefined : { retries: options.retries }),
-    ...(options.fetch === undefined ? undefined : { fetch: options.fetch }),
+    retries: options.retries,
+    fetch: options.fetch,
   });
 }
 

@@ -145,7 +145,7 @@ function parseEntry(value: JsonValue | undefined): EntryInfo | undefined {
     path: value.path,
     type,
     size: decodeInt(value.size) ?? 0,
-    ...(Number.isFinite(modified) ? { modifiedTime: modified } : undefined),
+    modifiedTime: Number.isFinite(modified) ? modified : undefined,
   };
 }
 
@@ -225,8 +225,8 @@ export function createEnvd(options: {
       path: `/${method}`,
       sandboxId,
       body: message,
-      ...(options.user === undefined ? undefined : { headers: basic(options.user) }),
-      ...(options.readOnly ? { readOnly: true } : undefined),
+      headers: options.user === undefined ? undefined : basic(options.user),
+      readOnly: options.readOnly,
     });
   }
 
@@ -270,6 +270,13 @@ export function createEnvd(options: {
       frames: AsyncGenerator<ConnectFrame, void, undefined>;
       pid: number;
     }> => {
+      const connect = { "content-type": connectJson, "keepalive-ping-interval": "50" };
+
+      const timed =
+        options.timeoutMs > 0
+          ? { ...connect, "connect-timeout-ms": String(options.timeoutMs) }
+          : connect;
+
       const response = await http.stream({
         // Connect reattaches to a running process and changes nothing, so a broken stream is a lost read, not an unknown outcome.
         method: "POST",
@@ -280,14 +287,7 @@ export function createEnvd(options: {
         signal: controller.signal,
         startupTimeoutMs: startupMs,
         readOnly: rpc === "Connect",
-        headers: {
-          "content-type": connectJson,
-          "keepalive-ping-interval": "50",
-          ...(options.timeoutMs > 0
-            ? { "connect-timeout-ms": String(options.timeoutMs) }
-            : undefined),
-          ...options.headers,
-        },
+        headers: { ...timed, ...options.headers },
       });
 
       if (!(response.headers.get("content-type") ?? "").startsWith(connectJson) || !response.body) {
@@ -500,7 +500,7 @@ export function createEnvd(options: {
           path: "/files",
           sandboxId,
           body: form,
-          query: { ...(single === undefined ? undefined : { path: single }), username: user },
+          query: { path: single, username: user },
         });
       },
     },
@@ -561,7 +561,7 @@ export function createEnvd(options: {
             cmd: "/bin/bash",
             args: ["-l", "-c", options.command],
             envs: options.envs ?? {},
-            ...(options.cwd === undefined ? undefined : { cwd: options.cwd }),
+            cwd: options.cwd,
           },
           stdin: options.stdin,
           tag,
@@ -580,9 +580,7 @@ export function createEnvd(options: {
         return processes.filter(isRecord).flatMap((item) => {
           const pid = decodeInt(item.pid);
 
-          return pid === undefined
-            ? []
-            : [{ pid, ...(isString(item.tag) ? { tag: item.tag } : undefined) }];
+          return pid === undefined ? [] : [{ pid, tag: isString(item.tag) ? item.tag : undefined }];
         });
       },
       signal,

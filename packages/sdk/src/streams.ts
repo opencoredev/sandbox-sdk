@@ -55,7 +55,7 @@ function fault(
       provider: options.provider,
       sandboxId: options.sandboxId,
       retryable: kind === "disconnected" || kind === "truncated",
-      ...(cause === undefined ? undefined : { cause: nativeDetail(cause) ?? kind }),
+      cause: cause === undefined ? undefined : (nativeDetail(cause) ?? kind),
     },
   );
 
@@ -306,14 +306,16 @@ export async function* sse(
   let pending = false;
 
   const dispatch = (): ServerSentEvent | undefined => {
-    const out = data.length
-      ? {
-          event: event || "message",
-          data: data.join("\n"),
-          ...(lastId === undefined ? undefined : { id: lastId }),
-          ...(retry === undefined ? undefined : { retry }),
-        }
-      : undefined;
+    let out: ServerSentEvent | undefined;
+
+    // Optional fields stay absent when the stream never set them.
+    if (data.length) {
+      out = { event: event || "message", data: data.join("\n") };
+
+      if (lastId !== undefined) out.id = lastId;
+
+      if (retry !== undefined) out.retry = retry;
+    }
 
     event = "";
     data = [];
@@ -496,11 +498,12 @@ export async function* connectEnvelopes(
 
       if (!isString(code))
         throw fault("malformed", "The Connect end-of-stream error has no code", options);
-      frame.error = {
-        code,
-        ...(isString(message) ? { message } : undefined),
-        ...(Array.isArray(details) ? { details } : undefined),
-      };
+      const endError: NonNullable<typeof frame.error> = { code };
+
+      if (isString(message)) endError.message = message;
+
+      if (Array.isArray(details)) endError.details = details;
+      frame.error = endError;
     }
 
     if (isObject(metadata)) {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { SandboxError } from "../src/index.js";
 import { boundaryOf, firstPart, readAll } from "../src/providers/daytona/multipart.js";
 import { chunked, pieces } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 const options = { provider: "daytona", sandboxId: "sb-1" };
 const bytes = Uint8Array.from({ length: 300 }, (_, i) => i % 256);
@@ -19,19 +19,6 @@ function body(part: Uint8Array, headers = "Content-Type: application/octet-strea
   out.set(tail, head.length + part.length);
 
   return out;
-}
-
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
 }
 
 describe("boundaryOf", () => {
@@ -139,7 +126,7 @@ describe("firstPart", () => {
         options,
       );
 
-      expect(await failure(readAll(part.body))).toMatchObject({
+      expect(await rejection(readAll(part.body))).toMatchObject({
         code: "unavailable",
         retryable: true,
         sandboxId: "sb-1",
@@ -148,7 +135,7 @@ describe("firstPart", () => {
 
     for (const cut of [10, 40])
       expect(
-        await failure(
+        await rejection(
           firstPart(chunked([whole.subarray(0, cut)]), "DAYTONA-FILE-BOUNDARY", options),
         ),
       ).toMatchObject({ code: "unavailable" });
@@ -172,21 +159,21 @@ describe("firstPart", () => {
         options,
       );
 
-      expect(await failure(readAll(part.body))).toMatchObject({ code: "provider" });
+      expect(await rejection(readAll(part.body))).toMatchObject({ code: "provider" });
     }
   });
 
   test("no parts, a wrong boundary or oversized headers are malformed", async () => {
     expect(
-      await failure(
+      await rejection(
         firstPart(chunked(["--DAYTONA-FILE-BOUNDARY--\r\n"]), "DAYTONA-FILE-BOUNDARY", options),
       ),
     ).toMatchObject({ code: "provider" });
     expect(
-      await failure(firstPart(chunked(["x".repeat(20_000)]), "DAYTONA-FILE-BOUNDARY", options)),
+      await rejection(firstPart(chunked(["x".repeat(20_000)]), "DAYTONA-FILE-BOUNDARY", options)),
     ).toMatchObject({ code: "provider" });
     expect(
-      await failure(
+      await rejection(
         firstPart(
           chunked([`--DAYTONA-FILE-BOUNDARY\r\nX: ${"y".repeat(20_000)}`]),
           "DAYTONA-FILE-BOUNDARY",

@@ -72,7 +72,7 @@ function parseFrame(
       return {
         type: value.type,
         data: value.data,
-        ...(nextOffset === undefined ? undefined : { nextOffset }),
+        nextOffset,
       };
     }
 
@@ -84,8 +84,8 @@ function parseFrame(
 
       return {
         type: value.type,
-        ...(stdoutOffset === undefined ? undefined : { stdoutOffset }),
-        ...(stderrOffset === undefined ? undefined : { stderrOffset }),
+        stdoutOffset,
+        stderrOffset,
       };
     }
 

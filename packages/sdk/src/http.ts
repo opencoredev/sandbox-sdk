@@ -417,12 +417,13 @@ export function parseErrorBody(text: string): ErrorBody {
     (isString(nested) ? nested : undefined) ??
     (json === undefined && text.trim() ? text.trim() : undefined);
 
-  return {
-    text,
-    json,
-    ...(code === undefined ? undefined : { code }),
-    ...(message === undefined ? undefined : { message }),
-  };
+  const body: ErrorBody = { text, json };
+
+  if (code !== undefined) body.code = code;
+
+  if (message !== undefined) body.message = message;
+
+  return body;
 }
 
 /** Reads at most `limit` bytes. `onOverflow: "truncate"` stops there and cancels; `"throw"` throws. */
@@ -658,8 +659,8 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: request.sandboxId,
       retryable,
-      ...(hint === undefined ? undefined : { hint }),
-      ...(cause === undefined ? undefined : { cause: redact(cause) }),
+      hint,
+      cause: cause === undefined ? undefined : redact(cause),
     });
   }
 
@@ -686,7 +687,7 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: error.sandboxId,
       retryable: error.retryable,
-      ...(error.hint === undefined ? undefined : { hint: error.hint }),
+      hint: error.hint,
       cause,
     });
   }
@@ -739,10 +740,10 @@ export function createHttpClient<Plane extends string>(
           code === "unavailable" || code === "quota" || code === "timeout",
         );
 
-        statuses.set(error, {
-          status: failed.status,
-          ...(apiCode ? { code: apiCode.trim() } : undefined),
-        });
+        statuses.set(
+          error,
+          apiCode ? { status: failed.status, code: apiCode.trim() } : { status: failed.status },
+        );
 
         return error;
       }
@@ -825,10 +826,9 @@ export function createHttpClient<Plane extends string>(
     const canRetry = replayable && (!unsafe || request.idempotencyKey !== undefined);
     const { signal } = deadline;
 
-    const context: PlaneContext = {
-      signal,
-      ...(request.sandboxId === undefined ? undefined : { sandboxId: request.sandboxId }),
-    };
+    const context: PlaneContext = { signal };
+
+    if (request.sandboxId !== undefined) context.sandboxId = request.sandboxId;
 
     const fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     const refreshKey = `${planeName}\0${request.sandboxId ?? ""}`;
@@ -938,10 +938,11 @@ export function createHttpClient<Plane extends string>(
       let failed: HttpFailure | undefined;
 
       for (let hop = 0; ; hop++) {
-        const headers = new Headers({
-          ...plane.headers,
-          ...(contentType && sendBody !== undefined ? { "content-type": contentType } : undefined),
-        });
+        const headers = new Headers(
+          contentType && sendBody !== undefined
+            ? { ...plane.headers, "content-type": contentType }
+            : plane.headers,
+        );
 
         if (request.idempotencyKey !== undefined && options.idempotencyHeader)
           headers.set(options.idempotencyHeader, request.idempotencyKey);

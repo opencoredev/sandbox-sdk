@@ -7,7 +7,7 @@
  */
 import { type JsonValue, isJsonObject } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
-import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
+import type { CreateInput, Preview, Provider, SandboxInfo } from "../../provider.js";
 import { SandboxError, invalid } from "../../errors.js";
 import {
   createDeadline,
@@ -200,15 +200,13 @@ function parseInfo(raw: JsonValue | undefined, sandboxId?: string): NativeInfo {
     status,
     metadata,
     createdAt: Date.parse(created),
-    ...(isNumber(timeout) ? { timeoutSeconds: timeout } : undefined),
-    ...(isObject(network)
+    timeoutSeconds: isNumber(timeout) ? timeout : undefined,
+    network: isObject(network)
       ? {
-          network: {
-            allowOut: strings(field(network, "allow_out")),
-            denyOut: strings(field(network, "deny_out")),
-          },
+          allowOut: strings(field(network, "allow_out")),
+          denyOut: strings(field(network, "deny_out")),
         }
-      : undefined),
+      : undefined,
   };
 }
 
@@ -316,11 +314,12 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           const route = await routes.current(id, context.signal);
           sentWith.set(context, route.revision);
 
-          return {
+          const headers = {
             ...dataPlane(id, config().sandboxHost).headers,
             [accessTokenHeader]: route.token,
-            ...(route.hint ? { [routingHintHeader]: route.hint } : undefined),
           };
+
+          return route.hint ? { ...headers, [routingHintHeader]: route.hint } : headers;
         },
         // Shared by every request refused at once; each one stops waiting on its own signal.
         async refresh(context) {
@@ -423,7 +422,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       sandboxId: id,
       body: {
         command,
-        ...(settings.env === undefined ? undefined : { env: settings.env }),
+        env: settings.env,
         timeout_s: Math.ceil(settings.timeoutMs / 1000),
       },
       // The 5 s margin lets the server's own command timeout answer first.
@@ -679,20 +678,17 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             body: {
               name: `sbxsdk-${crypto.randomUUID()}`,
               metadata: Object.fromEntries(metadata),
-              ...(input.env === undefined ? undefined : { env_vars: input.env }),
+              env_vars: input.env,
               preview_access: previewAccess,
-              ...(network
-                ? { network: { allow_out: network.allowOut, deny_out: network.denyOut } }
-                : undefined),
-              ...(autoPauseSeconds === undefined
-                ? undefined
-                : { timeout_seconds: autoPauseSeconds }),
-              ...(autoDeleteSeconds === undefined
-                ? undefined
-                : { auto_delete_seconds: autoDeleteSeconds }),
-              ...(options.secretBindings && Object.keys(options.secretBindings).length
-                ? { secrets: options.secretBindings }
-                : undefined),
+              network: network
+                ? { allow_out: network.allowOut, deny_out: network.denyOut }
+                : undefined,
+              timeout_seconds: autoPauseSeconds,
+              auto_delete_seconds: autoDeleteSeconds,
+              secrets:
+                options.secretBindings && Object.keys(options.secretBindings).length
+                  ? options.secretBindings
+                  : undefined,
               ...(input.from
                 ? { from_snapshot: input.from }
                 : { from_template: options.template ?? "superserve/node-22" }),
@@ -946,11 +942,11 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           throw failure("Superserve returned an invalid preview token", "provider", id);
         const expiresAt = isString(expires) ? Date.parse(expires) : NaN;
 
-        return {
-          url,
-          headers: { [header]: value },
-          ...(Number.isNaN(expiresAt) ? undefined : { expiresAt }),
-        };
+        const preview: Preview = { url, headers: { [header]: value } };
+
+        if (!Number.isNaN(expiresAt)) preview.expiresAt = expiresAt;
+
+        return preview;
       }),
     pause: (id) =>
       safe(id, async () => {

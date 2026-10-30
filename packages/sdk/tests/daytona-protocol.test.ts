@@ -1,11 +1,11 @@
 // Daytona's wire protocol against scripted HTTP replies: multipart transfers, the session log stream and the
 // toolbox proxy URL, including the faults a real network produces (cuts, truncation, splits, hangs).
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { SandboxError } from "../src/index.js";
 import type { OutputChunk } from "../src/provider.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { daytonaHttp } from "../src/providers/daytona/api.js";
 import { fakeServer, pieces, type FakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 let api: FakeServer;
 let toolbox: FakeServer;
@@ -52,19 +52,6 @@ const client = () =>
     secrets: () => [],
   });
 
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
-
 describe("file transfer", () => {
   test("uploads build multipart/form-data with Web FormData: Daytona's field names and the exact bytes", async () => {
     toolbox.on("POST /toolbox/sb-1/files/bulk-upload", { json: { files: [] } });
@@ -80,11 +67,10 @@ describe("file transfer", () => {
 
     expect(form.get("files[0].path")).toBe("/workspace/a b.bin");
     const file = form.get("files[0].file");
-    expect(file).toBeInstanceOf(Blob);
-    // SAFETY: the multipart part under test is a file upload.
-    expect(new Uint8Array(await (file as Blob).arrayBuffer())).toEqual(data);
-    // SAFETY: the multipart part under test is a file upload.
-    expect((file as File).name).toBe("/workspace/a b.bin");
+
+    if (!(file instanceof File)) throw new Error("The upload has no file part");
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(data);
+    expect(file.name).toBe("/workspace/a b.bin");
   });
 
   test("downloads read Daytona's multipart reply split at every chunk size", async () => {
@@ -120,7 +106,7 @@ describe("file transfer", () => {
         "Content-Type: application/json; charset=utf-8",
       ),
     });
-    expect(await failure(box.fs.download("/tmp/a"))).toMatchObject({
+    expect(await rejection(box.fs.download("/tmp/a"))).toMatchObject({
       code: "file_not_found",
       provider: "daytona",
       sandboxId: "sb-1",
@@ -136,7 +122,7 @@ describe("file transfer", () => {
         }),
       ),
     });
-    const error = await failure(box.fs.download("/tmp"));
+    const error = await rejection(box.fs.download("/tmp"));
     expect(error.code).toBe("invalid_argument");
     expect(error.message).not.toContain("points to a directory");
   });
@@ -150,7 +136,7 @@ describe("file transfer", () => {
       stream: [whole.subarray(0, 3000)],
       cut: true,
     });
-    expect(await failure(box.fs.download("/tmp/a"))).toMatchObject({
+    expect(await rejection(box.fs.download("/tmp/a"))).toMatchObject({
       code: "unavailable",
       retryable: true,
     });
@@ -158,7 +144,7 @@ describe("file transfer", () => {
       headers: multipart,
       stream: [whole.subarray(0, whole.length - 30)],
     });
-    expect(await failure(box.fs.download("/tmp/a"))).toMatchObject({
+    expect(await rejection(box.fs.download("/tmp/a"))).toMatchObject({
       code: "unavailable",
       retryable: true,
     });
@@ -167,7 +153,7 @@ describe("file transfer", () => {
   test("a reply that is not multipart is a provider error", async () => {
     api.on("GET /api/sandbox/sb-1/toolbox-proxy-url", { json: { url: `${toolbox.url}/toolbox` } });
     toolbox.on("POST /toolbox/sb-1/files/bulk-download", { json: { unexpected: true } });
-    expect(await failure(client().toolbox("sb-1").fs.download("/tmp/a"))).toMatchObject({
+    expect(await rejection(client().toolbox("sb-1").fs.download("/tmp/a"))).toMatchObject({
       code: "provider",
     });
   });
@@ -321,18 +307,18 @@ describe("session log stream", () => {
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify({ exitCode: 0, result: "" }));
     });
-    expect(await failure(run())).toMatchObject({ code: "unavailable", provider: "daytona" });
+    expect(await rejection(run())).toMatchObject({ code: "unavailable", provider: "daytona" });
     expect(killed).toBe(true);
   });
 
   test("a stream that ends inside a frame is incomplete output, not success", async () => {
     script({ stream: ["O:ZXhh"] });
-    expect(await failure(run())).toMatchObject({ code: "provider" });
+    expect(await rejection(run())).toMatchObject({ code: "provider" });
   });
 
   test("output after the terminal frame fails closed", async () => {
     script({ stream: [`X:\n${frames("late")}`] });
-    expect(await failure(run())).toMatchObject({ code: "provider" });
+    expect(await rejection(run())).toMatchObject({ code: "provider" });
   });
 
   test("an abort while the stream has not started kills the group and closes the stream", async () => {

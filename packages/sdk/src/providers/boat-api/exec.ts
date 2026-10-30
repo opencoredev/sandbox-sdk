@@ -215,7 +215,7 @@ export async function execute(
     const completion = (async (): Promise<ExecResult> => {
       for await (const frame of followCommand(follow.http ?? http, id, started.processId, {
         signal: stream.signal,
-        ...(follow.timing === undefined ? undefined : { timing: follow.timing }),
+        timing: follow.timing,
       })) {
         if (frame.type === "stdout" || frame.type === "stderr") {
           input.onChunk({ stream: frame.type, text: frame.data });
