@@ -498,6 +498,25 @@ test.each(["error", "build_failed"])(
   },
 );
 
+test("a buffered read that stalls after headers times out within requestTimeoutMs", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 1_000 }));
+  await box.files.write("stalled", "never sent");
+
+  // The daemon sends headers and one chunk, then nothing.
+  vi.spyOn(guest(box.id).fs, "downloadFileStream").mockImplementation(async () => {
+    const body = new Readable({ read() {} });
+    body.push("partial");
+
+    return body;
+  });
+
+  const hung = new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 10_000));
+
+  await expect(Promise.race([box.files.read("stalled"), hung])).rejects.toMatchObject({
+    code: "timeout",
+  });
+});
+
 test("the snapshot wait is not bounded by requestTimeoutMs", async () => {
   const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 200 }));
 
