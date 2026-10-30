@@ -179,11 +179,11 @@ console.log(preview.url, preview.headers);
 
 ## 7. snapshots
 
-| 0.2                     | 1.0                                             |
-| ----------------------- | ----------------------------------------------- |
-| `snapshots.create()`    | `box.snapshot()`                                |
-| `snapshots.restore(id)` | `createSandbox(provider, { from: id })`         |
-| `snapshots.delete(id)`  | Use the provider's own SDK through `box.native` |
+| 0.2 | 1.0 |
+| --- | --- |
+| `snapshots.create()` | `box.snapshot()` |
+| `snapshots.restore(id)` | `createSandbox(provider, { from: id })` |
+| `snapshots.delete(id)` | Call the provider's API through [`box.native`](/reference/native) |
 
 `snapshot()` exists only on providers that support it, so TypeScript reports a call on one that doesn't. In 0.2 that was a runtime error.
 

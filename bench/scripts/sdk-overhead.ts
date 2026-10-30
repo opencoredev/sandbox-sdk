@@ -51,6 +51,13 @@ const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
 
+/** Runs `load` on first use and shares its promise after that. */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let value: Promise<T> | undefined;
+
+  return () => (value ??= load());
+}
+
 const nativePackages = {
   e2b: "e2b",
   daytona: "@daytonaio/sdk",
@@ -93,17 +100,22 @@ const providers = {
     const template = templates.get("e2b");
     const provider = m.e2b(template === undefined ? {} : { template });
 
+    // The adapter calls the API over HTTP; the floor is the official SDK, connected once per sandbox.
     return {
       provider,
       floor: (id) => {
-        const box = provider.native(id);
+        const box = once(() =>
+          provider
+            .native(id)
+            .sdk((): Promise<typeof import("e2b")> => import(nativeUrl("e2b"))),
+        );
 
         return {
           exec: async (command = "true") => {
-            await box.commands.run(command, { user: "root" });
+            await (await box()).commands.run(command, { user: "root" });
           },
           write: async (path, data) => {
-            await box.files.write(path, new Uint8Array(data).buffer, { user: "root" });
+            await (await box()).files.write(path, new Uint8Array(data).buffer, { user: "root" });
           },
         };
       },
@@ -116,18 +128,25 @@ const providers = {
 
     const provider = m.daytona();
 
+    // The adapter calls the API over HTTP; the floor is the official SDK, connected once per sandbox.
     return {
       provider,
       floor: (id) => {
-        const box = provider.native(id);
+        const box = once(() =>
+          provider
+            .native(id)
+            .sdk((): Promise<typeof import("@daytonaio/sdk")> => import(nativeUrl("@daytonaio/sdk"))),
+        );
 
         return {
           exec: async (command = "true") => {
-            const r = await box.process.executeCommand(command);
+            const r = await (await box()).process.executeCommand(command);
 
             if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`);
           },
-          write: (path, data) => box.fs.uploadFile(Buffer.from(data), path),
+          write: async (path, data) => {
+            await (await box()).fs.uploadFile(Buffer.from(data), path);
+          },
         };
       },
     };
@@ -189,19 +208,24 @@ const providers = {
 
     const provider = m.freestyle();
 
+    // The adapter calls the API over HTTP; the floor is the official SDK, connected once per sandbox.
     return {
       provider,
       floor: (id) => {
-        const vm = provider.native(id);
+        const vm = once(() =>
+          provider
+            .native(id)
+            .sdk((): Promise<typeof import("freestyle")> => import(nativeUrl("freestyle"))),
+        );
 
         return {
           exec: async (command = "true") => {
-            const r = await vm.exec({ command, linuxUser: "root", timeoutMs });
+            const r = await (await vm()).exec({ command, linuxUser: "root", timeoutMs });
 
             if (r.statusCode !== 0) throw new Error(`exit ${r.statusCode}`);
           },
           write: async (path, data) => {
-            await vm.fs.writeFile(path, data);
+            await (await vm()).fs.writeFile(path, data);
           },
         };
       },
@@ -237,17 +261,22 @@ const providers = {
     const template = templates.get("superserve");
     const provider = m.superserve(template === undefined ? {} : { template });
 
+    // The adapter calls the API over HTTP; the floor is the official SDK, connected once per sandbox.
     return {
       provider,
       floor: (id) => {
-        const box = provider.native(id);
+        const box = once(() =>
+          provider
+            .native(id)
+            .sdk((): Promise<typeof import("@superserve/sdk")> => import(nativeUrl("@superserve/sdk"))),
+        );
 
         return {
           exec: async (command = "true") => {
-            await box.commands.run(command, { timeoutMs });
+            await (await box()).commands.run(command, { timeoutMs });
           },
           write: async (path, data) => {
-            await box.files.write(path, data, { timeoutMs });
+            await (await box()).files.write(path, data, { timeoutMs });
           },
         };
       },

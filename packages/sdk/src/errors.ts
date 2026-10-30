@@ -325,6 +325,21 @@ export function reason(code: ErrorCode, detail?: string): string {
   return detail ?? meanings[code];
 }
 
+/**
+ * @internal The shared HTTP status mapper. Provider hooks refine it (a 404 for a missing file, a stale route).
+ * A 504 is a timeout; the HTTP client turns it into `outcome_unknown` for a request that may have had an effect.
+ */
+export function statusCode(status: number): ErrorCode {
+  if (status === 400 || status === 422) return "invalid_argument";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 402 || status === 429) return "quota";
+  if (status === 404 || status === 410) return "not_found";
+  if (status === 408 || status === 504) return "timeout";
+  if (status === 413) return "unsupported";
+  if (status >= 500 && status <= 599) return "unavailable";
+  return "provider";
+}
+
 /** @internal Throws an `invalid_argument` SandboxError. */
 export function invalid(message: string): never {
   throw new SandboxError(`${message}. The request is invalid. Check the supplied options.`, {

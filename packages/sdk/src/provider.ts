@@ -161,3 +161,8 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
     id: string,
   ): Promise<{ record: string; environment: Record<string, string> } | undefined>;
 }
+// For adapter authors: the HTTP client and native API helpers the built-in direct-HTTP adapters use.
+export { createHttpClient, createDeadline } from "./http.js";
+export type { HttpClient, HttpClientOptions, HttpPlane, HttpRequest, StreamRequest, HttpResponse, HttpFailure, FailedRequest, ErrorBody, PlaneContext, Fetch, Deadline, StaleVerdict } from "./http.js";
+export { createNativeApi, sdkConstruct, sdkCall } from "./native.js";
+export type { NativeApi, NativeApiOptions, NativeSdkBinding, NativeRequestOptions, NativeSdkLoader, AnyNativeSdk, HttpMethod } from "./native.js";

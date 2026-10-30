@@ -27,7 +27,7 @@ That starts a sandbox, runs one command, prints its output, and deletes the sand
 
 <CardGroup cols={2}>
   <Card title="Install" href="/getting-started/installation" icon="package">
-    Add the package, and a provider's SDK when you use one.
+    Add the package, and a provider's SDK for the few providers that need one.
   </Card>
   <Card title="Quickstart" href="/getting-started/quickstart" icon="rocket">
     Run your first sandbox in memory with no account, then in Docker.
@@ -109,7 +109,7 @@ That starts a sandbox, runs one command, prints its output, and deletes the sand
 
 ## How it differs
 
-- **Your keys, no middleman.** The SDK calls each provider's own SDK with your credentials. Nothing runs between you and the provider, and nothing is installed inside the sandbox.
+- **Your keys, no middleman.** The SDK calls each provider's API or SDK with your credentials. Nothing runs between you and the provider, and nothing is installed inside the sandbox.
 - **It never quietly ignores an option.** If you ask a provider for a network allow list or a machine size it can't enforce, `createSandbox` fails with `unsupported` instead of handing you an open sandbox.
 - **Failed commands are results.** A non-zero exit code comes back as `ok: false`. The SDK throws only when the sandbox or the provider fails.
 - **Sandboxes come back.** Give a sandbox a `key` and the next request, on any server, gets the same one. Background processes and their logs live inside the sandbox, so they survive a redeploy.

@@ -123,9 +123,9 @@ It throws `SandboxError` with code `not_found` if the sandbox is gone.
 | `box.created`      | Whether this call created the sandbox                 |
 | `box.labels`       | Labels on the sandbox, including `sandbox-sdk`        |
 | `box.capabilities` | Optional features this provider supports              |
-| `box.native`       | The provider's own sandbox object, typed per provider |
+| `box.native`       | The provider's own API, typed per provider |
 
-Use `box.native` when you need a provider feature the SDK doesn't wrap. It is the same object the provider's SDK returns.
+Use `box.native` when you need a provider feature the SDK doesn't wrap. For providers that call their API directly, it is a [`NativeApi`](/reference/native) that calls any endpoint and can load the official SDK on demand. For providers that wrap an SDK, it is the same object that SDK returns.
 
 ## Optional capabilities
 

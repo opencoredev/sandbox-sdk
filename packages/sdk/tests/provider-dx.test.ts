@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { BoxdOptions as BoxdClientOptions } from "@boxd-sh/sdk";
 import { e2b } from "../src/providers/e2b/index.js";
@@ -9,12 +9,9 @@ import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
-import { boatApi } from "../src/providers/boat-api/index.js";
-import type { BoatOptions } from "../src/providers/boat/index.js";
 import { boxd as mockBoxd, MockBoxd } from "./cloud-guest-mock.js";
-import { daytona as mockDaytona, mockState as daytonaState } from "./daytona-mock.js";
 import { tenki as mockTenki, tenkiState, cleanupTenki } from "./tenki-mock.js";
-import { e2b as mockE2B, MockSandbox as MockE2BSandbox, listQueries } from "./e2b-sdk-mock.js";
+import { fakeServer } from "./http-fake.js";
 
 const boxdConfigs: BoxdClientOptions[] = [];
 
@@ -26,41 +23,58 @@ class RecordingBoxd extends MockBoxd {
   }
 }
 
-const boatOrigins: string[] = [];
-const boatTypes: string[] = [];
-const createBody = z.object({ type: z.string() });
+const e2bKeys: (string | null)[] = [];
+const realFetch = globalThis.fetch;
 
-/** The real Boat SDK over a recording transport: lists are empty and creates are rejected. */
-async function boatTransport(input: RequestInfo | URL, init?: RequestInit) {
-  const request = new Request(input, init);
-  boatOrigins.push(new URL(request.url).origin);
+/** E2B speaks HTTP directly: record the key each control-plane call sends and answer an empty list. */
+async function fetchE2B(input: string | URL | Request, init?: RequestInit) {
+  const url = new URL(input instanceof Request ? input.url : input);
 
-  if (request.method === "GET") return Response.json({ sandboxes: [] });
+  // Local fake servers (other providers' tests) pass through; everything else stays offline.
+  if (url.hostname === "127.0.0.1" || url.hostname === "localhost") return realFetch(input, init);
 
-  boatTypes.push(createBody.parse(await request.json()).type);
+  if (url.hostname !== "api.e2b.app")
+    throw new TypeError("fetch failed: the network is blocked in this test");
 
-  return new Response(null, { status: 400 });
+  e2bKeys.push(new Headers(init?.headers).get("x-api-key"));
+
+  return Response.json([]);
 }
 
-function recordingBoat(options: BoatOptions) {
-  return boatApi(options, {
-    name: "boat",
-    label: "Boat",
-    keyEnv: "BOAT_API_KEY",
-    baseEnv: "BOAT_API_BASE",
-    baseUrl: "https://boat.dev/api/v1",
-    fetch: boatTransport,
+const boatRequest = z.object({ type: z.string() });
+
+/** Boat calls its API with fetch: record each request, list nothing, and refuse every create with a 400. */
+function stubBoatFetch() {
+  const requests: { origin: string; method: string; type?: string }[] = [];
+
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const method = init.method ?? "GET";
+    const origin = new URL(url).origin;
+
+    if (method !== "POST") {
+      requests.push({ origin, method });
+      return Response.json({ ok: true, sandboxes: [], pageInfo: { hasMore: false } });
+    }
+
+    const body = boatRequest.parse(JSON.parse(z.string().parse(init.body)));
+    requests.push({ origin, method, type: body.type });
+
+    return Response.json({ ok: false, code: "invalid_request" }, { status: 400 });
   });
+
+  return requests;
 }
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", fetchE2B);
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   boxdConfigs.length = 0;
-  boatOrigins.length = 0;
-  boatTypes.length = 0;
-  daytonaState.configs.length = 0;
-  listQueries.length = 0;
+  e2bKeys.length = 0;
   await cleanupTenki();
 });
 
@@ -77,26 +91,38 @@ test("boxd endpoint alias works and baseUrl wins", async () => {
 });
 
 test("daytona endpoint alias works and baseUrl wins", async () => {
-  await mockDaytona({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
-  await mockDaytona({
-    apiKey: "offline",
-    apiUrl: "https://old.test",
-    baseUrl: "https://new.test",
-  }).list({});
-  expect(daytonaState.configs).toMatchObject([
-    { apiUrl: "https://old.test" },
-    { apiUrl: "https://new.test" },
-  ]);
+  const old = await fakeServer();
+  const next = await fakeServer();
+
+  try {
+    for (const server of [old, next])
+      server.on("GET /api/sandbox", { json: { items: [], nextCursor: null } });
+
+    await daytona({ apiKey: "offline", apiUrl: `${old.url}/api` }).list({});
+    await daytona({
+      apiKey: "offline",
+      apiUrl: `${old.url}/api`,
+      baseUrl: `${next.url}/api`,
+    }).list({});
+    expect([old.requests.length, next.requests.length]).toEqual([1, 1]);
+  } finally {
+    await old.close();
+    await next.close();
+  }
 });
 
 test("boat endpoint alias works and baseUrl wins", async () => {
-  await recordingBoat({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
-  await recordingBoat({
+  const requests = stubBoatFetch();
+  await boat({ apiKey: "offline", apiUrl: "https://old.test" }).list({});
+  await boat({
     apiKey: "offline",
     apiUrl: "https://old.test",
     baseUrl: "https://new.test",
   }).list({});
-  expect(boatOrigins).toEqual(["https://old.test", "https://new.test"]);
+  expect(requests.map((request) => request.origin)).toEqual([
+    "https://old.test",
+    "https://new.test",
+  ]);
 });
 
 test("Tenki authToken alias works and apiKey wins", async () => {
@@ -106,17 +132,21 @@ test("Tenki authToken alias works and apiKey wins", async () => {
 });
 
 test("Boat type alias works, machine wins, and per-create size still wins", async () => {
+  const requests = stubBoatFetch();
+
   for (const [options, size] of [
     [{ type: "small" }, undefined],
     [{ machine: "large", type: "small" }, undefined],
     [{ machine: "large", type: "small" }, "medium"],
   ] as const) {
     await expect(
-      recordingBoat({ apiKey: "offline", ...options }).create({ labels: {}, size }),
+      boat({ apiKey: "offline", ...options }).create({ labels: {}, size }),
     ).rejects.toMatchObject({ code: "invalid_argument" });
   }
 
-  expect(boatTypes).toEqual(["small", "large", "default"]);
+  expect(
+    requests.filter((request) => request.method === "POST").map((request) => request.type),
+  ).toEqual(["small", "large", "default"]);
 });
 
 for (const [name, factory, env, label, next] of [
@@ -146,13 +176,7 @@ test.each(["create", "connect", "list"] as const)(
   async (operation) => {
     vi.stubEnv("E2B_API_KEY", "");
 
-    const native = [
-      vi.spyOn(MockE2BSandbox, "create"),
-      vi.spyOn(MockE2BSandbox, "connect"),
-      vi.spyOn(MockE2BSandbox, "list"),
-    ];
-
-    const provider = mockE2B();
+    const provider = e2b();
 
     const result =
       operation === "create"
@@ -162,16 +186,15 @@ test.each(["create", "connect", "list"] as const)(
           : provider.list({});
 
     await expect(result).rejects.toMatchObject({ code: "auth" });
-
-    for (const call of native) expect(call).not.toHaveBeenCalled();
+    expect(e2bKeys).toEqual([]);
   },
 );
 
 test("E2B reads env after construction and allows retry after missing credentials", async () => {
   vi.stubEnv("E2B_API_KEY", "");
-  const provider = mockE2B();
+  const provider = e2b();
   await expect(provider.list({})).rejects.toMatchObject({ code: "auth" });
   vi.stubEnv("E2B_API_KEY", "late-key");
   expect(await provider.list({})).toEqual([]);
-  expect(listQueries).toMatchObject([{ apiKey: "late-key" }]);
+  expect(e2bKeys).toEqual(["late-key"]);
 });

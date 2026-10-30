@@ -3,7 +3,7 @@ title: E2B
 description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots, network allow lists, and a hard lifetime a reconnect can't extend.
 ---
 
-`e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM through the official `e2b` SDK.
+`e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM. It calls E2B's API and the daemon inside each sandbox over HTTP, so you install no E2B package.
 
 ## Install
 
@@ -11,34 +11,34 @@ description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots,
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next e2b
+npm install @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next e2b
+pnpm add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next e2b
+yarn add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next e2b
+bun add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server, and keep it out of browser bundles.
+Set `E2B_API_KEY` on your server, and keep it out of browser bundles.
 
 ## Quickstart
 
@@ -196,14 +196,78 @@ Host rules match on the HTTP `Host` header and TLS SNI, and DNS stays allowed. S
 
 `requestTimeoutMs` bounds each E2B control-plane request. `volumes` maps absolute mount paths to [E2B volume](https://e2b.dev/docs/volumes) names or IDs, for example `{ "/data": "my-volume" }`. Volumes must be enabled on your E2B team.
 
-A custom template needs `sh`, `bash`, `setsid`, and `git`. `box.native` is the E2B SDK's `Sandbox` object.
+A custom template needs `sh`, `bash`, `setsid`, and `git`.
+
+## Call the API directly
+
+`box.native` calls any E2B endpoint with the adapter's credentials, retries, error mapping, and redaction. It has two planes:
+
+| Plane | Base URL | Credentials | What is there |
+| --- | --- | --- | --- |
+| `"api"` (default) | `https://api.{domain}` | `X-API-KEY` | The [E2B REST API](https://e2b.dev/docs/api-reference): sandboxes, snapshots, templates |
+| `"envd"` | The sandbox's envd daemon | The sandbox's access token | `GET /health`, `GET` and `POST /files`, and the `filesystem.Filesystem` and `process.Process` RPCs as Connect JSON |
+
+`{sandboxId}` in a path fills itself from the sandbox. An envd RPC is a `POST` to `/{service}/{method}` with the request message as the JSON body.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+
+const info = await box.native.request<{ state: string; endAt: string }>("GET", "/sandboxes/{sandboxId}");
+console.log(info.state, info.endAt);
+
+const { processes = [] } = await box.native.request<{ processes?: { pid: number }[] }>("POST", "/process.Process/List", {
+  plane: "envd",
+  body: {},
+});
+console.log(processes.length);
+
+await box.files.write("/tmp/data.bin", new Uint8Array([0, 1, 2]));
+const response = await box.native.fetch("GET", "/files", { plane: "envd", query: { path: "/tmp/data.bin", username: "root" } });
+console.log(new Uint8Array(await response.arrayBuffer()));
+```
+
+`request` resolves with the JSON body. `fetch` resolves with the raw `Response`, so read the body or cancel it.
+
+For calls about your account rather than one sandbox, use the factory's `api`. It has no sandbox and no `envd` plane:
+
+```ts
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const provider = e2b();
+const templates = await provider.api.request<{ templateID: string }[]>("GET", "/templates");
+console.log(templates.map(template => template.templateID));
+
+// A snapshot ID from box.snapshot() is a template ID.
+await provider.api.request("DELETE", "/templates/{id}", { params: { id: "snapshot-id" } });
+```
+
+To use the official SDK for something the SDK doesn't wrap, install `e2b` and pass its import to `sdk`. On `box.native` you get an `e2b` `Sandbox` for this sandbox, built from its existing connection, so no API call is made and its timeout doesn't change. On `provider.api` you get an `E2B` client with the same API key.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+const sandbox = await box.native.sdk(() => import("e2b"));
+const result = await sandbox.commands.run("echo from the e2b SDK");
+console.log(result.stdout);
+
+const client = await e2b().api.sdk(() => import("e2b"));
+const page = await client.Sandbox.list().nextItems();
+console.log(page.length);
+```
+
+In earlier betas, `box.native` was the `e2b` `Sandbox` itself. Replace `box.native.commands.run(...)` with `(await box.native.sdk(() => import("e2b"))).commands.run(...)`, or with a `request` call.
 
 ## Limitations
 
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - `size` fails with `unsupported`. Pick the machine in the template.
 - `idleTimeoutMs` fails with `unsupported`. Use `timeoutMs`, or [Daytona](/providers/daytona) for idle auto-stop.
-- `snapshot({ expiresInMs })` fails with `unsupported`. Delete snapshots with `Sandbox.deleteSnapshot` from `e2b`.
+- `snapshot({ expiresInMs })` fails with `unsupported`. Delete a snapshot with `provider.api.request("DELETE", "/templates/{id}", { params: { id } })`, as shown in [Call the API directly](#call-the-api-directly).
 - No terminals.
 
 ## How it works
@@ -211,6 +275,7 @@ A custom template needs `sh`, `bash`, `setsid`, and `git`. `box.native` is the E
 - Your `labels` become E2B metadata. `sandbox-sdk-key` and `sandbox-sdk-deadline` are reserved.
 - The SDK stores the `timeoutMs` deadline in metadata and clamps E2B's timeout back to it on every connect and resume. With `autoPause` it stores no deadline.
 - After creation the SDK reads the network settings back from E2B, including `public: false`. If they don't match, it destroys the sandbox and throws `unsupported`.
+- Commands, files, and processes go to envd, the daemon inside the sandbox. Each command start carries a unique tag, so a start that was cancelled, or whose response was lost, can still be found and stopped.
 
 ## Next steps
 

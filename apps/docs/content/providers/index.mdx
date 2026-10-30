@@ -7,7 +7,7 @@ description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona,
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
 
-Each cloud provider uses that company's own SDK with your credentials. Install the SDK next to Sandbox SDK; [Peer packages](/reference/capabilities#peer-packages) names the package and version range for each one. It loads on the provider's first operation, so unused providers cost nothing.
+E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer call the provider's HTTP API directly, so they need no package besides Sandbox SDK. The others use the provider's own SDK, which you install next to Sandbox SDK; [Peer packages](/reference/capabilities#peer-packages) names the package and version range for each one. It loads on the provider's first operation, so unused providers cost nothing. Either way, calls use your credentials.
 
 Not sure where to start? [Choose a provider](/getting-started/choose-a-provider) maps common needs to a provider.
 

@@ -2,9 +2,7 @@ import { inspect } from "node:util";
 import { expect, test } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import { loadPeer } from "../src/peer.js";
-import { e2bError } from "../src/providers/e2b/errors.js";
 import { railwayError, rememberRailwayErrors } from "../src/providers/railway/errors.js";
-import { daytonaError, rememberDaytonaErrors } from "../src/providers/daytona/errors.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { vercelError } from "../src/providers/vercel/errors.js";
@@ -17,22 +15,9 @@ function renamed<T extends Error>(error: T, name: string): T {
   return error;
 }
 
-test("e2b maps by the SDK's literal error name, not the bundled class name", async () => {
-  const { FileNotFoundError, SandboxNotFoundError } = await import("e2b");
-
-  class FileNotFoundError2 extends FileNotFoundError {}
-
-  const native = new FileNotFoundError2("missing.txt");
-  expect(native.constructor.name).toBe("FileNotFoundError2");
-  expect(e2bError(native, "box").code).toBe("file_not_found");
-  expect(e2bError(new SandboxNotFoundError("gone"), "box").code).toBe("not_found");
-});
-
-test("railway and daytona match the classes the adapter loaded, whatever they are named", async () => {
+test("railway matches the classes the adapter loaded, whatever they are named", async () => {
   const railway = await loadPeer("railway", "railway", () => import("railway"));
-  const daytona = await loadPeer("@daytonaio/sdk", "daytona", () => import("@daytonaio/sdk"));
   rememberRailwayErrors(railway);
-  rememberDaytonaErrors(daytona);
   expect(
     railwayError(
       renamed(
@@ -58,28 +43,9 @@ test("railway and daytona match the classes the adapter loaded, whatever they ar
       "box",
     ).code,
   ).toBe("outcome_unknown");
-  expect(daytonaError(renamed(new daytona.DaytonaConnectionError("down"), "L1"), "box").code).toBe(
     "unavailable",
   );
-  expect(
-    daytonaError(renamed(new daytona.DaytonaConnectionTimeoutError("slow"), "t"), "box").code,
-  ).toBe("timeout");
-  expect(
-    daytonaError(renamed(new daytona.DaytonaInvalidArgumentError("bad"), "x"), "box").code,
-  ).toBe("invalid_argument");
   expect(railwayError(renamed(new Error("x"), "Pce"), "box").code).toBe("provider");
-});
-
-test("daytona names a module its SDK could not load in a bundle, with the fix", () => {
-  const native = new Error(
-    `Uploading files is not supported:  Module "form-data" is not available in the "node" runtime: Cannot find module 'form-data'`,
-  );
-
-  const error = daytonaError(native, "box", true);
-  expect(error).toMatchObject({ code: "unavailable", provider: "daytona", sandboxId: "box" });
-  expect(error.message).toContain(`could not load "form-data"`);
-  expect(error.message).toContain("Cannot find module 'form-data'");
-  expect(error.hint).toContain("serverExternalPackages");
 });
 
 test("an ESM bundle without require names the module and the fix", async () => {

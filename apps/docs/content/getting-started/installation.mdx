@@ -1,9 +1,9 @@
 ---
 title: Install
-description: Install Sandbox SDK, and the SDK of each cloud provider you use. Requirements, optional packages, and where your keys must stay.
+description: Install Sandbox SDK, plus the provider SDK for Vercel, Upstash, Railway, Tenki, boxd, or agentOS if you use one. Requirements, optional packages, and where your keys must stay.
 ---
 
-Sandbox SDK is one npm package. The core has no runtime dependencies. Each cloud provider needs its own official SDK installed next to it, and you only install the ones you use.
+Sandbox SDK is one npm package. The core has no runtime dependencies. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else, because their adapters call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS need that provider's official SDK installed next to it, and you only install the ones you use.
 
 ## 1. Install the package
 
@@ -44,9 +44,9 @@ bun add @opencoredev/sandbox-sdk@next
 
 That is enough for the [Memory](/providers/memory) provider, which runs in your process, and for [Local](/providers/local), which needs Docker running on the same machine.
 
-## 2. Add a provider SDK
+## 2. Add a provider SDK, if needed
 
-Install the SDK for each cloud provider you plan to use. The adapter loads it the first time that provider does something, so a provider you never call costs nothing. The tabs cover the most common providers. [Peer packages](/reference/capabilities#peer-packages) lists the package and version range for every provider.
+E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need no extra package. For the providers that wrap an SDK, install it next to Sandbox SDK. The adapter loads it the first time that provider does something, so a provider you never call costs nothing. [Peer packages](/reference/capabilities#peer-packages) lists the package and version range for each one.
 
 <ProviderTabs>
 <ProviderTab provider="local">
@@ -56,38 +56,7 @@ No package. Start Docker Engine (Docker Desktop, OrbStack, and Colima all work) 
 </ProviderTab>
 <ProviderTab provider="e2b">
 
-<Tabs hash={false}>
-  <Tab title="npm">
-
-```bash
-npm install e2b
-```
-
-  </Tab>
-  <Tab title="pnpm">
-
-```bash
-pnpm add e2b
-```
-
-  </Tab>
-  <Tab title="yarn">
-
-```bash
-yarn add e2b
-```
-
-  </Tab>
-  <Tab title="bun">
-
-```bash
-bun add e2b
-```
-
-  </Tab>
-</Tabs>
-
-Needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server.
+No package. `e2b()` calls E2B's API over HTTP. Set `E2B_API_KEY` on your server.
 
 </ProviderTab>
 <ProviderTab provider="vercel">
@@ -128,38 +97,7 @@ Needs `@vercel/sandbox` 3.8 or later. Inside a Vercel deployment it authenticate
 </ProviderTab>
 <ProviderTab provider="daytona">
 
-<Tabs hash={false}>
-  <Tab title="npm">
-
-```bash
-npm install @daytonaio/sdk
-```
-
-  </Tab>
-  <Tab title="pnpm">
-
-```bash
-pnpm add @daytonaio/sdk
-```
-
-  </Tab>
-  <Tab title="yarn">
-
-```bash
-yarn add @daytonaio/sdk
-```
-
-  </Tab>
-  <Tab title="bun">
-
-```bash
-bun add @daytonaio/sdk
-```
-
-  </Tab>
-</Tabs>
-
-Needs `@daytonaio/sdk` 0.225 or a later 0.x release. Set `DAYTONA_API_KEY` on your server.
+No package. `daytona()` calls Daytona's API over HTTP. Set `DAYTONA_API_KEY` on your server.
 
 </ProviderTab>
 <ProviderTab provider="memory">
@@ -190,16 +128,16 @@ These are optional peer dependencies. Importing the package root never loads the
 
 ## Bundling
 
-You don't need a bundler: Node and Bun run the package from `node_modules`. If your platform bundles server code anyway, as Next.js, Convex, and AWS Lambda builds do, mark the SDK and the provider SDKs you use as external so they load from `node_modules` at runtime:
+You don't need a bundler: Node and Bun run the package from `node_modules`. If your platform bundles server code anyway, as Next.js, Convex, and AWS Lambda builds do, mark the SDK and any provider SDKs you use as external so they load from `node_modules` at runtime:
 
 ```bash
 esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \
-  --external:@opencoredev/sandbox-sdk --external:e2b
+  --external:@opencoredev/sandbox-sdk --external:@vercel/sandbox
 ```
 
 In Next.js, use `serverExternalPackages`, as the [Next.js page](/integrations/nextjs#bundling) shows. In Convex, list the packages under `node.externalPackages` in `convex.json`.
 
-When the packages have to go inside the bundle, for example because the deployment ships no `node_modules`, build an ESM bundle with a `require` shim. Provider SDKs are CommonJS and call `require` for Node built-ins, which an ESM bundle doesn't define. Without the shim, the first provider call fails with `Dynamic require of "node:fs" is not supported`.
+When the packages have to go inside the bundle, for example because the deployment ships no `node_modules`, build an ESM bundle with a `require` shim. Some provider SDKs are CommonJS and call `require` for Node built-ins, which an ESM bundle doesn't define. Without the shim, the first provider call fails with `Dynamic require of "node:fs" is not supported`.
 
 ```bash
 esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \

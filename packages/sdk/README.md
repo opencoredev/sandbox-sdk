@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk@next
 ```
 
-Then add the peer package for each provider you use, for example `npm install e2b`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Provider packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -35,7 +35,7 @@ For a real Linux sandbox, swap the provider. Nothing else changes:
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
-// Reads E2B_API_KEY from the environment. Run `npm install e2b` first.
+// Reads E2B_API_KEY from the environment. No other package needed.
 await using box = await createSandbox(e2b());
 
 await box.files.write("hello.py", "print('hello from the sandbox')");
@@ -47,7 +47,7 @@ console.log(result.ok, result.stdout);
 
 ## Switch providers with one variable
 
-Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out.
+Pick the provider from an environment variable and keep the sandbox code identical. Each adapter loads through a dynamic `import()`, so only the provider you pick needs its peer package installed, if it has one. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out.
 
 ```ts
 import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";

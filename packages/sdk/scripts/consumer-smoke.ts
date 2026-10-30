@@ -1,4 +1,4 @@
-// Packs the SDK, installs the tarball into a fresh npm project with only the e2b peer,
+// Packs the SDK, installs the tarball into a fresh npm project with no provider peer (e2b needs none),
 // and checks every package.json export at runtime and under four tsc configurations.
 // Subpaths come from the exports map, so new entries are covered without edits here.
 import { spawnSync } from "node:child_process";
@@ -18,7 +18,8 @@ function isConditionalExport(target: ExportTarget): target is Exclude<ExportTarg
 const sdkDir = resolve(import.meta.dir, "..");
 const packDir = process.env.PACK_DIR ?? "/tmp/sandbox-sdk-pack";
 const consumerDir = process.env.CONSUMER_DIR ?? "/tmp/sandbox-sdk-smoke-consumer";
-const installedPeers = ["e2b"];
+// e2b, the provider the app below runs, needs no peer since SBX-74.
+const installedPeers: string[] = [];
 const failures: string[] = [];
 
 function sh(command: string, args: string[], options: { cwd: string; timeoutMs: number }) {
@@ -116,7 +117,7 @@ check(
   missingTargets.join(", "),
 );
 
-// Step 2: fresh consumer with only the e2b provider peer.
+// Step 2: fresh consumer with no provider peer.
 rmSync(consumerDir, { recursive: true, force: true });
 
 mkdirSync(consumerDir, { recursive: true });
@@ -187,7 +188,8 @@ function externals(entry: string, declaration: boolean) {
       continue;
     }
 
-    const source = readFileSync(file, "utf8");
+    // JSDoc examples (`box.native.sdk(() => import("@daytonaio/sdk"))`) are not imports, so comments are dropped.
+    const source = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
     // Type positions in declarations use import("x") too, and they always need x, so declarations have no lazy edges.
     const edges = [
@@ -202,7 +204,8 @@ function externals(entry: string, declaration: boolean) {
     ];
 
     for (const edge of edges) {
-      if (edge.spec === undefined || isBuiltin(edge.spec)) continue;
+      // Error messages quote `import("${pkg}")` in template literals; a placeholder is never a module.
+      if (edge.spec === undefined || edge.spec.includes("${") || isBuiltin(edge.spec)) continue;
 
       if (edge.spec.startsWith("."))
         queue.push({

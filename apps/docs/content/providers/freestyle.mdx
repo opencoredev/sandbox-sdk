@@ -3,7 +3,7 @@ title: Freestyle
 description: Run persistent Linux VMs on Freestyle. Default-deny outbound networking, memory pause and snapshots, second-level timeouts, and public HTTPS previews.
 ---
 
-`freestyle()` runs each sandbox as a persistent Linux VM on [Freestyle](https://www.freestyle.sh/docs) through the current `freestyle` SDK.
+`freestyle()` runs each sandbox as a persistent Linux VM on [Freestyle](https://www.freestyle.sh/docs). It calls Freestyle's API directly, so it needs no package besides `@opencoredev/sandbox-sdk`.
 
 ## Install
 
@@ -11,34 +11,34 @@ description: Run persistent Linux VMs on Freestyle. Default-deny outbound networ
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next freestyle
+npm install @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next freestyle
+pnpm add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next freestyle
+yarn add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next freestyle
+bun add @opencoredev/sandbox-sdk@next
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `freestyle` 0.2.20 or later. The older `freestyle-sandboxes` package isn't supported. Set `FREESTYLE_API_KEY` on your server, and keep it out of browser bundles.
+Set `FREESTYLE_API_KEY` on your server, and keep it out of browser bundles.
 
 ## Quickstart
 
@@ -183,7 +183,67 @@ The adapter reads the rules and limits back after creation and deletes the VM if
 | `requestTimeoutMs` | `number` | `30_000`                   |                     |
 | `autoDeleteMs`     | `number` | Never, or your plan's cap  |                     |
 
-`requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. `box.native` is the SDK's typed `Vm` handle.
+`requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. To reach the rest of Freestyle's API, see [Call the API directly](#call-the-api-directly).
+
+## Call the API directly
+
+`box.native` calls any endpoint in [Freestyle's API](https://api.freestyle.sh/openapi.json) with the adapter's base URL, API key, retries and error mapping. See [Native API](/reference/native) for every option.
+
+- Paths include the version: `/v5/vms/{vmId}`.
+- `{vmId}` fills itself from the sandbox. Pass any other placeholder in `params`.
+- Freestyle has one plane, `"api"`, so you never set `plane`.
+
+`request` returns the JSON body:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const vm = await box.native.request<{ state: string; resources: { cpu: number; memory: number } }>("GET", "/v5/vms/{vmId}");
+console.log(vm.state, vm.resources);
+```
+
+`fetch` returns the raw `Response`, for file bytes:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const response = await box.native.fetch("GET", "/v5/vms/{vmId}/fs/read", { query: { path: "/etc/os-release" } });
+console.log(await response.text());
+```
+
+The adapter's own calls ask Freestyle to finish slow requests in the background and poll for the result. Native calls don't, so a call that runs longer than your timeout fails with `timeout`. Raise `timeoutMs` for slow endpoints.
+
+`provider.api` is the same client with no VM bound, for account-level calls:
+
+```ts
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+const provider = freestyle();
+const { snapshots } = await provider.api.request<{ snapshots: { id: string }[]; totalCount: number }>("GET", "/v5/snapshots", {
+  query: { limit: 10 },
+});
+console.log(snapshots.map((snapshot) => snapshot.id));
+```
+
+To use the official SDK, install `freestyle` yourself and pass its import to `sdk`. `box.native.sdk` returns the SDK's `Vm` for this sandbox, and `provider.api.sdk` returns a `Freestyle` client. Both use the adapter's API key and base URL.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const vm = await box.native.sdk(() => import("freestyle"));
+const { stdout } = await vm.exec({ command: "uname -a" });
+
+const client = await freestyle().api.sdk(() => import("freestyle"));
+const { vms } = await client.vms.list();
+```
+
+In 1.0.0-beta.0, `box.native` was the SDK's `Vm`. Replace `box.native.exec(...)` with `(await box.native.sdk(() => import("freestyle"))).exec(...)`.
 
 ## Limitations
 

@@ -107,9 +107,9 @@ Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `lab
 | `created`      | `boolean`                                                                        |
 | `labels`       | `Record<string, string>`                                                         |
 | `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">` |
-| `native`       | The provider's own sandbox object                                                |
-| `files`        | [`Files`](#files)                                                                |
-| `git`          | [`Git`](#git)                                                                    |
+| `native` | The provider's own API: a [`NativeApi`](/reference/native) for providers that call their API directly, or the provider SDK's sandbox object |
+| `files` | [`Files`](#files) |
+| `git` | [`Git`](#git) |
 
 ### `run(command, options?)`
 

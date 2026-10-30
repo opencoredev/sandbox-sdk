@@ -48,7 +48,7 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 
 ## Peer packages
 
-Each cloud provider loads its company's own SDK the first time it does anything. These are optional peers, so your package manager won't install them for you: add the one for each provider you use next to `@opencoredev/sandbox-sdk`. Version is the range the SDK accepts.
+E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer call their provider's HTTP API directly and need no peer. The other cloud providers load their company's own SDK the first time they do anything. These are optional peers, so your package manager won't install them for you: add the one for each provider you use next to `@opencoredev/sandbox-sdk`. Version is the range the SDK accepts.
 
 | Provider                            | Import                                | Peer package              | Version            |
 | ----------------------------------- | ------------------------------------- | ------------------------- | ------------------ |
@@ -56,15 +56,15 @@ Each cloud provider loads its company's own SDK the first time it does anything.
 | [agentOS](/providers/agentos)       | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core` | `0.4.1`            |
 | [E2B](/providers/e2b)               | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                     | `^2.56.0`          |
 | [Vercel](/providers/vercel)         | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`         | `^3.8.0`           |
-| [Daytona](/providers/daytona)       | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`          | `>=0.225.0 <1.0.0` |
+| [Daytona](/providers/daytona)       | `@opencoredev/sandbox-sdk/daytona`    | None | None |
 | [Upstash](/providers/upstash)       | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`            | `^0.7.9`           |
 | [Railway](/providers/railway)       | `@opencoredev/sandbox-sdk/railway`    | `railway`                 | `^3.16.0`          |
-| [Boat](/providers/boat)             | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`            | `^1.9.9`           |
-| [Sandboxer](/providers/sandboxer)   | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`            | `^1.9.9`           |
+| [Boat](/providers/boat)             | `@opencoredev/sandbox-sdk/boat`       | None | None |
+| [Sandboxer](/providers/sandboxer)   | `@opencoredev/sandbox-sdk/sandboxer`  | None | None |
 | [Tenki](/providers/tenki)           | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`     | `^1.4.1`           |
-| [Superserve](/providers/superserve) | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`         | `^0.11.4`          |
+| [Superserve](/providers/superserve) | `@opencoredev/sandbox-sdk/superserve` | None | None |
 | [boxd](/providers/boxd)             | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `^0.2.17`          |
-| [Freestyle](/providers/freestyle)   | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`               | `^0.2.20`          |
+| [Freestyle](/providers/freestyle)   | `@opencoredev/sandbox-sdk/freestyle`  | None | None |
 | [Memory](/providers/memory)         | `@opencoredev/sandbox-sdk/memory`     | None                      | None               |
 
 Local needs a running Docker Engine instead. agentOS also needs its platform sidecar package; see [Local (agentOS)](/providers/agentos).

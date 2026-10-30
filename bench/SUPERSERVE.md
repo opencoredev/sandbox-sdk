@@ -1,6 +1,6 @@
 # Superserve benchmark
 
-SBX-51 adds Superserve to the same harness used for the other seven cloud providers. The SDK entry point is `@opencoredev/sandbox-sdk/superserve`; install optional peer `@superserve/sdk` 0.11.4 or later and set `SUPERSERVE_API_KEY` in the child process environment.
+SBX-51 adds Superserve to the same harness used for the other seven cloud providers. The SDK entry point is `@opencoredev/sandbox-sdk/superserve`, which needs no other package; set `SUPERSERVE_API_KEY` in the child process environment.
 
 The public adapter default remains `superserve/node-22`: 1 vCPU, 1024 MiB RAM, and 4096 MiB disk, checked October 21, 2026. That template lacks Python. Creation now fails with `unsupported` unless you choose a Python-equipped template or explicitly set `installPython: true`. The opt-in restores the earlier apt installation of Python, pip, and venv during creation. That preparation inflated the original cold and burst measurements. Use the retained custom template below for benchmark reruns; keep the public SDK default unchanged because the custom template belongs to this account.
 
