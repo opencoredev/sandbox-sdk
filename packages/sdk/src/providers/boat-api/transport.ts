@@ -2,6 +2,7 @@
  * https://sandboxer.com/api/v1/openapi.yaml. Routes, headers and bodies follow
  * @boatdev/sdk 1.9.9 (`src/apis/BoatApi.ts`), which no longer loads at runtime.
  */
+import type { JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createHttpClient, type Fetch, type HttpClient, type HttpRequest } from "../../http.js";
@@ -203,7 +204,11 @@ export async function writeFile(
 }
 
 /** Kills a detached command and its descendants. Resolves with the reported `running` value. */
-export async function stopCommand(http: BoatHttp, id: string, processId: number): Promise<unknown> {
+export async function stopCommand(
+  http: BoatHttp,
+  id: string,
+  processId: number,
+): Promise<JsonValue | undefined> {
   const value = await http.json({
     method: "DELETE",
     path: "/sandboxes/{sandboxId}/commands/{processId}",

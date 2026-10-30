@@ -1,4 +1,5 @@
 /** A fake Freestyle API: `freestyleFetch` serves the /v5 routes the adapter calls from these mock VMs. */
+import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -6,8 +7,8 @@ import { MockGuest } from "./mock-guest.js";
 
 interface InlineFirewallRule {
   action: string;
-  source: Record<string, unknown>;
-  destination: Record<string, unknown>;
+  source: JsonObject;
+  destination: JsonObject;
 }
 
 interface CreateVmOptions {
@@ -42,7 +43,7 @@ interface ExecOptions {
   timeoutMs?: number;
 }
 
-type CreateTlsRuleOptions = Record<string, unknown>;
+type CreateTlsRuleOptions = JsonObject;
 
 export const freestyleState = {
   boxes: new Map<string, MockVm>(),
@@ -288,7 +289,7 @@ async function route(
   headers: Headers,
   body: Uint8Array,
 ): Promise<Response> {
-  const json = (): unknown => (body.byteLength ? JSON.parse(new TextDecoder().decode(body)) : {});
+  const json = () => (body.byteLength ? JSON.parse(new TextDecoder().decode(body)) : {});
   const parts = url.pathname.split("/").filter(Boolean);
   const [v5, vms, id, ...rest] = parts;
 

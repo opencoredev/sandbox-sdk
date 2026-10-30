@@ -10,6 +10,7 @@
  * - Protobuf JSON: `bytes` fields are base64, int64 fields are strings, defaults (exit code 0, empty lists) are
  *   left out, enums are names.
  */
+import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isNumber, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import type { HttpClient } from "../../http.js";
@@ -105,7 +106,7 @@ export interface ProcessEntry {
   tag?: string;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const fileTypes: Readonly<Record<string, EntryInfo["type"]>> = {
@@ -213,7 +214,7 @@ export function createEnvd(options: {
     method: string,
     message: unknown,
     options: { user?: string; readOnly?: boolean } = {},
-  ): Promise<unknown> {
+  ): Promise<JsonValue | undefined> {
     return http.json({
       method: "POST",
       plane: "envd",

@@ -3,6 +3,7 @@
  * protocol @superserve/sdk 0.11.4 speaks. Install it with `installSuperserveFake()`, which stubs the global
  * `fetch` and `WebSocket`. Guest commands and files run on Linux through MockGuest.
  */
+import type { JsonObject } from "../src/shared/json.js";
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { vi } from "vitest";
 import { MockGuest } from "./mock-guest.js";
@@ -136,7 +137,7 @@ export const dataRequests = (id: string) =>
     (r) => r.url.origin === dataHost && r.headers.get("x-superserve-sandbox-id") === id,
   );
 
-function info(id: string, box: Box, extra: Record<string, unknown> = {}) {
+function info(id: string, box: Box, extra: JsonObject = {}) {
   return {
     id,
     name: `sbxsdk-${id}`,
@@ -178,7 +179,7 @@ const normalize = (g: MockGuest, value: string) =>
     `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
   );
 
-const record = (value: unknown): Record<string, unknown> =>
+const record = (value: unknown): JsonObject =>
   isObject(value) ? Object.fromEntries(Object.entries(value)) : {};
 
 const list = (value: unknown): string[] =>

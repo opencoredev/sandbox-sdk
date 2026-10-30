@@ -10,6 +10,7 @@
  *   failure to see whether the chunk landed.
  * - Every request and poll of one adapter operation shares its deadline (see deadline.ts).
  */
+import type { JsonObject } from "../../shared/json.js";
 import { isString } from "../../shared/narrow.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
@@ -59,8 +60,8 @@ export interface VmData {
 
 export interface FirewallRule {
   action: string;
-  source: Record<string, unknown>;
-  destination: Record<string, unknown>;
+  source: JsonObject;
+  destination: JsonObject;
 }
 
 export interface CreatedVm {
@@ -80,7 +81,7 @@ interface UploadStatus {
   receivedBytes: number;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 function unexpected(what: string, sandboxId?: string): never {
@@ -374,7 +375,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
 
   return {
     http,
-    async createVm(body: Record<string, unknown>): Promise<CreatedVm> {
+    async createVm(body: JsonObject): Promise<CreatedVm> {
       const value: unknown = (await call({ method: "POST", path: "/v5/vms", body })).json();
       const data = vmData(value);
 
@@ -433,7 +434,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
 
       return snapshotId;
     },
-    async createTlsRule(body: Record<string, unknown>): Promise<{ domain: string }> {
+    async createTlsRule(body: JsonObject): Promise<{ domain: string }> {
       const domain = text((await call({ method: "POST", path: "/v5/tls", body })).json(), "domain");
 
       if (domain === undefined) unexpected("TLS rule");

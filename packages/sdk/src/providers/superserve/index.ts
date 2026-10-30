@@ -5,6 +5,7 @@
  * - `data`: exec and files inside a sandbox, authenticated with the access token and routing hint from
  *   activate or resume (see routes.ts for when they are replaced).
  */
+import type { JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { SandboxError, invalid } from "../../errors.js";
@@ -64,7 +65,7 @@ export type SuperservePlane = "api" | "data";
 /** What `native.sdk(load)` needs from `@superserve/sdk`: its `Sandbox` class. */
 export interface SuperserveModule {
   Sandbox: {
-    connect(sandboxId: string, options?: { apiKey?: string; baseUrl?: string }): Promise<unknown>;
+    connect(sandboxId: string, options?: { apiKey?: string; baseUrl?: string }): Promise<object>;
   };
 }
 
@@ -160,7 +161,7 @@ const wholeSeconds = (value: number | undefined, label: string, zero: boolean) =
   return Math.ceil(value / 1000);
 };
 
-const field = (raw: unknown, key: string): unknown =>
+const field = (raw: unknown, key: string): JsonValue | undefined =>
   isObject(raw) ? Reflect.get(raw, key) : undefined;
 
 const strings = (raw: unknown): string[] | undefined =>
@@ -229,7 +230,8 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
   const prepared = new Set<string>();
   const deleting = new Map<string, Promise<void>>();
   // Sandboxes this client has activated (the SDK's Sandbox.connect). Connecting resumes a paused sandbox.
-  const connected = new Map<string, Promise<unknown>>();
+  // Each sandbox this provider has activated or created; the value settles once its route is known.
+  const connected = new Map<string, Promise<void>>();
   const config = () => resolveConfig(options);
   const timeout = options.requestTimeoutMs ?? 90000;
   const autoPauseSeconds = wholeSeconds(options.autoPauseMs, "autoPauseMs", false);
@@ -338,11 +340,11 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
     },
   });
 
-  function ensure(id: string): Promise<unknown> {
+  function ensure(id: string): Promise<void> {
     let pending = connected.get(id);
 
     if (!pending) {
-      const activation = routes.activate(id);
+      const activation = routes.activate(id).then(() => undefined);
       pending = activation;
       connected.set(id, activation);
       activation.catch(() => {

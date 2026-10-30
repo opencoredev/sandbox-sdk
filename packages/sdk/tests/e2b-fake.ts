@@ -6,6 +6,7 @@
  *   const e2b = await fakeE2B();
  *   vi.stubGlobal("fetch", e2b.fetch(globalThis.fetch));   // routes api.*, sandbox.*, 49983-* and 3000-* hosts here
  */
+import type { JsonObject } from "../src/shared/json.js";
 import { isBoolean, isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
@@ -19,7 +20,7 @@ import { fakeServer, type FakeServer, type RecordedRequest } from "./http-fake.j
 
 export interface CreateCall {
   template: string;
-  body: Record<string, unknown>;
+  body: JsonObject;
   host: string;
 }
 
@@ -47,13 +48,13 @@ export type Spawn = (script: string) => Promise<FakeProcess>;
 
 export type StartHook = (script: string, spawn: Spawn, machine: Machine) => Promise<FakeProcess>;
 
-type Message = Record<string, unknown>;
+type Message = JsonObject;
 
 const json = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

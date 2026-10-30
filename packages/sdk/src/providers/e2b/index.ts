@@ -1,3 +1,4 @@
+import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isBoolean, isObject, isString } from "../../shared/narrow.js";
 import { posix } from "node:path";
 import type {
@@ -64,12 +65,12 @@ export interface E2BSandboxInit {
 export type E2BClientInit = Pick<E2BSandboxInit, "apiKey" | "domain" | "requestTimeoutMs">;
 
 /** `box.native.sdk`: pass `() => import("e2b")` and get that module's `Sandbox` for this sandbox. */
-export type E2BSandboxSdk = <M extends { Sandbox: new (init: E2BSandboxInit) => unknown }>(
+export type E2BSandboxSdk = <M extends { Sandbox: new (init: E2BSandboxInit) => object }>(
   load: () => Promise<M>,
 ) => Promise<InstanceType<M["Sandbox"]>>;
 
 /** `provider.api.sdk`: pass `() => import("e2b")` and get an `E2B` client with the provider's credentials. */
-export type E2BClientSdk = <M extends { E2B: new (init: E2BClientInit) => unknown }>(
+export type E2BClientSdk = <M extends { E2B: new (init: E2BClientInit) => object }>(
   load: () => Promise<M>,
 ) => Promise<InstanceType<M["E2B"]>>;
 
@@ -98,7 +99,7 @@ const unsupported = (message: string) =>
     { code: "unsupported", provider: "e2b" },
   );
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const strings = (value: unknown): string[] | undefined =>

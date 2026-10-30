@@ -12,6 +12,7 @@
  * - `frame_too_large`: a frame is larger than `maxFrameBytes`.
  * - `malformed`: a frame is not valid for the protocol.
  */
+import type { JsonValue } from "./shared/json.js";
 import { isObject, isString } from "./shared/narrow.js";
 import { SandboxError, nativeDetail } from "./errors.js";
 
@@ -234,7 +235,7 @@ export async function* ndjson(
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
 
-  const parse = (line: Uint8Array, last: boolean): unknown => {
+  const parse = (line: Uint8Array, last: boolean): JsonValue | undefined => {
     const text = utf8.decode(line).replace(/\r$/, "");
 
     try {
@@ -471,7 +472,7 @@ export async function* connectEnvelopes(
     await source.return();
   }
 
-  function json(bytes: Uint8Array): unknown {
+  function json(bytes: Uint8Array): JsonValue | undefined {
     try {
       return JSON.parse(utf8.decode(bytes));
     } catch {

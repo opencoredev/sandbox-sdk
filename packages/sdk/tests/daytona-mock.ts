@@ -6,6 +6,7 @@
  * calls a method on the sandbox's MockSandbox (`guest(id).fs.listFiles`, `guest(id).process.executeCommand`),
  * so tests replace one guest operation with `vi.spyOn`, as they would a native SDK method.
  */
+import type { JsonValue } from "../src/shared/json.js";
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { createReadStream, promises as fs } from "node:fs";
 import type { ServerResponse } from "node:http";
@@ -422,7 +423,7 @@ function query(request: RecordedRequest) {
   return new URL(request.url, "http://mock").searchParams;
 }
 
-function json(request: RecordedRequest): unknown {
+function json(request: RecordedRequest): JsonValue | undefined {
   return request.body.length ? JSON.parse(request.body.toString()) : undefined;
 }
 
@@ -467,7 +468,7 @@ function route(
     request: RecordedRequest,
     response: ServerResponse,
     segments: string[],
-  ) => Promise<unknown>,
+  ) => Promise<JsonValue | undefined>,
 ) {
   server.on(`${method} ${path}`, async (request, response) => {
     const segments = new URL(request.url, "http://mock").pathname
@@ -610,7 +611,7 @@ const tool = (
     request: RecordedRequest,
     response: ServerResponse,
     segments: string[],
-  ) => Promise<unknown>,
+  ) => Promise<JsonValue | undefined>,
 ) =>
   route(method, `/toolbox/{id}${path}`, async (request, response, segments) =>
     handler(await daytona.get(segments[2] ?? ""), request, response, segments),

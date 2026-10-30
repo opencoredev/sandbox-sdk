@@ -24,11 +24,11 @@ import { execute, sessionProcess, workspaceCommand, quote } from "./exec.js";
 export type { DaytonaPlane } from "./api.js";
 
 /** A Daytona volume to mount. */
-export interface DaytonaVolume {
+export type DaytonaVolume = {
   volumeId: string;
   mountPath: string;
   subpath?: string;
-}
+};
 
 export interface DaytonaOptions {
   /** Defaults to DAYTONA_API_KEY; required on first use unless jwtToken is set. */
@@ -75,7 +75,7 @@ export interface DaytonaSdkModule {
     organizationId?: string;
     apiUrl?: string;
     target?: string;
-  }) => { get(sandboxIdOrName: string): Promise<unknown> };
+  }) => { get(sandboxIdOrName: string): Promise<object> };
 }
 
 /** `box.native.sdk`: the `Sandbox` of the `@daytonaio/sdk` you imported. */

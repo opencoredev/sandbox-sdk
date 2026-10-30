@@ -1,3 +1,4 @@
+import type { JsonValue } from "../src/shared/json.js";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import { createSandbox, SandboxError, type NativeApi, type ProviderSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
@@ -22,7 +23,9 @@ interface AcmeConfig {
 }
 
 /** What the adapter needs from the module: a client class whose `get(id)` resolves to the SDK's sandbox. */
-type AcmeModule = { Acme: new (config: AcmeConfig) => { get(id: string): Promise<unknown> } };
+type AcmeModule = {
+  Acme: new (config: AcmeConfig) => { get(id: string): Promise<object> };
+};
 
 /** `box.native.sdk`: the module's own sandbox type comes back. */
 type AcmeSandboxSdk = <M extends AcmeModule>(

@@ -1,6 +1,7 @@
 // The E2B adapter on the wire, against a scripted server: error mapping, retries, the native API, sdk(load),
 // and the Connect stream faults (truncation, missing end frame, split frames, disconnect and reconnect,
 // cancellation during startup). E2B_API_URL and E2B_SANDBOX_URL point both planes at the server.
+import type { JsonObject } from "../src/shared/json.js";
 import { isObject } from "../src/shared/narrow.js";
 import {
   afterAll,
@@ -65,7 +66,7 @@ const connectStream = (
   extra: { cut?: boolean; hold?: boolean; intervalMs?: number } = {},
 ) => ({ stream: parts, headers: { "content-type": "application/connect+json" }, ...extra });
 
-const envelopeOf = (request: RecordedRequest): Record<string, unknown> =>
+const envelopeOf = (request: RecordedRequest): JsonObject =>
   JSON.parse(request.body.subarray(5).toString());
 
 const scriptOf = (request: RecordedRequest) => {

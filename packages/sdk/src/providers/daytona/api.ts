@@ -6,6 +6,7 @@
  *   does. The newest URL seen for a sandbox wins, as in the official SDK.
  * Both take the same bearer credential, plus `X-Daytona-Organization-ID` with a JWT.
  */
+import type { JsonObject } from "../../shared/json.js";
 import { SandboxError } from "../../errors.js";
 import {
   createDeadline,
@@ -59,7 +60,7 @@ export interface DaytonaHttpOptions {
   fetch?: Fetch;
 }
 
-const record = (value: unknown): value is Record<string, unknown> =>
+const record = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const optional = <T>(value: unknown, test: (cause: unknown) => cause is T): T | undefined =>
@@ -266,7 +267,7 @@ export function daytonaHttp(options: DaytonaHttpOptions) {
   const control = {
     get,
     waitFor,
-    async create(body: Record<string, unknown>, deadline: Deadline): Promise<SandboxDto> {
+    async create(body: JsonObject, deadline: Deadline): Promise<SandboxDto> {
       return remember(
         sandboxDto(await http.json({ method: "POST", path: "/sandbox", body, deadline })),
       );

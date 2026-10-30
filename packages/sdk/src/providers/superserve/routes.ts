@@ -11,6 +11,7 @@
  * activation or resume takes a revision when it starts; a response older than the route in use is dropped,
  * so a slow activation never overwrites a newer resume.
  */
+import type { JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { failure } from "./errors.js";
 
@@ -152,7 +153,7 @@ export type RotateEndpoint = "activate" | "resume";
 
 export interface RouteBookOptions {
   /** POST /sandboxes/{id}/{endpoint} and return the response body. */
-  rotate(sandboxId: string, endpoint: RotateEndpoint): Promise<unknown>;
+  rotate(sandboxId: string, endpoint: RotateEndpoint): Promise<JsonValue | undefined>;
   /** Replace a route this long before its routing hint expires. Default: 30 s. */
   refreshBeforeMs?: number;
 }

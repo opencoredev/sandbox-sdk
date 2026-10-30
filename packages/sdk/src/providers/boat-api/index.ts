@@ -6,6 +6,7 @@
  * https://docs.boat.dev/long-running-tasks/background-commands
  * https://docs.boat.dev/machines
  */
+import type { JsonObject } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
@@ -44,14 +45,27 @@ export interface BoatApiSettings {
   pausedStates?: readonly string[];
   downloadMaxBytes?: number;
   /** Extra create body fields, such as Sandboxer's region. */
-  createFields?: Readonly<Record<string, unknown>>;
+  createFields?: JsonObject;
   /** Sees every sandbox the API returns, such as Sandboxer recording regions. */
   observe?: (sandbox: BoatSandbox) => void;
   destroy?: (http: BoatHttp, id: string) => Promise<void>;
   download?: (http: BoatHttp, id: string, path: string) => Promise<Uint8Array>;
   preview?: (url: string) => Promise<{ url: string; headers?: Record<string, string> }>;
   /** Extra `Configuration` parameters for the client `native.sdk()` builds. */
-  sdkConfiguration?: Readonly<Record<string, unknown>>;
+  sdkConfiguration?: BoatSdkConfiguration;
+}
+
+/** A request hook for the BoatApi client `native.sdk()` builds, as `@boatdev/sdk` middleware. */
+export interface BoatSdkMiddleware {
+  pre?(context: {
+    url: string;
+    init: RequestInit;
+  }): Promise<{ url: string; init: RequestInit } | undefined>;
+}
+
+/** Extra `Configuration` parameters for that client. */
+export interface BoatSdkConfiguration {
+  middleware?: BoatSdkMiddleware[];
 }
 
 const defaults: BoatApiSettings = {

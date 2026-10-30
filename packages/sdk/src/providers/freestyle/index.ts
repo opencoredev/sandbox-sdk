@@ -41,7 +41,7 @@ export interface FreestyleOptions {
 /** What `native.sdk(load)` needs from the module: the `Freestyle` client class and its `vms.ref(id)`. */
 type FreestyleModule = {
   Freestyle: new (options: { apiKey: string; baseUrl: string }) => {
-    vms: { ref(vmIdOrSlug: string): unknown };
+    vms: { ref(vmIdOrSlug: string): object };
   };
 };
 
