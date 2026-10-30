@@ -72,7 +72,11 @@ function invalidResponse(
 }
 
 /** Parses one sandbox object. */
-export function parseSandbox(value: unknown, provider: string, label: string): BoatSandbox {
+export function parseSandbox(
+  value: JsonValue | undefined,
+  provider: string,
+  label: string,
+): BoatSandbox {
   if (!isObject(value) || value === null || !("id" in value) || !isString(value.id) || !value.id)
     throw invalidResponse(provider, label, "sandbox");
   const name = "name" in value && isString(value.name) ? value.name : "";
@@ -87,7 +91,11 @@ export function parseSandbox(value: unknown, provider: string, label: string): B
 }
 
 /** `{ sandbox }`, the body of create, get and update. */
-export function parseSandboxBody(value: unknown, provider: string, label: string): BoatSandbox {
+export function parseSandboxBody(
+  value: JsonValue | undefined,
+  provider: string,
+  label: string,
+): BoatSandbox {
   return parseSandbox(
     isObject(value) && "sandbox" in value ? value.sandbox : undefined,
     provider,
@@ -97,7 +105,7 @@ export function parseSandboxBody(value: unknown, provider: string, label: string
 
 /** `{ sandboxes, pageInfo }` from `GET /sandboxes`. */
 export function parseSandboxPage(
-  value: unknown,
+  value: JsonValue | undefined,
   provider: string,
   label: string,
 ): { sandboxes: BoatSandbox[]; hasMore: boolean; nextCursor?: string } {
@@ -108,7 +116,9 @@ export function parseSandboxPage(
     !Array.isArray(value.sandboxes)
   )
     throw invalidResponse(provider, label, "sandbox list");
-  const sandboxes = value.sandboxes.map((item: unknown) => parseSandbox(item, provider, label));
+  const sandboxes = value.sandboxes.map((item: JsonValue | undefined) =>
+    parseSandbox(item, provider, label),
+  );
   const page: unknown = "pageInfo" in value ? value.pageInfo : undefined;
 
   const hasMore = isObject(page) && "hasMore" in page && page.hasMore === true;
@@ -133,7 +143,7 @@ export type CommandOutcome =
   | { kind: "started"; processId: number }
   | { kind: "unknown" };
 
-export function parseCommand(value: unknown): CommandOutcome {
+export function parseCommand(value: JsonValue | undefined): CommandOutcome {
   if (!isObject(value) || value === null) return { kind: "unknown" };
 
   if (

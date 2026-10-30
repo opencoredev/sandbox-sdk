@@ -6,7 +6,7 @@
  *   does. The newest URL seen for a sandbox wins, as in the official SDK.
  * Both take the same bearer credential, plus `X-Daytona-Organization-ID` with a JWT.
  */
-import type { JsonObject } from "../../shared/json.js";
+import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { SandboxError } from "../../errors.js";
 import {
   createDeadline,
@@ -63,8 +63,10 @@ export interface DaytonaHttpOptions {
 const record = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const optional = <T>(value: unknown, test: (cause: unknown) => cause is T): T | undefined =>
-  test(value) ? value : undefined;
+const optional = <T>(
+  value: JsonValue | undefined,
+  test: (cause: unknown) => cause is T,
+): T | undefined => (test(value) ? value : undefined);
 
 const isString = (value: unknown): value is string => typeof value === "string";
 
@@ -81,7 +83,7 @@ function malformed(what: string, sandboxId?: string): SandboxError {
 }
 
 /** Validates a SandboxDto. */
-export function sandboxDto(value: unknown): SandboxDto {
+export function sandboxDto(value: JsonValue | undefined): SandboxDto {
   if (!record(value) || !isString(value.id) || !value.id) throw malformed("a sandbox");
 
   const labels = record(value.labels)
@@ -105,7 +107,7 @@ export function sandboxDto(value: unknown): SandboxDto {
   };
 }
 
-function fileDto(value: unknown, sandboxId: string): FileDto {
+function fileDto(value: JsonValue | undefined, sandboxId: string): FileDto {
   if (!record(value) || !isString(value.name) || !isBoolean(value.isDir))
     throw malformed("file information", sandboxId);
 
@@ -250,7 +252,12 @@ export function daytonaHttp(options: DaytonaHttpOptions) {
 
   const lifecycle = (timeoutMs: number, signal?: AbortSignal) => createDeadline(timeoutMs, signal);
 
-  const post = async (id: string, action: string, deadline: Deadline, body?: unknown) =>
+  const post = async (
+    id: string,
+    action: string,
+    deadline: Deadline,
+    body?: JsonValue | undefined,
+  ) =>
     remember(
       sandboxDto(
         await http.json({
@@ -436,7 +443,7 @@ function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: st
     } = {},
   ) => http.request({ ...base, method, path, ...extra });
 
-  const result = (value: unknown) => {
+  const result = (value: JsonValue | undefined) => {
     if (!record(value)) throw malformed("a command result", id);
 
     return {

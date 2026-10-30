@@ -427,7 +427,7 @@ function json(request: RecordedRequest): JsonValue | undefined {
   return request.body.length ? JSON.parse(request.body.toString()) : undefined;
 }
 
-function reply(response: ServerResponse, status: number, body?: unknown) {
+function reply(response: ServerResponse, status: number, body?: JsonValue | undefined) {
   response
     .writeHead(status, body === undefined ? {} : { "content-type": "application/json" })
     .end(body === undefined ? undefined : JSON.stringify(body));

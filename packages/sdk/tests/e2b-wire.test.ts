@@ -1,7 +1,7 @@
 // The E2B adapter on the wire, against a scripted server: error mapping, retries, the native API, sdk(load),
 // and the Connect stream faults (truncation, missing end frame, split frames, disconnect and reconnect,
 // cancellation during startup). E2B_API_URL and E2B_SANDBOX_URL point both planes at the server.
-import type { JsonObject } from "../src/shared/json.js";
+import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isObject } from "../src/shared/narrow.js";
 import {
   afterAll,
@@ -49,7 +49,7 @@ afterAll(() => {
 
 const key = "e2b_secret_key_123456";
 const token = "envd-token-abcdef123456";
-const frame = (message: unknown, end = false) => connectEnvelope(message, end);
+const frame = (message: JsonValue | undefined, end = false) => connectEnvelope(message, end);
 const start = (pid: number) => frame({ event: { start: { pid } } });
 
 const out = (text: string, stream: "stdout" | "stderr" = "stdout") =>

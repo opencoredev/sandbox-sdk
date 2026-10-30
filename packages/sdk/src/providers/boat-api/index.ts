@@ -6,7 +6,7 @@
  * https://docs.boat.dev/long-running-tasks/background-commands
  * https://docs.boat.dev/machines
  */
-import type { JsonObject } from "../../shared/json.js";
+import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { posix } from "node:path";
@@ -113,7 +113,7 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
   if (!name.startsWith(prefix)) return;
 
   try {
-    const value: unknown = JSON.parse(
+    const value: JsonValue | undefined = JSON.parse(
       inflateRawSync(Buffer.from(name.slice(prefix.length), "base64url"), {
         maxOutputLength: 65_536,
       }).toString(),
@@ -175,7 +175,7 @@ function info(
 }
 
 function fileInfo(
-  value: unknown,
+  value: JsonValue | undefined,
   failure: ReturnType<typeof errors>["failure"],
   label: string,
 ): FileInfo {
@@ -257,7 +257,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
   // retries underneath them. A first attach that fails then fails fast, so the command is stopped at once.
   const once = boatHttp({ ...transport, retries: 0 });
 
-  const sandboxOf = (value: unknown) => {
+  const sandboxOf = (value: JsonValue | undefined) => {
     const sandbox = parseSandboxBody(value, settings.name, label);
     settings.observe?.(sandbox);
 
@@ -764,7 +764,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
           }
         }, id),
       stat: async (id, path) => {
-        const value: unknown = JSON.parse(
+        const value: JsonValue | undefined = JSON.parse(
           await node(
             id,
             statScript + "process.stdout.write(JSON.stringify(stat(process.argv[1])))",
@@ -775,7 +775,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
         return fileInfo(value, failure, label);
       },
       list: async (id, path) => {
-        const value: unknown = JSON.parse(
+        const value: JsonValue | undefined = JSON.parse(
           await node(
             id,
             statScript +

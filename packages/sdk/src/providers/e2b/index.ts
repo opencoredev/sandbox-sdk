@@ -102,7 +102,7 @@ const unsupported = (message: string) =>
 const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const strings = (value: unknown): string[] | undefined =>
+const strings = (value: JsonValue | undefined): string[] | undefined =>
   Array.isArray(value) ? value.filter((item) => isString(item)) : undefined;
 
 const fileOf = (entry: EntryInfo): FileInfo => ({
@@ -130,7 +130,7 @@ function invalidResponse(what: string, sandboxId?: string) {
   });
 }
 
-function parseDetails(value: unknown): Details {
+function parseDetails(value: JsonValue | undefined): Details {
   if (!isRecord(value) || !isString(value.sandboxID) || !value.sandboxID)
     throw invalidResponse("a sandbox without an ID");
 
@@ -277,7 +277,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     HttpRequest<E2BPlane>
   >;
 
-  function parseConnection(value: unknown): Connection {
+  function parseConnection(value: JsonValue | undefined): Connection {
     if (
       !isRecord(value) ||
       !isString(value.sandboxID) ||

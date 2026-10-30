@@ -1,3 +1,4 @@
+import type { JsonValue } from "../src/shared/json.js";
 import { isObject, isString } from "../src/shared/narrow.js";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -56,7 +57,7 @@ test("every awaited native operation is bounded and aborts its fetch", async () 
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      (_url: unknown, init?: RequestInit) =>
+      (_url: JsonValue | undefined, init?: RequestInit) =>
         new Promise((_resolve, reject) => {
           const signal = init?.signal;
 

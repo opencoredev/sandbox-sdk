@@ -161,14 +161,14 @@ const wholeSeconds = (value: number | undefined, label: string, zero: boolean) =
   return Math.ceil(value / 1000);
 };
 
-const field = (raw: unknown, key: string): JsonValue | undefined =>
+const field = (raw: JsonValue | undefined, key: string): JsonValue | undefined =>
   isObject(raw) ? Reflect.get(raw, key) : undefined;
 
-const strings = (raw: unknown): string[] | undefined =>
+const strings = (raw: JsonValue | undefined): string[] | undefined =>
   Array.isArray(raw) && raw.every((x) => isString(x)) ? raw : undefined;
 
 /** Parses a sandbox object from the control plane, like the SDK's `toSandboxInfo`. */
-function parseInfo(raw: unknown, sandboxId?: string): NativeInfo {
+function parseInfo(raw: JsonValue | undefined, sandboxId?: string): NativeInfo {
   const id = field(raw, "id"),
     status = field(raw, "status"),
     created = field(raw, "created_at");
@@ -659,7 +659,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
         const createdAt = Date.now();
-        let raw: unknown;
+        let raw: JsonValue | undefined;
 
         try {
           // The caller's signal is checked after the response instead: aborting mid-request would leave a sandbox nobody deletes.

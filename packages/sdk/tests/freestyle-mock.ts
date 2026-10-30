@@ -166,7 +166,7 @@ v=sdk_paths(v)`;
 
     return this.record;
   }
-  async snapshot(options?: unknown) {
+  async snapshot(options?: JsonValue | undefined) {
     freestyleState.snapshotOptions.push(options);
     const snapshotId = crypto.randomUUID();
     const root = await fs.mkdtemp("/tmp/sdk-freestyle-snapshot-");

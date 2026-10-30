@@ -6,7 +6,7 @@
  *   const e2b = await fakeE2B();
  *   vi.stubGlobal("fetch", e2b.fetch(globalThis.fetch));   // routes api.*, sandbox.*, 49983-* and 3000-* hosts here
  */
-import type { JsonObject } from "../src/shared/json.js";
+import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isBoolean, isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
@@ -50,7 +50,10 @@ export type StartHook = (script: string, spawn: Spawn, machine: Machine) => Prom
 
 type Message = JsonObject;
 
-const json = (response: ServerResponse, status: number, body: unknown) => {
+/** Any value JSON.stringify accepts. */
+type Serializable = Parameters<typeof JSON.stringify>[0];
+
+const json = (response: ServerResponse, status: number, body: Serializable) => {
   response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 };
 
@@ -434,7 +437,8 @@ export async function fakeE2B(): Promise<FakeE2B> {
 
         if (snapshot) await fs.cp(snapshot, root, { recursive: true });
         const network = isRecord(body.network) ? body.network : undefined;
-        const list = (value: unknown) => (Array.isArray(value) ? value.map(String) : undefined);
+        const list = (value: JsonValue | undefined) =>
+          Array.isArray(value) ? value.map(String) : undefined;
 
         const info: Info = {
           sandboxID: "",

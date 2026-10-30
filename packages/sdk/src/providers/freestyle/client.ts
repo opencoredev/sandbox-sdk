@@ -10,7 +10,7 @@
  *   failure to see whether the chunk landed.
  * - Every request and poll of one adapter operation shares its deadline (see deadline.ts).
  */
-import type { JsonObject } from "../../shared/json.js";
+import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isString } from "../../shared/narrow.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
@@ -92,7 +92,7 @@ function optionalNumber(value: unknown): value is number | null | undefined {
   return value === undefined || value === null || typeof value === "number";
 }
 
-export function vmData(value: unknown, sandboxId?: string): VmData {
+export function vmData(value: JsonValue | undefined, sandboxId?: string): VmData {
   if (!isRecord(value) || !isString(value.id) || !isString(value.state))
     unexpected("VM record", sandboxId);
   const metadata: Record<string, string> = {};
@@ -127,12 +127,12 @@ export function vmData(value: unknown, sandboxId?: string): VmData {
   };
 }
 
-function firewallRules(value: unknown): FirewallRule[] {
+function firewallRules(value: JsonValue | undefined): FirewallRule[] {
   if (value === undefined || value === null) return [];
 
   if (!Array.isArray(value)) unexpected("firewall rule list");
 
-  return value.map((rule: unknown) => {
+  return value.map((rule: JsonValue | undefined) => {
     if (
       !isRecord(rule) ||
       !isString(rule.action) ||
@@ -145,7 +145,7 @@ function firewallRules(value: unknown): FirewallRule[] {
   });
 }
 
-function execResponse(value: unknown, sandboxId: string): ExecResponse {
+function execResponse(value: JsonValue | undefined, sandboxId: string): ExecResponse {
   if (
     !isRecord(value) ||
     !optionalNumber(value.statusCode) ||
@@ -157,14 +157,14 @@ function execResponse(value: unknown, sandboxId: string): ExecResponse {
   return { statusCode: value.statusCode ?? null, stdout: value.stdout, stderr: value.stderr };
 }
 
-function uploadStatus(value: unknown, sandboxId: string): UploadStatus {
+function uploadStatus(value: JsonValue | undefined, sandboxId: string): UploadStatus {
   if (!isRecord(value) || !isString(value.uploadId) || !Number.isSafeInteger(value.receivedBytes))
     unexpected("upload session", sandboxId);
 
   return { uploadId: value.uploadId, receivedBytes: Number(value.receivedBytes) };
 }
 
-const text = (value: unknown, key: string) => {
+const text = (value: JsonValue | undefined, key: string) => {
   const found = isRecord(value) ? value[key] : undefined;
 
   return isString(found) && found ? found : undefined;
@@ -251,7 +251,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
     path: string,
     deadline: Deadline,
   ): Promise<HttpResponse> {
-    let body: unknown;
+    let body: JsonValue | undefined;
 
     try {
       body = accepted.json();
@@ -376,7 +376,9 @@ export function freestyleClient(options: FreestyleClientOptions) {
   return {
     http,
     async createVm(body: JsonObject): Promise<CreatedVm> {
-      const value: unknown = (await call({ method: "POST", path: "/v5/vms", body })).json();
+      const value: JsonValue | undefined = (
+        await call({ method: "POST", path: "/v5/vms", body })
+      ).json();
       const data = vmData(value);
 
       return {
@@ -386,7 +388,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
       };
     },
     async listVms(limit: number, offset: number): Promise<{ vms: VmData[]; totalCount: number }> {
-      const value: unknown = (
+      const value: JsonValue | undefined = (
         await call({ method: "GET", path: "/v5/vms", query: { limit, offset } })
       ).json();
 
@@ -394,7 +396,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
         unexpected("VM list");
 
       return {
-        vms: value.vms.map((v: unknown) => vmData(v)),
+        vms: value.vms.map((v: JsonValue | undefined) => vmData(v)),
         totalCount: Number(value.totalCount),
       };
     },
@@ -424,7 +426,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
       await call({ method: "POST", path: `/v5/vms/{id}/${action}`, ...vm(id), body: {} });
     },
     async snapshot(id: string, body: { ttlSeconds?: number }): Promise<string> {
-      const value: unknown = (
+      const value: JsonValue | undefined = (
         await call({ method: "POST", path: "/v5/vms/{id}/snapshot", ...vm(id), body })
       ).json();
 

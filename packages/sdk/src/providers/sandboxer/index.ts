@@ -1,4 +1,5 @@
 /** Sandboxer API v1 derives from Boat API v1. https://sandboxer.com/api/v1/openapi.yaml */
+import type { JsonValue } from "../../shared/json.js";
 import { isObject, isString } from "../../shared/narrow.js";
 import type { Provider } from "../../provider.js";
 import type { NativeApi } from "../../native.js";
@@ -80,7 +81,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   async function poll(
     path: string,
     params: Record<string, string>,
-    ready: (value: unknown) => boolean,
+    ready: (value: JsonValue | undefined) => boolean,
   ) {
     const deadline = createDeadline(timeout);
 

@@ -135,7 +135,7 @@ export interface Route {
 
 /** Reads `access_token` and `routing_hint` from a create, activate or resume response. */
 export function parseRoute(
-  raw: unknown,
+  raw: JsonValue | undefined,
   sandboxId: string,
   operation: string,
 ): { token: string; hint?: string } {
@@ -171,7 +171,7 @@ export interface RouteBook {
   /** POST `/resume` (not shared) and apply its route by revision. */
   resume(sandboxId: string): Promise<Route>;
   /** Apply a route from a create response. */
-  seed(sandboxId: string, raw: unknown): Route;
+  seed(sandboxId: string, raw: JsonValue | undefined): Route;
   /** Drop a sandbox's state (destroy, close). An activation still in flight then applies to nothing. */
   forget(sandboxId: string): void;
   /** Every token and hint held, for redaction. */

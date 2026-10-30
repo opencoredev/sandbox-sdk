@@ -119,7 +119,7 @@ const base64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
 const connectJson = "application/connect+json";
 
 /** proto3 JSON integers: a number or a decimal string. Absent is 0. */
-function decodeInt(value: unknown): number | undefined {
+function decodeInt(value: JsonValue | undefined): number | undefined {
   if (value === undefined) return 0;
   const number = isString(value) && /^-?\d+$/.test(value) ? Number(value) : value;
 
@@ -127,7 +127,7 @@ function decodeInt(value: unknown): number | undefined {
 }
 
 /** An EntryInfo from envd, or undefined for a type the SDK skips too. */
-function parseEntry(value: unknown): EntryInfo | undefined {
+function parseEntry(value: JsonValue | undefined): EntryInfo | undefined {
   if (!isRecord(value) || !isString(value.path)) return undefined;
 
   const type =
@@ -153,7 +153,7 @@ type ProcessEvent =
   | { kind: "other" };
 
 /** One StartResponse or ConnectResponse (`{ event: ProcessEvent }`), or undefined when it is malformed. */
-function parseEvent(message: unknown): ProcessEvent | undefined {
+function parseEvent(message: JsonValue | undefined): ProcessEvent | undefined {
   const event = isRecord(message) ? message.event : undefined;
 
   if (!isRecord(event)) return undefined;
@@ -212,7 +212,7 @@ export function createEnvd(options: {
   async function unary(
     sandboxId: string,
     method: string,
-    message: unknown,
+    message: JsonValue | undefined,
     options: { user?: string; readOnly?: boolean } = {},
   ): Promise<JsonValue | undefined> {
     return http.json({
@@ -236,7 +236,7 @@ export function createEnvd(options: {
   async function open(
     sandboxId: string,
     rpc: "Start" | "Connect",
-    message: unknown,
+    message: JsonValue | undefined,
     options: Omit<StartOptions, "command" | "cwd" | "envs" | "user" | "stdin"> & {
       headers?: Record<string, string>;
       tag?: string;

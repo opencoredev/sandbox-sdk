@@ -231,7 +231,7 @@ const defaultMax = 16 * 1024 * 1024;
 export async function* ndjson(
   body: ReadableStream<Uint8Array>,
   options: StreamOptions,
-): AsyncGenerator<unknown, void, undefined> {
+): AsyncGenerator<JsonValue | undefined, void, undefined> {
   const max = options.maxFrameBytes ?? defaultMax;
   const buffer = new Bytes();
 
@@ -392,7 +392,7 @@ export async function* sse(
 
 /** A Connect streaming frame: a message, or the end-of-stream frame with the outcome. */
 export type ConnectFrame =
-  | { kind: "message"; message: unknown }
+  | { kind: "message"; message: JsonValue | undefined }
   | {
       kind: "end";
       error?: { code: string; message?: string; details?: unknown[] };
@@ -480,7 +480,7 @@ export async function* connectEnvelopes(
     }
   }
 
-  function end(value: unknown): ConnectFrame {
+  function end(value: JsonValue | undefined): ConnectFrame {
     if (!isObject(value) || value === null)
       throw fault("malformed", "The Connect end-of-stream frame is not an object", options);
     const error: unknown = "error" in value ? value.error : undefined;
@@ -517,7 +517,7 @@ export async function* connectEnvelopes(
 }
 
 /** Encodes one Connect envelope with a JSON payload, for a streaming request body. */
-export function connectEnvelope(message: unknown, end = false): Uint8Array {
+export function connectEnvelope(message: JsonValue | undefined, end = false): Uint8Array {
   const payload = new TextEncoder().encode(JSON.stringify(message));
   const out = new Uint8Array(5 + payload.byteLength);
   out[0] = end ? 0x02 : 0x00;

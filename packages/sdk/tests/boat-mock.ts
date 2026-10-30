@@ -1,6 +1,7 @@
 /** Official HTTP transport mock. The real Boat SDK talks to this server; files,
  * commands, stdin, streaming, process groups and preview HTTP run on real Linux.
  */
+import type { JsonValue } from "../src/shared/json.js";
 import { isString } from "../src/shared/narrow.js";
 import { createServer, type ServerResponse } from "node:http";
 import { createServer as createSocket } from "node:net";
@@ -67,7 +68,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
   let loseWrite = false;
   const idempotent = new Map<string, Box>();
 
-  const json = (res: ServerResponse, data: unknown, statusCode = 200) => {
+  const json = (res: ServerResponse, data: JsonValue | undefined, statusCode = 200) => {
     res.writeHead(statusCode, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   };

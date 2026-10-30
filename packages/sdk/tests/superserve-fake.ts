@@ -3,7 +3,7 @@
  * protocol @superserve/sdk 0.11.4 speaks. Install it with `installSuperserveFake()`, which stubs the global
  * `fetch` and `WebSocket`. Guest commands and files run on Linux through MockGuest.
  */
-import type { JsonObject } from "../src/shared/json.js";
+import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { vi } from "vitest";
 import { MockGuest } from "./mock-guest.js";
@@ -90,7 +90,7 @@ export const state = {
   resumeGate: undefined as Promise<void> | undefined,
   /** Answer the next data-plane requests with these failures instead (status, JSON or text body). */
   // SAFETY: an empty start value, typed for what the tests store in it later.
-  dataFaults: [] as { status: number; body: unknown }[],
+  dataFaults: [] as { status: number; body: JsonValue | undefined }[],
   /** Hold the create response (the sandbox already exists) until the gate opens. */
   // SAFETY: an empty start value, typed for what the tests store in it later.
   createGate: undefined as Promise<void> | undefined,
@@ -108,7 +108,10 @@ export const state = {
 let minted = 0;
 const mint = () => `tok${++minted}-${crypto.randomUUID().replaceAll("-", "")}`;
 
-const json = (status: number, body: unknown) =>
+/** Any value JSON.stringify accepts: the fake answers with plain objects and class-free records. */
+type Serializable = Parameters<typeof JSON.stringify>[0];
+
+const json = (status: number, body: Serializable) =>
   new Response(body === undefined ? null : JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -179,18 +182,18 @@ const normalize = (g: MockGuest, value: string) =>
     `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
   );
 
-const record = (value: unknown): JsonObject =>
+const record = (value: JsonValue | undefined): JsonObject =>
   isObject(value) ? Object.fromEntries(Object.entries(value)) : {};
 
-const list = (value: unknown): string[] =>
+const list = (value: JsonValue | undefined): string[] =>
   Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
 
-const strings = (value: unknown): Record<string, string> =>
+const strings = (value: JsonValue | undefined): Record<string, string> =>
   Object.fromEntries(
     Object.entries(record(value)).filter((e): e is [string, string] => typeof e[1] === "string"),
   );
 
-async function control(method: string, url: URL, body: unknown): Promise<Response> {
+async function control(method: string, url: URL, body: JsonValue | undefined): Promise<Response> {
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (parts[0] === "snapshots")
@@ -323,7 +326,7 @@ async function data(
   method: string,
   url: URL,
   headers: Headers,
-  body: unknown,
+  body: JsonValue | undefined,
   raw: Uint8Array | undefined,
 ): Promise<Response> {
   const id = headers.get("x-superserve-sandbox-id") ?? "";
@@ -399,7 +402,7 @@ async function data(
         exit_code: 0,
       });
     } catch (error) {
-      const failed = record(error);
+      const failed: JsonObject = isObject(error) ? Object.fromEntries(Object.entries(error)) : {};
 
       if (isNumber(failed.code))
         return json(200, {
@@ -422,7 +425,7 @@ async function fakeFetch(input: string | URL | Request, init: RequestInit = {}):
   init.signal?.throwIfAborted();
   const raw = init.body instanceof Uint8Array ? init.body : undefined;
   const text = isString(init.body) ? init.body : undefined;
-  const body: unknown = text === undefined ? undefined : JSON.parse(text);
+  const body: JsonValue | undefined = text === undefined ? undefined : JSON.parse(text);
   state.requests.push({ method, url, headers, body });
 
   if (url.origin === api) {

@@ -15,6 +15,7 @@
  * says where this connection's output starts: the offset asked for, or 0 when Boat replaced the log.
  * Like the SDK, a lower `attached` offset is taken as is, so a replaced log's output is not dropped.
  */
+import type { JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createDeadline, sleep } from "../../http.js";
@@ -56,7 +57,7 @@ const offset = (value: object, key: string): number | undefined => {
 };
 
 function parseFrame(
-  value: unknown,
+  value: JsonValue | undefined,
   malformed: (what: string, code?: "outcome_unknown") => SandboxError,
 ): WireFrame {
   if (!isObject(value) || value === null || !("type" in value) || !isString(value.type))
