@@ -125,8 +125,7 @@
     "./package.json": "./package.json"
   },
   "publishConfig": {
-    "access": "public",
-    "tag": "next"
+    "access": "public"
   },
   "scripts": {
     "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
