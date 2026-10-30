@@ -1,7 +1,31 @@
 import { defineConfig } from "blume";
 
+import site from "../../vercel.json" with { type: "json" };
 import { providerTabsMarkdown } from "./components/providers.ts";
 import { sandboxDark } from "./themes/code";
+
+type Redirect = NonNullable<Parameters<typeof defineConfig>[0]["redirects"]>[number];
+
+const base = "/docs";
+
+/**
+ * The repo's vercel.json is the one list of redirects, and Vercel answers them
+ * with real 308s. The ones that start and end in the docs come through here too,
+ * written relative to the base as Blume expects, so `blume validate` checks each
+ * target is a page and a host that skips vercel.json still gets a redirect page.
+ */
+const docsRedirects = site.redirects.flatMap(({ source, destination }): Redirect[] => {
+  const from = withinBase(source);
+  const to = withinBase(destination);
+
+  return from && to ? [{ from, to, status: 308 }] : [];
+});
+
+function withinBase(path: string): string | undefined {
+  if (path === base) return "/";
+
+  return path.startsWith(`${base}/`) ? path.slice(base.length) : undefined;
+}
 
 const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeScript (Node 22+ or Bun 1.3+) needs an isolated Linux machine to:
 
@@ -33,7 +57,7 @@ export default defineConfig({
     root: "content",
   },
   deployment: {
-    base: "/docs",
+    base,
     site: "https://sandbox-sdk.app",
   },
   github: {
@@ -41,19 +65,7 @@ export default defineConfig({
     repo: "sandbox-sdk",
     dir: "apps/docs",
   },
-  redirects: [
-    { from: "/quickstart", to: "/getting-started/quickstart" },
-    { from: "/installation", to: "/getting-started/installation" },
-    { from: "/providers/compare", to: "/providers" },
-    // The 0.2 docs had one API page per surface. Each now lives in a concept guide.
-    // These stay exact: Blume serves its own JSON under /api/docs.
-    { from: "/api/sandboxes", to: "/concepts/sandboxes-and-keys" },
-    { from: "/api/commands", to: "/concepts/running-commands" },
-    { from: "/api/files", to: "/concepts/files-and-git" },
-    { from: "/api/processes", to: "/concepts/processes-and-previews" },
-    { from: "/api/ports", to: "/concepts/processes-and-previews" },
-    { from: "/api/snapshots", to: "/concepts/lifecycle-and-cleanup" },
-  ],
+  redirects: docsRedirects,
   navigation: {
     cta: { href: "https://github.com/opencoredev/sandbox-sdk", label: "GitHub" },
     // The repo link is the only thing in Blume's site footer, so hiding it drops
