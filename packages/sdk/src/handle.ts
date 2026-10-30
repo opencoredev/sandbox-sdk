@@ -34,7 +34,8 @@ function methodsOf(methods: ExtensionMethods): [string, ExtensionMethods[string]
     level !== null && level !== Object.prototype;
     level = Object.getPrototypeOf(level)
   )
-    for (const name of Object.getOwnPropertyNames(level)) if (name !== "constructor") names.add(name);
+    for (const name of Object.getOwnPropertyNames(level))
+      if (name !== "constructor") names.add(name);
 
   return [...names].flatMap((name) => {
     const method = methods[name];
