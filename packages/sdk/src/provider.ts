@@ -58,6 +58,11 @@ export interface ProviderFiles {
   readonly transfer?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
+  /**
+   * One exec carrying a small environment variable costs less than a read plus a write, so `files.edit`
+   * runs as one guest python3 call. Leave it unset where extra env is staged through more requests.
+   */
+  readonly editInGuest?: boolean;
   /** Write applies `options.mode` itself. Without it, the core runs `chmod` after the write. */
   readonly writeSupportsMode?: boolean;
   /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */

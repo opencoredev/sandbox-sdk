@@ -225,7 +225,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     remove: (path, options) => safe(() => fs.remove(id, pathOf(path), { recursive: options?.recursive ?? false })),
     edit: (path, { find, replace }) => safe(async () => {
       if (!find) invalid("find cannot be empty");
-      if (byteExact(find) && !/\p{Cs}/u.test(replace)) {
+      if (fs.editInGuest && byteExact(find) && !/\p{Cs}/u.test(replace)) {
         const { exitCode, stdout } = await guest(python(editScript, pathOf(path)), JSON.stringify({ find, replace }), true);
         if (exitCode === 0) return;
         if (exitCode === 3) throw editFailed(path, stdout.trim() ? stdout.trim().split(" ").map(Number) : []);

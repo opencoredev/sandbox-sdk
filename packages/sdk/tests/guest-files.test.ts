@@ -18,7 +18,7 @@ function recorded(native: Provider, python = true) {
       return native.exec(id, { ...input, onChunk: chunk => input.onChunk({ ...chunk, text: chunk.text.replaceAll(root, "") }) });
     },
     files: {
-      ...native.files,
+      ...native.files, editInGuest: true,
       read(id, path) { calls.push("read"); return native.files.read(id, path); },
       write(id, path, data, options) { calls.push("write"); return native.files.write(id, path, data, options); },
       list(id, path) { calls.push("list"); return native.files.list(id, path); },
@@ -115,6 +115,17 @@ describe("files.edit in one guest call", () => {
       expect(await box.files.read("a.txt")).toBe("three");
     } finally { await box.destroy(); }
   });
+});
+
+test("adapters that stage extra env keep edit on the RPC path", async () => {
+  const { provider, calls } = recorded(await shellProvider());
+  const box = await createSandbox({ ...provider, files: { ...provider.files, editInGuest: false } });
+  try {
+    await box.files.write("a.txt", "one");
+    calls.length = 0;
+    await box.files.edit("a.txt", { find: "one", replace: "two" });
+    expect(calls).toEqual(["read", "write"]);
+  } finally { await box.destroy(); }
 });
 
 describe("files.search in one guest call", () => {

@@ -369,6 +369,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     }),
     files: {
       writeCreatesParents: true,
+      editInGuest: true,
       read: (id, path) => call(id, async () => { await client(id); return envd.files.read(id, path, "root"); }),
       write: (id, path, data) => call(id, async () => {
         await client(id);
