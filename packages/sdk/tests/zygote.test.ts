@@ -1,7 +1,8 @@
 // The guest zygote (SBX-78): Freestyle and Superserve fork each command's supervisor from a warm
 // interpreter. These drive the real client, zygote and Freestyle supervisor on Linux. Native exec
 // hands the client pipes, so the harness does too; the provider fakes hand it sockets, which the
-// zygote refuses, so provider tests cover the fallback.
+// zygote refuses, so provider tests cover the fallback. superserve-zygote.test.ts drives
+// Superserve's warm path through its own execute().
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
