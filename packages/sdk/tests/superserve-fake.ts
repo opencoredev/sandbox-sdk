@@ -441,6 +441,9 @@ async function fakeFetch(input: string | URL | Request, init: RequestInit = {}):
 
 type Listener = (event: never) => void;
 
+/** What the fake socket dispatches: an open or close notice, or a message with its data. */
+type FakeSocketEvent = { data?: string | ArrayBuffer | Uint8Array; code?: number; reason?: string };
+
 /** The subset of the WebSocket API session.ts uses, driving a MockGuest stream. */
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -496,10 +499,10 @@ class FakeWebSocket {
   removeEventListener(type: string, listener: Listener) {
     this.listeners.get(type)?.delete(listener);
   }
-  private emit(type: string, event: object) {
+  private emit(type: string, event: FakeSocketEvent) {
     for (const listener of this.listeners.get(type) ?? [])
       // SAFETY: listeners for this event type are registered with this signature.
-      (listener as (event: object) => void)(event);
+      (listener as (event: FakeSocketEvent) => void)(event);
   }
   private binary(channel: number, bytes: Uint8Array) {
     const frame = new Uint8Array(bytes.length + 1);

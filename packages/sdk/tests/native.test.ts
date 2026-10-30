@@ -1,4 +1,3 @@
-import type { JsonValue } from "../src/shared/json.js";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import { createSandbox, SandboxError, type NativeApi, type ProviderSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";

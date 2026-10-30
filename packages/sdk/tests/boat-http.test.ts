@@ -1,6 +1,7 @@
 // Boat and Sandboxer over plain HTTP: the command stream's protocol faults, lifecycle faults, the
 // idempotency key, the delete confirmation headers, and the native API. Everything runs against
 // http-fake, so each fault is scripted rather than timed.
+import type { JsonObject } from "../src/shared/json.js";
 import { isString } from "../src/shared/narrow.js";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import type { BoatApi } from "@boatdev/sdk";
@@ -26,7 +27,7 @@ afterEach(async () => {
   await server.close();
 });
 
-const line = (frame: object) => JSON.stringify(frame) + "\n";
+const line = (frame: JsonObject) => JSON.stringify(frame) + "\n";
 
 const attached = (stdoutOffset = 0, stderrOffset = 0) =>
   line({ type: "attached", processId: 7, stdoutOffset, stderrOffset });

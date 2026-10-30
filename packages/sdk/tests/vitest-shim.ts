@@ -7,7 +7,7 @@ import { isString } from "../src/shared/narrow.js";
 class ByteQueue {
   private buffer: Uint8Array[] = [];
   private waiting:
-    | { resolve: (result: IteratorResult<Uint8Array>) => void; reject: (error: unknown) => void }
+    | { resolve: (result: IteratorResult<Uint8Array>) => void; reject: (cause: unknown) => void }
     | undefined;
   private closed = false;
   private error: unknown;
@@ -34,15 +34,15 @@ class ByteQueue {
       waiter.resolve({ value: undefined, done: true });
     }
   }
-  fail(error: unknown) {
+  fail(cause: unknown) {
     if (this.closed) return;
-    this.error = error;
+    this.error = cause;
     this.closed = true;
 
     if (this.waiting) {
       const waiter = this.waiting;
       this.waiting = undefined;
-      waiter.reject(error);
+      waiter.reject(cause);
     }
   }
   [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -78,7 +78,7 @@ class ExecStream {
   private exit: number | undefined;
   private failure: unknown;
   private done = false;
-  private waiters: { resolve: (code: number) => void; reject: (error: unknown) => void }[] = [];
+  private waiters: { resolve: (code: number) => void; reject: (cause: unknown) => void }[] = [];
   constructor(private readonly transport: Transport) {}
   write(data: string | Uint8Array) {
     this.transport.write(isString(data) ? new TextEncoder().encode(data) : data);
@@ -112,19 +112,22 @@ class ExecStream {
 
     for (const waiter of this.waiters.splice(0)) waiter.resolve(code);
   }
-  _setError(error: unknown) {
+  _setError(cause: unknown) {
     if (this.done) return;
-    this.failure = error;
+    this.failure = cause;
     this.done = true;
 
-    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+    for (const waiter of this.waiters.splice(0)) waiter.reject(cause);
   }
 }
 
-const afterAllHooks: (() => unknown)[] = [];
+/** A cleanup hook, as vitest takes it. */
+type Hook = () => Promise<void> | void;
+
+const afterAllHooks: Hook[] = [];
 
 /** Collected, not run: call {@link runAfterAll} when the consumer is done with the fakes. */
-export function afterAll(hook: () => unknown) {
+export function afterAll(hook: Hook) {
   afterAllHooks.push(hook);
 }
 
@@ -133,7 +136,8 @@ export async function runAfterAll() {
 }
 
 export const vi = {
-  stubGlobal(name: string, value: unknown) {
+  // The fakes stub fetch and, for Superserve, WebSocket.
+  stubGlobal(name: string, value: typeof fetch | typeof WebSocket) {
     Reflect.set(globalThis, name, value);
   },
   async importActual(name: string): Promise<{ ExecStream: typeof ExecStream }> {

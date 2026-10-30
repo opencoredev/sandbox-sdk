@@ -411,16 +411,16 @@ export async function freestyleFetch(
     record.body = JSON.parse(new TextDecoder().decode(body));
   freestyleRequests.push(record);
 
-  const served = route(method, url, headers, body).catch((failure: unknown) => {
-    if (isObject(failure) && failure !== null && "status" in failure && isNumber(failure.status))
+  const served = route(method, url, headers, body).catch((cause: unknown) => {
+    if (isObject(cause) && cause !== null && "status" in cause && isNumber(cause.status))
       return Response.json(
         {
-          code: "code" in failure && isString(failure.code) ? failure.code : "ERROR",
-          message: failure instanceof Error ? failure.message : "error",
+          code: "code" in cause && isString(cause.code) ? cause.code : "ERROR",
+          message: cause instanceof Error ? cause.message : "error",
         },
-        { status: failure.status },
+        { status: cause.status },
       );
-    throw new TypeError("fetch failed", { cause: failure });
+    throw new TypeError("fetch failed", { cause });
   });
 
   const signal = init.signal;
@@ -439,9 +439,9 @@ export async function freestyleFetch(
         done();
         resolve(response);
       },
-      (failure: unknown) => {
+      (cause: unknown) => {
         done();
-        reject(failure);
+        reject(cause);
       },
     );
   });

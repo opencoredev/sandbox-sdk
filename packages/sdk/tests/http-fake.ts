@@ -128,7 +128,7 @@ export async function fakeServer(): Promise<FakeServer> {
       }
     });
 
-    if (typeof reply === "function") {
+    if (reply instanceof Function) {
       await reply(recorded, response);
 
       return;

@@ -25,15 +25,21 @@ async function failure(promise: Promise<unknown>): Promise<SandboxError> {
 }
 
 // A stand-in for @daytonaio/sdk with the shape native.sdk() needs.
+interface FakeConfig {
+  apiKey?: string;
+  apiUrl?: string;
+  target?: string;
+}
+
 class FakeSandbox {
   constructor(
     readonly id: string,
-    readonly config: object,
+    readonly config: FakeConfig,
   ) {}
 }
 
 class FakeDaytona {
-  constructor(readonly config: { apiKey?: string; apiUrl?: string; target?: string }) {}
+  constructor(readonly config: FakeConfig) {}
   async get(id: string) {
     return new FakeSandbox(id, this.config);
   }
