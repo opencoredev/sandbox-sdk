@@ -3,16 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   cleanupFreestyle,
-  freestyle,
+  freestyleFetch,
   freestyleState,
 } from "../../packages/sdk/tests/freestyle-mock.js";
+import { freestyle } from "../../packages/sdk/src/providers/freestyle/index.js";
 
-vi.stubGlobal(
-  "fetch",
-  vi.fn(() => {
-    throw new Error("Cloud HTTP forbidden in offline tests");
-  }),
-);
+// The fake Freestyle API; any other host throws.
+vi.stubGlobal("fetch", vi.fn(freestyleFetch));
 
 import { createSandbox } from "../../packages/sdk/src/index.js";
 import { main } from "../src/cli.js";
@@ -33,7 +30,7 @@ afterEach(async () => {
 
 test("bench reap skips legacy missing metadata, recovers native-labelled orphans, and keeps other runs", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  const provider = freestyle({ apiKey: "offline" });
+  const provider = freestyle({ apiKey: "mock-key" });
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "reap-43" } });
   const unrelated = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
   const legacy = await createSandbox(provider);
@@ -41,10 +38,13 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
 
   if (!native) throw new Error("Missing mock VM");
   delete native.record.metadata["sandbox-sdk-info"];
-  vi.spyOn(legacy.native.fs, "readTextFile").mockRejectedValue(
+  const ownVm = freestyleState.boxes.get(own.id);
+
+  if (!ownVm) throw new Error("Missing mock VM");
+  vi.spyOn(native.fs, "readFile").mockRejectedValue(
     Object.assign(new Error("missing marker or VM"), { status: 404 }),
   );
-  vi.spyOn(own.native.fs, "readTextFile").mockRejectedValue(
+  vi.spyOn(ownVm.fs, "readFile").mockRejectedValue(
     Object.assign(new Error("setup never ran"), { status: 404 }),
   );
 
@@ -127,7 +127,7 @@ test("bench reap fails on native listing auth errors", async () => {
 
 test("reap recovers exactly labelled resources even when the journal is truncated", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  const provider = freestyle({ apiKey: "offline" });
+  const provider = freestyle({ apiKey: "mock-key" });
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
   const other = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
 

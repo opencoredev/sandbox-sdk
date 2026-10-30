@@ -1,37 +1,64 @@
+/** A fake Freestyle API: `freestyleFetch` serves the /v5 routes the adapter calls from these mock VMs. */
+import type { JsonObject, JsonValue } from "../src/shared/json.js";
+import { isNumber, isObject, isString } from "../src/shared/narrow.js";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import * as freestyleSdk from "freestyle";
-import { MockGuest } from "./cloud-guest-mock.js";
-import {
-  createFreestyleProvider,
-  type FreestyleOptions,
-} from "../src/providers/freestyle/provider.js";
-import type {
-  CreateVmOptions,
-  VmData,
-  ExecOptions,
-  InlineFirewallRule,
-  CreateTlsRuleOptions,
-  Vm,
-} from "freestyle";
-import { isObject, isString } from "../src/shared/narrow.js";
+import { MockGuest } from "./mock-guest.js";
 
-type SnapshotOptions = Parameters<Vm["snapshot"]>[0];
+interface InlineFirewallRule {
+  action: string;
+  source: JsonObject;
+  destination: JsonObject;
+}
 
-const creates: CreateVmOptions[] = [];
-const rules: CreateTlsRuleOptions[] = [];
-const snapshotOptions: SnapshotOptions[] = [];
+interface CreateVmOptions {
+  snapshotId?: string;
+  metadata?: Record<string, string>;
+  firewall: { rules: InlineFirewallRule[] };
+  tls?: { rules: unknown[] };
+  vpcs?: string[];
+  idleTimeoutSeconds?: number;
+  ttlSeconds?: number;
+  autoDeleteSeconds?: number;
+}
+
+interface VmData {
+  id: string;
+  state: string;
+  resources: { cpu: number; memory: number; storage: number };
+  metadata: Record<string, string>;
+  vpcs: string[];
+  networks: unknown[];
+  createdAt: string;
+  updatedAt: string;
+  idleTimeoutSeconds?: number;
+  ttlSeconds?: number;
+  autoDeleteSeconds?: number;
+}
+
+interface ExecOptions {
+  command: string;
+  stdin?: string;
+  linuxUser?: string;
+  timeoutMs?: number;
+}
+
+type CreateTlsRuleOptions = JsonObject;
 
 export const freestyleState = {
   boxes: new Map<string, MockVm>(),
-  creates,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
+  creates: [] as CreateVmOptions[],
   snapshots: new Map<string, string>(),
-  rules,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
+  rules: [] as CreateTlsRuleOptions[],
   error: 0,
   listError: 0,
   widen: false,
   delay: 0,
   peak: 0,
-  snapshotOptions,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
+  snapshotOptions: [] as unknown[],
 };
 
 const error = (status: number) => Object.assign(new Error("secret-native-error"), { status });
@@ -55,15 +82,10 @@ export class MockVm {
       updatedAt: new Date().toISOString(),
       idleTimeoutSeconds: params.idleTimeoutSeconds,
       ttlSeconds: params.ttlSeconds,
+      ...(params.autoDeleteSeconds === undefined
+        ? undefined
+        : { autoDeleteSeconds: params.autoDeleteSeconds }),
     };
-
-    if (params.autoDeleteSeconds !== undefined)
-      this.record.autoDeleteSeconds = params.autoDeleteSeconds;
-  }
-  async data() {
-    if (freestyleState.error) throw error(freestyleState.error);
-
-    return this.record;
   }
   fs = {
     writeFile: async (path: string, bytes: Uint8Array, options?: { mode?: number }) => {
@@ -75,7 +97,6 @@ export class MockVm {
     },
     readFile: (path: string, options?: { offset?: number; length?: number }) =>
       this.guest.read(path, options),
-    readTextFile: async (path: string) => new TextDecoder().decode(await this.guest.read(path)),
   };
   async exec(options: ExecOptions) {
     let input = options.stdin ? Buffer.from(options.stdin, "base64").toString() : "";
@@ -87,6 +108,7 @@ export class MockVm {
       const envelope: unknown = JSON.parse(input);
 
       if (
+        envelope &&
         isObject(envelope) &&
         "command" in envelope &&
         isString(envelope.command) &&
@@ -103,7 +125,7 @@ export class MockVm {
 
     const mapping = `
 def sdk_paths(value):
- if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(this.guest.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/var/lib/"+"sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/var/lib/sandbox-sdk").toString("hex")}").decode()).replace("/tmp/"+"sdk-bare",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/sdk-bare").toString("hex")}").decode())
+ if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(this.guest.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/var/lib/"+"sandbox-sdk",bytes.fromhex("${Buffer.from(this.guest.root + "/var/lib/sandbox-sdk").toString("hex")}").decode())
  if isinstance(value,list): return [sdk_paths(x) for x in value]
  if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
  return value
@@ -144,7 +166,7 @@ v=sdk_paths(v)`;
 
     return this.record;
   }
-  async snapshot(options?: SnapshotOptions) {
+  async snapshot(options?: JsonValue | undefined) {
     freestyleState.snapshotOptions.push(options);
     const snapshotId = crypto.randomUUID();
     const root = await fs.mkdtemp("/tmp/sdk-freestyle-snapshot-");
@@ -199,7 +221,6 @@ export class MockFreestyle {
         tlsRules: [],
       };
     },
-    ref: (id: string) => this.get(id),
     get: async (id: string) => this.get(id).record,
     list: async (options?: { limit?: number; offset?: number }) => {
       if (freestyleState.listError) throw error(freestyleState.listError);
@@ -246,10 +267,182 @@ export async function cleanupFreestyle() {
   freestyleState.snapshots.clear();
 }
 
-/** The Freestyle adapter with this fixture in place of the SDK's client. */
-export function freestyle(options: FreestyleOptions = {}) {
-  return createFreestyleProvider(options, async () => ({
-    ...freestyleSdk,
-    Freestyle: MockFreestyle,
-  }));
+const origin = "https://api.freestyle.sh";
+const backend = new MockFreestyle();
+
+function vmOf(id: string) {
+  return backend.get(decodeURIComponent(id));
+}
+
+/** One parsed request the fake served, for assertions on the wire. */
+export const freestyleRequests: {
+  method: string;
+  path: string;
+  query: URLSearchParams;
+  headers: Headers;
+  body?: unknown;
+}[] = [];
+
+async function route(
+  method: string,
+  url: URL,
+  headers: Headers,
+  body: Uint8Array,
+): Promise<Response> {
+  const json = () => (body.byteLength ? JSON.parse(new TextDecoder().decode(body)) : {});
+  const parts = url.pathname.split("/").filter(Boolean);
+  const [v5, vms, id, ...rest] = parts;
+
+  if (v5 !== "v5") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
+
+  if (vms === "tls" && method === "POST" && id === undefined)
+    // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
+    return Response.json(await backend.tls.rules.create(json() as CreateTlsRuleOptions));
+
+  if (vms !== "vms") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
+
+  if (id === undefined) {
+    if (method === "POST") {
+      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
+      const { data, firewallRules, tlsRules } = await backend.vms.create(json() as CreateVmOptions);
+
+      return Response.json({ ...data, firewallRules, tlsRules }, { status: 201 });
+    }
+
+    if (method === "GET")
+      return Response.json(
+        await backend.vms.list({
+          limit: Number(url.searchParams.get("limit") ?? 100),
+          offset: Number(url.searchParams.get("offset") ?? 0),
+        }),
+      );
+  }
+
+  const action = rest.join("/");
+
+  if (action === "" && method === "GET")
+    return Response.json(await backend.vms.get(decodeURIComponent(id ?? "")));
+
+  if (action === "" && method === "DELETE") {
+    await backend.vms.delete(decodeURIComponent(id ?? ""));
+
+    return new Response(null, { status: 204 });
+  }
+
+  const vm = vmOf(id ?? "");
+
+  switch (`${method} ${action}`) {
+    case "POST exec-await":
+      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
+      return Response.json(await vm.exec(json() as ExecOptions));
+    case "POST pause":
+      return Response.json(await vm.pause());
+    case "POST start":
+      return Response.json(await vm.start());
+    case "POST snapshot":
+      return Response.json(await vm.snapshot(json()));
+    case "GET fs/read": {
+      const path = url.searchParams.get("path") ?? "";
+      const range = /^bytes=(\d+)-(\d+)$/.exec(headers.get("range") ?? "");
+
+      const bytes = await vm.fs.readFile(
+        path,
+        range
+          ? { offset: Number(range[1]), length: Number(range[2]) - Number(range[1]) + 1 }
+          : undefined,
+      );
+
+      return new Response(new Uint8Array(bytes), {
+        status: range ? 206 : 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+    }
+
+    case "PUT fs/write": {
+      const sha256 = createHash("sha256").update(body).digest("hex");
+
+      if (url.searchParams.get("sha256") !== sha256)
+        return Response.json({ code: "SHA256_MISMATCH", message: "body damaged" }, { status: 400 });
+      const mode = url.searchParams.get("mode");
+      await vm.fs.writeFile(
+        url.searchParams.get("path") ?? "",
+        body,
+        mode === null ? {} : { mode: Number(mode) },
+      );
+
+      return new Response(null, { status: 204 });
+    }
+  }
+
+  throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
+}
+
+/**
+ * `fetch` for the fake API. A thrown error with a `status` becomes that HTTP error (its message is the body's
+ * message, as Freestyle sends it); any other thrown error is a network failure. A request whose signal aborts
+ * rejects, but the server-side work it started still finishes, like a real API.
+ */
+export async function freestyleFetch(
+  input: string | URL | Request,
+  init: RequestInit = {},
+): Promise<Response> {
+  const url = new URL(input instanceof Request ? input.url : input);
+
+  if (url.origin !== origin) throw new Error("Cloud HTTP is forbidden in offline provider tests");
+  const method = init.method ?? "GET";
+  const headers = new Headers(init.headers);
+
+  if (headers.get("authorization") !== "Bearer mock-key")
+    return Response.json({ code: "UNAUTHORIZED", message: "bad key" }, { status: 401 });
+
+  const body =
+    init.body === undefined || init.body === null
+      ? new Uint8Array()
+      : new Uint8Array(await new Response(init.body).arrayBuffer());
+
+  const record: (typeof freestyleRequests)[number] = {
+    method,
+    path: url.pathname,
+    query: url.searchParams,
+    headers,
+  };
+
+  if (body.byteLength && headers.get("content-type") === "application/json")
+    record.body = JSON.parse(new TextDecoder().decode(body));
+  freestyleRequests.push(record);
+
+  const served = route(method, url, headers, body).catch((cause: unknown) => {
+    if (isObject(cause) && cause !== null && "status" in cause && isNumber(cause.status))
+      return Response.json(
+        {
+          code: "code" in cause && isString(cause.code) ? cause.code : "ERROR",
+          message: cause instanceof Error ? cause.message : "error",
+        },
+        { status: cause.status },
+      );
+    throw new TypeError("fetch failed", { cause });
+  });
+
+  const signal = init.signal;
+
+  if (!signal) return served;
+
+  return await new Promise<Response>((resolve, reject) => {
+    const abort = () =>
+      reject(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    const done = () => signal.removeEventListener("abort", abort);
+    served.then(
+      (response) => {
+        done();
+        resolve(response);
+      },
+      (cause: unknown) => {
+        done();
+        reject(cause);
+      },
+    );
+  });
 }

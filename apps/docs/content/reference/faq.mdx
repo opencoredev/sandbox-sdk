@@ -5,15 +5,15 @@ description: Answers to common questions about Sandbox SDK. Pricing, providers, 
 
 ## Is Sandbox SDK a hosted service?
 
-No. It is an npm package that runs in your server. It calls each provider's own SDK with your credentials, and nothing runs between you and the provider. There is no account to create with us.
+No. It is an npm package that runs in your server. It calls each provider's API or SDK with your credentials, and nothing runs between you and the provider. There is no account to create with us.
 
 ## What does it cost?
 
 The SDK is free and MIT licensed. You pay each provider for the sandboxes you run on it, at their prices. Local and Memory cost nothing beyond your own machine.
 
-## Why not call the provider's SDK directly?
+## Why not call the provider's API or SDK directly?
 
-You can, and `box.native` gives you the provider's own object whenever you need it. The SDK adds what most apps end up writing themselves: one API across providers, get-or-create by key, background processes that survive a restart, readiness checks, file editing and diffs, git with hidden tokens, secret redaction, output caps, ready-made agent tools, and errors with codes you can branch on.
+You can, and `box.native` gives you the provider's API, or its own SDK object, whenever you need it. The SDK adds what most apps end up writing themselves: one API across providers, get-or-create by key, background processes that survive a restart, readiness checks, file editing and diffs, git with hidden tokens, secret redaction, output caps, ready-made agent tools, and errors with codes you can branch on.
 
 ## Can I switch providers later?
 
@@ -25,7 +25,7 @@ No. Provider keys would be exposed. Call it from a server, a server action, a ro
 
 ## Does it run on edge runtimes?
 
-No. It needs Node 22+ or Bun 1.3+. Next.js middleware and other edge runtimes can't load the provider SDKs. Use a Node route or function.
+No. It needs Node 22+ or Bun 1.3+, so use a Node route or function instead of Next.js middleware or another edge runtime.
 
 ## Do I need Docker?
 

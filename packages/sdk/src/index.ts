@@ -42,6 +42,8 @@ export type {
 
 export type { WriteOptions, SnapshotOptions } from "./provider.js";
 
+export type { NativeApi, NativeRequestOptions, HttpMethod } from "./native.js";
+
 export type { Files, FileDiff, FileEvent } from "./files.js";
 
 export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";

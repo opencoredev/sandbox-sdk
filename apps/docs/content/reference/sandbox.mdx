@@ -7,28 +7,28 @@ description: Every export of @opencoredev/sandbox-sdk and every member of a sand
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next
+npm install @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next
+pnpm add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next
+yarn add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next
+bun add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
@@ -99,17 +99,17 @@ Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `lab
 
 ### Properties
 
-| Member         | Type                                                                             |
-| -------------- | -------------------------------------------------------------------------------- |
-| `id`           | `string`                                                                         |
-| `key`          | `string \| undefined`                                                            |
-| `provider`     | `string`                                                                         |
-| `created`      | `boolean`                                                                        |
-| `labels`       | `Record<string, string>`                                                         |
-| `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">` |
-| `native`       | The provider's own sandbox object                                                |
-| `files`        | [`Files`](#files)                                                                |
-| `git`          | [`Git`](#git)                                                                    |
+| Member         | Type                                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | `string`                                                                                                                                    |
+| `key`          | `string \| undefined`                                                                                                                       |
+| `provider`     | `string`                                                                                                                                    |
+| `created`      | `boolean`                                                                                                                                   |
+| `labels`       | `Record<string, string>`                                                                                                                    |
+| `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">`                                                            |
+| `native`       | The provider's own API: a [`NativeApi`](/reference/native) for providers that call their API directly, or the provider SDK's sandbox object |
+| `files`        | [`Files`](#files)                                                                                                                           |
+| `git`          | [`Git`](#git)                                                                                                                               |
 
 ### `run(command, options?)`
 

@@ -1,15 +1,6 @@
-import type * as Daytona from "@daytonaio/sdk";
-import {
-  SandboxError,
-  describeNative,
-  evidenceCause,
-  reason,
-  redacting,
-  type ErrorCode,
-  type NativeEvidence,
-} from "../../errors.js";
-import { decodeNative } from "../../shared/native-error.js";
-import { isString } from "../../shared/narrow.js";
+import { isNumber, isObject } from "../../shared/narrow.js";
+import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
+import type { FailedRequest, HttpFailure } from "../../http.js";
 
 // These codes are already recognized by this adapter. Unknown wire codes are
 // omitted until verified; a spelling filter alone can admit reflected secrets.
@@ -18,37 +9,28 @@ const knownCodes = new Set(["FILE_NOT_FOUND", "QUOTA_EXCEEDED"]);
 const requestIdPattern =
   /^(?:[a-f0-9]{16,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
 
-const bundleHint =
-  "The Daytona SDK requires some modules at runtime in a way bundlers cannot follow. Mark @daytonaio/sdk as external (Next.js: serverExternalPackages) and install it next to your app.";
+const operations =
+  /^(request|create|restore|list|connect|destroy|exec|process|preview|snapshot|files)$/;
 
-/** The Daytona SDK error classes this module matches. */
-export type DaytonaErrorClasses = Pick<
-  typeof Daytona,
-  | "DaytonaTimeoutError"
-  | "DaytonaConnectionTimeoutError"
-  | "DaytonaConnectionError"
-  | "DaytonaInvalidArgumentError"
->;
-
-/** Every copy of the Daytona SDK's error classes an adapter has loaded. The SDK names errors after
- * new.target.name, which bundlers rename with the class, so the class objects are the stable match.
- * Each factory can load its own copy, and an error from any of them is a Daytona error. */
-const loaded = new Set<DaytonaErrorClasses>();
-
-/** Match errors against the classes of a Daytona SDK copy an adapter loaded. */
-export function rememberDaytonaErrors(classes: DaytonaErrorClasses): void {
-  loaded.add(classes);
+/** Bounded, validated attribution copied onto an error's cause. Never a response's message or body. */
+interface Evidence {
+  status?: number;
+  providerCode?: string;
+  requestId?: string;
+  operation: string;
+  source?: string;
+  native?: string;
 }
 
-/** The module named by the Daytona SDK's own "Module "x" is not available" / "didn't pass import validation" error, if this is one. */
-export function unloadedModule(cause: unknown): string | undefined {
-  if (!(cause instanceof Error)) return undefined;
+const isEvidence = (cause: unknown): cause is Error & Evidence =>
+  cause instanceof Error &&
+  typeof ("operation" in cause ? cause.operation : undefined) === "string";
 
-  return /Module "([\w@./-]{1,64})" (?:is not available|didn't pass import validation)/.exec(
-    cause.message,
-  )?.[1];
-}
-
+/**
+ * Maps a failure to a SandboxError with bounded evidence on its cause. `error` is an HTTP failure shaped by
+ * {@link httpHooks} (`statusCode`, `code`, `source`, `headers`), any other thrown value, or a SandboxError,
+ * which keeps its code and only gets `operation` set on its evidence.
+ */
 export function daytonaError(
   cause: unknown,
   sandboxId?: string,
@@ -57,22 +39,42 @@ export function daytonaError(
   apiKey = process.env.DAYTONA_API_KEY,
   knownSecrets: Iterable<string> = [],
 ): SandboxError {
-  if (cause instanceof SandboxError) return cause;
+  const safeOperation = operations.test(operation) ? operation : "request";
 
-  const native = decodeNative(cause);
-  const status = native.statusCode;
-  const nativeCode = native.code;
-  // Match the classes the adapter loaded first. The name checks remain for callers that never loaded the peer.
-  const name = native.name;
+  if (cause instanceof SandboxError) {
+    if (!isEvidence(cause.cause) || cause.cause.operation === safeOperation) return cause;
+    const { status, providerCode, requestId, source, native } = cause.cause;
 
-  const is = (type: keyof DaytonaErrorClasses) =>
-    [...loaded].some((classes) => cause instanceof classes[type]);
+    const evidence: Evidence = {
+      operation: safeOperation,
+      ...(status === undefined ? undefined : { status }),
+      ...(providerCode === undefined ? undefined : { providerCode }),
+      ...(requestId === undefined ? undefined : { requestId }),
+      ...(source === undefined ? undefined : { source }),
+      ...(native === undefined ? undefined : { native }),
+    };
+
+    return new SandboxError(cause.message, {
+      code: cause.code,
+      provider: cause.provider,
+      sandboxId: cause.sandboxId,
+      retryable: cause.retryable,
+      ...(cause.hint === undefined ? undefined : { hint: cause.hint }),
+      cause: Object.assign(new Error(JSON.stringify(evidence)), evidence),
+    });
+  }
+
+  const status = cause && isObject(cause) && "statusCode" in cause ? cause.statusCode : undefined;
+
+  const nativeCode = cause && isObject(cause) && "code" in cause ? cause.code : undefined;
+  const name = cause instanceof Error ? cause.name : "";
 
   const missingFile =
     file &&
     status === 400 &&
+    cause instanceof Error &&
     /(?:\bENOENT\b|no such file or directory|\bnot found\b|\bdoes not exist\b)/i.test(
-      native.message,
+      cause.message,
     );
 
   let code: ErrorCode = "provider";
@@ -82,59 +84,45 @@ export function daytonaError(
     code = "file_not_found";
   else if (status === 404 || status === 410) code = "not_found";
   else if (status === 429 || status === 402 || nativeCode === "QUOTA_EXCEEDED") code = "quota";
-  else if (
-    status === 408 ||
-    status === 504 ||
-    is("DaytonaTimeoutError") ||
-    is("DaytonaConnectionTimeoutError") ||
-    name.includes("Timeout")
-  )
-    code = "timeout";
-  else if (
-    (status !== undefined && status >= 500) ||
-    is("DaytonaConnectionError") ||
-    name.includes("Connection")
-  )
-    code = "unavailable";
-  else if (
-    status === 400 ||
-    status === 422 ||
-    is("DaytonaInvalidArgumentError") ||
-    name.includes("InvalidArgument")
-  )
+  else if (status === 408 || status === 504 || name.includes("Timeout")) code = "timeout";
+  else if ((isNumber(status) && status >= 500) || name.includes("Connection")) code = "unavailable";
+  else if (status === 400 || status === 422 || name.includes("InvalidArgument"))
     code = "invalid_argument";
-
-  // Copy only bounded machine fields; never a response's message or body. An unrecognized
-  // failure without a status keeps its scrubbed message as `native` (see describeNative).
-  const evidence: NativeEvidence = {
-    operation:
-      /^(request|create|restore|list|connect|destroy|exec|process|preview|snapshot|files)$/.test(
-        operation,
-      )
-        ? operation
-        : "request",
-  };
+  const evidence: Evidence = { operation: safeOperation };
 
   const denied = [...knownSecrets, apiKey, process.env.DAYTONA_API_KEY].filter(
-    (value): value is string => value !== undefined && value.length > 0,
+    (value): value is string => typeof value === "string" && value.length > 0,
   );
 
-  const safe = (value: string | number | undefined, pattern: RegExp): value is string =>
-    isString(value) && pattern.test(value) && !denied.some((secret) => value.includes(secret));
+  const safeToken = (value: unknown, pattern: RegExp): value is string =>
+    typeof value === "string" &&
+    pattern.test(value) &&
+    !denied.some((secret) => value.includes(secret));
 
-  if (status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599)
+  if (isNumber(status) && Number.isInteger(status) && status >= 100 && status <= 599)
     evidence.status = status;
 
-  if (safe(nativeCode, /^[A-Z_]{1,64}$/) && knownCodes.has(nativeCode))
+  if (safeToken(nativeCode, /^[A-Z_]{1,64}$/) && knownCodes.has(nativeCode))
     evidence.providerCode = nativeCode;
 
-  if (safe(native.source, /^DAYTONA_(API|DAEMON|PROXY)$/)) evidence.source = native.source;
+  if (cause && isObject(cause)) {
+    if ("source" in cause && safeToken(cause.source, /^DAYTONA_(API|DAEMON|PROXY)$/))
+      evidence.source = cause.source;
 
-  const requestId = ["x-request-id", "x-daytona-request-id"]
-    .map((key) => native.headers.get(key))
-    .find((value) => safe(value, requestIdPattern));
+    if ("headers" in cause && cause.headers && isObject(cause.headers)) {
+      const headers = cause.headers;
 
-  if (requestId !== undefined) evidence.requestId = requestId;
+      for (const value of [
+        "x-request-id" in headers ? headers["x-request-id"] : undefined,
+        "x-daytona-request-id" in headers ? headers["x-daytona-request-id"] : undefined,
+      ]) {
+        if (safeToken(value, requestIdPattern)) {
+          evidence.requestId = value;
+          break;
+        }
+      }
+    }
+  }
 
   const { detail } = describeNative(cause, {
     code,
@@ -143,19 +131,8 @@ export function daytonaError(
   });
 
   if (detail !== undefined) evidence.native = detail;
-  const module = unloadedModule(cause);
-
-  if (module !== undefined)
-    return new SandboxError(
-      `Daytona request failed: the Daytona SDK could not load "${module}" (${reason(code, evidence.native)}). ${bundleHint}`,
-      {
-        code: "unavailable",
-        provider: "daytona",
-        sandboxId,
-        cause: evidenceCause(evidence),
-        hint: bundleHint,
-      },
-    );
+  // Error.message survives the SDK redactor; own fields support direct clients.
+  const reported = Object.assign(new Error(JSON.stringify(evidence)), evidence);
 
   return new SandboxError(
     `Daytona request failed: ${reason(code, evidence.native)}. Check the sandbox and provider configuration.`,
@@ -163,11 +140,66 @@ export function daytonaError(
       code,
       provider: "daytona",
       sandboxId,
-      cause: evidenceCause(evidence),
+      cause: reported,
       retryable: ["quota", "unavailable", "timeout"].includes(code),
       hint: "Check Daytona credentials, quotas, sandbox state, and request options before retrying.",
     },
   );
+}
+
+/** A toolbox call on a path, as opposed to a process or session: its 404 means a missing file. */
+export function isFileRequest(request: FailedRequest): boolean {
+  return request.plane === "toolbox" && /^[A-Z]+ \/files(?:\/|$)/.test(request.operation);
+}
+
+/** An HTTP status failure in the shape {@link daytonaError} reads. The message is only matched, never copied. */
+function statusFailure(failed: Extract<HttpFailure, { kind: "status" }>) {
+  const json = failed.body.json;
+
+  const source: unknown = isObject(json) ? ("source" in json ? json.source : undefined) : undefined;
+
+  const headers: Record<string, string> = {};
+
+  for (const key of ["x-request-id", "x-daytona-request-id"]) {
+    const value = failed.headers.get(key);
+
+    if (value !== null) headers[key] = value;
+  }
+
+  return Object.assign(new Error(failed.body.message ?? ""), {
+    statusCode: failed.status,
+    code: failed.body.code,
+    source,
+    headers,
+  });
+}
+
+/**
+ * The HTTP client's `mapError` and `cause` hooks: Daytona's status rules (a missing file is a 404, or a 400
+ * that says so), and the same bounded evidence {@link daytonaError} builds. Other failures keep the defaults.
+ */
+export function httpHooks(denied: () => Iterable<string>) {
+  const map = (failed: HttpFailure, request: FailedRequest) =>
+    failed.kind === "status"
+      ? daytonaError(
+          statusFailure(failed),
+          request.sandboxId,
+          isFileRequest(request),
+          "request",
+          undefined,
+          denied(),
+        )
+      : undefined;
+
+  return {
+    mapError: (failed: HttpFailure, request: FailedRequest): ErrorCode | undefined =>
+      map(failed, request)?.code,
+    cause: (failed: HttpFailure, request: FailedRequest): Error | undefined => {
+      const cause = map(failed, request)?.cause;
+
+      return cause instanceof Error ? cause : undefined;
+    },
+  };
 }
 
 export function unsupported(message: string): never {

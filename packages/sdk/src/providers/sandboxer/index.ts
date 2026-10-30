@@ -1,11 +1,18 @@
 /** Sandboxer API v1 derives from Boat API v1. https://sandboxer.com/api/v1/openapi.yaml */
-import type { CreateSandboxRequest } from "@boatdev/sdk";
+import type { JsonValue } from "../../shared/json.js";
+import { isObject, isString } from "../../shared/narrow.js";
 import type { Provider } from "../../provider.js";
-import type { BoatCreateOptions, BoatNative } from "../boat/index.js";
+import type { NativeApi } from "../../native.js";
+import { createDeadline, sleep, type HttpRequest } from "../../http.js";
+import type {
+  BoatClientSdk,
+  BoatCreateOptions,
+  BoatMachine,
+  BoatSandboxSdk,
+} from "../boat/index.js";
 import { boatApi } from "../boat-api/index.js";
 import { errors } from "../boat-api/errors.js";
-import { isJsonObject, type JsonObject, type JsonValue } from "../../shared/json.js";
-import { isString } from "../../shared/narrow.js";
+import type { BoatPlane, BoatSandbox } from "../boat-api/transport.js";
 
 /** `GET /regions` lists them: us-east (Ashburn, Virginia), eu-central (Helsinki). */
 export type SandboxerRegion = "us-east" | "eu-central" | (string & {});
@@ -16,7 +23,7 @@ export interface SandboxerOptions extends BoatCreateOptions {
   /** Default: https://sandboxer.com/api/v1. */
   baseUrl?: string;
   /** Native machine size; default: Sandboxer default (4 CPU/8 GB). Per-create size wins. */
-  machine?: CreateSandboxRequest["type"];
+  machine?: BoatMachine;
   /** Deadline for each control-plane request and lifecycle poll. Default: 90 seconds. */
   requestTimeoutMs?: number;
   /** Region for new sandboxes. Default: SANDBOXER_REGION, else the region
@@ -28,7 +35,11 @@ const regionSources = ["requested", "nearest", "default", "source"] as const;
 
 export type SandboxerRegionSource = (typeof regionSources)[number];
 
-export interface SandboxerNative extends BoatNative {
+/**
+ * `box.native`: Sandboxer's HTTP API with this adapter's base URL, key, retries and redaction (plane `"api"`,
+ * `{sandboxId}` fills from the sandbox), plus where the VM landed and named snapshots.
+ */
+export interface SandboxerNative extends NativeApi<BoatPlane, BoatSandboxSdk> {
   /** Null for sandboxes from before regions. */
   readonly region: string | null;
   readonly regionSource: SandboxerRegionSource | null;
@@ -36,12 +47,15 @@ export interface SandboxerNative extends BoatNative {
 }
 
 const { failure, boatError } = errors("sandboxer", "Sandboxer", "SANDBOXER_API_KEY", true);
-
 const baseUrl = "https://sandboxer.com/api/v1";
+const confirmHeader = "X-Sandboxer-Confirm-Delete";
 
-export type SandboxerProvider = Provider<SandboxerNative, "size" | "pause" | "snapshot">;
+export type SandboxerProvider = Provider<SandboxerNative, "size" | "pause" | "snapshot"> & {
+  /** Sandboxer's API with no sandbox bound, for account calls such as `GET /regions`. */
+  readonly api: NativeApi<BoatPlane, BoatClientSdk>;
+};
 
-/** Sandboxer through its Boat-compatible API; loads @boatdev/sdk on first use. */
+/** Sandboxer through its Boat-compatible API, over plain HTTP. No other package to install. */
 export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
   const timeout = options.requestTimeoutMs ?? 90_000;
   const deletions = new Map<string, string>();
@@ -49,11 +63,10 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
 
   if (region !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(region))
     throw failure("Invalid Sandboxer region", "invalid_argument");
-  // The Boat SDK's serializers drop region fields, so add and read them here.
   const placements = new Map<string, Pick<SandboxerNative, "region" | "regionSource">>();
 
-  function place(value: JsonObject) {
-    if (!isString(value.id) || !("region" in value)) return;
+  function place(value: BoatSandbox["raw"]) {
+    if (!("id" in value) || !isString(value.id) || !("region" in value)) return;
     const name = isString(value.region) ? value.region : null;
 
     const source =
@@ -64,57 +77,24 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     placements.set(value.id, { region: name, regionSource: source });
   }
 
-  async function request(
+  /** Polls `path` until `ready`, inside one deadline for the whole operation. */
+  async function poll(
     path: string,
-    method = "GET",
-    body?: JsonValue,
-    timeoutMs = timeout,
-  ): Promise<JsonValue> {
-    const key = options.apiKey ?? process.env.SANDBOXER_API_KEY;
+    params: Record<string, string>,
+    ready: (value: JsonValue | undefined) => boolean,
+  ) {
+    const deadline = createDeadline(timeout);
 
-    if (!key)
-      throw failure(
-        "Sandboxer API key is missing. Authentication is required. Set SANDBOXER_API_KEY or pass apiKey.",
-        "auth",
-      );
+    for (;;) {
+      if (ready(await http.json({ method: "GET", path, params, deadline }))) return;
 
-    try {
-      const init: RequestInit = {
-        method,
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(timeoutMs),
-      };
+      if (deadline.remaining() <= 0) break;
 
-      if (body !== undefined) init.body = JSON.stringify(body);
-      const response = await fetch(`${options.baseUrl ?? baseUrl}${path}`, init);
-
-      if (!response.ok) {
-        // An unreadable error body only means there is no API code to report.
-        const envelope: JsonValue | undefined = await response.json().catch(() => undefined);
-        const apiCode = isJsonObject(envelope) ? envelope.code : undefined;
-
-        throw { response, apiCode };
+      try {
+        await sleep(Math.min(250, deadline.remaining()), deadline, "sandboxer");
+      } catch {
+        break;
       }
-
-      return await response.json();
-    } catch (error) {
-      throw boatError(error);
-    }
-  }
-
-  async function poll(path: string, ready: (value: JsonValue) => boolean) {
-    const end = performance.now() + timeout;
-
-    while (performance.now() < end) {
-      if (
-        ready(
-          await request(path, "GET", undefined, Math.max(1, Math.ceil(end - performance.now()))),
-        )
-      )
-        return;
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(250, Math.max(1, Math.ceil(end - performance.now())))),
-      );
     }
 
     throw failure("Sandboxer operation did not finish before its deadline", "timeout");
@@ -125,16 +105,24 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
       throw failure("Invalid snapshot name", "invalid_argument", id);
 
     try {
-      await request("/named-snapshots", "POST", { sandboxId: id, name });
-      await poll(`/named-snapshots/${encodeURIComponent(name)}`, (value) => {
-        if (!isJsonObject(value) || !("snapshot" in value))
+      await http.json({
+        method: "POST",
+        path: "/named-snapshots",
+        body: { sandboxId: id, name },
+        sandboxId: id,
+      });
+      await poll("/named-snapshots/{name}", { name }, (value) => {
+        if (!isObject(value) || value === null || !("snapshot" in value))
           throw failure("Invalid snapshot response");
         const snapshot = value.snapshot;
 
         if (
-          !isJsonObject(snapshot) ||
+          !isObject(snapshot) ||
+          snapshot === null ||
           !("status" in snapshot) ||
+          !("name" in snapshot) ||
           snapshot.name !== name ||
+          !("sourceSandboxId" in snapshot) ||
           snapshot.sourceSandboxId !== id
         )
           throw failure("Invalid snapshot metadata");
@@ -155,7 +143,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     }
   }
 
-  const core = boatApi(options, {
+  const { provider: core, http } = boatApi(options, {
     name: "sandboxer",
     label: "Sandboxer",
     keyEnv: "SANDBOXER_API_KEY",
@@ -163,82 +151,78 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     createFrom: true,
     idleStop: true,
     pausedStates: ["archived", "stopped"],
-    fetch: async (url, init) => {
-      const headers = new Headers(init?.headers);
-
-      const href = url instanceof URL ? url.href : url instanceof Request ? url.url : url;
-      const path = new URL(href).pathname;
-
-      if (init?.method === "DELETE" && /\/sandboxes\/[^/]+$/.test(path))
-        headers.set(
-          "X-Sandboxer-Confirm-Delete",
-          decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)),
-        );
-      let body = init?.body;
-
-      if (region !== undefined && init?.method === "POST" && path.endsWith("/sandboxes")) {
-        if (!isString(body)) throw failure("Sandboxer create body is not JSON", "provider");
-        const request: JsonValue = JSON.parse(body);
-
-        if (!isJsonObject(request))
-          throw failure("Sandboxer create body is not an object", "provider");
-        body = JSON.stringify({ ...request, region });
-      }
-
-      const response = await fetch(url, { ...init, headers, body });
-
-      if (response.ok && init?.method !== "DELETE" && /\/sandboxes(\/[^/]+)?$/.test(path)) {
-        // A body that is not JSON carries no placement; the response still goes to the SDK.
-        const value: JsonValue | undefined = await response
-          .clone()
-          .json()
-          .catch(() => undefined);
-
-        if (isJsonObject(value)) {
-          if (isJsonObject(value.sandbox)) place(value.sandbox);
-
-          if (Array.isArray(value.sandboxes))
-            for (const item of value.sandboxes) if (isJsonObject(item)) place(item);
-        }
-      }
-
-      return response;
-    },
+    ...(region === undefined ? undefined : { createFields: { region } }),
+    observe: (sandbox) => place(sandbox.raw),
     downloadMaxBytes: 50 * 1024 * 1024,
-    destroy: async (api, id) => {
+    destroy: async (http, id) => {
       let operationId = deletions.get(id);
 
       if (!operationId) {
-        const { operation } = await api.deleteSandbox({ sandboxId: id, xAsciiConfirmDelete: id });
+        // The spec's ConfirmDelete header must equal the sandbox ID, else 409. Boat's header rides along, as the SDK sent it.
+        const value: unknown = await http.json({
+          method: "DELETE",
+          path: "/sandboxes/{sandboxId}",
+          params: { sandboxId: id },
+          sandboxId: id,
+          headers: { [confirmHeader]: id, "X-Ascii-Confirm-Delete": id },
+        });
 
-        if (operation.targetId !== id || operation.kind !== "sandbox")
+        const operation = isObject(value) && "operation" in value ? value.operation : undefined;
+
+        if (
+          !isObject(operation) ||
+          operation === null ||
+          !("targetId" in operation) ||
+          operation.targetId !== id ||
+          !("kind" in operation) ||
+          operation.kind !== "sandbox" ||
+          !("status" in operation)
+        )
           throw failure("Invalid deletion operation", "outcome_unknown", id);
 
         if (operation.status === "completed") return;
+
+        if (!("id" in operation) || !isString(operation.id) || !operation.id)
+          throw failure("Invalid deletion operation", "outcome_unknown", id);
         operationId = operation.id;
         deletions.set(id, operationId);
       }
 
-      await poll(`/deletion-operations/${encodeURIComponent(operationId)}`, (value) => {
-        if (!isJsonObject(value) || !("operation" in value))
+      await poll("/deletion-operations/{operationId}", { operationId }, (value) => {
+        if (!isObject(value) || value === null || !("operation" in value))
           throw failure("Invalid deletion response");
         const next = value.operation;
 
-        if (!isJsonObject(next) || next.targetId !== id || !("status" in next))
+        if (
+          !isObject(next) ||
+          next === null ||
+          !("targetId" in next) ||
+          next.targetId !== id ||
+          !("status" in next)
+        )
           throw failure("Invalid deletion metadata");
 
         return next.status === "completed";
       });
       deletions.delete(id);
     },
-    download: async (api, id, path) =>
-      new Uint8Array(await (await api.artifact({ sandboxId: id, path })).arrayBuffer()),
+    download: async (http, id, path) =>
+      (
+        await http.request({
+          method: "GET",
+          path: "/sandboxes/{sandboxId}/artifacts",
+          params: { sandboxId: id },
+          query: { path },
+          sandboxId: id,
+          maxBytes: 50 * 1024 * 1024 + 1,
+        })
+      ).body,
     // The proxy accepts its __sbx_auth cookie, whose value is the URL token.
     // Exchanging the token over HTTP fails until the port listens, and a
     // tokened URL adds a redirect to every request, so build the cookie here.
     preview: async (url) => {
-      const value = new URL(url);
-      const token = value.searchParams.get("_token");
+      const value = new URL(url),
+        token = value.searchParams.get("_token");
 
       if (token === null) return { url };
 
@@ -247,33 +231,58 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
 
       return { url: value.toString(), headers: { Cookie: `__sbx_auth=${token}` } };
     },
+    // The BoatApi client native.sdk() builds sends Boat's delete header; Sandboxer needs its own too.
+    sdkConfiguration: {
+      middleware: [
+        {
+          async pre({ url, init }: { url: string; init: RequestInit }) {
+            const path = new URL(url).pathname;
+
+            if (init.method !== "DELETE" || !/\/sandboxes\/[^/]+$/.test(path)) return undefined;
+            const headers = new Headers(init.headers);
+            headers.set(confirmHeader, decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)));
+
+            return { url, init: { ...init, headers } };
+          },
+        },
+      ],
+    },
+  });
+
+  const lifecycle = (id: string, action: "stop" | "resume"): HttpRequest<BoatPlane> => ({
+    method: "POST",
+    path: `/sandboxes/{sandboxId}/${action}`,
+    params: { sandboxId: id },
+    sandboxId: id,
   });
 
   return {
     ...core,
     capabilities: new Set(["size", "pause", "snapshot"]),
     async pause(id) {
-      await request(`/sandboxes/${encodeURIComponent(id)}/stop`, "POST");
-      await poll(`/sandboxes/${encodeURIComponent(id)}`, (value) => {
-        if (!isJsonObject(value) || !("sandbox" in value)) throw failure("Invalid stop response");
+      await http.json(lifecycle(id, "stop"));
+      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, (value) => {
+        if (!isObject(value) || value === null || !("sandbox" in value))
+          throw failure("Invalid stop response");
         const box = value.sandbox;
 
-        if (!isJsonObject(box) || box.id !== id || !("stop" in box))
+        if (!isObject(box) || box === null || !("id" in box) || box.id !== id || !("stop" in box))
           throw failure("Invalid stop metadata");
         const stop = box.stop;
 
-        if (!isJsonObject(stop) || !("status" in stop)) return false;
+        if (!isObject(stop) || stop === null || !("status" in stop)) return false;
 
         return stop.status === "completed";
       });
     },
     async resume(id) {
-      await request(`/sandboxes/${encodeURIComponent(id)}/resume`, "POST");
-      await poll(`/sandboxes/${encodeURIComponent(id)}`, (value) => {
-        if (!isJsonObject(value) || !("sandbox" in value)) throw failure("Invalid resume response");
+      await http.json(lifecycle(id, "resume"));
+      await poll("/sandboxes/{sandboxId}", { sandboxId: id }, (value) => {
+        if (!isObject(value) || value === null || !("sandbox" in value))
+          throw failure("Invalid resume response");
         const box = value.sandbox;
 
-        if (!isJsonObject(box) || box.id !== id || !("state" in box))
+        if (!isObject(box) || box === null || !("id" in box) || box.id !== id || !("state" in box))
           throw failure("Invalid resume metadata");
 
         return box.state === "ready";
@@ -291,12 +300,12 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
 
       return createSnapshot(id, `sdk-${crypto.randomUUID()}`);
     },
-    native: (id) => ({
-      ...core.native(id),
-      region: null,
-      regionSource: null,
-      ...placements.get(id),
-      createSnapshot: (name) => createSnapshot(id, name),
-    }),
+    native: (id) =>
+      Object.assign(core.native(id), {
+        region: null,
+        regionSource: null,
+        ...placements.get(id),
+        createSnapshot: (name: string) => createSnapshot(id, name),
+      }),
   };
 }

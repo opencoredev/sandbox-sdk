@@ -8,7 +8,8 @@ This spec is the single source of truth for the rewrite. If an implementation ch
 
 ## 0. Ground rules
 
-- **Package.** Single package, `@opencoredev/sandbox-sdk`, version `1.0.0`, ESM only, Node 22+ and Bun 1.3+. Provider SDKs are optional peer dependencies behind subpath exports, and each one is imported dynamically inside its provider's `create`.
+- **Package.** Single package, `@opencoredev/sandbox-sdk`, version `1.0.0`, ESM only, Node 22+ and Bun 1.3+. Each provider is a subpath export. Where a provider's API works over `fetch`, the adapter calls it directly and needs no other package: installing `@opencoredev/sandbox-sdk` is the whole install. Providers whose protocol `fetch` can't carry (bidirectional gRPC, a local runtime) keep their SDK as an optional peer dependency, imported dynamically on first use. Each provider page says which kind it is.
+- **Peer guarantees.** The build keeps an explicit list of provider and framework packages external (`packages/sdk/scripts/externals.ts`), never derived from `peerDependencies`, and fails if any `node_modules` code lands in `dist`. Removing a peer can never bundle a dev-installed SDK. The types follow the same rule: no declaration imports a package that is not a declared peer of that subpath, so a consumer with no peers installed typechecks with `skipLibCheck` on or off. `smoke:consumer:nopeers` proves both from the packed tarball on Node 22 and Bun.
 - **Core size.** Core has zero runtime dependencies (no zod). The root entry stays under 8 KB minified, enforced by a size check in CI.
 - **One obvious way.** No aliases, no `run`/`exec`/`execute` trio, and options are objects with explicit units (`timeoutMs`, `maxOutputBytes`). Root exports stay at about 25 names or fewer.
 - **Errors.** A non-zero exit code is a result, never a throw. The SDK throws only when the sandbox, the provider, or the request itself fails, and it always throws `SandboxError` (section 9).
@@ -180,25 +181,35 @@ These run through `run`, with credentials passed through a temporary credential 
 
 - `box.id`, `box.key`, `box.provider` (a name string), `box.created`, `box.labels`.
 - `box.usage()` returns `{ createdAt, runningMs, commands, bytesOut }`, plus native cost fields if the provider exposes them.
-- `box.native` is the provider's raw client or sandbox object, fully typed per provider.
+- `box.native` is the escape hatch for anything the SDK does not wrap. Its shape depends on the provider:
+  - **Direct-HTTP providers** give a `NativeApi<Plane>` (exported from the root as a type):
+    - `request<T>(method, path, options?)` calls any endpoint with the adapter's base URL, credentials, retries, error mapping and redaction, and returns the JSON body (`undefined` when empty).
+    - `fetch(method, path, options?)` returns the raw `Response` for bytes and streams.
+    - `sdk(load)` takes the official SDK module the caller imported (`box.native.sdk(() => import("@daytonaio/sdk"))`) and returns that SDK's object for this sandbox. The caller installs the SDK; it is not a dependency. Each provider types `load` with a structural constraint on the module (`M extends { Daytona: new (config) => { get(id): Promise<unknown> } }`) and derives the result from the caller's own module type, so no declaration of ours imports an optional package.
+    - `options`: `plane` (a provider API surface such as Daytona's `"api"` or `"toolbox"`; default is the control plane), `params`, `query`, `body` (JSON unless it is a `BodyInit`), `headers`, `signal`, `timeoutMs`.
+    - Placeholders: only the provider's sandbox placeholder (documented per provider, such as `{sandboxId}`) fills itself on `box.native`. Every other `{name}` must be in `params`, and a missing or unused one is `invalid_argument` before any request. Explicit `params` win.
+    - Non-2xx responses throw `SandboxError`; native errors keep the provider's error message, scrubbed of credentials and URLs.
+    - The factory's return type also carries `api: NativeApi<Plane>` with no sandbox bound, for account-level calls (`daytona().api.request("GET", "/snapshots")`). `api` is not on the shared `Provider` interface.
+  - **SDK-backed providers** (Vercel, Upstash, Railway, Tenki, boxd, and agentOS) give the SDK's own client or sandbox object, fully typed through the optional peer.
+    Switching a provider from the second kind to the first is a breaking change for `box.native` users; the changelog and the provider page show the migration (`(await box.native.sdk(() => import("pkg"))).method()`).
 
 ## 8. Providers
 
-| Factory            | Subpath       | Native SDK (optional peer) and notes                                                                            |
+| Factory            | Subpath       | Native API or SDK (optional peer) and notes                                                                     |
 | ------------------ | ------------- | --------------------------------------------------------------------------------------------------------------- |
 | `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
 | `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.      |
-| `e2b(opts)`        | `/e2b`        | `e2b`. Native commands and pause/snapshot.                                                                      |
+| `e2b(opts)`        | `/e2b`        | Direct HTTP to E2B's API and each sandbox's envd; no peer. Native commands and pause/snapshot.                  |
 | `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                   |
-| `daytona(opts)`    | `/daytona`    | `@daytonaio/sdk`. Labels, preview token.                                                                        |
+| `daytona(opts)`    | `/daytona`    | Direct HTTP to Daytona's API and toolbox; no peer. Labels, preview token.                                       |
 | `upstash(opts)`    | `/upstash`    | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                                |
 | `railway(opts)`    | `/railway`    | `railway`.                                                                                                      |
-| `boat(opts)`       | `/boat`       | `@boatdev/sdk`.                                                                                                 |
-| `sandboxer(opts)`  | `/sandboxer`  | `@boatdev/sdk`, through the same API client as `boat`.                                                          |
+| `boat(opts)`       | `/boat`       | Direct HTTP to Boat's API; no peer.                                                                             |
+| `sandboxer(opts)`  | `/sandboxer`  | Direct HTTP, through the same API client as `boat`; no peer.                                                    |
 | `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                          |
 | `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
-| `freestyle(opts)`  | `/freestyle`  | `freestyle`.                                                                                                    |
-| `superserve(opts)` | `/superserve` | `@superserve/sdk`.                                                                                              |
+| `freestyle(opts)`  | `/freestyle`  | Direct HTTP to Freestyle's API; no peer.                                                                        |
+| `superserve(opts)` | `/superserve` | Direct HTTP to Superserve's API and sandbox data plane; no peer.                                                |
 | `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                              |
 
 Each adapter's key mode, capabilities, limits, and peer package range are listed once, in the docs' [capability matrix](../apps/docs/content/reference/capabilities.mdx). `apps/docs/scripts/check-capabilities.ts` checks that page against the adapters.
@@ -218,6 +229,17 @@ Each adapter's key mode, capabilities, limits, and peer package range are listed
 - `keyMode`
 
 Everything else, including runs, processes, the `$` tag, edit, upload, search, changes, git, and readiness, lives once in core on top of these primitives.
+
+**Direct-HTTP adapters.** They share one transport from `/provider`: `createHttpClient` and `createNativeApi`, with stream readers (NDJSON, server-sent events, Connect envelopes) internal to the package. The transport guarantees:
+
+- Credentials attach only to the configured plane's origin. Absolute URLs, poll URLs, signed URLs and redirects to other origins get none.
+- Retries (at most 2, jittered backoff, `Retry-After` up to 20 s and within the deadline) cover 429, 502, 503, 504 and network errors, and only GET, HEAD, PUT and DELETE, or a POST that carries a server-supported idempotency key. A streamed request body is never retried.
+- A POST or PATCH that may have reached the server and then failed (a dropped connection after sending, a timeout, a 504) is `outcome_unknown`, never `unavailable`.
+- One deadline covers credentials, every attempt, backoff, polling and the response body. Streams use a startup timeout until headers and an idle timeout between chunks instead. Cleanup after an abort uses a fresh, short deadline.
+- Response bodies are cancelled before a retry and when a stream reader stops early. Streamed uploads use `duplex: "half"`.
+- Error bodies are read up to 64 KB and stream frames up to 16 MiB.
+- Redaction happens in the transport: credential header values, the provider's keys, signed URL query strings and credential-shaped text never reach a `SandboxError`. Adapter calls keep the HTTP status and the provider's error code, never response text.
+- Providers refine the shared status mapping with a hook (a missing file versus a missing sandbox, a stale route).
 
 ## 9. Errors
 

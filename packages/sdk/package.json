@@ -135,6 +135,7 @@
     "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts",
     "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts",
+    "smoke:consumer:nopeers": "timeout 900s bun scripts/consumer-smoke-nopeers.ts",
     "smoke:bundle": "timeout 600s bun scripts/bundle-smoke.ts"
   },
   "devDependencies": {
@@ -157,19 +158,14 @@
     "zod": "^4.6.7"
   },
   "peerDependencies": {
-    "@boatdev/sdk": "^1.9.9",
     "@boxd-sh/sdk": "^0.2.17",
-    "@daytonaio/sdk": ">=0.225.0 <1.0.0",
     "@mastra/core": "^1.78.0",
     "@openai/agents": "^0.20.0",
     "@rivet-dev/agentos-core": "0.4.1",
-    "@superserve/sdk": "^0.11.4",
     "@tenkicloud/sandbox": "^1.4.1",
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "^3.8.0",
     "ai": "^7.0.143",
-    "e2b": "^2.56.0",
-    "freestyle": "^0.2.20",
     "railway": "^3.16.0",
     "vitest": ">=3",
     "zod": "^4.6.7"
@@ -190,22 +186,13 @@
     "zod": {
       "optional": true
     },
-    "e2b": {
-      "optional": true
-    },
     "@vercel/sandbox": {
-      "optional": true
-    },
-    "@daytonaio/sdk": {
       "optional": true
     },
     "@upstash/box": {
       "optional": true
     },
     "railway": {
-      "optional": true
-    },
-    "@boatdev/sdk": {
       "optional": true
     },
     "@tenkicloud/sandbox": {
@@ -215,12 +202,6 @@
       "optional": true
     },
     "@boxd-sh/sdk": {
-      "optional": true
-    },
-    "freestyle": {
-      "optional": true
-    },
-    "@superserve/sdk": {
       "optional": true
     }
   },

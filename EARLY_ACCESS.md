@@ -1,20 +1,20 @@
-# Sandbox SDK 1.0 beta: early access
+# Sandbox SDK 1.0: early access notes
 
-`@opencoredev/sandbox-sdk` 1.0.0-beta.1 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
+`@opencoredev/sandbox-sdk` 1.0 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
 
-This is a beta. The API can still change before 1.0.0. If something breaks or reads wrong, tell us; the last section says what to include.
+If something breaks or reads wrong, tell us; the last section says what to include.
 
 ## Install
 
-Install from the `next` tag (`latest` is still 0.2, so a plain install gives you the old API):
+Install from npm:
 
 ```sh
-npm install @opencoredev/sandbox-sdk@next
+npm install @opencoredev/sandbox-sdk
 ```
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
-Then install the peer package for each provider you plan to use. They are optional peers, so npm will not add them for you. The [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. Node.js 22+ or Bun 1.3+, ESM only.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
 
 Check it works with no account and no Docker:
 
@@ -83,7 +83,7 @@ await using box = await createSandbox(await loadProvider(process.env.SANDBOX_PRO
 console.log(await greet(box));
 ```
 
-The dynamic `import()` per case means only the provider you pick needs its peer package installed. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
+The dynamic `import()` per case means only the provider you pick needs its peer package installed, if it has one. At runtime that holds as written. For the TypeScript compiler, the switch still reaches every listed adapter's declarations, and those reference their peer's types. Set `"skipLibCheck": true` in `tsconfig.json` (most templates already do), or install the peers you list as devDependencies, otherwise `tsc` reports TS2307 for the ones you left out. The repository's `examples/getting-started/src/multi-provider.ts` is the same program with every provider and an exhaustive switch.
 
 ## Check capabilities before optional calls
 
@@ -132,7 +132,7 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 
 Open an issue at https://github.com/opencoredev/sandbox-sdk/issues, or message Leo directly. Include:
 
-- the SDK version (`1.0.0-beta.1`) and your runtime (Node.js or Bun version),
+- the SDK version (for example `1.0.0`) and your runtime (Node.js or Bun version),
 - the provider and the factory options you passed,
 - for a `SandboxError`: `code`, `message`, `hint`, `provider`, and `sandboxId`,
 - the smallest snippet that reproduces it.

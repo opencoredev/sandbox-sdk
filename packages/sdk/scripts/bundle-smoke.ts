@@ -133,7 +133,7 @@ const requireBanner = {
 
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
-const needsRequire = ["e2b", "vercel", "daytona", "tenki", "boxd", "boxd files"];
+const needsRequire = ["vercel", "tenki", "boxd", "boxd files"];
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
@@ -260,29 +260,20 @@ try {
 
   for (const [name, why] of Object.entries(skipped)) console.log(`SKIP ${name}: ${why}`);
 
-  // Minifiers rename every class, and esbuild renames colliding ones (e2b's and Tenki's FileNotFoundError)
+  // Minifiers rename every class, and esbuild renames colliding ones (Tenki's FileNotFoundError)
   // even without --minify. The mappers must still recognize the real native errors.
   const mapping = `
-const { FileNotFoundError, SandboxNotFoundError } = require("e2b");
 const { FileNotFoundError: TenkiFileNotFoundError } = require("@tenkicloud/sandbox");
 const railway = require("railway");
-const daytona = require("@daytonaio/sdk");
-const { e2bError } = require("./src/providers/e2b/errors.ts");
 const { tenkiError } = require("./src/providers/tenki/errors.ts");
 const { railwayError, rememberRailwayErrors } = require("./src/providers/railway/errors.ts");
-const { daytonaError, rememberDaytonaErrors } = require("./src/providers/daytona/errors.ts");
 const { loadPeer } = require("./src/peer.ts");
 (async () => {
   rememberRailwayErrors(await loadPeer("railway", "railway", async () => railway));
-  rememberDaytonaErrors(await loadPeer("@daytonaio/sdk", "daytona", async () => daytona));
   const cases = [
-    ["e2b FileNotFoundError", FileNotFoundError, e2bError(new FileNotFoundError("missing.txt"), "box").code, "file_not_found"],
-    ["e2b SandboxNotFoundError", SandboxNotFoundError, e2bError(new SandboxNotFoundError("gone"), "box").code, "not_found"],
     ["tenki FileNotFoundError", TenkiFileNotFoundError, tenkiError(new TenkiFileNotFoundError("missing.txt"), "box", "files").code, "file_not_found"],
     ["railway SandboxFileNotFoundError", railway.SandboxFileNotFoundError, railwayError(new railway.SandboxFileNotFoundError({ operation: "read", path: "/x", message: "missing" }), "box").code, "file_not_found"],
     ["railway ExecNotStartedError", railway.ExecNotStartedError, railwayError(new railway.ExecNotStartedError({ message: "not started" }), "box").code, "unavailable"],
-    ["daytona DaytonaConnectionError", daytona.DaytonaConnectionError, daytonaError(new daytona.DaytonaConnectionError("down"), "box").code, "unavailable"],
-    ["daytona DaytonaTimeoutError", daytona.DaytonaTimeoutError, daytonaError(new daytona.DaytonaTimeoutError("slow"), "box").code, "timeout"],
   ];
   for (const [name, type, code, expected] of cases) console.log(JSON.stringify({ name, className: type.name, code, expected }));
 })();
@@ -322,8 +313,8 @@ const { loadPeer } = require("./src/peer.ts");
     );
   check(
     "minified mapping cases ran",
-    mappedRows.length === 7,
-    `${mappedRows.length} of 7${mapped.status === 0 ? "" : `\n${mapped.stderr.slice(-2000)}`}`,
+    mappedRows.length === 3,
+    `${mappedRows.length} of 3${mapped.status === 0 ? "" : `\n${mapped.stderr.slice(-2000)}`}`,
   );
 
   const live = process.env.BUNDLE_SMOKE_LIVE;

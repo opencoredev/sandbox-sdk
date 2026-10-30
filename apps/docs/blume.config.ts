@@ -1,7 +1,31 @@
 import { defineConfig } from "blume";
 
+import site from "../../vercel.json" with { type: "json" };
 import { providerTabsMarkdown } from "./components/providers.ts";
 import { sandboxDark } from "./themes/code";
+
+type Redirect = NonNullable<Parameters<typeof defineConfig>[0]["redirects"]>[number];
+
+const base = "/docs";
+
+/**
+ * The repo's vercel.json is the one list of redirects, and Vercel answers them
+ * with real 308s. The ones that start and end in the docs come through here too,
+ * written relative to the base as Blume expects, so `blume validate` checks each
+ * target is a page and a host that skips vercel.json still gets a redirect page.
+ */
+const docsRedirects = site.redirects.flatMap(({ source, destination }): Redirect[] => {
+  const from = withinBase(source);
+  const to = withinBase(destination);
+
+  return from && to ? [{ from, to, status: 308 }] : [];
+});
+
+function withinBase(path: string): string | undefined {
+  if (path === base) return "/";
+
+  return path.startsWith(`${base}/`) ? path.slice(base.length) : undefined;
+}
 
 const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeScript (Node 22+ or Bun 1.3+) needs an isolated Linux machine to:
 
@@ -11,11 +35,11 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, and Freestyle without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
-It is not a hosted service: it calls each provider's own SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
+It is not a hosted service: it calls each provider's HTTP API or SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk@next\` or \`bun add @opencoredev/sandbox-sdk@next\` (1.0 is in beta on the \`next\` tag). Install a provider's SDK next to it only when you use that provider (\`e2b\`, \`@vercel/sandbox\`, \`@daytonaio/sdk\`, \`@upstash/box\`, \`railway\`, \`@boatdev/sdk\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, \`freestyle\`, \`@superserve/sdk\`, or \`@rivet-dev/agentos-core\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else. For Vercel, Upstash Box, Railway, Tenki, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`@upstash/box\`, \`railway\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -33,7 +57,7 @@ export default defineConfig({
     root: "content",
   },
   deployment: {
-    base: "/docs",
+    base,
     site: "https://sandbox-sdk.app",
   },
   github: {
@@ -41,19 +65,7 @@ export default defineConfig({
     repo: "sandbox-sdk",
     dir: "apps/docs",
   },
-  redirects: [
-    { from: "/quickstart", to: "/getting-started/quickstart" },
-    { from: "/installation", to: "/getting-started/installation" },
-    { from: "/providers/compare", to: "/providers" },
-    // The 0.2 docs had one API page per surface. Each now lives in a concept guide.
-    // These stay exact: Blume serves its own JSON under /api/docs.
-    { from: "/api/sandboxes", to: "/concepts/sandboxes-and-keys" },
-    { from: "/api/commands", to: "/concepts/running-commands" },
-    { from: "/api/files", to: "/concepts/files-and-git" },
-    { from: "/api/processes", to: "/concepts/processes-and-previews" },
-    { from: "/api/ports", to: "/concepts/processes-and-previews" },
-    { from: "/api/snapshots", to: "/concepts/lifecycle-and-cleanup" },
-  ],
+  redirects: docsRedirects,
   navigation: {
     cta: { href: "https://github.com/opencoredev/sandbox-sdk", label: "GitHub" },
     // The repo link is the only thing in Blume's site footer, so hiding it drops
@@ -206,6 +218,7 @@ export default defineConfig({
           icon: "library",
           items: [
             { label: "Sandbox API", root: "/reference/sandbox", icon: "box" },
+            { label: "Native API", root: "/reference/native", icon: "plug" },
             { label: "Agent tools", root: "/reference/agent-tools", icon: "wrench" },
             { label: "Errors", root: "/reference/errors", icon: "triangle-alert" },
             { label: "Capabilities", root: "/reference/capabilities", icon: "list-checks" },

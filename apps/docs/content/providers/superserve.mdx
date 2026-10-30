@@ -3,7 +3,7 @@ title: Superserve
 description: Run Firecracker microVMs on Superserve. Pause and resume, snapshots, egress allow lists, secret bindings, and HTTPS previews.
 ---
 
-`superserve()` runs each sandbox as a Firecracker microVM on [Superserve](https://docs.superserve.ai/sandbox/create) through the official `@superserve/sdk`.
+`superserve()` runs each sandbox as a Firecracker microVM on [Superserve](https://docs.superserve.ai/sandbox/create). It calls Superserve's HTTP API directly, so there is no second package to install.
 
 ## Install
 
@@ -11,34 +11,34 @@ description: Run Firecracker microVMs on Superserve. Pause and resume, snapshots
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next @superserve/sdk
+npm install @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next @superserve/sdk
+pnpm add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next @superserve/sdk
+yarn add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next @superserve/sdk
+bun add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `@superserve/sdk` 0.11.4 or later. Set `SUPERSERVE_API_KEY` on your server, and keep it out of browser bundles.
+Set `SUPERSERVE_API_KEY` on your server, and keep it out of browser bundles. Commands that take stdin use the runtime's global `WebSocket`, which Node 22 and Bun have.
 
 ## Quickstart
 
@@ -137,7 +137,7 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(superserve(), { from: id });
 ```
 
-Snapshots outlive their source and have no expiry; delete them with the native `Snapshot.deleteById(id)`. `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
+Snapshots outlive their source and have no expiry. Delete one through the API with `provider.api.request("DELETE", "/snapshots/{snapshotId}", { params: { snapshotId: id } })`. `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
 
 ## Size, network, and lifetime
 
@@ -199,7 +199,58 @@ await using box = await createSandbox(provider);
 
 `secretBindings` maps env var names to [Superserve secrets](https://docs.superserve.ai/secrets/overview) you created: `{ OPENAI_API_KEY: "openai-prod" }`. The sandbox sees a proxy token in the env var, and Superserve attaches the real credential to outbound requests for the secret's hosts. These are secret names, not values, unlike `createSandbox`'s `secrets` option.
 
-A template needs Git, tar, and `nohup`, plus Python 3 unless `installPython` is on. Installing Python needs root and package-repository access and slows the first operation. For fast starts, build a template with Python 3 included; the repo's benchmark has one in `bench/templates/superserve/build.ts`. `box.native` is the SDK's `Sandbox` object.
+A template needs Git, tar, and `nohup`, plus Python 3 unless `installPython` is on. Installing Python needs root and package-repository access and slows the first operation. For fast starts, build a template with Python 3 included; the repo's benchmark has one in `bench/templates/superserve/build.ts`.
+
+## Call the API directly
+
+`box.native` calls any Superserve endpoint with the adapter's credentials, retries, and error mapping. `{sandboxId}` in a path fills in from the sandbox. Superserve has two planes:
+
+- `"api"`, the default, is the control plane at `https://api.superserve.ai`, sent with your API key.
+- `"data"` is exec and files inside the sandbox. The adapter sends the sandbox's access token and routing hint, and activates the sandbox again when they expire or the data plane refuses them.
+
+`request` returns the parsed JSON body. `fetch` returns the raw `Response` for bytes and streams. A non-2xx answer rejects with `SandboxError` from both.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }));
+const ports = await box.native.request<{ ports: { port: number }[] }>(
+  "GET",
+  "/sandboxes/{sandboxId}/preview-ports",
+);
+console.log(ports.ports);
+
+await box.files.write("report.txt", "done\n");
+const file = await box.native.fetch("GET", "/files", {
+  plane: "data",
+  query: { path: "/workspace/report.txt" },
+});
+console.log(await file.text());
+```
+
+`provider.api` is the same API with no sandbox bound, for account-level calls on the control plane. The `data` plane needs a sandbox, so it works only on `box.native`.
+
+```ts
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+const provider = superserve();
+const sandboxes = await provider.api.request<{ id: string; status: string }[]>("GET", "/sandboxes");
+console.log(sandboxes.length);
+```
+
+To use the official SDK, install `@superserve/sdk` yourself and pass its import to `sdk`. On a sandbox you get the SDK's `Sandbox` from `Sandbox.connect`, which resumes the sandbox if it is paused. On `provider.api` you get the `Sandbox` class.
+
+```ts check="skip"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
+
+await using box = await createSandbox(superserve({ installPython: true }));
+const sandbox = await box.native.sdk(() => import("@superserve/sdk"));
+console.log(await sandbox.getInfo());
+```
+
+If `@superserve/sdk` isn't installed, `sdk` rejects with `unavailable`.
 
 ## Limitations
 

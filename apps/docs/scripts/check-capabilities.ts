@@ -4,7 +4,8 @@
  *   bun scripts/check-capabilities.ts
  *
  * Every provider is built from its adapter with dummy credentials and a stub transport:
- * the peer SDK loader, `fetch` (Boat, Sandboxer), or a Docker socket (Local) records the
+ * the peer SDK loader, `fetch` (the providers that call their HTTP API directly), or a Docker
+ * socket (Local) records the
  * call and fails it. Nothing leaves this machine. A cell is checked in one of two ways:
  *
  * - declared: against what the adapter declares as data (`capabilities`, `keyMode`, `previewMode`).
@@ -34,13 +35,13 @@ import {
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
-import { createDaytonaProvider } from "../../../packages/sdk/src/providers/daytona/provider.ts";
-import { createE2BProvider } from "../../../packages/sdk/src/providers/e2b/provider.ts";
-import { createFreestyleProvider } from "../../../packages/sdk/src/providers/freestyle/provider.ts";
+import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
+import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
+import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
-import { createSuperserveProvider } from "../../../packages/sdk/src/providers/superserve/provider.ts";
+import { superserve } from "../../../packages/sdk/src/providers/superserve/index.ts";
 import { createTenkiProvider } from "../../../packages/sdk/src/providers/tenki/provider.ts";
 import { createUpstashProvider } from "../../../packages/sdk/src/providers/upstash/provider.ts";
 import { createVercelProvider } from "../../../packages/sdk/src/providers/vercel/provider.ts";
@@ -61,7 +62,8 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** Boat and Sandboxer reach their API through the global fetch, so it stands in for them. */
+/** E2B, Daytona, Freestyle, Superserve, Boat and Sandboxer reach their API through the global
+ * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
 
@@ -93,7 +95,7 @@ const subjects: readonly Subject[] = [
     column: "agentOS",
     build: () => createAgentosProvider({}, stubTransport, createRegistry()),
   },
-  { column: "E2B", build: () => createE2BProvider({ apiKey: offlineKey }, stubTransport) },
+  { column: "E2B", build: () => e2b({ apiKey: offlineKey }) },
   {
     column: "Vercel",
     build: () =>
@@ -105,7 +107,7 @@ const subjects: readonly Subject[] = [
   },
   {
     column: "Daytona",
-    build: () => createDaytonaProvider({ apiKey: offlineKey }, stubTransport),
+    build: () => daytona({ apiKey: offlineKey }),
   },
   {
     column: "Upstash",
@@ -121,7 +123,7 @@ const subjects: readonly Subject[] = [
   { column: "Tenki", build: () => createTenkiProvider({ apiKey: offlineKey }, stubTransport) },
   {
     column: "Superserve",
-    build: () => createSuperserveProvider({ apiKey: offlineKey }, stubTransport),
+    build: () => superserve({ apiKey: offlineKey }),
   },
   {
     column: "boxd",
@@ -129,7 +131,7 @@ const subjects: readonly Subject[] = [
   },
   {
     column: "Freestyle",
-    build: () => createFreestyleProvider({ apiKey: offlineKey }, stubTransport),
+    build: () => freestyle({ apiKey: offlineKey }),
   },
   { column: "Memory", build: () => memory() },
 ];
@@ -502,10 +504,12 @@ function dynamicImports(entry: string) {
   for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
     if (seen.has(file)) continue;
     seen.add(file);
-    const text = readFileSync(file, "utf8");
+    // JSDoc examples (`box.native.sdk(() => import("e2b"))`) are not imports, so comments are dropped.
+    const text = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
     for (const [, specifier = ""] of text.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/g))
-      if (!specifier.startsWith("node:") && !specifier.startsWith("."))
+      // Error messages quote `import("${pkg}")` in template literals; a placeholder is never a module.
+      if (!specifier.startsWith("node:") && !specifier.startsWith(".") && !specifier.includes("${"))
         found.add(packageOf(specifier));
 
     for (const [, relative = ""] of text.matchAll(/\bfrom\s+"(\.{1,2}\/[^"]+)\.js"/g))

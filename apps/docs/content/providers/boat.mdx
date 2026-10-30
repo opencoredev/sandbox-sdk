@@ -11,34 +11,34 @@ description: Run persistent Ubuntu VMs for long-running agents on Boat. Size pre
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk@next @boatdev/sdk
+npm install @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk@next @boatdev/sdk
+pnpm add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk@next @boatdev/sdk
+yarn add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk@next @boatdev/sdk
+bun add @opencoredev/sandbox-sdk
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `@boatdev/sdk` 1.9.9 or later. Set `BOAT_API_KEY` on your server, and keep it out of browser bundles.
+The adapter calls Boat's HTTP API itself, so there is nothing else to install. Set `BOAT_API_KEY` on your server, and keep it out of browser bundles.
 
 ## Quickstart
 
@@ -126,7 +126,7 @@ console.log(response.status);
 
 ## Pause, resume, and snapshots
 
-This adapter has no pause, resume, or snapshots, and the methods don't exist on its sandbox type. Boat's native stop and snapshots are on `box.native.client`. Code that accepts any provider can check first:
+This adapter has no pause, resume, or snapshots, and the methods don't exist on its sandbox type. Boat's own stop and snapshot endpoints are reachable through [`box.native`](#call-the-api-directly). Code that accepts any provider can check first:
 
 ```ts
 import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
@@ -177,7 +177,57 @@ await using box = await createSandbox(
 | `org`              | `string`                                      | Your active wallet        |                 |
 | `requestTimeoutMs` | `number`                                      | `90_000`                  |                 |
 
-A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+ plan. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Boat never captures the disk, and a stop erases it. `monitoring: false` means Boat keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `apiUrl` and `type` are deprecated aliases. `box.native` is `{ sandbox, client }`, Boat's sandbox metadata and the `BoatApi` client.
+A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+ plan. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Boat never captures the disk, and a stop erases it. `monitoring: false` means Boat keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `apiUrl` and `type` are deprecated aliases.
+
+## Call the API directly
+
+`box.native` calls any Boat endpoint with the adapter's base URL, key, retries, and error mapping. Paths are relative to `https://boat.dev/api/v1`, and `{sandboxId}` fills in from the sandbox. Boat has one plane, `"api"`. See the [native API reference](/reference/native) for every option.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+await using box = await createSandbox(boat());
+await box.run("echo report > /tmp/report.txt");
+
+const history = await box.native.request<{ commands: { command: string; status: string }[] }>(
+  "GET",
+  "/sandboxes/{sandboxId}/command-history",
+  { query: { limit: 5 } },
+);
+console.log(history.commands.map((entry) => entry.status));
+
+const file = await box.native.fetch("GET", "/sandboxes/{sandboxId}/artifacts", {
+  query: { path: "/tmp/report.txt" },
+});
+console.log(await file.text());
+```
+
+`request` returns the JSON body and `fetch` the raw `Response`. A non-2xx status rejects with `SandboxError`.
+
+For account calls with no sandbox, use the provider's `api`:
+
+```ts
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+const limits = await boat().api.request("GET", "/limits");
+console.log(limits);
+```
+
+To use the official SDK instead, install `@boatdev/sdk` and pass its import to `sdk`. On a sandbox you get a `BoatApi` client set up with the same base URL and key, plus the sandbox's metadata. On `provider.api` you get the client alone.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
+
+await using box = await createSandbox(boat());
+const { client, sandbox } = await box.native.sdk(() => import("@boatdev/sdk"));
+console.log(sandbox.state);
+const { snapshots } = await client.listSandboxSnapshots({ sandboxId: box.id });
+console.log(snapshots.length);
+```
+
+In earlier betas, `box.native` was `{ sandbox, client }`. That pair now comes from `box.native.sdk(() => import("@boatdev/sdk"))`.
 
 ## Limitations
 
@@ -190,7 +240,8 @@ A per-create `size` wins over `machine`. `xlarge` (16 CPUs, 32 GB) needs a $100+
 
 - Sandboxes are created with `noEnv: true`, so they get none of your account's saved secrets. `env` and `secrets` still apply.
 - Boat has no labels, so the key and labels are compressed into the display name. Renaming the VM in Boat hides it from the SDK.
-- Create retries up to three times with the same idempotency key. Commands and file operations are never replayed.
+- Create retries up to three times with the same idempotency key. Commands are never replayed. Reads, file writes, and deletes retry on 429, 502, 503, 504, and dropped connections.
+- Command output streams from Boat's NDJSON attach endpoint. Boat ends each connection after 10 minutes; the adapter reopens it from the last byte offsets, so no output is lost or repeated. A dropped connection or 60 seconds of silence is reopened the same way for up to 60 seconds.
 - stdin and file contents never travel in command text, which Boat keeps in its history. Boat's file API takes at most 5 MiB per write and only paths under `/home/user` or `/tmp`. A write of up to 4 MiB under those paths, without `mode`, goes straight to it. Anything else, and all stdin, is uploaded in 4 MiB parts to a new `0700` directory under `/tmp`. A guest command then copies the file into place, or the shell opens the stdin file and deletes it before your command starts.
 - Reads above 1 MiB use a signed download URL; smaller reads use guest commands.
 - `destroy()` deletes the VM and its snapshots. Boat purges the data asynchronously.

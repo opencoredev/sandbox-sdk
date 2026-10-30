@@ -1,303 +1,46 @@
-import { afterAll, expect, test } from "vitest";
+import { afterAll, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { mkdtemp, writeFile, readFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockGuest } from "./cloud-guest-mock.js";
-import type {
-  NetworkConfig,
-  PublishPreviewPortOptions,
-  SandboxCreateOptions,
-  SandboxStatus,
-  SandboxUpdateOptions,
-  SnapshotCreateOptions,
-} from "@superserve/sdk";
 import { quote } from "../src/shared/shell.js";
-import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import {
-  createSuperserveProvider,
-  type SuperserveOptions,
-} from "../src/providers/superserve/provider.js";
+  activations,
+  api,
+  dataHost,
+  dataRequests,
+  gate,
+  installSuperserveFake,
+  resetSuperserveFake,
+  revoke,
+  state,
+  tokenOf,
+} from "./superserve-fake.js";
+
+installSuperserveFake();
+
+import {
+  superserve,
+  type SuperserveNative,
+  type SuperserveProvider,
+} from "../src/providers/superserve/index.js";
 import { superserveError } from "../src/providers/superserve/errors.js";
-import { createSandbox, connectSandbox } from "../src/index.js";
+import { createSandbox, connectSandbox, SandboxError } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
-
-type MockRecord = {
-  guest: MockGuest;
-  metadata: Record<string, string>;
-  createdAt: Date;
-  status: SandboxStatus;
-  network?: NetworkConfig;
-};
-
-type MockState = {
-  boxes: Map<string, MockRecord>;
-  creates: number;
-  nativeTimeoutSeconds: number;
-  bootstrapPath: string;
-  updates: SandboxUpdateOptions[];
-  createOptions?: SandboxCreateOptions;
-  transportFailure: boolean;
-  stdinFailure: boolean;
-  closes: number;
-  bootstrap?: () => Promise<void>;
-  snapshotFailure: boolean;
-  snapshotOptions?: SnapshotCreateOptions;
-  dropNetwork: boolean;
-  previewAccess: PublishPreviewPortOptions[];
-};
-
-const state: MockState = {
-  boxes: new Map(),
-  creates: 0,
-  nativeTimeoutSeconds: 0,
-  bootstrapPath: "",
-  updates: [],
-  transportFailure: false,
-  stdinFailure: false,
-  closes: 0,
-  snapshotFailure: false,
-  dropNetwork: false,
-  previewAccess: [],
-};
-
-/** The Superserve Sandbox surface the adapter uses, backed by isolated Linux directories. */
-class MockSandbox {
-  constructor(readonly id: string) {}
-  static async create(options: SandboxCreateOptions) {
-    const guest = await MockGuest.create();
-    state.creates++;
-    state.createOptions = options;
-
-    const record: MockRecord = {
-      guest,
-      metadata: options.metadata ?? {},
-      createdAt: new Date(),
-      status: "active",
-    };
-
-    if (options.network && !state.dropNetwork) record.network = options.network;
-    state.boxes.set(guest.id, record);
-
-    return new this(guest.id);
-  }
-  static async connect(id: string) {
-    if (!state.boxes.has(id)) throw Object.assign(new Error("private"), { statusCode: 404 });
-
-    return new this(id);
-  }
-  static async list() {
-    return [...state.boxes.entries()].map(([id, v]) => ({ ...v, id }));
-  }
-  static async killById(id: string) {
-    await state.boxes.get(id)?.guest.destroy();
-    state.boxes.delete(id);
-  }
-  get value() {
-    const v = state.boxes.get(this.id);
-
-    if (!v) throw Object.assign(new Error("private"), { statusCode: 404 });
-
-    return v;
-  }
-  async getInfo() {
-    return state.nativeTimeoutSeconds > 0
-      ? { ...this.value, id: this.id, timeoutSeconds: state.nativeTimeoutSeconds }
-      : { ...this.value, id: this.id };
-  }
-  async update(options: SandboxUpdateOptions) {
-    state.updates.push(options);
-  }
-  async snapshot(options: SnapshotCreateOptions) {
-    state.snapshotOptions = options;
-
-    if (state.snapshotFailure) throw new Error("private-native-token");
-
-    return { id: "snapshot-1" };
-  }
-  async pause() {
-    this.value.status = "paused";
-  }
-  async resume() {
-    this.value.status = "active";
-  }
-  get commands() {
-    const g = this.value.guest;
-
-    const launch = (command: string) => {
-      const mapping = `
-def sdk_paths(value):
- if isinstance(value,str): return value.replace("/"+"workspace",bytes.fromhex("${Buffer.from(g.root + "/workspace").toString("hex")}").decode()).replace("/tmp/"+".sandbox-sdk",bytes.fromhex("${Buffer.from(g.root + "/tmp/.sandbox-sdk").toString("hex")}").decode()).replace("/tmp/"+"sdk-bare",bytes.fromhex("${Buffer.from(g.root + "/tmp/sdk-bare").toString("hex")}").decode())
- if isinstance(value,list): return [sdk_paths(x) for x in value]
- if isinstance(value,dict): return {k:sdk_paths(x) for k,x in value.items()}
- return value
-v=sdk_paths(v)`;
-
-      return command
-        .replace(
-          "else marshal.loads(bytes.fromhex(sys.stdin.read()))",
-          "else marshal.loads(bytes.fromhex(sys.stdin.read()))" + mapping,
-        )
-        .replace("data.hex()", `data.replace(${JSON.stringify(g.root)}.encode(),bytes()).hex()`);
-    };
-
-    return {
-      run: async (command: string, options: { env?: Record<string, string> } = {}) => {
-        if (options.env?.SANDBOX_SDK_BOOTSTRAP) await state.bootstrap?.();
-
-        if (state.transportFailure) {
-          state.transportFailure = false;
-          void g.raw(command).catch(() => {});
-          throw new Error("private-native-token");
-        }
-
-        const env = { ...options.env };
-
-        if (options.env?.SANDBOX_SDK_BOOTSTRAP && state.bootstrapPath)
-          env.PATH = state.bootstrapPath;
-
-        const prefix = Object.entries(env)
-          .map(([key, value]) => {
-            // Match MockGuest.upload's host-path normalization for encoded output.
-            const payload =
-              key === "SANDBOX_SDK_BOOTSTRAP"
-                ? value.replace(
-                    "base64.b64encode(data)",
-                    `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`,
-                  )
-                : value;
-
-            return `export ${key}=${quote(payload)};`;
-          })
-          .join(" ");
-
-        try {
-          return {
-            stdout: await g.raw(`${prefix} ${launch(command)}`),
-            stderr: "",
-            exitCode: 0,
-            truncated: false,
-          };
-        } catch (error) {
-          if (isObject(error) && "code" in error && isNumber(error.code))
-            return {
-              stdout: "stdout" in error && isString(error.stdout) ? error.stdout : "",
-              stderr: "stderr" in error && isString(error.stderr) ? error.stderr : "",
-              exitCode: error.code,
-              truncated: false,
-            };
-          throw error;
-        }
-      },
-      spawn: async (
-        command: string,
-        options: {
-          onStdout?: (s: string) => void;
-          onStderr?: (s: string) => void;
-          startupSignal?: AbortSignal;
-          env?: Record<string, string>;
-        },
-      ) => {
-        if (options.startupSignal?.aborted) throw new DOMException("aborted", "AbortError");
-
-        const prefix = Object.entries(options.env ?? {})
-          .map(
-            ([key, value]) =>
-              `export ${key}=${quote(value.replace("base64.b64encode(data)", `base64.b64encode(data.replace(${JSON.stringify(g.root)}.encode(),bytes()))`))};`,
-          )
-          .join(" ");
-
-        const stream = g.stream(`${prefix} ${launch(command)}`);
-
-        let stdout = "",
-          stderr = "";
-
-        stream.stdout.push = (bytes) => {
-          const text = Buffer.from(bytes).toString();
-          stdout += text;
-          options.onStdout?.(text);
-        };
-
-        stream.stderr.push = (bytes) => {
-          const text = Buffer.from(bytes).toString();
-          stderr += text;
-          options.onStderr?.(text);
-        };
-
-        return {
-          stdin: {
-            write: (s: string) => {
-              if (state.stdinFailure) {
-                state.stdinFailure = false;
-                throw new Error("private-input-error");
-              }
-
-              stream.write(s);
-            },
-            close: () => stream.end(),
-          },
-          kill: () => stream.close(),
-          wait: async () => {
-            const pending = stream.wait();
-
-            if (state.transportFailure) {
-              state.transportFailure = false;
-              pending.catch(() => {});
-              throw new Error("private-native-token");
-            }
-
-            return { exitCode: await pending, stdout, stderr };
-          },
-          close: async () => {
-            state.closes++;
-            stream.close();
-          },
-        };
-      },
-    };
-  }
-  get files() {
-    const g = this.value.guest;
-
-    return {
-      write: (p: string, b: Uint8Array) => g.upload(p, b),
-      read: async (p: string) => {
-        try {
-          return await g.read(p);
-        } catch {
-          throw Object.assign(new Error("private"), { statusCode: 404 });
-        }
-      },
-    };
-  }
-  async publishPreviewPort(port: number, options: PublishPreviewPortOptions) {
-    state.previewAccess.push(options);
-
-    return { port };
-  }
-  async getPreviewToken() {
-    return { header: "x-preview", token: "mock" };
-  }
-  getPreviewUrl(port: number) {
-    return `https://mock.invalid/${port}`;
-  }
-}
-
-function superserve(options: SuperserveOptions) {
-  return createSuperserveProvider(options, async () => ({ Sandbox: MockSandbox }));
-}
 
 const factory = () => superserve({ apiKey: "mock" });
 
+// live: true authorizes the fake: every request goes to the local Superserve API.
 runConformance(factory, {
   live: true,
   unsupported: {
     httpProbe: "Mock superserve preview URLs point at an unreachable host",
+    gitPush: "The HTTP fake's guest has no git identity; the live smoke covers git on superserve",
   },
 });
 
 afterAll(async () => {
-  for (const v of state.boxes.values()) await v.guest.destroy();
-  state.boxes.clear();
+  await resetSuperserveFake();
+  vi.unstubAllGlobals();
 });
 
 test("fails closed before allocation for unsupported creation settings", async () => {
@@ -341,8 +84,9 @@ test("transport failure confirms termination before a delayed side effect", asyn
 
   try {
     state.transportFailure = true;
+    // The connection drops after the command started, so the run's outcome is unknown, never a plain failure.
     await expect(box.run("sleep .4; echo leaked > late-transport")).rejects.toMatchObject({
-      code: "provider",
+      code: "outcome_unknown",
     });
     expect(await box.files.exists("late-transport")).toBe(false);
     expect((await box.run("echo usable")).stdout).toBe("usable\n");
@@ -378,7 +122,7 @@ test("snapshot failures retain a safe idempotent recovery name", async () => {
     expect(await box.snapshot()).toEqual({ id: "snapshot-1" });
     expect(state.snapshotOptions).toMatchObject({
       name: expect.stringMatching(/^sbxsdk-/),
-      idempotencyKey: expect.any(String),
+      idempotency_key: expect.any(String),
     });
     state.snapshotFailure = true;
     await expect(box.snapshot()).rejects.toMatchObject({
@@ -387,6 +131,21 @@ test("snapshot failures retain a safe idempotent recovery name", async () => {
     });
   } finally {
     state.snapshotFailure = false;
+    await box.destroy();
+  }
+});
+
+test("a snapshot Superserve marks failed reports provider, not an unknown outcome", async () => {
+  const box = await createSandbox(factory());
+
+  try {
+    state.snapshotRejected = true;
+    await expect(box.snapshot()).rejects.toMatchObject({
+      code: "provider",
+      message: expect.stringContaining("Snapshot failed"),
+    });
+  } finally {
+    state.snapshotRejected = false;
     await box.destroy();
   }
 });
@@ -435,8 +194,8 @@ test.each([
   const box = await provider.create({ labels: {} });
 
   try {
-    expect(state.createOptions).toMatchObject({ fromTemplate: expected });
-    expect(state.createOptions).not.toHaveProperty("fromSnapshot");
+    expect(state.createOptions).toMatchObject({ from_template: expected });
+    expect(state.createOptions).not.toHaveProperty("from_snapshot");
   } finally {
     await provider.destroy(box.id);
   }
@@ -447,8 +206,8 @@ test("snapshot restore takes precedence over a custom template", async () => {
   const box = await provider.create({ labels: {}, from: "snapshot-custom" });
 
   try {
-    expect(state.createOptions).toMatchObject({ fromSnapshot: "snapshot-custom" });
-    expect(state.createOptions).not.toHaveProperty("fromTemplate");
+    expect(state.createOptions).toMatchObject({ from_snapshot: "snapshot-custom" });
+    expect(state.createOptions).not.toHaveProperty("from_template");
   } finally {
     await provider.destroy(box.id);
   }
@@ -493,7 +252,7 @@ test("restores clear an inherited auto-pause timeout", async () => {
     const box = await provider.create({ labels: {}, from: "external-snapshot" });
 
     try {
-      expect(state.updates.slice(before)).toEqual([{ timeoutSeconds: null }]);
+      expect(state.updates.slice(before)).toEqual([{ timeout_seconds: null }]);
     } finally {
       await provider.destroy(box.id);
     }
@@ -656,7 +415,7 @@ test("first file operation persists create environment for a fresh client", asyn
   }
 });
 
-test("native lifetime, secret and preview options reach Sandbox.create in seconds", async () => {
+test("native lifetime, secret and preview options reach POST /sandboxes in seconds", async () => {
   const provider = superserve({
     apiKey: "mock",
     autoPauseMs: 90_500,
@@ -669,14 +428,16 @@ test("native lifetime, secret and preview options reach Sandbox.create in second
 
   try {
     expect(state.createOptions).toMatchObject({
-      timeoutSeconds: 91,
-      autoDeleteSeconds: 0,
+      timeout_seconds: 91,
+      auto_delete_seconds: 0,
       secrets: { OPENAI_API_KEY: "openai-prod" },
-      previewAccess: "public",
+      preview_access: "public",
     });
     expect(state.createOptions).not.toHaveProperty("network");
-    expect(await provider.previewUrl(box.id, 3000)).toEqual({ url: "https://mock.invalid/3000" });
-    expect(state.previewAccess.at(-1)).toEqual({ access: "public" });
+    expect(await provider.previewUrl(box.id, 3000)).toEqual({
+      url: `https://3000-${box.id}.sandbox.superserve.ai`,
+    });
+    expect(state.previewAccess.at(-1)).toEqual({ port: 3000, access: "public" });
   } finally {
     await provider.destroy(box.id);
   }
@@ -694,16 +455,16 @@ test("network policy maps to Superserve egress rules and is confirmed after crea
   expect(provider.capabilities.has("network-policy")).toBe(true);
 
   const cases: [import("../src/provider.js").CreateInput["network"], unknown][] = [
-    ["none", { allowOut: [], denyOut: ["0.0.0.0/0"] }],
+    ["none", { allow_out: [], deny_out: ["0.0.0.0/0"] }],
     [
       { allow: ["10.0.0.0/8", "1.2.3.4"] },
-      { allowOut: ["10.0.0.0/8", "1.2.3.4/32"], denyOut: ["0.0.0.0/0"] },
+      { allow_out: ["10.0.0.0/8", "1.2.3.4/32"], deny_out: ["0.0.0.0/0"] },
     ],
     [
       { allow: ["registry.npmjs.org", "*.github.com"] },
       {
-        allowOut: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"],
-        denyOut: ["0.0.0.0/0"],
+        allow_out: ["registry.npmjs.org", "*.github.com", "1.1.1.1/32", "8.8.8.8/32"],
+        deny_out: ["0.0.0.0/0"],
       },
     ],
   ];
@@ -742,10 +503,10 @@ test("restores apply the configured auto-pause instead of the inherited one", as
 
     try {
       expect(state.createOptions).toMatchObject({
-        fromSnapshot: "external-snapshot",
-        timeoutSeconds: 30,
+        from_snapshot: "external-snapshot",
+        timeout_seconds: 30,
       });
-      expect(state.updates.slice(before)).toEqual([{ timeoutSeconds: 30 }]);
+      expect(state.updates.slice(before)).toEqual([{ timeout_seconds: 30 }]);
     } finally {
       await provider.destroy(box.id);
     }
@@ -787,4 +548,517 @@ test("a missing cwd is a failed run with the shell error on stderr, and start re
   } finally {
     await box.destroy();
   }
+});
+
+describe("data-plane routes", () => {
+  const read = (provider: ReturnType<typeof factory>, id: string) =>
+    provider.files.read(id, "/workspace/route.txt");
+
+  async function created(provider = factory()) {
+    const info = await provider.create({ labels: {} });
+    await state.boxes
+      .get(info.id)
+      ?.guest.upload("/workspace/route.txt", new TextEncoder().encode("ok"));
+
+    return { provider, id: info.id };
+  }
+
+  test("data-plane calls send the sandbox id, access token and routing hint only to the data host", async () => {
+    const { provider, id } = await created();
+
+    try {
+      expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
+      const [request] = dataRequests(id);
+      expect(request?.url.href).toBe(`${dataHost}/files?path=%2Fworkspace%2Froute.txt`);
+      expect(request?.headers.get("x-access-token")).toBe(tokenOf(id));
+      expect(request?.headers.get("x-superserve-routing-hint")).toMatch(/^eyJ/);
+      expect(request?.headers.get("x-api-key")).toBeNull();
+      const control = state.requests.filter((r) => r.url.origin === api);
+      expect(
+        control.every(
+          (r) => r.headers.get("x-access-token") === null && r.headers.get("x-api-key") === "mock",
+        ),
+      ).toBe(true);
+      expect(activations(id)).toBe(0);
+    } finally {
+      await provider.destroy(id);
+    }
+  });
+
+  test("a routing hint about to expire is replaced before the call, not after a failure", async () => {
+    state.hintSeconds = 10;
+    const { provider, id } = await created();
+    state.hintSeconds = 3600;
+
+    try {
+      const before = state.requests.length;
+      await read(provider, id);
+
+      const after = state.requests
+        .slice(before)
+        .map((r) => `${r.method} ${r.url.origin === api ? "api" : "data"}${r.url.pathname}`);
+
+      expect(after).toEqual([`POST api/sandboxes/${id}/activate`, "GET data/files"]);
+      // The fresh hint is good for an hour, so the next call needs no activation.
+      await read(provider, id);
+      expect(activations(id)).toBe(1);
+    } finally {
+      await provider.destroy(id);
+    }
+  });
+
+  test.each([
+    ["a 401", { status: 401, body: { error: "invalid access token" } }],
+    [
+      "a stale-route 404",
+      { status: 404, body: { error: { code: "sandbox_route_stale", message: "moved" } } },
+    ],
+    [
+      "a 503 sandbox_unavailable",
+      { status: 503, body: { error: { code: "sandbox_unavailable", message: "paused" } } },
+    ],
+    ["the legacy plain-text paused 503", { status: 503, body: "sandbox is paused\n" }],
+  ])("%s reactivates once and resends", async (_name, fault) => {
+    const { provider, id } = await created();
+
+    try {
+      state.dataFaults.push(fault);
+      expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
+      expect(activations(id)).toBe(1);
+      expect(dataRequests(id)).toHaveLength(2);
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
+  });
+
+  test("a hinted 503 without sandbox_unavailable and a plain 404 do not reactivate", async () => {
+    const { provider, id } = await created();
+
+    try {
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
+      expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
+      expect(activations(id)).toBe(0);
+      await expect(provider.files.read(id, "/workspace/missing")).rejects.toMatchObject({
+        code: "file_not_found",
+      });
+      expect(activations(id)).toBe(0);
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
+  });
+
+  test("without a routing hint a bare 503 reactivates; a read is resent, an exec that may have run is not", async () => {
+    state.noHints = true;
+    const { provider, id } = await created();
+
+    const execs = () =>
+      state.requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          request.url.origin === dataHost &&
+          request.url.pathname === "/exec",
+      );
+
+    try {
+      expect(dataRequests(id).at(-1)?.headers.get("x-superserve-routing-hint") ?? null).toBeNull();
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
+      expect(new TextDecoder().decode(await read(provider, id))).toBe("ok");
+      expect(activations(id)).toBe(1);
+      expect(dataRequests(id)).toHaveLength(2);
+      const box = await connectSandbox(provider, id);
+      const before = execs().length;
+      state.dataFaults.push({
+        status: 503,
+        body: { error: { code: "overloaded", message: "busy" } },
+      });
+      await expect(box.run("echo once >> ran.txt")).rejects.toMatchObject({
+        code: "outcome_unknown",
+        provider: "superserve",
+      });
+      // The refused launch went out once: a second copy could run the command twice. (A later /exec is the
+      // supervisor's own recovery check, a different command.) The route was still refreshed for the next call.
+      const launch = JSON.stringify(execs()[before]?.body);
+      expect(
+        execs()
+          .slice(before)
+          .filter((request) => JSON.stringify(request.body) === launch),
+      ).toHaveLength(1);
+      expect(activations(id)).toBe(2);
+    } finally {
+      state.noHints = false;
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
+  });
+
+  test("a second refusal after reactivating fails instead of looping", async () => {
+    const { provider, id } = await created();
+
+    try {
+      state.dataFaults.push({ status: 401, body: {} }, { status: 401, body: {} });
+      await expect(read(provider, id)).rejects.toMatchObject({
+        code: "auth",
+        provider: "superserve",
+      });
+      expect(activations(id)).toBe(1);
+    } finally {
+      state.dataFaults = [];
+      await provider.destroy(id);
+    }
+  });
+
+  test("concurrent calls refused at once share one activation", async () => {
+    const { provider, id } = await created();
+
+    try {
+      revoke(id);
+      const held = gate();
+      state.activateGate = held.promise;
+      const reads = Array.from({ length: 6 }, () => read(provider, id));
+      // Every read is refused and waits on the single activation the first one started.
+      await vi.waitFor(() => expect(dataRequests(id)).toHaveLength(6));
+      await vi.waitFor(() => expect(activations(id)).toBe(1));
+      held.open();
+      expect((await Promise.all(reads)).map((bytes) => new TextDecoder().decode(bytes))).toEqual(
+        Array(6).fill("ok"),
+      );
+      expect(activations(id)).toBe(1);
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
+  });
+
+  test("an activation that answers after a newer resume never replaces the resumed token", async () => {
+    const { provider, id } = await created();
+
+    try {
+      revoke(id);
+      const held = gate();
+      state.activateGate = held.promise;
+      // The refused read starts an activation; the server mints its answer now and holds it.
+      const pending = read(provider, id);
+      await vi.waitFor(() => expect(activations(id)).toBe(1));
+      // A resume starts later, rotates the token on the server and answers first.
+      await provider.resume?.(id);
+      const resumed = tokenOf(id);
+      held.open();
+      expect(new TextDecoder().decode(await pending)).toBe("ok");
+      // The refused read was resent with the resumed token, and so is the next read: the held answer was dropped.
+      expect(dataRequests(id).at(-1)?.headers.get("x-access-token")).toBe(resumed);
+      await read(provider, id);
+      expect(dataRequests(id).map((r) => r.headers.get("x-access-token") === resumed)).toEqual([
+        false,
+        true,
+        true,
+      ]);
+      expect(activations(id)).toBe(1);
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
+  });
+
+  test("a refusal sent with a token older than the current one resends without activating", async () => {
+    const { provider, id } = await created();
+
+    try {
+      revoke(id);
+      const held = gate();
+      state.dataGate = held.promise;
+      // The read goes out with the revoked token; the server decides on a 401 and holds it.
+      const pending = read(provider, id);
+      await vi.waitFor(() => expect(dataRequests(id)).toHaveLength(1));
+      state.dataGate = undefined;
+      // A resume answers meanwhile with a newer token.
+      await provider.resume?.(id);
+      held.open();
+      expect(new TextDecoder().decode(await pending)).toBe("ok");
+      expect(activations(id)).toBe(0);
+      expect(dataRequests(id).map((r) => r.headers.get("x-access-token") === tokenOf(id))).toEqual([
+        false,
+        true,
+      ]);
+    } finally {
+      state.dataGate = undefined;
+      await provider.destroy(id);
+    }
+  });
+
+  test("an aborted caller leaves the shared activation running for the others", async () => {
+    const { provider, id } = await created();
+
+    try {
+      revoke(id);
+      const held = gate();
+      state.activateGate = held.promise;
+      const controller = new AbortController();
+      const native = provider.native(id);
+
+      const abandoned = native.fetch("GET", "/files", {
+        plane: "data",
+        query: { path: "/workspace/route.txt" },
+        signal: controller.signal,
+      });
+
+      const kept = read(provider, id);
+      await vi.waitFor(() => expect(activations(id)).toBe(1));
+      controller.abort();
+      await expect(abandoned).rejects.toMatchObject({ code: "aborted" });
+      held.open();
+      expect(new TextDecoder().decode(await kept)).toBe("ok");
+      expect(activations(id)).toBe(1);
+    } finally {
+      state.activateGate = undefined;
+      await provider.destroy(id);
+    }
+  });
+});
+
+describe("exec/connect", () => {
+  test("stdin runs dial the per-sandbox host with the token and hint as subprotocols", async () => {
+    const box = await createSandbox(factory());
+
+    try {
+      const before = state.sockets.length;
+      expect((await box.run("cat", { stdin: "über-stdin" })).stdout).toBe("über-stdin");
+      const socket = state.sockets[before];
+      expect(socket?.url).toBe(`wss://boxd-${box.id}.sandbox.superserve.ai/exec/connect`);
+      expect(socket?.protocols).toEqual([
+        "superserve.exec.v1",
+        `token.${tokenOf(box.id)}`,
+        expect.stringMatching(/^route\.eyJ/),
+      ]);
+      const start = JSON.parse(String(socket?.sent[0]));
+      expect(start).toMatchObject({ command: expect.any(String), timeout_s: expect.any(Number) });
+      // Start, stdin frames on channel 0, stdin_close, then the SIGTERM that closing a finished session sends.
+      const close = socket?.sent.indexOf(JSON.stringify({ type: "stdin_close" })) ?? -1;
+      expect(close).toBeGreaterThan(1);
+      expect(
+        socket?.sent
+          .slice(1, close)
+          .every(
+            (frame) =>
+              frame instanceof Uint8Array && frame[0] === 0 && frame.length <= 32 * 1024 + 1,
+          ),
+      ).toBe(true);
+      expect(socket?.sent.slice(close + 1)).toEqual([
+        JSON.stringify({ type: "signal", name: "SIGTERM" }),
+      ]);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a refused dial reactivates once and dials again", async () => {
+    const box = await createSandbox(factory());
+
+    try {
+      const before = state.sockets.length;
+      state.refuseDials = 1;
+      expect((await box.run("cat", { stdin: "again" })).stdout).toBe("again");
+      expect(state.sockets.length - before).toBe(2);
+      expect(activations(box.id)).toBe(1);
+      state.refuseDials = 2;
+      await expect(box.run("cat", { stdin: "never" })).rejects.toBeInstanceOf(SandboxError);
+    } finally {
+      state.refuseDials = 0;
+      await box.destroy();
+    }
+  });
+
+  test("an expiring hint is replaced before dialling", async () => {
+    state.hintSeconds = 5;
+    const box = await createSandbox(factory());
+    state.hintSeconds = 3600;
+
+    try {
+      const before = state.requests.length;
+      expect((await box.run("cat", { stdin: "fresh" })).stdout).toBe("fresh");
+      expect(state.requests.slice(before)[0]?.url.pathname).toBe(`/sandboxes/${box.id}/activate`);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("an abort before the dial opens rejects without starting the command", async () => {
+    const provider = factory();
+    const box = await provider.create({ labels: {} });
+
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      expect(
+        await provider.exec(box.id, {
+          command: "echo never",
+          cwd: "/workspace",
+          env: {},
+          stdin: "x",
+          timeoutMs: 5000,
+          signal: controller.signal,
+          onChunk: () => {},
+        }),
+      ).toEqual({ exitCode: null, timedOut: true });
+    } finally {
+      await provider.destroy(box.id);
+    }
+  });
+});
+
+describe("native API", () => {
+  test("box.native fills {sandboxId} on the control plane and routes the data plane", async () => {
+    const box = await createSandbox(factory());
+
+    try {
+      expect(box.native.sandboxId).toBe(box.id);
+      expect(
+        await box.native.request<{ id: string; status: string }>("GET", "/sandboxes/{sandboxId}"),
+      ).toMatchObject({ id: box.id, status: "active" });
+      await box.files.write("native.txt", "native");
+
+      const response = await box.native.fetch("GET", "/files", {
+        plane: "data",
+        query: { path: "/workspace/native.txt" },
+      });
+
+      expect(await response.text()).toBe("native");
+      await expect(box.native.request("GET", "/no/such/route")).rejects.toMatchObject({
+        code: "not_found",
+      });
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("provider.api is account scoped: no sandbox placeholder, no data plane", async () => {
+    const provider = factory();
+    const box = await provider.create({ labels: { native: "api" } });
+
+    try {
+      expect(provider.api.sandboxId).toBeUndefined();
+
+      const list = await provider.api.request<{ id: string }[]>("GET", "/sandboxes", {
+        query: { "metadata.sandbox-sdk": "1" },
+      });
+
+      expect(list.map((v) => v.id)).toContain(box.id);
+      const before = state.requests.length;
+      await expect(provider.api.request("GET", "/sandboxes/{sandboxId}")).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      await expect(provider.api.request("GET", "/files", { plane: "data" })).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      expect(state.requests.length).toBe(before);
+    } finally {
+      await provider.destroy(box.id);
+    }
+  });
+
+  test("sdk(load) connects the caller's Sandbox class with this provider's credentials", async () => {
+    const calls: unknown[][] = [];
+
+    class Sandbox {
+      constructor(readonly id: string) {}
+      static async connect(id: string, options?: { apiKey?: string; baseUrl?: string }) {
+        calls.push([id, options]);
+
+        return new Sandbox(id);
+      }
+    }
+
+    const provider = superserve({ apiKey: "mock" });
+    const native = provider.native("sb-1");
+    const connected = await native.sdk(async () => ({ Sandbox }));
+    expectTypeOf(connected).toEqualTypeOf<Sandbox>();
+    expect(connected.id).toBe("sb-1");
+    expect(calls).toEqual([["sb-1", { apiKey: "mock", baseUrl: undefined }]]);
+    const account = await provider.api.sdk(async () => ({ Sandbox }));
+    expectTypeOf(account).toEqualTypeOf<typeof Sandbox>();
+    expect(account).toBe(Sandbox);
+
+    // JavaScript callers can hand over anything; a module without Sandbox is invalid_argument.
+    // @ts-expect-error the module has no Sandbox export
+    const wrong = native.sdk(async () => ({ Other: 1 }));
+
+    await expect(wrong).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(
+      native.sdk(() =>
+        Promise.reject(
+          Object.assign(new Error("Cannot find package '@superserve/sdk'"), {
+            code: "ERR_MODULE_NOT_FOUND",
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  test("the official SDK's module satisfies the sdk(load) constraint", () => {
+    const connect = (native: SuperserveNative) => native.sdk(() => import("@superserve/sdk"));
+    const account = (api: SuperserveProvider["api"]) => api.sdk(() => import("@superserve/sdk"));
+    expectTypeOf<Awaited<ReturnType<typeof connect>>>().toEqualTypeOf<
+      import("@superserve/sdk").Sandbox
+    >();
+    expectTypeOf<Awaited<ReturnType<typeof account>>>().toEqualTypeOf<
+      typeof import("@superserve/sdk").Sandbox
+    >();
+  });
+});
+
+describe("lifecycle and protocol faults", () => {
+  test("a create the caller aborts mid-request still completes remotely and is deleted, not leaked", async () => {
+    const provider = factory();
+    const held = gate();
+    state.createGate = held.promise;
+    const before = state.boxes.size;
+    const controller = new AbortController();
+    const creating = provider.create({ labels: {}, signal: controller.signal });
+    await vi.waitFor(() => expect(state.boxes.size).toBe(before + 1));
+    controller.abort();
+    held.open();
+    state.createGate = undefined;
+    await expect(creating).rejects.toMatchObject({ code: "aborted" });
+    expect(state.boxes.size).toBe(before);
+  });
+
+  test("a session that drops mid-command is cancelled and reported, and the sandbox stays usable", async () => {
+    const box = await createSandbox(factory());
+
+    try {
+      state.dropSessions = 1;
+      await expect(box.run("cat; sleep 5", { stdin: "x" })).rejects.toMatchObject({
+        code: "provider",
+        message: expect.stringContaining("closed before the command finished"),
+      });
+      expect((await box.run("cat", { stdin: "after" })).stdout).toBe("after");
+    } finally {
+      state.dropSessions = 0;
+      await box.destroy();
+    }
+  });
+
+  test("a cut exec response is a provider error, never a parsed result", async () => {
+    const provider = factory();
+    const box = await provider.create({ labels: {} });
+
+    try {
+      await provider.files.list(box.id, "/workspace");
+      state.cutExec = 1;
+      await expect(provider.files.list(box.id, "/workspace")).rejects.toMatchObject({
+        code: "provider",
+        provider: "superserve",
+      });
+    } finally {
+      state.cutExec = 0;
+      await provider.destroy(box.id);
+    }
+  });
 });
