@@ -894,7 +894,9 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
     },
     files: {
       writeCreatesParents: true,
-      editInGuest: true,
+      // Native and staged writes both put a new inode in place; the listing keeps os.listdir order.
+      editInGuest: "replace",
+      listOrder: "directory",
       // Upstash's own step history, written into the workspace by the platform.
       internal: [".step-git"],
       read: (id, path) => onFile(id, "read", (value) => readFile(value, path)),

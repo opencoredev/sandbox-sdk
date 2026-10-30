@@ -135,48 +135,66 @@ function pythonGlob(glob: string) {
     .join("");
 }
 
-// Guest scripts take paths in argv and user text as JSON in the environment, never argv. Environment
-// values travel with the exec request, while stdin costs extra round trips on E2B and Upstash; text over
-// 32 KiB goes on stdin, since one variable must stay under the kernel's 128 KiB limit. Exit 70 means "use the RPC path": it is
-// raised before any change, so the fallback reproduces each provider's own errors exactly.
-// edit: read, count matches, then write a sibling temp file with the original owner and mode and
-// rename it over the target. Symlinks resolve to their target; hard-linked files stay in place (70).
+// Guest scripts are fixed source: every caller value (paths, globs, limits, user text) arrives as one
+// JSON object in the environment, never in the command or argv. Environment values travel with the exec
+// request, while stdin costs extra round trips on E2B and Upstash; input over 32 KiB goes on stdin, since
+// one variable must stay under the kernel's 128 KiB limit. Exit 70 means "use the RPC path": it is raised
+// before any change, so the fallback reproduces each provider's own errors exactly.
+// edit: read and count matches, then write the way the adapter's own write does. "in-place" rewrites the
+// same inode (owner, mode and links stay); if that write fails, the original bytes go back before exit 70,
+// and 71 means they could not. "replace" writes a sibling temp file with the original owner and mode and
+// renames it over the target; hard-linked files stay in place (70). Symlinks resolve to their target.
 const editScript = `import json,os,stat,sys
-p=os.path.realpath(sys.argv[1])
 try:
- a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read());f=a["find"].encode();r=a["replace"].encode()
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read());p=os.path.realpath(a["path"]);f=a["find"].encode();r=a["replace"].encode();w=a["write"]
  s=os.stat(p)
- if not stat.S_ISREG(s.st_mode) or s.st_nlink>1:sys.exit(70)
+ if not stat.S_ISREG(s.st_mode) or (w!="in-place" and s.st_nlink>1):sys.exit(70)
  with open(p,"rb") as h:d=h.read()
 except Exception:sys.exit(70)
 m=[];n=1;q=0;i=d.find(f)
 while i>=0:n+=d.count(b"\\n",q,i);q=i;m.append(n);i=d.find(f,i+1)
 if len(m)!=1:print(" ".join(map(str,m)));sys.exit(3)
-i=d.find(f);t="%s/.%s.%s.sdk-edit"%(os.path.dirname(p),os.path.basename(p),os.urandom(6).hex())
+i=d.find(f);o=d[:i]+r+d[i+len(f):]
+def put(fd,b):
+ os.lseek(fd,0,0);v=memoryview(b)
+ while v:v=v[os.write(fd,v):]
+ os.ftruncate(fd,len(b))
+if w=="in-place":
+ try:fd=os.open(p,os.O_WRONLY)
+ except Exception:sys.exit(70)
+ try:put(fd,o)
+ except Exception:
+  try:put(fd,d)
+  except Exception:sys.exit(71)
+  sys.exit(70)
+ sys.exit(0)
+t="%s/.%s.%s.sdk-edit"%(os.path.dirname(p),os.path.basename(p),os.urandom(6).hex())
 try:fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 except Exception:sys.exit(70)
 try:
- with os.fdopen(fd,"wb") as h:h.write(d[:i]+r+d[i+len(f):])
+ with os.fdopen(fd,"wb") as h:h.write(o)
  if (s.st_uid,s.st_gid)!=(os.geteuid(),os.getegid()):os.chown(t,s.st_uid,s.st_gid)
  os.chmod(t,stat.S_IMODE(s.st_mode));os.rename(t,p)
 except Exception:
  os.unlink(t);sys.exit(70)`;
 
-// search: list the whole tree first (sorted, lstat types, like the RPC walk), then read regular files in
-// order and print [path, line, base64 line] for each line holding the query bytes, up to the limit.
+// search: list the whole tree first in the adapter's list order (lstat types, like the RPC walk), then
+// read regular files in that order and print [path, line, base64 line] for each line holding the query
+// bytes, up to the limit. The glob arrives as a regular expression in the input and is only compiled.
 const searchScript = `import base64,json,os,re,stat,sys
-root,pat,base,mx=sys.argv[1],sys.argv[2],sys.argv[3]=="1",int(sys.argv[4])
-q=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read()).encode();g=re.compile(pat) if pat else None
 def u(s):
  if all(c<="\\uffff" for c in s):return s
  b=s.encode("utf-16-le","surrogatepass");return "".join(chr(int.from_bytes(b[i:i+2],"little")) for i in range(0,len(b),2))
 files=[]
 def walk(d,rel):
- for b in sorted(os.listdir(d)):
+ names=os.listdir(d)
+ for b in sorted(names) if order=="name" else names:
   p=os.path.join(d,b);s=os.lstat(p);name=b.decode("utf-8","replace");r=rel+name
   if stat.S_ISREG(s.st_mode) and (g is None or g.fullmatch(u(r)) or (base and g.fullmatch(u(name)))):files.append((p,os.path.join(root,r)))
   elif stat.S_ISDIR(s.st_mode):walk(p,r+"/")
 try:
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read())
+ root=a["root"];q=a["query"].encode();g=re.compile(a["pattern"]) if a["pattern"] else None;base=a["base"]is True;mx=int(a["max"]);order=a["order"]
  walk(os.fsencode(root),"");n=0
  for p,shown in files:
   with open(p,"rb") as h:lines=h.read().split(b"\\n")
@@ -189,8 +207,29 @@ except Exception:sys.exit(70)`;
 // Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
 const byteExact = (text: string) => !/\p{Cs}|[\uFEFF\uFFFD]/u.test(text);
 
-const python = (script: string, ...args: string[]) =>
-  `python3 -I -S -c ${quote(script)} ${args.map(quote).join(" ")}`;
+// A path with a lone surrogate names different bytes in the guest than through the RPC path.
+const wellFormed = (text: string) => !/\p{Cs}/u.test(text);
+
+/** The one command a guest script runs as. It holds no caller value. */
+const python = (script: string) => `python3 -I -S -c ${quote(script)}`;
+
+/** Edit input: the target, the exact text and the adapter's write semantics. */
+interface EditInput {
+  path: string;
+  find: string;
+  replace: string;
+  write: "in-place" | "replace";
+}
+
+/** Search input: `pattern` is the glob as a Python regular expression, empty for none. */
+interface SearchInput {
+  root: string;
+  query: string;
+  pattern: string;
+  base: boolean;
+  max: number;
+  order: "name" | "directory";
+}
 
 const editFailed = (path: string, lines: number[]) =>
   new SandboxError(
@@ -254,16 +293,20 @@ export function makeFiles(
 
   // A stopped guest edit may already have renamed its file, so only read-only calls fall back after one.
   async function guest(
-    command: string,
-    input: string,
+    script: string,
+    value: EditInput | SearchInput,
     mutates: boolean,
   ): Promise<{ exitCode: number; stdout: string }> {
     if (!guestPython) return { exitCode: 70, stdout: "" };
     let stdout = "";
+    const input = JSON.stringify(value);
     const inline = Buffer.byteLength(input) <= 32_768;
+    const accepts = (await fs.guestInput?.(id)) ?? "stdin";
+
+    if (accepts === "none" || (accepts === "env" && !inline)) return { exitCode: 70, stdout: "" };
 
     const result = await provider.exec(id, {
-      command,
+      command: python(script),
       cwd: "/",
       env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" },
       stdin: inline ? undefined : input,
@@ -601,10 +644,12 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       safe(async () => {
         if (!find) invalid("find cannot be empty");
 
-        if (fs.editInGuest && byteExact(find) && !/\p{Cs}/u.test(replace)) {
+        const dest = pathOf(path);
+
+        if (fs.editInGuest && byteExact(find) && wellFormed(replace) && wellFormed(dest)) {
           const { exitCode, stdout } = await guest(
-            python(editScript, pathOf(path)),
-            JSON.stringify({ find, replace }),
+            editScript,
+            { path: dest, find, replace, write: fs.editInGuest },
             true,
           );
 
@@ -612,6 +657,12 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
           if (exitCode === 3)
             throw editFailed(path, stdout.trim() ? stdout.trim().split(" ").map(Number) : []);
+
+          if (exitCode === 71)
+            throw new SandboxError(
+              `File edit outcome unknown at ${path}. Writing the file failed and its original contents could not be restored. Read the file to check its state before retrying.`,
+              { code: "outcome_unknown" },
+            );
         }
 
         const text = await read(path);
@@ -625,11 +676,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
         if (matches.length !== 1) throw editFailed(path, matches);
         // The file exists, so its parent does too: write without the mkdir.
-        await fs.write(
-          id,
-          pathOf(path),
-          new TextEncoder().encode(text.replace(find, () => replace)),
-        );
+        await fs.write(id, dest, new TextEncoder().encode(text.replace(find, () => replace)));
       }),
     upload: (source, target, options) =>
       safe(async () => {
@@ -746,19 +793,29 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
         if (!Number.isSafeInteger(max) || max < 1) invalid("maxMatches must be positive");
 
+        const root = pathOf(options.path);
+
         // An empty query also matches the empty tail after a final newline, and no line holds a newline: keep the RPC walk for both.
-        if (query && !query.includes("\n") && byteExact(query)) {
+        // The guest walks in the adapter's list order, so maxMatches stops at the same files; without one, keep the RPC walk.
+        if (
+          fs.listOrder &&
+          query &&
+          !query.includes("\n") &&
+          byteExact(query) &&
+          wellFormed(root)
+        ) {
           const glob = options.glob ?? "";
 
           const { exitCode, stdout } = await guest(
-            python(
-              searchScript,
-              pathOf(options.path),
-              glob && pythonGlob(glob),
-              glob && !glob.includes("/") ? "1" : "0",
-              String(max),
-            ),
-            JSON.stringify(query),
+            searchScript,
+            {
+              root,
+              query,
+              pattern: glob && pythonGlob(glob),
+              base: glob !== "" && !glob.includes("/"),
+              max,
+              order: fs.listOrder,
+            },
             false,
           );
 

@@ -606,6 +606,8 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     files: {
       writeCreatesParents: true,
       writeSupportsMode: true,
+      // Node's readdirSync returns names sorted, as libuv's scandir does.
+      listOrder: "name",
       readRange: (id, path, range) => readRange(id, path, range.offset, range.length),
       read: async (id, path) => {
         // Open, measure and read small files in one guest operation. Following

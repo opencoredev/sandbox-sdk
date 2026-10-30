@@ -875,7 +875,21 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
       }),
     files: {
       writeCreatesParents: true,
-      editInGuest: true,
+      // envd writes uploads into the existing file, and ListDir sorts entries by name.
+      editInGuest: "in-place",
+      listOrder: "name",
+      // Input over 32 KiB needs stdin and its close; envd before 0.3.0 cannot run without stdin at all.
+      guestInput: (id) =>
+        call(id, async () => {
+          await client(id);
+          const { envdVersion } = connection(id);
+
+          return versionAtLeast(envdVersion, envdGates.closeStdin)
+            ? "stdin"
+            : versionAtLeast(envdVersion, envdGates.stdinFlag)
+              ? "env"
+              : "none";
+        }),
       read: (id, path) =>
         call(id, async () => {
           await client(id);

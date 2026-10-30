@@ -562,6 +562,8 @@ export function local(options: LocalOptions = {}): LocalProvider {
     files: {
       writeCreatesParents: true,
       writeSupportsMode: true,
+      // Node's readdirSync returns names sorted, as libuv's scandir does.
+      listOrder: "name",
       async read(id, path) {
         return new Uint8Array(
           Buffer.from(

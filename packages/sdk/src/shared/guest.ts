@@ -481,6 +481,8 @@ export function files(
 
   return {
     writeCreatesParents: true,
+    // The metadata script lists in os.listdir order.
+    listOrder: "directory",
     readRange: (id, path, range) => safe(id, async () => (await get(id)).read(path, range)),
     read: (id, path) => safe(id, async () => (await get(id)).read(path)),
     write: (id, path, data, options) =>

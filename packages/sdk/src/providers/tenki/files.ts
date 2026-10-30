@@ -156,6 +156,8 @@ export function files(
   return {
     writeCreatesParents: true,
     writeSupportsMode: true,
+    // The guest's list op returns os.listdir order.
+    listOrder: "directory",
     read: (id, path) =>
       safe(id, async () => {
         const resolved = nativePath(await get(id), path);

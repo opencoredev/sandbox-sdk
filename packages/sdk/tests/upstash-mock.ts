@@ -26,6 +26,7 @@ import {
   type UpstashOptions,
 } from "../src/providers/upstash/provider.js";
 import type { Provider } from "../src/provider.js";
+import { guestInputVariable, mapGuestInput } from "./guest-input.js";
 
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 
@@ -294,6 +295,15 @@ export class MockBox {
 
       if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = this.rewrite(env.GIT_INDEX_FILE);
 
+      // A guest file command's stdin is held until it ends, so its JSON paths can be mapped.
+      const guestStdin =
+        env[guestInputVariable] !== undefined ? new Array<Uint8Array>() : undefined;
+
+      const map = (path: string) => this.map(path);
+
+      if (env[guestInputVariable])
+        env[guestInputVariable] = mapGuestInput(env[guestInputVariable], map);
+
       const child = spawn(
         command,
         args.map((arg) => this.rewrite(arg)),
@@ -337,9 +347,13 @@ export class MockBox {
         pid,
         execId: crypto.randomUUID(),
         write: (data) => {
-          child.stdin.write(data);
+          if (guestStdin) guestStdin.push(Buffer.from(data));
+          else child.stdin.write(data);
         },
-        endStdin: () => child.stdin.end(),
+        endStdin: () =>
+          child.stdin.end(
+            guestStdin ? mapGuestInput(Buffer.concat(guestStdin).toString(), map) : undefined,
+          ),
         resize() {},
         kill,
         terminate: () => kill("KILL"),
