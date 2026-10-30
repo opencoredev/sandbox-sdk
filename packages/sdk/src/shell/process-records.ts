@@ -30,6 +30,47 @@ function records(dir: string) {
   };
 }
 
+/** Take a record directory's lock: a directory holding one entry named for its owner's pid.
+ * A waiter frees a lock whose owner has died, and one left empty for about a second by an
+ * owner killed between its two steps, so a writer killed by stop() cannot wedge the log.
+ * Breaking a dead owner's lock hinges on removing its entry, which only one waiter can do. */
+function lockLines(lock: string): string[] {
+  return [
+    // $$ is the parent shell's pid inside a subshell; /proc/self names the subshell itself.
+    `lock_me=$$`,
+    `read -r lock_me _ 2>/dev/null < /proc/self/stat`,
+    `lock_idle=0`,
+    `until mkdir ${lock} 2>/dev/null && : > ${lock}/"$lock_me"`,
+    // A glob, not ls, so the wait loop forks nothing but sleep.
+    `do lock_owner=`,
+    `for lock_entry in ${lock}/*`,
+    `do [ -e "$lock_entry" ] && lock_owner=\${lock_entry##*/}`,
+    `done`,
+    `if [ -n "$lock_owner" ]`,
+    `then lock_idle=0`,
+    // A zombie still answers kill -0, so /proc's state field decides where it exists.
+    `if [ -r /proc/self/stat ]`,
+    `then lock_state=Z`,
+    `read -r _ _ lock_state _ 2>/dev/null < /proc/"$lock_owner"/stat`,
+    `elif kill -0 "$lock_owner" 2>/dev/null`,
+    `then lock_state=S`,
+    `else lock_state=Z`,
+    `fi`,
+    `case "$lock_state" in Z|X) rm ${lock}/"$lock_owner" 2>/dev/null && rmdir ${lock} 2>/dev/null;; esac`,
+    `elif [ -d ${lock} ]`,
+    `then lock_idle=$((lock_idle+1))`,
+    `[ "$lock_idle" -lt 100 ] || { rmdir ${lock} 2>/dev/null; lock_idle=0; }`,
+    `fi`,
+    `sleep .01`,
+    `done`,
+  ];
+}
+
+/** Release a lock taken by {@link lockLines} in the same shell. */
+function unlockCommand(lock: string): string {
+  return `rm ${lock}/"$lock_me" 2>/dev/null && rmdir ${lock}`;
+}
+
 /** Print spec.json, a NUL, a `base start size status` header line, then a base64 log window.
  * It takes the writer's lock, so rotation cannot pair a new base with an old log. */
 export function logPageScript(input: {
@@ -45,10 +86,8 @@ export function logPageScript(input: {
     `[ -f ${file.spec} ] || exit ${recordExit.missing}`,
     `cat ${file.spec} || exit 1`,
     `printf '\\000'`,
-    `while ! mkdir ${file.lock} 2>/dev/null`,
-    `do sleep .01`,
-    `done`,
-    `trap 'rmdir ${file.lock}' EXIT`,
+    ...lockLines(file.lock),
+    `trap ${quote(unlockCommand(file.lock))} EXIT`,
     `b=$(cat ${file.base})`,
     `n=$(wc -c < ${file.log})`,
     `a=${input.after ?? '"$b"'}`,
@@ -121,9 +160,7 @@ function appendFunction(dir: string): string {
   const file = records(dir);
 
   const body = [
-    `while ! mkdir ${file.lock} 2>/dev/null`,
-    `do sleep 0.01`,
-    `done`,
+    ...lockLines(file.lock),
     `printf '%s%s\\n' "$1" "$2" >> ${file.log}`,
     `n=$(wc -c < ${file.log})`,
     `if [ "$n" -gt 10485760 ]`,
@@ -133,7 +170,7 @@ function appendFunction(dir: string): string {
     `echo $((b+n-kept)) > ${file.base}`,
     `mv ${file.rotate} ${file.log}`,
     `fi`,
-    `rmdir ${file.lock}`,
+    unlockCommand(file.lock),
   ].join("; ");
 
   return `append() { ${body}; };`;
