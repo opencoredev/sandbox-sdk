@@ -109,6 +109,17 @@ export function globMatch(path: string, glob: string) {
   );
 }
 
+// Ranged reads behind each SDK Files object. The public read has no range, so agent tools reach it here.
+const boundedReads = new WeakMap<Files, (path: string, maxBytes: number) => Promise<Uint8Array>>();
+
+/** @internal Read at most `maxBytes + 1` bytes when the adapter has ranged reads, so a caller can
+ * refuse an oversized file without downloading all of it. Without them, read the whole file. */
+export function readAtMost(files: Files, path: string, maxBytes: number) {
+  const bounded = boundedReads.get(files);
+
+  return bounded ? bounded(path, maxBytes) : files.read(path, { as: "bytes" });
+}
+
 /** `guard` throws synchronously when the handle is closed; `ready` resolves once the handle may touch the sandbox (secret recovery). */
 export function makeFiles(
   provider: Provider,
@@ -427,7 +438,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
   const baseline = (since?: string) =>
     missingStart(since, () => read(checkpoint(since ?? "start")));
 
-  return {
+  const result: Files & Disposable = {
     [Symbol.dispose]() {
       for (const stop of watchers) stop();
     },
@@ -713,4 +724,14 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         return { added, modified, removed, patch: redactor.text(patch) };
       }),
   };
+
+  boundedReads.set(result, (path, maxBytes) =>
+    safe(() =>
+      fs.readRange
+        ? fs.readRange(id, pathOf(path), { offset: 0, length: maxBytes + 1 })
+        : fs.read(id, pathOf(path)),
+    ),
+  );
+
+  return result;
 }

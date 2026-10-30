@@ -543,6 +543,7 @@ export async function runV2(
     let blockedBy: string | null = null;
     const dependencies = new Map<string, string>();
     const reconnectedHandles: Sandbox[] = [];
+    let reconnectedTo: Sandbox | undefined;
     let restoredDurationMs = 0;
     let restoredCost: number | null = 0;
 
@@ -1619,6 +1620,7 @@ export async function runV2(
                 const firstCommandOKMs = performance.now() - start;
                 reconnectClock?.finish();
                 reconnectedHandles.push(previous);
+                reconnectedTo = connected;
                 active = connected;
                 box = connected;
 
@@ -1791,10 +1793,13 @@ export async function runV2(
         state.stop = "Cleanup could not drain";
       }
 
-      // Provider clients are cached by sandbox ID, shared across local handles.
-      // Closing an old handle earlier would detach the newly connected handle too.
-      for (const previous of reconnectedHandles)
-        await measure("reconnect-cleanup", () => previous.close());
+      // Provider clients are cached by sandbox ID and detach when the last local handle closes,
+      // so the final row closes the newest handle too and times that release.
+      for (const [index, previous] of reconnectedHandles.entries())
+        await measure("reconnect-cleanup", async () => {
+          if (index === reconnectedHandles.length - 1) await reconnectedTo?.close();
+          await previous.close();
+        });
       const duration = performance.now() - lifeStart;
 
       const sourceCost = estimateCost(
