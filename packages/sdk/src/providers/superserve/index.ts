@@ -5,7 +5,7 @@
  * - `data`: exec and files inside a sandbox, authenticated with the access token and routing hint from
  *   activate or resume (see routes.ts for when they are replaced).
  */
-import type { JsonValue } from "../../shared/json.js";
+import { type JsonValue, isJsonObject } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { SandboxError, invalid } from "../../errors.js";
@@ -162,7 +162,7 @@ const wholeSeconds = (value: number | undefined, label: string, zero: boolean) =
 };
 
 const field = (raw: JsonValue | undefined, key: string): JsonValue | undefined =>
-  isObject(raw) ? Reflect.get(raw, key) : undefined;
+  isJsonObject(raw) ? raw[key] : undefined;
 
 const strings = (raw: JsonValue | undefined): string[] | undefined =>
   Array.isArray(raw) && raw.every((x) => isString(x)) ? raw : undefined;
@@ -606,7 +606,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
     async connect(module, sandboxId) {
       const Sandbox: unknown = "Sandbox" in module ? module.Sandbox : undefined;
 
-      if (typeof Sandbox !== "function")
+      if (!(Sandbox instanceof Function))
         invalid(
           `The module passed to native.sdk() has no Sandbox export. Pass () => import("${sdkPackage}")`,
         );
@@ -915,10 +915,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         const access = field(published, "access");
 
-        if (
-          typeof field(published, "port") !== "number" ||
-          (access !== "public" && access !== "private")
-        )
+        if (!isNumber(field(published, "port")) || (access !== "public" && access !== "private"))
           throw failure("Superserve returned an invalid preview port", "provider", id);
 
         if (previewAccess === "public") return { url };

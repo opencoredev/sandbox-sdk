@@ -6,7 +6,7 @@ import type { FailedRequest, HttpFailure } from "../../http.js";
 // omitted until verified; a spelling filter alone can admit reflected secrets.
 const knownCodes = new Set(["FILE_NOT_FOUND", "QUOTA_EXCEEDED"]);
 
-const requestIdShape =
+const requestIdPattern =
   /^(?:[a-f0-9]{16,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
 
 const operations =
@@ -32,7 +32,7 @@ const isEvidence = (cause: unknown): cause is Error & Evidence =>
  * which keeps its code and only gets `operation` set on its evidence.
  */
 export function daytonaError(
-  error: unknown,
+  cause: unknown,
   sandboxId?: string,
   file = false,
   operation = file ? "files" : "request",
@@ -41,9 +41,9 @@ export function daytonaError(
 ): SandboxError {
   const safeOperation = operations.test(operation) ? operation : "request";
 
-  if (error instanceof SandboxError) {
-    if (!isEvidence(error.cause) || error.cause.operation === safeOperation) return error;
-    const { status, providerCode, requestId, source, native } = error.cause;
+  if (cause instanceof SandboxError) {
+    if (!isEvidence(cause.cause) || cause.cause.operation === safeOperation) return cause;
+    const { status, providerCode, requestId, source, native } = cause.cause;
 
     const evidence: Evidence = {
       operation: safeOperation,
@@ -54,27 +54,27 @@ export function daytonaError(
       ...(native === undefined ? undefined : { native }),
     };
 
-    return new SandboxError(error.message, {
-      code: error.code,
-      provider: error.provider,
-      sandboxId: error.sandboxId,
-      retryable: error.retryable,
-      ...(error.hint === undefined ? undefined : { hint: error.hint }),
+    return new SandboxError(cause.message, {
+      code: cause.code,
+      provider: cause.provider,
+      sandboxId: cause.sandboxId,
+      retryable: cause.retryable,
+      ...(cause.hint === undefined ? undefined : { hint: cause.hint }),
       cause: Object.assign(new Error(JSON.stringify(evidence)), evidence),
     });
   }
 
-  const status = error && isObject(error) && "statusCode" in error ? error.statusCode : undefined;
+  const status = cause && isObject(cause) && "statusCode" in cause ? cause.statusCode : undefined;
 
-  const nativeCode = error && isObject(error) && "code" in error ? error.code : undefined;
-  const name = error instanceof Error ? error.name : "";
+  const nativeCode = cause && isObject(cause) && "code" in cause ? cause.code : undefined;
+  const name = cause instanceof Error ? cause.name : "";
 
   const missingFile =
     file &&
     status === 400 &&
-    error instanceof Error &&
+    cause instanceof Error &&
     /(?:\bENOENT\b|no such file or directory|\bnot found\b|\bdoes not exist\b)/i.test(
-      error.message,
+      cause.message,
     );
 
   let code: ErrorCode = "provider";
@@ -105,15 +105,18 @@ export function daytonaError(
   if (safeToken(nativeCode, /^[A-Z_]{1,64}$/) && knownCodes.has(nativeCode))
     evidence.providerCode = nativeCode;
 
-  if (error && isObject(error)) {
-    if ("source" in error && safeToken(error.source, /^DAYTONA_(API|DAEMON|PROXY)$/))
-      evidence.source = error.source;
+  if (cause && isObject(cause)) {
+    if ("source" in cause && safeToken(cause.source, /^DAYTONA_(API|DAEMON|PROXY)$/))
+      evidence.source = cause.source;
 
-    if ("headers" in error && error.headers && isObject(error.headers)) {
-      for (const key of ["x-request-id", "x-daytona-request-id"]) {
-        const value: unknown = Reflect.get(error.headers, key);
+    if ("headers" in cause && cause.headers && isObject(cause.headers)) {
+      const headers = cause.headers;
 
-        if (safeToken(value, requestIdShape)) {
+      for (const value of [
+        "x-request-id" in headers ? headers["x-request-id"] : undefined,
+        "x-daytona-request-id" in headers ? headers["x-daytona-request-id"] : undefined,
+      ]) {
+        if (safeToken(value, requestIdPattern)) {
           evidence.requestId = value;
           break;
         }
@@ -121,7 +124,7 @@ export function daytonaError(
     }
   }
 
-  const { detail } = describeNative(error, {
+  const { detail } = describeNative(cause, {
     code,
     status: status === undefined ? undefined : String(status),
     redact: redacting(denied),
@@ -129,7 +132,7 @@ export function daytonaError(
 
   if (detail !== undefined) evidence.native = detail;
   // Error.message survives the SDK redactor; own fields support direct clients.
-  const cause = Object.assign(new Error(JSON.stringify(evidence)), evidence);
+  const reported = Object.assign(new Error(JSON.stringify(evidence)), evidence);
 
   return new SandboxError(
     `Daytona request failed: ${reason(code, evidence.native)}. Check the sandbox and provider configuration.`,
@@ -137,7 +140,7 @@ export function daytonaError(
       code,
       provider: "daytona",
       sandboxId,
-      cause,
+      cause: reported,
       retryable: ["quota", "unavailable", "timeout"].includes(code),
       hint: "Check Daytona credentials, quotas, sandbox state, and request options before retrying.",
     },

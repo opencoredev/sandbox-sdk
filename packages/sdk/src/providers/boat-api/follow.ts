@@ -15,7 +15,7 @@
  * says where this connection's output starts: the offset asked for, or 0 when Boat replaced the log.
  * Like the SDK, a lower `attached` offset is taken as is, so a replaced log's output is not dropped.
  */
-import type { JsonValue } from "../../shared/json.js";
+import { type JsonValue, isJsonObject, type JsonObject } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createDeadline, sleep } from "../../http.js";
@@ -50,8 +50,8 @@ type WireFrame =
   | { type: "error" }
   | { type: "other" };
 
-const offset = (value: object, key: string): number | undefined => {
-  const found: unknown = Reflect.get(value, key);
+const offset = (value: JsonObject, key: string): number | undefined => {
+  const found = value[key];
 
   return isNumber(found) && Number.isSafeInteger(found) && found >= 0 ? found : undefined;
 };
@@ -60,8 +60,7 @@ function parseFrame(
   value: JsonValue | undefined,
   malformed: (what: string, code?: "outcome_unknown") => SandboxError,
 ): WireFrame {
-  if (!isObject(value) || value === null || !("type" in value) || !isString(value.type))
-    throw malformed("a frame has no type");
+  if (!isJsonObject(value) || !isString(value.type)) throw malformed("a frame has no type");
 
   switch (value.type) {
     case "stdout":

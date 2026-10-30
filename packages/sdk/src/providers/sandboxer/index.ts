@@ -12,7 +12,7 @@ import type {
 } from "../boat/index.js";
 import { boatApi } from "../boat-api/index.js";
 import { errors } from "../boat-api/errors.js";
-import type { BoatPlane } from "../boat-api/transport.js";
+import type { BoatPlane, BoatSandbox } from "../boat-api/transport.js";
 
 /** `GET /regions` lists them: us-east (Ashburn, Virginia), eu-central (Helsinki). */
 export type SandboxerRegion = "us-east" | "eu-central" | (string & {});
@@ -65,7 +65,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     throw failure("Invalid Sandboxer region", "invalid_argument");
   const placements = new Map<string, Pick<SandboxerNative, "region" | "regionSource">>();
 
-  function place(value: object) {
+  function place(value: BoatSandbox["raw"]) {
     if (!("id" in value) || !isString(value.id) || !("region" in value)) return;
     const name = isString(value.region) ? value.region : null;
 
