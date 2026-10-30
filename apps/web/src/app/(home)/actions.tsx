@@ -1,5 +1,5 @@
-import landing from "../(home)/landing.module.css";
-import { DocsButton } from "../(home)/parts";
+import landing from "./landing.module.css";
+import { DocsButton } from "./parts";
 import { CopyPrompt } from "./copy-prompt";
 
 /** Read the docs, or hand the setup to a coding agent. */

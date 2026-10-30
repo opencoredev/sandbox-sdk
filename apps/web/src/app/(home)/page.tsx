@@ -1,105 +1,106 @@
-"use client";
-
 /*
  * Direction
- * Reference: Leo's Paper design for Sandbox SDK (hairline grid frame, pixel
- *   display type, square-dot halftones, amber brackets), and the ascii.rest
- *   scenes for the dot art.
- * Palette: ink #0b0b0c, panel #111214, hairline #23252a, text #ecebe8,
- *   muted #8d8e93, amber #e8a33c. Provider art carries its own colour.
- * Type: Geist Pixel Square for display, Geist Sans for prose, Geist Mono for code.
- * Layout: one 1280px frame of hairlines with crosshair joints; sections are
- *   cells in that frame, not floating cards.
- * Signature: the harbor at dusk, drawn in square pixels inside a bracketed
- *   viewport, like looking through a scope.
- * Avoiding: gradient blobs, pill badges, soft shadows, three equal icon cards,
- *   invented numbers.
+ * Reference: the "Landing Page" artboard in Leo's Paper file "sandbox sdk",
+ *   ported section by section, with the code samples moved to the 1.0 API.
+ * Palette: the file's tokens. Ink #0a0a0c, surface #111216, hairline white 9%,
+ *   body #c7cdd6, dim #697180, amber #efa43b.
+ * Type: Geist Pixel Square for headings, Geist for prose, Geist Mono for code.
+ * Layout: one 1154px hairline frame; each section is a cell in it, joined by
+ *   crosshairs and hatched dividers.
+ * Signature: the provider carousel behind amber-cornered brackets, and the
+ *   ember halftone under the closing call to action.
+ * Avoiding: gradient blobs, pill badges, soft shadows, invented numbers.
  */
+import Link from "next/link";
+import type { ReactNode } from "react";
 
-import { useEffect, useRef } from "react";
-
-import { HalftoneCanvas } from "@/components/halftone/halftone-canvas";
-import type { HalftoneDots } from "@/components/halftone/halftone";
-import { emberField } from "@/components/halftone/painters";
-
-import { Code } from "./code";
-import { HarborViewport } from "./harbor-viewport";
-import styles from "./landing.module.css";
-import { Arrow, Brackets, CopyCommand, DocsButton, Footer, GithubMark, Nav } from "./parts";
+import landing from "./landing.module.css";
+import { Arrow, Brackets, Footer, Nav } from "./parts";
+import { CARD_DOTS, DOCS, INSTALL } from "./site";
 import { ProvidersCarousel } from "./providers-carousel";
-import { CARD_DOTS, EMBER_DOTS, GITHUB, INK, INSTALL } from "./site";
-
-const HARBOR_DOTS: HalftoneDots = {
-  cell: 4.2,
-  fill: 0.82,
-  dot: "square",
-  glow: 0.08,
-  ground: INK,
-};
+import { Closing } from "./closing";
+import { FilesDiagram, LifecycleDiagram, RunDiagram, SwapDiagram, TestsDiagram } from "./diagrams";
+import { Actions } from "./actions";
+import styles from "./paper.module.css";
 
 function Hero() {
   return (
     <section className={styles.hero} aria-labelledby="hero-title">
-      <div className={styles.heroText}>
-        <h1 id="hero-title" className={styles.display} data-reveal>
-          Sandboxes for your agents and your users.
-        </h1>
-        <p className={styles.lede} data-reveal>
-          Any provider, one line. Run commands, edit files, and serve previews on Docker, E2B,
-          Vercel, Daytona, Upstash, Railway, Boat, Tenki, boxd, or Freestyle. The SDK calls each
-          provider with your own keys, with no hosted service in between.
-        </p>
-        <div className={styles.heroActions} data-reveal>
-          <DocsButton />
-          <a href={GITHUB} className={styles.secondary} target="_blank" rel="noopener noreferrer">
-            <GithubMark />
-            GitHub
-          </a>
-        </div>
-      </div>
-
-      <HarborViewport dots={HARBOR_DOTS} brackets={<Brackets />} />
-
-      <div className={styles.steps}>
-        {[
-          {
-            label: "Install",
-            code: INSTALL,
-            note: "Local needs Docker. Cloud providers use your API key.",
-          },
-          {
-            label: "Create",
-            code: "await using box = await createSandbox(e2b())",
-            note: "Destroyed when the scope ends, even if your code throws.",
-          },
-          {
-            label: "Run",
-            code: 'const r = await box.run("npm test")',
-            note: "A failing exit code comes back as a result, not a throw.",
-          },
-        ].map((step) => (
-          <div key={step.label} className={styles.step}>
-            <p className={styles.eyebrow}>{step.label}</p>
-            <code className={styles.stepCode}>{step.code}</code>
-            <p className={styles.stepNote}>{step.note}</p>
-          </div>
-        ))}
-      </div>
+      <Link href={DOCS.quickstart} className={styles.intro}>
+        <span className={styles.introDot} aria-hidden="true" />
+        Introducing Sandbox SDK 1.0
+        <Arrow />
+      </Link>
+      <h1 id="hero-title" className={styles.display}>
+        Give your agent a sandbox.
+      </h1>
+      <p className={styles.heroLede}>
+        Add an isolated sandbox to your app with one import. Commands, files, and git on 13
+        providers.
+      </p>
+      <Actions />
     </section>
+  );
+}
+
+const STEPS = [
+  { label: "Install", code: INSTALL, note: "One package, every adapter included" },
+  {
+    label: "Create",
+    code: "await using box = await createSandbox(e2b())",
+    note: "Deleted when the scope exits",
+  },
+  { label: "Run", code: "await box.$`bun test`", note: "Commands, files, and git inside the VM" },
+] as const;
+
+/** Just enough highlighting for the one-line commands in the steps band: keywords, calls, strings and punctuation. */
+const TOKEN =
+  /(`[^`]*`|"[^"]*"|@[\w./-]+)|\b(await|using|const|bun|add)\b|([A-Za-z_$][\w$]*)(?=\()|([()=.;$])/g;
+
+function highlight(code: string) {
+  const parts: { text: string; kind: "str" | "kw" | "fn" | "punct" | "plain" }[] = [];
+  let last = 0;
+
+  for (const m of code.matchAll(TOKEN)) {
+    if (m.index > last) parts.push({ text: code.slice(last, m.index), kind: "plain" });
+    const kind = m[1] ? "str" : m[2] ? "kw" : m[3] ? "fn" : "punct";
+    parts.push({ text: m[0], kind });
+    last = m.index + m[0].length;
+  }
+
+  if (last < code.length) parts.push({ text: code.slice(last), kind: "plain" });
+
+  return parts.map((p, i) => (
+    <span key={i} className={styles[p.kind]}>
+      {p.text}
+    </span>
+  ));
+}
+
+function Steps() {
+  return (
+    <div className={styles.steps}>
+      {STEPS.map((s) => (
+        <div key={s.label} className={styles.step}>
+          <p className={styles.eyebrow}>{s.label}</p>
+          <code className={styles.chip}>{highlight(s.code)}</code>
+          <p className={styles.note}>{s.note}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
 function Providers() {
   return (
-    <section className={styles.section} aria-labelledby="providers-title">
-      <div className={styles.sectionHead}>
+    <section className={styles.cell} aria-labelledby="providers-title">
+      <div className={styles.head}>
         <h2 id="providers-title" className={styles.title}>
-          Two local runtimes, eleven clouds, and a fake for tests.
+          Local, cloud, or in-memory.
         </h2>
-        <p className={styles.sectionLede}>
-          Local runs on Docker or agentOS. E2B, Vercel Sandbox, Daytona, Upstash Box, Railway,
-          Tenki, boxd, Freestyle, Superserve, Boat, and Sandboxer run in the cloud. memory() is an
-          in-process fake for unit tests that never touches the network.
+        <p className={styles.lede}>
+          Develop on your machine with Docker, test in memory, ship to E2B, Daytona, Vercel,
+          Upstash, Railway, Tenki and more. The API stays the same.
         </p>
       </div>
       <ProvidersCarousel dots={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
@@ -109,148 +110,76 @@ function Providers() {
 
 function Swap() {
   return (
-    <section className={styles.section} aria-labelledby="swap-title">
-      <div className={styles.sectionHead}>
+    <section className={styles.cell} aria-labelledby="swap-title">
+      <div className={styles.head}>
         <h2 id="swap-title" className={styles.title}>
-          The provider is the first argument.
+          Swap the adapter, keep the code.
         </h2>
-        <p className={styles.sectionLede}>
-          Everything after createSandbox stays the same. If a provider can&apos;t pause or snapshot,
-          those methods aren&apos;t on its type, so the compiler tells you before your users do.
+        <p className={styles.lede}>
+          Every adapter passes the same conformance suite. Moving providers is an import change, not
+          a rewrite.
         </p>
       </div>
-      <div className={styles.codePair}>
-        <div className={styles.panel}>
-          <p className={styles.panelTitle}>quickstart.ts</p>
-          <Code
-            lines={[
-              'import { createSandbox } from "@opencoredev/sandbox-sdk";',
-              'import { local } from "@opencoredev/sandbox-sdk/local";',
-              "",
-              "await using box = await createSandbox(local());",
-              "",
-              'const r = await box.run("node --version");',
-              "console.log(r.stdout);",
-            ]}
-          />
-        </div>
-        <div className={styles.panel}>
-          <p className={styles.panelTitle}>move to E2B</p>
-          <Code
-            lines={[
-              '- import { local } from "@opencoredev/sandbox-sdk/local";',
-              '+ import { e2b } from "@opencoredev/sandbox-sdk/e2b";',
-              "",
-              "- await using box = await createSandbox(local());",
-              "+ await using box = await createSandbox(e2b());",
-              "",
-              'const r = await box.run("node --version");',
-              "console.log(r.stdout);",
-            ]}
-            muted={[6, 7]}
-          />
-        </div>
-      </div>
+      <SwapDiagram />
     </section>
   );
 }
 
-const FEATURES: { title: string; body: string; lines: string[]; muted: number[] }[] = [
+const FEATURES: readonly { title: string; body: string; diagram: ReactNode }[] = [
   {
     title: "Run commands",
-    body: "box.$ shell-escapes every value you interpolate. Every command has a timeout and capped output, and stdin is closed unless you pass it.",
-    lines: [
-      "await box.$`git clone ${repo} app`;",
-      "",
-      'const r = await box.run("npm test", { cwd: "app" });',
-      "r.exitCode // 1, not an exception",
-      "r.output   // stdout and stderr, in order",
-    ],
-    muted: [3, 4],
+    body: "Shell commands with safe interpolation, streamed output and timeouts. A non-zero exit comes back as ok: false, not a throw.",
+    diagram: <RunDiagram />,
   },
   {
-    title: "Edit files",
-    body: "Edit by exact match, and get a patch of everything that changed since a checkpoint. An edit that matches twice fails instead of guessing.",
-    lines: [
-      "const before = await box.files.mark();",
-      'await box.files.edit("app/a.ts", {',
-      '  find: "foo()",',
-      '  replace: "bar()",',
-      "});",
-      "",
-      "const diff = await box.files.changes({ since: before });",
-    ],
-    muted: [],
+    title: "Move files and repos",
+    body: "Read, write, edit, search, upload and watch files. Clone and push with the token kept out of logs.",
+    diagram: <FilesDiagram />,
   },
   {
-    title: "Dev servers and previews",
-    body: "start waits until the port answers, then returns a preview URL. Reattach to the process by name from a later request.",
-    lines: [
-      'const dev = await box.start("npm run dev", {',
-      '  name: "dev",',
-      "  ready: { port: 3000 },",
-      "});",
-      "dev.url",
-      'box.process("dev") // from anywhere, later',
-    ],
-    muted: [4, 5],
+    title: "Control the lifecycle",
+    body: "Create, reconnect by id, list what is running, pause, snapshot or destroy. Each adapter declares what it supports.",
+    diagram: <LifecycleDiagram />,
   },
 ];
 
 function Features() {
   return (
-    <section className={styles.features} aria-label="What the API covers">
+    <section className={styles.trio} aria-label="What a sandbox can do">
       {FEATURES.map((f) => (
         <div key={f.title} className={styles.feature}>
-          <div className={styles.featureText}>
+          <div className={styles.featureHead}>
             <h3>{f.title}</h3>
             <p>{f.body}</p>
           </div>
-          <div className={styles.featureCode}>
-            <Code lines={f.lines} muted={f.muted} />
-          </div>
+          {f.diagram}
         </div>
       ))}
     </section>
   );
 }
 
-/** Model-facing output of the run tool, in the format the spec defines. */
-const TOOL_OUTPUT: { text: string; tone?: "pass" | "muted" }[] = [
-  { text: "OK exit=0 4.1s cwd=/workspace/app", tone: "pass" },
-  { text: "output:" },
-  { text: "> vitest run" },
-  { text: "src/cart.test.ts (12 tests)" },
-  { text: "src/checkout.test.ts (8 tests)" },
-  { text: "[38211 bytes cut, use process_logs]", tone: "muted" },
-];
-
-function Agents() {
+function Tests() {
   return (
-    <section className={styles.split} aria-labelledby="agents-title">
+    <section className={styles.split} aria-labelledby="tests-title">
       <div className={styles.splitText}>
-        <h2 id="agents-title" className={styles.title}>
-          Hand the sandbox to your agent.
+        <h2 id="tests-title" className={styles.title}>
+          Tests run in-process.
         </h2>
-        <p className={styles.sectionLede}>
-          sandboxTools(box) returns native tools for the AI SDK, Mastra, or the OpenAI Agents SDK.
-          The model gets a one-line verdict and capped output. Your UI can still stream all of it.
+        <p className={styles.lede}>
+          memory() keeps the sandbox API inside your test process. Nothing to boot, nothing to pay
+          for.
         </p>
         <ul className={styles.checks}>
           {[
-            "run, read_file, write_file, edit_file, start_process, process_logs, stop_process",
-            "Keep paths inside a root and approve or rewrite commands in beforeRun",
-            "Secrets you pass in are redacted from output and errors",
+            "The same API as the cloud adapters",
+            "No API key and no network in CI",
+            "Files, commands and processes, all in memory",
           ].map((item) => (
             <li key={item}>
               <span className={styles.check} aria-hidden="true">
-                <svg viewBox="0 0 12 12">
-                  <path
-                    d="M2.5 6.2 5 8.5l4.5-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                  />
+                <svg viewBox="0 0 16 16">
+                  <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" />
                 </svg>
               </span>
               {item}
@@ -258,92 +187,27 @@ function Agents() {
           ))}
         </ul>
       </div>
-      <div className={styles.splitArt}>
-        <div className={styles.terminal}>
-          <Brackets tone="amber" />
-          <p className={styles.panelTitle}>run, as the model sees it</p>
-          <ul className={styles.terminalBody}>
-            {TOOL_OUTPUT.map((line) => (
-              <li
-                key={line.text}
-                className={
-                  line.tone === "pass"
-                    ? styles.pass
-                    : line.tone === "muted"
-                      ? styles.terminalMuted
-                      : undefined
-                }
-              >
-                {line.text}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function Closing() {
-  return (
-    <section className={styles.closing} aria-labelledby="closing-title">
-      <HalftoneCanvas
-        paint={emberField}
-        dots={EMBER_DOTS}
-        fps={15}
-        stillAt={2}
-        className={styles.closingCanvas}
-      />
-      <div className={styles.closingText}>
-        <h2 id="closing-title" className={styles.title}>
-          Try it on your laptop with Docker.
-        </h2>
-        <CopyCommand command={INSTALL} />
-        <DocsButton />
-      </div>
+      <TestsDiagram />
     </section>
   );
 }
 
 export default function HomePage() {
-  const root = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const el = root.current;
-
-    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    el.dataset.motion = "on";
-
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          e.target.setAttribute("data-shown", "");
-          io.unobserve(e.target);
-        }
-      },
-      { rootMargin: "0px 0px -8% 0px" },
-    );
-
-    el.querySelectorAll("[data-reveal]").forEach((n) => io.observe(n));
-
-    return () => io.disconnect();
-  }, []);
-
   return (
-    <main ref={root} className={styles.page}>
-      <a href="#content" className={styles.skipLink}>
+    <main className={`${landing.page} ${styles.page}`}>
+      <a href="#content" className={landing.skipLink}>
         Skip to content
       </a>
       <Nav />
-      <div className={styles.frame} id="content">
+      <div className={landing.frame} id="content">
         <Hero />
-        <div className={styles.hatch} aria-hidden="true" />
+        <Steps />
+        <div className={landing.hatch} aria-hidden="true" />
         <Providers />
         <Swap />
         <Features />
-        <Agents />
-        <div className={styles.hatch} aria-hidden="true" />
+        <Tests />
+        <div className={landing.hatch} aria-hidden="true" />
         <Closing />
         <Footer />
       </div>
