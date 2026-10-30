@@ -620,6 +620,7 @@ with tempfile.TemporaryFile() as f:
 
         const result = await execute(
           {
+            id,
             raw: g.raw,
             read: (path, range, signal) => safe(id, () => client.readFile(id, path, range), signal),
             exec: (command, stdin, timeoutMs, signal) =>

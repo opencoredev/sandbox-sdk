@@ -124,7 +124,7 @@ console.log(`reaped ${removed} sandboxes`);
 
 - `labels` limits reaping to your app. Always pass it.
 - `olderThanMs` skips sandboxes younger than this, measured from creation.
-- `idleOnly: true` skips any sandbox with an SDK command in flight or an SDK background process running. Commands started outside the SDK aren't seen.
+- `idleOnly: true` skips any sandbox with an SDK command in flight or an SDK background process running. Commands started outside the SDK aren't seen. On E2B and Upstash, a process an SDK command left running, such as `npm run dev &`, also keeps the sandbox busy until it exits.
 
 Run it about as often as your shortest acceptable waste. Hourly is a good start. On Next.js, a [cron route](/integrations/nextjs#5-reap-forgotten-sandboxes) works.
 

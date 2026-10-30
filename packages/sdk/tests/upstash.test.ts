@@ -30,7 +30,7 @@ beforeEach(() => {
       String(input),
     )?.[1];
 
-    if (id !== undefined) {
+    if (id !== undefined && (init?.method ?? "GET") === "GET") {
       const box = state.boxes.get(decodeURIComponent(id));
 
       return Promise.resolve(

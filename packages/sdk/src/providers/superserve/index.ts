@@ -823,6 +823,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         return execute(
           {
+            id,
             raw: g.raw,
             read: async (path, range) => {
               const text = await g.raw(

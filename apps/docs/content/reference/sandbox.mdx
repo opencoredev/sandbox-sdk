@@ -93,7 +93,7 @@ Options: `labels?`. Returns `{ id, key?, labels, state, createdAt }[]` for sandb
 
 ## `reapSandboxes(provider, options?)`
 
-Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. With `idleOnly`, a sandbox counts as idle when it has no SDK command in flight and no running SDK background process. Commands started outside the SDK are not seen. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
+Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. With `idleOnly`, a sandbox counts as idle when it has no SDK command in flight and no running SDK background process. Commands started outside the SDK are not seen. On E2B and Upstash, reaping finds SDK commands by the `SANDBOX_SDK_RUN=1` variable they and their child processes carry, so a process a command left running, such as a server started with `&`, keeps the sandbox busy until it exits. A process whose environment the check cannot read also counts as busy. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
 
 ## Sandbox handle
 

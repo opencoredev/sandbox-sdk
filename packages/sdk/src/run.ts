@@ -7,6 +7,9 @@ import { quote } from "./shared/shell.js";
 // Providers built on run.ts helpers import quote from here.
 export { quote };
 
+/** Every SDK command carries this variable, and so does every descendant that keeps its environment. */
+export const activityTag = "SANDBOX_SDK_RUN";
+
 export const defaults = {
   CI: "1",
   PAGER: "cat",
@@ -14,6 +17,7 @@ export const defaults = {
   DEBIAN_FRONTEND: "noninteractive",
   TERM: "dumb",
   NO_COLOR: "1",
+  [activityTag]: "1",
 };
 
 export const pathOf = (path = ".") => posix.resolve("/workspace", path);
@@ -22,14 +26,42 @@ export const secretRecoveryCommand = `if [ -f /tmp/.sandbox-sdk/secret-names.jso
 // Anonymous-pipe relays keep activity alive until inherited stdout/stderr close.
 // Close the routing descriptors in the user shell: only its actual output pipes
 // should keep the relays alive. Every child remains in the adapter's process group.
-const activityScript = `trap 'rm -rf -- "$2"' EXIT
-(umask 077; mkdir -p "$2") || exit 1
-{ { "$3" -c "$1" 3>&- 4>&-; printf '%s\\n' "$?" > "$2/status"; } 2>&1 >&3 | cat >&4; } 3>&1 4>&2 | cat
-read -r code < "$2/status"
+// The marker is a file whose last write is the exit status; mkdir runs only once per sandbox.
+const activityScript = `[ -d "\${2%/*}" ] || (umask 077; mkdir -p "\${2%/*}") || exit 1
+trap 'rm -f -- "$2"' EXIT
+: > "$2" || exit 1
+{ { "$3" -c "$1" 3>&- 4>&-; printf '%s\\n' "$?" > "$2"; } 2>&1 >&3 | cat >&4; } 3>&1 4>&2 | cat
+read -r code < "$2"
 exit "$code"`;
 
 const activityCommand = (command: string, path: string, shell = "sh") =>
   `sh -c ${quote(activityScript)} sh ${quote(command)} ${quote(path)} ${quote(shell)}`;
+
+// procActivity adapters: the tagged outer shell waits for the command's own shell, so a command that
+// execs into a program that clears its environment (sudo, env -i) still has a tagged parent while it runs.
+const taggedCommand = (command: string, shell = "sh") => `${shell} -c ${quote(command)}; exit $?`;
+
+/**
+ * Idle scan for procActivity adapters. Exit 0 only when every live process is readable and none carries
+ * the tag; any other outcome means busy. Processes the exec user cannot read are re-read through
+ * passwordless sudo (root reads root-owned processes); a process nobody can read keeps the sandbox busy.
+ */
+export const activityScanCommand = `t=${activityTag}=1
+set -- /proc/[0-9]*/environ
+[ -e "$1" ] || exit 2
+grep -s -q -a -F -e "$t" -- "$@"; c=$?
+[ "$c" = 0 ] && exit 10
+[ "$c" = 1 ] && exit 0
+[ "$c" = 2 ] || exit 2
+u=
+for f in "$@"; do
+  grep -s -q -a -F -e "$t" -- "$f"; c=$?
+  [ "$c" = 0 ] && exit 10
+  [ "$c" = 2 ] && [ -d "\${f%/environ}" ] && u="$u $f"
+done
+[ -z "$u" ] && exit 0
+[ "$(id -u)" = 0 ] && exit 11
+sudo -n sh -c 'for f; do grep -s -q -a -F -e "$0" -- "$f"; c=$?; [ "$c" = 0 ] && exit 10; [ "$c" = 2 ] && [ -d "\${f%/environ}" ] && exit 11; done; exit 0' "$t" $u </dev/null 2>/dev/null`;
 
 // Guest markers cover independent SDK clients after launch. This registry also
 // covers transport setup/queueing before the guest can publish its marker.
@@ -313,11 +345,14 @@ export function makeRun(
           : await provider.exec(id, {
               // Pass the exact command as an argument to a fresh shell. User exit,
               // exec, traps, comments and stdin cannot bypass the parent's cleanup.
-              // Drain both pipes before removing activity: background descendants
-              // can retain stdout/stderr after the command shell itself has exited.
+              // Marker mode drains both pipes before removing activity: background descendants
+              // can retain stdout/stderr after the command shell itself has exited. procActivity
+              // adapters need no marker: idle scans find the tag in every live descendant.
               command: provider.inlineActivity
                 ? command
-                : activityCommand(command, activePath, provider.commandShell),
+                : provider.procActivity
+                  ? taggedCommand(command, provider.commandShell)
+                  : activityCommand(command, activePath, provider.commandShell),
               cwd,
               env: { ...baseEnv, ...options.env, ...defaults },
               stdin: options.stdin,
@@ -363,7 +398,7 @@ export function makeRun(
         options.signal?.removeEventListener("abort", abort);
 
         // Backup for the guest's own EXIT trap, which a kill can skip. The run's result stands.
-        if (!completed && !provider.inlineActivity)
+        if (!completed && !provider.inlineActivity && !provider.procActivity)
           await Promise.resolve()
             .then(() => provider.files.remove(id, activePath, { recursive: true }))
             .catch(() => {});

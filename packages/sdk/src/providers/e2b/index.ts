@@ -85,7 +85,10 @@ const envdPort = 49983;
 /** Domains the SDK (outside browsers) reaches envd on through one shared host, routed by headers. */
 const sharedRouting = new Set(["e2b.app", "e2b.dev", "e2b.pro", "e2b-staging.dev"]);
 const quote = (text: string) => `'${text.replace(/'/g, `'"'"'`)}'`;
-const prepareWorkspace = `flock -x ${workspaceMarker}.lock sh -c ${quote(`if [ ! -e ${workspaceMarker} ]; then mkdir -p /workspace && touch ${workspaceMarker} || exit 125; fi`)} || exit 125`;
+
+// Double-checked under the lock, in the launching shell: a prepared sandbox spawns nothing, a fresh one only flock and mkdir.
+// Redirections on a group, not exec or ":", so a failed open is a non-zero status rather than a shell exit.
+const prepareWorkspace = `[ -e ${workspaceMarker} ] || { flock -x 9 && { [ -e ${workspaceMarker} ] || { mkdir -p /workspace && printf ready > ${workspaceMarker}; }; }; } 9>${workspaceMarker}.lock || exit 125`;
 
 const missing = (cause: unknown) =>
   cause instanceof SandboxError && cause.code === "file_not_found";
@@ -625,6 +628,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     name: "e2b",
     keyMode: "best-effort",
     capabilities: new Set(["pause", "snapshot", "network-policy"]),
+    // Every exec runs as root in the VM's single PID namespace.
+    procActivity: true,
     api: createNativeApi<E2BPlane, E2BClientSdk>({ http, placeholder: "sandboxId", sdk: binding }),
     create: (input) =>
       call(undefined, async () => {
@@ -866,6 +871,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
       }),
     files: {
       writeCreatesParents: true,
+      editInGuest: true,
       read: (id, path) =>
         call(id, async () => {
           await client(id);

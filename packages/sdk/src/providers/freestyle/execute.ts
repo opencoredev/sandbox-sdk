@@ -1,8 +1,7 @@
 import { guestSpec } from "../../shared/wire.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { guestProcess } from "../../shared/guest.js";
+import { guestProcess, guestPump, zygoteSupervisor } from "../../shared/guest.js";
 import { pagedExecute, type PagedGuest } from "../../shared/paged-exec.js";
-import { quote } from "../../shared/shell.js";
 import { failure } from "./errors.js";
 
 export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
@@ -11,6 +10,7 @@ export const supervisorPath = "/var/lib/sandbox-sdk-exec-v2.py";
 // Small results return inline; large output uses bounded native ranged reads.
 export const supervisor = `import os,sys,marshal,_signal as signal,select,time,fcntl
 ${guestProcess}
+${guestPump}
 root=sys.argv[1]
 v=marshal.loads(bytes.fromhex(sys.stdin.read()))
 if v.get('files') is not None:
@@ -68,17 +68,7 @@ try:
    if p:
     with open(root+'/pid','w') as m: m.write(str(p.pid))
   if p:
-   stdout=p.stdout.fileno(); streams={stdout:'stdout',p.stderr.fileno():'stderr'}
-   end=time.monotonic()+v['timeoutMs']/1000
-   while streams or p.poll() is None:
-    if not timed and time.monotonic()>=end:
-     timed=True
-     try: os.killpg(p.pid,signal.SIGKILL)
-     except ProcessLookupError: pass
-    for fd in select.select(list(streams),[],[],.01 if streams else .001)[0]:
-     data=os.read(fd,8192)
-     if data: out.write(('["'+streams[fd]+'","'+data.hex()+'"]\\n').encode())
-     else: del streams[fd]; (p.stdout if fd==stdout else p.stderr).close()
+   timed=pump(p,lambda name,data: out.write(('["'+name+'","'+data.hex()+'"]\\n').encode()),time.monotonic()+v['timeoutMs']/1000)
    code=p.wait()
   timed=timed or os.path.exists(root+'/cancelled')
  result='{"exitCode":%s,"timedOut":%s}'%('null' if timed else str(code if code>=0 else 128-code),str(timed).lower())
@@ -99,7 +89,11 @@ finally:
   except FileNotFoundError: pass
 `;
 
+const launch = zygoteSupervisor(supervisor);
+
 export interface ExecutionGuest extends PagedGuest {
+  /** The sandbox ID. */
+  readonly id: string;
   exec(command: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<string>;
 }
 
@@ -114,7 +108,7 @@ export async function execute(
     fail: (message, code) => failure(message, code),
     launch: (root, signal) =>
       g.exec(
-        `python3 -S -c ${quote(supervisor)} ${quote(root)}`,
+        launch.command(g.id, root),
         guestSpec({
           files,
           command: input.command,

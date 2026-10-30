@@ -82,6 +82,11 @@ export interface ProviderFiles {
   readonly checkpoints?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
+  /**
+   * One exec carrying a small environment variable costs less than a read plus a write, so `files.edit`
+   * runs as one guest python3 call. Leave it unset where extra env is staged through more requests.
+   */
+  readonly editInGuest?: boolean;
   /** Write applies `options.mode` itself. Without it, the core runs `chmod` after the write. */
   readonly writeSupportsMode?: boolean;
   /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */
@@ -132,6 +137,12 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly previewMode?: "placeholder";
   /** Exec creates/removes input.activityPath without separate file RPCs. */
   readonly inlineActivity?: boolean;
+  /**
+   * Every exec from every client shares one Linux PID namespace with `/proc` mounted, and the exec user
+   * can read each process's environ (directly, or through passwordless sudo for root-owned ones). The
+   * core then runs commands without a marker and idle reaping scans `/proc` for the SDK's env tag.
+   */
+  readonly procActivity?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */

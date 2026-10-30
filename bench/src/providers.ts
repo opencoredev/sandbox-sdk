@@ -186,6 +186,7 @@ const providerMembers = {
   processMode: (target) => target.processMode,
   previewMode: (target) => target.previewMode,
   inlineActivity: (target) => target.inlineActivity,
+  procActivity: (target) => target.procActivity,
   commandShell: (target) => target.commandShell,
   processRecordRoot: (target) => target.processRecordRoot,
   capabilities: (target) => target.capabilities,

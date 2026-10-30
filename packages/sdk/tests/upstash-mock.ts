@@ -13,8 +13,9 @@ import type {
   ExecSessionHandle,
   ExecSessionOptions,
   FileStat,
+  NetworkPolicy,
 } from "@upstash/box";
-import { isString } from "../src/shared/narrow.js";
+import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import {
   createUpstashProvider,
   type BoxHandleConfig,
@@ -33,6 +34,7 @@ type EnvWrite = { path: string; mode: number; directoryMode: number };
 const creates: BoxConfig[] = [];
 const ephemeralCreates: EphemeralBoxConfig[] = [];
 const envWrites: EnvWrite[] = [];
+const deletes: string[] = [];
 
 export const state = {
   boxes: new Map<string, MockBox>(),
@@ -42,6 +44,10 @@ export const state = {
   snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
   envWrites,
+  /** How the next durable create boots: status reads that report "creating", then its outcome. */
+  boot: { polls: 0, outcome: "running" },
+  statusReads: 0,
+  deletes,
 };
 
 /** One mock machine. Every handle for the same box ID shares it. */
@@ -345,6 +351,19 @@ export class MockBox {
       command: string,
     ): Promise<{ exitCode: number; stdout: string; stderr: string; result: string }>;
   };
+  /** Status reads left that still report "creating", then the outcome a boot reaches. */
+  booting = { polls: 0, outcome: "running" };
+  async getStatus() {
+    state.statusReads++;
+
+    if (this.booting.polls > 0) {
+      this.booting.polls--;
+
+      return { status: "creating" };
+    }
+
+    return { status: this.booting.outcome };
+  }
   async getPublicURL(port: number, settings?: { bearerToken?: boolean }) {
     const url = `http://127.0.0.1:${this.port}/?port=${port}`;
 
@@ -424,6 +443,114 @@ export class MockEphemeralBox {
   }
 }
 
+/** The adapter sends Box.create's and Box.fromSnapshot's request itself, then attaches with Box.get. Serve
+ * those routes from MockBox, turning the wire body back into the BoxConfig the native SDK would receive,
+ * so `state.creates` still records what reached Upstash. Other requests pass through. */
+type Wire = {
+  snapshot_id?: string;
+  labels?: string[];
+  size?: BoxSize;
+  keep_alive?: boolean;
+  init_command?: string;
+  runtime?: BoxConfig["runtime"];
+  browser?: boolean;
+  env_vars?: Record<string, string>;
+  attach_headers?: BoxConfig["attachHeaders"];
+  network_policy?: {
+    mode: "allow-all" | "deny-all" | "custom";
+    allowed_domains?: string[];
+    allowed_cidrs?: string[];
+    denied_cidrs?: string[];
+  };
+};
+
+function configOf(wire: Wire, apiKey: string | null): BoxConfig {
+  const config: BoxConfig = {};
+
+  if (apiKey !== null) config.apiKey = apiKey;
+
+  if (wire.labels) config.labels = wire.labels;
+
+  if (wire.size) config.size = wire.size;
+
+  if (wire.keep_alive) config.keepAlive = true;
+
+  if (wire.init_command !== undefined) config.initCommand = wire.init_command;
+
+  if (wire.runtime) config.runtime = wire.runtime;
+
+  if (wire.browser) config.browser = true;
+
+  if (wire.env_vars) config.env = wire.env_vars;
+
+  if (wire.attach_headers) config.attachHeaders = wire.attach_headers;
+  const policy = wire.network_policy;
+
+  if (policy?.mode === "custom") {
+    const custom: Extract<NetworkPolicy, { mode: "custom" }> = { mode: "custom" };
+
+    if (policy.allowed_domains) custom.allowedDomains = policy.allowed_domains;
+
+    if (policy.allowed_cidrs) custom.allowedCidrs = policy.allowed_cidrs;
+
+    if (policy.denied_cidrs) custom.deniedCidrs = policy.denied_cidrs;
+    config.networkPolicy = custom;
+  } else if (policy) config.networkPolicy = { mode: policy.mode };
+
+  return config;
+}
+
+const upstream = globalThis.fetch;
+
+globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input instanceof Request ? input.url : String(input);
+  const method = init?.method ?? "GET";
+  const create = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box(\/from-snapshot)?$/.exec(url);
+
+  if (create && method === "POST") {
+    const wire: Wire = JSON.parse(String(init?.body));
+    const config = configOf(wire, new Headers(init?.headers).get("X-Box-Api-Key"));
+    let box: MockBox;
+
+    try {
+      box = create[1]
+        ? await MockBox.fromSnapshot(wire.snapshot_id ?? "", config)
+        : await MockBox.create(config);
+    } catch (error) {
+      const status =
+        isObject(error) && "statusCode" in error && isNumber(error.statusCode)
+          ? error.statusCode
+          : 500;
+
+      return Response.json(
+        { error: error instanceof Error ? error.message : "failed" },
+        { status },
+      );
+    }
+
+    box.booting = { ...state.boot };
+
+    return Response.json({
+      ...box.data,
+      status: box.booting.polls > 0 ? "creating" : box.booting.outcome,
+    });
+  }
+
+  const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(url)?.[1];
+
+  if (id !== undefined && method === "DELETE") {
+    state.deletes.push(decodeURIComponent(id));
+    const box = state.boxes.get(decodeURIComponent(id));
+
+    if (!box) return Response.json({ error: "not found" }, { status: 404 });
+    await box.delete();
+
+    return Response.json({});
+  }
+
+  return upstream(input, init);
+}, upstream);
+
 export async function cleanup() {
   for (const box of state.boxes.values()) await box.delete();
 
@@ -434,6 +561,9 @@ export async function cleanup() {
   state.ephemeralCreates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
+  state.boot = { polls: 0, outcome: "running" };
+  state.statusReads = 0;
+  state.deletes.length = 0;
 }
 
 const load = async () => ({ Box: MockBox, EphemeralBox: MockEphemeralBox });
