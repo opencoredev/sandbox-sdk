@@ -5,7 +5,7 @@
  */
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { vi } from "vitest";
-import { MockGuest } from "./cloud-guest-mock.js";
+import { MockGuest } from "./mock-guest.js";
 import { quote } from "../src/shared/shell.js";
 
 export const api = "https://api.superserve.ai";

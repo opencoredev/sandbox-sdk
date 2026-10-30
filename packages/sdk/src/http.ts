@@ -17,6 +17,7 @@
  *   Response text is kept only for native calls (`detail: "message"`), scrubbed; adapter calls keep the
  *   status and the provider's error code.
  */
+import { isJsonObject, type JsonValue } from "./shared/json.js";
 import { isObject, isString } from "./shared/narrow.js";
 import {
   SandboxError,
@@ -90,7 +91,7 @@ export interface ErrorBody {
   /** The first 64 KB of the body, decoded as UTF-8. */
   text: string;
   /** `text` parsed as JSON, or `undefined` when it is not JSON. */
-  json: unknown;
+  json: JsonValue | undefined;
   /** The provider's error code (`sandbox_not_found`), from `code`, `error.code`, `error` or `type`. */
   code?: string;
   /** The provider's error message, from `message`, `error.message`, `error`, `detail` or `title`. */
@@ -188,7 +189,20 @@ export interface HttpResponse {
   /** The body as UTF-8 text. */
   text(): string;
   /** The body parsed as JSON, or `undefined` when it is empty. Invalid JSON is a `provider` SandboxError. */
-  json(): unknown;
+  json(): JsonValue | undefined;
+}
+
+/** The plane a request goes to, by name. */
+interface ChosenPlane {
+  name: string;
+  plane: HttpPlane;
+}
+
+/** A request body ready for `fetch`, and whether a retry may send it again. */
+interface SerializedBody {
+  body: BodyInit | undefined;
+  contentType?: string;
+  replayable: boolean;
 }
 
 export interface HttpClient<Plane extends string = string> {
@@ -199,7 +213,7 @@ export interface HttpClient<Plane extends string = string> {
   /** Send a request and buffer the response body (bounded by `maxBytes`). Non-2xx rejects. */
   request(request: HttpRequest<Plane>): Promise<HttpResponse>;
   /** `request(...).json()`. */
-  json(request: HttpRequest<Plane>): Promise<unknown>;
+  json(request: HttpRequest<Plane>): Promise<JsonValue | undefined>;
   /** Send a request and return once headers arrive. The body enforces the idle timeout and deadline; the caller reads or cancels it. */
   stream(request: StreamRequest<Plane>): Promise<Response>;
   /** A best-effort request after an abort: no caller signal, its own deadline of at most 10 s. */
@@ -286,8 +300,8 @@ const statuses = new WeakMap<SandboxError, { status: number; code?: string }>();
  * The HTTP status and provider error code (when it is a safe token) behind a client error, or `undefined`
  * for errors that are not a non-2xx response. For adapters that branch on a status, such as a 409 retry.
  */
-export function httpStatus(error: unknown): { status: number; code?: string } | undefined {
-  return error instanceof SandboxError ? statuses.get(error) : undefined;
+export function httpStatus(cause: unknown): { status: number; code?: string } | undefined {
+  return cause instanceof SandboxError ? statuses.get(cause) : undefined;
 }
 
 const errorBodyBytes = 64 * 1024;
@@ -328,11 +342,11 @@ const placeholderPattern = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const safeCode = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 const safeRequestId = /^[A-Za-z0-9_.:-]{1,128}$/;
 
-function errorCodes(error: unknown, depth = 0): string[] {
-  if (!isObject(error) || error === null || depth > 3) return [];
-  const own = "code" in error && isString(error.code) ? [error.code] : [];
+function errorCodes(cause: unknown, depth = 0): string[] {
+  if (!isObject(cause) || depth > 3) return [];
+  const own = "code" in cause && isString(cause.code) ? [cause.code] : [];
 
-  return [...own, ...errorCodes("cause" in error ? error.cause : undefined, depth + 1)];
+  return [...own, ...errorCodes("cause" in cause ? cause.cause : undefined, depth + 1)];
 }
 
 function isBodyInit(value: unknown): value is BodyInit {
@@ -359,11 +373,11 @@ function retryAfter(headers: Headers): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
-function pick(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isObject(value) || value === null) return undefined;
+function pick(value: JsonValue | undefined, keys: readonly string[]): string | undefined {
+  if (!isJsonObject(value)) return undefined;
 
   for (const key of keys) {
-    const found: unknown = Reflect.get(value, key);
+    const found = Object.hasOwn(value, key) ? value[key] : undefined;
 
     if (isString(found) && found) return found;
   }
@@ -373,7 +387,7 @@ function pick(value: unknown, keys: readonly string[]): string | undefined {
 
 /** Pulls the code and message out of the error shapes providers use: `{ code, message }`, `{ error: { code, message } }`, `{ error: "text" }`, RFC 7807. */
 export function parseErrorBody(text: string): ErrorBody {
-  let json: unknown;
+  let json: JsonValue | undefined;
 
   try {
     json = text ? JSON.parse(text) : undefined;
@@ -381,7 +395,7 @@ export function parseErrorBody(text: string): ErrorBody {
     json = undefined;
   }
 
-  const nested = isObject(json) ? ("error" in json ? json.error : undefined) : undefined;
+  const nested = isJsonObject(json) ? json.error : undefined;
 
   const code =
     pick(json, ["code", "error_code", "errorCode", "type"]) ??
@@ -526,7 +540,7 @@ export function createHttpClient<Plane extends string>(
 
   const planes: Readonly<Record<string, HttpPlane>> = options.planes;
 
-  function planeOf(name: string | undefined): { name: string; plane: HttpPlane } {
+  function planeOf(name: string | undefined): ChosenPlane {
     const key = name ?? options.defaultPlane;
     // Native callers pass any string at runtime, so look the plane up as an own key only.
     const plane = Object.hasOwn(planes, key) ? planes[key] : undefined;
@@ -778,11 +792,7 @@ export function createHttpClient<Plane extends string>(
     }
   }
 
-  function serialize(request: HttpRequest<string>): {
-    body: BodyInit | undefined;
-    contentType?: string;
-    replayable: boolean;
-  } {
+  function serialize(request: HttpRequest<string>): SerializedBody {
     if (request.body === undefined) return { body: undefined, replayable: true };
 
     if (request.method === "GET" || request.method === "HEAD")

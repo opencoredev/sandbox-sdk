@@ -2,7 +2,7 @@
 import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { MockGuest } from "./cloud-guest-mock.js";
+import { MockGuest } from "./mock-guest.js";
 
 interface InlineFirewallRule {
   action: string;
