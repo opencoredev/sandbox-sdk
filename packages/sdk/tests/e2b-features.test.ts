@@ -265,6 +265,17 @@ describe("metrics", () => {
     expect(empty.commands).toBe(0);
   });
 
+  test("usage() still returns the core counters when the metrics request fails", async () => {
+    const provider = await attached();
+    server.on("GET /sandboxes/{id}/metrics", { status: 404, json: { code: 404 } });
+    const box = await connectSandbox(provider, "sb1", { recoverSecrets: false });
+
+    const usage = await box.usage();
+    expect(usage).toMatchObject({ commands: 0, bytesOut: 0 });
+    expect(usage.cpuPercent).toBeUndefined();
+    expect(usage.memoryBytes).toBeUndefined();
+  });
+
   test("box.ext.e2b.metrics returns the window oldest first, in E2B's seconds", async () => {
     const provider = await attached();
     server.on("GET /sandboxes/{id}/metrics", { json: samples });

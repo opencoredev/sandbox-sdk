@@ -250,7 +250,7 @@ If the watch stream breaks, `onError` receives the error and the watch starts ag
 
 ## Metrics
 
-`box.usage()` adds E2B's newest metric sample to the SDK's own counters. The fields are absent until E2B has taken a sample, a few seconds after creation.
+`box.usage()` adds E2B's newest metric sample to the SDK's own counters. The fields are absent until E2B has taken a sample, a few seconds after creation, and when the metrics request fails; `usage()` never fails because of metrics. `box.ext.e2b.metrics()` throws instead.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";

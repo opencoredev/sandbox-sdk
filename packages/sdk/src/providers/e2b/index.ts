@@ -1453,7 +1453,9 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     terminal: (id, settings) => call(id, () => openTerminal(id, settings)),
     usage: (id) =>
       call(id, async (): Promise<Record<string, number>> => {
-        const latest = (await metrics(id)).at(-1);
+        // Metrics are extra: a sandbox that is gone, paused or not yet sampled still reports the core
+        // counters. box.ext.e2b.metrics() surfaces the error for callers that need it.
+        const latest = (await metrics(id).catch(() => [])).at(-1);
 
         if (!latest) return {};
 
