@@ -166,7 +166,7 @@
     },
     "packages/sdk": {
       "name": "@opencoredev/sandbox-sdk",
-      "version": "1.0.3",
+      "version": "1.1.0",
       "devDependencies": {
         "@boatdev/sdk": "1.9.9",
         "@boxd-sh/sdk": "0.2.17",
