@@ -16,8 +16,7 @@
  *   invented numbers.
  */
 
-import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 
 import { HalftoneCanvas } from "@/components/halftone/halftone-canvas";
 import type { HalftoneDots } from "@/components/halftone/halftone";
@@ -26,17 +25,9 @@ import { emberField } from "@/components/halftone/painters";
 import { Code } from "./code";
 import { HarborViewport } from "./harbor-viewport";
 import styles from "./landing.module.css";
+import { Arrow, Brackets, CopyCommand, DocsButton, Footer, GithubMark, Nav } from "./parts";
 import { ProvidersCarousel } from "./providers-carousel";
-
-const GITHUB = "https://github.com/opencoredev/sandbox-sdk";
-const NPM = "https://www.npmjs.com/package/@opencoredev/sandbox-sdk";
-const SECURITY = `${GITHUB}/security/policy`;
-const INSTALL = "bun add @opencoredev/sandbox-sdk";
-
-/** Docs live in the Blume app under /docs (apps/docs). */
-const DOCS = { quickstart: "/docs", providers: "/docs/providers" } as const;
-
-const INK: readonly [number, number, number] = [0.043, 0.043, 0.047];
+import { CARD_DOTS, EMBER_DOTS, GITHUB, INK, INSTALL } from "./site";
 
 const HARBOR_DOTS: HalftoneDots = {
   cell: 4.2,
@@ -45,112 +36,6 @@ const HARBOR_DOTS: HalftoneDots = {
   glow: 0.08,
   ground: INK,
 };
-
-const CARD_DOTS: HalftoneDots = { cell: 5, fill: 0.8, dot: "square", glow: 0.12, ground: INK };
-const EMBER_DOTS: HalftoneDots = { cell: 13, fill: 0.62, dot: "square", glow: 0.4, ground: INK };
-
-/** The scope mark: four corner brackets framing one lit cell. Source: public/brand. */
-function Mark({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 32 32" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M2 2h10v4H6v6H2zM30 2v10h-4V6h-6V2zM2 30V20h4v6h6v4zM30 30H20v-4h6v-6h4zM12 12h8v8h-8z"
-      />
-    </svg>
-  );
-}
-
-function Arrow() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" className={styles.arrowIcon}>
-      <path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" />
-    </svg>
-  );
-}
-
-function GithubMark() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" className={styles.githubIcon}>
-      <path
-        fill="currentColor"
-        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
-      />
-    </svg>
-  );
-}
-
-function Brackets({ tone = "light" }: { tone?: "light" | "amber" }) {
-  return (
-    <span
-      className={`${styles.brackets} ${tone === "amber" ? styles.bracketsAmber : ""}`}
-      aria-hidden="true"
-    >
-      <i />
-      <i />
-      <i />
-      <i />
-    </span>
-  );
-}
-
-function DocsButton() {
-  return (
-    <Link href={DOCS.quickstart} className={styles.primary}>
-      Read the docs
-      <Arrow />
-    </Link>
-  );
-}
-
-function CopyCommand({ command }: { command: string }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-
-  const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setState("copied");
-    } catch {
-      // no clipboard access: say so, the command stays selectable
-      setState("failed");
-    }
-
-    window.setTimeout(() => setState("idle"), 2000);
-  }, [command]);
-
-  return (
-    <button type="button" className={styles.command} onClick={copy} aria-label={`Copy: ${command}`}>
-      <span>{command}</span>
-      <span className={styles.commandHint} aria-live="polite">
-        {state === "copied" ? "copied" : state === "failed" ? "select to copy" : "copy"}
-      </span>
-    </button>
-  );
-}
-
-function Nav() {
-  return (
-    <header className={styles.navBar}>
-      <nav className={styles.nav} aria-label="Primary">
-        <Link href="/" className={styles.brand} aria-label="Sandbox SDK home">
-          <Mark className={styles.brandMark} />
-          <span>Sandbox SDK</span>
-        </Link>
-        <div className={styles.navLinks}>
-          <Link href={DOCS.quickstart}>Docs</Link>
-          <Link href={DOCS.providers}>Providers</Link>
-          <a href={SECURITY} target="_blank" rel="noopener noreferrer">
-            Security
-          </a>
-        </div>
-        <a href={GITHUB} className={styles.navGithub} target="_blank" rel="noopener noreferrer">
-          <GithubMark />
-          GitHub
-        </a>
-      </nav>
-    </header>
-  );
-}
 
 function Hero() {
   return (
@@ -209,12 +94,12 @@ function Providers() {
     <section className={styles.section} aria-labelledby="providers-title">
       <div className={styles.sectionHead}>
         <h2 id="providers-title" className={styles.title}>
-          Two local runtimes, nine clouds, and a fake for tests.
+          Two local runtimes, eleven clouds, and a fake for tests.
         </h2>
         <p className={styles.sectionLede}>
-          Local runs on Docker or agentOS. E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat,
-          Tenki, boxd, and Freestyle run in the cloud. memory() is an in-process fake for unit tests
-          that never touches the network.
+          Local runs on Docker or agentOS. E2B, Vercel Sandbox, Daytona, Upstash Box, Railway,
+          Tenki, boxd, Freestyle, Superserve, Boat, and Sandboxer run in the cloud. memory() is an
+          in-process fake for unit tests that never touches the network.
         </p>
       </div>
       <ProvidersCarousel dots={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
@@ -417,105 +302,6 @@ function Closing() {
         <DocsButton />
       </div>
     </section>
-  );
-}
-
-/* 5 by 7 bitmap letters for the footer wordmark */
-const GLYPHS = {
-  S: [".####", "#....", "#....", ".###.", "....#", "....#", "####."],
-  A: [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
-  N: ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
-  D: ["####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."],
-  B: ["####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."],
-  O: [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
-  X: ["#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"],
-} as const satisfies Record<string, readonly string[]>;
-
-type GlyphLetter = keyof typeof GLYPHS;
-
-function isGlyphLetter(letter: string): letter is GlyphLetter {
-  return Object.hasOwn(GLYPHS, letter);
-}
-
-/** The rows of one letter, or none for a letter the wordmark has no glyph for. */
-function glyphRows(letter: string): readonly string[] {
-  return isGlyphLetter(letter) ? GLYPHS[letter] : [];
-}
-
-function Wordmark({ text }: { text: string }) {
-  return (
-    <div className={styles.wordmark} aria-hidden="true">
-      {text.split("").map((ch, i) => (
-        <div key={i} className={styles.glyph}>
-          {glyphRows(ch).flatMap((row, y) =>
-            row
-              .split("")
-              .map((c, x) => (
-                <span key={`${x}-${y}`} className={c === "#" ? styles.on : undefined} />
-              )),
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function FooterLink({ href, children }: { href: string; children: ReactNode }) {
-  const external = href.startsWith("http");
-
-  return external ? (
-    <a href={href} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  ) : (
-    <Link href={href}>{children}</Link>
-  );
-}
-
-function Footer() {
-  return (
-    <footer className={styles.footer}>
-      <div className={styles.footerTop}>
-        <div className={styles.footerBrand}>
-          <Link href="/" className={styles.brand}>
-            <Mark className={styles.brandMark} />
-            <span>Sandbox SDK</span>
-          </Link>
-          <p>
-            A TypeScript SDK for sandboxes on Docker, agentOS, E2B, Vercel, Daytona, Upstash,
-            Railway, Boat, Tenki, boxd, and Freestyle. MIT licensed, built by OpenCore.
-          </p>
-        </div>
-        <div className={styles.footerCol}>
-          <p className={styles.eyebrow}>Docs</p>
-          <FooterLink href={DOCS.quickstart}>Quickstart</FooterLink>
-          <FooterLink href={DOCS.providers}>Providers</FooterLink>
-        </div>
-        <div className={styles.footerCol}>
-          <p className={styles.eyebrow}>Project</p>
-          <FooterLink href={GITHUB}>GitHub</FooterLink>
-          <FooterLink href={SECURITY}>Security</FooterLink>
-          <FooterLink href={`${GITHUB}/releases`}>Releases</FooterLink>
-        </div>
-      </div>
-      <div className={styles.footerRow}>
-        {[
-          { label: "GitHub", href: GITHUB },
-          { label: "npm", href: NPM },
-          { label: "Docs", href: DOCS.quickstart },
-        ].map((l) => (
-          <FooterLink key={l.label} href={l.href}>
-            {l.label}
-            <Arrow />
-          </FooterLink>
-        ))}
-      </div>
-      <Wordmark text="SANDBOX" />
-      <div className={styles.footerBase}>
-        <span>2026 OpenCore</span>
-        <span>MIT License</span>
-      </div>
-    </footer>
   );
 }
 

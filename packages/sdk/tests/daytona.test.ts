@@ -492,30 +492,36 @@ describe("Daytona buffered native commands", () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThan(1100);
     expect(download).toHaveBeenCalledTimes(1);
   });
-  test("timeout and abort retain partial output and kill descendants", async () => {
-    const box = await createSandbox(bufferedFactory());
-    expect(
-      await box.run("printf partial; (sleep .3; echo leaked > buffered-leak) & wait", {
-        timeoutMs: 80,
-      }),
-    ).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 80);
-
-    try {
+  // The windows leave a loaded host time to print "partial" before the kill, and the
+  // descendant's write lands well after it, so a surviving descendant is always visible.
+  test(
+    "timeout and abort retain partial output and kill descendants",
+    { timeout: 20_000 },
+    async () => {
+      const box = await createSandbox(bufferedFactory());
       expect(
-        await box.run("printf partial; (sleep .3; echo leaked > buffered-abort) & wait", {
-          signal: controller.signal,
+        await box.run("printf partial; (sleep 3; echo leaked > buffered-leak) & wait", {
+          timeoutMs: 1500,
         }),
       ).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
-    } finally {
-      clearTimeout(timer);
-    }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1500);
 
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    expect(await box.files.exists("buffered-leak")).toBe(false);
-    expect(await box.files.exists("buffered-abort")).toBe(false);
-  });
+      try {
+        expect(
+          await box.run("printf partial; (sleep 3; echo leaked > buffered-abort) & wait", {
+            signal: controller.signal,
+          }),
+        ).toMatchObject({ timedOut: true, exitCode: null, stdout: "partial" });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      expect(await box.files.exists("buffered-leak")).toBe(false);
+      expect(await box.files.exists("buffered-abort")).toBe(false);
+    },
+  );
   test("stdin retains the session transport", async () => {
     const box = await createSandbox(bufferedFactory());
     const session = vi.spyOn(box.native.process, "createSession");
