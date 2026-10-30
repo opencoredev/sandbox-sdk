@@ -594,7 +594,7 @@ describe("streams", () => {
     const deadline = createDeadline(1);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(deadline.signal.aborted).toBe(true);
-    expect((await failure(client().stream({ method: "GET", path: "/logs", deadline }))).code).toBe(
+    expect((await rejection(client().stream({ method: "GET", path: "/logs", deadline }))).code).toBe(
       "timeout",
     );
     expect(server.requests).toHaveLength(0);
@@ -681,7 +681,7 @@ test("credentials are never sent over plain HTTP to a non-loopback host", async 
   });
 
   const started = Date.now();
-  const error = await failure(plaintext.json({ method: "GET", path: "/sandboxes" }));
+  const error = await rejection(plaintext.json({ method: "GET", path: "/sandboxes" }));
   expect(error).toMatchObject({ code: "invalid_argument" });
   expect(error.message).toContain("plain HTTP");
   expect(error.message).not.toContain(key);
@@ -696,7 +696,7 @@ test("an error body that stalls past the deadline reports a timeout, not the sta
   // Headers arrive at once with 429, then the body never finishes.
   server.on("GET /v1/slow-error", { status: 429, stream: ['{"error":'], hold: true });
 
-  const error = await failure(
+  const error = await rejection(
     client({ timeoutMs: 400 }).json({ method: "GET", path: "/slow-error" }),
   );
 
