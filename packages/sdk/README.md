@@ -2,12 +2,12 @@
 
 One TypeScript API for running code in a sandbox. The same `createSandbox`, `run`, `files`, `start`, and `preview` calls work on E2B, Daytona, Vercel, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, Sandboxer, Docker on your machine, and an in-process fake for tests. Changing provider means changing one import.
 
-> **1.0 beta.** This is `1.0.0-beta.1` of the 1.0 rewrite, published under the `next` tag. The API can still change before 1.0.0. `latest` is still 0.2.
+> **Coming from 0.2?** 1.0 changes the API. [Upgrade from 0.2](https://sandbox-sdk.app/docs/upgrade-from-0-2) walks through each change.
 
 ## Install
 
 ```sh
-npm install @opencoredev/sandbox-sdk@next
+npm install @opencoredev/sandbox-sdk
 ```
 
 That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
