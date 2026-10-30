@@ -133,12 +133,18 @@ export interface Route {
   readonly revision: number;
 }
 
+/** A sandbox's data-plane token, and the routing hint that pins requests to its host. */
+export interface RouteToken {
+  token: string;
+  hint?: string;
+}
+
 /** Reads `access_token` and `routing_hint` from a create, activate or resume response. */
 export function parseRoute(
   raw: JsonValue | undefined,
   sandboxId: string,
   operation: string,
-): { token: string; hint?: string } {
+): RouteToken {
   const token = isObject(raw) ? ("access_token" in raw ? raw.access_token : undefined) : undefined;
 
   const hint = isObject(raw) ? ("routing_hint" in raw ? raw.routing_hint : undefined) : undefined;
@@ -146,7 +152,11 @@ export function parseRoute(
   if (!isString(token) || !token)
     throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);
 
-  return { token, ...(isString(hint) && hint ? { hint } : undefined) };
+  const route: RouteToken = { token };
+
+  if (isString(hint) && hint) route.hint = hint;
+
+  return route;
 }
 
 export type RotateEndpoint = "activate" | "resume";

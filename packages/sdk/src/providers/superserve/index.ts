@@ -652,12 +652,12 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         // Read credentials first: a missing key allocated nothing, so it is not an unknown outcome.
         config();
 
-        const metadata: Record<string, string> = {
-          "sandbox-sdk": "1",
-          ...(input.key !== undefined ? { "sdk-key": input.key } : undefined),
-        };
+        const metadata = new Map([["sandbox-sdk", "1"]]);
 
-        for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
+        if (input.key !== undefined) metadata.set("sdk-key", input.key);
+
+        for (const [key, value] of Object.entries(input.labels))
+          metadata.set(`label:${key}`, value);
         const createdAt = Date.now();
         let raw: JsonValue | undefined;
 
@@ -668,7 +668,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             path: "/sandboxes",
             body: {
               name: `sbxsdk-${crypto.randomUUID()}`,
-              metadata,
+              metadata: Object.fromEntries(metadata),
               ...(input.env === undefined ? undefined : { env_vars: input.env }),
               preview_access: previewAccess,
               ...(network
@@ -949,19 +949,20 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       safe(id, async () => {
         await ensure(id);
         const { deadline, stillPausing } = pauseDeadline(id);
-        let status: unknown;
+        let pausing: boolean;
 
         try {
-          status = field(
-            await http.json({
-              method: "POST",
-              path: "/sandboxes/{sandboxId}/pause",
-              ...sandbox(id),
-              timeoutMs: Math.min(30_000, timeout),
-              signal: deadline.signal,
-            }),
-            "status",
-          );
+          pausing =
+            field(
+              await http.json({
+                method: "POST",
+                path: "/sandboxes/{sandboxId}/pause",
+                ...sandbox(id),
+                timeoutMs: Math.min(30_000, timeout),
+                signal: deadline.signal,
+              }),
+              "status",
+            ) === "pausing";
         } catch (error) {
           // A pause request that timed out may still be pausing; polling finds out.
           if (deadline.timeout.aborted) throw stillPausing();
@@ -971,10 +972,10 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             (error.code !== "timeout" && error.code !== "outcome_unknown")
           )
             throw error;
-          status = "pausing";
+          pausing = true;
         }
 
-        if (status === "pausing") await untilPaused(id, deadline, stillPausing);
+        if (pausing) await untilPaused(id, deadline, stillPausing);
       }),
     resume: (id) =>
       safe(id, async () => {

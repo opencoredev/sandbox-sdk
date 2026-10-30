@@ -109,11 +109,11 @@ export interface ProcessEntry {
 const isRecord = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const fileTypes: Readonly<Record<string, EntryInfo["type"]>> = {
-  FILE_TYPE_FILE: "file",
-  FILE_TYPE_DIRECTORY: "dir",
-  FILE_TYPE_SYMLINK: "symlink",
-};
+const fileTypes: ReadonlyMap<string, EntryInfo["type"]> = new Map<string, EntryInfo["type"]>([
+  ["FILE_TYPE_FILE", "file"],
+  ["FILE_TYPE_DIRECTORY", "dir"],
+  ["FILE_TYPE_SYMLINK", "symlink"],
+]);
 
 const base64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
 const connectJson = "application/connect+json";
@@ -131,7 +131,11 @@ function parseEntry(value: JsonValue | undefined): EntryInfo | undefined {
   if (!isRecord(value) || !isString(value.path)) return undefined;
 
   const type =
-    value.isSymlink === true ? "symlink" : isString(value.type) ? fileTypes[value.type] : undefined;
+    value.isSymlink === true
+      ? "symlink"
+      : isString(value.type)
+        ? fileTypes.get(value.type)
+        : undefined;
 
   if (type === undefined) return undefined;
 

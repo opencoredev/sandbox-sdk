@@ -6,16 +6,16 @@ import type { FailedRequest, HttpFailure } from "../../http.js";
  * Connect error codes, from unary error bodies and stream end frames, as e2b's DEFAULT_ERROR_MAP reads them.
  * Codes it leaves to its generic SandboxError (already_exists, internal, ...) stay `provider`.
  */
-const connectCodes: Readonly<Record<string, ErrorCode>> = {
-  invalid_argument: "invalid_argument",
-  unauthenticated: "auth",
-  permission_denied: "auth",
-  not_found: "not_found",
-  resource_exhausted: "quota",
-  unavailable: "unavailable",
-  canceled: "timeout",
-  deadline_exceeded: "timeout",
-};
+const connectCodes: ReadonlyMap<string, ErrorCode> = new Map<string, ErrorCode>([
+  ["invalid_argument", "invalid_argument"],
+  ["unauthenticated", "auth"],
+  ["permission_denied", "auth"],
+  ["not_found", "not_found"],
+  ["resource_exhausted", "quota"],
+  ["unavailable", "unavailable"],
+  ["canceled", "timeout"],
+  ["deadline_exceeded", "timeout"],
+]);
 
 /** The envd file routes: a missing path there is `file_not_found`, not a missing sandbox. */
 export function isFileOperation(operation: string): boolean {
@@ -24,9 +24,7 @@ export function isFileOperation(operation: string): boolean {
 
 /** Maps a Connect error code. `file` turns `not_found` into `file_not_found`. */
 export function connectCode(code: string, file: boolean): ErrorCode {
-  const mapped = Object.hasOwn(connectCodes, code)
-    ? (connectCodes[code] ?? "provider")
-    : "provider";
+  const mapped = connectCodes.get(code) ?? "provider";
 
   return mapped === "not_found" && file ? "file_not_found" : mapped;
 }
@@ -40,7 +38,7 @@ export function mapE2BError(failure: HttpFailure, request: FailedRequest): Error
   const file = request.plane === "envd" && isFileOperation(request.operation);
   const code = failure.body.code;
 
-  if (request.plane === "envd" && code !== undefined && Object.hasOwn(connectCodes, code))
+  if (request.plane === "envd" && code !== undefined && connectCodes.has(code))
     return connectCode(code, file);
 
   if (failure.status === 507) return "quota";

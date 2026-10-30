@@ -103,12 +103,19 @@ export function parseSandboxBody(
   );
 }
 
+/** One page of `GET /sandboxes`. */
+export interface SandboxPage {
+  sandboxes: BoatSandbox[];
+  hasMore: boolean;
+  nextCursor?: string;
+}
+
 /** `{ sandboxes, pageInfo }` from `GET /sandboxes`. */
 export function parseSandboxPage(
   value: JsonValue | undefined,
   provider: string,
   label: string,
-): { sandboxes: BoatSandbox[]; hasMore: boolean; nextCursor?: string } {
+): SandboxPage {
   if (
     !isObject(value) ||
     value === null ||
@@ -121,7 +128,7 @@ export function parseSandboxPage(
     parseSandbox(item, provider, label),
   );
 
-  const page: unknown = "pageInfo" in value ? value.pageInfo : undefined;
+  const page = "pageInfo" in value ? value.pageInfo : undefined;
 
   const hasMore = isObject(page) && "hasMore" in page && page.hasMore === true;
 
@@ -130,7 +137,11 @@ export function parseSandboxPage(
       ? page.nextCursor
       : undefined;
 
-  return { sandboxes, hasMore, ...(next === undefined ? undefined : { nextCursor: next }) };
+  const result: SandboxPage = { sandboxes, hasMore };
+
+  if (next !== undefined) result.nextCursor = next;
+
+  return result;
 }
 
 /** What `POST /sandboxes/{sandboxId}/commands` returned. */

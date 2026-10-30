@@ -111,19 +111,19 @@ export class FreestyleApiError extends Error {
   }
 }
 
-const codes: Record<number, ErrorCode> = {
-  400: "invalid_argument",
-  401: "auth",
-  403: "auth",
-  404: "not_found",
-  402: "quota",
-  408: "timeout",
-  429: "quota",
-  500: "unavailable",
-  502: "unavailable",
-  503: "unavailable",
-  504: "timeout",
-};
+const codes: ReadonlyMap<number, ErrorCode> = new Map<number, ErrorCode>([
+  [400, "invalid_argument"],
+  [401, "auth"],
+  [403, "auth"],
+  [404, "not_found"],
+  [402, "quota"],
+  [408, "timeout"],
+  [429, "quota"],
+  [500, "unavailable"],
+  [502, "unavailable"],
+  [503, "unavailable"],
+  [504, "timeout"],
+]);
 
 /** The filesystem API answers a missing guest path with 404 NOT_FOUND too; only its message tells it from a missing VM. */
 export const missingPath = (status: number, message: string | undefined) =>
@@ -131,7 +131,7 @@ export const missingPath = (status: number, message: string | undefined) =>
 
 /** The code for a Freestyle status, as adapter errors and native calls report it. */
 export const statusCode = (status: number, message?: string): ErrorCode =>
-  missingPath(status, message) ? "file_not_found" : (codes[status] ?? "provider");
+  missingPath(status, message) ? "file_not_found" : (codes.get(status) ?? "provider");
 
 export function freestyleError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;

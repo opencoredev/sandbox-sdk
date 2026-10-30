@@ -81,6 +81,11 @@ interface UploadStatus {
   receivedBytes: number;
 }
 
+/** Where a failed request's HTTP failure is kept for the error hook to read. */
+interface FailureSlot {
+  failure?: HttpFailure;
+}
+
 const isRecord = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -220,7 +225,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
   });
 
   async function send(request: HttpRequest<FreestylePlane>): Promise<HttpResponse> {
-    const slot: { failure?: HttpFailure } = {};
+    const slot: FailureSlot = {};
 
     try {
       return await failures.run(slot, () => http.request(request));
