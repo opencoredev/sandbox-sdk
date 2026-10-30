@@ -33,6 +33,7 @@ import type {
   Preview,
 } from "../../provider.js";
 import { Redactor, SandboxError } from "../../errors.js";
+import { neverSent } from "../../http.js";
 import { defaults } from "../../run.js";
 import { isObject, isString } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
@@ -391,6 +392,19 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
     const end = Date.now() + 300_000;
     let response: Response;
 
+    // Only the create answer names the box, so once the request may have arrived, losing it leaves the outcome unknown.
+    const unknown = (what: string, cause: unknown) =>
+      new SandboxError(
+        `Upstash ${what}, so a box may exist without its ID. List sandboxes and destroy any you do not expect before retrying.`,
+        { code: "outcome_unknown", provider: "upstash", cause },
+      );
+
+    const aborted = () =>
+      new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
+        code: "aborted",
+        provider: "upstash",
+      });
+
     try {
       // No caller signal: an aborted request could still allocate a box, and only the response names it.
       response = await fetch(`${baseUrl}/v2/box${from === undefined ? "" : "/from-snapshot"}`, {
@@ -400,17 +414,25 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
         signal: AbortSignal.timeout(Math.min(config.timeout ?? 600_000, end - Date.now())),
       });
     } catch (error) {
-      // The request may have reached Upstash, and only its lost answer named the box.
-      if (error instanceof Error && error.name === "TimeoutError")
-        throw new SandboxError(
-          "Upstash did not answer the create request in time, so a box may exist without its ID. List sandboxes and destroy any you do not expect before retrying.",
-          { code: "outcome_unknown", provider: "upstash", cause: error },
-        );
-      throw error;
+      // A request that never left this process allocated nothing; any other failure may have reached Upstash.
+      if (neverSent(error)) throw error;
+      throw unknown(
+        error instanceof Error && error.name === "TimeoutError"
+          ? "did not answer the create request in time"
+          : "lost the connection after the create request was sent",
+        error,
+      );
     }
 
     if (!response.ok) throw await httpError(response);
-    const created: unknown = await response.json();
+    let created: unknown;
+
+    try {
+      // The request's timeout also bounds this read.
+      created = await response.json();
+    } catch (error) {
+      throw unknown("accepted the create request but its answer could not be read", error);
+    }
 
     if (!isCreatedBox(created))
       throw new SandboxError(
@@ -419,21 +441,33 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
       );
 
     try {
-      const value = await Box.get(created.id, {
-        apiKey,
-        baseUrl: config.baseUrl,
-        enableTelemetry: config.enableTelemetry,
-        timeout: config.timeout,
-      });
+      let value: B | undefined;
+
+      // Like the status poll below, ride out a failed read until the deadline, unless it can never succeed.
+      while (!value) {
+        try {
+          value = await Box.get(created.id, {
+            apiKey,
+            baseUrl: config.baseUrl,
+            enableTelemetry: config.enableTelemetry,
+            timeout: config.timeout,
+          });
+        } catch (error) {
+          if (
+            ["auth", "not_found"].includes(upstashError(error, created.id).code) ||
+            Date.now() >= end
+          )
+            throw error;
+
+          if (signal?.aborted) throw aborted();
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      }
 
       let status = created.status;
 
       while (status === "creating") {
-        if (signal?.aborted)
-          throw new SandboxError("Creation aborted. The caller cancelled. Retry when ready.", {
-            code: "aborted",
-            provider: "upstash",
-          });
+        if (signal?.aborted) throw aborted();
 
         if (Date.now() >= end)
           throw new Error(

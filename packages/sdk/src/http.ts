@@ -358,6 +358,10 @@ function errorCodes(cause: unknown, depth = 0): string[] {
   return [...own, ...errorCodes("cause" in cause ? cause.cause : undefined, depth + 1)];
 }
 
+/** @internal Whether a fetch rejection proves the request never left this process, so no server saw it. */
+export const neverSent = (cause: unknown) =>
+  errorCodes(cause).some((code) => unsentCodes.has(code));
+
 function isBodyInit(value: unknown): value is BodyInit {
   return (
     typeof value === "string" ||
@@ -981,7 +985,7 @@ export function createHttpClient<Plane extends string>(
               ? { kind: "timeout", sent: true }
               : (halt ?? {
                   kind: "network",
-                  sent: !errorCodes(error).some((code) => unsentCodes.has(code)),
+                  sent: !neverSent(error),
                   error,
                 });
           break;

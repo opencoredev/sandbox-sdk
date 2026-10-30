@@ -53,6 +53,11 @@ export const state = {
   hangCreate: false,
   /** Cleanup DELETEs that answer 503 before one goes through. */
   deleteFailures: 0,
+  /** How the next create answers once the box exists: "answer" in full, "reset" by dropping the connection,
+   * "malformed" with a bad body, or "stall" with a body that never finishes. "refused" fails before any box exists. */
+  createReply: "answer",
+  /** Box.get calls that fail with `status` before one succeeds. */
+  getFailures: { count: 0, status: 503 },
 };
 
 /** One mock machine. Every handle for the same box ID shares it. */
@@ -134,6 +139,11 @@ export class MockBox {
     return box;
   }
   static async get(id: string) {
+    if (state.getFailures.count > 0) {
+      state.getFailures.count--;
+      throw Object.assign(new Error("get failed"), { statusCode: state.getFailures.status });
+    }
+
     const value = state.boxes.get(id);
 
     if (!value) throw missing();
@@ -531,6 +541,11 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
         init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
       );
 
+    if (state.createReply === "refused")
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+
     const wire: Wire = JSON.parse(String(init?.body));
     const config = configOf(wire, new Headers(init?.headers).get("X-Box-Api-Key"));
     let box: MockBox;
@@ -552,6 +567,25 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
     }
 
     box.booting = { ...state.boot };
+
+    if (state.createReply === "reset")
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+      });
+
+    if (state.createReply === "malformed")
+      return new Response("{", { headers: { "Content-Type": "application/json" } });
+
+    // A real fetch's signal also aborts the body read.
+    if (state.createReply === "stall")
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason));
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
 
     return Response.json({
       ...box.data,
@@ -596,6 +630,8 @@ export async function cleanup() {
   state.hangCreate = false;
   state.deleteFailures = 0;
   state.deletes.length = 0;
+  state.createReply = "answer";
+  state.getFailures = { count: 0, status: 503 };
 }
 
 const load = async () => ({ Box: MockBox, EphemeralBox: MockEphemeralBox });
