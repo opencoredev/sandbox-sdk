@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+### Patch Changes
+
+- 4ca73cd: Internal cleanup with no API change: request bodies, headers and error fields are built explicitly instead of through conditional spreads, so an undefined header value can never be sent as the string "undefined".
+
 ## 1.0.1
 
 ### Patch Changes

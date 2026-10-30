@@ -43,12 +43,9 @@ function client(
             refreshes++;
             token = "new-token-654321";
           }),
-        ...(options.stale
-          ? {
-              stale: ({ status, body, credentials }) =>
-                options.stale!(status, body.code, credentials),
-            }
-          : undefined),
+        stale: options.stale
+          ? ({ status, body, credentials }) => options.stale!(status, body.code, credentials)
+          : undefined,
       },
     },
   });

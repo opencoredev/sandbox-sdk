@@ -212,7 +212,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
     templateID: machine.info.templateID,
     envdVersion: machine.info.envdVersion,
     envdAccessToken: machine.accessToken,
-    ...(machine.trafficToken ? { trafficAccessToken: machine.trafficToken } : undefined),
+    trafficAccessToken: machine.trafficToken || undefined,
     domain: fake.sandboxDomain,
   });
 
@@ -465,20 +465,18 @@ export async function fakeE2B(): Promise<FakeE2B> {
           envdVersion: fake.envdVersion,
           cpuCount: 2,
           memoryMB: 512,
-          ...(isBoolean(body.allow_internet_access)
-            ? { allowInternetAccess: body.allow_internet_access }
-            : undefined),
-          ...(network
+          allowInternetAccess: isBoolean(body.allow_internet_access)
+            ? body.allow_internet_access
+            : undefined,
+          network: network
             ? {
-                network: {
-                  allowOut: list(network.allowOut),
-                  denyOut: list(network.denyOut),
-                  ...(isBoolean(network.allowPublicTraffic)
-                    ? { allowPublicTraffic: network.allowPublicTraffic }
-                    : undefined),
-                },
+                allowOut: list(network.allowOut),
+                denyOut: list(network.denyOut),
+                allowPublicTraffic: isBoolean(network.allowPublicTraffic)
+                  ? network.allowPublicTraffic
+                  : undefined,
               }
-            : undefined),
+            : undefined,
         };
 
         const env = isRecord(body.envVars)
@@ -518,11 +516,12 @@ export async function fakeE2B(): Promise<FakeE2B> {
         // An empty first page, then one item per page, to exercise pagination.
         const page = Number(query.get("nextToken") ?? "0");
         const items = page === 0 ? [] : found.slice(page - 1, page);
+        const headers = { "content-type": "application/json" };
         response
-          .writeHead(200, {
-            "content-type": "application/json",
-            ...(page < found.length ? { "x-next-token": String(page + 1) } : undefined),
-          })
+          .writeHead(
+            200,
+            page < found.length ? { ...headers, "x-next-token": String(page + 1) } : headers,
+          )
           .end(
             JSON.stringify(
               items.map((machine) => ({ ...machine.info, metadata: { ...machine.info.metadata } })),
@@ -784,7 +783,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
                 : [
                     {
                       pid: proc.pid,
-                      ...(proc.tag ? { tag: proc.tag } : undefined),
+                      tag: proc.tag || undefined,
                       config: { cmd: "/bin/bash", args: proc.args },
                     },
                   ],

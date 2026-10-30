@@ -212,6 +212,18 @@ describe("Boat official SDK transport", () => {
       }
     }
   });
+  test("an unkeyed sandbox lists without a key field", async () => {
+    const box = await createSandbox(factory(), { labels: { app: "unkeyed" } });
+
+    try {
+      const [info] = await listSandboxes(factory(), { labels: { app: "unkeyed" } });
+      expect(info?.id).toBe(box.id);
+      expect(info && "key" in info).toBe(false);
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("fresh clients find metadata across pages and exclude unrelated VMs", async () => {
     const boxes = await Promise.all([
       createSandbox(factory(), { key: "first" }),

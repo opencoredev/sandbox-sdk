@@ -408,7 +408,7 @@ test.each(["vpc", "tls", "firewall", "limits", "setup"])(
         labels: {},
         network: "none",
         timeoutMs: 180000,
-        ...(kind === "setup" ? { env: { SETUP: "required" } } : undefined),
+        env: kind === "setup" ? { SETUP: "required" } : undefined,
       }),
     ).rejects.toMatchObject({ code: kind === "setup" ? "provider" : "unsupported" });
     expect(requests.at(-1)).toBe("DELETE /v5/vms/offline");

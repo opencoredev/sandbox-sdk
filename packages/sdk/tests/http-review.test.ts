@@ -5,6 +5,7 @@ import { SandboxError } from "../src/errors.js";
 import { createHttpClient, type StaleVerdict } from "../src/http.js";
 import { createNativeApi } from "../src/native.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 let server: FakeServer;
 let other: FakeServer;
@@ -18,19 +19,6 @@ afterEach(async () => {
   await server.close();
   await other.close();
 });
-
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
 
 const text = (error: SandboxError) => `${error.message} ${error.hint} ${String(error.cause)}`;
 
@@ -112,7 +100,7 @@ describe("caller credentials are redacted", () => {
     });
     const native = createNativeApi({ http: client(), placeholder: "sandboxId", sandboxId: "sb" });
 
-    const error = await failure(
+    const error = await rejection(
       native.request("POST", "/x", {
         body: {},
         headers: {
@@ -161,7 +149,7 @@ describe("a stale-credential refresh never resends a write that may have run", (
     server.on("POST /exec", { status: 503, json: {} }, { json: { ran: "twice" } });
     const { http, refreshes } = stale("unsure");
 
-    const error = await failure(
+    const error = await rejection(
       http.json({ method: "POST", path: "/exec", body: { command: "rm -rf build" } }),
     );
 
@@ -178,7 +166,7 @@ describe("a stale-credential refresh never resends a write that may have run", (
     server.on("POST /search", { status: 503, json: {} }, { json: [] });
     const { http } = stale("unsure");
     expect(
-      (await failure(http.json({ method: "POST", path: "/search", body: {}, readOnly: true })))
+      (await rejection(http.json({ method: "POST", path: "/search", body: {}, readOnly: true })))
         .code,
     ).toBe("unavailable");
     expect(server.calls("POST /search")).toHaveLength(1);
@@ -217,7 +205,7 @@ describe("plane callbacks are bounded by the deadline", () => {
     });
 
     const started = Date.now();
-    expect((await failure(http.json({ method: "GET", path: "/x", timeoutMs: 100 }))).code).toBe(
+    expect((await rejection(http.json({ method: "GET", path: "/x", timeoutMs: 100 }))).code).toBe(
       "timeout",
     );
     expect(Date.now() - started).toBeLessThan(2_000);
@@ -236,7 +224,7 @@ describe("plane callbacks are bounded by the deadline", () => {
     setTimeout(() => controller.abort(), 50);
     expect(
       (
-        await failure(
+        await rejection(
           http.json({ method: "GET", path: "/x", signal: controller.signal, timeoutMs: 60_000 }),
         )
       ).code,
@@ -253,7 +241,7 @@ describe("plane callbacks are bounded by the deadline", () => {
     });
 
     expect(
-      (await failure(http.stream({ method: "GET", path: "/logs", startupTimeoutMs: 100 }))).code,
+      (await rejection(http.stream({ method: "GET", path: "/logs", startupTimeoutMs: 100 }))).code,
     ).toBe("timeout");
     expect(server.requests).toHaveLength(0);
   });
@@ -281,7 +269,7 @@ describe("plane callbacks are bounded by the deadline", () => {
     server.on("POST /x", { json: {} });
     expect(
       (
-        await failure(
+        await rejection(
           http.json({ method: "POST", path: "/x", body: {}, signal: controller.signal }),
         )
       ).code,

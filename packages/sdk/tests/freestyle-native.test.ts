@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, expectTypeOf, test, vi } from "vitest";
 import type { Freestyle, Vm } from "freestyle";
-import { SandboxError, type NativeApi } from "../src/index.js";
+import type { NativeApi } from "../src/index.js";
 import { freestyle, type FreestyleNative } from "../src/providers/freestyle/index.js";
+import { rejection } from "./rejection.js";
 
 const base = "http://freestyle.test";
 const requests: { method: string; url: string; headers: Headers }[] = [];
@@ -67,19 +68,6 @@ async function connected(): Promise<{
   return { provider, native: provider.native("vm-1") };
 }
 
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
-
 test("box.native fills {vmId}, sends the key and returns JSON", async () => {
   const { native } = await connected();
   expect(native.sandboxId).toBe("vm-1");
@@ -105,7 +93,7 @@ test("box.native needs a connected VM and is stable per VM", async () => {
 test("provider.api has no VM bound: placeholders need params, which are URI-encoded", async () => {
   const provider = freestyle({ baseUrl: base, apiKey: "fs-key-123456" });
   expect(provider.api.sandboxId).toBeUndefined();
-  expect((await failure(provider.api.request("GET", "/v5/vms/{vmId}"))).code).toBe(
+  expect((await rejection(provider.api.request("GET", "/v5/vms/{vmId}"))).code).toBe(
     "invalid_argument",
   );
   expect(requests).toHaveLength(0);
@@ -129,7 +117,7 @@ test("fetch returns the raw Response for bytes; errors map like adapter calls an
 
   expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("hi");
 
-  const missing = await failure(
+  const missing = await rejection(
     native.fetch("GET", "/v5/vms/{vmId}/fs/read", { query: { path: "/missing" } }),
   );
 
@@ -138,7 +126,7 @@ test("fetch returns the raw Response for bytes; errors map like adapter calls an
     provider: "freestyle",
     sandboxId: "vm-1",
   });
-  const unknown = await failure(native.request("POST", "/v5/nope", { body: {} }));
+  const unknown = await rejection(native.request("POST", "/v5/nope", { body: {} }));
   expect(unknown.code).toBe("not_found");
   expect(unknown.message).toContain("NO_ROUTE");
   expect(`${unknown.message} ${String(unknown.cause)}`).not.toContain("fs-key-123456");
@@ -152,7 +140,7 @@ test("a provider message that echoes the API key keeps the message but not the k
     ),
   );
   const provider = freestyle({ baseUrl: base, apiKey: "fs-key-123456" });
-  const error = await failure(provider.api.request("GET", "/v5/vms"));
+  const error = await rejection(provider.api.request("GET", "/v5/vms"));
   expect(error.code).toBe("auth");
   expect(error.message).toContain("is revoked");
   expect(`${error.message} ${String(error.cause)}`).not.toContain("fs-key-123456");
@@ -160,10 +148,13 @@ test("a provider message that echoes the API key keeps the message but not the k
 
 test("unknown planes are invalid_argument and other origins get no credentials", async () => {
   const { native } = await connected();
-  // @ts-expect-error Freestyle has one plane
-  expect((await failure(native.request("GET", "/v5/vms/{vmId}", { plane: "toolbox" }))).code).toBe(
-    "invalid_argument",
-  );
+
+  const unknownPlane = native.request("GET", "/v5/vms/{vmId}", {
+    // @ts-expect-error Freestyle has one plane
+    plane: "toolbox",
+  });
+
+  expect((await rejection(unknownPlane)).code).toBe("invalid_argument");
   await (await native.fetch("GET", "https://elsewhere.test/hook")).text();
   expect(requests.at(-1)?.url).toBe("https://elsewhere.test/hook");
   expect(requests.at(-1)?.headers.get("authorization")).toBeNull();
@@ -191,11 +182,11 @@ test("provider.api.sdk returns the official client", async () => {
 test("sdk(load) rejects a module without Freestyle, and a failed import, with the package name", async () => {
   const { native } = await connected();
   // @ts-expect-error not the freestyle module
-  const wrong = await failure(native.sdk(async () => ({ Other: class {} })));
+  const wrong = await rejection(native.sdk(async () => ({ Other: class {} })));
   expect(wrong.code).toBe("invalid_argument");
   expect(wrong.message).toContain('import("freestyle")');
 
-  const missing = await failure(
+  const missing = await rejection(
     native.sdk(() =>
       Promise.reject(
         Object.assign(new Error("Cannot find package 'freestyle'"), {

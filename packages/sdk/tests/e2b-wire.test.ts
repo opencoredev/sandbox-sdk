@@ -19,6 +19,7 @@ import { connectEnvelope, streamFault } from "../src/streams.js";
 import { e2b } from "../src/providers/e2b/index.js";
 import { e2bError, mapE2BError } from "../src/providers/e2b/errors.js";
 import { fakeServer, pieces, type FakeServer, type RecordedRequest } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 let server: FakeServer;
 const saved = { api: process.env.E2B_API_URL, sandbox: process.env.E2B_SANDBOX_URL };
@@ -116,19 +117,6 @@ async function attached(options: Parameters<typeof e2b>[0] = {}) {
   return provider;
 }
 
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
-
 const exec = (provider: ReturnType<typeof e2b>, chunks: string[] = [], timeoutMs = 5_000) =>
   provider.exec("sb1", {
     command: "work",
@@ -146,7 +134,7 @@ describe("errors", () => {
       kind: "status" as const,
       status,
       headers: new Headers(),
-      body: { text: "", json: undefined, ...(code === undefined ? undefined : { code }) },
+      body: { text: "", json: undefined, code },
     });
 
     const api = { method: "GET" as const, plane: "api", operation: "GET /sandboxes/{id}" };
@@ -194,7 +182,7 @@ describe("errors", () => {
       status: 401,
       json: { code: 401, message: `secret-body-text ${key}` },
     });
-    const error = await failure(e2b({ apiKey: key }).create({ labels: {} }));
+    const error = await rejection(e2b({ apiKey: key }).create({ labels: {} }));
     expect(error).toMatchObject({
       code: "auth",
       provider: "e2b",
@@ -212,17 +200,17 @@ describe("errors", () => {
       status: 404,
       json: { code: 404, message: "sandbox not found" },
     });
-    expect((await failure(e2b({ apiKey: key }).connect("gone"))).code).toBe("not_found");
+    expect((await rejection(e2b({ apiKey: key }).connect("gone"))).code).toBe("not_found");
     const provider = await attached();
     server.on("GET /files", { status: 404, json: { code: 404, message: "file not found" } });
-    expect((await failure(provider.files.read("sb1", "/nope"))).code).toBe("file_not_found");
+    expect((await rejection(provider.files.read("sb1", "/nope"))).code).toBe("file_not_found");
     server.on("POST /filesystem.Filesystem/Stat", {
       status: 404,
       json: { code: "not_found", message: "no such file" },
     });
-    expect((await failure(provider.files.stat("sb1", "/nope"))).code).toBe("file_not_found");
+    expect((await rejection(provider.files.stat("sb1", "/nope"))).code).toBe("file_not_found");
     server.on("POST /files", { status: 507, json: { code: 507, message: "no space left" } });
-    expect((await failure(provider.files.write("sb1", "/tmp/x", new Uint8Array([1])))).code).toBe(
+    expect((await rejection(provider.files.write("sb1", "/tmp/x", new Uint8Array([1])))).code).toBe(
       "quota",
     );
   });
@@ -234,7 +222,7 @@ describe("errors", () => {
       body: "The sandbox was not found",
       headers: { "content-type": "text/plain" },
     });
-    expect(await failure(provider.files.list("sb1", "/tmp"))).toMatchObject({
+    expect(await rejection(provider.files.list("sb1", "/tmp"))).toMatchObject({
       code: "unavailable",
       retryable: true,
     });
@@ -268,7 +256,7 @@ describe("errors", () => {
     expect(server.calls("GET /sandboxes/{id}")).toHaveLength(2);
     expect(server.calls("POST /v2/sandboxes/{id}/connect")).toHaveLength(2);
     server.on("POST /v2/sandboxes", { status: 503, headers: { "retry-after": "0" } });
-    expect((await failure(e2b({ apiKey: key }).create({ labels: {} }))).code).toBe("unavailable");
+    expect((await rejection(e2b({ apiKey: key }).create({ labels: {} }))).code).toBe("unavailable");
     expect(server.calls("POST /v2/sandboxes")).toHaveLength(1);
   });
 });
@@ -319,7 +307,7 @@ describe("command streams", () => {
       "POST /process.Process/Start",
       connectStream([concat(start(7), data.subarray(0, 9))]),
     );
-    const error = await failure(exec(provider));
+    const error = await rejection(exec(provider));
     expect(error.code).toBe("unavailable");
     expect(streamFault(error)).toBe("truncated");
   });
@@ -327,7 +315,7 @@ describe("command streams", () => {
   test("a stream without its end frame is truncated, even after the end event", async () => {
     const provider = await attached();
     server.on("POST /process.Process/Start", connectStream([concat(start(7), out("ok"), exit())]));
-    expect(streamFault(await failure(exec(provider)))).toBe("truncated");
+    expect(streamFault(await rejection(exec(provider)))).toBe("truncated");
   });
 
   test("an end frame error before start is envd rejecting the call: mapped, and nothing to clean up", async () => {
@@ -338,7 +326,7 @@ describe("command streams", () => {
         frame({ error: { code: "invalid_argument", message: "cwd /nope: secret detail" } }, true),
       ]),
     );
-    const error = await failure(exec(provider));
+    const error = await rejection(exec(provider));
     expect(error.code).toBe("invalid_argument");
     expect(error.message).not.toContain("secret detail");
     expect(server.calls("POST /process.Process/List")).toHaveLength(0);
@@ -356,7 +344,7 @@ describe("command streams", () => {
         ),
       ]),
     );
-    expect((await failure(exec(provider))).code).toBe("timeout");
+    expect((await rejection(exec(provider))).code).toBe("timeout");
   });
 
   test("a response that is not a Connect stream is a provider error", async () => {
@@ -365,7 +353,7 @@ describe("command streams", () => {
       body: "<html>proxy</html>",
       headers: { "content-type": "text/html" },
     });
-    expect((await failure(exec(provider))).code).toBe("provider");
+    expect((await rejection(exec(provider))).code).toBe("provider");
   });
 
   test("a mid-stream disconnect reconnects by pid without replaying output", async () => {
@@ -470,7 +458,7 @@ describe("command streams", () => {
         status: 404,
         json: { code: "not_found", message: "no process" },
       });
-    expect((await failure(exec(provider))).code).toBe("outcome_unknown");
+    expect((await rejection(exec(provider))).code).toBe("outcome_unknown");
     const tag = tagOf(server.calls("POST /process.Process/Start")[0]!);
     expect(
       server
@@ -517,7 +505,7 @@ describe("native API", () => {
       json: { code: "not_found", message: `process 9 not found (token ${token})` },
     });
 
-    const error = await failure(
+    const error = await rejection(
       provider.native("sb1").request("POST", "/process.Process/SendSignal", {
         plane: "envd",
         body: { process: { pid: 9 } },
@@ -535,10 +523,10 @@ describe("native API", () => {
     expect(provider.api.sandboxId).toBeUndefined();
     expect(await provider.api.request("GET", "/templates")).toEqual([{ templateID: "base" }]);
     expect(server.requests[0]?.headers["x-api-key"]).toBe(key);
-    expect((await failure(provider.api.request("GET", "/sandboxes/{sandboxId}"))).code).toBe(
+    expect((await rejection(provider.api.request("GET", "/sandboxes/{sandboxId}"))).code).toBe(
       "invalid_argument",
     );
-    expect((await failure(provider.api.request("GET", "/health", { plane: "envd" }))).code).toBe(
+    expect((await rejection(provider.api.request("GET", "/health", { plane: "envd" }))).code).toBe(
       "invalid_argument",
     );
     expect(server.requests).toHaveLength(1);
@@ -566,7 +554,7 @@ describe("native API", () => {
   test("sdk(load) with a module missing the export is invalid_argument naming the package", async () => {
     const provider = await attached();
     // @ts-expect-error the module has no Sandbox class
-    const error = await failure(provider.native("sb1").sdk(async () => ({ Other: class {} })));
+    const error = await rejection(provider.native("sb1").sdk(async () => ({ Other: class {} })));
     expect(error.code).toBe("invalid_argument");
     expect(error.message).toContain('import("e2b")');
   });
