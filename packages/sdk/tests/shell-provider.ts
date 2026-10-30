@@ -5,6 +5,7 @@ import { join, posix } from "node:path";
 import { spawn } from "node:child_process";
 import type { Provider, SandboxInfo, FileInfo } from "../src/provider.js";
 import { SandboxError } from "../src/index.js";
+import { guestInputVariable, mapGuestInput } from "./guest-input.js";
 
 export async function shellProvider(): Promise<Provider> {
   const root = await fs.mkdtemp(join(tmpdir(), "sdk-shell-"));
@@ -98,6 +99,10 @@ export async function shellProvider(): Promise<Provider> {
         const env = { ...process.env, ...environment, ...input.env };
 
         if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = rewrite(env.GIT_INDEX_FILE);
+        const guest = env[guestInputVariable] !== undefined;
+
+        if (env[guestInputVariable])
+          env[guestInputVariable] = mapGuestInput(env[guestInputVariable], mapped);
 
         const child = spawn("sh", ["-c", rewrite(input.command)], {
           cwd: mapped(input.cwd),
@@ -127,7 +132,7 @@ export async function shellProvider(): Promise<Provider> {
           input.onChunk({ stream: "stderr", text: data.toString() }),
         );
         child.stdin.on("error", () => {});
-        child.stdin.end(input.stdin);
+        child.stdin.end(guest && input.stdin ? mapGuestInput(input.stdin, mapped) : input.stdin);
         child.on("error", reject);
         child.on("close", (code) => {
           clearTimeout(timer);

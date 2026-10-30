@@ -4,7 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
 import type { Provider, FileInfo, WriteOptions } from "./provider.js";
-import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, type ErrorCode, type Redactor } from "./errors.js";
+import { neverSent } from "./http.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
 import { isObject, isString } from "./shared/narrow.js";
@@ -87,9 +88,10 @@ function isContent(
   return isString(value) || value instanceof Uint8Array;
 }
 
+const globParts = (glob: string) => glob.split(/(\*\*\/|\*\*|\*|\?)/);
+
 export function globMatch(path: string, glob: string) {
-  const pattern = glob
-    .split(/(\*\*\/|\*\*|\*|\?)/)
+  const pattern = globParts(glob)
     .map((part) =>
       part === "**/"
         ? "(?:.*/)?"
@@ -106,6 +108,157 @@ export function globMatch(path: string, glob: string) {
   return (
     new RegExp(`^${pattern}$`).test(path) ||
     (!glob.includes("/") && new RegExp(`^${pattern}$`).test(posix.basename(path)))
+  );
+}
+
+// The same pattern for Python's re.fullmatch over UTF-16 code units: `.` excludes JS line terminators and every literal is a \u escape.
+function pythonGlob(glob: string) {
+  const any = "[^\\n\\r\\u2028\\u2029]";
+
+  const literal = (text: string) =>
+    Array.from(
+      { length: text.length },
+      (_, index) => `\\u${text.charCodeAt(index).toString(16).padStart(4, "0")}`,
+    ).join("");
+
+  return globParts(glob)
+    .map((part) =>
+      part === "**/"
+        ? `(?:${any}*/)?`
+        : part === "**"
+          ? `${any}*`
+          : part === "*"
+            ? "[^/]*"
+            : part === "?"
+              ? any
+              : literal(part),
+    )
+    .join("");
+}
+
+// Guest scripts are fixed source: every caller value (paths, globs, limits, user text) arrives as one
+// JSON object in the environment, never in the command or argv. Environment values travel with the exec
+// request, while stdin costs extra round trips on E2B and Upstash; input over 32 KiB goes on stdin, since
+// one variable must stay under the kernel's 128 KiB limit. Exit 70 means "use the RPC path": it is raised
+// before any change, so the fallback reproduces each provider's own errors exactly.
+// edit: read and count matches, then write the way the adapter's own write does. "in-place" rewrites the
+// same inode (owner, mode and links stay); if that write fails, the original bytes go back before exit 70,
+// and 71 means they could not. "replace" writes a sibling temp file with the original owner and mode and
+// renames it over the target; hard-linked files stay in place (70). Symlinks resolve to their target.
+const editScript = `import json,os,stat,sys
+try:
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read());p=os.path.realpath(a["path"]);f=a["find"].encode();r=a["replace"].encode();w=a["write"]
+ s=os.stat(p)
+ if not stat.S_ISREG(s.st_mode) or (w!="in-place" and s.st_nlink>1):sys.exit(70)
+ with open(p,"rb") as h:d=h.read()
+except Exception:sys.exit(70)
+m=[];n=1;q=0;i=d.find(f)
+while i>=0:n+=d.count(b"\\n",q,i);q=i;m.append(n);i=d.find(f,i+1)
+if len(m)!=1:print(" ".join(map(str,m)));sys.exit(3)
+i=d.find(f);o=d[:i]+r+d[i+len(f):]
+def put(fd,b):
+ os.lseek(fd,0,0);v=memoryview(b)
+ while v:v=v[os.write(fd,v):]
+ os.ftruncate(fd,len(b))
+if w=="in-place":
+ try:fd=os.open(p,os.O_WRONLY)
+ except Exception:sys.exit(70)
+ try:put(fd,o)
+ except Exception:
+  try:put(fd,d)
+  except Exception:sys.exit(71)
+  sys.exit(70)
+ sys.exit(0)
+t="%s/.%s.%s.sdk-edit"%(os.path.dirname(p),os.path.basename(p),os.urandom(6).hex())
+try:fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+except Exception:sys.exit(70)
+try:
+ with os.fdopen(fd,"wb") as h:h.write(o)
+ if (s.st_uid,s.st_gid)!=(os.geteuid(),os.getegid()):os.chown(t,s.st_uid,s.st_gid)
+ os.chmod(t,stat.S_IMODE(s.st_mode));os.rename(t,p)
+except Exception:
+ os.unlink(t);sys.exit(70)`;
+
+// search: list the whole tree first in the adapter's list order (lstat types, like the RPC walk), then
+// read regular files in that order and print [path, line, base64 line] for each line holding the query
+// bytes, up to the limit. The glob arrives as a regular expression in the input and is only compiled.
+const searchScript = `import base64,json,os,re,stat,sys
+def u(s):
+ if all(c<="\\uffff" for c in s):return s
+ b=s.encode("utf-16-le","surrogatepass");return "".join(chr(int.from_bytes(b[i:i+2],"little")) for i in range(0,len(b),2))
+files=[]
+def walk(d,rel):
+ names=os.listdir(d)
+ for b in sorted(names) if order=="name" else names:
+  p=os.path.join(d,b);s=os.lstat(p);name=b.decode("utf-8","replace");r=rel+name
+  if stat.S_ISREG(s.st_mode) and (g is None or g.fullmatch(u(r)) or (base and g.fullmatch(u(name)))):files.append((p,os.path.join(root,r)))
+  elif stat.S_ISDIR(s.st_mode):walk(p,r+"/")
+try:
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read())
+ root=a["root"];q=a["query"].encode();g=re.compile(a["pattern"]) if a["pattern"] else None;base=a["base"]is True;mx=int(a["max"]);order=a["order"]
+ walk(os.fsencode(root),"");n=0
+ for p,shown in files:
+  with open(p,"rb") as h:lines=h.read().split(b"\\n")
+  for i,line in enumerate(lines):
+   if q in line:
+    print(json.dumps([shown,i+1,base64.b64encode(line).decode()]));n+=1
+    if n>=mx:sys.exit(0)
+except Exception:sys.exit(70)`;
+
+// Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
+const byteExact = (text: string) => !/\p{Cs}|[\uFEFF\uFFFD]/u.test(text);
+
+// A path with a lone surrogate names different bytes in the guest than through the RPC path.
+const wellFormed = (text: string) => !/\p{Cs}/u.test(text);
+
+/** The one command a guest script runs as. It holds no caller value. */
+const python = (script: string) => `python3 -I -S -c ${quote(script)}`;
+
+/** Edit input: the target, the exact text and the adapter's write semantics. */
+interface EditInput {
+  path: string;
+  find: string;
+  replace: string;
+  write: "in-place" | "replace";
+}
+
+/** Search input: `pattern` is the glob as a Python regular expression, empty for none. */
+interface SearchInput {
+  root: string;
+  query: string;
+  pattern: string;
+  base: boolean;
+  max: number;
+  order: "name" | "directory";
+}
+
+// Refusals an adapter reports before anything starts in the guest.
+const refusedCodes = new Set<ErrorCode>([
+  "auth",
+  "invalid_argument",
+  "unsupported",
+  "quota",
+  "not_found",
+]);
+
+/** Whether an exec rejection proves the command never started: refused up front, or never sent. */
+const neverRan = (cause: unknown) =>
+  neverSent(cause) || (cause instanceof SandboxError && refusedCodes.has(cause.code));
+
+const editFailed = (path: string, lines: number[]) =>
+  new SandboxError(
+    `Edit failed at ${path}. ${lines.length ? `Matches on lines ${lines.join(", ")}` : "Text not found"}. Supply a unique exact match.`,
+    { code: lines.length ? "edit_not_unique" : "edit_not_found" },
+  );
+
+/** One guest search row: the shown path, its 1-based line, and the line's bytes in base64. */
+function isSearchRow(value: unknown): value is [string, number, string] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    isString(value[0]) &&
+    Number.isSafeInteger(value[1]) &&
+    isString(value[2])
   );
 }
 
@@ -146,6 +299,64 @@ export function makeFiles(
         "File transfer failed. The remote archive command failed. Ensure tar is installed and paths are accessible.",
         { code: "provider" },
       );
+  }
+
+  // One guest round trip. A guest without python3 (126/127) uses the RPC paths from then on; any
+  // other failure before the guest commits a change falls back for this call only.
+  let guestPython = provider.name !== "memory";
+
+  // A stopped guest edit may already have renamed its file, so only read-only calls fall back after one.
+  async function guest(
+    script: string,
+    value: EditInput | SearchInput,
+    mutates: boolean,
+  ): Promise<{ exitCode: number; stdout: string }> {
+    if (!guestPython) return { exitCode: 70, stdout: "" };
+    let stdout = "";
+    const input = JSON.stringify(value);
+    const inline = Buffer.byteLength(input) <= 32_768;
+    const accepts = (await fs.guestInput?.(id)) ?? "stdin";
+
+    if (accepts === "none" || (accepts === "env" && !inline)) return { exitCode: 70, stdout: "" };
+
+    let result: Awaited<ReturnType<Provider["exec"]>>;
+
+    try {
+      result = await provider.exec(id, {
+        command: python(script),
+        cwd: "/",
+        env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" },
+        stdin: inline ? undefined : input,
+        timeoutMs: 120_000,
+        onChunk(chunk) {
+          if (chunk.stream === "stdout") stdout += chunk.text;
+        },
+      });
+    } catch (error) {
+      // An edit may have committed before a timeout, a cut stream or a lost answer, so a retry could apply it twice.
+      if (!mutates || neverRan(error)) throw error;
+      throw new SandboxError(
+        "File edit outcome unknown. The guest command may have run before the call failed. Read the file to check its state before retrying.",
+        {
+          code: "outcome_unknown",
+          provider: provider.name,
+          sandboxId: id,
+          cause: redactor.error(error, provider.name, id),
+        },
+      );
+    }
+
+    if (result.timedOut || result.exitCode === null || result.exitCode >= 128) {
+      if (!mutates) return { exitCode: 70, stdout: "" };
+      throw new SandboxError(
+        "File edit outcome unknown. The guest command was stopped before it reported. Read the file to check its state before retrying.",
+        { code: "outcome_unknown" },
+      );
+    }
+
+    if (result.exitCode === 126 || result.exitCode === 127) guestPython = false;
+
+    return { exitCode: result.exitCode, stdout };
   }
 
   const safe = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -462,6 +673,28 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     edit: (path, { find, replace }) =>
       safe(async () => {
         if (!find) invalid("find cannot be empty");
+
+        const dest = pathOf(path);
+
+        if (fs.editInGuest && byteExact(find) && wellFormed(replace) && wellFormed(dest)) {
+          const { exitCode, stdout } = await guest(
+            editScript,
+            { path: dest, find, replace, write: fs.editInGuest },
+            true,
+          );
+
+          if (exitCode === 0) return;
+
+          if (exitCode === 3)
+            throw editFailed(path, stdout.trim() ? stdout.trim().split(" ").map(Number) : []);
+
+          if (exitCode === 71)
+            throw new SandboxError(
+              `File edit outcome unknown at ${path}. Writing the file failed and its original contents could not be restored. Read the file to check its state before retrying.`,
+              { code: "outcome_unknown" },
+            );
+        }
+
         const text = await read(path);
         const matches: number[] = [];
         let offset = text.indexOf(find);
@@ -471,15 +704,9 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           offset = text.indexOf(find, offset + 1);
         }
 
-        if (matches.length !== 1)
-          throw new SandboxError(
-            `Edit failed at ${path}. ${matches.length ? `Matches on lines ${matches.join(", ")}` : "Text not found"}. Supply a unique exact match.`,
-            { code: matches.length ? "edit_not_unique" : "edit_not_found" },
-          );
-        await write(
-          path,
-          text.replace(find, () => replace),
-        );
+        if (matches.length !== 1) throw editFailed(path, matches);
+        // The file exists, so its parent does too: write without the mkdir.
+        await fs.write(id, dest, new TextEncoder().encode(text.replace(find, () => replace)));
       }),
     upload: (source, target, options) =>
       safe(async () => {
@@ -595,6 +822,58 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         const max = options.maxMatches ?? 200;
 
         if (!Number.isSafeInteger(max) || max < 1) invalid("maxMatches must be positive");
+
+        const root = pathOf(options.path);
+
+        // An empty query also matches the empty tail after a final newline, and no line holds a newline: keep the RPC walk for both.
+        // The guest walks in the adapter's list order, so maxMatches stops at the same files; without one, keep the RPC walk.
+        if (
+          fs.listOrder &&
+          query &&
+          !query.includes("\n") &&
+          byteExact(query) &&
+          wellFormed(root)
+        ) {
+          const glob = options.glob ?? "";
+
+          const { exitCode, stdout } = await guest(
+            searchScript,
+            {
+              root,
+              query,
+              pattern: glob && pythonGlob(glob),
+              base: glob !== "" && !glob.includes("/"),
+              max,
+              order: fs.listOrder,
+            },
+            false,
+          );
+
+          if (exitCode === 0) {
+            for (const line of stdout.split("\n")) {
+              if (!line) continue;
+              const row: unknown = JSON.parse(line);
+
+              if (!isSearchRow(row)) {
+                result.length = 0;
+                break;
+              }
+
+              const text = new TextDecoder("utf-8", { ignoreBOM: row[1] !== 1 }).decode(
+                Buffer.from(row[2], "base64"),
+              );
+
+              if (!text.includes(query)) {
+                result.length = 0;
+                break;
+              }
+
+              result.push({ path: row[0], line: row[1], text: redactor.text(text) });
+            }
+
+            if (result.length || !stdout) return result;
+          }
+        }
 
         for (const entry of await list(options.path, { recursive: true, glob: options.glob }))
           if (entry.type === "file") {

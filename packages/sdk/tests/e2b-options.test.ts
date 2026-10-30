@@ -2,6 +2,7 @@ import { vi, test, expect, afterAll } from "vitest";
 import { fakeE2B } from "./e2b-fake.js";
 import { e2b } from "../src/providers/e2b/index.js";
 import { createSandbox } from "../src/index.js";
+import { stat } from "node:fs/promises";
 
 const fake = await fakeE2B();
 const { calls } = fake;
@@ -177,5 +178,75 @@ test("an envd older than the gates fails the way the SDK does", async () => {
     await expect(box.run("cat", { stdin: "x" })).rejects.toMatchObject({ code: "unsupported" });
   } finally {
     fake.envdVersion = "0.10.0";
+  }
+});
+
+test("guest edit and search keep to what the sandbox's envd can take", async () => {
+  const big = "b".repeat(40_000);
+  const guestStarts = () => fake.starts.filter((script) => script.includes("python3 -I -S")).length;
+
+  // 0.5.2 and later close stdin: input over 32 KiB goes to the guest on stdin.
+  const current = await createSandbox(e2b({ apiKey: "mock" }));
+
+  try {
+    await current.files.write("a.txt", "head\nmarker\ntail\n");
+    const before = guestStarts();
+    await current.files.edit("a.txt", { find: "marker", replace: big });
+    expect(guestStarts()).toBe(before + 1);
+    expect(await current.files.read("a.txt")).toBe(`head\n${big}\ntail\n`);
+  } finally {
+    await current.destroy();
+  }
+
+  for (const [version, small] of [
+    // Stdin cannot close: small input still runs in the guest, larger input uses the RPC path.
+    ["0.5.0", 1],
+    // Every command needs stdin open: nothing runs in the guest.
+    ["0.2.0", 0],
+  ] as const) {
+    fake.envdVersion = version;
+
+    try {
+      const box = await createSandbox(e2b({ apiKey: "mock" }));
+
+      try {
+        await box.files.write("a.txt", "head\nmarker\ntail\n");
+        const before = guestStarts();
+        await box.files.edit("a.txt", { find: "marker", replace: big });
+        expect(await box.files.search(big)).toEqual([
+          { path: "/workspace/a.txt", line: 2, text: big },
+        ]);
+        expect(guestStarts()).toBe(before);
+        await box.files.edit("a.txt", { find: "head", replace: "top" });
+        expect(guestStarts()).toBe(before + small);
+        expect(await box.files.read("a.txt")).toBe(`top\n${big}\ntail\n`);
+        expect(fake.machines.has(box.id)).toBe(true);
+      } finally {
+        await box.destroy();
+      }
+    } finally {
+      fake.envdVersion = "0.10.0";
+    }
+  }
+});
+
+test("an E2B guest edit rewrites the file in place, as envd's own write does", async () => {
+  const box = await createSandbox(e2b({ apiKey: "mock" }));
+
+  try {
+    await box.files.write("a.txt", "one\ntwo\n", { mode: 0o640 });
+    const host = fake.machines.get(box.id)?.mapped("/workspace/a.txt") ?? "";
+    const { ino } = await stat(host);
+    const before = fake.starts.length;
+    await box.files.edit("a.txt", { find: "two", replace: "2" });
+    // The edit was one guest command, and the file kept its inode and mode.
+    expect(
+      fake.starts.slice(before).filter((script) => script.includes("python3 -I -S")),
+    ).toHaveLength(1);
+    expect((await stat(host)).ino).toBe(ino);
+    expect((await stat(host)).mode & 0o7777).toBe(0o640);
+    expect(await box.files.read("a.txt")).toBe("one\n2\n");
+  } finally {
+    await box.destroy();
   }
 });

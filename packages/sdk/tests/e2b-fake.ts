@@ -17,6 +17,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ServerResponse } from "node:http";
 import { connectEnvelope } from "../src/streams.js";
 import { fakeServer, type FakeServer, type RecordedRequest } from "./http-fake.js";
+import { guestInputVariable, mapGuestInput } from "./guest-input.js";
 
 export interface CreateCall {
   template: string;
@@ -83,6 +84,8 @@ export class FakeProcess {
   readonly log: Message[] = [];
   readonly listeners = new Set<(message: Message) => void>();
   done = false;
+  /** Stdin of a guest file command, held until CloseStdin so its JSON paths can be mapped. */
+  guestStdin?: Buffer[];
   readonly exited: Promise<void>;
   constructor(
     readonly child: ChildProcess,
@@ -334,6 +337,11 @@ export async function fakeE2B(): Promise<FakeE2B> {
         if (value) env[name] = machine.rewrite(value);
       }
 
+      const guest = env[guestInputVariable] !== undefined;
+
+      if (env[guestInputVariable])
+        env[guestInputVariable] = mapGuestInput(env[guestInputVariable], machine.mapped);
+
       const child = spawn("/bin/bash", ["-l", "-c", machine.rewrite(script)], {
         cwd: machine.mapped(cwd),
         env,
@@ -343,6 +351,8 @@ export async function fakeE2B(): Promise<FakeE2B> {
 
       const proc = new FakeProcess(child, tag, ["-l", "-c", script], machine, () => fake.fragment);
       machine.processes.set(proc.pid, proc);
+
+      if (guest) proc.guestStdin = [];
 
       if (message.stdin !== true) child.stdin?.end();
 
@@ -798,8 +808,16 @@ export async function fakeE2B(): Promise<FakeE2B> {
           } else proc.child.kill("SIGTERM");
         } else if (method === "SendInput") {
           const input = isRecord(message.input) ? message.input : {};
-          proc.child.stdin?.write(Buffer.from(String(input.stdin ?? ""), "base64"));
-        } else if (method === "CloseStdin") proc.child.stdin?.end();
+          const bytes = Buffer.from(String(input.stdin ?? ""), "base64");
+
+          if (proc.guestStdin) proc.guestStdin.push(bytes);
+          else proc.child.stdin?.write(bytes);
+        } else if (method === "CloseStdin")
+          proc.child.stdin?.end(
+            proc.guestStdin
+              ? mapGuestInput(Buffer.concat(proc.guestStdin).toString(), machine.mapped)
+              : undefined,
+          );
         else {
           json(response, 404, { code: "unimplemented", message: "no such method" });
 

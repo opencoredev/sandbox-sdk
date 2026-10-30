@@ -13,8 +13,9 @@ import type {
   ExecSessionHandle,
   ExecSessionOptions,
   FileStat,
+  NetworkPolicy,
 } from "@upstash/box";
-import { isString } from "../src/shared/narrow.js";
+import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import {
   createUpstashProvider,
   type BoxHandleConfig,
@@ -25,6 +26,7 @@ import {
   type UpstashOptions,
 } from "../src/providers/upstash/provider.js";
 import type { Provider } from "../src/provider.js";
+import { guestInputVariable, mapGuestInput } from "./guest-input.js";
 
 const missing = () => Object.assign(new Error("not found"), { statusCode: 404 });
 
@@ -33,6 +35,7 @@ type EnvWrite = { path: string; mode: number; directoryMode: number };
 const creates: BoxConfig[] = [];
 const ephemeralCreates: EphemeralBoxConfig[] = [];
 const envWrites: EnvWrite[] = [];
+const deletes: string[] = [];
 
 export const state = {
   boxes: new Map<string, MockBox>(),
@@ -42,6 +45,25 @@ export const state = {
   snapshotMetadata: new Map<string, { id: string; name: string; box_id: string }>(),
   delayMs: 0,
   envWrites,
+  /** How the next durable create boots: status reads that report "creating", then its outcome. */
+  boot: { polls: 0, outcome: "running" },
+  statusReads: 0,
+  deletes,
+  /** Whether the next create request never answers, as if the response were lost after sending. */
+  hangCreate: false,
+  /** Cleanup DELETEs that answer 503 before one goes through. */
+  deleteFailures: 0,
+  /** How the next create answers once the box exists: "answer" in full, "reset" by dropping the connection,
+   * "malformed" with a bad body, or "stall" with a body that never finishes. "refused" fails before any box exists. */
+  createReply: "answer",
+  /** Box.get calls that fail with `status` before one succeeds. */
+  getFailures: { count: 0, status: 503 },
+  /** The `timeout` each Box.get call was given, in call order. */
+  getTimeouts: new Array<number | undefined>(),
+  /** Whether Box.get never settles, as a stalled fetch the native timeout does not bound. */
+  hangGet: false,
+  /** Runs at the start of each Box.get call, before it fails or answers. */
+  onGet: (): void => {},
 };
 
 /** One mock machine. Every handle for the same box ID shares it. */
@@ -122,7 +144,17 @@ export class MockBox {
 
     return box;
   }
-  static async get(id: string) {
+  static async get(id: string, options?: { timeout?: number }) {
+    state.getTimeouts.push(options?.timeout);
+    state.onGet();
+
+    if (state.hangGet) return new Promise<never>(() => {});
+
+    if (state.getFailures.count > 0) {
+      state.getFailures.count--;
+      throw Object.assign(new Error("get failed"), { statusCode: state.getFailures.status });
+    }
+
     const value = state.boxes.get(id);
 
     if (!value) throw missing();
@@ -284,6 +316,15 @@ export class MockBox {
 
       if (env.GIT_INDEX_FILE) env.GIT_INDEX_FILE = this.rewrite(env.GIT_INDEX_FILE);
 
+      // A guest file command's stdin is held until it ends, so its JSON paths can be mapped.
+      const guestStdin =
+        env[guestInputVariable] !== undefined ? new Array<Uint8Array>() : undefined;
+
+      const map = (path: string) => this.map(path);
+
+      if (env[guestInputVariable])
+        env[guestInputVariable] = mapGuestInput(env[guestInputVariable], map);
+
       const child = spawn(
         command,
         args.map((arg) => this.rewrite(arg)),
@@ -327,9 +368,13 @@ export class MockBox {
         pid,
         execId: crypto.randomUUID(),
         write: (data) => {
-          child.stdin.write(data);
+          if (guestStdin) guestStdin.push(Buffer.from(data));
+          else child.stdin.write(data);
         },
-        endStdin: () => child.stdin.end(),
+        endStdin: () =>
+          child.stdin.end(
+            guestStdin ? mapGuestInput(Buffer.concat(guestStdin).toString(), map) : undefined,
+          ),
         resize() {},
         kill,
         terminate: () => kill("KILL"),
@@ -345,6 +390,19 @@ export class MockBox {
       command: string,
     ): Promise<{ exitCode: number; stdout: string; stderr: string; result: string }>;
   };
+  /** Status reads left that still report "creating", then the outcome a boot reaches. */
+  booting = { polls: 0, outcome: "running" };
+  async getStatus() {
+    state.statusReads++;
+
+    if (this.booting.polls > 0) {
+      this.booting.polls--;
+
+      return { status: "creating" };
+    }
+
+    return { status: this.booting.outcome };
+  }
   async getPublicURL(port: number, settings?: { bearerToken?: boolean }) {
     const url = `http://127.0.0.1:${this.port}/?port=${port}`;
 
@@ -424,6 +482,150 @@ export class MockEphemeralBox {
   }
 }
 
+/** The adapter sends Box.create's and Box.fromSnapshot's request itself, then attaches with Box.get. Serve
+ * those routes from MockBox, turning the wire body back into the BoxConfig the native SDK would receive,
+ * so `state.creates` still records what reached Upstash. Other requests pass through. */
+type Wire = {
+  snapshot_id?: string;
+  labels?: string[];
+  size?: BoxSize;
+  keep_alive?: boolean;
+  init_command?: string;
+  runtime?: BoxConfig["runtime"];
+  browser?: boolean;
+  env_vars?: Record<string, string>;
+  attach_headers?: BoxConfig["attachHeaders"];
+  network_policy?: {
+    mode: "allow-all" | "deny-all" | "custom";
+    allowed_domains?: string[];
+    allowed_cidrs?: string[];
+    denied_cidrs?: string[];
+  };
+};
+
+function configOf(wire: Wire, apiKey: string | null): BoxConfig {
+  const config: BoxConfig = {};
+
+  if (apiKey !== null) config.apiKey = apiKey;
+
+  if (wire.labels) config.labels = wire.labels;
+
+  if (wire.size) config.size = wire.size;
+
+  if (wire.keep_alive) config.keepAlive = true;
+
+  if (wire.init_command !== undefined) config.initCommand = wire.init_command;
+
+  if (wire.runtime) config.runtime = wire.runtime;
+
+  if (wire.browser) config.browser = true;
+
+  if (wire.env_vars) config.env = wire.env_vars;
+
+  if (wire.attach_headers) config.attachHeaders = wire.attach_headers;
+  const policy = wire.network_policy;
+
+  if (policy?.mode === "custom") {
+    const custom: Extract<NetworkPolicy, { mode: "custom" }> = { mode: "custom" };
+
+    if (policy.allowed_domains) custom.allowedDomains = policy.allowed_domains;
+
+    if (policy.allowed_cidrs) custom.allowedCidrs = policy.allowed_cidrs;
+
+    if (policy.denied_cidrs) custom.deniedCidrs = policy.denied_cidrs;
+    config.networkPolicy = custom;
+  } else if (policy) config.networkPolicy = { mode: policy.mode };
+
+  return config;
+}
+
+const upstream = globalThis.fetch;
+
+globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input instanceof Request ? input.url : String(input);
+  const method = init?.method ?? "GET";
+  const create = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box(\/from-snapshot)?$/.exec(url);
+
+  if (create && method === "POST") {
+    if (state.hangCreate)
+      return new Promise<Response>((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+
+    if (state.createReply === "refused")
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+
+    const wire: Wire = JSON.parse(String(init?.body));
+    const config = configOf(wire, new Headers(init?.headers).get("X-Box-Api-Key"));
+    let box: MockBox;
+
+    try {
+      box = create[1]
+        ? await MockBox.fromSnapshot(wire.snapshot_id ?? "", config)
+        : await MockBox.create(config);
+    } catch (error) {
+      const status =
+        isObject(error) && "statusCode" in error && isNumber(error.statusCode)
+          ? error.statusCode
+          : 500;
+
+      return Response.json(
+        { error: error instanceof Error ? error.message : "failed" },
+        { status },
+      );
+    }
+
+    box.booting = { ...state.boot };
+
+    if (state.createReply === "reset")
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+      });
+
+    if (state.createReply === "malformed")
+      return new Response("{", { headers: { "Content-Type": "application/json" } });
+
+    // A real fetch's signal also aborts the body read.
+    if (state.createReply === "stall")
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason));
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+
+    return Response.json({
+      ...box.data,
+      status: box.booting.polls > 0 ? "creating" : box.booting.outcome,
+    });
+  }
+
+  const id = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box\/([^/]+)$/.exec(url)?.[1];
+
+  if (id !== undefined && method === "DELETE") {
+    state.deletes.push(decodeURIComponent(id));
+
+    if (state.deleteFailures > 0) {
+      state.deleteFailures--;
+
+      return Response.json({ error: "unavailable" }, { status: 503 });
+    }
+
+    const box = state.boxes.get(decodeURIComponent(id));
+
+    if (!box) return Response.json({ error: "not found" }, { status: 404 });
+    await box.delete();
+
+    return Response.json({});
+  }
+
+  return upstream(input, init);
+}, upstream);
+
 export async function cleanup() {
   for (const box of state.boxes.values()) await box.delete();
 
@@ -434,6 +636,16 @@ export async function cleanup() {
   state.ephemeralCreates.length = 0;
   state.delayMs = 0;
   state.envWrites.length = 0;
+  state.boot = { polls: 0, outcome: "running" };
+  state.statusReads = 0;
+  state.hangCreate = false;
+  state.deleteFailures = 0;
+  state.deletes.length = 0;
+  state.createReply = "answer";
+  state.getFailures = { count: 0, status: 503 };
+  state.getTimeouts.length = 0;
+  state.hangGet = false;
+  state.onGet = () => {};
 }
 
 const load = async () => ({ Box: MockBox, EphemeralBox: MockEphemeralBox });

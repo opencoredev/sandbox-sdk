@@ -360,6 +360,26 @@ export async function reapSandboxes(
 
 const runsDir = "/tmp/.sandbox-sdk/runs";
 
+/** Fail safe: a scan that cannot prove every process untagged, or that fails at all, means busy. */
+async function procScanBusy(provider: Provider, id: string): Promise<boolean> {
+  if (!provider.procActivity) return false;
+  const { activityScanCommand } = await import("./run.js");
+
+  try {
+    const result = await provider.exec(id, {
+      command: activityScanCommand,
+      cwd: "/",
+      env: {},
+      timeoutMs: 30_000,
+      onChunk() {},
+    });
+
+    return result.timedOut || result.exitCode !== 0;
+  } catch {
+    return true;
+  }
+}
+
 /** Whether a sandbox is idle, still has a live process or run, or no longer exists. */
 async function sandboxActivity(provider: Provider, id: string): Promise<"idle" | "busy" | "gone"> {
   let box: SandboxBase<unknown>;
@@ -374,13 +394,18 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
   }
 
   try {
-    const [processes, runs] = await Promise.all([box.processes(), runMarkers(box)]);
+    // Markers still count on procActivity adapters: an older client may have written one.
+    const [processes, runs, scanned] = await Promise.all([
+      box.processes(),
+      runMarkers(box),
+      procScanBusy(provider, id),
+    ]);
 
     const live = processes.some(
       (process) => process.status === "running" || process.status === "starting",
     );
 
-    return live || runs.length > 0 ? "busy" : "idle";
+    return live || runs.length > 0 || scanned ? "busy" : "idle";
   } finally {
     await box.close();
   }

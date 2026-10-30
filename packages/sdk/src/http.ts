@@ -358,6 +358,15 @@ function errorCodes(cause: unknown, depth = 0): string[] {
   return [...own, ...errorCodes("cause" in cause ? cause.cause : undefined, depth + 1)];
 }
 
+// Client failures for a request that never left this process, which keep no native error to inspect.
+const unsentFailures = new WeakSet<SandboxError>();
+
+/** @internal Whether a rejection proves the request never left this process, so no server saw it:
+ * a fetch failure, an error caused by one, or this client's failure for such a request. */
+export const neverSent = (cause: unknown) =>
+  (cause instanceof SandboxError && unsentFailures.has(cause)) ||
+  errorCodes(cause).some((code) => unsentCodes.has(code));
+
 function isBodyInit(value: unknown): value is BodyInit {
   return (
     typeof value === "string" ||
@@ -671,7 +680,7 @@ export function createHttpClient<Plane extends string>(
     plane: string,
     unconfirmed = false,
   ): SandboxError {
-    const error = mapDefault(failed, request, plane, unconfirmed);
+    const mapped = mapDefault(failed, request, plane, unconfirmed);
 
     const cause = options.cause?.(failed, {
       method: request.method,
@@ -680,16 +689,21 @@ export function createHttpClient<Plane extends string>(
       sandboxId: request.sandboxId,
     });
 
-    if (cause === undefined) return error;
+    const error =
+      cause === undefined
+        ? mapped
+        : new SandboxError(mapped.message, {
+            code: mapped.code,
+            provider,
+            sandboxId: mapped.sandboxId,
+            retryable: mapped.retryable,
+            hint: mapped.hint,
+            cause,
+          });
 
-    return new SandboxError(error.message, {
-      code: error.code,
-      provider,
-      sandboxId: error.sandboxId,
-      retryable: error.retryable,
-      hint: error.hint,
-      cause,
-    });
+    if (failed.kind === "network" && !failed.sent) unsentFailures.add(error);
+
+    return error;
   }
 
   /** `unconfirmed`: a failed response that does not prove the request did nothing, so a write is `outcome_unknown`. */
@@ -982,7 +996,7 @@ export function createHttpClient<Plane extends string>(
               ? { kind: "timeout", sent: true }
               : (halt ?? {
                   kind: "network",
-                  sent: !errorCodes(error).some((code) => unsentCodes.has(code)),
+                  sent: !neverSent(error),
                   error,
                 });
           break;

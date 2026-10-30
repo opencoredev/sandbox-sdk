@@ -82,6 +82,25 @@ export interface ProviderFiles {
   readonly checkpoints?: "files";
   /** Write handles missing parents itself, avoiding an unconditional mkdir RPC. */
   readonly writeCreatesParents?: boolean;
+  /**
+   * One exec carrying a small environment variable costs less than a read plus a write, so `files.edit`
+   * runs as one guest python3 call that changes the file the way `write` does: `"in-place"` when `write`
+   * truncates and rewrites the existing inode, `"replace"` when it renames a new file over it. Leave it
+   * unset where extra env is staged through more requests; edit then reads and writes.
+   */
+  readonly editInGuest?: "in-place" | "replace";
+  /**
+   * The order `list` returns entries in: `"name"` sorted by name bytes, `"directory"` the filesystem's
+   * own order (what `os.listdir` returns). When set, `files.search` walks the tree in one guest python3
+   * call in that order, so `maxMatches` stops at the same files. Unset, search lists and reads each file.
+   */
+  readonly listOrder?: "name" | "directory";
+  /**
+   * How guest file commands (edit and search above) may take their input in this sandbox: `"stdin"`,
+   * the default, also accepts input over 32 KiB on stdin; `"env"` only the environment, so larger input
+   * uses the RPC path; `"none"` keeps those commands on the RPC path.
+   */
+  guestInput?(id: string): Promise<"stdin" | "env" | "none">;
   /** Write applies `options.mode` itself. Without it, the core runs `chmod` after the write. */
   readonly writeSupportsMode?: boolean;
   /** Top-level /workspace entries the provider itself owns. File checkpoints and changes() skip them. */
@@ -132,6 +151,12 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   readonly previewMode?: "placeholder";
   /** Exec creates/removes input.activityPath without separate file RPCs. */
   readonly inlineActivity?: boolean;
+  /**
+   * Every exec from every client shares one Linux PID namespace with `/proc` mounted, and the exec user
+   * can read each process's environ (directly, or through passwordless sudo for root-owned ones). The
+   * core then runs commands without a marker and idle reaping scans `/proc` for the SDK's env tag.
+   */
+  readonly procActivity?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */

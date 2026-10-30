@@ -438,34 +438,48 @@ export function createBoxdProvider<C extends BoxdClient>(
               timeout: options.requestTimeoutMs ?? 90000,
             });
 
-          if (allow) {
-            // Applied before any SDK or user command runs; the platform confirms the list in effect.
-            const actual = await c.machines.setEgressAllow(m.id, allow);
-
-            if (actual.length !== allow.length || allow.some((entry) => !actual.includes(entry)))
-              throw failure(
-                "boxd did not confirm the requested egress allow-list",
-                "unsupported",
-                m.id,
-              );
-          }
+          const id = m.id;
 
           const value: SandboxInfo = {
-            id: m.id,
+            id,
             key: input.key,
             labels: input.labels,
             createdAt: m.createdAt?.getTime() ?? createdAt,
             state: "running",
           };
 
-          pending.set(m.id, preparation(metadata));
-          boxes.set(m.id, m);
+          pending.set(id, preparation(metadata));
+          boxes.set(id, m);
 
-          if (!nativeOwnership) await (await guest(m.id)).raw("true");
+          // Confirmed before return, so no user command runs under a wider list.
+          if (allow) {
+            const actual = await c.machines.setEgressAllow(id, allow);
+
+            if (actual.length !== allow.length || allow.some((entry) => !actual.includes(entry)))
+              throw failure(
+                "boxd did not confirm the requested egress allow-list",
+                "unsupported",
+                id,
+              );
+          }
+
+          // Labels, keys and restores live only in the guest file, which makes the machine findable:
+          // write it before another client can look, and only once any allow-list is confirmed.
+          if (!nativeOwnership) await (await guest(id)).raw("true");
 
           return value;
         } catch (error) {
-          await c.machines.delete(m.id);
+          // The failed machine is not this client's, whether or not the delete goes through.
+          try {
+            await c.machines.delete(m.id);
+          } finally {
+            boxes.delete(m.id);
+            pending.delete(m.id);
+            await webClient?.closeMachine(m.id);
+
+            if (!boxes.size) await webClient?.releaseIdle();
+          }
+
           throw error;
         }
       }),

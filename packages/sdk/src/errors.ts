@@ -157,7 +157,8 @@ export class Redactor {
         retryable: cause.retryable,
         hint: scrubCredentials(this.text(cause.hint)),
         provider,
-        sandboxId,
+        // Create paths know no ID yet; keep the one an adapter named, such as a box it could not delete.
+        sandboxId: sandboxId ?? cause.sandboxId,
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
         // Adapter evidence (see evidenceCause) keeps its fields as the JSON in its message.
         cause:

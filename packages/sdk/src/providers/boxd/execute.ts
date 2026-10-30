@@ -1,18 +1,20 @@
 import type { BoxdClient } from "./provider.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { guestProcess, python } from "../../shared/guest.js";
+import { cachedPython, guestProcess, python } from "../../shared/guest.js";
 import { quote } from "../../shared/shell.js";
 import { failure } from "./errors.js";
 
 // env in the native boxd ExecParams is prefixed onto command text. Instead,
 // deliver the entire spec over bidi stdin, then close it. The child inherits
 // the native process group, so cancelling the stream kills all descendants.
-const launcher = `import sys,json,os,fcntl,selectors,signal
+// The spec is JSON of strings, numbers and objects only, which is also a Python
+// literal: evaluating it with no builtins skips importing json's regex tree.
+const launcher = `import sys,os,fcntl,select,_signal as signal
 ${guestProcess}
 # Keep the output owner alive through native TERM grace. Caught handlers reset
 # to the default disposition when the user shell execs.
 signal.signal(signal.SIGTERM,lambda *_:None)
-v=json.load(sys.stdin)
+v=eval(sys.stdin.buffer.read().decode(),{'__builtins__':{}})
 if v.get('preparing'): print('SDK_PREPARED:',end='',flush=True)
 a=v.get('activityPath')
 m=v['pidPath']
@@ -31,14 +33,12 @@ try:
     print(str(e),file=sys.stderr); sys.exit(127)
   # Keep the supervisor and marker until inherited output pipes close, even
   # after the direct shell exits and only background descendants remain.
-  sel=selectors.DefaultSelector()
-  sel.register(p.stdout,selectors.EVENT_READ,sys.stdout.buffer)
-  sel.register(p.stderr,selectors.EVENT_READ,sys.stderr.buffer)
-  while sel.get_map():
-   for key,_ in sel.select():
-    data=os.read(key.fd,16384)
-    if data: key.data.write(data); key.data.flush()
-    else: sel.unregister(key.fileobj); key.fileobj.close()
+  streams={p.stdout.fileno():(p.stdout,sys.stdout.buffer),p.stderr.fileno():(p.stderr,sys.stderr.buffer)}
+  while streams:
+   for fd in select.select(list(streams),[],[])[0]:
+    data=os.read(fd,16384)
+    if data: streams[fd][1].write(data); streams[fd][1].flush()
+    else: streams.pop(fd)[0].close()
   code=p.wait()
   sys.exit(code if code>=0 else 128-code)
 finally:
@@ -67,6 +67,19 @@ finally:
   try: os.unlink(a)
   except FileNotFoundError: pass
 `;
+
+const cachedLauncher = cachedPython(launcher);
+
+/** The launcher's stdin. Strings, numbers and string maps only: the launcher reads it as a Python literal. */
+interface LauncherSpec {
+  pidPath: string;
+  preparing: 0 | 1;
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+  stdin: string;
+  activityPath?: string;
+}
 
 // Marks run argv[1] cancelled, kills its process group and waits up to 2 s for it to exit.
 const killProgram = `import os,sys,signal,time,fcntl
@@ -105,7 +118,7 @@ export async function execute(
 ): Promise<ExecResult> {
   if (input.signal?.aborted) return { exitCode: null, timedOut: true };
   const pidPath = `/tmp/sandbox-sdk-${crypto.randomUUID()}.pid`;
-  const stream = client.machines.streamExec(id, { command: setup + python(launcher) });
+  const stream = client.machines.streamExec(id, { command: setup + python(cachedLauncher) });
   let cancelled = false;
   let interrupted = false;
 
@@ -159,17 +172,18 @@ export async function execute(
   input.signal?.addEventListener("abort", cancel, { once: true });
 
   try {
-    stream.write(
-      JSON.stringify({
-        pidPath,
-        preparing: Boolean(setup),
-        command: input.command,
-        cwd: input.cwd,
-        env: input.env,
-        stdin: input.stdin ?? "",
-        activityPath: input.activityPath,
-      }),
-    );
+    // JSON.stringify drops an undefined activityPath, so no `null` reaches the literal.
+    const spec: LauncherSpec = {
+      pidPath,
+      preparing: setup ? 1 : 0,
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+      stdin: input.stdin ?? "",
+      activityPath: input.activityPath,
+    };
+
+    stream.write(JSON.stringify(spec));
     stream.end();
 
     const outcome = await Promise.race([

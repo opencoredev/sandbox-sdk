@@ -15,6 +15,8 @@ const mocks = {
   snapshotGet: vi.fn<Snapshots["get"]>(),
   snapshotDelete: vi.fn<Snapshots["delete"]>(),
   setEgressAllow: vi.fn(async (_id: string, entries: string[]) => entries),
+  /** releaseIdle calls on the transfer workers. */
+  releases: 0,
 };
 
 /** The boxd client fixture: Linux-backed machines plus spied snapshot and egress calls. */
@@ -43,7 +45,9 @@ class TestTransfers implements BoxdTransfers {
     return this.client.machines.files.download(id, path);
   }
   async closeMachine() {}
-  async releaseIdle() {}
+  async releaseIdle() {
+    mocks.releases++;
+  }
 }
 
 function boxd(options: BoxdOptions) {
@@ -897,5 +901,74 @@ test("a missing file is file_not_found for read, edit and remove, like the other
     expect(await box.files.exists("present.txt")).toBe(false);
   } finally {
     await box.destroy();
+  }
+});
+
+test("a keyed machine with an allow-list is not findable until the list is confirmed", async () => {
+  const provider = factory();
+  const other = factory();
+  const key = `egress-${crypto.randomUUID()}`;
+  let confirm = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    confirm = resolve;
+  });
+
+  mocks.setEgressAllow.mockClear();
+
+  mocks.setEgressAllow.mockImplementationOnce(async (_id, entries) => {
+    await gate;
+
+    return entries;
+  });
+
+  const creating = provider.create({ key, labels: {}, network: { allow: ["example.com"] } });
+
+  try {
+    await vi.waitFor(() => expect(mocks.setEgressAllow).toHaveBeenCalledTimes(1));
+    // Long enough for a metadata write racing the confirmation to land.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await other.find(key)).toBeUndefined();
+  } finally {
+    confirm();
+  }
+
+  const created = await creating;
+
+  try {
+    expect((await other.find(key))?.id).toBe(created.id);
+  } finally {
+    await provider.destroy(created.id);
+  }
+});
+
+test("a create whose allow-list fails drops the machine locally even when its delete fails", async () => {
+  const provider = factory();
+  const kept = await createSandbox(provider);
+  let failed: string | undefined;
+
+  try {
+    // A whole-file read opens the transfer workers that close() releases.
+    await kept.files.write("f.txt", "x");
+    expect(await kept.files.read("f.txt")).toBe("x");
+    const machines = kept.native.client.machines;
+    const remove = vi.spyOn(machines, "delete").mockRejectedValueOnce(new Error("delete failed"));
+    mocks.setEgressAllow.mockResolvedValueOnce([]);
+
+    await expect(
+      provider.create({ labels: {}, network: { allow: ["example.com"] } }),
+    ).rejects.toBeDefined();
+    failed = remove.mock.calls[0]?.[0];
+    expect(failed).toBeDefined();
+    remove.mockRestore();
+
+    // The only machine left on this client is `kept`, so closing it releases the idle workers.
+    mocks.releases = 0;
+    await kept.close();
+    expect(mocks.releases).toBe(1);
+  } finally {
+    await provider.destroy(kept.id);
+
+    if (failed) await provider.destroy(failed);
   }
 });
