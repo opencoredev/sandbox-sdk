@@ -648,3 +648,49 @@ describe("streams", () => {
     );
   });
 });
+
+test("credentials are never sent over plain HTTP to a non-loopback host", async () => {
+  let resolved = 0;
+
+  const plaintext = createHttpClient<"api">({
+    provider: "fake",
+    label: "Fake",
+    planes: {
+      api: {
+        // TEST-NET-3: never routable, so a request that went out would hang until the deadline.
+        baseUrl: "http://203.0.113.10/v1",
+        auth: () => {
+          resolved++;
+
+          return { authorization: `Bearer ${key}` };
+        },
+      },
+    },
+    defaultPlane: "api",
+    backoffMs: 1,
+    timeoutMs: 2_000,
+    secrets: () => [key],
+  });
+
+  const started = Date.now();
+  const error = await failure(plaintext.json({ method: "GET", path: "/sandboxes" }));
+  expect(error).toMatchObject({ code: "invalid_argument" });
+  expect(error.message).toContain("plain HTTP");
+  expect(error.message).not.toContain(key);
+  expect(Date.now() - started).toBeLessThan(1_000);
+  expect(resolved).toBe(1);
+  // Loopback stays allowed: every local fake and dev server in these tests uses it.
+  server.on("GET /v1/sandboxes", { json: [] });
+  expect(await client().json({ method: "GET", path: "/sandboxes" })).toEqual([]);
+});
+
+test("an error body that stalls past the deadline reports a timeout, not the status", async () => {
+  // Headers arrive at once with 429, then the body never finishes.
+  server.on("GET /v1/slow-error", { status: 429, stream: ['{"error":'], hold: true });
+
+  const error = await failure(
+    client({ timeoutMs: 400 }).json({ method: "GET", path: "/slow-error" }),
+  );
+
+  expect(error.code).toBe("timeout");
+});

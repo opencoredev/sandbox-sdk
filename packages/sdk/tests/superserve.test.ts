@@ -135,6 +135,21 @@ test("snapshot failures retain a safe idempotent recovery name", async () => {
   }
 });
 
+test("a snapshot Superserve marks failed reports provider, not an unknown outcome", async () => {
+  const box = await createSandbox(factory());
+
+  try {
+    state.snapshotRejected = true;
+    await expect(box.snapshot()).rejects.toMatchObject({
+      code: "provider",
+      message: expect.stringContaining("Snapshot failed"),
+    });
+  } finally {
+    state.snapshotRejected = false;
+    await box.destroy();
+  }
+});
+
 test("stdin setup failure closes the native session", async () => {
   const box = await createSandbox(factory());
 
