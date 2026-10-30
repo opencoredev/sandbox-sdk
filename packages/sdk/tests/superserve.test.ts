@@ -29,7 +29,14 @@ import { runConformance } from "../src/testing.js";
 
 const factory = () => superserve({ apiKey: "mock" });
 
-runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+// live: true authorizes the fake: every request goes to the local Superserve API.
+runConformance(factory, {
+  live: true,
+  unsupported: {
+    httpProbe: "Mock superserve preview URLs point at an unreachable host",
+    gitPush: "The HTTP fake's guest has no git identity; the live smoke covers git on superserve",
+  },
+});
 
 afterAll(async () => {
   await resetSuperserveFake();

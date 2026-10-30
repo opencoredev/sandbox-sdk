@@ -13,9 +13,14 @@ vi.stubGlobal("fetch", vi.fn(freestyleFetch));
 
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
-// Only Linux mock transports are used. The name admits the offline transport
-// through conformance's live:false cloud guard and skips real cloud HTTP/git.
-runConformance(() => ({ ...factory(), name: "memory" }), { live: false });
+// live: true authorizes the fake: every request goes to the local Freestyle API above.
+runConformance(factory, {
+  live: true,
+  unsupported: {
+    httpProbe: "Mock freestyle preview URLs point at an unreachable host",
+    gitPush: "The HTTP fake's guest has no git identity; the live smoke covers git on freestyle",
+  },
+});
 
 afterAll(cleanupFreestyle);
 

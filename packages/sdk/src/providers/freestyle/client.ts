@@ -241,10 +241,10 @@ export function freestyleClient(options: FreestyleClientOptions) {
   const current = (): Deadline =>
     operationSignal.getStore() ?? createDeadline(options.requestTimeoutMs);
 
-  const transient = (error: unknown) =>
-    error instanceof FreestyleApiError
-      ? transientPollStatuses.has(error.status) && error.backgroundRequestId === undefined
-      : error instanceof SandboxError && (error.code === "unavailable" || error.code === "timeout");
+  const transient = (cause: unknown) =>
+    cause instanceof FreestyleApiError
+      ? transientPollStatuses.has(cause.status) && cause.backgroundRequestId === undefined
+      : cause instanceof SandboxError && (cause.code === "unavailable" || cause.code === "timeout");
 
   async function poll(
     accepted: HttpResponse,

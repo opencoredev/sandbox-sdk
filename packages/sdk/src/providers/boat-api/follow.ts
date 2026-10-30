@@ -108,13 +108,13 @@ function parseFrame(
 }
 
 /** Whether a failure after a good connection is worth another attach. */
-function resumable(error: unknown): boolean {
-  const fault = streamFault(error);
+function resumable(cause: unknown): boolean {
+  const fault = streamFault(cause);
 
   if (fault) return fault === "disconnected" || fault === "truncated";
 
   return (
-    error instanceof SandboxError && (error.code === "unavailable" || error.code === "timeout")
+    cause instanceof SandboxError && (cause.code === "unavailable" || cause.code === "timeout")
   );
 }
 

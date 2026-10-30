@@ -31,8 +31,8 @@ export interface StreamOptions {
 const faults = new WeakMap<SandboxError, StreamFault>();
 
 /** The protocol fault behind a stream error, or `undefined` for any other error. */
-export function streamFault(error: unknown): StreamFault | undefined {
-  return error instanceof SandboxError ? faults.get(error) : undefined;
+export function streamFault(cause: unknown): StreamFault | undefined {
+  return cause instanceof SandboxError ? faults.get(cause) : undefined;
 }
 
 const faultCodes = {

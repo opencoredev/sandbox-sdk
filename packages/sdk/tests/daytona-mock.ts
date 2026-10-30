@@ -433,18 +433,18 @@ function reply(response: ServerResponse, status: number, body?: JsonValue | unde
     .end(body === undefined ? undefined : JSON.stringify(body));
 }
 
-function fail(response: ServerResponse, error: unknown, path: string) {
+function fail(response: ServerResponse, cause: unknown, path: string) {
   const status =
-    error instanceof Error && "statusCode" in error && isNumber(error.statusCode)
-      ? error.statusCode
+    cause instanceof Error && "statusCode" in cause && isNumber(cause.statusCode)
+      ? cause.statusCode
       : 500;
 
   const code =
-    error instanceof Error && "code" in error && isString(error.code) ? error.code : undefined;
+    cause instanceof Error && "code" in cause && isString(cause.code) ? cause.code : undefined;
 
   const headers =
-    error instanceof Error && "headers" in error && error.headers && isObject(error.headers)
-      ? error.headers
+    cause instanceof Error && "headers" in cause && cause.headers && isObject(cause.headers)
+      ? cause.headers
       : {};
 
   if (!response.headersSent)
@@ -452,7 +452,7 @@ function fail(response: ServerResponse, error: unknown, path: string) {
   response.end(
     JSON.stringify({
       statusCode: status,
-      message: error instanceof Error ? error.message : String(error),
+      message: cause instanceof Error ? cause.message : String(cause),
       code,
       source: "DAYTONA_DAEMON",
       path,
