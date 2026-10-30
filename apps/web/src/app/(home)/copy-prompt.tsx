@@ -2,6 +2,8 @@
 
 import { useCallback, useState } from "react";
 
+import { track } from "@/lib/posthog";
+
 import styles from "./paper.module.css";
 
 /** The 1.0 quickstart as Markdown, for agents. Update when the 1.0 docs move to sandbox-sdk.app. */
@@ -55,6 +57,7 @@ export function CopyPrompt() {
     try {
       await writeClipboard(AGENT_PROMPT);
       setState("copied");
+      track("agent_prompt_copied");
     } catch {
       setState("failed");
     }
