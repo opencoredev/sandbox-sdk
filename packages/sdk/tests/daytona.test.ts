@@ -480,6 +480,24 @@ test("snapshot waits within snapshotTimeoutMs and exposes its recovery name on f
   }
 });
 
+test.each(["error", "build_failed"])(
+  "a snapshot that ends in state %s rejects with its recovery name",
+  async (state) => {
+    const box = await createSandbox(daytona({ apiKey: "key", snapshotTimeoutMs: 5_000 }));
+    const native = guest(box.id);
+
+    const snapshot = vi.spyOn(native, "createSnapshot").mockImplementationOnce(async () => {
+      native.state = state;
+    });
+
+    const failed = box.snapshot();
+    await expect(failed).rejects.toMatchObject({ code: "provider", retryable: false });
+    const name = snapshot.mock.calls.at(-1)?.[0] ?? "";
+    expect(name).toMatch(/^sdk-/);
+    await expect(failed).rejects.toThrow(name);
+  },
+);
+
 test("the snapshot wait is not bounded by requestTimeoutMs", async () => {
   const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 200 }));
 

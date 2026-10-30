@@ -238,13 +238,15 @@ export function daytonaHttp(options: DaytonaHttpOptions) {
         throw error;
       }
 
-      if (done(dto.state)) return dto;
-
+      // Failure first: a wait for a transient state to clear ("snapshotting") would otherwise accept `error`.
       if (dto.state !== undefined && failedStates.has(dto.state))
         throw new SandboxError(
           `Sandbox ${what} failed with state ${dto.state}. Inspect the sandbox in the Daytona dashboard.`,
           { code: "provider", provider: "daytona", sandboxId: id },
         );
+
+      if (done(dto.state)) return dto;
+
       delay = pollDelay(Date.now() - started, delay);
       await sleep(Math.min(delay, Math.max(1, deadline.remaining())), deadline, "daytona");
     }
