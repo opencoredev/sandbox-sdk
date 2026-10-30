@@ -50,18 +50,26 @@ body {
 }
 
 /*
- * The sidebar, table of contents, search panes, code blocks, and wide tables
- * scroll on their own. Reaching the end of one neither bounces nor hands the
- * scroll to the page (or to the browser's swipe-to-go-back on a code block).
+ * The sidebar, table of contents and search panes scroll on their own.
+ * Reaching the end of one neither bounces nor hands the scroll to the page.
  */
 [data-blume-nav-drawer],
 [data-blume-toc],
 [data-blume-search-results],
-[data-blume-search-preview],
+[data-blume-search-preview] {
+  overscroll-behavior: none;
+}
+
+/*
+ * Code blocks, tab lists and wide tables sit in the page's flow, so only their
+ * sideways scroll is contained (no swipe-to-go-back at the edge). A vertical
+ * scroll that starts on one still reaches the page; with `none` on both axes,
+ * Safari stops the page scrolling while the pointer or finger is on a block.
+ */
 .prose :where(pre, pre > code, table),
 [role="tablist"],
 .prose :where(div:has(> table)) {
-  overscroll-behavior: none;
+  overscroll-behavior-x: none;
 }
 
 body {
