@@ -263,12 +263,14 @@ test("an old claim stays while its command runs, so the command runs exactly onc
   await request("true");
   const { dir } = await zygotePid();
   const counter = join(base, `runs-${crypto.randomUUID()}`);
+  // Claims of the two warm-up requests can still be on disk on a loaded host; only a new one is ours.
+  const earlier = new Set((await readdir(dir)).filter((entry) => entry.startsWith("c-")));
   // Longer than the zygote's 5 s sweep tick, so a sweep runs while the claim is live.
   const running = request(`echo x >> ${counter}; ${parent}; sleep 7; echo done`);
   let claim: string | undefined;
 
   for (let attempt = 0; attempt < 200 && !claim; attempt++) {
-    claim = (await readdir(dir)).find((entry) => entry.startsWith("c-"));
+    claim = (await readdir(dir)).find((entry) => entry.startsWith("c-") && !earlier.has(entry));
 
     if (!claim) await new Promise((resolve) => setTimeout(resolve, 10));
   }
