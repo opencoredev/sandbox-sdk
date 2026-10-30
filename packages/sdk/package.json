@@ -1,6 +1,6 @@
 {
   "name": "@opencoredev/sandbox-sdk",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0",
   "description": "One TypeScript API for cloud and local sandboxes: E2B, Daytona, Vercel, Upstash, Docker, and more. Run commands, edit files, start servers, and give AI agents a sandbox.",
   "keywords": [
     "agent-tools",
