@@ -1218,6 +1218,9 @@ export function createHttpClient<Plane extends string>(
     const combined = AbortSignal.any([overall.signal, startup.signal]);
     combined.addEventListener("abort", relay, { once: true });
 
+    // An already-expired shared deadline never fires the listener, so relay it now.
+    if (combined.aborted) relay();
+
     const gate: Deadline = {
       signal: controller.signal,
       timeout: overall.timeout,

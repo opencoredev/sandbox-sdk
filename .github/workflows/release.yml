@@ -16,7 +16,8 @@ jobs:
   release:
     name: Version or publish
     # Off until the owner sets the repository variable, so merging alone never publishes.
-    if: vars.SANDBOX_SDK_RELEASE_ENABLED == 'true'
+    # Only main publishes: a manual run on another branch must not reach npm.
+    if: vars.SANDBOX_SDK_RELEASE_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

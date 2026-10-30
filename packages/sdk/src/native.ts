@@ -272,7 +272,10 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       return (await http.json(call(method, path, request))) as T;
     },
     fetch(method, path, request) {
-      return http.stream(call(method, path, request));
+      // For fetch, timeoutMs is the time until headers; the caller owns the body, so it has no deadline.
+      const { timeoutMs, ...stream } = call(method, path, request);
+
+      return http.stream({ ...stream, startupTimeoutMs: timeoutMs });
     },
     sdk,
   };

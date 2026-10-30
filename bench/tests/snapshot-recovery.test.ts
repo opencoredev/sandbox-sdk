@@ -175,6 +175,7 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
       "@daytonaio/sdk": {
         Daytona: class {
           snapshot = { get, list: vi.fn(), delete: vi.fn() };
+          get = vi.fn();
         },
       },
       "@boxd-sh/sdk": {

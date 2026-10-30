@@ -238,13 +238,15 @@ export function daytonaHttp(options: DaytonaHttpOptions) {
         throw error;
       }
 
-      if (done(dto.state)) return dto;
-
+      // Failure first: a wait for a transient state to clear ("snapshotting") would otherwise accept `error`.
       if (dto.state !== undefined && failedStates.has(dto.state))
         throw new SandboxError(
           `Sandbox ${what} failed with state ${dto.state}. Inspect the sandbox in the Daytona dashboard.`,
           { code: "provider", provider: "daytona", sandboxId: id },
         );
+
+      if (done(dto.state)) return dto;
+
       delay = pollDelay(Date.now() - started, delay);
       await sleep(Math.min(delay, Math.max(1, deadline.remaining())), deadline, "daytona");
     }
@@ -374,7 +376,11 @@ export function daytonaHttp(options: DaytonaHttpOptions) {
     },
   };
 
-  return { http, control, toolbox: (id: string) => toolbox(http, control, id) };
+  return {
+    http,
+    control,
+    toolbox: (id: string) => toolbox(http, control, id, options.requestTimeoutMs),
+  };
 }
 
 export type DaytonaControl = ReturnType<typeof daytonaHttp>["control"];
@@ -429,7 +435,12 @@ export interface Toolbox {
 
 const execBufferMs = 5_000;
 
-function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: string): Toolbox {
+function toolbox(
+  http: HttpClient<DaytonaPlane>,
+  control: DaytonaControl,
+  id: string,
+  requestTimeoutMs: number,
+): Toolbox {
   const base = { plane: "toolbox" as const, sandboxId: id };
 
   const call = (
@@ -528,7 +539,8 @@ function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: st
         await call("POST", "/files/bulk-upload", { body: form });
       },
       async download(path) {
-        return readAll(await open(path));
+        // A stream's overall deadline is off by default; a buffered read gets the request deadline, body included.
+        return readAll(await open(path, { timeoutMs: requestTimeoutMs }));
       },
       downloadStream: (path, settings) => open(path, settings),
       async deleteFile(path, recursive) {

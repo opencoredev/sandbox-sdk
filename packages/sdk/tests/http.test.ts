@@ -590,6 +590,17 @@ describe("streams", () => {
     ).toBe("timeout");
   });
 
+  test("an expired shared deadline stops a stream before it sends", async () => {
+    server.on("GET /v1/logs", { stream: ["a"] });
+    const deadline = createDeadline(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(deadline.signal.aborted).toBe(true);
+    expect((await failure(client().stream({ method: "GET", path: "/logs", deadline }))).code).toBe(
+      "timeout",
+    );
+    expect(server.requests).toHaveLength(0);
+  });
+
   test("the idle timeout fires between chunks, not over the whole stream", async () => {
     // Gaps of 50 ms stay under the 1 s idle timeout; the held-open end trips it.
     server.on("GET /v1/logs", { stream: ["a", "b", "c"], intervalMs: 50, hold: true });
