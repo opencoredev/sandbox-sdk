@@ -7,11 +7,33 @@ import { socialImage } from "@/lib/shared";
 
 import "./global.css";
 
+const siteUrl = "https://sandbox-sdk.app";
+
+const description =
+  "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on E2B, Daytona, Vercel, Docker, and more from one TypeScript SDK.";
+
+// Structured data for search engines. JSON.stringify leaves "<" alone, so it is
+// escaped to keep a string value from closing the script tag.
+const jsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  name: "Sandbox SDK",
+  description,
+  url: siteUrl,
+  codeRepository: "https://github.com/opencoredev/sandbox-sdk",
+  programmingLanguage: "TypeScript",
+  runtimePlatform: "Node.js",
+  license: "https://opensource.org/licenses/MIT",
+  author: { "@type": "Organization", name: "OpenCore" },
+}).replace(/</g, "\\u003c");
+
 export const metadata: Metadata = {
-  metadataBase: new URL("https://sandbox-sdk.app"),
-  title: { default: "Sandbox SDK", template: "%s · Sandbox SDK" },
-  description:
-    "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on Docker, agentOS, E2B, Vercel, Daytona, Upstash Box, Railway, Boat, Tenki, boxd, or Freestyle from one TypeScript SDK.",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "Sandbox SDK: one TypeScript API for E2B, Daytona, Vercel Sandbox, and more",
+    template: "%s · Sandbox SDK",
+  },
+  description,
   applicationName: "Sandbox SDK",
   icons: {
     icon:
@@ -78,6 +100,7 @@ export default function Layout({ children }: LayoutProps<"/">) {
         )}
       </head>
       <body className="flex flex-col min-h-screen">
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />
         {children}
         <Analytics />
       </body>
