@@ -6,6 +6,7 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "redirects": [
+    { "source": "/v2", "destination": "/", "permanent": true },
     { "source": "/providers", "destination": "/docs/providers", "permanent": true },
     {
       "source": "/compatibility",
