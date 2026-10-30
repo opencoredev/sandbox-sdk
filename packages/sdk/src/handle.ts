@@ -1,7 +1,7 @@
 import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
 import { Redactor, SandboxError, invalid } from "./errors.js";
-import { forgetSandbox } from "./keys.js";
+import { attachHandle, detachHandle, forgetSandbox, withKeyLock } from "./keys.js";
 import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
 import { isString } from "./shared/narrow.js";
@@ -28,6 +28,18 @@ export async function makeHandle<N>(
 ): Promise<SandboxBase<N>> {
   let closed = false;
   let destroyed = false;
+  let closing: Promise<void> | undefined;
+  // Whether this handle still counts toward the sandbox's open handles (see attachHandle).
+  let holding = false;
+
+  /** Drop this handle's claim once. Returns whether no other open handle remains. */
+  const release = () => {
+    if (!holding) return false;
+    holding = false;
+
+    return detachHandle(provider, info.id);
+  };
+
   let commands = 0;
   let bytesOut = 0;
 
@@ -315,10 +327,26 @@ export async function makeHandle<N>(
     async close() {
       if (closed || destroyed) return;
 
-      try {
-        await provider.close?.(info.id);
+      closing ??= (async () => {
+        // Adapters key local resources by sandbox ID, so another open handle still needs them.
+        const last = release();
+
+        try {
+          if (last) await provider.close?.(info.id);
+        } catch (error) {
+          holding = true;
+          attachHandle(provider, info.id);
+          throw error;
+        }
+
         files[Symbol.dispose]();
         closed = true;
+      })().finally(() => {
+        closing = undefined;
+      });
+
+      try {
+        await closing;
       } catch (error) {
         throw redactor.error(error, provider.name, info.id);
       }
@@ -331,8 +359,15 @@ export async function makeHandle<N>(
         await provider.destroy(info.id);
         files[Symbol.dispose]();
         destroyed = true;
+        release();
+        const key = options.key;
+        const locator = options.locator;
 
-        if (options.key) await options.locator?.delete?.(options.key);
+        // Under the creation lock, so a replacement created meanwhile keeps its entry.
+        if (key && locator?.delete)
+          await withKeyLock(provider, key, options, async () => {
+            if ((await locator.get(key)) === info.id) await locator.delete?.(key);
+          });
       } catch (error) {
         throw redactor.error(error, provider.name, info.id);
       }
@@ -406,6 +441,8 @@ export async function makeHandle<N>(
         }),
     });
   registerToolRedactor(box, redactor);
+  attachHandle(provider, info.id);
+  holding = true;
 
   return box;
 }
