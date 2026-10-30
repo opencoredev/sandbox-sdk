@@ -7,12 +7,12 @@ import { shellProvider } from "./shell-provider.js";
 
 /** The shell test transport with every primitive call recorded. `python: false` makes the guest lack python3. */
 function recorded(native: Provider, python = true) {
-  const calls: string[] = []; const commands: { command: string; stdin?: string }[] = [];
+  const calls: string[] = []; const commands: { command: string; stdin?: string; env: Record<string, string> }[] = [];
   const root = native.native("shell") as string;
   const provider: Provider = {
     ...native,
     async exec(id, input) {
-      calls.push("exec"); commands.push({ command: input.command, stdin: input.stdin });
+      calls.push("exec"); commands.push({ command: input.command, stdin: input.stdin, env: input.env });
       if (!python && input.command.startsWith("python3 ")) return { exitCode: 127, timedOut: false };
       // Guest scripts print host paths after the test transport's rewrite; map them back.
       return native.exec(id, { ...input, onChunk: chunk => input.onChunk({ ...chunk, text: chunk.text.replaceAll(root, "") }) });
@@ -38,10 +38,26 @@ describe("files.edit in one guest call", () => {
       await box.files.edit("a.txt", { find: "secret-before", replace: "secret-after" });
       expect(calls).toEqual(["exec"]);
       expect(commands[0]?.command).not.toContain("secret");
-      expect(commands[0]?.stdin).toContain("secret-before");
+      expect(commands[0]?.env.SANDBOX_SDK_INPUT).toContain("secret-before");
+      expect(commands[0]?.stdin).toBeUndefined();
       expect(await box.files.read("a.txt")).toBe("one\nsecret-after\nthree\n");
       expect((await fs.stat(host("/workspace/a.txt"))).mode & 0o7777).toBe(0o640);
       expect((await fs.readdir(host("/workspace"))).filter(name => name.includes("sdk-edit"))).toEqual([]);
+    } finally { await box.destroy(); }
+  });
+
+  test("text over 32 KiB goes on stdin instead of the environment", async () => {
+    const { provider, calls, commands } = recorded(await shellProvider());
+    const box = await createSandbox(provider);
+    try {
+      const big = "b".repeat(40_000);
+      await box.files.write("a.txt", "head\nmarker\ntail\n");
+      calls.length = 0; commands.length = 0;
+      await box.files.edit("a.txt", { find: "marker", replace: big });
+      expect(calls).toEqual(["exec"]);
+      expect(commands[0]?.env.SANDBOX_SDK_INPUT).toBe("");
+      expect(commands[0]?.stdin).toContain(big);
+      expect(await box.files.read("a.txt")).toBe(`head\n${big}\ntail\n`);
     } finally { await box.destroy(); }
   });
 

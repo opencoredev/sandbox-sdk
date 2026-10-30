@@ -36,14 +36,16 @@ function pythonGlob(glob: string) {
   const literal = (text: string) => Array.from({ length: text.length }, (_, index) => `\\u${text.charCodeAt(index).toString(16).padStart(4, "0")}`).join("");
   return globParts(glob).map(part => part === "**/" ? `(?:${any}*/)?` : part === "**" ? `${any}*` : part === "*" ? "[^/]*" : part === "?" ? any : literal(part)).join("");
 }
-// Guest scripts take paths in argv and user text on stdin. Exit 70 means "use the RPC path": it is
+// Guest scripts take paths in argv and user text as JSON in the environment, never argv. Environment
+// values travel with the exec request, while stdin costs extra round trips on E2B and Upstash; text over
+// 32 KiB goes on stdin, since one variable must stay under the kernel's 128 KiB limit. Exit 70 means "use the RPC path": it is
 // raised before any change, so the fallback reproduces each provider's own errors exactly.
 // edit: read, count matches, then write a sibling temp file with the original owner and mode and
 // rename it over the target. Symlinks resolve to their target; hard-linked files stay in place (70).
 const editScript = `import json,os,stat,sys
 p=os.path.realpath(sys.argv[1])
 try:
- a=json.loads(sys.stdin.buffer.read());f=a["find"].encode();r=a["replace"].encode()
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read());f=a["find"].encode();r=a["replace"].encode()
  s=os.stat(p)
  if not stat.S_ISREG(s.st_mode) or s.st_nlink>1:sys.exit(70)
  with open(p,"rb") as h:d=h.read()
@@ -64,7 +66,7 @@ except Exception:
 // order and print [path, line, base64 line] for each line holding the query bytes, up to the limit.
 const searchScript = `import base64,json,os,re,stat,sys
 root,pat,base,mx=sys.argv[1],sys.argv[2],sys.argv[3]=="1",int(sys.argv[4])
-q=json.loads(sys.stdin.buffer.read()).encode();g=re.compile(pat) if pat else None
+q=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read()).encode();g=re.compile(pat) if pat else None
 def u(s):
  if all(c<="\\uffff" for c in s):return s
  b=s.encode("utf-16-le","surrogatepass");return "".join(chr(int.from_bytes(b[i:i+2],"little")) for i in range(0,len(b),2))
@@ -99,10 +101,11 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   // other failure before the guest commits a change falls back for this call only.
   let guestPython = provider.name !== "memory";
   // A stopped guest edit may already have renamed its file, so only read-only calls fall back after one.
-  async function guest(command: string, stdin: string, mutates: boolean): Promise<{ exitCode: number; stdout: string }> {
+  async function guest(command: string, input: string, mutates: boolean): Promise<{ exitCode: number; stdout: string }> {
     if (!guestPython) return { exitCode: 70, stdout: "" };
     let stdout = "";
-    const result = await provider.exec(id, { command, cwd: "/", env: defaults, stdin, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") stdout += chunk.text; } });
+    const inline = Buffer.byteLength(input) <= 32_768;
+    const result = await provider.exec(id, { command, cwd: "/", env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" }, stdin: inline ? undefined : input, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") stdout += chunk.text; } });
     if (result.timedOut || result.exitCode === null || result.exitCode >= 128) {
       if (!mutates) return { exitCode: 70, stdout: "" };
       throw new SandboxError("File edit outcome unknown. The guest command was stopped before it reported. Read the file to check its state before retrying.", { code: "outcome_unknown" });
