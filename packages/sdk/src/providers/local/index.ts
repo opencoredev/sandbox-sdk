@@ -65,6 +65,18 @@ const activity = "/tmp/.sandbox-sdk-activity";
 const keyLabel = "sandbox-sdk.local.key";
 const snapshotLabel = "sandbox-sdk.local.snapshot";
 
+/** A snapshot copies files, not processes. A restore marks each process its records show as
+ * running exited 137, as if killed, and drops record locks and run markers that no live
+ * process owns, so the copy neither reports phantom work nor stays busy to idle cleanup. */
+const restoreCleanup = [
+  "for d in /tmp/.sandbox-sdk/procs/*/",
+  `do [ -d "$d" ] || continue`,
+  `rm -rf "$d"lock`,
+  `[ ! -f "$d"spec.json ] || [ -f "$d"exit ] || printf 137 > "$d"exit || exit 1`,
+  "done",
+  "rm -rf /tmp/.sandbox-sdk/runs/*",
+].join("; ");
+
 /** Adapter bookkeeping kept in Docker labels. Callers see only their labels and `sandbox-sdk`. A restored container inherits its image's snapshot label. */
 const internal = new Set([deadlineLabel, idleLabel, keyLabel, snapshotLabel]);
 
@@ -367,6 +379,8 @@ export function local(options: LocalOptions = {}): LocalProvider {
           if (code !== 0)
             throw failure(`Could not give /workspace to user ${options.user}`, "invalid_argument");
         }
+
+        if (input.from !== undefined) await raw(id, ["sh", "-c", restoreCleanup]);
 
         phases.createPrerequisiteMs = performance.now() - phase;
 
