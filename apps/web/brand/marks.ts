@@ -52,6 +52,7 @@ export function isMarkName(name: string): name is MarkName {
 
 export function markPath(name: MarkName, color: string) {
   const { path, rule } = marks[name];
+
   return `<path fill="${color}" fill-rule="${rule}" d="${path}"/>`;
 }
 
