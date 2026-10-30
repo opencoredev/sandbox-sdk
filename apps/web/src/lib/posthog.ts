@@ -41,10 +41,12 @@ export function loadPostHog(): Promise<PostHog> | undefined {
 
     return posthog;
   });
+
   // a failed chunk load (say, briefly offline) shouldn't stick: the next call tries again
   loading.catch(() => {
     if (client === loading) client = undefined;
   });
+
   client = loading;
 
   return client;
