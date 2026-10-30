@@ -1,4 +1,4 @@
-/** Links, the install command and halftone styles, shared by the landing page and the /v2 preview. Plain constants, so server components can read them. */
+/** Links, the install command and halftone styles, shared by the landing page. Plain constants, so server components can read them. */
 import type { HalftoneDots } from "@/components/halftone/halftone";
 
 export const GITHUB = "https://github.com/opencoredev/sandbox-sdk";

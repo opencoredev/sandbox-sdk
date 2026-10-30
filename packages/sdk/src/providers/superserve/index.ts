@@ -1016,6 +1016,8 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           );
         await ensure(id);
         const name = `sbxsdk-${crypto.randomUUID()}`;
+        // A status Superserve confirmed is a real answer; only an unconfirmed outcome is unknown.
+        let terminal: SandboxError | undefined;
 
         try {
           const deadline = createDeadline(timeout);
@@ -1039,8 +1041,11 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
             if (status === "ready") return { id: snapshotId };
 
-            if (status === "failed" || status === "deleting")
-              throw failure(`Snapshot ${status}`, "provider", id);
+            if (status === "failed" || status === "deleting") {
+              terminal = failure(`Snapshot ${status}`, "provider", id);
+              throw terminal;
+            }
+
             await sleep(Math.min(snapshotPollMs, deadline.remaining()), deadline, "superserve");
             snapshot = await http.json({
               method: "GET",
@@ -1051,6 +1056,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             });
           }
         } catch {
+          if (terminal) throw terminal;
           throw failure(
             `Snapshot outcome unknown; recover snapshot named ${name} from source ${id}`,
             "outcome_unknown",

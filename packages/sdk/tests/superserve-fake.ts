@@ -74,6 +74,7 @@ export const state = {
   // SAFETY: an empty start value, typed for what the tests store in it later.
   bootstrap: undefined as undefined | (() => Promise<void>),
   snapshotFailure: false,
+  snapshotRejected: false,
   // SAFETY: an empty start value, typed for what the tests store in it later.
   snapshotOptions: undefined as unknown,
   dropNetwork: false,
@@ -297,7 +298,7 @@ async function control(method: string, url: URL, body: JsonValue | undefined): P
     return json(201, {
       id: "snapshot-1",
       sandbox_id: id,
-      status: "ready",
+      status: state.snapshotRejected ? "failed" : "ready",
       created_at: new Date().toISOString(),
     });
   }

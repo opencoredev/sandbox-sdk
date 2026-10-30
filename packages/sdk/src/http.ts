@@ -233,6 +233,15 @@ export interface Deadline {
 }
 
 /** A deadline `timeoutMs` from now that also follows `parent`. */
+/** Hosts where plain HTTP cannot expose credentials on the internet: loopback, and the reserved
+ * names of RFC 2606 and 6761 (`.test`, `.invalid`, `.example`, `.localhost`), which never resolve publicly. */
+function isPrivateHost(hostname: string): boolean {
+  return (
+    ["localhost", "127.0.0.1", "[::1]"].includes(hostname) ||
+    /\.(test|invalid|example|localhost)$/.test(hostname)
+  );
+}
+
 export function createDeadline(timeoutMs: number, parent?: AbortSignal): Deadline {
   const at = Date.now() + timeoutMs;
   const timeout = AbortSignal.timeout(Math.max(0, timeoutMs));
@@ -833,6 +842,19 @@ export function createHttpClient<Plane extends string>(
           ? { kind: "timeout", sent: false }
           : undefined;
 
+    /** A bounded error body. A deadline that fires mid-read is the outcome; other read failures leave it empty. */
+    const errorText = async (response: Response) => {
+      try {
+        return utf8.decode(await readBody(response.body, errorBodyBytes, () => undefined));
+      } catch {
+        const halt = halted();
+
+        if (halt) throw mapFailure(halt, request, planeName);
+
+        return "";
+      }
+    };
+
     for (let attempt = 0; ; attempt++) {
       const stop = halted();
 
@@ -885,11 +907,29 @@ export function createHttpClient<Plane extends string>(
       const generation = refreshes.get(refreshKey)?.generation ?? 0;
       let origin: string;
 
+      let baseUrl: URL;
+
       try {
-        origin = new URL(base).origin;
+        baseUrl = new URL(base);
       } catch {
         throw failure("provider", request, `: the ${label} base URL is invalid.`, undefined, false);
       }
+
+      origin = baseUrl.origin;
+
+      // Credentials never travel unencrypted to a public host. Local dev servers and test fakes are exempt.
+      if (
+        Object.keys(credentials).length > 0 &&
+        baseUrl.protocol === "http:" &&
+        !isPrivateHost(baseUrl.hostname)
+      )
+        throw failure(
+          "invalid_argument",
+          request,
+          `: the ${label} base URL uses plain HTTP, which would send credentials unencrypted. Use an https URL.`,
+          undefined,
+          false,
+        );
 
       let url = buildUrl(base, request);
       let method: HttpMethod = request.method;
@@ -1016,13 +1056,7 @@ export function createHttpClient<Plane extends string>(
         response.status >= 400 &&
         response.status !== 401
       )
-        errorBody = parseErrorBody(
-          utf8.decode(
-            await readBody(response.body, errorBodyBytes, () => undefined).catch(
-              () => new Uint8Array(),
-            ),
-          ),
-        );
+        errorBody = parseErrorBody(await errorText(response));
 
       const verdict: StaleVerdict | undefined =
         !refreshable || !response
@@ -1092,15 +1126,7 @@ export function createHttpClient<Plane extends string>(
       if (response && response.status >= 200 && response.status < 300) return response;
 
       if (response) {
-        const body =
-          errorBody ??
-          parseErrorBody(
-            utf8.decode(
-              await readBody(response.body, errorBodyBytes, () => undefined).catch(
-                () => new Uint8Array(),
-              ),
-            ),
-          );
+        const body = errorBody ?? parseErrorBody(await errorText(response));
 
         failed = { kind: "status", status: response.status, headers: response.headers, body };
 

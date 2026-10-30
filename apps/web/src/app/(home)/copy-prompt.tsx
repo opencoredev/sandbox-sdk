@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 
-import styles from "./v2.module.css";
+import styles from "./paper.module.css";
 
 /** The 1.0 quickstart as Markdown, for agents. Update when the 1.0 docs move to sandbox-sdk.app. */
 const QUICKSTART_MD = "https://sandbox-sdk.app/docs/getting-started/quickstart.md";
