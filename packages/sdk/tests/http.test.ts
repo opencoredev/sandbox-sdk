@@ -8,6 +8,7 @@ import {
 } from "../src/http.js";
 import { ndjson, streamFault } from "../src/streams.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 let server: FakeServer;
 let other: FakeServer;
@@ -44,19 +45,6 @@ function client(overrides: Partial<HttpClientOptions<"api" | "data">> = {}) {
   });
 }
 
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
-
 const text = (error: SandboxError) => `${error.message} ${error.hint} ${String(error.cause)}`;
 
 describe("requests", () => {
@@ -90,27 +78,35 @@ describe("requests", () => {
 
   test("placeholder mistakes are invalid_argument before any request", async () => {
     const http = client();
-    expect((await failure(http.json({ method: "GET", path: "/sandboxes/{id}" }))).code).toBe(
+    expect((await rejection(http.json({ method: "GET", path: "/sandboxes/{id}" }))).code).toBe(
       "invalid_argument",
     );
     expect(
-      (await failure(http.json({ method: "GET", path: "/sandboxes", params: { id: "x" } }))).code,
+      (await rejection(http.json({ method: "GET", path: "/sandboxes", params: { id: "x" } }))).code,
     ).toBe("invalid_argument");
     expect(
-      (await failure(http.json({ method: "GET", path: "/sandboxes/{id}", params: { id: ".." } })))
+      (await rejection(http.json({ method: "GET", path: "/sandboxes/{id}", params: { id: ".." } })))
         .code,
     ).toBe("invalid_argument");
-    expect((await failure(http.json({ method: "GET", path: "/a/../b" }))).code).toBe(
+    expect((await rejection(http.json({ method: "GET", path: "/a/../b" }))).code).toBe(
       "invalid_argument",
     );
-    expect((await failure(http.json({ method: "GET", path: "relative" }))).code).toBe(
+    expect((await rejection(http.json({ method: "GET", path: "relative" }))).code).toBe(
       "invalid_argument",
     );
-    expect(
-      // SAFETY: the test passes an unknown plane on purpose.
-      (await failure(http.json({ method: "GET", path: "/x", plane: "nope" as "api" }))).code,
-    ).toBe("invalid_argument");
-    expect((await failure(http.json({ method: "GET", path: "/x", body: { a: 1 } }))).code).toBe(
+
+    // Typed for any plane name, as a JavaScript caller is: the client checks the name at run time.
+    const untyped = createHttpClient<string>({
+      provider: "fake",
+      label: "Fake",
+      planes: { api: { baseUrl: `${server.url}/v1` } },
+      defaultPlane: "api",
+    });
+
+    expect((await rejection(untyped.json({ method: "GET", path: "/x", plane: "nope" }))).code).toBe(
+      "invalid_argument",
+    );
+    expect((await rejection(http.json({ method: "GET", path: "/x", body: { a: 1 } }))).code).toBe(
       "invalid_argument",
     );
     expect(server.requests).toHaveLength(0);
@@ -119,7 +115,7 @@ describe("requests", () => {
   test("204 and empty bodies are undefined; a non-JSON 2xx body is a provider error", async () => {
     server.on("DELETE /v1/x", { status: 204 }).on("GET /v1/html", { body: "<html>" });
     expect(await client().json({ method: "DELETE", path: "/x" })).toBeUndefined();
-    const error = await failure(client().json({ method: "GET", path: "/html" }));
+    const error = await rejection(client().json({ method: "GET", path: "/html" }));
     expect(error.code).toBe("provider");
     expect(error.message).toContain("not JSON");
   });
@@ -127,7 +123,7 @@ describe("requests", () => {
   test("a buffered body over maxBytes is unsupported", async () => {
     server.on("GET /v1/big", { body: "x".repeat(10_000) });
     expect(
-      (await failure(client().request({ method: "GET", path: "/big", maxBytes: 1000 }))).code,
+      (await rejection(client().request({ method: "GET", path: "/big", maxBytes: 1000 }))).code,
     ).toBe("unsupported");
   });
 });
@@ -141,14 +137,14 @@ describe("retries", () => {
 
   test("gives up after two retries with the mapped error", async () => {
     server.on("GET /v1/x", { status: 502 });
-    const error = await failure(client().json({ method: "GET", path: "/x" }));
+    const error = await rejection(client().json({ method: "GET", path: "/x" }));
     expect(error).toMatchObject({ code: "unavailable", retryable: true, provider: "fake" });
     expect(server.calls("GET /v1/x")).toHaveLength(3);
   });
 
   test("a Retry-After over 20 s is not waited for", async () => {
     server.on("GET /v1/x", { status: 429, headers: { "retry-after": "60" } });
-    const error = await failure(client().json({ method: "GET", path: "/x" }));
+    const error = await rejection(client().json({ method: "GET", path: "/x" }));
     expect(error).toMatchObject({ code: "quota", retryable: true });
     expect(server.requests).toHaveLength(1);
   });
@@ -157,7 +153,7 @@ describe("retries", () => {
     server.on("GET /v1/x", { status: 503, headers: { "retry-after": "5" } });
     const started = Date.now();
     expect(
-      (await failure(client().json({ method: "GET", path: "/x", timeoutMs: 1_000 }))).code,
+      (await rejection(client().json({ method: "GET", path: "/x", timeoutMs: 1_000 }))).code,
     ).toBe("unavailable");
     // It answers at once instead of sleeping 5 s first.
     expect(Date.now() - started).toBeLessThan(3_000);
@@ -166,7 +162,7 @@ describe("retries", () => {
 
   test("a POST is never retried without an idempotency key", async () => {
     server.on("POST /v1/x", { status: 503 });
-    expect((await failure(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
+    expect((await rejection(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
       "unavailable",
     );
     expect(server.requests).toHaveLength(1);
@@ -199,7 +195,7 @@ describe("retries", () => {
       },
     });
 
-    expect((await failure(client().request({ method: "PUT", path: "/upload", body }))).code).toBe(
+    expect((await rejection(client().request({ method: "PUT", path: "/upload", body }))).code).toBe(
       "unavailable",
     );
     expect(server.requests).toHaveLength(1);
@@ -226,7 +222,7 @@ describe("unknown outcomes", () => {
   test("a POST whose connection drops after sending is outcome_unknown and not retried", async () => {
     server.on("POST /v1/sandboxes", { drop: true });
 
-    const error = await failure(
+    const error = await rejection(
       client({ idempotencyHeader: undefined }).json({
         method: "POST",
         path: "/sandboxes",
@@ -240,7 +236,9 @@ describe("unknown outcomes", () => {
 
   test("a GET whose connection drops is retried, then unavailable", async () => {
     server.on("GET /v1/x", { drop: true });
-    expect((await failure(client().json({ method: "GET", path: "/x" }))).code).toBe("unavailable");
+    expect((await rejection(client().json({ method: "GET", path: "/x" }))).code).toBe(
+      "unavailable",
+    );
     expect(server.requests).toHaveLength(3);
   });
 
@@ -257,7 +255,7 @@ describe("unknown outcomes", () => {
       backoffMs: 1,
     });
 
-    expect((await failure(http.json({ method: "POST", path: "/x", body: {} }))).code).toBe(
+    expect((await rejection(http.json({ method: "POST", path: "/x", body: {} }))).code).toBe(
       "unavailable",
     );
   });
@@ -265,26 +263,28 @@ describe("unknown outcomes", () => {
   test("a POST that times out is outcome_unknown; a GET is timeout", async () => {
     server.on("POST /v1/x", { hang: true }).on("GET /v1/x", { hang: true });
     expect(
-      (await failure(client().json({ method: "POST", path: "/x", body: {}, timeoutMs: 100 }))).code,
+      (await rejection(client().json({ method: "POST", path: "/x", body: {}, timeoutMs: 100 })))
+        .code,
     ).toBe("outcome_unknown");
-    expect((await failure(client().json({ method: "GET", path: "/x", timeoutMs: 100 }))).code).toBe(
-      "timeout",
-    );
+    expect(
+      (await rejection(client().json({ method: "GET", path: "/x", timeoutMs: 100 }))).code,
+    ).toBe("timeout");
   });
 
   test("a 504 on a POST is outcome_unknown; a readOnly POST maps like a GET", async () => {
     server.on("POST /v1/x", { status: 504 });
-    expect((await failure(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
+    expect((await rejection(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
       "outcome_unknown",
     );
     expect(
-      (await failure(client().json({ method: "POST", path: "/x", body: {}, readOnly: true }))).code,
+      (await rejection(client().json({ method: "POST", path: "/x", body: {}, readOnly: true })))
+        .code,
     ).toBe("timeout");
   });
 
   test("a POST whose 2xx body is cut is outcome_unknown", async () => {
     server.on("POST /v1/x", { stream: ['{"id":'], cut: true });
-    expect((await failure(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
+    expect((await rejection(client().json({ method: "POST", path: "/x", body: {} }))).code).toBe(
       "outcome_unknown",
     );
   });
@@ -294,7 +294,8 @@ describe("unknown outcomes", () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
     expect(
-      (await failure(client().json({ method: "GET", path: "/x", signal: controller.signal }))).code,
+      (await rejection(client().json({ method: "GET", path: "/x", signal: controller.signal })))
+        .code,
     ).toBe("aborted");
   });
 
@@ -303,7 +304,7 @@ describe("unknown outcomes", () => {
     server.on("GET /v1/x", { json: {}, delayMs: 600 });
     const deadline = createDeadline(1_000);
     await client().json({ method: "GET", path: "/x", deadline });
-    expect((await failure(client().json({ method: "GET", path: "/x", deadline }))).code).toBe(
+    expect((await rejection(client().json({ method: "GET", path: "/x", deadline }))).code).toBe(
       "timeout",
     );
   });
@@ -400,7 +401,7 @@ describe("errors are redacted and bounded", () => {
       headers: { "x-request-id": "req_123" },
     });
 
-    const error = await failure(
+    const error = await rejection(
       client().json({
         method: "GET",
         path: "/sandboxes/{id}",
@@ -426,7 +427,7 @@ describe("errors are redacted and bounded", () => {
       },
     });
 
-    const error = await failure(
+    const error = await rejection(
       client().json({ method: "POST", path: "/x", body: {}, detail: "message" }),
     );
 
@@ -437,7 +438,7 @@ describe("errors are redacted and bounded", () => {
 
   test("an auth failure uses the provider's hint and never shows the credential", async () => {
     server.on("GET /v1/x", { status: 401, body: `invalid key ${key}` });
-    const error = await failure(client().json({ method: "GET", path: "/x", detail: "message" }));
+    const error = await rejection(client().json({ method: "GET", path: "/x", detail: "message" }));
     expect(error).toMatchObject({ code: "auth", hint: "Set FAKE_API_KEY." });
     expect(text(error)).not.toContain(key);
   });
@@ -449,7 +450,7 @@ describe("errors are redacted and bounded", () => {
       },
     });
 
-    const error = await failure(http.json({ method: "GET", path: "/x" }));
+    const error = await rejection(http.json({ method: "GET", path: "/x" }));
     expect(error.code).toBe("unavailable");
     expect(String(error.cause)).toContain("TypeError: fetch failed for [REDACTED]");
   });
@@ -470,7 +471,7 @@ describe("errors are redacted and bounded", () => {
           : undefined,
     });
 
-    expect((await failure(http.json({ method: "GET", path: "/files" }))).code).toBe(
+    expect((await rejection(http.json({ method: "GET", path: "/files" }))).code).toBe(
       "file_not_found",
     );
   });
@@ -484,7 +485,7 @@ describe("errors are redacted and bounded", () => {
     // The server never ends the body; reading stops at 64 KB instead of waiting for the 10 s deadline.
     const started = Date.now();
     expect(
-      (await failure(client({ timeoutMs: 10_000 }).json({ method: "GET", path: "/x" }))).code,
+      (await rejection(client({ timeoutMs: 10_000 }).json({ method: "GET", path: "/x" }))).code,
     ).toBe("invalid_argument");
     expect(Date.now() - started).toBeLessThan(5_000);
   });
@@ -521,24 +522,22 @@ describe("streams", () => {
       const response = await client().stream({
         path: "/exec",
         ...request,
-        ...(request.method === "POST" ? { body: {} } : undefined),
+        body: request.method === "POST" ? {} : undefined,
       });
 
       const frames: unknown[] = [];
-      let caught: unknown;
 
-      try {
-        for await (const frame of ndjson(response.body!, { provider: "fake" })) frames.push(frame);
-      } catch (error) {
-        caught = error;
-      }
+      const error = await rejection(
+        (async () => {
+          for await (const frame of ndjson(response.body!, { provider: "fake" }))
+            frames.push(frame);
+        })(),
+      );
 
       expect(frames).toEqual([{ out: 1 }]);
-      expect(caught).toBeInstanceOf(SandboxError);
-      expect(streamFault(caught)).toBe("disconnected");
+      expect(streamFault(error)).toBe("disconnected");
 
-      // SAFETY: the call under test rejects only with a SandboxError.
-      return caught as SandboxError;
+      return error;
     };
 
     server.on("POST /v1/exec", { stream: ['{"out":1}\n', '{"out"'], cut: true });
@@ -562,14 +561,14 @@ describe("streams", () => {
     const idle = async (request: { method: "POST" | "GET"; path: string }) => {
       const response = await client().stream({
         ...request,
-        ...(request.method === "POST" ? { body: {} } : undefined),
+        body: request.method === "POST" ? {} : undefined,
         idleTimeoutMs: 100,
       });
 
       const reader = response.body!.getReader();
       await reader.read();
 
-      return failure(reader.read());
+      return rejection(reader.read());
     };
 
     expect(await idle({ method: "POST", path: "/exec" })).toMatchObject({
@@ -585,7 +584,7 @@ describe("streams", () => {
   test("the startup timeout covers time to headers", async () => {
     server.on("GET /v1/logs", { hang: true });
     expect(
-      (await failure(client().stream({ method: "GET", path: "/logs", startupTimeoutMs: 100 })))
+      (await rejection(client().stream({ method: "GET", path: "/logs", startupTimeoutMs: 100 })))
         .code,
     ).toBe("timeout");
   });
@@ -596,22 +595,20 @@ describe("streams", () => {
     const response = await client().stream({ method: "GET", path: "/logs", idleTimeoutMs: 1_000 });
     const reader = response.body!.getReader();
     const seen: string[] = [];
-    let caught: unknown;
 
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
+    const error = await rejection(
+      (async () => {
+        for (;;) {
+          const { done, value } = await reader.read();
 
-        if (done) break;
-        seen.push(new TextDecoder().decode(value));
-      }
-    } catch (error) {
-      caught = error;
-    }
+          if (done) break;
+          seen.push(new TextDecoder().decode(value));
+        }
+      })(),
+    );
 
     expect(seen.join("")).toBe("abc");
-    // SAFETY: the call under test rejects only with a SandboxError.
-    expect((caught as SandboxError).code).toBe("timeout");
+    expect(error.code).toBe("timeout");
   });
 
   test("cancelling the body closes the connection", async () => {
@@ -637,13 +634,13 @@ describe("streams", () => {
     const reader = response.body!.getReader();
     await reader.read();
     setTimeout(() => controller.abort(), 20);
-    const error = await failure(reader.read());
+    const error = await rejection(reader.read());
     expect(error.code).toBe("aborted");
   });
 
   test("a non-2xx stream response rejects before the body is handed over", async () => {
     server.on("GET /v1/logs", { status: 404, json: { code: "gone" } });
-    expect((await failure(client().stream({ method: "GET", path: "/logs" }))).code).toBe(
+    expect((await rejection(client().stream({ method: "GET", path: "/logs" }))).code).toBe(
       "not_found",
     );
   });

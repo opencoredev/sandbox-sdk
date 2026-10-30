@@ -5,7 +5,6 @@ import type { JsonObject } from "../src/shared/json.js";
 import { isString } from "../src/shared/narrow.js";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import type { BoatApi } from "@boatdev/sdk";
-import { SandboxError } from "../src/index.js";
 import type { ExecInput } from "../src/provider.js";
 import { boat } from "../src/providers/boat/index.js";
 import { sandboxer } from "../src/providers/sandboxer/index.js";
@@ -16,6 +15,7 @@ import {
 } from "../src/providers/boat-api/follow.js";
 import { boatHttp } from "../src/providers/boat-api/transport.js";
 import { fakeServer, pieces, type FakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 let server: FakeServer;
 
@@ -72,18 +72,6 @@ const offsets = (index: number) => {
 
   return [url.searchParams.get("stdoutOffset"), url.searchParams.get("stderrOffset")];
 };
-
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    if (error instanceof SandboxError) return error;
-  }
-
-  throw new Error("expected a SandboxError rejection");
-}
 
 describe("command stream", () => {
   test("a forced reconnect frame reopens at its offsets at once, with no gap and no repeat", async () => {
@@ -150,7 +138,7 @@ describe("command stream", () => {
 
   test("an exit frame without an exit code is outcome_unknown", async () => {
     server.on(streamRoute, { stream: [attached(), line({ type: "exit", status: "exited" })] });
-    expect((await failure(follow())).code).toBe("outcome_unknown");
+    expect((await rejection(follow())).code).toBe("outcome_unknown");
   });
 
   test("a cut inside a JSON line resumes without a partial frame", async () => {
@@ -231,7 +219,7 @@ describe("command stream", () => {
 
   test("the first attach is not retried, so a missing stream fails fast", async () => {
     server.on(streamRoute, { status: 503, json: { ok: false, code: "unavailable" } });
-    expect((await failure(follow())).code).toBe("unavailable");
+    expect((await rejection(follow())).code).toBe("unavailable");
     expect(server.calls(streamRoute)).toHaveLength(1);
   });
 
@@ -241,14 +229,14 @@ describe("command stream", () => {
       { stream: [attached(), out("a", 1)], cut: true },
       { status: 404, json: { ok: false, code: "not_found" } },
     );
-    expect((await failure(follow())).code).toBe("not_found");
+    expect((await rejection(follow())).code).toBe("not_found");
     expect(server.calls(streamRoute)).toHaveLength(2);
   });
 
   test("failing reconnects give up after the retry window", async () => {
     server.on(streamRoute, { stream: [attached(), out("a", 1)], cut: true }, { drop: true });
 
-    const error = await failure(
+    const error = await rejection(
       follow({ timing: { idleMs: 2_000, retryWindowMs: 200, retryDelayMs: 20 } }),
     );
 
@@ -258,7 +246,7 @@ describe("command stream", () => {
 
   test("a malformed frame fails without a retry", async () => {
     server.on(streamRoute, { stream: [attached(), line({ type: "stdout" })] });
-    expect((await failure(follow())).code).toBe("provider");
+    expect((await rejection(follow())).code).toBe("provider");
     expect(server.calls(streamRoute)).toHaveLength(1);
   });
 
@@ -267,7 +255,7 @@ describe("command stream", () => {
     const abort = new AbortController();
     setTimeout(() => abort.abort(), 30);
     const started = Date.now();
-    expect((await failure(follow({ signal: abort.signal }))).code).toBe("aborted");
+    expect((await rejection(follow({ signal: abort.signal }))).code).toBe("aborted");
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
@@ -355,7 +343,7 @@ describe("adapter over HTTP", () => {
     setTimeout(() => abort.abort(), 20);
     expect(
       (
-        await failure(
+        await rejection(
           boat({ apiKey: "k", baseUrl: server.url }).create({ labels: {}, signal: abort.signal }),
         )
       ).code,
@@ -369,7 +357,7 @@ describe("adapter over HTTP", () => {
   test("a launched command whose response is lost is outcome_unknown", async () => {
     server.on("POST /sandboxes/{id}/commands", { drop: true });
 
-    const error = await failure(
+    const error = await rejection(
       boat({ apiKey: "k", baseUrl: server.url }).exec("bx_1", execInput()),
     );
 
@@ -481,7 +469,7 @@ describe("native API", () => {
     const { api } = boat({ apiKey: "k", baseUrl: server.url });
     expect(api.sandboxId).toBeUndefined();
     expect(await api.request("GET", "/limits")).toEqual({ ok: true, limits: {} });
-    expect((await failure(api.request("GET", "/sandboxes/{sandboxId}"))).code).toBe(
+    expect((await rejection(api.request("GET", "/sandboxes/{sandboxId}"))).code).toBe(
       "invalid_argument",
     );
     expect(server.calls("GET /sandboxes/{id}")).toHaveLength(0);
@@ -501,7 +489,7 @@ describe("native API", () => {
     );
 
     expect(await response.text()).toBe(attached() + exit());
-    const error = await failure(native.request("GET", "/sandboxes/{sandboxId}/nope"));
+    const error = await rejection(native.request("GET", "/sandboxes/{sandboxId}/nope"));
     expect(error).toMatchObject({ code: "not_found", provider: "boat", sandboxId: "bx_1" });
     expect(error.message).toContain("no route for");
     expect(error.message).not.toContain("boat-key-123456");
@@ -513,7 +501,7 @@ describe("native API", () => {
 
     try {
       expect(
-        (await failure(boat({ baseUrl: server.url }).api.request("GET", "/limits"))).code,
+        (await rejection(boat({ baseUrl: server.url }).api.request("GET", "/limits"))).code,
       ).toBe("auth");
       expect(server.calls("GET /limits")).toHaveLength(0);
     } finally {
@@ -541,7 +529,7 @@ describe("native API", () => {
   test("sdk(load) with a module that is not @boatdev/sdk is invalid_argument", async () => {
     const native = boat({ apiKey: "k", baseUrl: server.url }).native("bx_1");
     // @ts-expect-error the module lacks Configuration and BoatApi
-    const error = await failure(native.sdk(async () => ({ Other: class {} })));
+    const error = await rejection(native.sdk(async () => ({ Other: class {} })));
     expect(error.code).toBe("invalid_argument");
     expect(error.message).toContain('import("@boatdev/sdk")');
   });

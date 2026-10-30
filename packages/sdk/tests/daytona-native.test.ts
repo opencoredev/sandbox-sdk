@@ -3,6 +3,7 @@ import { createSandbox, SandboxError, type NativeApi } from "../src/index.js";
 import { daytona, type DaytonaNative, type DaytonaPlane } from "../src/providers/daytona/index.js";
 import { apiUrl, cleanupMock, guest, requests } from "./daytona-mock.js";
 import { fakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -10,19 +11,6 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await cleanupMock();
 });
-
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
 
 // A stand-in for @daytonaio/sdk with the shape native.sdk() needs.
 interface FakeConfig {
@@ -66,7 +54,7 @@ describe("box.native", () => {
     expect(requests.at(-1)?.url).toBe(`/toolbox/${box.id}/files?path=%2Fworkspace`);
     expect(requests.at(-1)?.headers.authorization).toBe("Bearer native-key");
     // @ts-expect-error not one of Daytona's planes; JavaScript callers get invalid_argument
-    expect((await failure(box.native.request("GET", "/files", { plane: "data" }))).code).toBe(
+    expect((await rejection(box.native.request("GET", "/files", { plane: "data" }))).code).toBe(
       "invalid_argument",
     );
   });
@@ -88,7 +76,7 @@ describe("box.native", () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
     const before = requests.length;
 
-    const error = await failure(
+    const error = await rejection(
       box.native.request("GET", "/sandbox/{sandboxId}/ports/{port}/preview-url"),
     );
 
@@ -104,7 +92,7 @@ describe("box.native", () => {
   test("an unknown endpoint is a SandboxError with the provider's scrubbed message", async () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
 
-    const error = await failure(
+    const error = await rejection(
       box.native.request("POST", "/no/such/endpoint", { body: { a: 1 } }),
     );
 
@@ -140,7 +128,7 @@ describe("box.native", () => {
   test("sdk(load) rejects a module without Daytona, and a missing package with the install hint", async () => {
     const box = await createSandbox(daytona({ apiKey: "native-key" }));
     // @ts-expect-error not the @daytonaio/sdk shape; JavaScript callers get invalid_argument
-    expect((await failure(box.native.sdk(() => Promise.resolve({ Other: class {} })))).code).toBe(
+    expect((await rejection(box.native.sdk(() => Promise.resolve({ Other: class {} })))).code).toBe(
       "invalid_argument",
     );
 
@@ -148,7 +136,7 @@ describe("box.native", () => {
       code: "ERR_MODULE_NOT_FOUND",
     });
 
-    expect(await failure(box.native.sdk(() => Promise.reject(missing)))).toMatchObject({
+    expect(await rejection(box.native.sdk(() => Promise.reject(missing)))).toMatchObject({
       code: "unavailable",
       hint: "npm i @daytonaio/sdk",
     });
@@ -188,15 +176,15 @@ describe("provider.api", () => {
     });
 
     expect(listed.items.map((item) => item.id)).toEqual([box.id]);
-    expect((await failure(provider.api.request("GET", "/sandbox/{sandboxId}"))).code).toBe(
+    expect((await rejection(provider.api.request("GET", "/sandbox/{sandboxId}"))).code).toBe(
       "invalid_argument",
     );
     expect(
       await provider.api.request("GET", "/sandbox/{sandboxId}", { params: { sandboxId: box.id } }),
     ).toMatchObject({ id: box.id });
-    expect((await failure(provider.api.request("GET", "/files", { plane: "toolbox" }))).code).toBe(
-      "invalid_argument",
-    );
+    expect(
+      (await rejection(provider.api.request("GET", "/files", { plane: "toolbox" }))).code,
+    ).toBe("invalid_argument");
     expect(guest(box.id)).toBeDefined();
   });
 
@@ -212,7 +200,7 @@ describe("provider.api", () => {
   test("missing credentials fail as auth before any request", async () => {
     vi.stubEnv("DAYTONA_API_KEY", "");
     const before = requests.length;
-    expect((await failure(daytona().api.request("GET", "/sandbox"))).code).toBe("auth");
+    expect((await rejection(daytona().api.request("GET", "/sandbox"))).code).toBe("auth");
     expect(requests).toHaveLength(before);
     vi.unstubAllEnvs();
   });

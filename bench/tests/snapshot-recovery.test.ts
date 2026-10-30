@@ -42,17 +42,16 @@ it.each(["missing", "other-run", "other-source", "live-other-source"])(
 
     const remove = vi.fn(async () => {});
 
+    const source = proof("source");
+
     const recorded =
       mode === "missing"
         ? undefined
-        : {
-            ...proof("source"),
-            ...(mode === "other-run"
-              ? { runLabel: "foreign" }
-              : mode === "other-source"
-                ? { sourceId: "foreign" }
-                : {}),
-          };
+        : mode === "other-run"
+          ? { ...source, runLabel: "foreign" }
+          : mode === "other-source"
+            ? { ...source, sourceId: "foreign" }
+            : source;
 
     await expect(
       snapshots.deleteProvenSnapshot(
