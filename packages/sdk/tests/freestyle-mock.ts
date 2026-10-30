@@ -46,14 +46,17 @@ type CreateTlsRuleOptions = Record<string, unknown>;
 
 export const freestyleState = {
   boxes: new Map<string, MockVm>(),
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   creates: [] as CreateVmOptions[],
   snapshots: new Map<string, string>(),
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   rules: [] as CreateTlsRuleOptions[],
   error: 0,
   listError: 0,
   widen: false,
   delay: 0,
   peak: 0,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   snapshotOptions: [] as unknown[],
 };
 
@@ -292,12 +295,14 @@ async function route(
   if (v5 !== "v5") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
 
   if (vms === "tls" && method === "POST" && id === undefined)
+    // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
     return Response.json(await backend.tls.rules.create(json() as CreateTlsRuleOptions));
 
   if (vms !== "vms") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
 
   if (id === undefined) {
     if (method === "POST") {
+      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
       const { data, firewallRules, tlsRules } = await backend.vms.create(json() as CreateVmOptions);
 
       return Response.json({ ...data, firewallRules, tlsRules }, { status: 201 });
@@ -327,6 +332,7 @@ async function route(
 
   switch (`${method} ${action}`) {
     case "POST exec-await":
+      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
       return Response.json(await vm.exec(json() as ExecOptions));
     case "POST pause":
       return Response.json(await vm.pause());

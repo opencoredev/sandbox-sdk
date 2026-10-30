@@ -25,6 +25,7 @@ async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
 
+    // SAFETY: the call under test rejects only with a SandboxError.
     return error as SandboxError;
   }
 

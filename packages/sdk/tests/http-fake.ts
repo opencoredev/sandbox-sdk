@@ -182,6 +182,7 @@ export async function fakeServer(): Promise<FakeServer> {
     socket.on("close", () => sockets.delete(socket));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // SAFETY: a server listening on TCP reports an AddressInfo.
   const { port } = server.address() as AddressInfo;
   const origin = `http://127.0.0.1:${port}`;
 

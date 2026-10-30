@@ -64,7 +64,9 @@ type Command = {
 };
 
 export const mockState = {
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   creates: [] as CreateBody[],
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   permissions: [] as { path: string; mode?: string }[],
   boxes: new Map<string, MockSandbox>(),
   snapshots: new Map<string, string>(),
@@ -484,6 +486,7 @@ function route(
 
 // Control plane: /api/sandbox/... Segments: ["", "api", "sandbox", id, action, ...].
 route("POST", "/api/sandbox", async (request) => {
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const box = await daytona.create(json(request) as CreateBody);
   box.state =
     mockState.createState === "started" && mockState.startPolls
@@ -496,6 +499,7 @@ route("POST", "/api/sandbox", async (request) => {
 
 route("GET", "/api/sandbox", async (request) => {
   const params = query(request);
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const labels = JSON.parse(params.get("labels") ?? "{}") as Record<string, string>;
   const all: MockSandbox[] = [];
 
@@ -566,6 +570,7 @@ route("POST", "/api/sandbox/{id}/start", async (_request, _response, [, , , id =
 
 route("POST", "/api/sandbox/{id}/resize", async (request, _response, [, , , id = ""]) => {
   const box = await daytona.get(id);
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   await box.resize(json(request) as { cpu: number });
 
   return box.dto();
@@ -573,6 +578,7 @@ route("POST", "/api/sandbox/{id}/resize", async (request, _response, [, , , id =
 
 route("POST", "/api/sandbox/{id}/snapshot", async (request, _response, [, , , id = ""]) => {
   const box = await daytona.get(id);
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const { name } = json(request) as { name: string };
   await box.createSnapshot(name);
 
@@ -636,6 +642,7 @@ tool("POST", "/files/bulk-upload", async (box, request) => {
 
 /** The daemon's bulk-download: one `file` or `error` part per path, with Daytona's fixed boundary. */
 tool("POST", "/files/bulk-download", async (box, request, response) => {
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const { paths } = json(request) as { paths: string[] };
   response.writeHead(200, {
     "content-type": "multipart/form-data; boundary=DAYTONA-FILE-BOUNDARY",
@@ -699,6 +706,7 @@ tool("POST", "/files/permissions", async (box, request) => {
 });
 
 tool("POST", "/process/execute", async (box, request) => {
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const body = json(request) as {
     command: string;
     cwd?: string;
@@ -710,6 +718,7 @@ tool("POST", "/process/execute", async (box, request) => {
 });
 
 tool("POST", "/process/code-run", async (box, request) => {
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   const body = json(request) as { code: string; language: string };
 
   if (body.language !== "python") throw failure(400, "unsupported language");
@@ -718,6 +727,7 @@ tool("POST", "/process/code-run", async (box, request) => {
 });
 
 tool("POST", "/process/session", async (box, request) => {
+  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
   await box.process.createSession((json(request) as { sessionId: string }).sessionId);
 });
 
@@ -733,6 +743,7 @@ tool(
   "POST",
   "/process/session/{session}/exec",
   async (box, request, _response, [, , , , , session = ""]) =>
+    // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
     box.process.executeSessionCommand(session, json(request) as { command: string }),
 );
 

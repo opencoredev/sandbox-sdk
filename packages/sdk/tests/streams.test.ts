@@ -22,6 +22,7 @@ async function collect<T>(
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
 
+    // SAFETY: the call under test rejects only with a SandboxError.
     return { frames: out, error: error as SandboxError };
   }
 
@@ -118,6 +119,7 @@ describe("ndjson", () => {
     }
 
     expect(seen).toHaveLength(1);
+    // SAFETY: the call under test rejects only with a SandboxError.
     expect((caught as SandboxError).code).toBe("aborted");
     expect(body.cancelled()).toBe(true);
   });

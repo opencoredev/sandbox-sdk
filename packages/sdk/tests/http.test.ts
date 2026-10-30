@@ -50,6 +50,7 @@ async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
 
+    // SAFETY: the call under test rejects only with a SandboxError.
     return error as SandboxError;
   }
 
@@ -106,6 +107,7 @@ describe("requests", () => {
       "invalid_argument",
     );
     expect(
+      // SAFETY: the test passes an unknown plane on purpose.
       (await failure(http.json({ method: "GET", path: "/x", plane: "nope" as "api" }))).code,
     ).toBe("invalid_argument");
     expect((await failure(http.json({ method: "GET", path: "/x", body: { a: 1 } }))).code).toBe(
@@ -535,6 +537,7 @@ describe("streams", () => {
       expect(caught).toBeInstanceOf(SandboxError);
       expect(streamFault(caught)).toBe("disconnected");
 
+      // SAFETY: the call under test rejects only with a SandboxError.
       return caught as SandboxError;
     };
 
@@ -607,6 +610,7 @@ describe("streams", () => {
     }
 
     expect(seen.join("")).toBe("abc");
+    // SAFETY: the call under test rejects only with a SandboxError.
     expect((caught as SandboxError).code).toBe("timeout");
   });
 

@@ -226,6 +226,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
 
   // `Sdk` is the adapter's narrowed signature for this one runtime function; its result type is derived from
   // the caller's module type, which no runtime check can produce, so this is the single place it is asserted.
+  // SAFETY: connect implements every overload of Sdk; TypeScript cannot check overloads against one function.
   const sdk = connect as unknown as Sdk;
 
   return {
@@ -236,6 +237,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       request?: NativeRequestOptions<Plane>,
     ): Promise<T> {
       // `T` is the caller's claim about the body, as with `Response.json()`; it is documented as unchecked.
+      // SAFETY: T is the caller's declared response shape; request<T> documents that the body is not validated.
       return (await http.json(call(method, path, request))) as T;
     },
     fetch(method, path, request) {

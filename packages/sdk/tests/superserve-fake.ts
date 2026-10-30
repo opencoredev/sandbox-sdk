@@ -57,37 +57,48 @@ export function gate() {
 
 export const state = {
   boxes: new Map<string, Box>(),
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   requests: [] as FakeRequest[],
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   sockets: [] as FakeSocket[],
   creates: 0,
   nativeTimeoutSeconds: 0,
   bootstrapPath: "",
   updates: new Array<unknown>(),
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   createOptions: undefined as unknown,
   transportFailure: false,
   stdinFailure: false,
   closes: 0,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   bootstrap: undefined as undefined | (() => Promise<void>),
   snapshotFailure: false,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   snapshotOptions: undefined as unknown,
   dropNetwork: false,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   previewAccess: [] as unknown[],
   /** Lifetime of the routing hints the fake hands out. */
   hintSeconds: 3600,
   /** Hand out routes with no routing hint, as an older control plane does. */
   noHints: false,
   /** Held activate or resume responses: the response leaves when the gate opens. Minted when the request arrives. */
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   activateGate: undefined as Promise<void> | undefined,
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   resumeGate: undefined as Promise<void> | undefined,
   /** Answer the next data-plane requests with these failures instead (status, JSON or text body). */
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   dataFaults: [] as { status: number; body: unknown }[],
   /** Hold the create response (the sandbox already exists) until the gate opens. */
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   createGate: undefined as Promise<void> | undefined,
   /** Drop the next `exec/connect` sessions after the command starts, with close code 1006. */
   dropSessions: 0,
   /** Answer the next POST /exec with a 200 whose JSON body is cut short. */
   cutExec: 0,
   /** Hold data-plane responses (decided when the request arrives) until the gate opens. */
+  // SAFETY: an empty start value, typed for what the tests store in it later.
   dataGate: undefined as Promise<void> | undefined,
   /** Refuse the next `exec/connect` dials, as a stale token does (an `error` event and no `close`). */
   refuseDials: 0,
@@ -483,6 +494,7 @@ class FakeWebSocket {
   }
   private emit(type: string, event: object) {
     for (const listener of this.listeners.get(type) ?? [])
+      // SAFETY: listeners for this event type are registered with this signature.
       (listener as (event: object) => void)(event);
   }
   private binary(channel: number, bytes: Uint8Array) {

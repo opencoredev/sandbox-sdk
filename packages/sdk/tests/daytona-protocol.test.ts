@@ -58,6 +58,7 @@ async function failure(promise: Promise<unknown>): Promise<SandboxError> {
   } catch (error) {
     expect(error).toBeInstanceOf(SandboxError);
 
+    // SAFETY: the call under test rejects only with a SandboxError.
     return error as SandboxError;
   }
 
@@ -80,7 +81,9 @@ describe("file transfer", () => {
     expect(form.get("files[0].path")).toBe("/workspace/a b.bin");
     const file = form.get("files[0].file");
     expect(file).toBeInstanceOf(Blob);
+    // SAFETY: the multipart part under test is a file upload.
     expect(new Uint8Array(await (file as Blob).arrayBuffer())).toEqual(data);
+    // SAFETY: the multipart part under test is a file upload.
     expect((file as File).name).toBe("/workspace/a b.bin");
   });
 
