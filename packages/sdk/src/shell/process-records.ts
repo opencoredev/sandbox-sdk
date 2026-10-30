@@ -110,6 +110,10 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
 
   return [
     `mkdir -p ${file.dir} || exit 1`,
+    // The lock makes the running check and the record writes one step, so two concurrent
+    // starts under one name cannot both pass the check.
+    ...lockLines(file.lock),
+    `trap ${quote(unlockCommand(file.lock))} EXIT`,
     `if [ -f ${file.spec} ] && [ ! -f ${file.exit} ]`,
     `then exit ${recordExit.running}`,
     `fi`,

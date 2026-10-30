@@ -84,6 +84,8 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
+  // Names this client is starting on a stream provider, whose records have no atomic guest check.
+  const starting = new Set<string>();
   // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
   const streams = provider.processMode === "stream";
 
@@ -485,6 +487,23 @@ export function makeProcesses(
   >();
 
   async function start(command: string, input: StartOptions = {}): Promise<ProcessHandle> {
+    const name = input.name ?? defaultProcessName(command);
+
+    // Shell setup reserves the name in the guest. Stream records are separate file calls, so
+    // two concurrent starts could both pass the running check before either writes spec.json.
+    if (!streams || !provider.startProcess) return startRecord(command, input);
+
+    if (starting.has(name)) return safe(() => invalid(`Process ${name} is already running`));
+    starting.add(name);
+
+    try {
+      return await startRecord(command, input);
+    } finally {
+      starting.delete(name);
+    }
+  }
+
+  async function startRecord(command: string, input: StartOptions): Promise<ProcessHandle> {
     return safe(async () => {
       const options = { ...input, name: input.name ?? defaultProcessName(command) };
 

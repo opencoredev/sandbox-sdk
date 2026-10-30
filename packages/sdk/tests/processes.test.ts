@@ -270,6 +270,60 @@ test("HTTP readiness allows a cloud handshake longer than 100ms", async () => {
   }
 });
 
+test("concurrent start() calls with one name launch only one process", async () => {
+  const provider = await shellProvider();
+  const exec = provider.exec.bind(provider);
+  // Widen the gap between setup's running check and its record writes, so both calls
+  // reach the check before either writes spec.json unless setup reserves the name.
+  provider.exec = (id, input) =>
+    exec(id, {
+      ...input,
+      command: input.command.replace("then exit 73; fi;", "then exit 73; fi; sleep 0.3;"),
+    });
+  const box = await createSandbox(provider);
+
+  try {
+    const results = await Promise.allSettled([
+      box.start("sleep 30", { name: "twin" }),
+      box.start("sleep 30", { name: "twin" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({
+          code: "invalid_argument",
+          message: expect.stringContaining("already running"),
+        }),
+      }),
+    ]);
+    await box.process("twin").stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("concurrent start() calls with one name on a stream-mode provider launch only one process", async () => {
+  const box = await createSandbox(memory());
+
+  try {
+    const results = await Promise.allSettled([
+      box.start("sleep 5", { name: "twin" }),
+      box.start("sleep 5", { name: "twin" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({ code: "invalid_argument" }),
+      }),
+    ]);
+    await box.process("twin").stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
 /** Poll a process's log until it contains `text`. */
 async function waitForLog(process: { logs(): Promise<{ text: string }> }, text: string) {
   const end = Date.now() + 10_000;
