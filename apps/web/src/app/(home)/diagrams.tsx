@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * The /v2 diagrams: pixel-art scenes, one idea each, drawn on a coarse grid by
+ * The landing page diagrams: pixel-art scenes, one idea each, drawn on a coarse grid by
  * PixelCanvas. Every scene is a loop with a written timeline (in seconds) and
  * a still frame for reduced motion. Labels are real text laid over the canvas.
  */

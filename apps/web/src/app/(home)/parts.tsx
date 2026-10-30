@@ -1,6 +1,6 @@
 "use client";
 
-/** Pieces shared by the landing page and the /v2 preview: links, the logo, buttons and the footer. */
+/** Pieces of the landing page: links, the logo, buttons and the footer. */
 
 import Link from "next/link";
 import { useCallback, useState, type ReactNode } from "react";
