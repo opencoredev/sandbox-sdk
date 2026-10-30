@@ -21,6 +21,12 @@
     },
     { "source": "/llms.txt", "destination": "/docs/llms.txt", "permanent": true },
     { "source": "/llms-full.txt", "destination": "/docs/llms-full.txt", "permanent": true },
+    { "source": "/llms.mdx/docs/content.md", "destination": "/docs/index.md", "permanent": true },
+    {
+      "source": "/llms.mdx/docs/:path*/content.md",
+      "destination": "/docs/:path*.md",
+      "permanent": true
+    },
     {
       "source": "/docs/quickstart",
       "destination": "/docs/getting-started/quickstart",
