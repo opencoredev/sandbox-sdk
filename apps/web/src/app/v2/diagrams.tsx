@@ -6,7 +6,7 @@
  * a still frame for reduced motion. Labels are real text laid over the canvas.
  */
 import Image from "next/image";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { inOut, out, PixelCanvas, span, type Grid } from "./pixel-canvas";
 import styles from "./diagrams.module.css";
@@ -29,6 +29,7 @@ const C = {
 
 function hash(n: number) {
   const s = Math.sin(n * 127.1) * 43758.5453;
+
   return s - Math.floor(s);
 }
 
@@ -63,6 +64,7 @@ function dashed(
     g.rect(x + i, y, Math.min(on, w - i), 1, color);
     g.rect(x + i, y + h - 1, Math.min(on, w - i), 1, color);
   }
+
   for (let j = 0; j < h; j += on + gap) {
     g.rect(x, y + j, 1, Math.min(on, h - j), color);
     g.rect(x + w - 1, y + j, 1, Math.min(on, h - j), color);
@@ -97,15 +99,10 @@ function Tag({
   /** Hidden on narrow screens, where the canvas is too small for every label. */
   minor?: boolean;
 }) {
-  const style: CSSProperties = {
-    left: `${(x / cols) * 100}%`,
-    top: `${(y / rows) * 100}%`,
-    transform: align === "center" ? "translate(-50%, -50%)" : "translateY(-50%)",
-  };
   return (
     <span
-      className={`${styles.tag} ${tone ? styles[tone] : ""} ${minor ? styles.minor : ""}`}
-      style={style}
+      className={`${styles.tag} ${align === "center" ? styles.center : ""} ${tone ? styles[tone] : ""} ${minor ? styles.minor : ""}`}
+      style={{ "--x": `${(x / cols) * 100}%`, "--y": `${(y / rows) * 100}%` }}
     >
       {children}
     </span>
@@ -131,15 +128,19 @@ const stationY = (k: number) => 12 + k * 14;
 const TRACKS = STATIONS.map((_, k) => {
   const pts: [number, number][] = [];
   const y = stationY(k);
+
   for (let x = 70; x < SWITCH_X; x++) pts.push([x, 40]);
+
   // an S-curve out of the switch onto the station's row
   for (let i = 0; i <= 40; i++) {
     const u = i / 40;
     const e = u * u * (3 - 2 * u);
     pts.push([SWITCH_X + u * 40, 40 + (y - 40) * e]);
   }
+
   // on into the middle of the dock, where the sandbox parks
   for (let x = SWITCH_X + 41; x <= DOCK_X + 9; x++) pts.push([x, y]);
+
   return pts;
 });
 
@@ -162,6 +163,7 @@ function drawSwap(g: Grid, t: number) {
     for (let p = 0; p < pts.length; p += 2)
       if (pts[p][0] < DOCK_X) g.rect(pts[p][0], pts[p][1], 1, 1, i === k ? C.amberDeep : C.edge);
   });
+
   for (let p = 0; p <= at; p++)
     if (track[p][0] < DOCK_X) g.rect(track[p][0], track[p][1], 1, 1, C.amber);
 
@@ -176,17 +178,20 @@ function drawSwap(g: Grid, t: number) {
     const here = i === k;
     const arrived = here ? span(c, SW.travel, SW.travel + 0.25) : 0;
     frame(g, DOCK_X, y - 5, 18, 11, here ? s.color : C.edge, here ? 0.4 + arrived * 0.6 : 1);
+
     if (arrived > 0) g.rect(DOCK_X + 1, y - 4, 16, 9, s.color, arrived * 0.18);
   });
 
   // the sandbox, with a short trail while it moves
   const [px, py] = track[at];
+
   if (go < 1) {
     for (let tr = 1; tr <= 3; tr++) {
       const q = track[Math.max(0, at - tr * 4)];
       g.rect(q[0] - 1, q[1] - 1, 2, 2, C.amber, 0.5 - tr * 0.14);
     }
   }
+
   const fade = 1 - span(c, SW.cycle - 0.25, SW.cycle);
   box(g, px - 4, py - 4, 8, fade);
 }
@@ -216,21 +221,19 @@ export function SwapDiagram() {
           </Tag>
           {STATIONS.map((st, i) => {
             const lit = i * 2 + 1 === k;
+
             return (
-              <Image
+              <span
                 key={st.name}
-                src={st.logo}
-                alt=""
-                width={48}
-                height={48}
-                unoptimized
                 className={`${styles.logo} ${lit ? styles.logoLit : ""}`}
                 style={{
-                  left: `${((DOCK_X + 24) / SW.cols) * 100}%`,
-                  top: `${((stationY(i) - 6) / SW.rows) * 100}%`,
-                  width: `${(12 / SW.cols) * 100}%`,
+                  "--x": `${((DOCK_X + 24) / SW.cols) * 100}%`,
+                  "--y": `${((stationY(i) - 6) / SW.rows) * 100}%`,
+                  "--w": `${(12 / SW.cols) * 100}%`,
                 }}
-              />
+              >
+                <Image src={st.logo} alt="" width={48} height={48} unoptimized />
+              </span>
             );
           })}
           {k % 2 === 1 && (
@@ -265,14 +268,17 @@ function drawRun(g: Grid, t: number) {
   // the command, with a caret that blinks until it is sent
   g.rect(28, 4, 40, 10, "#17181c");
   frame(g, 28, 4, 40, 10, C.edge);
+
   if (c < 0.35 && Math.floor(t * 4) % 2 === 0) g.rect(62, 7, 2, 4, C.text);
 
   // it drops into the sandbox
   const drop = out(span(c, 0.35, 0.8));
+
   if (c > 0.35 && c < 0.85) g.rect(47, 15 + drop * 10, 3, 3, C.amber);
 
   const working = c > 0.8 && c < 3.0;
   box(g, 40, 26, 16, working ? 1 : 0.35);
+
   if (working) {
     // the work inside: cells flicker on a fast clock
     for (let i = 0; i < 4; i++) {
@@ -284,6 +290,7 @@ function drawRun(g: Grid, t: number) {
   // output streams out under it, one line at a time; the last line says how it ended
   OUTPUT.forEach((w, i) => {
     const appear = out(span(c, 1.0 + i * 0.32, 1.25 + i * 0.32));
+
     if (appear <= 0) return;
     const last = i === OUTPUT.length - 1;
     g.rect(
@@ -298,6 +305,7 @@ function drawRun(g: Grid, t: number) {
 
   // the result lamp on the sandbox
   const lamp = span(c, 2.9, 3.1) * fade;
+
   if (lamp > 0) g.rect(46, 20, 4, 3, fail ? C.red : C.green, lamp);
 }
 
@@ -310,7 +318,9 @@ export function RunDiagram() {
       stillAt={3.4}
       step={(t) => {
         const c = t % RUN.cycle;
+
         if (c < 2.9 || c > RUN.cycle - 0.3) return 0;
+
         return Math.floor(t / RUN.cycle) % 2 === 1 ? 2 : 1;
       }}
       label="A command goes into the sandbox, output streams out, and the result comes back as ok or ok: false."
@@ -345,15 +355,18 @@ function drawFiles(g: Grid, t: number) {
 
   // the sandbox, flashing an outline as each file lands
   box(g, 66, 13, 20);
+
   for (let i = 0; i < 3; i++) {
     const flash =
       span(c, 0.95 + i * 0.45, 1.0 + i * 0.45) * (1 - span(c, 1.0 + i * 0.45, 1.3 + i * 0.45));
+
     if (flash > 0) frame(g, 64, 11, 24, 24, C.amberLight, flash);
   }
 
   // three files arc across
   for (let i = 0; i < 3; i++) {
     const k = inOut(span(c, 0.3 + i * 0.45, 0.95 + i * 0.45));
+
     if (k <= 0 || k >= 1) continue;
     const x = 19 + (70 - 19) * k;
     const y = 18 - Math.sin(k * Math.PI) * 12;
@@ -363,12 +376,16 @@ function drawFiles(g: Grid, t: number) {
 
   // git: commits appear on a branch, then a push travels to the remote
   g.rect(8, 54, 62, 1, C.edge);
+
   for (let j = 0; j < 4; j++) {
     const on = out(span(c, 1.9 + j * 0.3, 2.1 + j * 0.3));
     frame(g, 9 + j * 16, 52, 5, 5, on > 0 ? C.amber : C.edge, on > 0 ? fade : 1);
+
     if (on > 0) g.rect(10 + j * 16, 53, 3, 3, C.amber, on * fade);
   }
+
   const push = inOut(span(c, 3.3, 3.9));
+
   if (push > 0 && push < 1) g.rect(60 + push * 18, 53, 3, 3, C.amberLight);
   cloud(g, 78, 49, span(c, 3.9, 4.1) * fade > 0.5 ? C.amber : C.dim);
 }
@@ -405,10 +422,12 @@ export function FilesDiagram() {
 
 const LIFE = { cols: 96, rows: 72, cycle: 7.2 };
 const STATES = ["created", "running", "paused", "running", "destroyed"] as const;
+
 /** The state index (0 to 4), plus 10 while the snapshot outline is on screen. */
 const lifeStep = (t: number) => {
   const c = t % LIFE.cycle;
   const state = c < 1.4 ? 0 : c < 3.4 ? 1 : c < 4.8 ? 2 : c < 5.6 ? 3 : 4;
+
   return state + (c >= 2.5 && c < 6.4 ? 10 : 0);
 };
 
@@ -421,10 +440,13 @@ function drawLife(g: Grid, t: number) {
   // the snapshot: a copy slides out while it runs, and stays as an outline until the end
   const snap = inOut(span(c, 2.1, 2.8));
   const gone = span(c, 6.2, 6.8);
+
   if (snap > 0 && gone < 1) {
     const sx = Math.round(x0 + snap * 34);
+
     if (snap < 1) box(g, sx, y0, 16, 0.35);
     dashed(g, sx, y0, 16, 16, C.amberDark, 2, 2);
+
     if (gone > 0) g.rect(sx, y0, 16, 16, "#0a0a0c", gone);
   }
 
@@ -435,6 +457,7 @@ function drawLife(g: Grid, t: number) {
       let x = x0 + bx * 4;
       let y = y0 + by * 4;
       let alpha = 1;
+
       if (state === 0) {
         // assemble: each block flies in from a scattered start
         const k = out(span(c, n * 0.04, n * 0.04 + 0.7));
@@ -448,9 +471,11 @@ function drawLife(g: Grid, t: number) {
         y += k * k * 36;
         alpha = 1 - k;
       }
+
       const cool = state === 2;
       const top = by === 0;
       const side = bx === 3;
+
       const color = cool
         ? top
           ? "#d6e2f7"
@@ -462,6 +487,7 @@ function drawLife(g: Grid, t: number) {
           : side
             ? C.amberDark
             : C.amber;
+
       g.rect(x, y, 4, 4, color, alpha);
     }
   }
@@ -469,6 +495,7 @@ function drawLife(g: Grid, t: number) {
   // running: a light sweeps across it; paused: a pause mark sits above it
   if (state === 1 || state === 3)
     g.rect(x0 + Math.round(((c * 1.6) % 1) * 14), y0 + 6, 2, 8, "#fff4de", 0.7);
+
   if (state === 2) {
     g.rect(x0 + 5, y0 - 8, 2, 5, C.text);
     g.rect(x0 + 9, y0 - 8, 2, 5, C.text);
@@ -508,8 +535,10 @@ export function LifecycleDiagram() {
 
 const TESTS = { cols: 112, rows: 64, cycle: 4.6 };
 const TEST_W = [30, 22, 34];
+
 const passed = (t: number) => {
   const c = t % TESTS.cycle;
+
   return TEST_W.filter((_, i) => c > 1.0 + i * 0.8).length;
 };
 
@@ -524,6 +553,7 @@ function drawTests(g: Grid, t: number) {
     const running = c > 0.5 + i * 0.8 && c <= 1.0 + i * 0.8;
     const done = c > 1.0 + i * 0.8;
     g.rect(38, y + 1, w, 2, C.dim);
+
     if (running) g.rect(32, y, 4, 4, C.amber, 0.5 + 0.5 * Math.sin(t * 18));
     else if (done) g.rect(32, y, 4, 4, C.green, reset);
     else frame(g, 32, y, 4, 4, C.edge);
@@ -532,6 +562,7 @@ function drawTests(g: Grid, t: number) {
   // the network: outside the boundary, with the cable cut
   for (let x = 79; x < 92; x += 3) g.rect(x, 31, 2, 1, C.edge);
   const blink = Math.floor(t * 1.5) % 2 === 0 ? 1 : 0.4;
+
   for (const [dx, dy] of [
     [0, -2],
     [2, -2],

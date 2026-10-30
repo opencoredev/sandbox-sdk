@@ -11,11 +11,16 @@
   display: block;
   width: 100%;
   height: auto;
+  aspect-ratio: var(--ratio);
   image-rendering: pixelated;
 }
 
+/* labels sit at --x and --y, in percent of the canvas */
 .tag {
   position: absolute;
+  top: var(--y);
+  left: var(--x);
+  transform: translateY(-50%);
   color: var(--faint);
   font-family: var(--mono);
   font-size: 12px;
@@ -24,12 +29,23 @@
   pointer-events: none;
 }
 /* provider logos sit over the canvas as real SVGs, so they stay sharp */
+.center {
+  transform: translate(-50%, -50%);
+}
 .logo {
   position: absolute;
+  top: var(--y);
+  left: var(--x);
+  width: var(--w);
   height: auto;
   opacity: 0.3;
   transition: opacity 300ms ease;
   pointer-events: none;
+}
+.logo img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .logoLit {
   opacity: 1;

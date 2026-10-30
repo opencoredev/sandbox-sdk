@@ -24,10 +24,12 @@ const AGENT_PROMPT = `Add Sandbox SDK (@opencoredev/sandbox-sdk) to this project
 async function writeClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
+
     return;
   } catch {
     // no async clipboard here (plain HTTP) or it was refused: use the textarea route
   }
+
   const focused = document.activeElement;
   const area = document.createElement("textarea");
   area.value = text;
@@ -37,7 +39,9 @@ async function writeClipboard(text: string) {
   area.select();
   const ok = document.execCommand("copy");
   area.remove();
+
   if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+
   if (!ok) throw new Error("copy was refused");
 }
 
@@ -46,6 +50,7 @@ const AGENTS = ["claude", "chatgpt", "grok", "cursor"] as const;
 /** Copies a ready-made prompt for Claude Code, Codex, Grok or Cursor, with their marks stacked in front. */
 export function CopyPrompt() {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
   const copy = useCallback(async () => {
     try {
       await writeClipboard(AGENT_PROMPT);
@@ -53,8 +58,10 @@ export function CopyPrompt() {
     } catch {
       setState("failed");
     }
+
     window.setTimeout(() => setState("idle"), 1800);
   }, []);
+
   return (
     <>
       <button

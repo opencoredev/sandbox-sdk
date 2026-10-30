@@ -67,13 +67,16 @@ const TOKEN =
 function highlight(code: string) {
   const parts: { text: string; kind: "str" | "kw" | "fn" | "punct" | "plain" }[] = [];
   let last = 0;
+
   for (const m of code.matchAll(TOKEN)) {
     if (m.index > last) parts.push({ text: code.slice(last, m.index), kind: "plain" });
     const kind = m[1] ? "str" : m[2] ? "kw" : m[3] ? "fn" : "punct";
     parts.push({ text: m[0], kind });
     last = m.index + m[0].length;
   }
+
   if (last < code.length) parts.push({ text: code.slice(last), kind: "plain" });
+
   return parts.map((p, i) => (
     <span key={i} className={styles[p.kind]}>
       {p.text}
@@ -107,7 +110,7 @@ function Providers() {
           Upstash, Railway, Tenki and more. The API stays the same.
         </p>
       </div>
-      <ProvidersCarousel style={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
+      <ProvidersCarousel dots={CARD_DOTS} brackets={<Brackets />} arrow={<Arrow />} />
     </section>
   );
 }

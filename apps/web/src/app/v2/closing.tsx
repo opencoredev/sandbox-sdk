@@ -15,7 +15,7 @@ export function Closing() {
     <section className={landing.closing} aria-labelledby="closing-title">
       <HalftoneCanvas
         paint={emberField}
-        style={EMBER_DOTS}
+        dots={EMBER_DOTS}
         fps={15}
         stillAt={2}
         className={landing.closingCanvas}

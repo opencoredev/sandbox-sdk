@@ -25,6 +25,7 @@ const REDUCED = "(prefers-reduced-motion: reduce)";
 function subscribeMotion(onChange: () => void) {
   const query = window.matchMedia(REDUCED);
   query.addEventListener("change", onChange);
+
   return () => query.removeEventListener("change", onChange);
 }
 
@@ -57,23 +58,30 @@ export function PixelCanvas({
 }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [current, setCurrent] = useState(() => (step ? step(stillAt) : 0));
+
   const still = useSyncExternalStore(
     subscribeMotion,
     () => window.matchMedia(REDUCED).matches,
     () => false,
   );
+
   // the latest callbacks, so a parent re-render never restarts the loop
   const drawRef = useRef(draw);
   const stepRef = useRef(step);
-  drawRef.current = draw;
-  stepRef.current = step;
+
+  useEffect(() => {
+    drawRef.current = draw;
+    stepRef.current = step;
+  });
 
   useEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext("2d");
+
     if (!canvas || !ctx) return;
     canvas.width = cols;
     canvas.height = rows;
+
     const grid: Grid = {
       ctx,
       cols,
@@ -86,11 +94,14 @@ export function PixelCanvas({
         ctx.globalAlpha = 1;
       },
     };
+
     let last = Number.NaN;
+
     const frame = (t: number) => {
       ctx.clearRect(0, 0, cols, rows);
       drawRef.current(grid, t);
       const s = stepRef.current?.(t);
+
       // only tell React when the step actually changes, not on every frame
       if (s !== undefined && s !== last) {
         last = s;
@@ -100,6 +111,7 @@ export function PixelCanvas({
 
     if (still) {
       frame(stillAt);
+
       return;
     }
 
@@ -107,21 +119,26 @@ export function PixelCanvas({
     let visible = false;
     let start = 0;
     let shown = 0;
+
     const loop = (now: number) => {
       if (!start) start = now - shown * 1000;
       shown = (now - start) / 1000;
       frame(shown);
       raf = visible ? requestAnimationFrame(loop) : 0;
     };
+
     const io = new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
+
       if (visible && !raf) {
         start = 0;
         raf = requestAnimationFrame(loop);
       }
     });
+
     io.observe(canvas);
     frame(0);
+
     return () => {
       io.disconnect();
       cancelAnimationFrame(raf);
@@ -136,7 +153,7 @@ export function PixelCanvas({
           role="img"
           aria-label={label}
           className={styles.pixelCanvas}
-          style={{ aspectRatio: `${cols} / ${rows}` }}
+          style={{ "--ratio": `${cols} / ${rows}` }}
         />
         {overlay?.(current)}
       </div>
@@ -147,12 +164,16 @@ export function PixelCanvas({
 
 /* timing helpers shared by the scenes */
 export const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 /** Strong ease-in-out for things that travel on screen. */
 export const inOut = (v: number) => {
   const c = clamp01(v);
+
   return c < 0.5 ? 4 * c * c * c : 1 - (-2 * c + 2) ** 3 / 2;
 };
+
 /** Strong ease-out for things that arrive or appear. */
 export const out = (v: number) => 1 - (1 - clamp01(v)) ** 3;
+
 /** 0..1 progress of `t` through the window [a, b]. */
 export const span = (t: number, a: number, b: number) => clamp01((t - a) / (b - a));
