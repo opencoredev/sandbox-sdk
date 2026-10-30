@@ -9,7 +9,7 @@
 //   await server.close();
 import { isString } from "../src/shared/narrow.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo, Socket } from "node:net";
+import type { Socket } from "node:net";
 
 /** One scripted reply. */
 export type Reply =
@@ -170,10 +170,12 @@ export async function fakeServer(): Promise<FakeServer> {
     }
 
     const body = reply.json !== undefined ? JSON.stringify(reply.json) : (reply.body ?? "");
-    response.writeHead(reply.status ?? 200, {
-      ...(reply.json !== undefined ? { "content-type": "application/json" } : undefined),
-      ...reply.headers,
-    });
+    response.writeHead(
+      reply.status ?? 200,
+      reply.json === undefined
+        ? { ...reply.headers }
+        : { "content-type": "application/json", ...reply.headers },
+    );
     response.end(body);
   });
 
@@ -182,8 +184,10 @@ export async function fakeServer(): Promise<FakeServer> {
     socket.on("close", () => sockets.delete(socket));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  // SAFETY: a server listening on TCP reports an AddressInfo.
-  const { port } = server.address() as AddressInfo;
+  const address = server.address();
+
+  if (!address || isString(address)) throw new Error("The fake server has no TCP port");
+  const { port } = address;
   const origin = `http://127.0.0.1:${port}`;
 
   const fake: FakeServer = {

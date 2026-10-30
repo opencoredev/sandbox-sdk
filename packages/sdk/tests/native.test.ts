@@ -11,6 +11,7 @@ import {
   type Provider,
 } from "../src/provider.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 // The worked example of the structural-constraint pattern a converted provider follows for `sdk(load)`.
 // The provider never imports its SDK's types. It states the module shape it needs, and the result type
@@ -135,19 +136,6 @@ function acme() {
   };
 }
 
-async function failure(promise: Promise<unknown>): Promise<SandboxError> {
-  try {
-    await promise;
-  } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
-
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return error as SandboxError;
-  }
-
-  throw new Error("expected a rejection");
-}
-
 describe("request and fetch", () => {
   test("box.native fills {sandboxId}; provider.api does not and fails before any request", async () => {
     server.on("GET /api/sandbox/{id}", { json: { id: "sb-1", state: "started" } });
@@ -160,7 +148,7 @@ describe("request and fetch", () => {
     });
     expect(server.requests[0]?.url).toBe("/api/sandbox/sb-1");
     expect(api.sandboxId).toBeUndefined();
-    const error = await failure(api.request("GET", "/sandbox/{sandboxId}"));
+    const error = await rejection(api.request("GET", "/sandbox/{sandboxId}"));
     expect(error.code).toBe("invalid_argument");
     expect(error.message).toContain("params.sandboxId");
     expect(server.requests).toHaveLength(1);
@@ -176,7 +164,7 @@ describe("request and fetch", () => {
       params: { sandboxId: "sb-2", port: 3000 },
     });
     expect(server.requests[0]?.url).toBe("/api/sandbox/sb-2/ports/3000");
-    expect((await failure(box.request("GET", "/sandbox/{sandboxId}/ports/{port}"))).code).toBe(
+    expect((await rejection(box.request("GET", "/sandbox/{sandboxId}/ports/{port}"))).code).toBe(
       "invalid_argument",
     );
     expect(server.requests).toHaveLength(1);
@@ -201,18 +189,18 @@ describe("request and fetch", () => {
     ).toEqual([{ name: "a.txt" }]);
     expect(toolbox.requests[0]?.url).toBe("/proxy/sb-9/files?path=%2Fworkspace");
     expect(toolbox.requests[0]?.headers.authorization).toBe("Bearer acme-key-123456");
-    expect((await failure(acme().api.request("GET", "/files", { plane: "toolbox" }))).code).toBe(
+    expect((await rejection(acme().api.request("GET", "/files", { plane: "toolbox" }))).code).toBe(
       "invalid_argument",
     );
     // @ts-expect-error not one of Acme's planes; JavaScript callers get invalid_argument
-    expect((await failure(box.request("GET", "/files", { plane: "data" }))).code).toBe(
+    expect((await rejection(box.request("GET", "/files", { plane: "data" }))).code).toBe(
       "invalid_argument",
     );
   });
 
   test("an unknown endpoint is a SandboxError that keeps the provider's scrubbed message", async () => {
     const box = acme().native("sb-1");
-    const error = await failure(box.request("POST", "/no/such/endpoint", { body: { a: 1 } }));
+    const error = await rejection(box.request("POST", "/no/such/endpoint", { body: { a: 1 } }));
     expect(error).toMatchObject({ code: "not_found", provider: "acme", sandboxId: "sb-1" });
     expect(error.message).toContain("no_route");
     expect(error.message).toContain("fake server has no route");
@@ -227,7 +215,7 @@ describe("request and fetch", () => {
     const response = await box.fetch("GET", "/logs");
     expect(response).toBeInstanceOf(Response);
     expect(await response.text()).toBe("line 1\nline 2\n");
-    expect((await failure(box.fetch("GET", "/missing"))).code).toBe("not_found");
+    expect((await rejection(box.fetch("GET", "/missing"))).code).toBe("not_found");
   });
 
   test("fetch's timeoutMs covers time to headers, not the body", async () => {
@@ -256,7 +244,7 @@ describe("request and fetch", () => {
 
   test("a bad method from JavaScript is invalid_argument", async () => {
     // @ts-expect-error not an HttpMethod
-    expect((await failure(acme().native("sb-1").request("TRACE", "/x"))).code).toBe(
+    expect((await rejection(acme().native("sb-1").request("TRACE", "/x"))).code).toBe(
       "invalid_argument",
     );
   });
@@ -289,7 +277,7 @@ describe("sdk(load)", () => {
   });
 
   test("a module without the expected export is invalid_argument naming the package", async () => {
-    const error = await failure(
+    const error = await rejection(
       acme()
         .loose("sb-1")
         .sdk(async () => ({ Other: Acme })),
@@ -300,7 +288,7 @@ describe("sdk(load)", () => {
   });
 
   test("a missing install is unavailable with the install command", async () => {
-    const error = await failure(
+    const error = await rejection(
       acme()
         .loose("sb-1")
         .sdk(() =>
@@ -322,7 +310,7 @@ describe("sdk(load)", () => {
       }
     }
 
-    const error = await failure(
+    const error = await rejection(
       acme()
         .native("sb-1")
         .sdk(async () => ({ Acme: Broken })),
@@ -342,7 +330,7 @@ describe("sdk(load)", () => {
 
     expect(
       (
-        await failure(
+        await rejection(
           createNativeApi({ http, placeholder: "id", sandboxId: "x" }).sdk(async () => acmeModule),
         )
       ).code,

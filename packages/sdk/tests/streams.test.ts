@@ -9,6 +9,7 @@ import {
   type StreamOptions,
 } from "../src/streams.js";
 import { chunked, pieces } from "./http-fake.js";
+import { rejection } from "./rejection.js";
 
 const options: StreamOptions = { provider: "fake", sandboxId: "sb" };
 
@@ -20,10 +21,9 @@ async function collect<T>(
   try {
     for await (const frame of frames) out.push(frame);
   } catch (error) {
-    expect(error).toBeInstanceOf(SandboxError);
+    if (!(error instanceof SandboxError)) throw error;
 
-    // SAFETY: the call under test rejects only with a SandboxError.
-    return { frames: out, error: error as SandboxError };
+    return { frames: out, error };
   }
 
   return { frames: out };
@@ -107,20 +107,18 @@ describe("ndjson", () => {
     const controller = new AbortController();
     const body = chunked(['{"a":1}\n', '{"a":2}\n']);
     const seen: unknown[] = [];
-    let caught: unknown;
 
-    try {
-      for await (const frame of ndjson(body, { ...options, signal: controller.signal })) {
-        seen.push(frame);
-        controller.abort();
-      }
-    } catch (error) {
-      caught = error;
-    }
+    const error = await rejection(
+      (async () => {
+        for await (const frame of ndjson(body, { ...options, signal: controller.signal })) {
+          seen.push(frame);
+          controller.abort();
+        }
+      })(),
+    );
 
     expect(seen).toHaveLength(1);
-    // SAFETY: the call under test rejects only with a SandboxError.
-    expect((caught as SandboxError).code).toBe("aborted");
+    expect(error.code).toBe("aborted");
     expect(body.cancelled()).toBe(true);
   });
 });

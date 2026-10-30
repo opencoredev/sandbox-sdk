@@ -206,8 +206,8 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
     let module: SdkMember;
 
     try {
-      // SAFETY: a module namespace or CommonJS exports object, or whatever the caller returned; it is
-      // checked below, and adapters read each export through sdkConstruct and sdkCall.
+      // SAFETY: SdkMember only lets code read members by name, and every read is checked with isSdkValue or
+      // instanceof Function (here, in sdkConstruct and in sdkCall) before the member is used.
       module = peerModule(await load()) as SdkMember;
     } catch (error) {
       const missing =
@@ -253,11 +253,9 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
     }
   }
 
-  // `Sdk` is the adapter's narrowed signature for this one runtime function; its result type is derived from
-  // the caller's module type, which no runtime check can produce, so this is the single place it is asserted.
-  // SAFETY: connect implements every overload of Sdk; TypeScript cannot check overloads against one function.
   const loader: NativeSdkLoader = connect;
-  // SAFETY: the same function; Sdk only narrows the module and result types for the caller.
+  // SAFETY: Sdk is the adapter's signature for this function, and that adapter's binding.connect builds the
+  // object the signature derives from the caller's module type.
   const sdk = loader as Sdk;
 
   return {
@@ -267,8 +265,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       path: string,
       request?: NativeRequestOptions<Plane>,
     ): Promise<T> {
-      // `T` is the caller's claim about the body, as with `Response.json()`; it is documented as unchecked.
-      // SAFETY: T is the caller's declared response shape; request<T> documents that the body is not validated.
+      // SAFETY: NativeApi.request documents T as the caller's unchecked claim about the body, as with Response.json().
       return (await http.json(call(method, path, request))) as T;
     },
     fetch(method, path, request) {

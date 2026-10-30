@@ -475,7 +475,7 @@ function toolbox(
       body: { paths: [path] },
       readOnly: true,
       signal: settings.signal,
-      ...(settings.timeoutMs === undefined ? undefined : { timeoutMs: settings.timeoutMs }),
+      timeoutMs: settings.timeoutMs,
     });
 
     const boundary = boundaryOf(response.headers.get("content-type"));
@@ -574,7 +574,7 @@ function toolbox(
                 timeout: timeoutSec,
                 envs: env && Object.keys(env).length ? env : undefined,
               },
-              ...(timeoutSec ? { timeoutMs: timeoutSec * 1000 + execBufferMs } : undefined),
+              timeoutMs: timeoutSec ? timeoutSec * 1000 + execBufferMs : undefined,
             })
           ).json(),
         );

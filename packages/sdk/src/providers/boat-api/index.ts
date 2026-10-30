@@ -137,7 +137,7 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
       });
     }
 
-    return { ...(key === null ? undefined : { key }), labels: { ...labels, ...own } };
+    return { key: key ?? undefined, labels: { ...labels, ...own } };
   } catch {
     return;
   }
@@ -427,14 +427,14 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
 
         const body = {
           noEnv: true,
-          ...(input.from === undefined ? undefined : { from: input.from }),
+          from: input.from,
           env: input.env,
           type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
-          ...(ttlSeconds === undefined ? undefined : { ttlSeconds }),
-          ...(snapshots === undefined ? undefined : { snapshots }),
-          ...(monitoring === undefined ? undefined : { monitoring }),
-          ...(org === undefined ? undefined : { org }),
-          ...(idleStopMinutes === undefined ? undefined : { idleStopMinutes }),
+          ttlSeconds,
+          snapshots,
+          monitoring,
+          org,
+          idleStopMinutes,
           ...settings.createFields,
         };
 

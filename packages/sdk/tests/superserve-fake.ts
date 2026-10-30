@@ -56,53 +56,73 @@ export function gate() {
   return { promise, open };
 }
 
-export const state = {
-  boxes: new Map<string, Box>(),
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  requests: [] as FakeRequest[],
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  sockets: [] as FakeSocket[],
+/** What the fake records and the knobs tests turn. */
+export interface FakeState {
+  boxes: Map<string, Box>;
+  requests: FakeRequest[];
+  sockets: FakeSocket[];
+  creates: number;
+  nativeTimeoutSeconds: number;
+  bootstrapPath: string;
+  updates: unknown[];
+  createOptions: unknown;
+  transportFailure: boolean;
+  stdinFailure: boolean;
+  closes: number;
+  bootstrap: (() => Promise<void>) | undefined;
+  snapshotFailure: boolean;
+  snapshotRejected: boolean;
+  snapshotOptions: unknown;
+  dropNetwork: boolean;
+  previewAccess: unknown[];
+  /** Lifetime of the routing hints the fake hands out. */
+  hintSeconds: number;
+  /** Hand out routes with no routing hint, as an older control plane does. */
+  noHints: boolean;
+  /** Held activate or resume responses: the response leaves when the gate opens. Minted when the request arrives. */
+  activateGate: Promise<void> | undefined;
+  resumeGate: Promise<void> | undefined;
+  /** Answer the next data-plane requests with these failures instead (status, JSON or text body). */
+  dataFaults: { status: number; body: JsonValue | undefined }[];
+  /** Hold the create response (the sandbox already exists) until the gate opens. */
+  createGate: Promise<void> | undefined;
+  /** Drop the next `exec/connect` sessions after the command starts, with close code 1006. */
+  dropSessions: number;
+  /** Answer the next POST /exec with a 200 whose JSON body is cut short. */
+  cutExec: number;
+  /** Hold data-plane responses (decided when the request arrives) until the gate opens. */
+  dataGate: Promise<void> | undefined;
+  /** Refuse the next `exec/connect` dials, as a stale token does (an `error` event and no `close`). */
+  refuseDials: number;
+}
+
+export const state: FakeState = {
+  boxes: new Map(),
+  requests: [],
+  sockets: [],
   creates: 0,
   nativeTimeoutSeconds: 0,
   bootstrapPath: "",
-  updates: new Array<unknown>(),
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  createOptions: undefined as unknown,
+  updates: [],
+  createOptions: undefined,
   transportFailure: false,
   stdinFailure: false,
   closes: 0,
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  bootstrap: undefined as undefined | (() => Promise<void>),
+  bootstrap: undefined,
   snapshotFailure: false,
   snapshotRejected: false,
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  snapshotOptions: undefined as unknown,
+  snapshotOptions: undefined,
   dropNetwork: false,
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  previewAccess: [] as unknown[],
-  /** Lifetime of the routing hints the fake hands out. */
+  previewAccess: [],
   hintSeconds: 3600,
-  /** Hand out routes with no routing hint, as an older control plane does. */
   noHints: false,
-  /** Held activate or resume responses: the response leaves when the gate opens. Minted when the request arrives. */
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  activateGate: undefined as Promise<void> | undefined,
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  resumeGate: undefined as Promise<void> | undefined,
-  /** Answer the next data-plane requests with these failures instead (status, JSON or text body). */
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  dataFaults: [] as { status: number; body: JsonValue | undefined }[],
-  /** Hold the create response (the sandbox already exists) until the gate opens. */
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  createGate: undefined as Promise<void> | undefined,
-  /** Drop the next `exec/connect` sessions after the command starts, with close code 1006. */
+  activateGate: undefined,
+  resumeGate: undefined,
+  dataFaults: [],
+  createGate: undefined,
   dropSessions: 0,
-  /** Answer the next POST /exec with a 200 whose JSON body is cut short. */
   cutExec: 0,
-  /** Hold data-plane responses (decided when the request arrives) until the gate opens. */
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  dataGate: undefined as Promise<void> | undefined,
-  /** Refuse the next `exec/connect` dials, as a stale token does (an `error` event and no `close`). */
+  dataGate: undefined,
   refuseDials: 0,
 };
 
@@ -151,10 +171,8 @@ function info(id: string, box: Box, extra: JsonObject = {}) {
     created_at: box.createdAt.toISOString(),
     metadata: box.metadata,
     preview_access: "private",
-    ...(box.network ? { network: box.network } : undefined),
-    ...(state.nativeTimeoutSeconds > 0
-      ? { timeout_seconds: state.nativeTimeoutSeconds }
-      : undefined),
+    network: box.network,
+    timeout_seconds: state.nativeTimeoutSeconds > 0 ? state.nativeTimeoutSeconds : undefined,
     ...extra,
   };
 }
@@ -227,9 +245,10 @@ async function control(method: string, url: URL, body: JsonValue | undefined): P
       status: "active",
       token: mint(),
       hint: routingHint(state.hintSeconds),
-      ...(options.network && !state.dropNetwork
-        ? { network: { allow_out: list(network.allow_out), deny_out: list(network.deny_out) } }
-        : undefined),
+      network:
+        options.network && !state.dropNetwork
+          ? { allow_out: list(network.allow_out), deny_out: list(network.deny_out) }
+          : undefined,
     };
 
     state.boxes.set(guest.id, box);
@@ -240,7 +259,7 @@ async function control(method: string, url: URL, body: JsonValue | undefined): P
       201,
       info(guest.id, box, {
         access_token: box.token,
-        ...(state.noHints ? undefined : { routing_hint: box.hint }),
+        routing_hint: state.noHints ? undefined : box.hint,
       }),
     );
   }
@@ -273,7 +292,7 @@ async function control(method: string, url: URL, body: JsonValue | undefined): P
 
     const answer = info(id, box, {
       access_token: box.token,
-      ...(state.noHints ? undefined : { routing_hint: box.hint }),
+      routing_hint: state.noHints ? undefined : box.hint,
     });
 
     const held = action === "activate" ? state.activateGate : state.resumeGate;
@@ -440,10 +459,10 @@ async function fakeFetch(input: string | URL | Request, init: RequestInit = {}):
   throw new TypeError(`fetch failed: no fake host for ${url.origin}`);
 }
 
-type Listener = (event: never) => void;
-
 /** What the fake socket dispatches: an open or close notice, or a message with its data. */
 type FakeSocketEvent = { data?: string | ArrayBuffer | Uint8Array; code?: number; reason?: string };
+
+type Listener = (event: FakeSocketEvent) => void;
 
 /** The subset of the WebSocket API session.ts uses, driving a MockGuest stream. */
 class FakeWebSocket {
@@ -501,9 +520,7 @@ class FakeWebSocket {
     this.listeners.get(type)?.delete(listener);
   }
   private emit(type: string, event: FakeSocketEvent) {
-    for (const listener of this.listeners.get(type) ?? [])
-      // SAFETY: listeners for this event type are registered with this signature.
-      (listener as (event: FakeSocketEvent) => void)(event);
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
   private binary(channel: number, bytes: Uint8Array) {
     const frame = new Uint8Array(bytes.length + 1);

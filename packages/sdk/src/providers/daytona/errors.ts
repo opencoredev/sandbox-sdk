@@ -45,21 +45,25 @@ export function daytonaError(
     if (!isEvidence(cause.cause) || cause.cause.operation === safeOperation) return cause;
     const { status, providerCode, requestId, source, native } = cause.cause;
 
-    const evidence: Evidence = {
-      operation: safeOperation,
-      ...(status === undefined ? undefined : { status }),
-      ...(providerCode === undefined ? undefined : { providerCode }),
-      ...(requestId === undefined ? undefined : { requestId }),
-      ...(source === undefined ? undefined : { source }),
-      ...(native === undefined ? undefined : { native }),
-    };
+    // Own fields on the reported Error: copy only the ones that are set.
+    const evidence: Evidence = { operation: safeOperation };
+
+    if (status !== undefined) evidence.status = status;
+
+    if (providerCode !== undefined) evidence.providerCode = providerCode;
+
+    if (requestId !== undefined) evidence.requestId = requestId;
+
+    if (source !== undefined) evidence.source = source;
+
+    if (native !== undefined) evidence.native = native;
 
     return new SandboxError(cause.message, {
       code: cause.code,
       provider: cause.provider,
       sandboxId: cause.sandboxId,
       retryable: cause.retryable,
-      ...(cause.hint === undefined ? undefined : { hint: cause.hint }),
+      hint: cause.hint,
       cause: Object.assign(new Error(JSON.stringify(evidence)), evidence),
     });
   }

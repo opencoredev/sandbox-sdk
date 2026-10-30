@@ -80,10 +80,8 @@ export async function spawn(options: SpawnOptions): Promise<Session> {
   ws.send(
     JSON.stringify({
       command: options.command,
-      ...(options.env === undefined ? undefined : { env: options.env }),
-      ...(options.timeoutMs === undefined
-        ? undefined
-        : { timeout_s: Math.ceil(options.timeoutMs / 1000) }),
+      env: options.env,
+      timeout_s: options.timeoutMs === undefined ? undefined : Math.ceil(options.timeoutMs / 1000),
     }),
   );
 
