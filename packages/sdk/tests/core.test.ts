@@ -3,6 +3,8 @@ import { createSandbox, connectSandbox, reapSandboxes, SandboxError } from "../s
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// A wrapper killed or observed before its first mkdir leaves no runs directory: that is no marker either.
+const markers = async (box: { files: { exists(path: string): Promise<boolean>; list(path: string): Promise<unknown[]> } }) => await box.files.exists("/tmp/.sandbox-sdk/runs") ? await box.files.list("/tmp/.sandbox-sdk/runs") : [];
 describe("core safety guarantees", () => {
   test("secrets stay redacted across chunks, streams, causes and reconnects", async () => {
     const token = "secret-value";
@@ -218,8 +220,9 @@ describe("anonymous-pipe activity wrapper", () => {
       const provider = await (await import("./shell-provider.js")).shellProvider(); const box = await createSandbox(provider);
       try {
         const redirect = stream === "stderr" ? ">&2" : "";
-        const running = Promise.resolve(box.run(`(sleep 0.2; printf LATE ${redirect}) & exit 7`));
-        await pause(30);
+        const running = Promise.resolve(box.run(`(sleep 1; printf LATE ${redirect}) & exit 7`));
+        // Wait for the guest to publish its marker rather than guessing how long a loaded host takes to start sh.
+        for (const deadline = Date.now() + 5000; (await markers(box)).length === 0 && Date.now() < deadline;) await pause(10);
         expect((await box.files.list("/tmp/.sandbox-sdk/runs")).length).toBe(1);
         // Different provider name bypasses this realm's run registry, like a second client.
         expect(await reapSandboxes({ ...provider, name: "independent-client" }, { idleOnly: true })).toBe(0);
@@ -236,7 +239,7 @@ describe("anonymous-pipe activity wrapper", () => {
         const running = Promise.resolve(box.run("(sleep 0.2; echo escaped > escaped) & wait", { timeoutMs: cancel === "timeout" ? 40 : 1000, signal: controller.signal }));
         if (cancel === "abort") setTimeout(() => controller.abort(), 40);
         expect(await running).toMatchObject({ timedOut: true, exitCode: null }); await pause(240);
-        expect(await box.files.exists("escaped")).toBe(false); expect(await box.files.list("/tmp/.sandbox-sdk/runs")).toEqual([]);
+        expect(await box.files.exists("escaped")).toBe(false); expect(await markers(box)).toEqual([]);
       } finally { await box.destroy(); }
     });
   }

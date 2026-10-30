@@ -25,10 +25,70 @@ export interface Files {
   mark(name?: string): Promise<string>;
   changes(options?: { since?: string }): Promise<FileDiff>;
 }
+const globParts = (glob: string) => glob.split(/(\*\*\/|\*\*|\*|\?)/);
 export function globMatch(path: string, glob: string) {
-  const pattern = glob.split(/(\*\*\/|\*\*|\*|\?)/).map(part => part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "." : part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")).join("");
+  const pattern = globParts(glob).map(part => part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "." : part.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")).join("");
   return new RegExp(`^${pattern}$`).test(path) || (!glob.includes("/") && new RegExp(`^${pattern}$`).test(posix.basename(path)));
 }
+// The same pattern for Python's re.fullmatch over UTF-16 code units: `.` excludes JS line terminators and every literal is a \u escape.
+function pythonGlob(glob: string) {
+  const any = "[^\\n\\r\\u2028\\u2029]";
+  const literal = (text: string) => Array.from({ length: text.length }, (_, index) => `\\u${text.charCodeAt(index).toString(16).padStart(4, "0")}`).join("");
+  return globParts(glob).map(part => part === "**/" ? `(?:${any}*/)?` : part === "**" ? `${any}*` : part === "*" ? "[^/]*" : part === "?" ? any : literal(part)).join("");
+}
+// Guest scripts take paths in argv and user text as JSON in the environment, never argv. Environment
+// values travel with the exec request, while stdin costs extra round trips on E2B and Upstash; text over
+// 32 KiB goes on stdin, since one variable must stay under the kernel's 128 KiB limit. Exit 70 means "use the RPC path": it is
+// raised before any change, so the fallback reproduces each provider's own errors exactly.
+// edit: read, count matches, then write a sibling temp file with the original owner and mode and
+// rename it over the target. Symlinks resolve to their target; hard-linked files stay in place (70).
+const editScript = `import json,os,stat,sys
+p=os.path.realpath(sys.argv[1])
+try:
+ a=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read());f=a["find"].encode();r=a["replace"].encode()
+ s=os.stat(p)
+ if not stat.S_ISREG(s.st_mode) or s.st_nlink>1:sys.exit(70)
+ with open(p,"rb") as h:d=h.read()
+except Exception:sys.exit(70)
+m=[];n=1;q=0;i=d.find(f)
+while i>=0:n+=d.count(b"\\n",q,i);q=i;m.append(n);i=d.find(f,i+1)
+if len(m)!=1:print(" ".join(map(str,m)));sys.exit(3)
+i=d.find(f);t="%s/.%s.%s.sdk-edit"%(os.path.dirname(p),os.path.basename(p),os.urandom(6).hex())
+try:fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+except Exception:sys.exit(70)
+try:
+ with os.fdopen(fd,"wb") as h:h.write(d[:i]+r+d[i+len(f):])
+ if (s.st_uid,s.st_gid)!=(os.geteuid(),os.getegid()):os.chown(t,s.st_uid,s.st_gid)
+ os.chmod(t,stat.S_IMODE(s.st_mode));os.rename(t,p)
+except Exception:
+ os.unlink(t);sys.exit(70)`;
+// search: list the whole tree first (sorted, lstat types, like the RPC walk), then read regular files in
+// order and print [path, line, base64 line] for each line holding the query bytes, up to the limit.
+const searchScript = `import base64,json,os,re,stat,sys
+root,pat,base,mx=sys.argv[1],sys.argv[2],sys.argv[3]=="1",int(sys.argv[4])
+q=json.loads(os.environ.get("SANDBOX_SDK_INPUT") or sys.stdin.buffer.read()).encode();g=re.compile(pat) if pat else None
+def u(s):
+ if all(c<="\\uffff" for c in s):return s
+ b=s.encode("utf-16-le","surrogatepass");return "".join(chr(int.from_bytes(b[i:i+2],"little")) for i in range(0,len(b),2))
+files=[]
+def walk(d,rel):
+ for b in sorted(os.listdir(d)):
+  p=os.path.join(d,b);s=os.lstat(p);name=b.decode("utf-8","replace");r=rel+name
+  if stat.S_ISREG(s.st_mode) and (g is None or g.fullmatch(u(r)) or (base and g.fullmatch(u(name)))):files.append((p,os.path.join(root,r)))
+  elif stat.S_ISDIR(s.st_mode):walk(p,r+"/")
+try:
+ walk(os.fsencode(root),"");n=0
+ for p,shown in files:
+  with open(p,"rb") as h:lines=h.read().split(b"\\n")
+  for i,line in enumerate(lines):
+   if q in line:
+    print(json.dumps([shown,i+1,base64.b64encode(line).decode()]));n+=1
+    if n>=mx:sys.exit(0)
+except Exception:sys.exit(70)`;
+// Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
+const byteExact = (text: string) => !/\p{Cs}|[﻿�]/u.test(text);
+const python = (script: string, ...args: string[]) => `python3 -I -S -c ${quote(script)} ${args.map(quote).join(" ")}`;
+const editFailed = (path: string, lines: number[]) => new SandboxError(`Edit failed at ${path}. ${lines.length ? `Matches on lines ${lines.join(", ")}` : "Text not found"}. Supply a unique exact match.`, { code: lines.length ? "edit_not_unique" : "edit_not_found" });
 /** `guard` throws synchronously when the handle is closed; `ready` resolves once the handle may touch the sandbox (secret recovery). */
 export function makeFiles(provider: Provider, id: string, redactor: Redactor, guard: () => void = () => {}, ready: () => Promise<void> = async () => {}): Files & Disposable {
   const fs = provider.files; const watchers = new Set<() => void>();
@@ -36,6 +96,22 @@ export function makeFiles(provider: Provider, id: string, redactor: Redactor, gu
   async function remote(command: string) {
     const result = await provider.exec(id, { command, cwd: "/workspace", env: defaults, timeoutMs: 120_000, onChunk() {} });
     if (result.exitCode !== 0) throw new SandboxError("File transfer failed. The remote archive command failed. Ensure tar is installed and paths are accessible.", { code: "provider" });
+  }
+  // One guest round trip. A guest without python3 (126/127) uses the RPC paths from then on; any
+  // other failure before the guest commits a change falls back for this call only.
+  let guestPython = provider.name !== "memory";
+  // A stopped guest edit may already have renamed its file, so only read-only calls fall back after one.
+  async function guest(command: string, input: string, mutates: boolean): Promise<{ exitCode: number; stdout: string }> {
+    if (!guestPython) return { exitCode: 70, stdout: "" };
+    let stdout = "";
+    const inline = Buffer.byteLength(input) <= 32_768;
+    const result = await provider.exec(id, { command, cwd: "/", env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" }, stdin: inline ? undefined : input, timeoutMs: 120_000, onChunk(chunk) { if (chunk.stream === "stdout") stdout += chunk.text; } });
+    if (result.timedOut || result.exitCode === null || result.exitCode >= 128) {
+      if (!mutates) return { exitCode: 70, stdout: "" };
+      throw new SandboxError("File edit outcome unknown. The guest command was stopped before it reported. Read the file to check its state before retrying.", { code: "outcome_unknown" });
+    }
+    if (result.exitCode === 126 || result.exitCode === 127) guestPython = false;
+    return { exitCode: result.exitCode, stdout };
   }
   const safe = async <T>(action: () => Promise<T>): Promise<T> => { try { guard(); await ready().finally(guard); return await action(); } catch (error) { throw redactor.error(error, provider.name, id); } };
   async function list(path = ".", options: { recursive?: boolean; glob?: string } = {}): Promise<FileInfo[]> {
@@ -148,11 +224,18 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     exists: path => safe(async () => { try { await fs.stat(id, pathOf(path)); return true; } catch (error) { if (error instanceof SandboxError && ["file_not_found", "not_found"].includes(error.code)) return false; throw error; } }),
     remove: (path, options) => safe(() => fs.remove(id, pathOf(path), { recursive: options?.recursive ?? false })),
     edit: (path, { find, replace }) => safe(async () => {
-      if (!find) invalid("find cannot be empty"); const text = await read(path); const matches: number[] = [];
+      if (!find) invalid("find cannot be empty");
+      if (fs.editInGuest && byteExact(find) && !/\p{Cs}/u.test(replace)) {
+        const { exitCode, stdout } = await guest(python(editScript, pathOf(path)), JSON.stringify({ find, replace }), true);
+        if (exitCode === 0) return;
+        if (exitCode === 3) throw editFailed(path, stdout.trim() ? stdout.trim().split(" ").map(Number) : []);
+      }
+      const text = await read(path); const matches: number[] = [];
       let offset = text.indexOf(find);
       while (offset !== -1) { matches.push(text.slice(0, offset).split("\n").length); offset = text.indexOf(find, offset + 1); }
-      if (matches.length !== 1) throw new SandboxError(`Edit failed at ${path}. ${matches.length ? `Matches on lines ${matches.join(", ")}` : "Text not found"}. Supply a unique exact match.`, { code: matches.length ? "edit_not_unique" : "edit_not_found" });
-      await write(path, text.replace(find, () => replace));
+      if (matches.length !== 1) throw editFailed(path, matches);
+      // The file exists, so its parent does too: write without the mkdir.
+      await fs.write(id, pathOf(path), new TextEncoder().encode(text.replace(find, () => replace)));
     }),
     upload: (source, target, options) => safe(async () => {
       const root = resolve(source);
@@ -200,6 +283,20 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
     search: (query, options = {}) => safe(async () => {
       const result: { path: string; line: number; text: string }[] = []; const max = options.maxMatches ?? 200;
       if (!Number.isSafeInteger(max) || max < 1) invalid("maxMatches must be positive");
+      // An empty query also matches the empty tail after a final newline, and no line holds a newline: keep the RPC walk for both.
+      if (query && !query.includes("\n") && byteExact(query)) {
+        const glob = options.glob ?? "";
+        const { exitCode, stdout } = await guest(python(searchScript, pathOf(options.path), glob && pythonGlob(glob), glob && !glob.includes("/") ? "1" : "0", String(max)), JSON.stringify(query), false);
+        if (exitCode === 0) {
+          for (const row of stdout.split("\n")) if (row) {
+            const [path, line, data] = JSON.parse(row) as [string, number, string];
+            const text = new TextDecoder("utf-8", { ignoreBOM: line !== 1 }).decode(Buffer.from(data, "base64"));
+            if (!text.includes(query)) { result.length = 0; break; }
+            result.push({ path, line, text: redactor.text(text) });
+          }
+          if (result.length || !stdout) return result;
+        }
+      }
       for (const entry of await list(options.path, { recursive: true, glob: options.glob })) if (entry.type === "file") {
         const lines = (await read(entry.path)).split("\n");
         for (const [index, text] of lines.entries()) if (text.includes(query)) { result.push({ path: entry.path, line: index + 1, text: redactor.text(text) }); if (result.length >= max) return result; }

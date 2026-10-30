@@ -282,6 +282,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   };
   const provider: E2BProvider = {
     name: "e2b", keyMode: "best-effort", capabilities: new Set(["pause", "snapshot", "network-policy"]),
+    // Every exec runs as root in the VM's single PID namespace.
+    procActivity: true,
     api: createNativeApi<E2BPlane, E2BClientSdk>({ http, placeholder: "sandboxId", sdk: binding }),
     create: input => call(undefined, async () => {
       validate(input, options);
@@ -369,6 +371,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     }),
     files: {
       writeCreatesParents: true,
+      editInGuest: true,
       read: (id, path) => call(id, async () => { await client(id); return envd.files.read(id, path, "root"); }),
       write: (id, path, data) => call(id, async () => {
         await client(id);
