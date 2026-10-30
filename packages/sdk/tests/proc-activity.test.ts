@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -233,7 +233,22 @@ describe("idle reaping on procActivity adapters", () => {
 });
 
 describe("activity scan script", () => {
-  // The script runs on this host against a fake /proc and a fake sudo on PATH.
+  // The script runs on this host against a fake /proc and a fake sudo. Its PATH holds only these host
+  // tools and that sudo, so the host's own sudo (passwordless on CI runners) is never found.
+  const hostTool = (name: string) => {
+    const found = ["/usr/bin", "/bin"]
+      .map((dir) => join(dir, name))
+      .find((path) => existsSync(path));
+
+    if (!found) throw new Error(`The scan test needs ${name} in /usr/bin or /bin`);
+
+    return found;
+  };
+
+  // Root reads any file mode, so on a root host the scan runs as an unprivileged user that owns the fake /proc.
+  const nobody = process.getuid?.() === 0 ? 65534 : undefined;
+  const user = nobody === undefined ? {} : { uid: nobody, gid: nobody };
+
   async function scan(
     processes: Record<string, { environ: string; readable?: boolean }>,
     sudo: "missing" | "fails" | "reads",
@@ -247,9 +262,22 @@ describe("activity scan script", () => {
       await fs.mkdir(proc);
       await fs.mkdir(bin);
 
+      for (const tool of ["sh", "grep", "id", "chmod"])
+        await fs.symlink(hostTool(tool), join(bin, tool));
+
       for (const [pid, { environ, readable = true }] of Object.entries(processes)) {
         await fs.mkdir(join(proc, pid));
         await fs.writeFile(join(proc, pid, "environ"), environ, { mode: readable ? 0o400 : 0o000 });
+      }
+
+      if (nobody !== undefined) {
+        await fs.chmod(root, 0o755);
+
+        for (const path of [
+          proc,
+          ...Object.keys(processes).flatMap((pid) => [join(proc, pid), join(proc, pid, "environ")]),
+        ])
+          await fs.chown(path, nobody, nobody);
       }
 
       if (sudo !== "missing")
@@ -261,10 +289,10 @@ describe("activity scan script", () => {
           { mode: 0o755 },
         );
       const script = activityScanCommand.replaceAll("/proc/", `${proc}/`);
-      const env = { PATH: `${bin}:/usr/bin:/bin` };
+      const env = { PATH: bin };
 
       try {
-        await run("sh", ["-c", script], { env });
+        await run(hostTool("sh"), ["-c", script], { env, ...user });
 
         return 0;
       } catch (error) {
@@ -281,43 +309,37 @@ describe("activity scan script", () => {
 
   const untagged = "PATH=/bin\0HOME=/root\0";
   const tagged = `HOME=/root\0${activityTag}=1\0`;
-  test.skipIf(process.getuid?.() === 0)(
-    "idle only when every process is readable and untagged",
-    async () => {
-      expect(await scan({ "1": { environ: untagged }, "42": { environ: "" } }, "missing")).toBe(0);
-      expect(await scan({ "1": { environ: untagged }, "42": { environ: tagged } }, "missing")).toBe(
-        10,
-      );
-      expect(await scan({}, "missing")).not.toBe(0);
-    },
-  );
-  test.skipIf(process.getuid?.() === 0)(
-    "unreadable processes are busy unless sudo can read them untagged",
-    async () => {
-      expect(
-        await scan(
-          { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
-          "missing",
-        ),
-      ).not.toBe(0);
-      expect(
-        await scan(
-          { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
-          "fails",
-        ),
-      ).not.toBe(0);
-      expect(
-        await scan(
-          { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
-          "reads",
-        ),
-      ).toBe(0);
-      expect(
-        await scan(
-          { "1": { environ: tagged, readable: false }, "42": { environ: untagged } },
-          "reads",
-        ),
-      ).toBe(10);
-    },
-  );
+  test("idle only when every process is readable and untagged", async () => {
+    expect(await scan({ "1": { environ: untagged }, "42": { environ: "" } }, "missing")).toBe(0);
+    expect(await scan({ "1": { environ: untagged }, "42": { environ: tagged } }, "missing")).toBe(
+      10,
+    );
+    expect(await scan({}, "missing")).not.toBe(0);
+  });
+  test("unreadable processes are busy unless sudo can read them untagged", async () => {
+    expect(
+      await scan(
+        { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
+        "missing",
+      ),
+    ).not.toBe(0);
+    expect(
+      await scan(
+        { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
+        "fails",
+      ),
+    ).not.toBe(0);
+    expect(
+      await scan(
+        { "1": { environ: untagged, readable: false }, "42": { environ: untagged } },
+        "reads",
+      ),
+    ).toBe(0);
+    expect(
+      await scan(
+        { "1": { environ: tagged, readable: false }, "42": { environ: untagged } },
+        "reads",
+      ),
+    ).toBe(10);
+  });
 });
