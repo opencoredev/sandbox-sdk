@@ -18,7 +18,7 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - run: bun packages/sdk/scripts/run-live.ts ${{ matrix.provider }}
+      - run: bun packages/sdk/scripts/live-smoke.ts --providers ${{ matrix.provider }} --json live-${{ matrix.provider }}.json
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
@@ -28,8 +28,10 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           UPSTASH_BOX_API_KEY: ${{ secrets.UPSTASH_BOX_API_KEY }}
           TENKI_API_KEY: ${{ secrets.TENKI_API_KEY }}
+      # live-smoke skips a provider with no credentials and still exits 0, so a missing secret would pass silently
+      - run: jq -e '.missing | length == 0' live-${{ matrix.provider }}.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
         if: always()
         with:
           name: compatibility-${{ matrix.provider }}
-          path: packages/sdk/compatibility/results/${{ matrix.provider }}.json
+          path: live-${{ matrix.provider }}.json
