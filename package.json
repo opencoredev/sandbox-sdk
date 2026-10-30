@@ -15,6 +15,7 @@
     "typecheck": "turbo run typecheck",
     "check-types": "bun run typecheck",
     "test": "turbo run test",
+    "test:ci": "turbo run test --concurrency=1",
     "test:live": "turbo run test:live",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",

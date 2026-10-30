@@ -16,5 +16,7 @@ jobs:
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
-      - run: bun run test
+      # Each test task builds its package first. Run them one at a time so the
+      # Next.js builds and the vitest workers never share the runner's memory.
+      - run: bun run test:ci
       - run: bun run build
