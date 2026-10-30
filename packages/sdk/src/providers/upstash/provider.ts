@@ -440,26 +440,62 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
         { code: "outcome_unknown", provider: "upstash" },
       );
 
+    const expired = (cause?: unknown) =>
+      new SandboxError(
+        `Upstash box ${created.id} could not be read before the create deadline. Retry when ready.`,
+        { code: "timeout", provider: "upstash", sandboxId: created.id, cause },
+      );
+
+    /** One Box.get within the remaining budget. Its native timeout does not bound the fetch, so race it. */
+    const attach = (remaining: number) => {
+      const timeout = Math.min(config.timeout ?? 600_000, remaining);
+
+      const halt = signal
+        ? AbortSignal.any([AbortSignal.timeout(timeout), signal])
+        : AbortSignal.timeout(timeout);
+
+      const get = Box.get(created.id, {
+        apiKey,
+        baseUrl: config.baseUrl,
+        enableTelemetry: config.enableTelemetry,
+        timeout,
+      });
+
+      // A read that loses the race may still settle; nothing waits on it.
+      get.catch(() => {});
+
+      return new Promise<B>((resolve, reject) => {
+        const stop = () => reject(signal?.aborted ? aborted() : expired());
+
+        if (halt.aborted) stop();
+        halt.addEventListener("abort", stop, { once: true });
+        get.then(resolve, reject).finally(() => halt.removeEventListener("abort", stop));
+      });
+    };
+
     try {
       let value: B | undefined;
 
       // Like the status poll below, ride out a failed read until the deadline, unless it can never succeed.
       while (!value) {
-        try {
-          value = await Box.get(created.id, {
-            apiKey,
-            baseUrl: config.baseUrl,
-            enableTelemetry: config.enableTelemetry,
-            timeout: config.timeout,
-          });
-        } catch (error) {
-          if (
-            ["auth", "not_found"].includes(upstashError(error, created.id).code) ||
-            Date.now() >= end
-          )
-            throw error;
+        if (signal?.aborted) throw aborted();
 
-          if (signal?.aborted) throw aborted();
+        if (Date.now() >= end) throw expired();
+
+        try {
+          value = await attach(end - Date.now());
+        } catch (error) {
+          if (error instanceof SandboxError) throw error;
+
+          // Mapped and scrubbed, so the timeout keeps no native object as its cause.
+          const mapped = upstashError(error, created.id, false, "request", (text) =>
+            redactor.text(text),
+          );
+
+          if (["auth", "not_found"].includes(mapped.code)) throw error;
+
+          // A sleep past the deadline would only end in a timeout.
+          if (Date.now() + 200 >= end) throw expired(mapped);
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }

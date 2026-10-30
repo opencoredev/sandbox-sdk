@@ -174,3 +174,83 @@ test("an auth failure of the first Box.get fails at once and deletes the box", a
   expect(state.deletes).toHaveLength(1);
   expect(state.boxes.size).toBe(0);
 });
+
+test("a Box.get that fails just before the create deadline is not retried past it", async () => {
+  state.getFailures = { count: 100, status: 503 };
+  const now = Date.now.bind(Date);
+  let skew = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + skew);
+
+  // The first read fails with 100 ms of the 300 s create budget left: a 200 ms sleep would pass the deadline.
+  state.onGet = () => {
+    if (skew === 0) skew = 300_000 - 100;
+  };
+
+  try {
+    await expect(createSandbox(upstash({ apiKey: "mock-key" }))).rejects.toMatchObject({
+      code: "timeout",
+      provider: "upstash",
+    });
+  } finally {
+    clock.mockRestore();
+  }
+
+  expect(state.getTimeouts).toHaveLength(1);
+  // The attempt's timeout is the remaining budget, not the 600 s native default.
+  expect(state.getTimeouts[0]).toBeLessThanOrEqual(300_000);
+  expect(state.deletes).toHaveLength(1);
+  expect(state.boxes.size).toBe(0);
+});
+
+test("each Box.get attempt is bound by the time left, and by requestTimeoutMs", async () => {
+  state.getFailures = { count: 2, status: 503 };
+  const box = await createSandbox(upstash({ apiKey: "mock-key" }));
+  await box.destroy();
+  expect(state.getTimeouts).toHaveLength(3);
+
+  for (const timeout of state.getTimeouts) {
+    expect(timeout).toBeGreaterThan(290_000);
+    expect(timeout).toBeLessThanOrEqual(300_000);
+  }
+
+  state.getTimeouts.length = 0;
+  const bound = await createSandbox(upstash({ apiKey: "mock-key", requestTimeoutMs: 5_000 }));
+  await bound.destroy();
+  expect(state.getTimeouts).toEqual([5_000]);
+});
+
+test("a Box.get that never answers fails within requestTimeoutMs and deletes the box", async () => {
+  state.hangGet = true;
+  const started = Date.now();
+
+  await expect(
+    createSandbox(upstash({ apiKey: "mock-key", requestTimeoutMs: 300 })),
+  ).rejects.toMatchObject({ code: "timeout", provider: "upstash" });
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(state.deletes).toHaveLength(1);
+  expect(state.boxes.size).toBe(0);
+}, 10_000);
+
+test("a Box.get that never answers and whose cleanup fails is outcome_unknown", async () => {
+  state.hangGet = true;
+  state.deleteFailures = 100;
+
+  await expect(
+    createSandbox(upstash({ apiKey: "mock-key", requestTimeoutMs: 300 })),
+  ).rejects.toMatchObject({ code: "outcome_unknown", provider: "upstash" });
+  expect(state.boxes.size).toBe(1);
+}, 20_000);
+
+test("cancelling while Box.get stalls deletes the box and reports aborted", async () => {
+  state.hangGet = true;
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 200);
+  const started = Date.now();
+
+  await expect(
+    createSandbox(upstash({ apiKey: "mock-key" }), { signal: controller.signal }),
+  ).rejects.toMatchObject({ code: "aborted" });
+  expect(Date.now() - started).toBeLessThan(2_000);
+  await vi.waitFor(() => expect(state.boxes.size).toBe(0));
+  expect(state.deletes).toHaveLength(1);
+}, 10_000);

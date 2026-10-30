@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { join, posix } from "node:path";
+import { createServer } from "node:net";
 import { promisify } from "node:util";
 import { connectSandbox, createSandbox, SandboxError } from "../src/index.js";
+import { createHttpClient } from "../src/http.js";
 import type { Provider } from "../src/provider.js";
 import { isString } from "../src/shared/narrow.js";
 import { shellProvider } from "./shell-provider.js";
@@ -248,6 +250,157 @@ test("adapters that stage extra env keep edit on the RPC path", async () => {
   } finally {
     await box.destroy();
   }
+});
+
+/** The shell transport, with every guest file command rejected by `fail`. `run` first runs it to completion. */
+function rejecting(native: Provider, fail: () => Promise<Error> | Error, run: boolean): Provider {
+  return {
+    ...native,
+    async exec(id, input) {
+      if (!input.command.startsWith("python3 ")) return native.exec(id, input);
+
+      if (run) await native.exec(id, input);
+      throw await fail();
+    },
+    files: { ...native.files, editInGuest: "in-place", listOrder: "name" },
+  };
+}
+
+/** The error a real HTTP client gives for a POST to a closed port, which never left this process. */
+async function unreachable() {
+  const server = createServer();
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  await new Promise((done) => server.close(done));
+
+  if (!address || isString(address)) throw new Error("No port");
+
+  const http = createHttpClient({
+    provider: "shell",
+    label: "Shell",
+    planes: { api: { baseUrl: `http://127.0.0.1:${address.port}` } },
+    defaultPlane: "api",
+    backoffMs: 1,
+    retries: 0,
+  });
+
+  return http.json({ method: "POST", path: "/exec", body: {} }).then(
+    () => new Error("The request to a closed port succeeded"),
+    (cause: Error) => cause,
+  );
+}
+
+describe("a guest edit whose exec rejects", () => {
+  test("is outcome_unknown when the command may have run, with the cause kept and redacted", async () => {
+    for (const fail of [
+      () =>
+        new SandboxError("Shell exec failed: the stream was cut. token=hunter2-secret", {
+          code: "unavailable",
+          provider: "shell",
+        }),
+      () =>
+        new SandboxError("Shell exec failed: no response before the deadline.", {
+          code: "timeout",
+          provider: "shell",
+        }),
+      () =>
+        new SandboxError("Shell exec failed: the connection failed after the request was sent.", {
+          code: "outcome_unknown",
+          provider: "shell",
+        }),
+      () =>
+        new TypeError("fetch failed", {
+          cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+        }),
+    ]) {
+      const box = await createSandbox(rejecting(await shellProvider(), fail, true), {
+        secrets: { SHELL_TOKEN: "hunter2-secret" },
+      });
+
+      try {
+        await box.files.write("a.txt", "one");
+
+        const error: unknown = await box.files
+          .edit("a.txt", { find: "one", replace: "two" })
+          .catch((cause: unknown) => cause);
+
+        expect(error).toBeInstanceOf(SandboxError);
+        expect(error).toMatchObject({
+          code: "outcome_unknown",
+          sandboxId: box.id,
+          message: expect.stringContaining("Read the file to check its state before retrying"),
+        });
+        const cause = error instanceof SandboxError ? String(error.cause) : "";
+        expect(cause).not.toBe("undefined");
+        expect(cause).not.toContain("hunter2-secret");
+        // The edit did commit, which is why a blind retry would be wrong.
+        expect(await box.files.read("a.txt")).toBe("two");
+      } finally {
+        await box.destroy();
+      }
+    }
+  });
+
+  test("keeps its own code when the rejection proves nothing ran", async () => {
+    for (const [fail, code] of [
+      [() => new SandboxError("Shell auth failed", { code: "auth", provider: "shell" }), "auth"],
+      [
+        () =>
+          new SandboxError("Shell rejected the command", {
+            code: "invalid_argument",
+            provider: "shell",
+          }),
+        "invalid_argument",
+      ],
+      [
+        () => new SandboxError("Shell sandbox is gone", { code: "not_found", provider: "shell" }),
+        "not_found",
+      ],
+      [
+        () => new SandboxError("Shell is rate limited", { code: "quota", provider: "shell" }),
+        "quota",
+      ],
+      [
+        () =>
+          new SandboxError("Shell is unreachable", {
+            code: "unavailable",
+            provider: "shell",
+            cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+          }),
+        "unavailable",
+      ],
+      [unreachable, "unavailable"],
+    ] as const) {
+      const box = await createSandbox(rejecting(await shellProvider(), fail, false));
+
+      try {
+        await box.files.write("a.txt", "one");
+        await expect(
+          box.files.edit("a.txt", { find: "one", replace: "two" }),
+        ).rejects.toMatchObject({ code });
+        expect(await box.files.read("a.txt")).toBe("one");
+      } finally {
+        await box.destroy();
+      }
+    }
+  });
+
+  test("a guest search keeps the provider's error, since it changes nothing", async () => {
+    const fail = () =>
+      new SandboxError("Shell exec failed: the stream was cut.", {
+        code: "unavailable",
+        provider: "shell",
+      });
+
+    const box = await createSandbox(rejecting(await shellProvider(), fail, false));
+
+    try {
+      await box.files.write("a.txt", "one");
+      await expect(box.files.search("one")).rejects.toMatchObject({ code: "unavailable" });
+    } finally {
+      await box.destroy();
+    }
+  });
 });
 
 describe("files.search in one guest call", () => {

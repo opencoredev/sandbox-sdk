@@ -58,6 +58,12 @@ export const state = {
   createReply: "answer",
   /** Box.get calls that fail with `status` before one succeeds. */
   getFailures: { count: 0, status: 503 },
+  /** The `timeout` each Box.get call was given, in call order. */
+  getTimeouts: new Array<number | undefined>(),
+  /** Whether Box.get never settles, as a stalled fetch the native timeout does not bound. */
+  hangGet: false,
+  /** Runs at the start of each Box.get call, before it fails or answers. */
+  onGet: (): void => {},
 };
 
 /** One mock machine. Every handle for the same box ID shares it. */
@@ -138,7 +144,12 @@ export class MockBox {
 
     return box;
   }
-  static async get(id: string) {
+  static async get(id: string, options?: { timeout?: number }) {
+    state.getTimeouts.push(options?.timeout);
+    state.onGet();
+
+    if (state.hangGet) return new Promise<never>(() => {});
+
     if (state.getFailures.count > 0) {
       state.getFailures.count--;
       throw Object.assign(new Error("get failed"), { statusCode: state.getFailures.status });
@@ -632,6 +643,9 @@ export async function cleanup() {
   state.deletes.length = 0;
   state.createReply = "answer";
   state.getFailures = { count: 0, status: 503 };
+  state.getTimeouts.length = 0;
+  state.hangGet = false;
+  state.onGet = () => {};
 }
 
 const load = async () => ({ Box: MockBox, EphemeralBox: MockEphemeralBox });

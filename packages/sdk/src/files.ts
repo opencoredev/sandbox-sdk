@@ -4,7 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
 import type { Provider, FileInfo, WriteOptions } from "./provider.js";
-import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, type ErrorCode, type Redactor } from "./errors.js";
+import { neverSent } from "./http.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
 import { isObject, isString } from "./shared/narrow.js";
@@ -231,6 +232,19 @@ interface SearchInput {
   order: "name" | "directory";
 }
 
+// Refusals an adapter reports before anything starts in the guest.
+const refusedCodes = new Set<ErrorCode>([
+  "auth",
+  "invalid_argument",
+  "unsupported",
+  "quota",
+  "not_found",
+]);
+
+/** Whether an exec rejection proves the command never started: refused up front, or never sent. */
+const neverRan = (cause: unknown) =>
+  neverSent(cause) || (cause instanceof SandboxError && refusedCodes.has(cause.code));
+
 const editFailed = (path: string, lines: number[]) =>
   new SandboxError(
     `Edit failed at ${path}. ${lines.length ? `Matches on lines ${lines.join(", ")}` : "Text not found"}. Supply a unique exact match.`,
@@ -305,16 +319,32 @@ export function makeFiles(
 
     if (accepts === "none" || (accepts === "env" && !inline)) return { exitCode: 70, stdout: "" };
 
-    const result = await provider.exec(id, {
-      command: python(script),
-      cwd: "/",
-      env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" },
-      stdin: inline ? undefined : input,
-      timeoutMs: 120_000,
-      onChunk(chunk) {
-        if (chunk.stream === "stdout") stdout += chunk.text;
-      },
-    });
+    let result: Awaited<ReturnType<Provider["exec"]>>;
+
+    try {
+      result = await provider.exec(id, {
+        command: python(script),
+        cwd: "/",
+        env: { ...defaults, SANDBOX_SDK_INPUT: inline ? input : "" },
+        stdin: inline ? undefined : input,
+        timeoutMs: 120_000,
+        onChunk(chunk) {
+          if (chunk.stream === "stdout") stdout += chunk.text;
+        },
+      });
+    } catch (error) {
+      // An edit may have committed before a timeout, a cut stream or a lost answer, so a retry could apply it twice.
+      if (!mutates || neverRan(error)) throw error;
+      throw new SandboxError(
+        "File edit outcome unknown. The guest command may have run before the call failed. Read the file to check its state before retrying.",
+        {
+          code: "outcome_unknown",
+          provider: provider.name,
+          sandboxId: id,
+          cause: redactor.error(error, provider.name, id),
+        },
+      );
+    }
 
     if (result.timedOut || result.exitCode === null || result.exitCode >= 128) {
       if (!mutates) return { exitCode: 70, stdout: "" };
