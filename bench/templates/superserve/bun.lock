@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "sandbox-bench-superserve-template",
+      "dependencies": {
+        "@superserve/sdk": "0.11.4",
+      },
+    },
+  },
+  "packages": {
+    "@superserve/sdk": ["@superserve/sdk@0.11.4", "", {}, "sha512-vFjtm3+Z+32tAxMIhUVCT+nYi3PpgyG48Au9F/Rh4qoFtjT3dzJJn+94zaTcPPfHeRFh0fex/Lh93ac5JWjr2w=="],
+  }
+}

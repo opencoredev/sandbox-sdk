@@ -1,0 +1,33 @@
+---
+// Provider tabs on top of Blume's inline Tabs. Every group on a page shares the
+// "provider" sync key, so picking Daytona in one group switches the others, and
+// the choice is kept in ?provider= for deep links.
+import Tabs from "blume/components/content/Tabs.astro";
+
+interface Props {
+  defaultTabIndex?: number;
+}
+
+const { defaultTabIndex = 0 } = Astro.props;
+---
+
+<div class="provider-tabs">
+  <Tabs defaultTabIndex={defaultTabIndex} inline param="provider" syncKey="provider">
+    <slot />
+  </Tabs>
+  {/* Without JavaScript Blume shows only the first panel. Show every panel, labeled. */}
+  <noscript>
+    <style>
+      .provider-tabs [data-blume-tablist] {
+        display: none;
+      }
+      .provider-tabs [data-blume-tab-content] > * {
+        display: block !important;
+      }
+      .provider-tabs .provider-tab-fallback {
+        display: flex;
+        margin-top: 2rem;
+      }
+    </style>
+  </noscript>
+</div>

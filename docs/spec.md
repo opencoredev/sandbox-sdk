@@ -1,0 +1,320 @@
+# Sandbox SDK 1.0 spec
+
+The pitch: "Sandboxes for your agents and your users. Any provider, one line."
+
+The library must be simple to start with and powerful when you need more. It talks directly to each provider's own SDK with your keys. There is no hosted middleman and no daemon installed in the sandbox.
+
+This spec is the single source of truth for the rewrite. If an implementation choice isn't covered here, pick the simplest option that keeps the stated guarantees, and note it in your PR.
+
+## 0. Ground rules
+
+- **Package.** Single package, `@opencoredev/sandbox-sdk`, version `1.0.0`, ESM only, Node 22+ and Bun 1.3+. Provider SDKs are optional peer dependencies behind subpath exports, and each one is imported dynamically inside its provider's `create`.
+- **Core size.** Core has zero runtime dependencies (no zod). The root entry stays under 8 KB minified, enforced by a size check in CI.
+- **One obvious way.** No aliases, no `run`/`exec`/`execute` trio, and options are objects with explicit units (`timeoutMs`, `maxOutputBytes`). Root exports stay at about 25 names or fewer.
+- **Errors.** A non-zero exit code is a result, never a throw. The SDK throws only when the sandbox, the provider, or the request itself fails, and it always throws `SandboxError` (section 9).
+- **No lying.** Methods for optional capabilities exist on the type only when the provider supports them. At runtime, `box.capabilities` lists the same set. When a requested option can't be enforced (network policy, size), creation fails and does not silently ignore it.
+- **Defaults stop footguns:**
+  - every command has a timeout;
+  - stdin is closed;
+  - non-interactive env vars are set;
+  - output is capped;
+  - the default working directory is `/workspace`;
+  - `cd` and `export` never carry over between calls.
+- Follow `~/.agents/skills/typescript-best-practices/SKILL.md`.
+
+## 1. Getting a sandbox
+
+```ts
+import {
+  createSandbox,
+  connectSandbox,
+  listSandboxes,
+  reapSandboxes,
+} from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b({ template: "base" }), {
+  key: `user:${userId}`, // optional. get-or-create. box.created tells you which.
+  size: "small", // "small" | "medium" | "large" | { cpu, memoryMb, diskGb }
+  env: { NODE_ENV: "development" },
+  secrets: { GITHUB_TOKEN: token }, // injected as env, redacted from every output/log/error
+  network: "all", // "all" | "none" | { allow: ["registry.npmjs.org", ...] }
+  ports: [3000], // declared up front where the provider routes only declared ports
+  idleTimeoutMs: 15 * 60_000, // auto-stop/pause when idle (native where supported)
+  timeoutMs: 60 * 60_000, // hard max lifetime
+  labels: { app: "builder", userId },
+  signal, // abort creation; a sandbox that arrives late gets destroyed
+});
+```
+
+- **Get-or-create.** `createSandbox(provider, { key })` finds the sandbox by key or creates it.
+  - Each provider adapter declares `keyMode: "exact" | "best-effort"`. Exact means the provider enforces unique names: Vercel named sandboxes, Docker container names, memory. Best-effort means lookup by tag or metadata (E2B, Daytona) and can race.
+  - Pass `locator: { get(key), set(key, id), delete?(key) }` to cache key-to-ID lookups in any KV store and recover from stale IDs. A two-function locator cannot enforce uniqueness across hosts, because `get` then `set` is not atomic.
+  - For exact mode on a best-effort provider, pass `keyMode: "exact"` and add `locator.withLock(key, action)`, backed by a distributed lock or transaction. Without `withLock`, `createSandbox` rejects exact mode with `unsupported`.
+  - A stale stored ID gets recreated transparently.
+- **Lookup and cleanup.**
+  - `connectSandbox(provider, id)` reattaches by native ID.
+  - `listSandboxes(provider, { labels? })` returns `{ id, key?, labels, state, createdAt }[]`, covering only sandboxes this SDK created, which carry the `sandbox-sdk` label.
+  - `reapSandboxes(provider, { olderThanMs?, labels?, idleOnly? })` destroys matching sandboxes and returns the count.
+- **Closing vs destroying.**
+  - `box.close()` detaches local resources and leaves the sandbox running.
+  - `box.destroy()` kills it.
+  - `await using` / `[Symbol.asyncDispose]` calls `close()` when a `key` was given, otherwise `destroy()`.
+- **Machine size.** Each adapter maps `size` presets to native settings and documents the mapping. A size the provider can't honor makes creation fail with `unsupported`, naming what the provider allows.
+
+## 2. Running commands
+
+```ts
+const r = await box.run("pnpm test", { cwd: "app", env: {}, timeoutMs: 120_000, stdin: "y\n" });
+// r: { ok, exitCode, stdout, stderr, output, durationMs, truncated, timedOut, cwd, command }
+
+for await (const chunk of box.run("pnpm install")) ui.write(chunk.stream, chunk.text);
+// RunHandle is both PromiseLike<RunResult> and AsyncIterable<OutputChunk>
+
+await box.$`git clone ${url} app`; // tagged template, every interpolation shell-escaped
+await box.$`ls ${dir}`.cwd("/workspace"); // same RunHandle, chainable .cwd/.env/.timeout
+```
+
+**Defaults:**
+
+- `timeoutMs` 120 000.
+- `maxOutputBytes` 1 MB kept per stream in `RunResult`. Beyond that, keep the head and tail, set `truncated: true`, and put a marker in the middle.
+- stdin closed unless given.
+- Env always includes `CI=1 PAGER=cat GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive TERM=dumb NO_COLOR=1`.
+
+**Results:**
+
+- `output` is stdout and stderr interleaved in arrival order.
+- `cwd` is the resolved absolute path.
+- On timeout or abort, the SDK kills the whole remote process group and returns `{ timedOut: true, exitCode: null, ok: false }` with the partial output. It does not throw.
+- `signal` aborts both the call and the remote process.
+
+## 3. Background processes and previews
+
+```ts
+const dev = await box.start("pnpm dev --port 3000", {
+  name: "dev", // unique per sandbox; reattach by name
+  cwd: "app",
+  ready: { port: 3000 } | { http: { port: 3000, path: "/" } } | { log: /Local:/ },
+  readyTimeoutMs: 60_000,
+});
+dev.url; // preview URL when ready included a port, verified to answer
+dev.status; // "starting" | "running" | "exited" | "failed"
+for await (const line of dev.lines({ after: cursor })) {
+} // line: { text, stream, cursor }
+const page = await dev.logs({ after: cursor, maxBytes: 16_384 }); // { text, nextCursor, truncated }
+await dev.stop(); // SIGTERM, then SIGKILL after graceMs; idempotent
+await dev.restart();
+const exit = await dev.wait(); // { exitCode, signal }
+
+box.process("dev"); // reattach from anywhere: works after the app server restarted
+await box.processes(); // [{ name, command, status, pid, ports, startedAt, exitCode }]
+const p = await box.preview(3000, { path: "/", waitMs: 10_000 }); // { url, headers?, expiresAt? }
+```
+
+**Process records.**
+
+- Process records and logs live inside the sandbox under `/tmp/.sandbox-sdk/procs/<name>/`, in `spec.json`, `pid`, `exit`, and `out.log`. Logs rotate at 10 MB.
+- Native process APIs are used where a provider has them. The shell shim is the fallback.
+
+**Readiness.**
+
+- If the process exits before it's ready, `start` throws `SandboxError{ code: "process_exited" }` with the exit code and the last 50 log lines.
+- If readiness times out, the process keeps running, the handle reports `ready: false`, and the error carries the log tail.
+
+**Cursors and memory.**
+
+- Cursors are opaque, serializable strings, so a different server process can resume reading.
+- Host-side buffering per process is bounded at 1 MB.
+
+**Previews.**
+
+- `preview()` returns provider-correct access, including the Daytona token header and an expiry where relevant.
+- The SDK checks the URL from outside before returning it when `waitMs` is set.
+
+## 4. Files
+
+```ts
+await box.files.write("app/index.ts", code);                  // string | Uint8Array; creates dirs
+await box.files.write({ "a.ts": "...", "b/c.ts": "..." });     // many at once
+const text = await box.files.read("app/index.ts");             // string
+const bytes = await box.files.read("logo.png", { as: "bytes" });
+await box.files.edit("app/index.ts", { find: "foo()", replace: "bar()" }); // must match exactly once
+await box.files.list("app", { recursive?: true, glob?: "**/*.ts" }); // [{ path, type, size, modifiedAt }]
+await box.files.stat(path); await box.files.exists(path); await box.files.remove(path, { recursive });
+await box.files.upload("./starter", "app", { ignore: [".git", "node_modules"] }); // tar under the hood
+await box.files.download("app/dist", "./out");
+await box.files.search("TODO", { path: "app", glob: "*.ts", maxMatches: 200 }); // [{ path, line, text }]
+const stop = box.files.watch("app", (e) => {}, { recursive: true }); // { type, path } events
+const diff = await box.files.changes({ since: "start" });      // { added, modified, removed, patch }; needs createSandbox(p, { trackChanges: true })
+```
+
+- Relative paths resolve against `/workspace`.
+- `edit` fails with `edit_not_found` or `edit_not_unique`, including the line numbers of the matches.
+- `changes` compares against `box.files.mark()` for a named checkpoint, or against a snapshot taken at create time when the sandbox was created with `trackChanges: true` (off by default, so creating a sandbox costs no extra round trips). It works on any provider by using git internally on a hidden index.
+
+## 5. Git
+
+```ts
+await box.git.clone(url, { dir: "app", branch?, depth?, token? }); // token never in argv/history/logs
+await box.git.status("app");  await box.git.diff("app");
+await box.git.commit("app", { message, all: true, author? });
+await box.git.push("app", { token?, remote?, branch? });
+await box.git.checkout("app", { branch, create? });
+```
+
+These run through `run`, with credentials passed through a temporary credential helper.
+
+## 6. Optional capabilities (type-gated)
+
+| Method                         | Returns                                                           |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `box.pause()` / `box.resume()` | `void`                                                            |
+| `box.snapshot()`               | `{ id }`, used as `createSandbox(provider, { from: snapshotId })` |
+| `box.terminal({ cols, rows })` | PTY handle with `write`, `resize`, `onData`, `close`              |
+
+- `network` policy and `size` are creation-time options that fail closed when the provider can't enforce them.
+- `box.capabilities` is a `ReadonlySet<"pause" | "snapshot" | "terminal" | "network-policy" | "size">`.
+
+## 7. Other handle members
+
+- `box.id`, `box.key`, `box.provider` (a name string), `box.created`, `box.labels`.
+- `box.usage()` returns `{ createdAt, runningMs, commands, bytesOut }`, plus native cost fields if the provider exposes them.
+- `box.native` is the provider's raw client or sandbox object, fully typed per provider.
+
+## 8. Providers
+
+| Factory            | Subpath       | Native SDK (optional peer) and notes                                                                            |
+| ------------------ | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
+| `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.      |
+| `e2b(opts)`        | `/e2b`        | `e2b`. Native commands and pause/snapshot.                                                                      |
+| `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                   |
+| `daytona(opts)`    | `/daytona`    | `@daytonaio/sdk`. Labels, preview token.                                                                        |
+| `upstash(opts)`    | `/upstash`    | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                                |
+| `railway(opts)`    | `/railway`    | `railway`.                                                                                                      |
+| `boat(opts)`       | `/boat`       | `@boatdev/sdk`.                                                                                                 |
+| `sandboxer(opts)`  | `/sandboxer`  | `@boatdev/sdk`, through the same API client as `boat`.                                                          |
+| `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                          |
+| `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
+| `freestyle(opts)`  | `/freestyle`  | `freestyle`.                                                                                                    |
+| `superserve(opts)` | `/superserve` | `@superserve/sdk`.                                                                                              |
+| `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                              |
+
+Each adapter's key mode, capabilities, limits, and peer package range are listed once, in the docs' [capability matrix](../apps/docs/content/reference/capabilities.mdx). `apps/docs/scripts/check-capabilities.ts` checks that page against the adapters.
+
+**Adapter contract.** Internal, exported from `/provider` for third parties. [adapters.md](./adapters.md) is the guide for writing one. Each adapter implements:
+
+- `create(input)`
+- `find(key)`
+- `connect(id)`
+- `list(labels)`
+- `destroy(id)`
+- `exec(id, { command, cwd, env, stdin, timeoutMs, signal, onChunk })`, returning `{ exitCode, timedOut }`
+- `files` primitives: `read`, `write`, `list`, `stat`, `remove`, `mkdir`
+- `previewUrl(id, port)`
+- optional `pause`, `resume`, `snapshot`, `terminal`, and native process hooks
+- `capabilities`
+- `keyMode`
+
+Everything else, including runs, processes, the `$` tag, edit, upload, search, changes, git, and readiness, lives once in core on top of these primitives.
+
+## 9. Errors
+
+```ts
+class SandboxError extends Error {
+  code:
+    | "auth"
+    | "not_found"
+    | "quota"
+    | "unavailable"
+    | "unsupported"
+    | "timeout"
+    | "aborted"
+    | "outcome_unknown"
+    | "process_exited"
+    | "port_not_ready"
+    | "edit_not_found"
+    | "edit_not_unique"
+    | "file_not_found"
+    | "invalid_argument"
+    | "provider";
+  retryable: boolean;
+  hint: string;
+  provider: string;
+  sandboxId?: string;
+  cause?: unknown;
+}
+```
+
+The message format is "what happened. why. what to do next." Secrets are redacted from messages, causes, and logs. Native errors map to these codes in each adapter's `errors.ts`.
+
+## 10. Agent tools
+
+Each adapter is a subpath. `/ai` gives AI SDK tools, `/mastra` gives Mastra tools, and `/openai` gives OpenAI Agents SDK tools. Each one exports `sandboxTools(box, options?)`, which returns that framework's native tool map or array with no glue code needed.
+
+**Default tools.** Flat parameters, one verb each, and a description that says when _not_ to use the tool:
+
+| Tool            | Parameters                                                               |
+| --------------- | ------------------------------------------------------------------------ |
+| `run`           | `command`, `cwd?`, `timeoutMs?`                                          |
+| `read_file`     | `path`, `offset?`, `limit?`. Returns numbered lines and a sha.           |
+| `write_file`    | `path`, `content`                                                        |
+| `edit_file`     | `path`, `find`, `replace`                                                |
+| `start_process` | `name`, `command`, `cwd?`, `port?`. Waits for ready and returns the URL. |
+| `process_logs`  | `name`, `cursor?`                                                        |
+| `stop_process`  | `name`                                                                   |
+
+**Optional tools:** `search`, `list_files`, `changes`, `preview`.
+
+**Model-facing output:**
+
+- It opens with a verdict line: `OK exit=0 1.2s cwd=/workspace` or `FAILED exit=1 ...`.
+- After that come `output:` and the interleaved, ANSI-stripped output, capped at 16 KB as head plus tail with a "[N bytes cut, use process_logs]" marker.
+- Errors use the section 9 format, and secrets never appear.
+
+**Options:**
+
+- `root` keeps paths inside it.
+- `allow` and `deny` select tools.
+- `beforeRun(command)` can deny or rewrite a command.
+- Per-tool limits.
+- `onEvent` streams full output to the UI while the model gets the compact result. For AI SDK this uses preliminary results and `toModelOutput`.
+
+## 11. Tests, conformance, benchmarks
+
+- **Conformance.** `/testing` exports `runConformance(providerFactory, { live })`, one suite every provider must pass. It covers create/find-by-key, run (exit codes, stdin, timeout kill, abort kill, truncation, interleaving, non-interactive env), `$` escaping, processes (start/ready/logs/cursor/reattach after a new client/stop/exit-before-ready), files (all ops, upload/download, edit errors, changes), git (clone and commit against a local bare repo), preview, close vs destroy, reap, and capability gating.
+- **Unit tests** run against `memory()` and provider mocks. Docker conformance runs locally and in CI. Each cloud provider's live tests (`packages/sdk/tests/*.live.test.ts`) skip unless its credentials are set, for example `E2B_API_KEY`, or `VERCEL_TOKEN` with a team and project.
+- **Benchmarks.** `bench/` holds a runnable harness, `bun bench --providers e2b,vercel,... --runs 50`; [bench/README.md](../bench/README.md) documents its scenarios and flags. It measures, among others:
+  - create to first command (cold);
+  - command round trip;
+  - file write and read (1 KB, 10 MB);
+  - start a dev server until ready;
+  - preview first byte;
+  - destroy;
+  - SDK overhead against the raw provider SDK, as CPU time (the original harness, `bun bench --v1`).
+
+  It reports p50, p95, and p99 with the machine and region, writes JSON, a Markdown table and an HTML report, and never runs cloud providers without keys.
+
+- Test commands must use timeouts and at most 4 workers.
+
+## 12. Repo layout (branch from `v2`)
+
+```
+packages/sdk          the library (old src deleted, written fresh)
+apps/web              landing page = current v2 apps/fumadocs home page, moved; docs routes removed
+apps/docs             Blume docs (base /docs), ~15 pages, written fresh
+bench/                benchmark harness
+examples/             ai-app-builder (Next + AI SDK), coding-agent (CLI)
+```
+
+## 13. Docs (Blume, about 15 pages)
+
+- Quickstart
+- Concepts: sandboxes and keys, running commands, processes and previews, files and git, lifecycle and cleanup
+- Guides: give your agent a sandbox (AI SDK / Mastra / OpenAI), build an AI app builder, testing with `memory()`, machine size and network
+- Providers: overview table plus one page each
+- Reference: generated from types
+- Upgrade from 0.2
+
+Writing follows the `doc-writing` skill. Every snippet gets type-checked in CI. One theme, matching the landing page tokens: Geist, JetBrains Mono, accent `#EFA43B`, bg `#0A0A0C`.

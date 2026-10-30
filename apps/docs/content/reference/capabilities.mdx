@@ -1,0 +1,124 @@
+---
+title: Capabilities
+description: The full capability matrix. Which options and methods each provider accepts, the exact limits, how TypeScript gates optional methods, and how to check at runtime.
+---
+
+Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This page lists what each provider accepts. [Compare providers](/providers) lists each provider's factory, credentials, and what it is best for.
+
+## Matrix
+
+Each row is an option or method. "No network" means `network: "none"`, and "Allow list" means a `network` policy with an `allow` array. "Partial" means a limit that matters, and the [notes](#notes) under the table explain each one. The table scrolls sideways.
+
+|                   | Local        | agentOS            | E2B         | Vercel             | Daytona           | Upstash            | Railway            | Boat               | Sandboxer          | Tenki       | Superserve        | boxd             | Freestyle              | Memory   |
+| ----------------- | ------------ | ------------------ | ----------- | ------------------ | ----------------- | ------------------ | ------------------ | ------------------ | ------------------ | ----------- | ----------------- | ---------------- | ---------------------- | -------- |
+| `pause()`         | Yes          | No                 | Yes         | Partial            | No                | Partial            | No                 | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `snapshot()`      | Yes          | No                 | Yes         | Yes                | Yes               | Yes                | Files&nbsp;only    | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `terminal()`      | No           | No                 | No          | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
+| No&nbsp;network   | Yes          | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No               | Yes                    | Recorded |
+| Allow&nbsp;list   | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes              | Empty&nbsp;only        | Recorded |
+| Size&nbsp;presets | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | No       |
+| Exact&nbsp;size   | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Fixed&nbsp;steps | No                     | No       |
+| `idleTimeoutMs`   | Partial      | No                 | No          | No                 | Minutes           | No                 | Minutes            | No                 | Minutes            | No          | No                | Seconds          | Seconds                | Yes      |
+| `timeoutMs`       | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes           | No                 | No                 | No                 | No                 | Yes         | No                | Seconds          | Seconds                | Yes      |
+| `ports`           | Yes          | No                 | No          | Up&nbsp;to&nbsp;15 | No                | No                 | Up&nbsp;to&nbsp;10 | No                 | No                 | No          | No                | No               | No                     | No       |
+| `labels`          | Yes          | Yes                | Yes         | Up&nbsp;to&nbsp;4  | Yes               | Yes                | Yes                | 120&nbsp;chars     | 120&nbsp;chars     | Yes         | Yes               | Yes              | About&nbsp;2.9&nbsp;KB | Yes      |
+| Key&nbsp;mode     | exact        | exact              | best-effort | exact              | best-effort       | best-effort        | best-effort        | best-effort        | best-effort        | best-effort | best-effort       | best-effort      | best-effort            | exact    |
+| Preview&nbsp;URL  | Localhost    | No                 | Public      | Public             | Token&nbsp;header | Bearer&nbsp;header | Public             | Cookie&nbsp;header | Cookie&nbsp;header | Public      | Token&nbsp;header | Public           | Public                 | Fake     |
+
+`timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. "Minutes" and "Seconds" mean the provider enforces the limit in whole units of that size. In the `ports` row, an entry other than No means a preview port must be listed in `ports` when the sandbox is created. In the Preview URL row, "Public" means an `https://` URL anyone can open, and a header entry means `preview.headers` must go with every request.
+
+`scripts/check-capabilities.ts` in the docs app checks this table against the adapters' source on every CI run.
+
+## Notes
+
+- **Pause.** Local uses `docker pause`, so processes freeze and continue on resume. E2B, Tenki, boxd, and Freestyle pause the VM with its memory. Tenki clears `/tmp`; the adapter keeps SDK process records in durable storage and restores their `/tmp/.sandbox-sdk` link on resume. Vercel Sandbox and Upstash Box keep the disk and end running processes, which the SDK marks failed with exit code 137 on resume. Call `box.process(name).restart()` to start them again. A Vercel sandbox created with `persistent: false`, or an Upstash Box created with `ephemeral: true`, has no `"pause"` capability. Sandboxer usually restores memory and processes too. Daytona has no pause; its idle timeout stops the sandbox instead.
+- **Snapshots.** Railway checkpoints the file system only. Sandboxer snapshots are named disk snapshots that never expire.
+- **Size.** Local takes presets or `{ cpu, memoryMb }`, because Docker can't enforce a disk size. Vercel Sandbox derives memory from the vCPU count, 2048 MiB each, and has no disk setting. boxd sizes come in fixed steps of 1, 2, 4, or 8 vCPU with 4 GiB per vCPU and a 100 GB disk. E2B fixes CPU, memory, and disk in the template, so any `size` fails. Each provider page lists its preset mapping, and [Machine size and network](/guides/machine-size-and-network) compares them.
+- **Network.** Local and Freestyle enforce `"none"` but have no per-host filter, so a nonempty `{ allow }` fails there. boxd is the reverse: it takes allow lists but can't express `"none"`, because an empty boxd list means unrestricted. Tenki, Superserve, and boxd allow lists also take `*.` wildcards, and Superserve and boxd take IPv4 addresses and CIDRs. Memory records the policy and has no network to enforce it on.
+- **Timeouts.** Railway's idle timeout destroys the VM. Sandboxer's pauses it. Daytona's stops it and keeps the disk. Daytona works in minutes: `idleTimeoutMs` rounds up to the next minute and `timeoutMs` rounds down, so the hard limit is never longer than you asked. `timeoutMs` below one minute fails. Freestyle rounds the same way in seconds. boxd rounds both up to whole seconds. Vercel Sandbox applies `timeoutMs` to each session, and each resume starts a new one. Tenki supports a hard lifetime but rejects idle timeouts, which its current API no longer enforces. Memory runs its timers in your process. Local stores both deadlines on the container and enforces them when a client reconnects or `reapSandboxes` runs, so schedule a reaper if nothing reconnects.
+- **Provider timers.** Some providers reject `timeoutMs` but have a timer of their own on the factory. Boat and Sandboxer take `ttlSeconds`, an auto-stop that restarts while Boat's agent works, so it is not a hard lifetime. Upstash Box takes `ttlSeconds` with `ephemeral: true` as a leak backstop. Superserve takes `autoPauseMs` and `autoDeleteMs`. The provider pages explain each one.
+- **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox, so you get four labels, or three with a `key`. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded. Railway and boxd keep them in a marker file inside each VM.
+- **Key mode.** agentOS keys are exact within one application process.
+- **Previews.** Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. boxd gives one public route per machine, and previewing a new port moves it. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. agentOS has no preview URLs, and Memory returns fake ones.
+- **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+- **Upstash Box.** Listing SDK boxes reads metadata from inside each box and may wake idle boxes.
+- **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).
+- **agentOS.** Supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local (agentOS)](/providers/agentos).
+- **boxd.** A restored snapshot keeps the source's size, image, and env. See [boxd](/providers/boxd).
+
+## Peer packages
+
+Each cloud provider loads its company's own SDK the first time it does anything. These are optional peers, so your package manager won't install them for you: add the one for each provider you use next to `@opencoredev/sandbox-sdk`. Version is the range the SDK accepts.
+
+| Provider                            | Import                                | Peer package              | Version            |
+| ----------------------------------- | ------------------------------------- | ------------------------- | ------------------ |
+| [Local](/providers/local)           | `@opencoredev/sandbox-sdk/local`      | None                      | None               |
+| [agentOS](/providers/agentos)       | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core` | `0.4.1`            |
+| [E2B](/providers/e2b)               | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                     | `^2.56.0`          |
+| [Vercel](/providers/vercel)         | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`         | `^3.8.0`           |
+| [Daytona](/providers/daytona)       | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`          | `>=0.225.0 <1.0.0` |
+| [Upstash](/providers/upstash)       | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`            | `^0.7.9`           |
+| [Railway](/providers/railway)       | `@opencoredev/sandbox-sdk/railway`    | `railway`                 | `^3.16.0`          |
+| [Boat](/providers/boat)             | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`            | `^1.9.9`           |
+| [Sandboxer](/providers/sandboxer)   | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`            | `^1.9.9`           |
+| [Tenki](/providers/tenki)           | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`     | `^1.4.1`           |
+| [Superserve](/providers/superserve) | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`         | `^0.11.4`          |
+| [boxd](/providers/boxd)             | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `^0.2.17`          |
+| [Freestyle](/providers/freestyle)   | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`               | `^0.2.20`          |
+| [Memory](/providers/memory)         | `@opencoredev/sandbox-sdk/memory`     | None                      | None               |
+
+Local needs a running Docker Engine instead. agentOS also needs its platform sidecar package; see [Local (agentOS)](/providers/agentos).
+
+## Capability names
+
+`box.capabilities` is a `ReadonlySet` of these names:
+
+| Capability         | Means                                                  |
+| ------------------ | ------------------------------------------------------ |
+| `"pause"`          | `pause()` and `resume()` exist                         |
+| `"snapshot"`       | `snapshot()` exists and `createSandbox` accepts `from` |
+| `"terminal"`       | `terminal()` exists                                    |
+| `"network-policy"` | `network` accepts `"none"`, and maybe `{ allow }`      |
+| `"size"`           | `size` accepts presets, and maybe exact numbers        |
+
+A capability means the provider supports the feature in general. The matrix has the finer limits: for example, Local declares `"network-policy"` but only accepts `"none"`.
+
+## Checked by TypeScript
+
+Methods for optional capabilities exist on the sandbox type only when the provider declares them. Calling `box.pause()` on Memory is a type error, not a runtime surprise.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { key: "project:42" });
+
+await box.run("npm install");
+await box.pause();
+```
+
+## Check at runtime
+
+When the provider is chosen at runtime, read `box.capabilities`:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+console.log([...box.capabilities]);
+```
+
+This prints `[ "pause", "snapshot", "network-policy" ]`.
+
+## What fails, and when
+
+Each of these makes `createSandbox` throw `unsupported` before the provider is called, or right after creation when only the provider can tell:
+
+- `size` on a provider without `"size"`, or a size it can't honor. The message names what the provider allows.
+- `network` other than `"all"` on a provider without `"network-policy"`, or a policy it can't enforce. E2B reads the settings back after creation and destroys the sandbox if they don't match.
+- `from` on a provider without `"snapshot"`.
+- `idleTimeoutMs` or `timeoutMs` on a provider that can't enforce it.
+- `keyMode: "exact"` on a best-effort provider without `locator.withLock`.
+
+Error codes are listed in [Errors](/reference/errors).

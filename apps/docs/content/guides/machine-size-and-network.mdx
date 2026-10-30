@@ -1,0 +1,80 @@
+---
+title: Machine size and network
+description: Pick a CPU and memory size for a sandbox, and limit which hosts it can reach. Both fail at creation when the provider can't enforce them.
+---
+
+Two options shape what a sandbox is allowed to be: `size` sets how much machine it gets, and `network` sets where it can connect. You set both when you create the sandbox. If the provider can't do what you asked, `createSandbox` throws instead of giving you something different.
+
+## Size
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using small = await createSandbox(daytona(), { size: "small" });
+await using custom = await createSandbox(daytona(), {
+  size: { cpu: 4, memoryMb: 8192, diskGb: 20 },
+});
+```
+
+`size` takes a preset (`"small"`, `"medium"`, or `"large"`) or exact numbers. Each provider maps the presets to its own machine settings:
+
+| Preset   | Local            | Vercel            | Daytona                       |
+| -------- | ---------------- | ----------------- | ----------------------------- |
+| `small`  | 1 CPU, 1024 MiB  | 1 vCPU, 2048 MiB  | 1 CPU, 1024 MiB, 10 GiB disk  |
+| `medium` | 2 CPUs, 4096 MiB | 2 vCPUs, 4096 MiB | 2 CPUs, 4096 MiB, 10 GiB disk |
+| `large`  | 4 CPUs, 8192 MiB | 4 vCPUs, 8192 MiB | 4 CPUs, 8192 MiB, 10 GiB disk |
+
+Exact numbers are less portable than presets. Some providers take any CPU, memory, and disk, some fix one of them or allow only certain steps, some take presets only, and some take no `size` at all because the template sets the machine. The Size presets and Exact size rows of the [capability matrix](/reference/capabilities#matrix) say which provider does what, and each provider page lists its preset mapping.
+
+When a provider can't give you the size you asked for, creation fails with code `unsupported`, and the error message says what that provider allows. Vercel, for example, has no disk setting:
+
+```ts
+import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+try {
+  await using box = await createSandbox(vercel(), {
+    size: { cpu: 64, memoryMb: 262_144, diskGb: 500 },
+  });
+} catch (error) {
+  if (error instanceof SandboxError && error.code === "unsupported") {
+    console.error(error.message, error.hint);
+  }
+}
+```
+
+Leave `size` out to get the provider's default machine.
+
+## Network
+
+| `network`          | The sandbox can reach                    |
+| ------------------ | ---------------------------------------- |
+| `"all"`            | Any host. This is the default.           |
+| `"none"`           | Nothing. No outbound connections at all. |
+| `{ allow: [...] }` | Only the hosts in the list               |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), {
+  network: { allow: ["registry.npmjs.org", "github.com", "codeload.github.com"] },
+});
+
+const install = await box.run("npm install react");
+const exfil = await box.run("curl -sS https://example.com");
+console.log(install.ok, exfil.ok);
+```
+
+This prints `true false`. npm reaches its registry, and the request to any other host fails inside the sandbox.
+
+Use an allow list whenever a model or a user's code runs in the sandbox. A short list of package registries and your own API covers most apps.
+
+## When a provider can't enforce it
+
+A network policy is only useful if it holds. When a provider has no way to enforce `"none"` or an allow list, `createSandbox` throws `SandboxError` with code `unsupported` rather than create an open sandbox. The same goes for `size`.
+
+Providers differ here. Some enforce both `"none"` and allow lists, some only one of them, and some accept only `"all"`. The No network and Allow list rows of the [capability matrix](/reference/capabilities#matrix) say which, and its Network note lists the host formats each allow list takes. Check ahead of time with `box.capabilities`, which includes `"network-policy"` and `"size"` when the provider supports them in some form.
+
+Previews are inbound, so an allow list doesn't block them. The exception is Local with `network: "none"`, where the container has no network at all and previews fail.

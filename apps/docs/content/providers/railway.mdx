@@ -1,0 +1,191 @@
+---
+title: Railway
+description: Run ephemeral Linux VMs on Railway. Streaming commands, filesystem checkpoints, idle destruction, and public previews on declared ports.
+---
+
+`railway()` runs each sandbox as an isolated Linux VM on [Railway](https://railway.com), through the official `railway` SDK.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next railway
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next railway
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next railway
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next railway
+```
+
+  </Tab>
+</Tabs>
+
+The adapter needs `railway` 3.16.0 or later. Set `RAILWAY_API_TOKEN` and `RAILWAY_ENVIRONMENT_ID` on your server, and keep the token out of browser bundles. See Railway's [sandbox quickstart](https://docs.railway.com/sandboxes/quickstart).
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+`await using` deletes the VM when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                            |
+| ------------------------------ | ----------- | ---------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Live output                                                      |
+| Files                          | Yes         |                                                                  |
+| Background processes           | Yes         |                                                                  |
+| Preview URLs                   | Yes         | Public `https://`; declare up to 10 ports                        |
+| Pause and resume               | No          |                                                                  |
+| Snapshots                      | Yes         | File system checkpoints. `expiresInMs` fails with `unsupported`  |
+| Machine size                   | No          | Railway can't set disk size. Set CPU and memory with `resources` |
+| Network policy                 | No          | Only `"all"`                                                     |
+| Hard lifetime (`timeoutMs`)    | No          |                                                                  |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Whole minutes; destroys the VM                                   |
+| Keys                           | Best-effort | Read from a marker file in each VM                               |
+| Terminal                       | No          |                                                                  |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
+```
+
+Railway's file API applies `{ mode }` right after the upload.
+
+## Background processes and previews
+
+Declare preview ports at creation, up to ten. Railway publishes a public HTTPS domain for each. Servers must bind to `0.0.0.0`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway(), { ports: [3000] });
+await box.start(
+  `node -e "require('http').createServer((req, res) => res.end('ok')).listen(3000, '0.0.0.0')"`,
+  { name: "web", ready: { http: { port: 3000 } } },
+);
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+Ports can't be added later, and an undeclared port fails with `unsupported`.
+
+## Pause, resume, and snapshots
+
+Railway has no pause or resume, and the methods don't exist on its sandbox type. `snapshot()` saves a file system checkpoint and returns its name, which `from` accepts. Files survive; memory and running processes don't.
+
+```ts
+import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway(), { key: "user:123" });
+if (hasCapability(box, "pause")) await box.pause();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(railway(), { from: id });
+```
+
+Checkpoints stay in Railway after the source VM is gone. Manage them with Railway's SDK or CLI. They have no expiry, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted.
+
+## Size, network, and lifetime
+
+Every `size`, presets included, fails with `unsupported`, because Railway can set CPU and memory but not disk. Set those two on the factory instead, in vCPUs and decimal GB. Railway caps both at your workspace's VM maximum without an error. `network` other than `"all"` and `timeoutMs` fail too.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { railway } from "@opencoredev/sandbox-sdk/railway";
+
+await using box = await createSandbox(railway({ resources: { cpu: 2, memoryGB: 4 } }), {
+  idleTimeoutMs: 15 * 60_000,
+});
+```
+
+`idleTimeoutMs` rounds up to whole minutes and destroys the VM and its files when it fires. Save a checkpoint first if you need them. Railway defers idle teardown while a command runs.
+
+## Configuration
+
+| Option             | Type                                  | Default                              | Env var                  |
+| ------------------ | ------------------------------------- | ------------------------------------ | ------------------------ |
+| `token`            | `string`                              |                                      | `RAILWAY_API_TOKEN`      |
+| `environmentId`    | `string`                              |                                      | `RAILWAY_ENVIRONMENT_ID` |
+| `authType`         | `"bearer" \| "project-token"`         | `"bearer"`                           |                          |
+| `region`           | `string`                              | Railway's default                    |                          |
+| `networkIsolation` | `"ISOLATED" \| "PRIVATE"`             | `"ISOLATED"`; `"PRIVATE"` with ports |                          |
+| `template`         | `SandboxTemplate`                     | Railway's default image              |                          |
+| `checkpoint`       | `string`                              |                                      |                          |
+| `resources`        | `{ cpu?: number; memoryGB?: number }` | Railway's plan default               |                          |
+
+Set `template` or `checkpoint`, not both. `from` overrides either. Both isolation modes keep outbound internet access; `"PRIVATE"` joins the environment's private network. A custom template needs `sh`, GNU `stat`, `rm`, `setsid`, and Git. `box.native` is the Railway SDK's `Sandbox` object.
+
+## Limitations
+
+- Keys are best-effort. Use a [`locator` with a lock](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact lookup.
+- No machine size, outbound restrictions, hard lifetime, pause, or terminals.
+- An idle timeout destroys the VM instead of keeping it.
+- Previews are public and need declared ports.
+
+## How it works
+
+- Railway has no labels API, so the key and labels live in `/tmp/.sandbox-sdk/railway.json`. Discovery pages through the environment's sandboxes and reads that file from running VMs. Keep it intact.
+- After a restore, process records that were running are marked failed with exit code 137.
+- If a command can't be confirmed stopped after a transport failure, the adapter destroys the VM before returning the error.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)

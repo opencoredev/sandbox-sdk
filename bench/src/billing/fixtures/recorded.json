@@ -1,0 +1,585 @@
+{
+  "recordedAt": "2026-10-22T01:20:00Z",
+  "note": "Live GET responses, selected fields only; identifiers replaced. Boat 404 was observed on an old deleted sandbox.",
+  "upstash": {
+    "status": "deleted",
+    "total_cpu_ns": 11079767000,
+    "total_compute_cost_usd": 0.00030777130555555555,
+    "id": "fixture-upstash"
+  },
+  "e2b": [
+    {
+      "id": "0",
+      "type": "sandbox.lifecycle.killed",
+      "eventData": {
+        "execution": {
+          "execution_time": 35208,
+          "memory_mb": 512,
+          "started_at": "2026-10-19T20:34:15Z",
+          "vcpu_count": 2
+        }
+      }
+    },
+    {
+      "id": "1",
+      "type": "sandbox.lifecycle.updated"
+    },
+    {
+      "id": "2",
+      "type": "sandbox.lifecycle.resumed"
+    },
+    {
+      "id": "3",
+      "type": "sandbox.lifecycle.paused",
+      "eventData": {
+        "execution": {
+          "execution_time": 14862,
+          "memory_mb": 512,
+          "started_at": "2026-10-19T20:34:00Z",
+          "vcpu_count": 2
+        }
+      }
+    },
+    {
+      "id": "4",
+      "type": "sandbox.lifecycle.created"
+    }
+  ],
+  "boxd": {
+    "costMicro": 3386,
+    "complete": true,
+    "currency": "usd",
+    "rates": {
+      "vcpuHourMicro": 47000,
+      "ramGibHourMicro": 14000,
+      "diskGibHourMicro": 96
+    },
+    "seconds": {
+      "running": 117,
+      "standby": 0,
+      "hibernated": 0,
+      "stopped": 0
+    },
+    "machineId": "fixture-boxd"
+  },
+  "superserve": {
+    "summary": {
+      "current_charges_usd": 0.1213959469865,
+      "credits_applied_usd": 0.1213959469865,
+      "expected_invoice_amount_usd": 0,
+      "billing_period": {
+        "start": "2026-10-01T00:00:00Z",
+        "end": "2026-11-01T00:00:00Z"
+      }
+    },
+    "pricing": {
+      "currency": "USD",
+      "rates": [
+        {
+          "resource_key": "vcpu",
+          "resource": "vcpu",
+          "display_name": "CPU",
+          "sort_order": 10,
+          "unit": "second",
+          "display_unit": "vCPU-hours",
+          "price_usd": 1.4e-5,
+          "price_usd_hourly": 0.0504,
+          "effective_from": "2026-06-17T00:00:00Z",
+          "tracked": true,
+          "billable": true
+        },
+        {
+          "resource_key": "memory_gib",
+          "resource": "memory_gib",
+          "display_name": "Memory",
+          "sort_order": 20,
+          "unit": "second",
+          "display_unit": "GiB-hours",
+          "price_usd": 4.5e-6,
+          "price_usd_hourly": 0.0162,
+          "effective_from": "2026-06-17T00:00:00Z",
+          "tracked": true,
+          "billable": true
+        },
+        {
+          "resource_key": "storage_gib",
+          "resource": "storage_gib",
+          "display_name": "Storage",
+          "sort_order": 30,
+          "unit": "second",
+          "display_unit": "GiB-hours",
+          "price_usd": 3e-8,
+          "price_usd_hourly": 0.000108,
+          "effective_from": "2026-06-17T00:00:00Z",
+          "tracked": true,
+          "billable": false
+        }
+      ]
+    },
+    "series": {
+      "buckets": [
+        {
+          "start": "2026-10-19T00:00:00Z",
+          "end": "2026-10-19T01:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T01:00:00Z",
+          "end": "2026-10-19T02:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T02:00:00Z",
+          "end": "2026-10-19T03:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T03:00:00Z",
+          "end": "2026-10-19T04:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T04:00:00Z",
+          "end": "2026-10-19T05:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T05:00:00Z",
+          "end": "2026-10-19T06:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T06:00:00Z",
+          "end": "2026-10-19T07:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T07:00:00Z",
+          "end": "2026-10-19T08:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T08:00:00Z",
+          "end": "2026-10-19T09:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T09:00:00Z",
+          "end": "2026-10-19T10:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T10:00:00Z",
+          "end": "2026-10-19T11:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T11:00:00Z",
+          "end": "2026-10-19T12:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T12:00:00Z",
+          "end": "2026-10-19T13:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T13:00:00Z",
+          "end": "2026-10-19T14:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T14:00:00Z",
+          "end": "2026-10-19T15:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T15:00:00Z",
+          "end": "2026-10-19T16:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T16:00:00Z",
+          "end": "2026-10-19T17:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T17:00:00Z",
+          "end": "2026-10-19T18:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T18:00:00Z",
+          "end": "2026-10-19T19:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T19:00:00Z",
+          "end": "2026-10-19T20:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T20:00:00Z",
+          "end": "2026-10-19T21:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T21:00:00Z",
+          "end": "2026-10-19T22:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T22:00:00Z",
+          "end": "2026-10-19T23:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-19T23:00:00Z",
+          "end": "2026-10-20T00:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T00:00:00Z",
+          "end": "2026-10-20T01:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T01:00:00Z",
+          "end": "2026-10-20T02:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T02:00:00Z",
+          "end": "2026-10-20T03:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T03:00:00Z",
+          "end": "2026-10-20T04:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T04:00:00Z",
+          "end": "2026-10-20T05:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T05:00:00Z",
+          "end": "2026-10-20T06:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T06:00:00Z",
+          "end": "2026-10-20T07:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T07:00:00Z",
+          "end": "2026-10-20T08:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T08:00:00Z",
+          "end": "2026-10-20T09:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T09:00:00Z",
+          "end": "2026-10-20T10:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T10:00:00Z",
+          "end": "2026-10-20T11:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T11:00:00Z",
+          "end": "2026-10-20T12:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T12:00:00Z",
+          "end": "2026-10-20T13:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T13:00:00Z",
+          "end": "2026-10-20T14:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T14:00:00Z",
+          "end": "2026-10-20T15:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T15:00:00Z",
+          "end": "2026-10-20T16:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T16:00:00Z",
+          "end": "2026-10-20T17:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T17:00:00Z",
+          "end": "2026-10-20T18:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T18:00:00Z",
+          "end": "2026-10-20T19:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T19:00:00Z",
+          "end": "2026-10-20T20:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T20:00:00Z",
+          "end": "2026-10-20T21:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T21:00:00Z",
+          "end": "2026-10-20T22:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T22:00:00Z",
+          "end": "2026-10-20T23:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-20T23:00:00Z",
+          "end": "2026-10-21T00:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T00:00:00Z",
+          "end": "2026-10-21T01:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T01:00:00Z",
+          "end": "2026-10-21T02:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T02:00:00Z",
+          "end": "2026-10-21T03:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T03:00:00Z",
+          "end": "2026-10-21T04:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T04:00:00Z",
+          "end": "2026-10-21T05:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T05:00:00Z",
+          "end": "2026-10-21T06:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T06:00:00Z",
+          "end": "2026-10-21T07:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T07:00:00Z",
+          "end": "2026-10-21T08:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T08:00:00Z",
+          "end": "2026-10-21T09:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T09:00:00Z",
+          "end": "2026-10-21T10:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T10:00:00Z",
+          "end": "2026-10-21T11:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T11:00:00Z",
+          "end": "2026-10-21T12:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T12:00:00Z",
+          "end": "2026-10-21T13:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T13:00:00Z",
+          "end": "2026-10-21T14:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T14:00:00Z",
+          "end": "2026-10-21T15:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T15:00:00Z",
+          "end": "2026-10-21T16:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T16:00:00Z",
+          "end": "2026-10-21T17:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T17:00:00Z",
+          "end": "2026-10-21T18:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T18:00:00Z",
+          "end": "2026-10-21T19:00:00Z",
+          "billed_total_usd": 0.047519252498499996
+        },
+        {
+          "start": "2026-10-21T19:00:00Z",
+          "end": "2026-10-21T20:00:00Z",
+          "billed_total_usd": 0.0737446605025
+        },
+        {
+          "start": "2026-10-21T20:00:00Z",
+          "end": "2026-10-21T21:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T21:00:00Z",
+          "end": "2026-10-21T22:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T22:00:00Z",
+          "end": "2026-10-21T23:00:00Z",
+          "billed_total_usd": 0
+        },
+        {
+          "start": "2026-10-21T23:00:00Z",
+          "end": "2026-10-22T00:00:00Z",
+          "billed_total_usd": 0
+        }
+      ]
+    }
+  },
+  "daytonaPeriods": [
+    {
+      "startAt": "2026-10-19T20:34:01.293Z",
+      "endAt": "2026-10-19T20:34:23.475Z",
+      "cpu": 1,
+      "gpu": 0,
+      "ramGB": 1,
+      "diskGB": 3,
+      "price": 0.00041236337999999995
+    },
+    {
+      "startAt": "2026-10-19T20:34:23.483Z",
+      "endAt": "2026-10-19T20:34:25.405Z",
+      "cpu": 0,
+      "gpu": 0,
+      "ramGB": 0,
+      "diskGB": 3,
+      "price": 1.7298000000000003e-7
+    },
+    {
+      "startAt": "2026-10-19T20:34:25.412Z",
+      "endAt": "2026-10-19T20:35:31.648Z",
+      "cpu": 1,
+      "gpu": 0,
+      "ramGB": 1,
+      "diskGB": 3,
+      "price": 0.00123132724
+    }
+  ],
+  "boatMissing": {
+    "status": 404
+  },
+  "boxdOrg": {
+    "currency": "usd",
+    "totalCostMicro": 475993,
+    "complete": true,
+    "period": {
+      "start": "2026-10-19T00:00:00.000Z",
+      "end": "2026-10-22T00:00:00.000Z"
+    },
+    "rates": {
+      "vcpuHourMicro": 47000,
+      "ramGibHourMicro": 14000,
+      "diskGibHourMicro": 96
+    },
+    "machines": [
+      {
+        "machineId": "fixture-boxd",
+        "costMicro": 3386,
+        "complete": true
+      }
+    ]
+  },
+  "boxdActivity": {
+    "currency": "usd",
+    "entries": [
+      {
+        "kind": "usage_charge",
+        "amountMicro": -15512,
+        "createdAt": "2026-10-21T16:10:39.000Z",
+        "id": "0"
+      },
+      {
+        "kind": "usage_charge",
+        "amountMicro": -15526,
+        "createdAt": "2026-10-19T22:44:19.000Z",
+        "id": "1"
+      },
+      {
+        "kind": "usage_charge",
+        "amountMicro": -35285,
+        "createdAt": "2026-10-19T22:29:18.000Z",
+        "id": "2"
+      },
+      {
+        "kind": "usage_charge",
+        "amountMicro": -46487,
+        "createdAt": "2026-10-19T22:14:19.000Z",
+        "id": "3"
+      },
+      {
+        "kind": "usage_charge",
+        "amountMicro": -45970,
+        "createdAt": "2026-10-19T21:59:19.000Z",
+        "id": "4"
+      }
+    ],
+    "nextPageToken": null
+  },
+  "boat": {
+    "sandboxId": "fixture-boat",
+    "seconds": 48840,
+    "dollars": 0.4884,
+    "running": false
+  },
+  "daytonaAggregate": [
+    {
+      "sandboxId": "fixture-daytona",
+      "totalPrice": 0.0016438636
+    }
+  ]
+}

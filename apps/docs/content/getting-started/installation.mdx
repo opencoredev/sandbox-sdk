@@ -1,0 +1,222 @@
+---
+title: Install
+description: Install Sandbox SDK, and the SDK of each cloud provider you use. Requirements, optional packages, and where your keys must stay.
+---
+
+Sandbox SDK is one npm package. The core has no runtime dependencies. Each cloud provider needs its own official SDK installed next to it, and you only install the ones you use.
+
+## 1. Install the package
+
+:::note[1.0 is in beta]
+These docs cover `1.0.0-beta`, published on the `next` npm tag. Install with `@next`, as every install command on this site does. Without it, you get 0.2.
+:::
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+</Tabs>
+
+That is enough for the [Memory](/providers/memory) provider, which runs in your process, and for [Local](/providers/local), which needs Docker running on the same machine.
+
+## 2. Add a provider SDK
+
+Install the SDK for each cloud provider you plan to use. The adapter loads it the first time that provider does something, so a provider you never call costs nothing. The tabs cover the most common providers. [Peer packages](/reference/capabilities#peer-packages) lists the package and version range for every provider.
+
+<ProviderTabs>
+<ProviderTab provider="local">
+
+No package. Start Docker Engine (Docker Desktop, OrbStack, and Colima all work) and check it with `docker info`.
+
+</ProviderTab>
+<ProviderTab provider="e2b">
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install e2b
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add e2b
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add e2b
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add e2b
+```
+
+  </Tab>
+</Tabs>
+
+Needs `e2b` 2.56 or later. Set `E2B_API_KEY` on your server.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @vercel/sandbox
+```
+
+  </Tab>
+</Tabs>
+
+Needs `@vercel/sandbox` 3.8 or later. Inside a Vercel deployment it authenticates with OIDC. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @daytonaio/sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @daytonaio/sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @daytonaio/sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @daytonaio/sdk
+```
+
+  </Tab>
+</Tabs>
+
+Needs `@daytonaio/sdk` 0.225 or a later 0.x release. Set `DAYTONA_API_KEY` on your server.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+No package. Install the SDK as a dev dependency if you only use it in tests.
+
+</ProviderTab>
+</ProviderTabs>
+
+## 3. Add an agent framework (optional)
+
+Agent tools live on their own subpaths and need their framework and `zod`. Skip this if you aren't giving a model tools.
+
+| Framework                                    | Install                             | Import from                       |
+| -------------------------------------------- | ----------------------------------- | --------------------------------- |
+| [AI SDK](/integrations/ai-sdk)               | `ai` 7 and `zod` 4.6                | `@opencoredev/sandbox-sdk/ai`     |
+| [Mastra](/integrations/mastra)               | `@mastra/core` 1.78 and `zod` 4.6   | `@opencoredev/sandbox-sdk/mastra` |
+| [OpenAI Agents](/integrations/openai-agents) | `@openai/agents` 0.20 and `zod` 4.6 | `@opencoredev/sandbox-sdk/openai` |
+
+These are optional peer dependencies. Importing the package root never loads them.
+
+## Requirements
+
+- Node 22 or newer, or Bun 1.3 or newer.
+- ESM only. Use `import`, not `require`.
+- TypeScript is optional. Types ship with the package.
+- A server. Provider keys must never reach a browser bundle, so call the SDK from a route handler, a server action, a worker, or a script.
+
+## Bundling
+
+You don't need a bundler: Node and Bun run the package from `node_modules`. If your platform bundles server code anyway, as Next.js, Convex, and AWS Lambda builds do, mark the SDK and the provider SDKs you use as external so they load from `node_modules` at runtime:
+
+```bash
+esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \
+  --external:@opencoredev/sandbox-sdk --external:e2b
+```
+
+In Next.js, use `serverExternalPackages`, as the [Next.js page](/integrations/nextjs#bundling) shows. In Convex, list the packages under `node.externalPackages` in `convex.json`.
+
+When the packages have to go inside the bundle, for example because the deployment ships no `node_modules`, build an ESM bundle with a `require` shim. Provider SDKs are CommonJS and call `require` for Node built-ins, which an ESM bundle doesn't define. Without the shim, the first provider call fails with `Dynamic require of "node:fs" is not supported`.
+
+```bash
+esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs \
+  --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
+```
+
+A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either format.
+
+## What the package exports
+
+| Import                                                                                                                                                        | What it gives you                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `@opencoredev/sandbox-sdk`                                                                                                                                    | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
+| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each                                                                          |
+| `/ai`, `/mastra`, `/openai`                                                                                                                                   | `sandboxTools` for each agent framework                                                            |
+| `/tools`                                                                                                                                                      | The framework-neutral tool definitions and their Zod schemas                                       |
+| `/provider`                                                                                                                                                   | The adapter contract, for [writing a provider](/providers/custom)                                  |
+| `/testing`                                                                                                                                                    | `runConformance`, the suite every provider passes                                                  |
+
+Next: the [Quickstart](/getting-started/quickstart).

@@ -1,0 +1,87 @@
+---
+title: Write a provider
+description: Adapt any sandbox service to Sandbox SDK. Implement a small set of primitives from /provider, then check your adapter with runConformance from /testing.
+---
+
+Each built-in provider is a small adapter over a fixed set of primitives. Write the same adapter for another service and you get the whole API on top of it: runs, the `$` tag, processes and logs, readiness checks, edit, upload, search, changes, git, redaction, and agent tools.
+
+## What the core does for you
+
+You don't implement any of these. The core builds them from your primitives:
+
+- `run`, `$`, timeouts, output caps, and streaming.
+- Background processes, their logs and cursors, and reattach by name.
+- `files.edit`, `upload`, `download`, `search`, `watch`, `mark`, and `changes`.
+- Every `git` method.
+- Secret redaction and the `SandboxError` message format.
+- Get-or-create by key, `locator`, and the `sandbox-sdk` label.
+
+## The contract
+
+Import the types from `@opencoredev/sandbox-sdk/provider`. A `Provider` has:
+
+| Member                                    | What it does                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `name`                                    | The provider name, shown in `box.provider` and errors                                       |
+| `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                   |
+| `capabilities`                            | The optional features you implement                                                         |
+| `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot |
+| `find(key)`                               | Find a sandbox by key, or `undefined`                                                       |
+| `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                  |
+| `list(labels)`                            | List sandboxes matching labels                                                              |
+| `destroy(id)`                             | Delete a sandbox                                                                            |
+| `exec(id, input)`                         | Run one command and stream its output                                                       |
+| `files`                                   | `read`, `write`, `list`, `stat`, `remove`, `mkdir`, and optionally `readRange`              |
+| `previewUrl(id, port)`                    | Return `{ url, headers?, expiresAt? }` for a port                                           |
+| `native(id)`                              | The service's own sandbox object, exposed as `box.native`                                   |
+| `pause`, `resume`, `snapshot`, `terminal` | Optional. Must match `capabilities`.                                                        |
+| `close`, `usage`, `startProcess`          | Optional hooks                                                                              |
+
+Paths are absolute POSIX paths and times are epoch milliseconds.
+
+## Rules an adapter must follow
+
+- **Fail closed.** If `create` can't enforce a requested `size`, `network`, `idleTimeoutMs`, or `timeoutMs`, throw `SandboxError` with code `unsupported`. Never create a sandbox that's more open than requested.
+- **Exec closes stdin** unless `stdin` is given, emits chunks in arrival order, and kills the entire remote process group before settling on timeout or abort.
+- **Translate errors.** Map the service's failures to `SandboxError` codes such as `auth`, `not_found`, `quota`, and `unavailable`. Don't attach the native error object, since it can hold credentials.
+- **Keep policy out.** Redaction, edit, git, process records, and readiness belong to the core.
+- **Declare what you implement.** A capability without its method fails at `createSandbox` with code `provider`.
+
+## Check it with the conformance suite
+
+`runConformance` from `@opencoredev/sandbox-sdk/testing` runs the suite every built-in provider passes. It covers create and find by key, commands, `$` escaping, processes, files, git, previews, and cleanup. It needs `vitest` 3 or later.
+
+```ts title="provider.test.ts"
+import { runConformance } from "@opencoredev/sandbox-sdk/testing";
+import { myProvider } from "./my-provider";
+
+runConformance(() => myProvider(), { live: true });
+```
+
+`live: true` is required for every provider except `memory()` and `local()`. With `live: false` the suite refuses any other provider, so a test run can't reach a cloud account by accident. Live runs give each case 120 seconds, since real providers boot machines and cross the network. Pass `timeoutMs` to change that.
+
+Every check runs unless you skip it. To skip a check your runtime can't pass, give the reason under `unsupported`:
+
+- `gitPush` skips the bare-repository clone, commit and push, for a runtime without git.
+- `httpProbe` skips the real HTTP request to a preview URL, for previews no HTTP client can reach.
+- `previews` expects `preview()` to reject with `unsupported`, and skips the HTTP probe too.
+- `processes` skips the background process checks.
+- `fileModes` skips the permission-bit check for `files.write`.
+
+```ts title="provider.test.ts"
+import { runConformance } from "@opencoredev/sandbox-sdk/testing";
+import { myProvider } from "./my-provider";
+
+runConformance(() => myProvider(), {
+  live: true,
+  unsupported: { httpProbe: "Preview URLs are only reachable inside the VPC" },
+});
+```
+
+The built-in adapters in [`packages/sdk/src/providers`](https://github.com/opencoredev/sandbox-sdk/tree/main/packages/sdk/src/providers) are working examples to copy from.
+
+## Avoiding extra calls
+
+If an adapter can create and remove the core run activity record inside its native exec, set `inlineActivity: true` and honor `ExecInput.activityPath` for the entire run, including failure and cancellation. Otherwise the core maintains that record through file calls. Garbage collection uses the record to avoid reaping active work.
+
+Set `files.writeCreatesParents: true` only when `write()` handles missing parent directories itself. The core then omits its unconditional mkdir. An adapter can try the native upload first, create missing parents on a confirmed not-found response, and retry the upload. Native whole-file and ranged reads should return the full requested data, up to EOF.

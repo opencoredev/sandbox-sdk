@@ -1,0 +1,233 @@
+---
+title: Local
+description: Run sandboxes as Docker containers on your own machine. No account or key. Exact keys, pause, image snapshots, size presets, and loopback previews.
+---
+
+`local()` runs each sandbox as a Docker container on the machine your code runs on, for development and CI. No Docker? [Rivet agentOS](/providers/agentos) runs command and file tasks locally without it.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+</Tabs>
+
+No provider package and no credentials. Start Docker Engine (Docker Desktop, OrbStack, and Colima all work). `DOCKER_HOST` is optional.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+The first run pulls `node:22-bookworm`. `await using` removes the container when the block ends.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                |
+| ------------------------------ | ------- | ---------------------------------------------------- |
+| Commands and streaming         | Yes     | Live output                                          |
+| Files                          | Yes     | `mode` is set in the same write                      |
+| Background processes           | Yes     |                                                      |
+| Preview URLs                   | Partial | `http://127.0.0.1` on the Docker host; declare ports |
+| Pause and resume               | Yes     | Processes freeze and continue                        |
+| Snapshots                      | Yes     | Commits a local image; no `expiresInMs`              |
+| Machine size                   | Partial | Presets or `{ cpu, memoryMb }`; no `diskGb`          |
+| Network policy                 | Partial | `"none"` only; no allow lists                        |
+| Hard lifetime (`timeoutMs`)    | Partial | Enforced on reconnect or reap                        |
+| Idle timeout (`idleTimeoutMs`) | Partial | Enforced on reconnect or reap                        |
+| Keys                           | Exact   | Container name is a hash of the key                  |
+| Terminal                       | No      |                                                      |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+`mode` is applied exactly, ignoring the container's umask. Without it, new files get the umask default (usually `644`).
+
+## Background processes and previews
+
+Declare the ports you will preview. Each maps to a free port on `127.0.0.1`. Without `ports`, the SDK declares 3000.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { ports: [3000] });
+await box.start(
+  `node -e "require('http').createServer((req, res) => res.end('ok')).listen(3000)"`,
+  { name: "web", ready: { port: 3000 } },
+);
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+The URL works only on the Docker host. Previewing an undeclared port fails with `unsupported`, and so does any preview with `network: "none"`.
+
+## Pause, resume, and snapshots
+
+`pause()` uses `docker pause`, so processes freeze and continue on resume. `snapshot()` commits the container to a local image and returns its ID.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(local(), { from: id });
+```
+
+Snapshot images stay in Docker until you run `docker image rm`. Images have no expiry, so `snapshot({ expiresInMs })` with a value above 0 fails with `unsupported`.
+
+## Size, network, and lifetime
+
+| Preset   | CPUs | Memory   |
+| -------- | ---- | -------- |
+| `small`  | 1    | 1024 MiB |
+| `medium` | 2    | 4096 MiB |
+| `large`  | 4    | 8192 MiB |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local(), {
+  size: "medium",
+  network: "none",
+  idleTimeoutMs: 15 * 60_000,
+  timeoutMs: 60 * 60_000,
+});
+await using custom = await createSandbox(local(), { size: { cpu: 1.5, memoryMb: 2048 } });
+```
+
+A custom size sets Docker's CPU quota and memory directly; fractional CPUs work. Memory is a hard limit with swap off. Without `size`, Docker sets no limit. A size with `diskGb` and any allow list fail with `unsupported`. Docker has no timer, so both timeouts are checked when a client reconnects or [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) runs. Schedule a reaper if nothing reconnects.
+
+## Configuration
+
+| Option        | Type           | Default                       | Env var       |
+| ------------- | -------------- | ----------------------------- | ------------- |
+| `image`       | `string`       | `"node:22-bookworm"`          |               |
+| `dockerHost`  | `string`       | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
+| `platform`    | `string`       | Docker's platform             |               |
+| `user`        | `string`       | The image's user              |               |
+| `runtime`     | `string`       | Docker's default (`runc`)     |               |
+| `networkMode` | `string`       | `"bridge"`                    |               |
+| `mounts`      | `LocalMount[]` | None                          |               |
+| `pidsLimit`   | `number`       | No limit                      |               |
+| `shmSizeMb`   | `number`       | 64                            |               |
+| `capAdd`      | `string[]`     | None                          |               |
+| `capDrop`     | `string[]`     | None                          |               |
+| `securityOpt` | `string[]`     | None                          |               |
+
+The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+const provider = local({
+  platform: "linux/amd64",
+  user: "node",
+  runtime: "runsc",
+  pidsLimit: 256,
+  capDrop: ["NET_RAW"],
+  securityOpt: ["no-new-privileges"],
+  mounts: [
+    { type: "volume", source: "npm-cache", target: "/home/node/.npm" },
+    { type: "tmpfs", target: "/scratch" },
+    { type: "bind", source: "/srv/fixtures", target: "/fixtures", readOnly: true },
+  ],
+});
+await using box = await createSandbox(provider);
+```
+
+- `platform` is passed to the pull and the create. A cached image for another platform is pulled again.
+- `user` runs every command and file operation as that user (name, uid, or `uid:gid`). The SDK gives `/workspace` to that user at creation. Mount targets keep their owner, so a fresh named volume is owned by root and a non-root user can't write it until you change that.
+- `runtime` picks an OCI runtime the daemon has registered, such as `runsc` (gVisor) or `sysbox-runc`, for stronger isolation.
+- `networkMode` joins a user-defined network you created. `network: "none"` still wins. `host` and `container:` modes are rejected because they break loopback previews.
+- `mounts` takes `{ type: "bind" | "volume" | "tmpfs", source?, target, readOnly? }`. Bind sources must be absolute host paths. Named volumes and bind sources survive `destroy()`; anonymous volumes and tmpfs mounts are removed with the container.
+- `capAdd`, `capDrop`, and `securityOpt` pass through to Docker unchanged.
+
+## Limitations
+
+- Isolation is a container, not a VM, unless you set a sandboxing `runtime` such as gVisor. Don't run untrusted code on a machine that holds secrets.
+- No network allow lists. The Allow list row of the [capability matrix](/reference/capabilities#matrix) lists the providers that have them.
+- Preview URLs are reachable only on the Docker host.
+- Timeouts need a reconnect or a reaper to take effect.
+- No terminals.
+
+## How it works
+
+- The adapter talks to the Docker API over a Unix socket. It needs no Docker CLI and installs nothing in the container.
+- Concurrent calls with the same key share one container, because Docker refuses duplicate names. Discovery only sees containers labeled `sandbox-sdk=1`.
+- Idle time counts from the last SDK command or file operation. Running background processes keep a sandbox from going idle.
+- `close()` leaves the container and its processes running across restarts of your app.
+
+## Next steps
+
+- [Quickstart](/getting-started/quickstart)
+- [Running commands](/concepts/running-commands)

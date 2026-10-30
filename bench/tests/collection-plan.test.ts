@@ -1,0 +1,203 @@
+import { expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { metricDefs } from "../src/site-data.js";
+import { collectionPolicy } from "../src/collection-policy.js";
+
+const script = readFileSync(new URL("../src/collection-plan.sh", import.meta.url), "utf8");
+const scriptPath = fileURLToPath(new URL("../src/collection-plan.sh", import.meta.url));
+
+function plan(mode: string, cwd?: string) {
+  const result = spawnSync("bash", [scriptPath, mode], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, BENCH_PLAN_DRY_RUN: "1" },
+    timeout: 5000,
+  });
+
+  expect(result.status, result.stderr).toBe(0);
+
+  return result.stdout.replaceAll("\\,", ",");
+}
+
+it("plans every default scenario and all 27 metric IDs on a pinned commit", () => {
+  const output = plan("default-nonboat");
+  expect(metricDefs).toHaveLength(27);
+  const scenarios = /--scenarios ([^ ]+)/.exec(output)?.[1]?.split(",") ?? [];
+  expect(scenarios).toEqual([
+    "command",
+    "files-1kb",
+    "files-10mb",
+    "reconnect",
+    "pause-resume",
+    "perf",
+    "git-clone",
+    "npm-install",
+    "dev-server",
+    "preview-first-byte",
+    "edit-loop",
+    "tool-replay",
+    "pip-install",
+  ]);
+
+  for (const def of metricDefs) {
+    const covered =
+      ["cold", "destroy", "snapshot", "create-from-snapshot"].includes(def.scenario) ||
+      def.scenario.startsWith("burst-") ||
+      (def.suite === "main" &&
+        (scenarios.includes(def.scenario) ||
+          ([
+            "cpu-single",
+            "cpu-all",
+            "memory-mbps",
+            "disk-write-mbps",
+            "disk-read-mbps",
+            "disk-4k-write-iops",
+            "disk-4k-read-iops",
+            "tcp-ms",
+            "network-mbps",
+          ].includes(def.scenario) &&
+            scenarios.includes("perf"))));
+
+    expect(covered, def.id).toBe(true);
+  }
+
+  expect(output).toContain("--template e2b=base");
+  expect(output).toContain("--template superserve=sandbox-bench-node22-py311-1x1-pinned ");
+  expect(output).not.toContain("--template superserve=sandbox-bench-node22-py311-1x1 ");
+  expect(script).toContain("git rev-parse HEAD");
+  expect(script).toContain("BENCH_COLLECTION_COMMIT");
+});
+
+it("uses the verified same-spec mapping, including Superserve at 4x8", () => {
+  const output = plan("same-spec-nonboat");
+  expect(output).toContain("--providers e2b,daytona,upstash,boxd,freestyle,tenki,superserve ");
+  expect(output).toContain("--template e2b=r1h7gud12rf1f6iu29r0");
+  expect(output).toContain("--template daytona=daytona-large");
+  expect(output).toContain("--size upstash=medium");
+  expect(output).toContain("--size boxd=4:16384");
+  expect(output).toContain("--size tenki=4:8192 ");
+  expect(output).toContain("--template superserve=sandbox-bench-node22-py311-4x8-pinned ");
+  expect(script).toContain("DAYTONA_TARGET=us");
+});
+
+it("keeps Boat windows below verified quotas and documents impossible K25", () => {
+  for (const track of ["default", "same-spec"]) {
+    const windows = [0, 1, 2].map((i) => plan(`boat-${track}-${i}`));
+    expect(
+      windows.map((w) => w.split("\n").filter((l) => l.startsWith("bun bench --")).length),
+    ).toEqual([6, 6, 5]);
+    expect(windows.join("")).not.toContain("--bursts 10,25");
+    expect(windows.join("").match(/--burst-cohorts 1/g)).toHaveLength(3);
+    expect(windows.join("").match(/WAIT_SECONDS 65/g)).toHaveLength(17);
+  }
+
+  const help = plan("help");
+  expect(help).toContain("26 hours");
+  expect(help).toContain("65 minutes");
+  expect(collectionPolicy().notRun).toContainEqual(
+    expect.objectContaining({ provider: "boat", track: "default", scenario: "burst-25/*" }),
+  );
+  expect(collectionPolicy().notRun.filter((n) => n.provider === "superserve")).toEqual([]);
+});
+
+it("keeps collection outputs and policy imports stable from root, bench and outside the repository", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
+  const expected = plan("default-nonboat", root);
+
+  for (const cwd of [resolve(root, "bench"), tmpdir()]) {
+    expect(plan("default-nonboat", cwd)).toBe(expected);
+    expect(plan("same-spec-nonboat", cwd)).toBe(plan("same-spec-nonboat", root));
+    expect(plan("boat-default-0", cwd)).toBe(plan("boat-default-0", root));
+    expect(plan("policy", cwd)).toBe(plan("policy", root));
+  }
+
+  expect(expected).toContain(`--out ${root}/bench/results/sbx53-default-main`);
+  expect(plan("help", tmpdir())).toContain("ownership.json");
+});
+
+it("omits the public CDN download in every collection invocation", () => {
+  for (const track of ["default", "same-spec"]) {
+    for (const mode of [`${track}-nonboat`, ...[0, 1, 2].map((i) => `boat-${track}-${i}`)]) {
+      const commands = plan(mode)
+        .split("\n")
+        .filter((line) => line.startsWith("bun bench --"));
+
+      expect(commands.length).toBeGreaterThan(0);
+
+      for (const command of commands) expect(command).toContain("--omit-network-download true");
+    }
+  }
+});
+
+it("runs Daytona in every suite and burst size now that its account quota is raised", () => {
+  const commands = (track: string) =>
+    plan(`${track}-nonboat`)
+      .split("\n")
+      .filter((line) => line.startsWith("bun bench --"));
+
+  const hasDaytona = (line: string) => /--providers [^ ]*\bdaytona\b/.test(line);
+
+  for (const track of ["default", "same-spec"]) {
+    const lines = commands(track);
+
+    for (const scenario of ["command,", "snapshot", "cost", "burst"])
+      expect(
+        lines.filter((line) => line.includes(`--scenarios ${scenario}`)).every(hasDaytona),
+      ).toBe(true);
+    const bursts = lines.filter((line) => line.includes("--scenarios burst"));
+    expect(bursts).toHaveLength(1);
+    expect(bursts[0]).toContain("--bursts 10,25");
+    expect(bursts[0]).toContain("daytona=25");
+  }
+
+  expect(collectionPolicy().notRun.filter((r) => r.provider === "daytona")).toEqual([]);
+  expect(JSON.stringify(collectionPolicy())).not.toMatch(/10 vCPU/);
+});
+
+it("plans isolated sequential cost tasks and recollectable billing for both tracks", () => {
+  for (const track of ["default", "same-spec"]) {
+    const nonboat = plan(`${track}-nonboat`);
+    expect(nonboat).toContain("--cost-runs 10 --scenarios cost");
+    expect(nonboat).toContain(`bun bench billing --report `);
+    const boat = plan(`boat-${track}-2`);
+    expect(boat).toContain("--cost-runs 10 --provider-concurrency 1 --scenarios cost");
+    expect(boat).toContain(`sbx53-${track}-boat-cost-1`);
+  }
+
+  expect(script).toContain("set -euo pipefail");
+  expect(plan("help")).toContain("170 starts");
+});
+
+it("sets verified explicit account limits for every launched provider", () => {
+  for (const mode of [
+    "default-nonboat",
+    "same-spec-nonboat",
+    "boat-default-0",
+    "boat-default-1",
+    "boat-default-2",
+    "boat-same-spec-0",
+    "boat-same-spec-1",
+    "boat-same-spec-2",
+  ]) {
+    for (const line of plan(mode)
+      .split("\n")
+      .filter((l) => l.startsWith("bun bench --"))) {
+      const providers = /--providers ([^ ]+)/.exec(line)?.[1]?.split(",") ?? [];
+
+      const limits = Object.fromEntries(
+        [...line.matchAll(/--account-limits ([^ ]+)/g)].flatMap((m) =>
+          (m[1] ?? "").split(",").map((entry) => entry.split("=")),
+        ),
+      );
+
+      for (const provider of providers)
+        expect(Number(limits[provider]), `${mode}: ${provider}`).toBeGreaterThanOrEqual(
+          line.includes("--bursts 10,25") ? 25 : 1,
+        );
+    }
+  }
+});

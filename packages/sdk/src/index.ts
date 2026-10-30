@@ -1,33 +1,403 @@
-export { capabilityMode, requireCapability, supports } from "./core/capabilities";
-export { isSandboxError, redactSensitive, SandboxError, sandboxErrorCodes } from "./core/errors";
-export { createSandbox, withSandbox } from "./core/sandbox";
-export { capabilityNames, providerNames } from "./core/types";
+import type { Provider, Capability, SandboxInfo } from "./provider.js";
+import type {
+  ConnectOptions,
+  CreateOptions,
+  ListOptions,
+  MethodsFor,
+  ProviderSandbox,
+  ReapOptions,
+  SandboxBase,
+} from "./types.js";
+import { SandboxError, Redactor, invalid, isNotFound } from "./errors.js";
+import { forgetKey, forgetSandbox, knownKey, rememberKey, withKeyLock } from "./keys.js";
+
+export { SandboxError } from "./errors.js";
+
+export type { ErrorCode, ErrorOptions } from "./errors.js";
+
 export type {
-  Capability,
-  CapabilityMap,
-  CapabilityMode,
-  CommandInput,
-  CommandResult,
-  ExposedPort,
-  FileValue,
-  ProcessOutputEvent,
-  ProcessStatus,
-  ProviderName,
-  RunOptions,
   Sandbox,
-  SandboxDirectoryEntry,
-  SandboxFiles,
-  SandboxPorts,
-  SandboxProcess,
-  SandboxProcesses,
-  SandboxSnapshot,
-  SandboxSnapshots,
-} from "./core/types";
-export type { SandboxErrorCode } from "./core/errors";
-export type {
-  ManagedSandboxCreateOptions,
-  ManagedSandboxProvider,
-  ManagedSandboxResumeOptions,
-  ManagedSandboxSession,
-  SandboxNetworkPolicy,
-} from "./core/provider";
+  SandboxBase,
+  ProviderSandbox,
+  CreateOptions,
+  ConnectOptions,
+  ListOptions,
+  ReapOptions,
+  PreviewOptions,
+  Usage,
+  Locator,
+  RunOptions,
+  RunHandle,
+  RunResult,
+  OutputChunk,
+  Capability,
+  CapabilityMethods,
+  MethodsFor,
+  SandboxInfo,
+  FileInfo,
+  Labels,
+  Preview,
+  Terminal,
+} from "./types.js";
+
+export type { WriteOptions, SnapshotOptions } from "./provider.js";
+
+export type { Files, FileDiff, FileEvent } from "./files.js";
+
+export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
+
+export type { Git } from "./git.js";
+
+/**
+ * Check a capability at runtime and narrow the sandbox type to include its methods.
+ * Use it when the provider is chosen at runtime: `if (hasCapability(box, "pause")) await box.pause();`
+ */
+export function hasCapability<B extends SandboxBase<unknown>, K extends Capability>(
+  box: B,
+  capability: K,
+): box is B & (K extends Capability ? MethodsFor<K> : never) {
+  return box.capabilities.has(capability);
+}
+
+const sdkLabel = { "sandbox-sdk": "1" };
+
+function validate(provider: Provider, options: CreateOptions) {
+  for (const name of Object.keys({ ...options.env, ...options.secrets }))
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
+
+  for (const cap of provider.capabilities) {
+    if (
+      (cap === "pause" && (!provider.pause || !provider.resume)) ||
+      (cap === "snapshot" && !provider.snapshot) ||
+      (cap === "terminal" && !provider.terminal)
+    )
+      throw new SandboxError(
+        "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
+        { code: "provider" },
+      );
+  }
+
+  if (options.size !== undefined && !provider.capabilities.has("size"))
+    throw new SandboxError(
+      "Creation refused. Provider cannot enforce size. Choose a provider with size support.",
+      { code: "unsupported" },
+    );
+
+  if (
+    options.network !== undefined &&
+    options.network !== "all" &&
+    !provider.capabilities.has("network-policy")
+  )
+    throw new SandboxError(
+      "Creation refused. Provider cannot enforce network policy. Choose a provider with network-policy support.",
+      { code: "unsupported" },
+    );
+
+  if (options.from !== undefined && !provider.capabilities.has("snapshot"))
+    throw new SandboxError(
+      "Creation refused. Provider cannot restore snapshots. Choose a provider with snapshot support.",
+      { code: "unsupported" },
+    );
+
+  if (options.keyMode === "exact" && provider.keyMode !== "exact" && !options.locator?.withLock)
+    throw new SandboxError(
+      "Exact key mode unavailable. Two-function locator storage cannot enforce distributed uniqueness. Supply locator.withLock or use an exact provider.",
+      { code: "unsupported" },
+    );
+
+  for (const port of options.ports ?? [])
+    if (!Number.isInteger(port) || port < 1 || port > 65535) invalid("Invalid port");
+
+  for (const value of [options.timeoutMs, options.idleTimeoutMs])
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+      invalid("Timeouts must be positive milliseconds");
+}
+
+export function createSandbox<P extends Provider>(
+  provider: P,
+  options?: CreateOptions,
+): Promise<ProviderSandbox<P>>;
+export async function createSandbox(
+  provider: Provider,
+  options: CreateOptions = {},
+): Promise<SandboxBase<unknown>> {
+  const redactor = new Redactor();
+  redactor.add(Object.values(options.secrets ?? {}));
+
+  async function acquire() {
+    let owned: SandboxInfo | undefined;
+
+    try {
+      validate(provider, options);
+
+      if (options.signal?.aborted)
+        throw new SandboxError(
+          "Creation aborted. Signal was already aborted. Retry with a fresh signal.",
+          { code: "aborted" },
+        );
+      let info: SandboxInfo | undefined;
+
+      if (options.key) {
+        const stored = (await options.locator?.get(options.key)) ?? knownKey(provider, options.key);
+
+        if (stored) {
+          try {
+            info = await provider.connect(stored);
+          } catch (error) {
+            if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
+            forgetKey(provider, options.key);
+          }
+        }
+
+        // A stopped sandbox may never run again (an ended non-persistent Vercel session). The adapter's
+        // find decides: it returns the sandbox when it can resume, and removes and skips it when it cannot.
+        if (info?.state === "stopped") {
+          info = undefined;
+          forgetKey(provider, options.key);
+        }
+
+        info ??= await provider.find(options.key);
+      }
+
+      let created = !info;
+
+      if (!info) {
+        const {
+          secrets,
+          locator: _locator,
+          keyMode: _keyMode,
+          trackChanges: _trackChanges,
+          ...input
+        } = options;
+
+        const pending = provider
+          .create({
+            ...input,
+            env: { ...options.env, ...secrets },
+            labels: { ...options.labels, ...sdkLabel },
+          })
+          .catch(async (error) => {
+            // A native unique-name conflict can race the initial lookup on another client.
+            if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
+              const existing = await provider.find(options.key);
+
+              if (existing) {
+                created = false;
+
+                return existing;
+              }
+            }
+
+            throw error;
+          });
+
+        if (options.signal) {
+          const signal = options.signal;
+          let abort = () => {};
+
+          const cancellation = new Promise<never>((_, reject) => {
+            abort = () =>
+              reject(
+                new SandboxError(
+                  "Creation aborted. The signal was cancelled. Any late sandbox will be destroyed.",
+                  { code: "aborted" },
+                ),
+              );
+            signal.addEventListener("abort", abort, { once: true });
+
+            if (signal.aborted) abort();
+          });
+
+          const arrival = pending.then(async (value) => {
+            if (signal.aborted) {
+              if (created) await provider.destroy(value.id);
+              throw new SandboxError(
+                "Creation aborted. Late sandbox destroyed. Retry with a fresh signal.",
+                { code: "aborted" },
+              );
+            }
+
+            return value;
+          });
+
+          try {
+            info = await Promise.race([arrival, cancellation]);
+          } finally {
+            signal.removeEventListener("abort", abort);
+          }
+        } else info = await pending;
+
+        if (created) owned = info;
+      }
+
+      if (options.signal?.aborted) {
+        if (owned) await provider.destroy(owned.id);
+        owned = undefined;
+        throw new SandboxError(
+          "Creation aborted. Sandbox arrived after cancellation and was destroyed. Retry with a fresh signal.",
+          { code: "aborted" },
+        );
+      }
+
+      if (options.key) {
+        await options.locator?.set(options.key, info.id);
+        rememberKey(provider, options.key, info.id);
+      }
+
+      const { makeHandle } = await import("./handle.js");
+
+      return await makeHandle(provider, info, created, options, redactor);
+    } catch (error) {
+      if (owned) {
+        forgetSandbox(provider, owned.id);
+        // Creation already failed; that error is the one to report.
+        await provider.destroy(owned.id).catch(() => {});
+      }
+
+      throw redactor.error(error, provider.name);
+    }
+  }
+
+  if (!options.key) return acquire();
+
+  return withKeyLock(provider, options.key, options, acquire);
+}
+
+export function connectSandbox<P extends Provider>(
+  provider: P,
+  id: string,
+  options?: ConnectOptions,
+): Promise<ProviderSandbox<P>>;
+export async function connectSandbox(
+  provider: Provider,
+  id: string,
+  options: ConnectOptions = {},
+): Promise<SandboxBase<unknown>> {
+  const redactor = new Redactor();
+  redactor.add(Object.values(options.secrets ?? {}));
+
+  try {
+    validate(provider, options);
+    const info = await provider.connect(id);
+    const { makeHandle } = await import("./handle.js");
+
+    return await makeHandle(
+      provider,
+      info,
+      false,
+      { ...options, key: info.key },
+      redactor,
+      options.recoverSecrets ?? true,
+    );
+  } catch (error) {
+    throw redactor.error(error, provider.name, id);
+  }
+}
+
+export async function listSandboxes(
+  provider: Provider,
+  options: ListOptions = {},
+): Promise<SandboxInfo[]> {
+  try {
+    return (await provider.list({ ...options.labels, ...sdkLabel })).filter(
+      (info) => info.labels["sandbox-sdk"] === "1",
+    );
+  } catch (error) {
+    throw new Redactor().error(error, provider.name);
+  }
+}
+
+export async function reapSandboxes(
+  provider: Provider,
+  options: ReapOptions = {},
+): Promise<number> {
+  if (
+    options.olderThanMs !== undefined &&
+    (!Number.isFinite(options.olderThanMs) || options.olderThanMs < 0)
+  )
+    invalid("olderThanMs must be non-negative");
+  const isActive = options.idleOnly ? (await import("./run.js")).isRunActive : () => false;
+  const minAge = options.olderThanMs ?? 0;
+  let count = 0;
+
+  try {
+    for (const info of await listSandboxes(provider, options)) {
+      if (Date.now() - info.createdAt < minAge) continue;
+
+      if (options.idleOnly) {
+        if (isActive(provider.name, info.id)) continue;
+        const activity = await sandboxActivity(provider, info.id);
+
+        // Already gone counts as reaped.
+        if (activity === "gone") {
+          count++;
+          continue;
+        }
+
+        if (activity === "busy") continue;
+      }
+
+      // A run from this realm may have started while the sandbox was inspected.
+      if (isActive(provider.name, info.id)) continue;
+      forgetSandbox(provider, info.id);
+
+      try {
+        await provider.destroy(info.id);
+      } catch (error) {
+        if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
+      }
+
+      count++;
+    }
+
+    return count;
+  } catch (error) {
+    throw new Redactor().error(error, provider.name);
+  }
+}
+
+const runsDir = "/tmp/.sandbox-sdk/runs";
+
+/** Whether a sandbox is idle, still has a live process or run, or no longer exists. */
+async function sandboxActivity(provider: Provider, id: string): Promise<"idle" | "busy" | "gone"> {
+  let box: SandboxBase<unknown>;
+
+  try {
+    const info = await provider.connect(id);
+    const { makeHandle } = await import("./handle.js");
+    box = await makeHandle(provider, info, false, {}, new Redactor(), false);
+  } catch (error) {
+    if (error instanceof SandboxError && error.code === "not_found") return "gone";
+    throw error;
+  }
+
+  try {
+    const [processes, runs] = await Promise.all([box.processes(), runMarkers(box)]);
+
+    const live = processes.some(
+      (process) => process.status === "running" || process.status === "starting",
+    );
+
+    return live || runs.length > 0 ? "busy" : "idle";
+  } finally {
+    await box.close();
+  }
+}
+
+/** Activity markers of in-flight runs; none when the runs directory does not exist. */
+async function runMarkers(box: SandboxBase<unknown>) {
+  try {
+    return await box.files.list(runsDir);
+  } catch (error) {
+    if (isNotFound(error)) return [];
+
+    // Some adapters report a missing path as a generic provider error.
+    if (
+      error instanceof SandboxError &&
+      error.code === "provider" &&
+      !(await box.files.exists(runsDir))
+    )
+      return [];
+    throw error;
+  }
+}

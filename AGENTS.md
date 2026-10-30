@@ -1,23 +1,27 @@
 # Agent instructions
 
-## V2 is in progress
+## 1.0 rewrite in progress
 
-Sandbox SDK V2 is being built on the long-lived `v2` branch. It merges into `main` once, when V2 is released.
+Sandbox SDK 1.0 is being rewritten from scratch on `leoplayz317/sbx-23-rewrite-sandbox-sdk-10-from-scratch`, which branches from `v2`. The full design lives in `docs/spec.md`. Read it before changing anything, and treat it as the source of truth.
 
-- Branch from `v2`, not `main`, and open pull requests against `v2`.
-- Don't target `main` with V2 work. Only urgent fixes for current users go to `main`; merge `main` into `v2` afterwards so the branches don't drift.
-- Track work in the Linear `SBX` team (marketing in `SBXM`), under the "Sandbox SDK V2" project.
+- Track work in the Linear `SBX` team (marketing in `SBXM`), under the "Sandbox SDK 1.0 rewrite" project. The umbrella issue is SBX-23.
+- Layout:
+  - `packages/sdk` is the library.
+  - `apps/web` is the landing page.
+  - `apps/docs` is the Blume docs, served at `/docs`.
+  - `bench/` is the benchmark harness.
+  - `examples/` holds the examples.
+- Load `~/.agents/skills/typescript-best-practices/SKILL.md` before writing TypeScript.
+- Tests run with a timeout and at most 4 workers. Never run unbounded suites.
 
 ## Checks
 
-CI runs these from the repo root. Run them before you push:
+Run these from the repo root before you push:
 
 ```sh
-bun install --frozen-lockfile
+bun install
 bun run lint
 bun run typecheck
 bun run test
 bun run build
 ```
-
-Don't run `bun run build` in `packages/sdk` while the docs dev server is running; it clears `dist`, which the docs site imports.

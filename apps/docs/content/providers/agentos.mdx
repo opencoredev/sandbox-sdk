@@ -1,0 +1,201 @@
+---
+title: Rivet agentOS
+description: Run command and file tasks locally in V8 and WebAssembly, without Docker or a cloud account. Exact in-process keys and host allow lists.
+---
+
+`agentos()` runs each sandbox in [Rivet agentOS](https://rivet.dev/agentos/docs/embedded), a small virtual OS inside your application process. For real Linux, background processes, or previews, use [Local](/providers/local) with Docker.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @rivet-dev/agentos-core@0.4.1
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @rivet-dev/agentos-core@0.4.1
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @rivet-dev/agentos-core@0.4.1
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @rivet-dev/agentos-core@0.4.1
+```
+
+  </Tab>
+</Tabs>
+
+No account, API key, or Docker daemon. Rivet publishes sidecars for Linux glibc and macOS on x64 and arm64; native Windows is not supported.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+await box.files.write("hello.cjs", "console.log(6 * 7)");
+const result = await box.run("node hello.cjs");
+console.log(result.stdout);
+```
+
+This prints `42`. `await using` disposes the VM when the block ends.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                          |
+| ------------------------------ | ------- | -------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Bundled shell tools, Node compatibility layer, WebAssembly Git |
+| Files                          | Yes     | Virtual file system; native `mode`                             |
+| Background processes           | No      | Use `box.native.process`                                       |
+| Preview URLs                   | No      | Use `box.native.network.httpRequest()`                         |
+| Pause and resume               | No      |                                                                |
+| Snapshots                      | No      |                                                                |
+| Machine size                   | No      |                                                                |
+| Network policy                 | Yes     | `"none"` or literal host names                                 |
+| Hard lifetime (`timeoutMs`)    | No      |                                                                |
+| Idle timeout (`idleTimeoutMs`) | No      |                                                                |
+| Keys                           | Exact   | Within one application process                                 |
+| Terminal                       | No      |                                                                |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives. Command timeouts and cancellation work.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("echo one; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+It does not boot Linux. Pure JavaScript npm packages can work; native addons and arbitrary Linux binaries don't.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+`mode` is applied inside the VM right after the write. Without it, new files get `644`.
+
+## Background processes and previews
+
+`box.start()` and `box.preview()` throw `unsupported`. Listeners stay inside the VM. Reach a guest HTTP server through the native API:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+const response = await box.native.network.httpRequest({ port: 3000, path: "/" });
+console.log(response.status);
+```
+
+Start the server with `box.native.process.spawn()`.
+
+## Pause, resume, and snapshots
+
+agentOS has no pause, resume, or snapshots, and the methods don't exist on its sandbox type. Code that accepts any provider can check first:
+
+```ts
+import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos());
+if (hasCapability(box, "pause")) await box.pause();
+```
+
+## Size, network, and lifetime
+
+`size`, `idleTimeoutMs`, and `timeoutMs` fail with `unsupported`. `network: "none"` denies guest egress, and an allow list accepts literal host names, with no wildcards or URLs.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+
+await using box = await createSandbox(agentos(), {
+  network: { allow: ["registry.npmjs.org"] },
+});
+```
+
+## Configuration
+
+| Option           | Type              | Default                                | Env var |
+| ---------------- | ----------------- | -------------------------------------- | ------- |
+| `gitPackagePath` | `string`          | Rivet's pinned Git package, downloaded |         |
+| `software`       | `SoftwareInput[]` | None                                   |         |
+| `mounts`         | `MountConfig[]`   | None                                   |         |
+| `limits`         | `AgentOsLimits`   | agentOS's built-in limits              |         |
+
+Pass a trusted local `.aospkg` file to work offline. `box.native` is the typed `AgentOs` VM.
+
+`software`, `mounts`, and `limits` go to `AgentOs.create` unchanged, with the types from `@rivet-dev/agentos-core`:
+
+- `software` adds packages next to the bundled shell tools and Git.
+- `mounts` projects host directories or other file systems into the VM. `hostDirMount(path, hostPath)` is read-only unless you pass `{ readOnly: false }`, and the guest sees only that subtree.
+- `limits.resources` caps processes, open files, sockets, file system bytes, and WebAssembly memory and fuel. A command that hits a cap fails with an error such as `Resource temporarily unavailable`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agentos } from "@opencoredev/sandbox-sdk/agentos";
+import { hostDirMount } from "@rivet-dev/agentos-core";
+
+const provider = agentos({
+  mounts: [hostDirMount("/fixtures", "/srv/fixtures")],
+  limits: { resources: { maxProcesses: 64, maxFilesystemBytes: 512 * 1024 * 1024 } },
+});
+await using box = await createSandbox(provider);
+console.log((await box.run("ls /fixtures")).stdout);
+```
+
+A custom VM `user` isn't exposed: agentOS 0.4.1 writes host-side files as uid 1000, so any other user can't write `/workspace`.
+
+## Limitations
+
+- A virtual OS, not a Linux kernel.
+- No SDK background processes, previews, pause, snapshots, sizes, timeouts, or terminals.
+- Git clone, commit, status, and file checkpoints work. Git push stalls in agentOS 0.4.1.
+- Files and keys last only as long as your application process.
+
+## How it works
+
+- Commands run in agentOS's virtual process table. JavaScript runs in V8 isolates, and shell tools run as WebAssembly over a shared virtual file system.
+- The first sandbox downloads Rivet's Git package (about 18 MB) and checks its pinned SHA-256 digest. Rivet caches it by digest.
+- All factories in one process share a registry, so keys, reconnect, list, and reap work across them. Another process has its own.
+- The Linux x64 sidecar takes about 144 MiB on disk.
+
+## Next steps
+
+- [Local](/providers/local)
+- [Capabilities](/reference/capabilities)

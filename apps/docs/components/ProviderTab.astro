@@ -1,0 +1,36 @@
+---
+// One provider panel inside <ProviderTabs>. The provider key picks the display
+// name and the logo from /integrations, so pages can't drift from the sidebar.
+import Tab from "blume/components/content/Tab.astro";
+
+import { PROVIDERS, type ProviderKey } from "./providers.ts";
+
+interface Props {
+  provider: ProviderKey;
+  title?: string;
+}
+
+const { provider, title } = Astro.props;
+const { name, logo } = PROVIDERS[provider];
+const label = title ?? name;
+
+// Logos live in public/, which is served under the docs base path (/docs).
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const style = logo ? `--sbx-mark: url("${base}${logo}")` : undefined;
+---
+
+{/*
+  Logos are spans with a background image, not <img>: Blume binds
+  click-to-zoom to every `.prose img`, and a tab icon must only switch tabs.
+  The logo keeps its own brand colors (see "brand marks" in theme.css).
+*/}
+<Tab title={label}>
+  <p class="provider-tab-fallback">
+    <span aria-hidden="true" class="provider-logo" data-provider={provider} style={style}></span>
+    <strong>{label}</strong>
+  </p>
+  <slot />
+  <template data-blume-tab-icon>
+    <span aria-hidden="true" class="provider-logo" data-provider={provider} style={style}></span>
+  </template>
+</Tab>

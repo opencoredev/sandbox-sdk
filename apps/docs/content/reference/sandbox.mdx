@@ -1,0 +1,213 @@
+---
+title: Sandbox API
+description: Every export of @opencoredev/sandbox-sdk and every member of a sandbox handle, with parameters, defaults, and return types.
+---
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+</Tabs>
+
+The root entry exports `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types on this page. Providers live on subpaths: `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, and `/memory`. Agent tools live on `/ai`, `/mastra`, and `/openai`, and the framework-neutral tool schemas on `/tools`. The adapter contract is on `/provider` and the conformance suite on `/testing`.
+
+## `createSandbox(provider, options?)`
+
+Creates a sandbox, or with `key`, finds the existing one first. Guide: [Sandboxes and keys](/concepts/sandboxes-and-keys).
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b(), { key: "user:123", timeoutMs: 60 * 60_000 });
+```
+
+### Parameters
+
+- `provider`: a provider from a subpath factory, such as `e2b()`.
+- `key?: string`: get-or-create key. `box.created` tells you which happened.
+- `keyMode?: "exact" | "best-effort"`: ask for exact get-or-create. On a best-effort provider this needs `locator.withLock`, or creation fails with `unsupported`.
+- `locator?: { get(key), set(key, id), delete?(key), withLock?(key, action) }`: your own key store. `withLock` runs `action` under a distributed lock. Guide: [Exact and best-effort keys](/concepts/sandboxes-and-keys#exact-and-best-effort-keys).
+- `size?: "small" | "medium" | "large" | { cpu, memoryMb, diskGb }`: machine size. Fails with `unsupported` if the provider can't honor it. Guide: [Machine size and network](/guides/machine-size-and-network).
+- `env?: Record<string, string>`: environment for every command.
+- `secrets?: Record<string, string>`: set as environment variables and redacted from all output, logs, and errors. Names must be valid shell variable names, for `env` too.
+- `network?: "all" | "none" | { allow: string[] }`: defaults to `"all"`. Fails with `unsupported` if the provider can't enforce it.
+- `ports?: number[]`: ports to preview. Some providers route only the ports listed here, and the others ignore it. Local defaults to `[3000]`. The `ports` row of the [capability matrix](/reference/capabilities#matrix) says which providers need it and how many ports each takes.
+- `idleTimeoutMs?: number`: stop after this long idle. Fails with `unsupported` where the provider has no idle timer.
+- `timeoutMs?: number`: hard maximum lifetime. Fails with `unsupported` where the provider can't enforce one. See the [capability matrix](/reference/capabilities).
+- `labels?: Record<string, string>`: your labels. The SDK adds `sandbox-sdk`.
+- `from?: string`: a snapshot ID to start from. Needs the `"snapshot"` capability.
+- `trackChanges?: boolean`: record a `"start"` checkpoint when the sandbox is created, so `files.changes()` works without `since`. Defaults to `false`. It costs one command in the sandbox, so creation is a little slower. Guide: [See what changed](/concepts/files-and-git#see-what-changed).
+- `signal?: AbortSignal`: abort creation. A sandbox that arrives after the abort is destroyed.
+
+### Returns
+
+`Promise<Sandbox>`, typed per provider. Throws `SandboxError` when creation fails.
+
+## `connectSandbox(provider, id, options?)`
+
+Attaches to an existing sandbox by native ID. Throws `not_found` if it doesn't exist. Connecting runs no command in the sandbox, so a handle that only cleans up works even when the sandbox can't run commands, for example a stopped Vercel sandbox:
+
+```ts
+import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+const id = "sbx_example"; // the ID you stored at creation
+const box = await connectSandbox(vercel(), id);
+await box.destroy();
+```
+
+Options:
+
+- `secrets?: Record<string, string>`: more values to redact.
+- `recoverSecrets?: boolean`: default `true`. Secrets set at creation stay in the environment and redacted, because the SDK reads their names back from the sandbox. That costs one command, run before the first `run`, `start`, `process`, `files`, or `terminal` call. `destroy`, `close`, `pause`, `resume`, `snapshot`, and `usage` never need it. If the command fails, that first call throws `provider` and the next call tries again. With `false`, the SDK skips it and no longer redacts the secrets set at creation.
+
+## `listSandboxes(provider, options?)`
+
+Options: `labels?`. Returns `{ id, key?, labels, state, createdAt }[]` for sandboxes this SDK created. `labels` filters the list. `state` is `"running"`, `"paused"`, or `"stopped"`. `createdAt` is epoch milliseconds.
+
+## `reapSandboxes(provider, options?)`
+
+Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. With `idleOnly`, a sandbox counts as idle when it has no SDK command in flight and no running SDK background process. Commands started outside the SDK are not seen. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
+
+## Sandbox handle
+
+### Properties
+
+| Member         | Type                                                                             |
+| -------------- | -------------------------------------------------------------------------------- |
+| `id`           | `string`                                                                         |
+| `key`          | `string \| undefined`                                                            |
+| `provider`     | `string`                                                                         |
+| `created`      | `boolean`                                                                        |
+| `labels`       | `Record<string, string>`                                                         |
+| `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">` |
+| `native`       | The provider's own sandbox object                                                |
+| `files`        | [`Files`](#files)                                                                |
+| `git`          | [`Git`](#git)                                                                    |
+
+### `run(command, options?)`
+
+Returns a `RunHandle`: await it for a `RunResult`, or iterate it for `{ stream, text }` chunks. Guide: [Running commands](/concepts/running-commands).
+
+| Option                         | Default                                                  |
+| ------------------------------ | -------------------------------------------------------- |
+| `cwd?: string`                 | `/workspace`                                             |
+| `env?: Record<string, string>` | none                                                     |
+| `timeoutMs?: number`           | `120_000`                                                |
+| `maxOutputBytes?: number`      | `1_048_576` per stream. `output` holds up to twice this. |
+| `stdin?: string`               | closed                                                   |
+| `signal?: AbortSignal`         | none                                                     |
+
+`RunResult` is `{ ok, exitCode, stdout, stderr, output, durationMs, truncated, timedOut, cwd, command }`. A non-zero exit, a timeout, and an abort all resolve. None of them throws.
+
+### `` $`command` ``
+
+A tagged template that shell-escapes every interpolated value and returns a `RunHandle`. Chain `.cwd(path)`, `.env(vars)`, and `.timeout(ms)`.
+
+### `start(command, options?)`
+
+Starts a background process and resolves when it is ready. Guide: [Processes and previews](/concepts/processes-and-previews).
+
+- `name?: string`: unique per sandbox. Defaults to a stable name derived from the command, such as `npm-1a2b3c4d`, so the same command always maps to the same process. The handle's `name` holds it.
+- `cwd?: string`
+- `env?: Record<string, string>`
+- `ready?: { port } | { http: { port, path? } } | { log: RegExp }`
+- `readyTimeoutMs?: number`
+
+`name` may use letters, numbers, `-`, and `_`, up to 128 characters. Throws `process_exited` if the process exits before it is ready.
+
+### `ProcessHandle`
+
+| Member                           | What it does                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------- |
+| `name`, `status`, `ready`, `url` | Current state. `url` is set when `ready` named a port.                                   |
+| `lines({ after? })`              | Async iterable of `{ text, stream, cursor }`                                             |
+| `logs({ after?, maxBytes? })`    | One page: `{ text, nextCursor, truncated }`. `maxBytes` defaults to 16 KB, at most 1 MB. |
+| `stop({ graceMs? })`             | SIGTERM, then SIGKILL. Idempotent.                                                       |
+| `restart()`                      | Stops and starts the same command                                                        |
+| `wait()`                         | Resolves `{ exitCode, signal }` on exit                                                  |
+
+### `process(name)`, `processes()`
+
+`process(name)` returns the handle for a named process from any client. `processes()` returns `{ name, command, status, pid, ports, startedAt, exitCode }[]`.
+
+### `preview(port, options?)`
+
+Returns `{ url, headers?, expiresAt? }`. Options: `path?`, `waitMs?`. With `waitMs`, the URL is requested from your process until it answers with a 2xx status, or the call throws `port_not_ready`.
+
+### `usage()`
+
+Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the provider reports.
+
+### `close()`, `destroy()`, `[Symbol.asyncDispose]()`
+
+`close()` detaches and leaves the sandbox running. `destroy()` deletes it. `await using` calls `close()` when the sandbox has a key and `destroy()` otherwise.
+
+### Optional capabilities
+
+Present on the type only when the provider supports them. The [capability matrix](/reference/capabilities) lists which provider has which.
+
+| Method                       | Returns                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pause()`, `resume()`        | `Promise<void>`                                                                                                                                                                                                                                                                                                                |
+| `snapshot({ expiresInMs? })` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. `expiresInMs` deletes the snapshot after that many milliseconds, and `0` keeps it until you delete it. A provider that can't honor it throws `unsupported` or `invalid_argument` rather than ignoring it. A negative or fractional value throws `invalid_argument`. |
+| `terminal({ cols, rows })`   | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0.                                                                                                                                                                                                                                    |
+
+## Files
+
+Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/files-and-git).
+
+| Method                                                         | Returns                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `read(path, { as? })`                                          | `string`, or `Uint8Array` with `as: "bytes"`                                                                                                                                                                                                                                         |
+| `write(path, data, { mode? })` or `write(record, { mode? })`   | `void`. Creates directories. `mode` sets the permission bits of every file written, such as `0o600`, and must be an integer from `0` to `0o7777`. A provider that can't set the mode natively gets one `chmod` after the write, so until it runs the files have default permissions. |
+| `edit(path, { find, replace })`                                | `void`. Throws `edit_not_found` or `edit_not_unique`.                                                                                                                                                                                                                                |
+| `list(path?, { recursive?, glob? })`                           | `{ path, type, size, modifiedAt }[]`                                                                                                                                                                                                                                                 |
+| `stat(path)`                                                   | `{ path, type, size, modifiedAt }`                                                                                                                                                                                                                                                   |
+| `exists(path)`                                                 | `boolean`                                                                                                                                                                                                                                                                            |
+| `remove(path, { recursive? })`                                 | `void`                                                                                                                                                                                                                                                                               |
+| `upload(localDir, remoteDir, { ignore? })`                     | `void`                                                                                                                                                                                                                                                                               |
+| `download(remoteDir, localDir)`                                | `void`                                                                                                                                                                                                                                                                               |
+| `search(query, { path?, glob?, maxMatches? })`                 | `{ path, line, text }[]`                                                                                                                                                                                                                                                             |
+| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`.                                                                                                                                                                |
+| `mark(name?)`                                                  | The checkpoint name                                                                                                                                                                                                                                                                  |
+| `changes({ since? })`                                          | `{ added, modified, removed, patch }`. `since` defaults to `"start"`, which exists only if you created the sandbox with `trackChanges: true` or called `mark("start")`. Otherwise it throws `invalid_argument`.                                                                      |
+
+## Git
+
+Every method resolves with a `RunResult`. Tokens go through a temporary credential helper and never appear in argv, history, or output.
+
+| Method                   | Options                                                   |
+| ------------------------ | --------------------------------------------------------- |
+| `clone(url, options?)`   | `dir?` (defaults to `app`), `branch?`, `depth?`, `token?` |
+| `status(dir?)`           |                                                           |
+| `diff(dir?)`             |                                                           |
+| `commit(dir, options)`   | `message`, `all?`, `author?`                              |
+| `push(dir, options?)`    | `token?`, `remote?`, `branch?`                            |
+| `checkout(dir, options)` | `branch`, `create?`                                       |

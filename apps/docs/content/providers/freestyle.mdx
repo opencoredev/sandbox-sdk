@@ -1,0 +1,206 @@
+---
+title: Freestyle
+description: Run persistent Linux VMs on Freestyle. Default-deny outbound networking, memory pause and snapshots, second-level timeouts, and public HTTPS previews.
+---
+
+`freestyle()` runs each sandbox as a persistent Linux VM on [Freestyle](https://www.freestyle.sh/docs) through the current `freestyle` SDK.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next freestyle
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next freestyle
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next freestyle
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next freestyle
+```
+
+  </Tab>
+</Tabs>
+
+The adapter needs `freestyle` 0.2.20 or later. The older `freestyle-sandboxes` package isn't supported. Set `FREESTYLE_API_KEY` on your server, and keep it out of browser bundles.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+`await using` deletes the VM when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                 |
+| ------------------------------ | ----------- | ----------------------------------------------------- |
+| Commands and streaming         | Partial     | Output arrives when the command finishes              |
+| Files                          | Yes         | Native `mode`                                         |
+| Background processes           | Yes         |                                                       |
+| Preview URLs                   | Yes         | Public `https://` on `style.dev`                      |
+| Pause and resume               | Yes         | Memory survives                                       |
+| Snapshots                      | Yes         | Memory and disk; `expiresInMs` is native              |
+| Machine size                   | No          | Pick a base snapshot instead                          |
+| Network policy                 | Partial     | `"all"` or `"none"`; no host allow lists              |
+| Hard lifetime (`timeoutMs`)    | Yes         | Whole seconds                                         |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Whole seconds of network inactivity                   |
+| Keys                           | Best-effort | Read from VM metadata, with a marker file as fallback |
+| Terminal                       | No          |                                                       |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result. Iterating works too, but Freestyle returns output only after the command exits, so chunks arrive together at the end.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("echo one; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+Commands run as root. A timeout or abort kills the command's process group.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+await box.files.write(".env", "TOKEN=abc\n", { mode: 0o600 });
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+`mode` goes to Freestyle's native write. Without it, an existing file keeps its mode and a new file gets the guest default (`644`).
+
+## Background processes and previews
+
+No ports to declare. Bind your server to `0.0.0.0`. `box.preview(port)` creates a public TLS rule at a random `sdk-<uuid>.style.dev` domain, with no headers needed.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle());
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", {
+  name: "web",
+  ready: { port: 3000 },
+});
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+The URL is public. Protect sensitive apps yourself. Previews keep working under `network: "none"`, which only blocks outbound traffic.
+
+## Pause, resume, and snapshots
+
+`pause()` freezes the VM with its memory. `snapshot()` captures memory and disk, and `from` starts a new VM from it with fresh SDK identity and the network rules you ask for.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 });
+await using copy = await createSandbox(freestyle(), { from: id });
+```
+
+`expiresInMs` sets the snapshot's native TTL, rounded up to whole seconds: Freestyle deletes it that long after capture. Without it, or with `0`, the snapshot is kept until you delete it, or until your plan's retention cap. Snapshots include the creation environment file, secrets included. Treat them as sensitive.
+
+## Size, network, and lifetime
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle(), {
+  network: "none",
+  idleTimeoutMs: 10 * 60_000,
+  timeoutMs: 2 * 60 * 60_000,
+});
+```
+
+- `size` fails with `unsupported`. Pick a machine through the base snapshot (`snapshotId`).
+- `network: "none"`, or an empty allow list, adds no outbound rules. A nonempty allow list fails with `unsupported`.
+- `idleTimeoutMs` rounds up to whole seconds and measures network activity, not CPU.
+- `timeoutMs` rounds down to whole seconds, so deletion is never late. Under one second fails with `unsupported`.
+- `autoDeleteMs` on the provider deletes a VM once it has gone that long without running, for example after it was paused or stopped. Each start resets the clock, and `0` deletes the VM as soon as it stops. It rounds up to whole seconds.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
+
+await using box = await createSandbox(freestyle({ autoDeleteMs: 24 * 60 * 60_000 }));
+```
+
+The adapter reads the rules and limits back after creation and deletes the VM if they don't match.
+
+## Configuration
+
+| Option             | Type     | Default                    | Env var             |
+| ------------------ | -------- | -------------------------- | ------------------- |
+| `apiKey`           | `string` |                            | `FREESTYLE_API_KEY` |
+| `baseUrl`          | `string` | `https://api.freestyle.sh` |                     |
+| `snapshotId`       | `string` | `"freestyle/ubuntu"`       |                     |
+| `requestTimeoutMs` | `number` | `30_000`                   |                     |
+| `autoDeleteMs`     | `number` | Never, or your plan's cap  |                     |
+
+`requestTimeoutMs` bounds control and file operations, including background polling. Commands use their own run timeout. The base image needs Python 3, Git, GNU tar, and `nohup`. `box.native` is the SDK's typed `Vm` handle.
+
+## Limitations
+
+- Keys are best-effort, and listing can wake VMs.
+- No sizes, host allow lists, or terminals.
+- Command output isn't live.
+- A timed-out create can still finish on Freestyle and reports `outcome_unknown`. Check your account before retrying.
+
+## How it works
+
+- Native metadata marks SDK VMs. The full key and labels live in `/var/lib/sandbox-sdk.json`. Keep it intact, and keep secrets out of labels.
+- A Python supervisor is installed once at creation and runs every command. Large output stays on guest disk and is fetched with ranged reads.
+- Creation env lives in a root-only `0600` file so new handles can recover it.
+- The preview domain is cached per port for the life of the provider instance. A new instance can create another domain.
+- Your plan can still reclaim unused VMs under its retention policy.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

@@ -1,0 +1,186 @@
+---
+title: Build an AI app builder
+description: Build a Next.js chat where a model writes an app inside a per-project sandbox and the user sees a live preview. Uses the AI SDK and Vercel Sandbox.
+---
+
+This guide builds the core of a "describe an app, watch it get built" product. Each project gets its own sandbox. A model edits files and runs commands in it through [sandbox tools](/guides/give-your-agent-a-sandbox), and the user sees the running app in an iframe.
+
+The finished version is in the repo at `examples/ai-app-builder`.
+
+## How it works
+
+1. The browser sends chat messages and a project ID to `/api/chat`.
+2. The route gets or creates the project's sandbox by key.
+3. The model works in the sandbox with `sandboxTools` and starts the dev server with `start_process`.
+4. A second route returns the preview URL, and the page shows it in an iframe.
+
+## 1. Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @vercel/sandbox ai @ai-sdk/react
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @vercel/sandbox ai @ai-sdk/react
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @vercel/sandbox ai @ai-sdk/react
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @vercel/sandbox ai @ai-sdk/react
+```
+
+  </Tab>
+</Tabs>
+
+Set these on the server: `AI_GATEWAY_API_KEY` for the model, and `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID` for sandboxes. None of them may reach the browser.
+
+## 2. Get the project's sandbox
+
+Put sandbox creation in one place so both routes use the same settings.
+
+```ts title="lib/sandbox.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+export async function projectSandbox(projectId: string) {
+  const box = await createSandbox(vercel(), {
+    key: `project:${projectId}`,
+    ports: [3000],
+    labels: { app: "builder", projectId },
+  });
+
+  if (box.created) {
+    await box.run("npx --yes create-next-app@latest app --yes --use-npm", { timeoutMs: 600_000 });
+  }
+
+  return box;
+}
+```
+
+The key makes this safe to call on every request. The first call creates the sandbox and scaffolds a Next.js app in `/workspace/app`. Later calls find the same sandbox. Vercel needs port 3000 declared here so it can be previewed.
+
+Vercel has no idle timer, and its `timeoutMs` bounds one session, not the sandbox's whole life: each resume starts a new one. So a sandbox users keep coming back to has no lifetime limit of its own. The [reaper](#before-you-ship) below cleans up the ones users abandon. The two labels plus the SDK's own tags use four of the five tags Vercel allows.
+
+## 3. Stream the agent
+
+```ts title="app/api/chat/route.ts"
+import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from "ai";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+import { projectSandbox } from "@/lib/sandbox";
+
+export async function POST(request: Request) {
+  const { messages, projectId }: { messages: UIMessage[]; projectId: string } =
+    await request.json();
+
+  const box = await projectSandbox(projectId);
+
+  const result = streamText({
+    model: "anthropic/claude-opus-5-5",
+    system: [
+      "You build a Next.js app in /workspace/app.",
+      "Keep the dev server running as a process named dev on port 3000.",
+      "Run the build after each change and fix any error before you answer.",
+    ].join("\n"),
+    messages: await convertToModelMessages(messages),
+    tools: sandboxTools(box, { root: "/workspace/app" }),
+    stopWhen: stepCountIs(40),
+    onFinish: () => box.close(),
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+`box.close()` detaches when the response ends and leaves the sandbox running for the next message. Don't use `await using` here: the stream outlives the function body.
+
+## 4. Return the preview URL
+
+```ts title="app/api/preview/route.ts"
+import { projectSandbox } from "@/lib/sandbox";
+
+export async function GET(request: Request) {
+  const projectId = new URL(request.url).searchParams.get("projectId") ?? "";
+
+  await using box = await projectSandbox(projectId);
+  const processes = await box.processes();
+  const dev = processes.find((p) => p.name === "dev" && p.status === "running");
+  if (!dev) return Response.json({ url: null });
+
+  const preview = await box.preview(3000, { waitMs: 10_000 });
+  return Response.json({ url: preview.url });
+}
+```
+
+The model starts the dev server with the `start_process` tool, so this route only looks it up. `waitMs` makes sure the URL answers before the browser loads it.
+
+## 5. The page
+
+```tsx title="app/page.tsx" check="skip"
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { useState } from "react";
+
+const projectId = "demo";
+
+export default function Builder() {
+  const [input, setInput] = useState("");
+  const [url, setUrl] = useState<string | null>(null);
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({ api: "/api/chat", body: { projectId } }),
+    onFinish: async () => {
+      const res = await fetch(`/api/preview?projectId=${projectId}`);
+      setUrl((await res.json()).url);
+    },
+  });
+
+  return (
+    <main style={{ display: "grid", gridTemplateColumns: "1fr 1fr", height: "100dvh" }}>
+      <section>
+        {messages.map((m) => (
+          <p key={m.id}>{m.parts.map((part) => (part.type === "text" ? part.text : null))}</p>
+        ))}
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            sendMessage({ text: input });
+            setInput("");
+          }}
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={status !== "ready"}
+          />
+        </form>
+      </section>
+      {url ? <iframe src={url} style={{ width: "100%", height: "100%", border: 0 }} /> : null}
+    </main>
+  );
+}
+```
+
+Type "a todo app with a dark theme" and send it. The model scaffolds pages, runs the build, and starts the server. When it finishes, the preview appears on the right. Follow-up messages edit the same sandbox, so the app keeps its state between turns.
+
+## Before you ship
+
+- **Reap forgotten sandboxes.** Run [`reapSandboxes`](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes) on a schedule with `labels: { app: "builder" }` and `idleOnly: true`.
+- **Restart the server after a resume.** A stopped Vercel sandbox resumes on the next call without its processes. If `box.process("dev").status` is `"failed"`, call `restart()` before you return the preview.
+- **Limit the network.** Pass `network: { allow: [...] }` so generated code can only reach the hosts it needs: the npm registry, plus `fonts.googleapis.com` and `fonts.gstatic.com` if apps use `next/font/google`. See [Machine size and network](/guides/machine-size-and-network).
+- **Show diffs.** Create the sandbox with `trackChanges: true`, and [`box.files.changes()`](/concepts/files-and-git#see-what-changed) gives you a patch of everything the model changed since then.

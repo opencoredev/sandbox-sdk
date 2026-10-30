@@ -1,0 +1,20 @@
+{
+  "name": "@sandbox-sdk/example-getting-started",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "quickstart": "bun src/quickstart.ts",
+    "multi-provider": "bun src/multi-provider.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src"
+  },
+  "dependencies": {
+    "@opencoredev/sandbox-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "oxlint": "1.90.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,210 @@
+---
+title: Sandboxer
+description: Run Ubuntu microVMs on Sandboxer in two regions. Size presets, pause and resume, named snapshots, and cookie-authenticated previews.
+---
+
+`sandboxer()` runs each sandbox as an Ubuntu 24.04 microVM on [Sandboxer](https://sandboxer.com), with Node.js 22, Python 3, and Git installed.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @boatdev/sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @boatdev/sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @boatdev/sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @boatdev/sdk
+```
+
+  </Tab>
+</Tabs>
+
+Sandboxer speaks a Boat-compatible API, so the adapter uses `@boatdev/sdk`. Set `SANDBOXER_API_KEY` on your server, and keep it out of browser bundles. `SANDBOXER_REGION` is optional.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+const result = await box.run("python3 --version");
+console.log(result.stdout);
+```
+
+`await using` deletes the VM when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                   |
+| ------------------------------ | ----------- | --------------------------------------- |
+| Commands and streaming         | Yes         | Live output                             |
+| Files                          | Yes         | `mode` is applied before the bytes land |
+| Background processes           | Yes         |                                         |
+| Preview URLs                   | Yes         | Send the returned `Cookie` header       |
+| Pause and resume               | Yes         | Usually restores memory and processes   |
+| Snapshots                      | Yes         | Named disk snapshots, no expiry         |
+| Machine size                   | Partial     | Presets only                            |
+| Network policy                 | No          | Only `"all"`                            |
+| Hard lifetime (`timeoutMs`)    | No          | Set the `ttlSeconds` auto-stop instead  |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the VM, in whole minutes         |
+| Keys                           | Best-effort | Stored in the VM's display name         |
+| Terminal                       | No          |                                         |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+
+await box.files.write(".env", "API_TOKEN=...\n", { mode: 0o600 });
+```
+
+With `mode`, the file gets its permissions before any contents are written, so the contents are never readable by other users. Writes run as the sandbox user, so root-owned paths such as `/etc` fail. Write those with `box.run("sudo ...")`.
+
+## Background processes and previews
+
+No ports to declare. The preview needs the `Cookie: __sbx_auth=...` header in `preview.headers` on every request. Treat it as a secret.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000, { waitMs: 10_000 });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+If your dev server checks the `Host` header, allow its preview host name under `.box.sandboxer.com`.
+
+## Pause, resume, and snapshots
+
+`pause()` stops the VM and waits for the stop to finish. Sandboxer normally restores memory and running processes on resume; its cold-boot fallback can lose them. `snapshot()` saves a named disk snapshot and returns its name.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(sandboxer(), { from: id });
+```
+
+Snapshots outlive their source and never expire, so `snapshot({ expiresInMs })` fails with `unsupported` unless it is `0`. Delete them through `DELETE /named-snapshots/{name}`. A restore must run in the snapshot's region.
+
+## Size, network, and lifetime
+
+| Preset   | Native type | vCPU | Memory    | Disk   |
+| -------- | ----------- | ---- | --------- | ------ |
+| `small`  | `small`     | 2    | 4096 MiB  | 12 GB  |
+| `medium` | `default`   | 4    | 8192 MiB  | 50 GB  |
+| `large`  | `large`     | 8    | 16384 MiB | 125 GB |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer({ region: "eu-central" }), { size: "small" });
+```
+
+Exact sizes, `network` other than `"all"`, and `timeoutMs` fail with `unsupported`. Trial accounts allow `small` and `default` sizes and two active sandboxes.
+
+`idleTimeoutMs` pauses the VM after that long without activity, rounded up to whole minutes, up to 7 days. The VM wakes by itself on the next API call or preview request. Without it, your plan's idle pause applies (15 minutes on the trial). It needs snapshots, so it fails with `invalid_argument` next to `snapshots: false`.
+
+Separately, Sandboxer stops a VM an hour after it starts. Set `ttlSeconds` to change that, or `null` to turn auto-stop off. It caps cost but is not a hard lifetime.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { sandboxer } from "@opencoredev/sandbox-sdk/sandboxer";
+
+await using box = await createSandbox(sandboxer({ ttlSeconds: 4 * 3600, monitoring: false }), {
+  idleTimeoutMs: 10 * 60_000,
+});
+```
+
+## Configuration
+
+| Option             | Type                                          | Default                        | Env var             |
+| ------------------ | --------------------------------------------- | ------------------------------ | ------------------- |
+| `apiKey`           | `string`                                      |                                | `SANDBOXER_API_KEY` |
+| `baseUrl`          | `string`                                      | `https://sandboxer.com/api/v1` |                     |
+| `machine`          | `"small" \| "default" \| "large" \| "xlarge"` | `"default"`                    |                     |
+| `region`           | `"us-east" \| "eu-central"`                   | Nearest to the caller          | `SANDBOXER_REGION`  |
+| `ttlSeconds`       | `number \| null`                              | `3600`                         |                     |
+| `snapshots`        | `boolean`                                     | `true`                         |                     |
+| `monitoring`       | `boolean`                                     | Account setting                |                     |
+| `org`              | `string`                                      | Your active wallet             |                     |
+| `requestTimeoutMs` | `number`                                      | `90_000`                       |                     |
+
+`us-east` is Ashburn, Virginia, and `eu-central` is Helsinki. A per-create `size` wins over `machine`. `ttlSeconds` takes 1 to 2,592,000 (30 days). `snapshots: false` means Sandboxer never captures the disk, so `pause()` erases it, and resume, snapshots, and idle pause stop working. `monitoring: false` means Sandboxer keeps no command output, process list, or metrics; live output still streams. `org` bills the VM to an organization, by id or name. `box.native.region` and `box.native.regionSource` report where the VM landed, and `box.native.createSnapshot(name)` takes a snapshot under a name you choose.
+
+## Limitations
+
+- Keys are best-effort, and the encoded key and labels must fit a 120-character name.
+- No custom sizes, network restrictions, hard lifetimes, or terminals.
+- Snapshots have no expiry.
+- File writes run as the sandbox user, so root-owned paths fail.
+
+## How it works
+
+- `createSandbox` makes two control-plane calls: the create and a metadata rename. Workspace setup runs inside the first command or file operation.
+- Sandboxes are created with `noEnv: true`, so they get none of your account's saved secrets.
+- stdin and file contents never travel in command text, which Sandboxer keeps in its history. Sandboxer's file API takes less than 5 MiB per write and only paths under `/home/user` or `/tmp`. A write of up to 4 MiB under those paths, without `mode`, goes straight to it. Anything else, and all stdin, is uploaded in 4 MiB parts to a new `0700` directory under `/tmp`. A guest command then copies the file into place, or the shell opens the stdin file and deletes it before your command starts.
+- Creates, resumes, and forks count as starts against your account's rate limits.
+- `destroy()` sends Sandboxer's delete confirmation header and waits for the deletion to finish.
+- Usage from `/sandboxes/{id}/usage` is machine time, not plan payments or credits.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Machine size and network](/guides/machine-size-and-network)

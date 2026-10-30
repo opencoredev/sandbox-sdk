@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Sandbox SDK">
+  <rect width="32" height="32" rx="7" fill="#E8A33C"/>
+  <path fill="#0B0B0C" d="M4 4h8v4H8v4H4zM28 4v8h-4V8h-4V4zM4 28v-8h4v4h4v4zM28 28h-8v-4h4v-4h4z"/>
+  <path fill="#0B0B0C" d="M12 12h8v8h-8z"/>
+</svg>

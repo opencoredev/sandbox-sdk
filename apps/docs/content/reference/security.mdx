@@ -1,0 +1,74 @@
+---
+title: Security
+description: What Sandbox SDK protects and what it leaves to the provider. Trust boundaries, keys, secret redaction, network policy, agent tool limits, previews, and reporting a vulnerability.
+---
+
+Sandbox SDK is a library over each provider's API. It does not add an isolation layer of its own. The provider you choose supplies the security boundary, its authentication, its network controls, and how it hardens the machine. Read this page before you run code from users or models.
+
+## Trust boundaries
+
+| Boundary                                       | Who provides it                                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Isolation between the sandbox and your servers | The provider: a microVM on E2B and Vercel Sandbox, Daytona's sandbox, a Docker container on Local |
+| Isolation between sandboxes                    | The provider                                                                                      |
+| Who may create and reach sandboxes             | Your provider credentials                                                                         |
+| Which user may use which sandbox               | Your app                                                                                          |
+| Outbound network                               | The provider, when you set `network`                                                              |
+
+**Local is a container, not a VM.** Containers share the host kernel. Don't run untrusted code from strangers with `local()` on a machine that holds secrets. Use a cloud provider for that.
+
+**Memory is not a sandbox.** Handlers run in your process with your process's privileges. Use it only for tests.
+
+## Keys stay on the server
+
+Provider factories read credentials from their arguments or the provider's own environment variables. Call the SDK from server code only, and never import a provider in a browser bundle. Sandbox SDK adds no telemetry and sends nothing anywhere except to the provider you configured.
+
+## Secrets
+
+Values you pass as `secrets` to `createSandbox` become environment variables in the sandbox. The SDK redacts them from every command result, log page, tool result, and error message it returns. `connectSandbox` reads the secret names back from the sandbox before the first command or file call and redacts them again.
+
+Redaction has limits:
+
+- Code in the sandbox can read its own environment and send a secret anywhere the network allows. Pair secrets with a [network policy](/guides/machine-size-and-network).
+- Raw `box.files.read` is not redacted. The agent tools' `read_file` is.
+- A secret that a program transforms, for example base64-encoded, no longer matches and isn't redacted.
+
+Use `env` for values that are safe to show and `secrets` for everything else.
+
+## Errors don't leak credentials
+
+`SandboxError.cause` is a redacted string, never the provider's error object, because native errors can carry credentials in their fields. Response text never appears. A failure the adapter doesn't recognize, such as a `TypeError` inside the provider's SDK, keeps its name and message, with URLs, auth headers, credential-looking values, the provider's API key, and your secrets replaced by `[REDACTED]`. See [Causes](/reference/errors#causes). Still, treat `message` and `cause` as internal: log them, and show users the `code` and `hint`.
+
+To write a file only its owner can read, pass `mode`: `box.files.write(".env", text, { mode: 0o600 })`. On providers without native modes the SDK runs `chmod` right after the write, so the file is briefly readable with default permissions. Put secret files in a directory only the sandbox user can enter, such as one made with `mkdir -m 700`.
+
+## Network policy fails closed
+
+`network: "none"` and `network: { allow: [...] }` are enforced by the provider. If the provider can't enforce what you asked, `createSandbox` throws `unsupported` instead of creating an open sandbox. E2B goes further: it reads the settings back after creation and destroys the sandbox if they don't match.
+
+Host allow lists are only as precise as the provider's filter. E2B matches on the HTTP `Host` header and TLS SNI and leaves DNS open, for example. Check the provider's documentation before you rely on a list to contain sensitive data.
+
+## Agent tools
+
+`sandboxTools` options narrow what a model can do. They are conveniences, not a security boundary:
+
+- `root` keeps file paths and working directories the model passes inside one directory. A shell command can still `cd` out or use an absolute path.
+- `allow` and `deny` decide which tools exist.
+- `beforeRun` sees every `run` and `start_process` command and can refuse or rewrite it. Matching strings is easy to get around, so treat it as a guard against mistakes, not against an attacker.
+
+The sandbox and its network policy are the real boundary. Assume anything the model can run, it will eventually run.
+
+## Previews
+
+A public preview URL is reachable by anyone who has it. Don't put secrets in a preview app, and don't share the URL beyond the user it belongs to. A private preview needs the header from `preview.headers`. Keep that header on your server and proxy the preview. Local previews bind to `127.0.0.1` on the Docker host. The Preview URL row of the [capability matrix](/reference/capabilities#matrix) says which providers give public URLs and which need a header.
+
+## Snapshots
+
+A snapshot captures the file system, and on E2B the memory. It doesn't remove secrets written to disk or environment variables baked into the image. Treat snapshot IDs as sensitive.
+
+## Your app's job
+
+The SDK doesn't validate user code, block malicious commands, scan files, rotate credentials, enforce quotas, or decide which user owns which sandbox. Derive sandbox keys from the authenticated user, rate-limit sandbox creation, set lifetime limits, and run a [reaper](/guides/cleanup).
+
+## Report a vulnerability
+
+Email `security@opencore.dev` with a minimal reproduction, the affected version, and the impact. Don't open a public issue before coordinated disclosure, and don't include production credentials, customer data, file contents, or full authenticated preview URLs.

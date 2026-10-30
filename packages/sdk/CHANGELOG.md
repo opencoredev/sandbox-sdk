@@ -1,23 +1,62 @@
-## Unreleased
+# Changelog
 
-- Add the Tenki provider adapter with files, streamed processes with stdin, public
-  preview URLs, disk-plus-memory snapshots, pause/resume, package export, live-test entry point,
-  and provider documentation.
+## 1.0.0-beta.1
 
-## @opencoredev/sandbox-sdk@0.2.0
+Fixes from early-adopter reports, provider options that were missing, and bundler support. Published under the `next` tag.
 
-- Add Ascii Box and Railway Sandbox provider adapters, package exports, capabilities, examples,
-  live-test entry points, and provider documentation.
-- Normalize HTTP response status codes from provider SDK errors.
+### Fixed
 
-## @opencoredev/sandbox-sdk@0.1.1
+- Provider SDKs load inside bundles. CommonJS peers imported from an esbuild, webpack or Next.js bundle no longer fail with `X is not a constructor`, and error mapping no longer depends on class names that minifiers rename. boxd transfers and Daytona file operations work in bundles too. An ESM bundle without a `require` shim fails with an `unavailable` error that says how to fix it.
+- Errors keep a redacted `cause`, and messages say what went wrong instead of "The provider reported provider". URLs, auth headers and credential-like values are scrubbed from every message and cause.
+- `boat()` and `sandboxer()` no longer put stdin or file contents in command strings. Both travel through the file API into a private `0600` staging file.
+- `connectSandbox()` no longer runs secret recovery on connect. It runs before the first command, so connecting to a stopped sandbox to destroy it works. Pass `recoverSecrets: false` to skip it.
+- `start()` reports a command that exits at once, or a missing `cwd`, as `failed` instead of `running`. A missing `cwd` is a normal failed run (exit 2) on every provider.
+- Railway command timeouts kill only the command instead of deleting the sandbox. Railway `list()` includes owned sandboxes that aren't running yet.
+- Tenki reports `/workspace` as a directory on a fresh sandbox. boxd and Freestyle report missing files as `file_not_found`. e2b reports exit 143 after `stop()`.
+- A local Docker sandbox restored from a snapshot no longer inherits the source's deadlines.
+- A Daytona create that times out deletes the half-created sandbox (with `@daytonaio/sdk` 0.227 or later). The Daytona peer range now accepts any 0.x from 0.225.
+- A thrown `SandboxError` prints as `SandboxError [code]: message`. `box.run()` returns a real `Promise` with `catch` and `finally`.
 
-- Add `Symbol.asyncDispose` to `Sandbox` so `await using` provides automatic cleanup.
+### Added
 
-## @opencoredev/sandbox-sdk@0.1.0
+- `files.write(path, data, { mode })` and `files.write(record, { mode })` set POSIX permissions. Providers apply the mode natively where they can; the rest run `chmod` right after the write.
+- `box.snapshot({ expiresInMs })`. Providers that can't expire snapshots reject a nonzero value with `unsupported`.
+- `vercel()`: `persistent`, `timeoutMs` (per session), `image`, `runtime`, `source` (git or tarball), exact vCPU sizes, `networkPolicy`, `region`, `failoverRegions`, `networkId`, `mounts`, `snapshotExpiresInMs`, `keepLastSnapshots`, `deleteOrphanSnapshots` and `fetch`.
+- Native options for the other providers, including e2b `public`, `autoPause`, `autoResume`, `volumes`; Daytona `public`, `autoArchiveMs`, `autoDeleteMs`, `volumes`, `createTimeoutMs`; Upstash `keepAlive`, `browser`, `attachHeaders`; Tenki `pauseRetentionMs`, `volumes`, `workspaceId`, `previewTtlMs`; Railway `resources`; Boat and Sandboxer `ttlSeconds`, `snapshots`, `monitoring`, `org`, and Sandboxer `idleTimeoutMs`; local `platform`, `user`, `runtime`, `networkMode`, `mounts`, `pidsLimit`, `shmSizeMb`, capabilities, `securityOpt` and custom sizes; Superserve network policies, `secretBindings`, `previewAccess`, `autoPauseMs`, `autoDeleteMs`; boxd allow lists, `volumes`, `timeoutMs`, `idleTimeoutMs`; Freestyle `autoDeleteMs` and snapshot expiry; agentOS `software`, `mounts`, `limits`. Each provider page lists them.
 
-### Initial release
+## 1.0.0-beta.0
 
-- Run one TypeScript sandbox API across Local, E2B, Daytona, Vercel Sandbox, and Upstash Box.
-- Use normalized files, commands, processes, ports, snapshots, and provider capabilities.
-- Integrate sandbox sessions with AI SDK, Harness, Eve, and Mastra.
+First preview of the 1.0 rewrite, published under the `next` tag. The SDK was rewritten from scratch; most of the 0.2 surface changed. The API may still change before 1.0.0. The [upgrade guide](https://github.com/opencoredev/sandbox-sdk/blob/main/apps/docs/content/upgrade-from-0-2.mdx) maps every 0.2 call to its 1.0 form.
+
+### Unreleased
+
+- Provider options now use `baseUrl` instead of `boxd.baseURL`, `daytona.apiUrl`, and `boat.apiUrl`; `tenki.apiKey` replaces `authToken`, and `boat.machine` replaces `type`. Old names remain deprecated aliases until 1.0.0. When both are supplied, the new name wins.
+- Added the Sandboxer provider at `@opencoredev/sandbox-sdk/sandboxer`. It shares Boat's API transport, including deferred workspace setup, and adds pause and resume, named snapshots, cookie-authenticated previews, and a `region` option (`us-east` or `eu-central`, default `SANDBOXER_REGION`, else nearest).
+- Provider option hovers document defaults and environment variables. All provider subpaths export a named provider type. Missing-credential errors explain the next step; E2B checks its key on first use and reads environment values set after factory construction.
+
+### Breaking changes since 0.2.0
+
+- `createSandbox(provider, options?)` takes the provider as its first argument instead of `createSandbox({ provider })`. The `cwd` option is gone; every sandbox starts in `/workspace`.
+- `stop()` is split into `destroy()`, which deletes the sandbox, and `close()`, which detaches and leaves it running. `await using` calls `close()` for keyed sandboxes and `destroy()` otherwise.
+- `run` results: `success` is now `ok`, `timeout` is `timeoutMs` (default 120 s), and a timeout resolves with `timedOut: true` instead of throwing. The `{ command, args }` form is replaced by the `` box.$`...` `` tag.
+- `files.text(path)` is now `files.read(path)`; bytes come from `files.read(path, { as: "bytes" })`. `files.mkdir` is gone (`write` creates parents). `write` accepts only strings and `Uint8Array`.
+- `processes.start` is now `box.start(command, { name })`. `output()` is replaced by `lines()` and `logs()`, `kill()` by `stop()`, and process stdin writes are removed.
+- `ports.expose` is now `box.preview(port)`, which returns `url` plus any required `headers`.
+- `snapshots.*` is now `box.snapshot()` and `createSandbox(provider, { from: id })`.
+- `local()` runs a Docker container from `node:22-bookworm` instead of a bundled AgentOS VM. AgentOS moved to the optional `/agentos` entry.
+- `sandbox.raw` is now `box.native`.
+- Removed: the Ascii Box provider, the `/eve` integration, and the helpers `withSandbox`, `supports`, `requireCapability`, `capabilityMode`, `isSandboxError`, and `redactSensitive`. Use `await using`, `box.capabilities.has(...)`, and `error instanceof SandboxError`.
+- Node.js 22+ or Bun 1.3+ is required. The package is ESM only.
+
+### Highlights
+
+- Thirteen providers behind one API: E2B, Daytona, Vercel, Upstash Box (durable and ephemeral), Railway, Tenki, boxd, Freestyle, Superserve, Boat, Local (Docker), agentOS, and an in-memory fake for tests.
+- Typed capabilities: `pause`, `snapshot`, and `terminal` exist on the sandbox type only when the provider supports them. Options a provider cannot enforce fail with `unsupported` instead of being dropped.
+- Keys: `createSandbox(provider, { key })` returns the same sandbox on every call, with an optional `locator` for your own store.
+- Secrets passed as `secrets` are redacted from command output, logs, errors, and agent tool results, including after reconnecting.
+- Durable named background processes with readiness checks (`port`, `http`, or `log`) and resumable log cursors that survive a server restart.
+- Files: `edit`, `search`, `watch`, `upload`/`download`, and `mark`/`changes` diffs, plus `box.git` with token-safe `clone` and `push`.
+- Agent tools for AI SDK (`/ai`), Mastra (`/mastra`), and OpenAI Agents (`/openai`), with output budgets, a `root` path guard, and a `beforeRun` command hook.
+- `SandboxError` with 15 stable codes, a `retryable` flag, and a `hint` for every code.
+- Zero runtime dependencies. The root entry is under 8 KB minified, and provider SDKs load only on first use.
+- A shared conformance suite (`/testing`) that every adapter, including third-party ones, can run.

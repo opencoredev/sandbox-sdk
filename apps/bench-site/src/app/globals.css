@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.13 0 0);
+  --foreground: oklch(0.96 0 0);
+  --primary: oklch(0.96 0 0);
+  --muted: oklch(0.7 0 0);
+  --line: oklch(0.26 0 0);
+  /* Cards sit one step above the page; the tab band and selected tab a step above that. */
+  --surface: oklch(0.16 0 0);
+  --band: oklch(0.185 0 0);
+  --chip: oklch(0.28 0 0);
+  --popover: oklch(0.21 0 0);
+  --grid: oklch(0.3 0 0);
+  --axis: oklch(0.42 0 0);
+  /* Sandbox SDK amber, from apps/web. */
+  --brand: #e8a33c;
+  /* Status board. */
+  --ok: oklch(0.72 0.15 152);
+  --warn: oklch(0.8 0.15 80);
+  --bad: oklch(0.65 0.2 25);
+  /*
+   * The scatter's faster-and-cheaper quadrant, as OKLCH channels. Read through
+   * oklch(var()) so the CSS minifier passes the colour on as written instead of
+   * converting it to lab(), which renders a step off.
+   */
+  --quadrant-lch: 0.8 0.17 152;
+  /* Scatter plot insets: room for tick labels on the left and bottom. */
+  --plot-left: 56px;
+  --plot-right: 18px;
+  --plot-top: 14px;
+  --plot-bottom: 30px;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-pixel: var(--font-geist-pixel-square), var(--font-geist-mono), monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-surface: var(--surface);
+  --color-band: var(--band);
+  --color-chip: var(--chip);
+  --color-popover: var(--popover);
+  --color-chart-grid: var(--grid);
+  --color-chart-axis: var(--axis);
+  --color-brand: var(--brand);
+  /* The sticky header lets the page show through a little under its blur. */
+  --color-header: color-mix(in oklch, var(--background) 88%, transparent);
+  --color-quadrant: color-mix(in oklch, oklch(var(--quadrant-lch)) 13%, transparent);
+  --color-quadrant-edge: color-mix(in oklch, oklch(var(--quadrant-lch)) 40%, transparent);
+  --color-quadrant-key: color-mix(in oklch, oklch(var(--quadrant-lch)) 16%, transparent);
+  --color-quadrant-key-edge: color-mix(in oklch, oklch(var(--quadrant-lch)) 45%, transparent);
+  --spacing-plot-left: var(--plot-left);
+  --spacing-plot-right: var(--plot-right);
+  --spacing-plot-top: var(--plot-top);
+  --spacing-plot-bottom: var(--plot-bottom);
+  --color-dither-ink: var(--dither-ink);
+  --color-dither-paper: var(--dither-paper);
+  --color-dither-blue: var(--dither-color-blue);
+  --color-dither-purple: var(--dither-color-purple);
+  --color-dither-green: var(--dither-color-green);
+  --color-dither-pink: var(--dither-color-pink);
+  --color-dither-orange: var(--dither-color-orange);
+  --color-dither-red: var(--dither-color-red);
+  --color-dither-grey: var(--dither-color-grey);
+}
+
+/* Type, measure and layout scale of the page. Font sizes set no line height of their own. */
+@theme {
+  --text-footnote: 9px;
+  --text-tick: 11px;
+  --text-fine: 11.5px;
+  --text-caption: 12px;
+  --text-note: 12.5px;
+  --text-control: 13px;
+  --text-label: 13.5px;
+  --text-body: 14px;
+  --text-menu: 14.5px;
+  --text-lockup: 15px;
+  --text-lede: 16px;
+  --text-chart-title: 17px;
+  --text-section: 21px;
+  --text-title: 28px;
+  --text-title-lg: 34px;
+  --text-display: 44px;
+  --text-display-lg: 72px;
+  --leading-display: 0.95;
+  --container-page: 1200px;
+  --container-lede: 52ch;
+  --container-intro: 72ch;
+  --container-footnote: 90ch;
+  --radius-tag: 3px;
+  --shadow-menu: 0 16px 32px rgb(0 0 0 / 0.6);
+  /* A column bar: 60px, or two thirds of its slot when that is narrower. */
+  --spacing-bar: min(60px, 66%);
+  /* Lifts a tag clear above the line it sits on. */
+  --spacing-lift: calc(100% + 3px);
+  /* Provider name, bar, value. */
+  --grid-template-columns-bar-row: 5.25rem 1fr auto;
+  --grid-template-columns-bar-row-compact: 4.75rem 1fr auto;
+  /* Provider label, ridgeline. */
+  --grid-template-columns-ridge: 6.75rem 1fr;
+  --grid-template-columns-ridge-wide: 9.5rem 1fr;
+}
+
+@layer base {
+  :root {
+    --dither-ink: var(--primary);
+    --dither-paper: var(--background);
+    --dither-cell: 3px;
+    --dither-color-blue: oklch(0.56 0.18 248);
+    --dither-color-purple: oklch(0.53 0.22 302);
+    --dither-color-green: oklch(0.58 0.15 152);
+    --dither-color-pink: oklch(0.58 0.21 355);
+    --dither-color-orange: oklch(0.64 0.17 52);
+    --dither-color-red: oklch(0.55 0.21 27);
+    --dither-color-grey: oklch(0.55 0 0);
+    --dither-bloom: 0.6;
+  }
+  .dark {
+    --dither-ink: var(--primary);
+    --dither-paper: var(--background);
+    --dither-cell: 3px;
+    --dither-color-blue: oklch(0.72 0.14 240);
+    --dither-color-purple: oklch(0.7 0.18 304);
+    --dither-color-green: oklch(0.78 0.17 152);
+    --dither-color-pink: oklch(0.74 0.17 354);
+    --dither-color-orange: oklch(0.79 0.15 62);
+    --dither-color-red: oklch(0.68 0.2 25);
+    --dither-color-grey: oklch(0.66 0 0);
+    --dither-bloom: 1;
+  }
+}
+
+html {
+  background: var(--background);
+  color: var(--foreground);
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* A horizontal scroller that fades out at an edge with more content past it. useScrollFade sets the attributes. */
+@utility scroll-fade {
+  --fade-start: 0px;
+  --fade-end: 0px;
+  /* Safari still needs the prefixed property. */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-start),
+    #000 calc(100% - var(--fade-end)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-start),
+    #000 calc(100% - var(--fade-end)),
+    transparent
+  );
+  &[data-fade-start] {
+    --fade-start: 28px;
+  }
+  &[data-fade-end] {
+    --fade-end: 36px;
+  }
+}
+
+/*
+ * A dithered fill painted from custom properties: a background colour, and for
+ * every variant but solid a tiled mask. `<DitherFill>` sets the properties.
+ */
+@utility dither-fill {
+  background-color: var(--fill-color);
+  -webkit-mask-image: var(--fill-mask);
+  mask-image: var(--fill-mask);
+  -webkit-mask-position: var(--fill-mask-position);
+  mask-position: var(--fill-mask-position);
+  -webkit-mask-repeat: var(--fill-mask-repeat);
+  mask-repeat: var(--fill-mask-repeat);
+  -webkit-mask-size: var(--fill-mask-size);
+  mask-size: var(--fill-mask-size);
+}
+
+/* Pixel-aligned SVG edges, so dither cells stay square. */
+@utility crisp-edges {
+  shape-rendering: crispEdges;
+}

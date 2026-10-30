@@ -1,0 +1,137 @@
+---
+title: Give your agent a sandbox
+description: Hand an AI SDK, Mastra, or OpenAI Agents SDK agent ready-made sandbox tools with sandboxTools, see what the model gets back, and limit what it can touch.
+---
+
+You want a model to run commands, read and edit files, and start a dev server, without writing tool definitions by hand. `sandboxTools(box)` returns ready tools in your framework's own format.
+
+Each framework has its own subpath, so you only load the one you use:
+
+| Framework         | Import                            | Returns                      | Page                                         |
+| ----------------- | --------------------------------- | ---------------------------- | -------------------------------------------- |
+| AI SDK            | `@opencoredev/sandbox-sdk/ai`     | A tool set for `tools`       | [AI SDK](/integrations/ai-sdk)               |
+| Mastra            | `@opencoredev/sandbox-sdk/mastra` | A tool map for `new Agent`   | [Mastra](/integrations/mastra)               |
+| OpenAI Agents SDK | `@opencoredev/sandbox-sdk/openai` | A tool array for `new Agent` | [OpenAI Agents](/integrations/openai-agents) |
+
+The tools behave the same in every framework. This page uses the AI SDK. The framework pages show the same agent in Mastra and the OpenAI Agents SDK.
+
+## Hand the model the tools
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next ai zod
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next ai zod
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next ai zod
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next ai zod
+```
+
+  </Tab>
+</Tabs>
+
+```ts title="agent.ts"
+import { generateText, stepCountIs } from "ai";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(e2b());
+await box.git.clone("https://github.com/acme/web.git", { dir: "app", depth: 1 });
+
+const { text } = await generateText({
+  model: "anthropic/claude-opus-5-5",
+  tools: sandboxTools(box, { root: "/workspace/app" }),
+  stopWhen: stepCountIs(30),
+  prompt: "Run the tests in /workspace/app and fix the first failure.",
+});
+
+console.log(text);
+```
+
+The model string goes through the Vercel AI Gateway, so set `AI_GATEWAY_API_KEY` on your server. Any AI SDK provider works in its place.
+
+The agent calls `run` to execute the tests, `read_file` to look at the failure, and `edit_file` to change it. You get its final summary in `text`.
+
+## The tools
+
+Seven tools are on by default. Each does one thing and has flat parameters, and each description tells the model when not to use it.
+
+| Tool            | Parameters                         | What it does                                               |
+| --------------- | ---------------------------------- | ---------------------------------------------------------- |
+| `run`           | `command`, `cwd?`, `timeoutMs?`    | Runs a command and waits for it to exit                    |
+| `read_file`     | `path`, `offset?`, `limit?`        | Returns numbered lines and a hash of the file              |
+| `write_file`    | `path`, `content`                  | Writes a whole file                                        |
+| `edit_file`     | `path`, `find`, `replace`          | Replaces text that appears exactly once                    |
+| `start_process` | `name`, `command`, `cwd?`, `port?` | Starts a background process, waits for it, returns its URL |
+| `process_logs`  | `name`, `cursor?`                  | Reads a process's output from a cursor                     |
+| `stop_process`  | `name`                             | Stops a background process                                 |
+
+Four more are available when you ask for them: `search`, `list_files`, `changes`, and `preview`.
+
+## What the model sees
+
+Tool results are short so they don't fill the context window. Every `run` result opens with a verdict line, then the output:
+
+```txt
+FAILED exit=1 4.2s cwd=/workspace/app
+output:
+ FAIL  src/login.test.ts
+  expected 200, received 500
+```
+
+Output is stripped of color codes and capped at 16 KB. Past that, the model gets the start and the end with a `[N bytes cut, use process_logs]` marker in between. Errors follow the same "what happened, why, what to do next" format as [`SandboxError`](/reference/errors), and secrets never appear.
+
+## Limit what the agent can do
+
+```ts title="agent.ts"
+import { generateText, stepCountIs } from "ai";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxTools } from "@opencoredev/sandbox-sdk/ai";
+
+await using box = await createSandbox(e2b(), { network: { allow: ["registry.npmjs.org"] } });
+
+const tools = sandboxTools(box, {
+  root: "/workspace/app",
+  allow: ["run", "read_file", "edit_file", "search"],
+  beforeRun: (command) => (command.includes("git push") ? false : command),
+});
+
+const { text } = await generateText({
+  model: "anthropic/claude-opus-5-5",
+  tools,
+  stopWhen: stepCountIs(20),
+  prompt: "Find why the build fails and fix it.",
+});
+console.log(text);
+```
+
+- `root` keeps every file path and working directory the model passes inside one directory. It is not a security boundary: a shell command can still `cd` out or use an absolute path, so rely on the sandbox and `beforeRun` for that.
+- `allow` and `deny` pick which tools exist. Here the model can read, edit, search, and run, but can't start processes.
+- `beforeRun` sees each `run` and `start_process` command before it runs. Return `false` to refuse it, a string to run instead, or `true` to allow it.
+- Pair tools with a [network policy](/guides/machine-size-and-network) so a command can't reach hosts you didn't allow.
+
+The full option list, including per-tool limits, is in the [agent tools reference](/reference/agent-tools).
+
+## Show full output in your UI
+
+The model gets a compact result, but people often want the whole log. Pass `onEvent` to receive every chunk of output as it happens and forward it to your UI. With the AI SDK, the tools also stream preliminary results, so a `useChat` UI shows output while the command is still running. The [AI app builder guide](/guides/build-an-ai-app-builder) wires this up end to end.

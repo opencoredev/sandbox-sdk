@@ -1,3 +1,4 @@
 {
-  "ignorePatterns": []
+  "printWidth": 100,
+  "ignorePatterns": ["tools/oxlint/anti-slop/**", "bench/results/**", "bun.lock"]
 }

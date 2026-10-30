@@ -1,0 +1,213 @@
+---
+title: Tenki
+description: Run coding agents on full Tenki Linux VMs. Memory pause, disk and memory snapshots, exact sizes, network allow lists, and a hard lifetime.
+---
+
+`tenki()` runs each sandbox as a full Linux VM on [Tenki](https://tenki.cloud/products/sandbox) through the official `@tenkicloud/sandbox` SDK.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @tenkicloud/sandbox
+```
+
+  </Tab>
+</Tabs>
+
+The adapter needs `@tenkicloud/sandbox` 1.4.1 or later. Set `TENKI_API_KEY` to a workspace API key on your server, and keep it out of browser bundles.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+`await using` terminates the VM when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                    |
+| ------------------------------ | ----------- | -------------------------------------------------------- |
+| Commands and streaming         | Yes         | Output streams in bounded pages                          |
+| Files                          | Yes         |                                                          |
+| Background processes           | Yes         |                                                          |
+| Preview URLs                   | Yes         | Public `https://`, with an expiry when Tenki reports one |
+| Pause and resume               | Yes         | Disk and memory survive                                  |
+| Snapshots                      | Yes         | Disk and memory, with optional expiry                    |
+| Machine size                   | Yes         | Presets or exact CPU, memory, and disk                   |
+| Network policy                 | Yes         | `"none"` or a host allow list, `*.` wildcards allowed    |
+| Hard lifetime (`timeoutMs`)    | Yes         |                                                          |
+| Idle timeout (`idleTimeoutMs`) | No          | Tenki removed idle auto-pause                            |
+| Keys                           | Best-effort | Stored in session metadata                               |
+| Terminal                       | No          |                                                          |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+A timeout or abort kills the command's whole process group.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
+```
+
+`{ mode }` is set when the file is written, by Tenki's streaming file API under `/home/tenki` (where `/workspace` lives) and by the guest helper elsewhere, so the file never has a looser mode.
+
+## Background processes and previews
+
+No ports to declare. The preview URL is public, so keep authentication in the app you expose.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url, preview.expiresAt);
+```
+
+Outbound network rules don't make a preview private.
+
+## Pause, resume, and snapshots
+
+Pause and resume keep disk and memory. Snapshots capture both, but not attached native volumes.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki(), { key: "user:123" });
+await box.pause();
+await box.resume();
+
+const { id } = await box.snapshot();
+await using copy = await createSandbox(tenki(), { from: id });
+```
+
+Pause closes active TCP, preview, and SSH connections; reconnect clients after resume. Snapshots stay in Tenki after the VM is gone, unless you give them an expiry:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki());
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Tenki deletes it in 7 days
+```
+
+`expiresInMs: 0` or no option keeps the snapshot until you delete it. A paused sandbox is kept for Tenki's pause retention; set `pauseRetentionMs` to change it.
+
+## Size, network, and lifetime
+
+| Preset   | CPUs | Memory   | Disk   |
+| -------- | ---- | -------- | ------ |
+| `small`  | 1    | 1024 MiB | 10 GiB |
+| `medium` | 2    | 4096 MiB | 20 GiB |
+| `large`  | 4    | 8192 MiB | 40 GiB |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+
+await using box = await createSandbox(tenki(), {
+  size: { cpu: 4, memoryMb: 16_384, diskGb: 50 },
+  network: { allow: ["registry.npmjs.org", "*.github.com"] },
+  timeoutMs: 30 * 60_000,
+});
+```
+
+- Exact sizes take 1 to 128 CPUs, an even `memoryMb` from 128 to 524288, and 5 to 100 GiB of disk. Workspace quotas can be lower.
+- Without `size`, the base image gets 2 CPUs, 4096 MB, and 5 GiB.
+- An empty allow list blocks outbound traffic. The adapter checks the returned policy and fails if it doesn't match.
+- `timeoutMs` sets Tenki's `maxDurationMs`. `idleTimeoutMs` fails with `unsupported`.
+
+## Configuration
+
+| Option             | Type                                   | Default                        | Env var                                    |
+| ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------ |
+| `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`   |
+| `baseUrl`          | `string`                               | `https://api.tenki.cloud`      | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
+| `image`            | `string`                               | Tenki's default image          |                                            |
+| `requestTimeoutMs` | `number`                               | `30_000`                       |                                            |
+| `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                            |
+| `resumeTimeoutMs`  | `number`                               | `180_000`, at most `900_000`   |                                            |
+| `pauseRetentionMs` | `number`                               | Tenki's retention              |                                            |
+| `previewTtlMs`     | `number`                               | Tenki's preview TTL            |                                            |
+| `volumes`          | `{ volumeId, mountPath, readOnly? }[]` |                                |                                            |
+| `workspaceId`      | `string`                               | Inferred from the API key      |                                            |
+
+`authToken` is a deprecated alias for `apiKey`. `volumes` mounts [Tenki volumes](https://tenki.cloud/docs/sandbox/volumes) you created with the native SDK. `workspaceId` is only needed for service credentials that span workspaces; it scopes both creation and listing. A custom image needs Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`, and must allow privileged execution. `box.native` is a typed Tenki `Session`; its `close()` terminates the VM, so use `box.close()` to detach.
+
+## Limitations
+
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+- No idle timeout or terminals.
+- Pause closes active connections.
+- Snapshots have their own lifecycle; delete them through the native client.
+
+## How it works
+
+- Tenki clears `/tmp` on pause. The adapter keeps SDK state under `/home/tenki/.sandbox-sdk` and relinks `/tmp/.sandbox-sdk` on resume and connect.
+- Sticky mode is off, so it can't override `timeoutMs`.
+- Tenki 1.4.1 can't cancel control-plane calls. A timed-out create may still finish; the adapter tries to close a late VM, but keep your process alive for that and check your sessions if it fails.
+- Command output spools to a file in the VM, which uses guest disk until the run finishes.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)

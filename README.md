@@ -2,48 +2,38 @@
   <img alt="Sandbox SDK with supported provider logos" src="./Background-with-text.png" width="820" />
 </p>
 
-Run the same TypeScript sandbox code on Local, E2B, Daytona, Vercel Sandbox, Upstash Box, Ascii Box, Railway Sandboxes, or Tenki.
+One TypeScript API for running code in a sandbox. Write it once, then run it on E2B, Daytona, Vercel Sandbox, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, Sandboxer, or Docker on your own machine.
 
-## Install
+> 1.0 is in beta. Install it with `@next`; `latest` is still 0.2.
 
 ```bash
-bun add @opencoredev/sandbox-sdk
+npm install @opencoredev/sandbox-sdk@next
 ```
-
-Node.js 22 or 24 is supported. Bun 1.3 or newer is also supported.
-
-## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 
-await using sandbox = await createSandbox({ provider: local() });
-console.log((await sandbox.run("node --version")).stdout);
+await using box = await createSandbox(memory());
+await box.files.write("hello.txt", "hello\n");
+console.log((await box.run("cat hello.txt")).stdout);
 ```
 
-`await using` stops the sandbox automatically when its scope exits, including when an operation throws.
+`memory()` needs no account. Swap it for `e2b()`, `local()`, or any other provider and the rest stays the same.
 
-Node.js 24 and Bun run this syntax directly. On Node.js 22, compile TypeScript to ES2022 or use the callback-style `withSandbox()` helper.
+- [Package README](./packages/sdk/README.md): install, providers and their capabilities, the full API, errors, and agent tools.
+- [Early access notes](./EARLY_ACCESS.md): installing the beta from the `next` tag, per-provider setup, and known limitations.
+- [Getting-started examples](./examples/getting-started): a keyless quickstart and a provider switch driven by `SANDBOX_PROVIDER`.
+- [Documentation site](https://sandbox-sdk.app/docs).
 
-## Providers
+## Repository
 
-| Provider                                                        | Runtime                 | Best for                                |
-| --------------------------------------------------------------- | ----------------------- | --------------------------------------- |
-| [Local](https://sandbox-sdk.app/docs/providers/local)           | AgentOS VM              | Development, CI, and self-hosting       |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)               | Hosted Linux sandbox    | Coding agents and isolated jobs         |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)       | Cloud workspace         | Persistent projects and GPUs            |
-| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | Hosted Linux sandbox    | Coding agents and persistent workspaces |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)   | Durable cloud container | Serverless agents and long-lived state  |
-| [Ascii Box](https://sandbox-sdk.app/docs/providers/box)         | Persistent cloud VM     | Full VMs and protected app previews     |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway)       | Ephemeral cloud VM      | Durable jobs and private networking     |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)           | Full Linux VM           | Coding agents, snapshots, pause/resume  |
-
-Local is included. Cloud providers use their official SDKs and credentials.
-
-## Documentation
-
-Setup, usage, integrations, and API reference are available at [sandbox-sdk.app/docs](https://sandbox-sdk.app/docs).
+- [`packages/sdk`](./packages/sdk): the `@opencoredev/sandbox-sdk` package.
+- [`examples`](./examples): runnable examples.
+- [`bench`](./bench): the provider benchmark harness.
+- [`apps/docs`](./apps/docs): the documentation site.
+- [`apps/web`](./apps/web): the landing page.
+- [`docs`](./docs): the 1.0 design spec and provider reference notes.
 
 Maintainer release instructions are in [RELEASING.md](./RELEASING.md).
 

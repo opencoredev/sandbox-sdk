@@ -1,9 +1,29 @@
 {
   "name": "@opencoredev/sandbox-sdk",
-  "version": "0.2.0",
-  "description": "One TypeScript SDK for every sandbox provider.",
+  "version": "1.0.0-beta.1",
+  "description": "One TypeScript API for cloud and local sandboxes: E2B, Daytona, Vercel, Upstash, Docker, and more. Run commands, edit files, start servers, and give AI agents a sandbox.",
+  "keywords": [
+    "agent-tools",
+    "ai-agents",
+    "ai-sdk",
+    "code-execution",
+    "daytona",
+    "docker",
+    "e2b",
+    "mastra",
+    "microvm",
+    "openai-agents",
+    "sandbox",
+    "typescript",
+    "upstash",
+    "vercel-sandbox"
+  ],
   "homepage": "https://sandbox-sdk.app",
+  "bugs": {
+    "url": "https://github.com/opencoredev/sandbox-sdk/issues"
+  },
   "license": "MIT",
+  "author": "OpenCore",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
@@ -12,170 +32,201 @@
   "files": [
     "dist",
     "README.md",
-    "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
-    "./local": {
-      "types": "./dist/providers/local/index.d.mts",
-      "import": "./dist/providers/local/index.mjs"
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "default": "./dist/provider.js"
     },
-    "./agentos": {
-      "types": "./dist/providers/agentos/index.d.mts",
-      "import": "./dist/providers/agentos/index.mjs"
-    },
-    "./e2b": {
-      "types": "./dist/providers/e2b/index.d.mts",
-      "import": "./dist/providers/e2b/index.mjs"
-    },
-    "./daytona": {
-      "types": "./dist/providers/daytona/index.d.mts",
-      "import": "./dist/providers/daytona/index.mjs"
-    },
-    "./vercel": {
-      "types": "./dist/providers/vercel/index.d.mts",
-      "import": "./dist/providers/vercel/index.mjs"
-    },
-    "./upstash": {
-      "types": "./dist/providers/upstash/index.d.mts",
-      "import": "./dist/providers/upstash/index.mjs"
-    },
-    "./box": {
-      "types": "./dist/providers/box/index.d.mts",
-      "import": "./dist/providers/box/index.mjs"
-    },
-    "./railway": {
-      "types": "./dist/providers/railway/index.d.mts",
-      "import": "./dist/providers/railway/index.mjs"
-    },
-    "./tenki": {
-      "types": "./dist/providers/tenki/index.d.mts",
-      "import": "./dist/providers/tenki/index.mjs"
-    },
-    "./metadata": {
-      "types": "./dist/metadata.d.mts",
-      "import": "./dist/metadata.mjs"
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "default": "./dist/memory.js"
     },
     "./testing": {
-      "types": "./dist/testing/index.d.mts",
-      "import": "./dist/testing/index.mjs"
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "default": "./dist/tools.js"
     },
     "./ai": {
-      "types": "./dist/ai/index.d.mts",
-      "import": "./dist/ai/index.mjs"
-    },
-    "./ai/harness": {
-      "types": "./dist/ai/harness.d.mts",
-      "import": "./dist/ai/harness.mjs"
-    },
-    "./eve": {
-      "types": "./dist/eve/index.d.mts",
-      "import": "./dist/eve/index.mjs"
+      "types": "./dist/ai.d.ts",
+      "default": "./dist/ai.js"
     },
     "./mastra": {
-      "types": "./dist/mastra/index.d.mts",
-      "import": "./dist/mastra/index.mjs"
-    }
+      "types": "./dist/mastra.d.ts",
+      "default": "./dist/mastra.js"
+    },
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "default": "./dist/openai.js"
+    },
+    "./local": {
+      "types": "./dist/providers/local/index.d.ts",
+      "default": "./dist/providers/local/index.js"
+    },
+    "./e2b": {
+      "types": "./dist/providers/e2b/index.d.ts",
+      "default": "./dist/providers/e2b/index.js"
+    },
+    "./vercel": {
+      "types": "./dist/providers/vercel/index.d.ts",
+      "default": "./dist/providers/vercel/index.js"
+    },
+    "./daytona": {
+      "types": "./dist/providers/daytona/index.d.ts",
+      "default": "./dist/providers/daytona/index.js"
+    },
+    "./upstash": {
+      "types": "./dist/providers/upstash/index.d.ts",
+      "default": "./dist/providers/upstash/index.js"
+    },
+    "./railway": {
+      "types": "./dist/providers/railway/index.d.ts",
+      "default": "./dist/providers/railway/index.js"
+    },
+    "./boat": {
+      "types": "./dist/providers/boat/index.d.ts",
+      "default": "./dist/providers/boat/index.js"
+    },
+    "./sandboxer": {
+      "types": "./dist/providers/sandboxer/index.d.ts",
+      "default": "./dist/providers/sandboxer/index.js"
+    },
+    "./tenki": {
+      "types": "./dist/providers/tenki/index.d.ts",
+      "default": "./dist/providers/tenki/index.js"
+    },
+    "./agentos": {
+      "types": "./dist/providers/agentos/index.d.ts",
+      "default": "./dist/providers/agentos/index.js"
+    },
+    "./boxd": {
+      "types": "./dist/providers/boxd/index.d.ts",
+      "default": "./dist/providers/boxd/index.js"
+    },
+    "./freestyle": {
+      "types": "./dist/providers/freestyle/index.d.ts",
+      "default": "./dist/providers/freestyle/index.js"
+    },
+    "./superserve": {
+      "types": "./dist/providers/superserve/index.d.ts",
+      "default": "./dist/providers/superserve/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org"
+    "tag": "next"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "bun scripts/build.ts && tsc -p tsconfig.build.json",
     "prepack": "bun run build",
-    "dev": "tsdown --watch src",
-    "lint": "oxlint src tests examples",
     "typecheck": "tsc --noEmit",
-    "test": "bun test tests --parallel=1 --timeout=15000",
-    "test:live": "bun test tests/live",
-    "test:live:ai-gateway": "bun scripts/run-ai-gateway-live.ts local",
-    "test:live:ai-gateway:vercel": "bun scripts/run-ai-gateway-live.ts vercel",
-    "test:live:e2b": "bun test tests/live/e2b.test.ts",
-    "test:live:daytona": "bun test tests/live/daytona.test.ts",
-    "test:live:integrations": "bun test tests/live/integrations.test.ts",
-    "test:live:mastra": "bun test tests/live/mastra.test.ts",
-    "test:live:vercel": "bun test tests/live/vercel.test.ts",
-    "test:live:upstash": "bun test tests/live/upstash.test.ts",
-    "test:live:box": "bun test tests/live/box.test.ts",
-    "test:live:railway": "bun test tests/live/railway.test.ts",
-    "test:live:tenki": "bun test tests/live/tenki.test.ts"
-  },
-  "dependencies": {
-    "@rivet-dev/agentos-core": "^0.2.7"
+    "lint": "oxlint src tests scripts",
+    "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
+    "check:size": "bun scripts/size.ts",
+    "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts",
+    "smoke:bundle": "timeout 600s bun scripts/bundle-smoke.ts"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1",
-    "@asciidev/box-sdk": "0.0.24",
-    "@daytona/sdk": "^0.196.0",
-    "@mastra/core": "1.51.0",
-    "@tenkicloud/sandbox": "1.0.6",
-    "@types/bun": "^1.3.14",
-    "@types/node": "^22.13.14",
-    "@upstash/box": "0.5.3",
-    "@vercel/sandbox": "^2.5.0",
-    "ai": "^7",
-    "e2b": "^2.32.0",
-    "eve": "^0.22",
-    "railway": "3.5.7",
-    "tsdown": "^0.16.6",
-    "typescript": "^6.0.3"
+    "@boatdev/sdk": "1.9.9",
+    "@boxd-sh/sdk": "0.2.17",
+    "@daytonaio/sdk": "^0.225.0",
+    "@mastra/core": "^1.78.0",
+    "@openai/agents": "^0.20.0",
+    "@rivet-dev/agentos-core": "0.4.1",
+    "@superserve/sdk": "0.11.4",
+    "@tenkicloud/sandbox": "^1.4.1",
+    "@upstash/box": "^0.7.9",
+    "@vercel/sandbox": "3.8.0",
+    "ai": "^7.0.143",
+    "e2b": "2.56.0",
+    "esbuild": "0.28.1",
+    "freestyle": "0.2.20",
+    "railway": "3.16.0",
+    "vitest": "^3.2.4",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
-    "@ai-sdk/harness": "^1.0.0",
-    "@asciidev/box-sdk": "^0.0.24",
-    "@daytona/sdk": "^0.196.0",
-    "@mastra/core": ">=1.12.0-0 <2.0.0-0",
-    "@tenkicloud/sandbox": "^1.0.6",
-    "@upstash/box": "^0.5.3",
-    "@vercel/sandbox": "^2.5.0",
-    "ai": "^7.0.0",
-    "e2b": "^2.32.0",
-    "eve": "^0.22.0",
-    "railway": "^3.5.7"
+    "@boatdev/sdk": "^1.9.9",
+    "@boxd-sh/sdk": "^0.2.17",
+    "@daytonaio/sdk": ">=0.225.0 <1.0.0",
+    "@mastra/core": "^1.78.0",
+    "@openai/agents": "^0.20.0",
+    "@rivet-dev/agentos-core": "0.4.1",
+    "@superserve/sdk": "^0.11.4",
+    "@tenkicloud/sandbox": "^1.4.1",
+    "@upstash/box": "^0.7.9",
+    "@vercel/sandbox": "^3.8.0",
+    "ai": "^7.0.143",
+    "e2b": "^2.56.0",
+    "freestyle": "^0.2.20",
+    "railway": "^3.16.0",
+    "vitest": ">=3",
+    "zod": "^4.6.7"
   },
   "peerDependenciesMeta": {
-    "e2b": {
-      "optional": true
-    },
-    "@daytona/sdk": {
-      "optional": true
-    },
-    "@vercel/sandbox": {
-      "optional": true
-    },
-    "@upstash/box": {
-      "optional": true
-    },
-    "@asciidev/box-sdk": {
-      "optional": true
-    },
-    "railway": {
-      "optional": true
-    },
-    "@tenkicloud/sandbox": {
+    "vitest": {
       "optional": true
     },
     "ai": {
       "optional": true
     },
-    "@ai-sdk/harness": {
-      "optional": true
-    },
     "@mastra/core": {
       "optional": true
     },
-    "eve": {
+    "@openai/agents": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    },
+    "e2b": {
+      "optional": true
+    },
+    "@vercel/sandbox": {
+      "optional": true
+    },
+    "@daytonaio/sdk": {
+      "optional": true
+    },
+    "@upstash/box": {
+      "optional": true
+    },
+    "railway": {
+      "optional": true
+    },
+    "@boatdev/sdk": {
+      "optional": true
+    },
+    "@tenkicloud/sandbox": {
+      "optional": true
+    },
+    "@rivet-dev/agentos-core": {
+      "optional": true
+    },
+    "@boxd-sh/sdk": {
+      "optional": true
+    },
+    "freestyle": {
+      "optional": true
+    },
+    "@superserve/sdk": {
       "optional": true
     }
   },
   "engines": {
-    "node": ">=22 <26"
+    "bun": ">=1.3",
+    "node": ">=22"
   }
 }

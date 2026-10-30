@@ -13,13 +13,18 @@
     "typecheck": {
       "dependsOn": ["^build", "^typecheck"]
     },
-    "test": { "dependsOn": ["build"] },
+    "test": {
+      "dependsOn": ["build"]
+    },
     "test:live": {
       "cache": false
     },
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "check": {
+      "dependsOn": ["^build"]
     }
   }
 }

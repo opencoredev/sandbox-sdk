@@ -1,0 +1,30 @@
+{
+  "name": "@sandbox-sdk/docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "blume dev",
+    "build": "blume build",
+    "check": "blume check --strict --isolated && blume validate --strict && bun run capabilities",
+    "typecheck": "blume check --strict --isolated && bun run snippets && bun run capabilities",
+    "snippets": "bun scripts/check-snippets.ts",
+    "capabilities": "bun scripts/check-capabilities.ts",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "blume": "2.2.4"
+  },
+  "devDependencies": {
+    "@mastra/core": "^1",
+    "@openai/agents": "^0.20",
+    "@opencoredev/sandbox-sdk": "workspace:*",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.3.0",
+    "ai": "^7",
+    "hono": "^4",
+    "typescript": "^6.0.3",
+    "vitest": "^3",
+    "zod": "^4"
+  }
+}

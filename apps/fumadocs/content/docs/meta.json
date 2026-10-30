@@ -1,5 +1,0 @@
-{
-  "title": "Sandbox SDK",
-  "root": true,
-  "pages": ["index", "providers", "integrations", "agent-skill", "reference", "api"]
-}

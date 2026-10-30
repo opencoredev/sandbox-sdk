@@ -1,0 +1,23 @@
+# Local (Docker) provider
+
+Import `local` from `@opencoredev/sandbox-sdk/local` and pass `local()` to `createSandbox`. Docker Engine must be running and accessible at `unix:///var/run/docker.sock`. Set `DOCKER_HOST` or `local({ dockerHost })` to another absolute `unix://` socket. Remote TCP engines are unsupported because preview URLs must reach this machine.
+
+The default image is `node:22-bookworm`. The adapter pulls it when absent and reuses it thereafter. `local({ image })` selects another image; it must contain Node, Git, tar, setsid, nohup, mkfifo, GNU sed, and standard Linux utilities. Snapshot IDs select locally committed images through `{ from: id }`.
+
+Size presets set CPU quotas and hard memory limits, with swap disabled: `small` = 1 CPU / 1024 MiB, `medium` = 2 CPUs / 4096 MiB, and `large` = 4 CPUs / 8192 MiB. Omitted size uses Docker defaults. Custom `{ cpu, memoryMb }` sizes set the same limits; a `diskGb` fails with `unsupported`, because Docker cannot enforce disk limits portably. Local accepts idle and lifetime options with client/reaper enforcement, described below. Docker provides no native deadline timer.
+
+`network: "none"` uses Docker's isolated network namespace with loopback only. Domain allow-lists fail with `unsupported`. The default network is Docker bridge. Declare preview ports at creation; each maps to an ephemeral host port bound exclusively to `127.0.0.1`. Omitting `ports` declares port 3000. Previews are accessible on the Docker host. They are unavailable with network `none`.
+
+Keys map to SHA-256 container names for Docker-enforced uniqueness. Discovery is restricted to containers labeled `sandbox-sdk=1`. Pause/resume use Docker pause/unpause. Snapshots use Docker commit and persist as local images until explicitly removed through Docker. `close()` leaves the container and detached background processes running. `destroy()` removes the container and anonymous volumes, while preserving the shared base image.
+
+Exec streams Docker's framed stdout/stderr, closes stdin after the supplied input, and kills the command's process group on timeout or abort. Files transfer through Node exec with base64 encoding, preserving binary bytes; core directory upload/download uses tar. Usage combines core command/output counters with container creation time. No Docker CLI, dockerode dependency, or container-side SDK daemon is required.
+
+Run live verification with `timeout 1200s env SANDBOX_LOCAL_LIVE=1 bunx vitest run packages/sdk/tests/local.live.test.ts --maxWorkers=1 --testTimeout=120000 --hookTimeout=120000`. The suite creates labeled containers and removes its containers and snapshot images.
+
+Local creation stores the absolute lifetime deadline and idle interval in container labels. A fresh `connectSandbox` (including keyed lookup) checks these settings and destroys an expired container before returning `not_found`. Idle time runs from the last SDK command or file operation; active SDK runs and background process records prevent idle expiry. `reapSandboxes` destroys containers selected by its normal age/label/idle filters. Schedule it to enforce cleanup when no client reconnects. These timers are client/reaper enforced: Docker does not stop an unattended container at its deadline, and an existing handle does not check the deadline before every operation. Paused containers defer idle checking until running again; absolute lifetime still applies. Use a scheduled reaper when you need cleanup after disconnecting.
+
+For local startup diagnosis, `usage()` includes `createInspectMs` (including any pull), `createContainerMs`, `createStartMs`, `createPrerequisiteMs`, and `firstCommandMs`. Timings are milliseconds from this adapter instance, so a newly connected client has no historical phase timings. First-command timing includes command execution and temporary PID-file cleanup. It measures the first adapter exec, which may be the SDK initialization checkpoint before your first `run`. Compare it with wall-clock `createSandbox` and `run` durations to separate container startup from SDK initialization.
+
+## Benchmark cleanup policy
+
+The default benchmark harness requests no creation lifetime or idle timeout from any provider. It relies on tracked cleanup, including deletion of late arrivals, and on its `ownership.json` journal for `bun bench reap`. The original harness (`bun bench --v1`) requests creation lifetime only from memory, E2B, and Daytona, and its reports include that policy in their notes. It requests none from Vercel, because Vercel's creation `timeoutMs` bounds one session and resets with each resume.

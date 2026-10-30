@@ -1,0 +1,182 @@
+---
+title: Next.js
+description: Use Sandbox SDK from Next.js App Router route handlers and server actions. Keep one sandbox per project, stream command output, and reap with a cron route.
+---
+
+In Next.js, sandboxes are created in server code: route handlers, server actions, and cron routes. The browser never imports a provider or sees a key. It talks to your routes, and your routes talk to the sandbox.
+
+For a complete app with a chat and a live preview, see [Build an AI app builder](/guides/build-an-ai-app-builder).
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk@next @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk@next @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk@next @vercel/sandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk@next @vercel/sandbox
+```
+
+  </Tab>
+</Tabs>
+
+This page uses [Vercel Sandbox](/providers/vercel), which authenticates with OIDC when your app runs on Vercel. Any provider works the same way.
+
+## Bundling
+
+`next build` bundles your server code, and the SDK works inside that bundle. E2B, Daytona, and boxd were checked in a Next.js 16 production build with no extra config. If a provider SDK still fails only in production, keep it and the SDK out of the server bundle:
+
+```ts title="next.config.ts" check="skip"
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  serverExternalPackages: ["@opencoredev/sandbox-sdk", "@vercel/sandbox"],
+};
+
+export default nextConfig;
+```
+
+Add each provider package you use to the list, such as `e2b`, `@daytonaio/sdk`, or `@boxd-sh/sdk`. Node then loads them from `node_modules` at runtime, the same way it does in `next dev`.
+
+## 1. Get a project's sandbox in one place
+
+Put creation in one module, so every route uses the same settings.
+
+```ts title="lib/sandbox.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+export function projectSandbox(projectId: string) {
+  return createSandbox(vercel(), {
+    key: `project:${projectId}`,
+    ports: [3000],
+    labels: { app: "my-app" },
+  });
+}
+```
+
+The `key` makes this safe to call on every request. The first call creates the sandbox, and later calls, on any server instance, get the same one.
+
+## 2. Run a command from a route handler
+
+```ts title="app/api/projects/[id]/run/route.ts"
+import { projectSandbox } from "@/lib/sandbox";
+
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { command }: { command: string } = await request.json();
+
+  await using box = await projectSandbox(id);
+  const result = await box.run(command, { timeoutMs: 60_000 });
+
+  return Response.json({ ok: result.ok, output: result.output });
+}
+```
+
+With a key, `await using` closes the handle when the request ends and leaves the sandbox running. Check who the user is and whether they own the project before you run anything they send.
+
+## 3. Stream output to the browser
+
+`box.run` is also an async iterable, so you can pipe its output into a streaming response:
+
+```ts title="app/api/projects/[id]/install/route.ts"
+import { projectSandbox } from "@/lib/sandbox";
+
+export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const box = await projectSandbox(id);
+  const encoder = new TextEncoder();
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const chunk of box.run("npm install", { cwd: "app" })) {
+          controller.enqueue(encoder.encode(chunk.text));
+        }
+      } finally {
+        controller.close();
+        await box.close();
+      }
+    },
+  });
+
+  return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+```
+
+The stream outlives the function body, so this closes the sandbox handle when the stream ends instead of using `await using`.
+
+## 4. Call it from a server action
+
+```ts title="app/actions.ts"
+"use server";
+
+import { projectSandbox } from "@/lib/sandbox";
+
+export async function previewUrl(projectId: string) {
+  await using box = await projectSandbox(projectId);
+  const dev = await box.start("npm run dev -- --port 3000", {
+    name: "dev",
+    cwd: "app",
+    ready: { port: 3000 },
+  });
+  return dev.url ?? null;
+}
+```
+
+`start` waits until port 3000 answers, then returns. If a process named `dev` is already running, look it up with `box.process("dev")` instead of starting it again. See [Dev servers and previews](/guides/dev-servers-and-previews).
+
+## 5. Reap forgotten sandboxes
+
+A Vercel sandbox's `timeoutMs` covers one session, and each resume starts a new one, so remove abandoned sandboxes on a schedule. A cron route works:
+
+```ts title="app/api/cron/reap/route.ts"
+import { reapSandboxes } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+export async function GET(request: Request) {
+  if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const removed = await reapSandboxes(vercel(), {
+    labels: { app: "my-app" },
+    olderThanMs: 24 * 60 * 60_000,
+    idleOnly: true,
+  });
+
+  return Response.json({ removed });
+}
+```
+
+Schedule it in `vercel.json` under `crons`. Vercel sends `CRON_SECRET` as a bearer token, so other callers get a 401. See [Clean up sandboxes](/guides/cleanup).
+
+## Where code runs
+
+| Code                                        | Runs on     | Can import a provider           |
+| ------------------------------------------- | ----------- | ------------------------------- |
+| Route handlers, server actions, cron routes | Your server | Yes                             |
+| `"use client"` components                   | The browser | No                              |
+| Middleware                                  | The edge    | No. Providers need Node or Bun. |
+
+Show a preview by putting its URL in an iframe. A Daytona preview needs a token header, so proxy it through a route instead.

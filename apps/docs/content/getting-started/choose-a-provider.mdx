@@ -1,0 +1,111 @@
+---
+title: Choose a provider
+description: Decide where your sandboxes run. Start with Local or Memory while you build, then pick E2B, Vercel Sandbox, or Daytona based on what your app needs.
+---
+
+A provider is the company or tool that actually runs your sandboxes. Your code doesn't depend on the choice: every provider takes the same calls, so you can start with one and switch later by changing an import.
+
+Start with [Local](/providers/local) while you build and [Memory](/providers/memory) in unit tests. Neither needs an account. Pick a cloud provider when you deploy.
+
+## Pick by what you need
+
+| You need                                   | Use                                   | Why                                      |
+| ------------------------------------------ | ------------------------------------- | ---------------------------------------- |
+| To develop or run CI with no cloud account | [Local](/providers/local)             | Real Linux in Docker on your own machine |
+| Unit tests that start no machine           | [Memory](/providers/memory)           | Runs in your process, no network         |
+| To deploy on Vercel with no extra keys     | [Vercel Sandbox](/providers/vercel)   | OIDC auth inside Vercel deployments      |
+| A service that isn't listed                | [Write a provider](/providers/custom) | A small adapter gets you the whole API   |
+
+If you need a specific feature, such as a pause that keeps memory, a hard lifetime, exact CPU and disk sizes, an idle timer, a network allow list, or get-or-create by key with no race, find its row in the [capability matrix](/reference/capabilities#matrix). It shows every provider for each feature and the limits that matter, and it is checked against the adapters' code. [Compare providers](/providers) lists credentials and what each provider is best for.
+
+## The same call on each provider
+
+Each provider is a factory you import from its own subpath and pass to `createSandbox`. Options you don't pass fall back to the provider's defaults.
+
+<ProviderTabs>
+<ProviderTab provider="local">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { local } from "@opencoredev/sandbox-sdk/local";
+
+await using box = await createSandbox(local({ image: "node:22-bookworm" }), {
+  key: "user:123",
+  ports: [3000],
+});
+```
+
+Needs Docker on the machine that runs your code. Preview URLs work only on that machine.
+
+</ProviderTab>
+<ProviderTab provider="e2b">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b({ template: "base" }), {
+  key: "user:123",
+  timeoutMs: 30 * 60_000,
+});
+```
+
+Reads `E2B_API_KEY`. Machine size comes from the template, so `size` is not accepted.
+
+</ProviderTab>
+<ProviderTab provider="vercel">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { vercel } from "@opencoredev/sandbox-sdk/vercel";
+
+await using box = await createSandbox(vercel(), {
+  key: "user:123",
+  ports: [3000],
+  size: "small",
+});
+```
+
+Uses OIDC inside Vercel, or `VERCEL_TOKEN` with team and project IDs. Declare every port you'll preview, up to 15.
+
+</ProviderTab>
+<ProviderTab provider="daytona">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+await using box = await createSandbox(daytona(), {
+  key: "user:123",
+  size: { cpu: 2, memoryMb: 4096, diskGb: 20 },
+  idleTimeoutMs: 15 * 60_000,
+});
+```
+
+Reads `DAYTONA_API_KEY`. Previews need a token header, so proxy them through your server.
+
+</ProviderTab>
+<ProviderTab provider="memory">
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory(), { key: "user:123" });
+```
+
+No machine. Files live in a map and commands run through handlers you write.
+
+</ProviderTab>
+</ProviderTabs>
+
+## Things that differ between providers
+
+Most of your code won't notice the provider. These four things can, and each has a row or note in the [capability matrix](/reference/capabilities):
+
+- **Keys.** Exact providers guarantee that two requests with the same `key` get one sandbox. Best-effort providers find sandboxes by searching, so a race can create two. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) if that matters. The Key mode row says which is which.
+- **Pause.** Some providers keep running processes through a pause. Others keep only the disk and end the processes, so you restart them. Some can't pause at all. See the `pause()` row and the Pause note.
+- **Previews.** Some providers need `ports` declared up front, and some previews need a header, so a browser can't load them directly. See the `ports` and Preview URL rows.
+- **Limits.** Idle and lifetime limits are enforced differently, and many providers support only one of them or neither. See [Clean up sandboxes](/guides/cleanup).
+
+When you ask for something a provider can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. You find out in development, not in production.

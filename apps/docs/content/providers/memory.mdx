@@ -1,0 +1,193 @@
+---
+title: Memory
+description: An in-process fake provider for unit tests. Files in a map, a small shell with handlers you can extend, fake preview URLs, and no network.
+---
+
+`memory()` is a fake provider that runs inside your own process, for fast unit tests. The full walkthrough is in [Testing with memory()](/guides/testing-with-memory).
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install -D @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add -D @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add -D @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add -d @opencoredev/sandbox-sdk@next
+```
+
+  </Tab>
+</Tabs>
+
+No other package and no credentials. Nothing starts and nothing touches the network.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory());
+await box.files.write("hello.txt", "hi\n");
+const result = await box.run("cat hello.txt && echo done");
+console.log(result.stdout);
+```
+
+This prints `hi` and `done`. `await using` destroys the sandbox when the block ends.
+
+## What it supports
+
+| Feature                        | Support | Notes                                              |
+| ------------------------------ | ------- | -------------------------------------------------- |
+| Commands and streaming         | Partial | A small built-in shell plus handlers you register  |
+| Files                          | Yes     | Kept in a map                                      |
+| Background processes           | Yes     | Handlers that run until their signal aborts        |
+| Preview URLs                   | Partial | Fake `memory.invalid` URL; never fetch it          |
+| Pause and resume               | No      |                                                    |
+| Snapshots                      | No      |                                                    |
+| Machine size                   | No      |                                                    |
+| Network policy                 | Partial | Accepted and recorded; there is no network         |
+| Hard lifetime (`timeoutMs`)    | Yes     | Timer in your process                              |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Timer in your process                              |
+| Keys                           | Exact   | Per provider instance; lost when the process exits |
+| Terminal                       | No      |                                                    |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Built in: `echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, and `printenv`. Register a handler for any other program. It gets the parsed `args`, `cwd`, `env`, `stdin`, an abort `signal`, `stdout` and `stderr` writers, and `files`, and returns the exit code.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+const provider = memory({
+  handlers: {
+    npm: ({ args, stdout }) => {
+      stdout(`npm ${args.join(" ")}: ok\n`);
+      return 0;
+    },
+  },
+});
+
+await using box = await createSandbox(provider);
+const result = await box.run("npm test");
+console.log(result.stdout);
+
+for await (const chunk of box.run("echo one; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The shell understands quotes, `$VAR`, `cd`, `export`, `;`, `&&`, `||`, `>`, and `>&2`. Pipes, `<`, `>>`, subshells, and a trailing `&` exit with code 127 and a message naming the syntax. So does a program with no handler. `provider.register(name, handler)` adds a handler later.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+```
+
+## Background processes and previews
+
+A handler that keeps running until its `signal` aborts behaves like a server, and `stop()` aborts it. `box.preview(port)` returns a URL on the `memory.invalid` host for assertions.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+const provider = memory({
+  handlers: {
+    serve: ({ signal }) =>
+      new Promise<number>((resolve) => {
+        signal.addEventListener("abort", () => resolve(0), { once: true });
+      }),
+  },
+});
+
+await using box = await createSandbox(provider);
+const web = await box.start("serve", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url);
+await web.stop();
+```
+
+## Pause, resume, and snapshots
+
+Memory has no pause, resume, or snapshots, and the methods don't exist on its sandbox type. Code that accepts any provider can check first:
+
+```ts
+import { createSandbox, hasCapability } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory());
+if (hasCapability(box, "pause")) await box.pause();
+```
+
+## Size, network, and lifetime
+
+`size` fails with `unsupported`. `network` is accepted and recorded, since there is no network to restrict. Both timeouts run as timers in your process and destroy the sandbox when they fire.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+
+await using box = await createSandbox(memory(), {
+  network: "none",
+  idleTimeoutMs: 5_000,
+  timeoutMs: 60_000,
+});
+```
+
+## Configuration
+
+| Option     | Type                             | Default | Env var |
+| ---------- | -------------------------------- | ------- | ------- |
+| `handlers` | `Record<string, CommandHandler>` | `{}`    |         |
+
+Your handlers replace a built-in with the same name. A handler must stop when `signal` aborts and must not touch the real world. `box.native` is `{ files }`, the map that holds the fake file system.
+
+## Limitations
+
+- No real shell, git, terminals, or sockets. `box.git` and fetching a preview don't work.
+- No pause or snapshots.
+- State is lost when the process exits.
+
+Test those paths against [Local](/providers/local) instead.
+
+## How it works
+
+- Each `memory()` call has its own files, processes, and keys.
+- The tokenizer never evals and never runs anything on your host. Every program is a handler.
+
+## Next steps
+
+- [Testing with memory()](/guides/testing-with-memory)
+- [Local](/providers/local)

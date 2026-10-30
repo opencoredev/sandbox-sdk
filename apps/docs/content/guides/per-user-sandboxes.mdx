@@ -1,0 +1,127 @@
+---
+title: One sandbox per user
+description: Give each user or project a sandbox that is still there on their next request, from any server. Use a key, run setup once, reattach to processes, and avoid races.
+---
+
+Most apps don't want a fresh machine on every request. A user's files, installed packages, and running dev server should still be there when they come back. Pass a `key` to `createSandbox` and you get the same sandbox back every time, from any server process.
+
+This guide builds a small module that every route can call. For how keys work under the hood, see [Sandboxes and keys](/concepts/sandboxes-and-keys).
+
+## 1. Get or create by key
+
+```ts title="lib/workspace.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+export async function userWorkspace(userId: string) {
+  const box = await createSandbox(e2b(), {
+    key: `user:${userId}`,
+    timeoutMs: 8 * 60 * 60_000,
+    labels: { app: "workspaces" },
+  });
+
+  if (box.created) {
+    await box.git.clone("https://github.com/acme/starter.git", { dir: "app", depth: 1 });
+    await box.run("npm install", { cwd: "app", timeoutMs: 300_000 });
+  }
+
+  return box;
+}
+```
+
+The first call for a user creates the sandbox and runs setup. Every later call finds it, and `box.created` is `false`, so setup is skipped. Use a key that names the owner: `user:<id>`, `project:<id>`, or `chat:<id>`.
+
+`timeoutMs` is a safety net. If the user never comes back, E2B deletes the sandbox eight hours after it was created.
+
+## 2. Use it in a request
+
+```ts title="handler.ts"
+import { userWorkspace } from "./lib/workspace";
+
+export async function runForUser(userId: string, command: string) {
+  await using box = await userWorkspace(userId);
+  const result = await box.run(command, { cwd: "app" });
+  return result.output;
+}
+```
+
+With a key, `await using` calls `box.close()` at the end of the block, not `destroy()`. The handle is released and the sandbox keeps running for the next request.
+
+## 3. Reattach to a running process
+
+Processes started with `box.start` keep their records and logs inside the sandbox, not in your server's memory. A different request, or a server that restarted after a deploy, finds them by name:
+
+```ts title="dev.ts"
+import { userWorkspace } from "./lib/workspace";
+
+export async function devUrl(userId: string) {
+  await using box = await userWorkspace(userId);
+
+  const running = (await box.processes()).find((p) => p.name === "dev" && p.status === "running");
+  if (!running) {
+    await box.start("npm run dev -- --port 3000", {
+      name: "dev",
+      cwd: "app",
+      ready: { port: 3000 },
+    });
+  }
+
+  const preview = await box.preview(3000, { waitMs: 10_000 });
+  return preview.url;
+}
+```
+
+The first request starts the server. Later ones see it running and only fetch the URL. To read its output from anywhere, call `box.process("dev").logs()`. See [Dev servers and previews](/guides/dev-servers-and-previews).
+
+## 4. Make concurrent requests safe
+
+Two requests for the same user can arrive at once, for example when a page opens two tabs. What happens depends on the provider's key mode:
+
+- **Exact providers**, such as Local and Vercel Sandbox, enforce unique names, so both requests always get one sandbox. Nothing to do.
+- **Best-effort providers**, such as E2B and Daytona, find sandboxes by searching labels. Two requests at the same moment can both miss and create two.
+
+The Key mode row of the [capability matrix](/reference/capabilities#matrix) lists every provider's mode.
+
+Within one server process, the SDK queues calls for the same key, so they never race each other. Across servers, give the SDK a `locator` backed by a store you already run, with a lock:
+
+```ts title="lib/workspace-locked.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { kv } from "../kv";
+
+export function userWorkspace(userId: string) {
+  return createSandbox(e2b(), {
+    key: `user:${userId}`,
+    keyMode: "exact",
+    locator: {
+      get: (key) => kv.get(key),
+      set: (key, id) => kv.set(key, id),
+      delete: (key) => kv.delete(key),
+      withLock: (key, action) => kv.withLock(`sandbox:${key}`, action),
+    },
+  });
+}
+```
+
+`withLock` must run `action` while holding a distributed lock for that key, such as a Redis `SET NX` or a database row lock. `keyMode: "exact"` makes the SDK refuse to run without one. If the stored ID points at a sandbox that's gone, the SDK creates a new one and stores its ID.
+
+## 5. Reattach by ID
+
+If you already store sandbox IDs, `connectSandbox` attaches to one without the key lookup. It never creates a sandbox:
+
+```ts title="connect.ts"
+import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const box = await connectSandbox(e2b(), "sbx_abc123");
+console.log(box.key, (await box.run("ls app")).stdout);
+await box.close();
+```
+
+It throws `SandboxError` with code `not_found` if the sandbox is gone.
+
+## Before you ship
+
+- **Set a limit.** Give keyed sandboxes `timeoutMs` or `idleTimeoutMs` where the provider supports them, and run a reaper where it doesn't. See [Clean up sandboxes](/guides/cleanup).
+- **Check ownership.** Derive the key from the authenticated user, never from a value the browser sends.
+- **Delete on account deletion.** Call `box.destroy()` when the user leaves, or reap by label.
