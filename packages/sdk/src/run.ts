@@ -39,7 +39,14 @@ const activityCommand = (command: string, path: string, shell = "sh") =>
 
 // procActivity adapters: the tagged outer shell waits for the command's own shell, so a command that
 // execs into a program that clears its environment (sudo, env -i) still has a tagged parent while it runs.
-const taggedCommand = (command: string, shell = "sh") => `${shell} -c ${quote(command)}; exit $?`;
+// Tagged cat relays carry stdout and stderr, so a background child that cleared its environment but
+// holds the output keeps a tagged reader alive until it closes. The status returns on fd 6, not a file.
+const taggedScript = `exec 7>&1
+c=$({ { { "$2" -c "$1" 3>&- 4>&- 6>&- 7>&-; echo "$?" >&6; } 2>&1 >&3 | cat >&4; } 3>&1 4>&2 | cat >&7; } 6>&1)
+exit "\${c:-1}"`;
+
+const taggedCommand = (command: string, shell = "sh") =>
+  `sh -c ${quote(taggedScript)} sh ${quote(command)} ${quote(shell)}`;
 
 /**
  * Idle scan for procActivity adapters. Exit 0 only when every live process is readable and none carries

@@ -119,6 +119,64 @@ describe("procActivity runs", () => {
   });
 });
 
+/** Processes other than `except` that hold `pipe` open and carry the SDK tag. */
+async function taggedHolders(pipe: string, except: string) {
+  const holders: string[] = [];
+
+  for (const pid of await fs.readdir("/proc")) {
+    if (!/^\d+$/.test(pid) || pid === except) continue;
+
+    try {
+      const environ = await fs.readFile(`/proc/${pid}/environ`, "latin1");
+
+      if (!environ.split("\0").includes(`${activityTag}=1`)) continue;
+
+      for (const fd of await fs.readdir(`/proc/${pid}/fd`))
+        if ((await fs.readlink(`/proc/${pid}/fd/${fd}`).catch(() => "")) === pipe) {
+          holders.push(pid);
+          break;
+        }
+    } catch {
+      // Exited or unreadable: not a holder this test can see.
+    }
+  }
+
+  return holders;
+}
+
+describe("procActivity output pipes", () => {
+  test("a tagged process holds the output while an env -i background child keeps it open", async () => {
+    const { provider } = await procShell();
+    const box = await createSandbox(provider);
+
+    try {
+      let child = "";
+      const running = box.run("env -i sleep 2 & echo $!", { timeoutMs: 10_000 });
+
+      for await (const chunk of running) {
+        child += chunk.text;
+
+        if (child.includes("\n")) break;
+      }
+
+      const pid = child.trim();
+      // The command shell and its tagged parent exit right after the echo.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      for (const fd of [1, 2]) {
+        const pipe = await fs.readlink(`/proc/${pid}/fd/${fd}`);
+        expect(pipe).toMatch(/^(pipe|socket):/);
+        // Another client's idle scan finds this tag, so the sandbox stays busy until the pipe closes.
+        expect(await taggedHolders(pipe, pid)).not.toEqual([]);
+      }
+
+      expect((await running).exitCode).toBe(0);
+    } finally {
+      await box.destroy();
+    }
+  });
+});
+
 describe("idle reaping on procActivity adapters", () => {
   for (const [label, outcome, reaped] of [
     ["an untagged scan", { exitCode: 0, timedOut: false }, 1],
