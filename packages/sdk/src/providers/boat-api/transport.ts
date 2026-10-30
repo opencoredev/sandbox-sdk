@@ -42,8 +42,8 @@ export function boatHttp(options: BoatHttpOptions): BoatHttp {
     secrets: options.secrets,
     idempotencyHeader: "Idempotency-Key",
     authHint: `Set ${options.keyEnv} to a valid ${options.label} API key.`,
-    ...(options.retries === undefined ? {} : { retries: options.retries }),
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.retries === undefined ? undefined : { retries: options.retries }),
+    ...(options.fetch === undefined ? undefined : { fetch: options.fetch }),
   });
 }
 
@@ -117,7 +117,7 @@ export function parseSandboxPage(
       ? page.nextCursor
       : undefined;
 
-  return { sandboxes, hasMore, ...(next === undefined ? {} : { nextCursor: next }) };
+  return { sandboxes, hasMore, ...(next === undefined ? undefined : { nextCursor: next }) };
 }
 
 /** What `POST /sandboxes/{sandboxId}/commands` returned. */

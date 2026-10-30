@@ -152,7 +152,7 @@ function parseDetails(value: unknown): Details {
     startedAt: Number.isFinite(startedAt) ? startedAt : 0,
     ...(isBoolean(value.allowInternetAccess)
       ? { allowInternetAccess: value.allowInternetAccess }
-      : {}),
+      : undefined),
     ...(network
       ? {
           network: {
@@ -160,10 +160,10 @@ function parseDetails(value: unknown): Details {
             denyOut: strings(network.denyOut),
             ...(isBoolean(network.allowPublicTraffic)
               ? { allowPublicTraffic: network.allowPublicTraffic }
-              : {}),
+              : undefined),
           },
         }
-      : {}),
+      : undefined),
   };
 }
 
@@ -262,7 +262,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
           return {
             "e2b-sandbox-id": sandboxId ?? "",
             "e2b-sandbox-port": String(envdPort),
-            ...(envdAccessToken ? { "x-access-token": envdAccessToken } : {}),
+            ...(envdAccessToken ? { "x-access-token": envdAccessToken } : undefined),
           };
         },
       },
@@ -297,8 +297,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     return {
       sandboxId: value.sandboxID,
       envdVersion: value.envdVersion,
-      ...(envdAccessToken ? { envdAccessToken } : {}),
-      ...(trafficAccessToken ? { trafficAccessToken } : {}),
+      ...(envdAccessToken ? { envdAccessToken } : undefined),
+      ...(trafficAccessToken ? { trafficAccessToken } : undefined),
       domain: text("domain") ?? domain(),
     };
   }
@@ -641,8 +641,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             ? {
                 ...(isObject(input.network)
                   ? { denyOut: ["0.0.0.0/0"], allowOut: input.network.allow }
-                  : {}),
-                ...(options.public === false ? { allowPublicTraffic: false } : {}),
+                  : undefined),
+                ...(options.public === false ? { allowPublicTraffic: false } : undefined),
               }
             : undefined;
 
@@ -656,21 +656,23 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
               metadata: {
                 ...input.labels,
                 "sandbox-sdk": "1",
-                ...(input.key === undefined ? {} : { [keyTag]: input.key }),
-                ...(deadline === undefined ? {} : { [deadlineTag]: String(deadline) }),
+                ...(input.key === undefined ? undefined : { [keyTag]: input.key }),
+                ...(deadline === undefined ? undefined : { [deadlineTag]: String(deadline) }),
               },
               envVars: input.env,
-              ...(input.timeoutMs === undefined ? {} : { timeout: seconds(input.timeoutMs) }),
+              ...(input.timeoutMs === undefined
+                ? undefined
+                : { timeout: seconds(input.timeoutMs) }),
               ...(input.network === "none"
                 ? { allow_internet_access: false }
                 : isObject(input.network)
                   ? {}
                   : { allow_internet_access: true }),
-              ...(network === undefined ? {} : { network }),
+              ...(network === undefined ? undefined : { network }),
               autoPause: options.autoPause === true,
               autoResume: { enabled: options.autoPause === true && options.autoResume === true },
               ...(options.volumes === undefined
-                ? {}
+                ? undefined
                 : {
                     volumeMounts: Object.entries(options.volumes).map(([path, name]) => ({
                       name,

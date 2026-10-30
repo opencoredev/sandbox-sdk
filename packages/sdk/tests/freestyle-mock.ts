@@ -79,7 +79,7 @@ export class MockVm {
       idleTimeoutSeconds: params.idleTimeoutSeconds,
       ttlSeconds: params.ttlSeconds,
       ...(params.autoDeleteSeconds === undefined
-        ? {}
+        ? undefined
         : { autoDeleteSeconds: params.autoDeleteSeconds }),
     };
   }

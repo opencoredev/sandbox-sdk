@@ -397,8 +397,8 @@ export function parseErrorBody(text: string): ErrorBody {
   return {
     text,
     json,
-    ...(code === undefined ? {} : { code }),
-    ...(message === undefined ? {} : { message }),
+    ...(code === undefined ? undefined : { code }),
+    ...(message === undefined ? undefined : { message }),
   };
 }
 
@@ -635,8 +635,8 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: request.sandboxId,
       retryable,
-      ...(hint === undefined ? {} : { hint }),
-      ...(cause === undefined ? {} : { cause: redact(cause) }),
+      ...(hint === undefined ? undefined : { hint }),
+      ...(cause === undefined ? undefined : { cause: redact(cause) }),
     });
   }
 
@@ -663,7 +663,7 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: error.sandboxId,
       retryable: error.retryable,
-      ...(error.hint === undefined ? {} : { hint: error.hint }),
+      ...(error.hint === undefined ? undefined : { hint: error.hint }),
       cause,
     });
   }
@@ -718,7 +718,7 @@ export function createHttpClient<Plane extends string>(
 
         statuses.set(error, {
           status: failed.status,
-          ...(apiCode ? { code: apiCode.trim() } : {}),
+          ...(apiCode ? { code: apiCode.trim() } : undefined),
         });
 
         return error;
@@ -808,7 +808,7 @@ export function createHttpClient<Plane extends string>(
 
     const context: PlaneContext = {
       signal,
-      ...(request.sandboxId === undefined ? {} : { sandboxId: request.sandboxId }),
+      ...(request.sandboxId === undefined ? undefined : { sandboxId: request.sandboxId }),
     };
 
     const fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -890,7 +890,7 @@ export function createHttpClient<Plane extends string>(
       for (let hop = 0; ; hop++) {
         const headers = new Headers({
           ...plane.headers,
-          ...(contentType && sendBody !== undefined ? { "content-type": contentType } : {}),
+          ...(contentType && sendBody !== undefined ? { "content-type": contentType } : undefined),
         });
 
         if (request.idempotencyKey !== undefined && options.idempotencyHeader)

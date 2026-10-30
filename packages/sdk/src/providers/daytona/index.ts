@@ -438,10 +438,10 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
 
           // The official SDK's request body for the same parameters.
           const body = {
-            ...(snapshot === undefined ? {} : { snapshot }),
+            ...(snapshot === undefined ? undefined : { snapshot }),
             ...(image
               ? { buildInfo: { dockerfileContent: `FROM ${image}\n` }, ...allocation }
-              : {}),
+              : undefined),
             env: input.env ?? {},
             labels,
             public: options.public ?? false,
@@ -451,14 +451,14 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
               input.idleTimeoutMs === undefined ? undefined : minutes(input.idleTimeoutMs),
             autoPauseInterval: 0,
             ...(options.autoArchiveMs === undefined
-              ? {}
+              ? undefined
               : { autoArchiveInterval: minutes(options.autoArchiveMs) }),
             ...(options.autoDeleteMs === undefined
-              ? {}
+              ? undefined
               : { autoDeleteInterval: minutes(options.autoDeleteMs, true) }),
-            ...(options.volumes === undefined ? {} : { volumes: options.volumes }),
+            ...(options.volumes === undefined ? undefined : { volumes: options.volumes }),
             ...(options.outboundProxyUrl === undefined
-              ? {}
+              ? undefined
               : { outboundProxyUrl: options.outboundProxyUrl }),
             ttlMinutes:
               input.timeoutMs === undefined ? undefined : Math.floor(input.timeoutMs / 60_000),
@@ -834,7 +834,7 @@ with os.fdopen(fd,"wb") as f: f.write(base64.b64decode(${JSON.stringify(Buffer.f
 
           return {
             url: link.url,
-            ...(value.public ? {} : { headers: { "X-Daytona-Preview-Token": link.token } }),
+            ...(value.public ? undefined : { headers: { "X-Daytona-Preview-Token": link.token } }),
           };
         },
         id,

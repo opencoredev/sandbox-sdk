@@ -140,7 +140,7 @@ function parseEntry(value: unknown): EntryInfo | undefined {
     path: value.path,
     type,
     size: decodeInt(value.size) ?? 0,
-    ...(Number.isFinite(modified) ? { modifiedTime: modified } : {}),
+    ...(Number.isFinite(modified) ? { modifiedTime: modified } : undefined),
   };
 }
 
@@ -220,8 +220,8 @@ export function createEnvd(options: {
       path: `/${method}`,
       sandboxId,
       body: message,
-      ...(options.user === undefined ? {} : { headers: basic(options.user) }),
-      ...(options.readOnly ? { readOnly: true } : {}),
+      ...(options.user === undefined ? undefined : { headers: basic(options.user) }),
+      ...(options.readOnly ? { readOnly: true } : undefined),
     });
   }
 
@@ -278,7 +278,9 @@ export function createEnvd(options: {
         headers: {
           "content-type": connectJson,
           "keepalive-ping-interval": "50",
-          ...(options.timeoutMs > 0 ? { "connect-timeout-ms": String(options.timeoutMs) } : {}),
+          ...(options.timeoutMs > 0
+            ? { "connect-timeout-ms": String(options.timeoutMs) }
+            : undefined),
           ...options.headers,
         },
       });
@@ -493,7 +495,7 @@ export function createEnvd(options: {
           path: "/files",
           sandboxId,
           body: form,
-          query: { ...(single === undefined ? {} : { path: single }), username: user },
+          query: { ...(single === undefined ? undefined : { path: single }), username: user },
         });
       },
     },
@@ -554,7 +556,7 @@ export function createEnvd(options: {
             cmd: "/bin/bash",
             args: ["-l", "-c", options.command],
             envs: options.envs ?? {},
-            ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+            ...(options.cwd === undefined ? undefined : { cwd: options.cwd }),
           },
           stdin: options.stdin,
           tag,
@@ -575,7 +577,7 @@ export function createEnvd(options: {
 
           return pid === undefined
             ? []
-            : [{ pid, ...(isString(item.tag) ? { tag: item.tag } : {}) }];
+            : [{ pid, ...(isString(item.tag) ? { tag: item.tag } : undefined) }];
         });
       },
       signal,

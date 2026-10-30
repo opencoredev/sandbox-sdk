@@ -193,7 +193,7 @@ function parseInfo(raw: unknown, sandboxId?: string): NativeInfo {
     status,
     metadata,
     createdAt: Date.parse(created),
-    ...(isNumber(timeout) ? { timeoutSeconds: timeout } : {}),
+    ...(isNumber(timeout) ? { timeoutSeconds: timeout } : undefined),
     ...(isObject(network)
       ? {
           network: {
@@ -201,7 +201,7 @@ function parseInfo(raw: unknown, sandboxId?: string): NativeInfo {
             denyOut: strings(field(network, "deny_out")),
           },
         }
-      : {}),
+      : undefined),
   };
 }
 
@@ -311,7 +311,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
           return {
             ...dataPlane(id, config().sandboxHost).headers,
             [accessTokenHeader]: route.token,
-            ...(route.hint ? { [routingHintHeader]: route.hint } : {}),
+            ...(route.hint ? { [routingHintHeader]: route.hint } : undefined),
           };
         },
         // Shared by every request refused at once; each one stops waiting on its own signal.
@@ -415,7 +415,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
       sandboxId: id,
       body: {
         command,
-        ...(settings.env === undefined ? {} : { env: settings.env }),
+        ...(settings.env === undefined ? undefined : { env: settings.env }),
         timeout_s: Math.ceil(settings.timeoutMs / 1000),
       },
       // The 5 s margin lets the server's own command timeout answer first.
@@ -652,7 +652,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
         const metadata: Record<string, string> = {
           "sandbox-sdk": "1",
-          ...(input.key !== undefined ? { "sdk-key": input.key } : {}),
+          ...(input.key !== undefined ? { "sdk-key": input.key } : undefined),
         };
 
         for (const [key, value] of Object.entries(input.labels)) metadata[`label:${key}`] = value;
@@ -667,18 +667,20 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
             body: {
               name: `sbxsdk-${crypto.randomUUID()}`,
               metadata,
-              ...(input.env === undefined ? {} : { env_vars: input.env }),
+              ...(input.env === undefined ? undefined : { env_vars: input.env }),
               preview_access: previewAccess,
               ...(network
                 ? { network: { allow_out: network.allowOut, deny_out: network.denyOut } }
-                : {}),
-              ...(autoPauseSeconds === undefined ? {} : { timeout_seconds: autoPauseSeconds }),
+                : undefined),
+              ...(autoPauseSeconds === undefined
+                ? undefined
+                : { timeout_seconds: autoPauseSeconds }),
               ...(autoDeleteSeconds === undefined
-                ? {}
+                ? undefined
                 : { auto_delete_seconds: autoDeleteSeconds }),
               ...(options.secretBindings && Object.keys(options.secretBindings).length
                 ? { secrets: options.secretBindings }
-                : {}),
+                : undefined),
               ...(input.from
                 ? { from_snapshot: input.from }
                 : { from_template: options.template ?? "superserve/node-22" }),
@@ -938,7 +940,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         return {
           url,
           headers: { [header]: value },
-          ...(Number.isNaN(expiresAt) ? {} : { expiresAt }),
+          ...(Number.isNaN(expiresAt) ? undefined : { expiresAt }),
         };
       }),
     pause: (id) =>

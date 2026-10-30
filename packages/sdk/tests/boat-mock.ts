@@ -81,10 +81,10 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
     snapshotAvailable: false,
     ...(provider === "sandboxer"
       ? { region: box.region ?? "us-east", regionSource: box.region ? "requested" : "nearest" }
-      : {}),
+      : undefined),
     ...(operations.has(box.id)
       ? { stop: { id: "stop-test", status: operations.get(box.id) } }
-      : {}),
+      : undefined),
   });
 
   const rewrite = (box: Box, text: string) =>
@@ -196,7 +196,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
             env: body.env ?? {},
             createdAt: new Date().toISOString(),
             state: "idle",
-            ...(isString(body.region) ? { region: body.region } : {}),
+            ...(isString(body.region) ? { region: body.region } : undefined),
             commands: new Map(),
           };
 
@@ -344,7 +344,7 @@ export async function boatMock(provider: "boat" | "sandboxer" = "boat") {
           type: "sandbox.info",
           sandbox: {
             ...sandbox(box),
-            ...(req.method === "PATCH" && staleRename ? { state: "provisioning" } : {}),
+            ...(req.method === "PATCH" && staleRename ? { state: "provisioning" } : undefined),
           },
         });
 

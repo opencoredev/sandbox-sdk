@@ -456,7 +456,7 @@ function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: st
       body: { paths: [path] },
       readOnly: true,
       signal: settings.signal,
-      ...(settings.timeoutMs === undefined ? {} : { timeoutMs: settings.timeoutMs }),
+      ...(settings.timeoutMs === undefined ? undefined : { timeoutMs: settings.timeoutMs }),
     });
 
     const boundary = boundaryOf(response.headers.get("content-type"));
@@ -554,7 +554,7 @@ function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: st
                 timeout: timeoutSec,
                 envs: env && Object.keys(env).length ? env : undefined,
               },
-              ...(timeoutSec ? { timeoutMs: timeoutSec * 1000 + execBufferMs } : {}),
+              ...(timeoutSec ? { timeoutMs: timeoutSec * 1000 + execBufferMs } : undefined),
             })
           ).json(),
         );

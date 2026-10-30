@@ -145,7 +145,7 @@ export function parseRoute(
   if (!isString(token) || !token)
     throw failure(`Superserve ${operation} returned no access token`, "provider", sandboxId);
 
-  return { token, ...(isString(hint) && hint ? { hint } : {}) };
+  return { token, ...(isString(hint) && hint ? { hint } : undefined) };
 }
 
 export type RotateEndpoint = "activate" | "resume";

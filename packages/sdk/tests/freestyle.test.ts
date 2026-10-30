@@ -393,7 +393,7 @@ test.each(["missing", "outdated"])(
         JSON.stringify({
           key: null,
           labels: box.labels,
-          ...(version === "outdated" ? { supervisorHash: "old-version" } : {}),
+          ...(version === "outdated" ? { supervisorHash: "old-version" } : undefined),
         }),
       );
       await fs.rm(native.guest.rewrite(supervisorPath), { force: true });

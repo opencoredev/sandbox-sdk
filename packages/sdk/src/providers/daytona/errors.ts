@@ -46,11 +46,11 @@ export function daytonaError(
 
     const evidence: Evidence = {
       operation: safeOperation,
-      ...(status === undefined ? {} : { status }),
-      ...(providerCode === undefined ? {} : { providerCode }),
-      ...(requestId === undefined ? {} : { requestId }),
-      ...(source === undefined ? {} : { source }),
-      ...(native === undefined ? {} : { native }),
+      ...(status === undefined ? undefined : { status }),
+      ...(providerCode === undefined ? undefined : { providerCode }),
+      ...(requestId === undefined ? undefined : { requestId }),
+      ...(source === undefined ? undefined : { source }),
+      ...(native === undefined ? undefined : { native }),
     };
 
     return new SandboxError(error.message, {
@@ -58,7 +58,7 @@ export function daytonaError(
       provider: error.provider,
       sandboxId: error.sandboxId,
       retryable: error.retryable,
-      ...(error.hint === undefined ? {} : { hint: error.hint }),
+      ...(error.hint === undefined ? undefined : { hint: error.hint }),
       cause: Object.assign(new Error(JSON.stringify(evidence)), evidence),
     });
   }

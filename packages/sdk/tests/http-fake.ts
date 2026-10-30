@@ -171,7 +171,7 @@ export async function fakeServer(): Promise<FakeServer> {
 
     const body = reply.json !== undefined ? JSON.stringify(reply.json) : (reply.body ?? "");
     response.writeHead(reply.status ?? 200, {
-      ...(reply.json !== undefined ? { "content-type": "application/json" } : {}),
+      ...(reply.json !== undefined ? { "content-type": "application/json" } : undefined),
       ...reply.headers,
     });
     response.end(body);

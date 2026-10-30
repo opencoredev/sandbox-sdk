@@ -123,7 +123,7 @@ function metadata(name: string): { key?: string; labels: Labels } | undefined {
       });
     }
 
-    return { ...(key === null ? {} : { key }), labels: { ...labels, ...own } };
+    return { ...(key === null ? undefined : { key }), labels: { ...labels, ...own } };
   } catch {
     return;
   }
@@ -409,14 +409,14 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
 
         const body = {
           noEnv: true,
-          ...(input.from === undefined ? {} : { from: input.from }),
+          ...(input.from === undefined ? undefined : { from: input.from }),
           env: input.env,
           type: input.size === undefined ? (options.machine ?? options.type) : presets[input.size],
-          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-          ...(snapshots === undefined ? {} : { snapshots }),
-          ...(monitoring === undefined ? {} : { monitoring }),
-          ...(org === undefined ? {} : { org }),
-          ...(idleStopMinutes === undefined ? {} : { idleStopMinutes }),
+          ...(ttlSeconds === undefined ? undefined : { ttlSeconds }),
+          ...(snapshots === undefined ? undefined : { snapshots }),
+          ...(monitoring === undefined ? undefined : { monitoring }),
+          ...(org === undefined ? undefined : { org }),
+          ...(idleStopMinutes === undefined ? undefined : { idleStopMinutes }),
           ...settings.createFields,
         };
 

@@ -135,8 +135,10 @@ function info(id: string, box: Box, extra: Record<string, unknown> = {}) {
     created_at: box.createdAt.toISOString(),
     metadata: box.metadata,
     preview_access: "private",
-    ...(box.network ? { network: box.network } : {}),
-    ...(state.nativeTimeoutSeconds > 0 ? { timeout_seconds: state.nativeTimeoutSeconds } : {}),
+    ...(box.network ? { network: box.network } : undefined),
+    ...(state.nativeTimeoutSeconds > 0
+      ? { timeout_seconds: state.nativeTimeoutSeconds }
+      : undefined),
     ...extra,
   };
 }
@@ -211,7 +213,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       hint: routingHint(state.hintSeconds),
       ...(options.network && !state.dropNetwork
         ? { network: { allow_out: list(network.allow_out), deny_out: list(network.deny_out) } }
-        : {}),
+        : undefined),
     };
 
     state.boxes.set(guest.id, box);
@@ -222,7 +224,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
       201,
       info(guest.id, box, {
         access_token: box.token,
-        ...(state.noHints ? {} : { routing_hint: box.hint }),
+        ...(state.noHints ? undefined : { routing_hint: box.hint }),
       }),
     );
   }
@@ -255,7 +257,7 @@ async function control(method: string, url: URL, body: unknown): Promise<Respons
 
     const answer = info(id, box, {
       access_token: box.token,
-      ...(state.noHints ? {} : { routing_hint: box.hint }),
+      ...(state.noHints ? undefined : { routing_hint: box.hint }),
     });
 
     const held = action === "activate" ? state.activateGate : state.resumeGate;

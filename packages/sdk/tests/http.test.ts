@@ -519,7 +519,7 @@ describe("streams", () => {
       const response = await client().stream({
         path: "/exec",
         ...request,
-        ...(request.method === "POST" ? { body: {} } : {}),
+        ...(request.method === "POST" ? { body: {} } : undefined),
       });
 
       const frames: unknown[] = [];
@@ -559,7 +559,7 @@ describe("streams", () => {
     const idle = async (request: { method: "POST" | "GET"; path: string }) => {
       const response = await client().stream({
         ...request,
-        ...(request.method === "POST" ? { body: {} } : {}),
+        ...(request.method === "POST" ? { body: {} } : undefined),
         idleTimeoutMs: 100,
       });
 

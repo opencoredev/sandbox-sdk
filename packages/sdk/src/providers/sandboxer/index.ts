@@ -150,7 +150,7 @@ export function sandboxer(options: SandboxerOptions = {}): SandboxerProvider {
     createFrom: true,
     idleStop: true,
     pausedStates: ["archived", "stopped"],
-    ...(region === undefined ? {} : { createFields: { region } }),
+    ...(region === undefined ? undefined : { createFields: { region } }),
     observe: (sandbox) => place(sandbox.raw),
     downloadMaxBytes: 50 * 1024 * 1024,
     destroy: async (http, id) => {

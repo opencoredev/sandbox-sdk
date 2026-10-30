@@ -144,7 +144,7 @@ describe("errors", () => {
       kind: "status" as const,
       status,
       headers: new Headers(),
-      body: { text: "", json: undefined, ...(code === undefined ? {} : { code }) },
+      body: { text: "", json: undefined, ...(code === undefined ? undefined : { code }) },
     });
 
     const api = { method: "GET" as const, plane: "api", operation: "GET /sandboxes/{id}" };

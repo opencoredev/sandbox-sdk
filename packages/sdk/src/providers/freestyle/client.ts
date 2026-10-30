@@ -119,10 +119,10 @@ export function vmData(value: unknown, sandboxId?: string): VmData {
     state: value.state,
     metadata,
     createdAt: createdAt ?? "",
-    ...(idleTimeoutSeconds === undefined ? {} : { idleTimeoutSeconds }),
-    ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-    ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
-    ...(vpcs === undefined ? {} : { vpcs }),
+    ...(idleTimeoutSeconds === undefined ? undefined : { idleTimeoutSeconds }),
+    ...(ttlSeconds === undefined ? undefined : { ttlSeconds }),
+    ...(autoDeleteSeconds === undefined ? undefined : { autoDeleteSeconds }),
+    ...(vpcs === undefined ? undefined : { vpcs }),
   };
 }
 
@@ -457,7 +457,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
         query: { path },
         deadline: current(),
         maxBytes: maxReadBytes,
-        ...(headers ? { headers } : {}),
+        ...(headers ? { headers } : undefined),
       });
 
       return response.body;
@@ -486,7 +486,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
             method: "POST",
             path: "/v5/vms/{id}/fs/uploads",
             ...vm(id),
-            body: { path, size, sha256, ...(mode === undefined ? {} : { mode }) },
+            body: { path, size, sha256, ...(mode === undefined ? undefined : { mode }) },
           })
         ).json(),
         id,

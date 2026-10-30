@@ -205,7 +205,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
     templateID: machine.info.templateID,
     envdVersion: machine.info.envdVersion,
     envdAccessToken: machine.accessToken,
-    ...(machine.trafficToken ? { trafficAccessToken: machine.trafficToken } : {}),
+    ...(machine.trafficToken ? { trafficAccessToken: machine.trafficToken } : undefined),
     domain: fake.sandboxDomain,
   });
 
@@ -451,7 +451,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
           memoryMB: 512,
           ...(isBoolean(body.allow_internet_access)
             ? { allowInternetAccess: body.allow_internet_access }
-            : {}),
+            : undefined),
           ...(network
             ? {
                 network: {
@@ -459,10 +459,10 @@ export async function fakeE2B(): Promise<FakeE2B> {
                   denyOut: list(network.denyOut),
                   ...(isBoolean(network.allowPublicTraffic)
                     ? { allowPublicTraffic: network.allowPublicTraffic }
-                    : {}),
+                    : undefined),
                 },
               }
-            : {}),
+            : undefined),
         };
 
         const env = isRecord(body.envVars)
@@ -505,7 +505,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
         response
           .writeHead(200, {
             "content-type": "application/json",
-            ...(page < found.length ? { "x-next-token": String(page + 1) } : {}),
+            ...(page < found.length ? { "x-next-token": String(page + 1) } : undefined),
           })
           .end(
             JSON.stringify(
@@ -766,7 +766,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
               .filter((proc) => !proc.done)
               .map((proc) => ({
                 pid: proc.pid,
-                ...(proc.tag ? { tag: proc.tag } : {}),
+                ...(proc.tag ? { tag: proc.tag } : undefined),
                 config: { cmd: "/bin/bash", args: proc.args },
               })),
           });

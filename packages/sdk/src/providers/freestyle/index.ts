@@ -214,7 +214,11 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
     const contents = pending.get(id);
 
     if (!contents)
-      return client.exec(id, { command, ...(stdin === undefined ? {} : { stdin }), timeoutMs });
+      return client.exec(id, {
+        command,
+        ...(stdin === undefined ? undefined : { stdin }),
+        timeoutMs,
+      });
 
     const result = await client.exec(id, {
       command: python(`import os,sys,json,tempfile,base64
@@ -394,7 +398,7 @@ with tempfile.TemporaryFile() as f:
             vpcs: [],
             idleTimeoutSeconds: idleTimeoutSeconds ?? -1,
             ttlSeconds,
-            ...(autoDeleteSeconds === undefined ? {} : { autoDeleteSeconds }),
+            ...(autoDeleteSeconds === undefined ? undefined : { autoDeleteSeconds }),
           };
 
           // No retries: a transport failure may have allocated a VM. An unknown

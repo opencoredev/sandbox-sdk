@@ -48,7 +48,7 @@ function client(
               stale: ({ status, body, credentials }) =>
                 options.stale!(status, body.code, credentials),
             }
-          : {}),
+          : undefined),
       },
     },
   });
