@@ -13,7 +13,7 @@ description: Move code from Sandbox SDK 0.2 to 1.0. Covers createSandbox, run, f
 4. `files.text` and `files.read` merge into `files.read`.
 5. `processes.start` becomes `box.start`, with names, readiness, and logs.
 6. `ports.expose` becomes `box.preview`.
-7. `snapshots.*` becomes `box.snapshot()` and `createSandbox(provider, { from })`.
+7. `snapshots.*` becomes `box.snapshot()`, `createSandbox(provider, { from })`, and `deleteSnapshot(provider, id)`.
 8. `local()` runs Docker instead of an AgentOS VM.
 9. Some providers and helpers are gone.
 
@@ -148,7 +148,7 @@ await dev.stop();
 - `ready` waits for a port, an HTTP response, or a log line before `start` returns.
 - `output()` becomes `lines()` and `logs()`, both resumable from a cursor.
 - `kill()` becomes `stop()`, which sends SIGTERM and then SIGKILL.
-- `write()` to a process's stdin is removed. Pass input up front with `box.run(command, { stdin })`. The API reserves [`box.terminal()`](/reference/sandbox#optional-capabilities) for interactive input, but no built-in provider implements it in 1.0.
+- `write()` to a process's stdin is removed. Pass input up front with `box.run(command, { stdin })`. For interactive input, use [`box.terminal()`](/reference/sandbox#optional-capabilities) on a provider with the `"terminal"` capability (E2B).
 
 ## 6. ports
 
@@ -179,11 +179,11 @@ console.log(preview.url, preview.headers);
 
 ## 7. snapshots
 
-| 0.2                     | 1.0                                                               |
-| ----------------------- | ----------------------------------------------------------------- |
-| `snapshots.create()`    | `box.snapshot()`                                                  |
-| `snapshots.restore(id)` | `createSandbox(provider, { from: id })`                           |
-| `snapshots.delete(id)`  | Call the provider's API through [`box.native`](/reference/native) |
+| 0.2                     | 1.0                                                                                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `snapshots.create()`    | `box.snapshot()`                                                                                                                                    |
+| `snapshots.restore(id)` | `createSandbox(provider, { from: id })`                                                                                                             |
+| `snapshots.delete(id)`  | `deleteSnapshot(provider, id)` on providers with `"snapshot-delete"` (E2B); elsewhere, the provider's API through [`box.native`](/reference/native) |
 
 `snapshot()` exists only on providers that support it, so TypeScript reports a call on one that doesn't. In 0.2 that was a runtime error.
 

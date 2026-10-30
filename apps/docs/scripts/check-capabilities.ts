@@ -201,6 +201,8 @@ function noise(length: number) {
 const pause = capability("pause");
 const snapshot = capability("snapshot");
 const terminal = capability("terminal");
+const snapshotDelete = capability("snapshot-delete");
+const templates = capability("templates");
 const tenMinutes = 10 * 60_000;
 const allowHost = { allow: ["example.com"] };
 
@@ -215,6 +217,11 @@ const rows: readonly Row[] = [
     cells: { Yes: snapshot.present, "Files only": snapshot.present, No: snapshot.absent },
     unchecked: 'what a snapshot holds ("Files only")',
   },
+  {
+    label: "deleteSnapshot()",
+    cells: { Yes: snapshotDelete.present, No: snapshotDelete.absent },
+  },
+  { label: "buildTemplate()", cells: { Yes: templates.present, No: templates.absent } },
   { label: "terminal()", cells: { Yes: terminal.present, No: terminal.absent } },
   {
     label: "No network",

@@ -30,6 +30,7 @@ import {
   type RailwayErrorClasses,
 } from "./errors.js";
 import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
+import { userAgent } from "../../version.js";
 
 export type RailwayOptions = {
   /** Defaults to RAILWAY_API_TOKEN; required for authentication. */
@@ -239,6 +240,7 @@ export function createRailwayProvider<B extends RailwayBox>(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "User-Agent": userAgent,
           ...(config.authType === "project-token"
             ? { "Project-Access-Token": config.token }
             : { Authorization: `Bearer ${config.token}` }),

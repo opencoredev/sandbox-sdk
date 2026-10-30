@@ -1,23 +1,29 @@
-import type { JsonObject, JsonValue } from "../../shared/json.js";
-import { isBoolean, isObject, isString } from "../../shared/narrow.js";
 import { posix } from "node:path";
-import type {
-  Provider,
-  SandboxInfo,
-  ExecInput,
-  FileInfo,
-  NativeProcess,
-  CreateInput,
-} from "../../provider.js";
-import { SandboxError } from "../../errors.js";
-import { createHttpClient, type HttpRequest } from "../../http.js";
 import {
+  SandboxError,
+  createDeadline,
+  createHttpClient,
   createNativeApi,
   sdkConstruct,
+  sleep as pollDelay,
+  type CreateInput,
+  type ExecInput,
+  type FileEvent,
+  type FileInfo,
+  type HttpRequest,
+  type JsonValue,
   type NativeApi,
+  type NativeProcess,
   type NativeSdkBinding,
-} from "../../native.js";
+  type Provider,
+  type SandboxInfo,
+  type TemplateBuildOptions,
+  type TemplateInfo,
+  type TemplateSpec,
+  type Terminal,
+} from "../../provider.js";
 import { e2bError, mapE2BError } from "./errors.js";
+import { isBoolean, isNumber, isObject, isRecord, isString } from "./narrow.js";
 import {
   createEnvd,
   envdGates,
@@ -102,11 +108,64 @@ const unsupported = (message: string) =>
     { code: "unsupported", provider: "e2b" },
   );
 
-const isRecord = (value: JsonValue | undefined): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 const strings = (value: JsonValue | undefined): string[] | undefined =>
   Array.isArray(value) ? value.filter((item) => isString(item)) : undefined;
+
+/** Builds poll this often; E2B's SDK polls every 200 ms, but a build takes seconds per step. */
+const buildPollMs = 1_000;
+const defaultBuildTimeoutMs = 30 * 60_000;
+
+/** Terminal output kept until the first `onData` subscriber, so the prompt is not lost. */
+const terminalBacklogChars = 64 * 1024;
+
+const watchTypes = {
+  create: "added",
+  write: "modified",
+  chmod: "modified",
+  remove: "removed",
+  rename: "removed",
+} as const satisfies Record<string, FileEvent["type"]>;
+
+/** A proto3 JSON number: a number or a decimal string. */
+const numberOf = (value: JsonValue | undefined): number | undefined => {
+  const number = isString(value) && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value;
+
+  return isNumber(number) && Number.isFinite(number) ? number : undefined;
+};
+
+function parseMetric(value: JsonValue | undefined): E2BMetric | undefined {
+  if (!isRecord(value) || !isString(value.timestamp)) return undefined;
+  const timestamp = Date.parse(value.timestamp);
+  const field = (name: string) => numberOf(value[name]) ?? 0;
+
+  if (!Number.isFinite(timestamp)) return undefined;
+
+  return {
+    timestamp,
+    cpuCount: field("cpuCount"),
+    cpuUsedPct: field("cpuUsedPct"),
+    memUsed: field("memUsed"),
+    memTotal: field("memTotal"),
+    diskUsed: field("diskUsed"),
+    diskTotal: field("diskTotal"),
+  };
+}
+
+/** E2B build steps for the portable spec: environment, working directory, then each command as root. */
+function buildSteps(spec: E2BTemplateSpec) {
+  const steps: { type: "ENV" | "WORKDIR" | "RUN"; args: string[]; force: boolean }[] = [];
+  const env = Object.entries(spec.env ?? {});
+
+  if (env.length) steps.push({ type: "ENV", args: env.flat(), force: false });
+
+  if (spec.workdir !== undefined)
+    steps.push({ type: "WORKDIR", args: [spec.workdir], force: false });
+
+  for (const command of spec.run ?? [])
+    steps.push({ type: "RUN", args: [command, "root"], force: false });
+
+  return steps;
+}
 
 const fileOf = (entry: EntryInfo): FileInfo => ({
   path: entry.path,
@@ -179,10 +238,56 @@ const infoOf = (details: Details): SandboxInfo => ({
   createdAt: details.startedAt,
 });
 
-export type E2BProvider = Provider<E2BNative, "pause" | "snapshot" | "network-policy"> & {
+/** One sample from E2B's sandbox metrics. Times are epoch ms, sizes bytes. */
+export interface E2BMetric {
+  timestamp: number;
+  cpuCount: number;
+  cpuUsedPct: number;
+  memUsed: number;
+  memTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+}
+
+/** The window `box.ext.e2b.metrics()` reads. Default: what E2B keeps for the sandbox. */
+export interface E2BMetricsRange {
+  startMs?: number;
+  endMs?: number;
+}
+
+/** E2B-only features on `box.ext.e2b`. */
+export type E2BExtension = {
+  /** Every metric sample in the window, oldest first. `box.usage()` reports the newest one. */
+  metrics(range?: E2BMetricsRange): Promise<E2BMetric[]>;
+};
+
+/** `buildTemplate(e2b(), spec)`: the portable spec plus E2B's template fields. */
+export interface E2BTemplateSpec extends TemplateSpec {
+  /** Start from another E2B template instead of an image. */
+  fromTemplate?: string;
+  /** Command every sandbox from the template starts with, kept running in the snapshot. */
+  startCommand?: string;
+  /** Command that must exit 0 before the snapshot is taken, such as a port check. Needs `startCommand`. */
+  readyCommand?: string;
+  /** Tags for this build, such as `["v2"]`. */
+  tags?: readonly string[];
+  /** Rebuild every layer instead of reusing cached ones. */
+  skipCache?: boolean;
+}
+
+export type E2BCapability =
+  | "pause"
+  | "snapshot"
+  | "snapshot-delete"
+  | "templates"
+  | "terminal"
+  | "network-policy";
+
+export type E2BProvider = Provider<E2BNative, E2BCapability, { e2b: E2BExtension }> & {
   /** The E2B API with this provider's credentials and no sandbox bound, for account calls such as `GET /templates`. */
   readonly api: NativeApi<E2BPlane, E2BClientSdk>;
-};
+  buildTemplate(spec: E2BTemplateSpec, options: TemplateBuildOptions): Promise<TemplateInfo>;
+} & Required<Pick<Provider, "terminal" | "deleteSnapshot">>;
 
 /** E2B's template fixes CPU, RAM and disk; explicit size requests fail closed.
  * Talks to E2B's control plane and to envd directly over HTTP; the `e2b` package is not needed.
@@ -486,6 +591,246 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     }
   }
 
+  /** Create /workspace now when it is still pending, for calls that need it on disk (snapshot, terminal, watch). */
+  async function ensureWorkspace(id: string, what: string) {
+    if (!workspaces.has(id)) return;
+    const exitCode = await runToEnd(id, prepareWorkspace);
+
+    if (exitCode !== 0)
+      throw new SandboxError(
+        `Preparing /workspace for ${what} failed with exit code ${exitCode}.`,
+        {
+          code: "provider",
+          provider: "e2b",
+          sandboxId: id,
+        },
+      );
+    workspaces.delete(id);
+  }
+
+  async function metrics(id: string, range: E2BMetricsRange = {}): Promise<E2BMetric[]> {
+    const body = await http.json({
+      method: "GET",
+      path: "/sandboxes/{id}/metrics",
+      params: { id },
+      sandboxId: id,
+      query: {
+        start: range.startMs === undefined ? undefined : Math.floor(range.startMs / 1000),
+        end: range.endMs === undefined ? undefined : Math.ceil(range.endMs / 1000),
+      },
+    });
+
+    if (!Array.isArray(body)) throw invalidResponse("metrics that are not an array", id);
+
+    // E2B takes whole seconds, so the request is widened; keep only samples inside the window asked for.
+    const from = range.startMs ?? Number.NEGATIVE_INFINITY;
+    const to = range.endMs ?? Number.POSITIVE_INFINITY;
+
+    return body
+      .flatMap((value) => {
+        const metric = parseMetric(value);
+
+        return metric && metric.timestamp >= from && metric.timestamp <= to ? [metric] : [];
+      })
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async function openTerminal(
+    id: string,
+    options: { cols: number; rows: number; cwd?: string; env?: Record<string, string> },
+  ): Promise<Terminal> {
+    await client(id);
+    const cwd = options.cwd ?? "/workspace";
+
+    if (cwd === "/workspace" || cwd.startsWith("/workspace/"))
+      await ensureWorkspace(id, "the terminal");
+
+    const listeners = new Set<(data: string) => void>();
+    // Output before the first subscriber, whole chunks, newest kept.
+    const backlog: string[] = [];
+    let backlogChars = 0;
+
+    const command = await envd.process.terminal(id, {
+      cols: options.cols,
+      rows: options.rows,
+      cwd,
+      envs: { TERM: "xterm-256color", LANG: "C.UTF-8", LC_ALL: "C.UTF-8", ...options.env },
+      user: "root",
+      abandon: (tag) => abandon(id, tag),
+      onPty(text) {
+        if (listeners.size) {
+          for (const listener of listeners) listener(text);
+
+          return;
+        }
+
+        backlog.push(text);
+        backlogChars += text.length;
+
+        while (backlogChars > terminalBacklogChars && backlog.length > 1)
+          backlogChars -= backlog.shift()?.length ?? 0;
+      },
+    });
+
+    const active = handles.get(id) ?? new Set<Command>();
+    handles.set(id, active);
+    active.add(command);
+    const exited = command.wait().finally(() => active.delete(command));
+    void exited.catch(() => {});
+
+    return {
+      write: (data) => call(id, () => command.sendPty(data)),
+      resize: (cols, rows) => call(id, () => command.resize(cols, rows)),
+      onData(callback) {
+        listeners.add(callback);
+
+        for (const text of backlog.splice(0)) callback(text);
+        backlogChars = 0;
+
+        return () => {
+          listeners.delete(callback);
+        };
+      },
+      close: () =>
+        call(id, async () => {
+          try {
+            // Bash gives each job its own process group, so stop the whole PTY session (envd makes the
+            // shell its leader), then the shell. Children outlive a shell that already exited, too.
+            // Best effort: a guest that cannot start another command (envd before 0.3.0) still gets the shell killed.
+            await runToEnd(
+              id,
+              `pkill -KILL -s ${command.pid} 2>/dev/null || kill -KILL -- -${command.pid} 2>/dev/null; true`,
+              10_000,
+            ).catch(() => {});
+
+            if (command.exitCode === undefined) await command.kill();
+            // The end event normally follows the kill at once; do not hang on a stalled stream.
+            await Promise.race([exited.catch(() => {}), sleep(5_000)]);
+          } finally {
+            // Even when the kill fails, stop reading: no output reaches a closed terminal.
+            command.disconnect();
+            active.delete(command);
+            listeners.clear();
+          }
+        }),
+      wait: () =>
+        call(id, async () => {
+          const exitCode = await exited;
+
+          return { exitCode: exitCode >= 0 ? exitCode : null };
+        }),
+    };
+  }
+
+  async function buildTemplate(
+    spec: E2BTemplateSpec,
+    options: TemplateBuildOptions,
+  ): Promise<TemplateInfo> {
+    if (spec.image !== undefined && spec.fromTemplate !== undefined)
+      throw new SandboxError("Pass image or fromTemplate, not both.", {
+        code: "invalid_argument",
+        provider: "e2b",
+      });
+
+    if (spec.readyCommand !== undefined && spec.startCommand === undefined)
+      throw new SandboxError("readyCommand needs startCommand. Add the command to wait for.", {
+        code: "invalid_argument",
+        provider: "e2b",
+      });
+
+    const deadline = createDeadline(options.timeoutMs ?? defaultBuildTimeoutMs, options.signal);
+
+    const requested = await http.json({
+      method: "POST",
+      path: "/v3/templates",
+      deadline,
+      body: {
+        name: spec.name,
+        tags: spec.tags,
+        cpuCount: spec.size?.cpu,
+        memoryMB: spec.size?.memoryMb,
+      },
+    });
+
+    if (!isRecord(requested) || !isString(requested.templateID) || !isString(requested.buildID))
+      throw invalidResponse("a template build without template and build IDs");
+
+    const { templateID, buildID } = requested;
+    const ids = { templateID, buildID };
+
+    // Once the build is requested it runs on E2B whatever happens here, so later failures name it.
+    const pending = (cause: unknown) => {
+      // outcome_unknown is a timeout after a POST was sent, the case that most needs the IDs.
+      if (
+        !(cause instanceof SandboxError) ||
+        !["timeout", "aborted", "outcome_unknown"].includes(cause.code)
+      )
+        return cause;
+
+      return new SandboxError(
+        `Stopped waiting for E2B template build ${buildID} of ${templateID}. The build may still finish on E2B. Check its status, or delete the template.`,
+        { code: cause.code, provider: "e2b", cause },
+      );
+    };
+
+    try {
+      await http.request({
+        method: "POST",
+        path: "/v2/templates/{templateID}/builds/{buildID}",
+        params: ids,
+        deadline,
+        body: {
+          ...(spec.fromTemplate === undefined
+            ? { fromImage: spec.image ?? "e2bdev/base" }
+            : { fromTemplate: spec.fromTemplate }),
+          steps: buildSteps(spec),
+          startCmd: spec.startCommand,
+          readyCmd: spec.readyCommand,
+          force: spec.skipCache === true,
+        },
+      });
+
+      for (let logsOffset = 0; ;) {
+        const status = await http.json({
+          method: "GET",
+          path: "/templates/{templateID}/builds/{buildID}/status",
+          params: ids,
+          query: { logsOffset },
+          deadline,
+        });
+
+        if (!isRecord(status) || !isString(status.status))
+          throw invalidResponse("a template build status without a state");
+        const entries = Array.isArray(status.logEntries) ? status.logEntries : [];
+        logsOffset += entries.length;
+
+        for (const entry of entries)
+          if (isRecord(entry) && isString(entry.message)) options.onLog?.(entry.message);
+
+        // Like the SDK, drain the remaining log entries before reporting the outcome.
+        if ((status.status === "ready" || status.status === "error") && entries.length === 0) {
+          if (status.status === "ready")
+            return { id: templateID, name: spec.name, buildId: buildID };
+
+          const reason = isRecord(status.reason) ? status.reason : undefined;
+
+          const step =
+            isString(reason?.step) && /^[\w-]{1,32}$/.test(reason.step) ? reason.step : undefined;
+
+          throw new SandboxError(
+            `E2B template build ${buildID} failed${step === undefined ? "" : ` at step ${step}`}. The build logs passed to onLog say why. Fix the step and build again.`,
+            { code: "provider", provider: "e2b" },
+          );
+        }
+
+        if (status.status !== "ready" && status.status !== "error")
+          await pollDelay(buildPollMs, deadline, "e2b");
+      }
+    } catch (cause) {
+      throw pending(cause);
+    }
+  }
+
   async function list(metadata: Record<string, string>) {
     return (await api.list({ ...metadata, "sandbox-sdk": "1" })).map(infoOf);
   }
@@ -630,7 +975,14 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   const provider: E2BProvider = {
     name: "e2b",
     keyMode: "best-effort",
-    capabilities: new Set(["pause", "snapshot", "network-policy"]),
+    capabilities: new Set<E2BCapability>([
+      "pause",
+      "snapshot",
+      "snapshot-delete",
+      "templates",
+      "terminal",
+      "network-policy",
+    ]),
     // Every exec runs as root in the VM's single PID namespace.
     procActivity: true,
     api: createNativeApi<E2BPlane, E2BClientSdk>({ http, placeholder: "sandboxId", sdk: binding }),
@@ -888,6 +1240,23 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
 
           return envd.files.read(id, path, "root");
         }),
+      watch: (id, path, settings) =>
+        call(id, async () => {
+          await client(id);
+
+          if (path === "/workspace" || path.startsWith("/workspace/"))
+            await ensureWorkspace(id, "the watch");
+          await envd.fs.watch(id, path, {
+            recursive: settings.recursive,
+            user: "root",
+            signal: settings.signal,
+            onEvent: (event) =>
+              settings.onEvent({
+                type: watchTypes[event.type],
+                path: posix.join(path, event.name),
+              }),
+          });
+        }),
       write: (id, path, data) =>
         call(id, async () => {
           await client(id);
@@ -1070,17 +1439,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             { code: "unsupported", provider: "e2b", sandboxId: id },
           );
         await client(id);
-
-        if (workspaces.has(id)) {
-          const exitCode = await runToEnd(id, prepareWorkspace);
-
-          if (exitCode !== 0)
-            throw new SandboxError(
-              `Preparing /workspace for the snapshot failed with exit code ${exitCode}.`,
-              { code: "provider", provider: "e2b", sandboxId: id },
-            );
-          workspaces.delete(id);
-        }
+        await ensureWorkspace(id, "the snapshot");
 
         const body = await http.json({
           method: "POST",
@@ -1095,6 +1454,45 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
 
         return { id: body.snapshotID };
       }),
+    deleteSnapshot: (snapshotId) =>
+      call(undefined, async () => {
+        // E2B keeps a snapshot as a template; deleting it is the template delete the SDK sends.
+        try {
+          await http.request({
+            method: "DELETE",
+            path: "/templates/{id}",
+            params: { id: snapshotId },
+          });
+
+          return true;
+        } catch (cause) {
+          if (cause instanceof SandboxError && cause.code === "not_found") return false;
+          throw cause;
+        }
+      }),
+    buildTemplate: (spec, settings) => call(undefined, () => buildTemplate(spec, settings)),
+    terminal: (id, settings) => call(id, () => openTerminal(id, settings)),
+    usage: (id) =>
+      call(id, async (): Promise<Record<string, number>> => {
+        // Metrics are extra: a sandbox that is gone, paused or not yet sampled still reports the core
+        // counters. box.ext.e2b.metrics() surfaces the error for callers that need it.
+        const latest = (await metrics(id).catch(() => [])).at(-1);
+
+        if (!latest) return {};
+
+        return {
+          cpuCount: latest.cpuCount,
+          cpuPercent: latest.cpuUsedPct,
+          memoryBytes: latest.memUsed,
+          memoryLimitBytes: latest.memTotal,
+          diskBytes: latest.diskUsed,
+          diskLimitBytes: latest.diskTotal,
+          metricsAt: latest.timestamp,
+        };
+      }),
+    extensions: {
+      e2b: (id) => ({ metrics: (range) => call(id, () => metrics(id, range)) }),
+    },
     startProcess: (id, input) =>
       call(id, async (): Promise<NativeProcess> => {
         const running = await launch(id, input);

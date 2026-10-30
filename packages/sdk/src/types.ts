@@ -1,12 +1,14 @@
 import type {
   Capability,
   CreateInput,
+  Extensions,
   FileInfo,
   Labels,
   OutputChunk,
   Provider,
   SandboxInfo,
   Terminal,
+  TerminalOptions,
   Preview,
   SnapshotOptions,
 } from "./provider.js";
@@ -131,7 +133,10 @@ export interface PreviewOptions {
   waitMs?: number;
 }
 
-/** Counters from `box.usage()`. Providers may add their own numeric fields. */
+/**
+ * Counters from `box.usage()`. The first four are always present. The metric fields come from the
+ * provider's latest sample and are absent when it reports none. Providers may add other numeric fields.
+ */
 export type Usage = {
   /** When the sandbox was created, in epoch milliseconds. */
   createdAt: number;
@@ -141,10 +146,27 @@ export type Usage = {
   commands: number;
   /** Output bytes received through this handle. */
   bytesOut: number;
-} & Record<string, number>;
+  /** vCPUs available to the sandbox. */
+  cpuCount?: number;
+  /** CPU use across all vCPUs, from 0 to 100. */
+  cpuPercent?: number;
+  /** Memory in use, in bytes. */
+  memoryBytes?: number;
+  /** Memory available, in bytes. */
+  memoryLimitBytes?: number;
+  /** Disk in use, in bytes. */
+  diskBytes?: number;
+  /** Disk available, in bytes. */
+  diskLimitBytes?: number;
+  /** When the provider took the metric sample, in epoch milliseconds. */
+  metricsAt?: number;
+} & Record<string, number | undefined>;
 
-/** The methods every sandbox has, whatever the provider. `N` is the provider's native client type. */
-export interface SandboxBase<N> {
+/**
+ * The methods every sandbox has, whatever the provider. `N` is the provider's native client type and
+ * `X` its provider-specific extensions.
+ */
+export interface SandboxBase<N, X extends Extensions = {}> {
   /** The provider's sandbox ID. Pass it to `connectSandbox` to reattach. */
   readonly id: string;
   /** The key passed to `createSandbox`, when there was one. */
@@ -159,6 +181,8 @@ export interface SandboxBase<N> {
   readonly capabilities: ReadonlySet<Capability>;
   /** The provider's own SDK object, fully typed, for anything this SDK does not cover. */
   readonly native: N;
+  /** Provider-specific features, by name, such as `box.ext.e2b.metrics()`. Empty for most providers. */
+  readonly ext: X;
   /** Run a shell command. Await the handle for the result, or iterate it to stream output. */
   run(command: string, options?: RunOptions): RunHandle;
   /** Run a command from a template literal. Every interpolated value is shell-quoted. */
@@ -198,8 +222,8 @@ export interface CapabilityMethods {
     snapshot(options?: SnapshotOptions): Promise<{ id: string }>;
   };
   terminal: {
-    /** Open an interactive PTY. */
-    terminal(options: { cols: number; rows: number }): Promise<Terminal>;
+    /** Open an interactive PTY running a login shell. Output is redacted like command output. */
+    terminal(options: TerminalOptions): Promise<Terminal>;
   };
 }
 
@@ -223,11 +247,24 @@ export type MethodsFor<C extends Capability> = [Extract<C, MethodCapability>] ex
  * provider typed as plain `Provider` (any capability), the methods are optional: check
  * them with {@link hasCapability} first. `createSandbox(e2b())` infers the precise type.
  */
-export type Sandbox<N = unknown, C extends Capability = never> = SandboxBase<N> &
+export type Sandbox<
+  N = unknown,
+  C extends Capability = never,
+  X extends Extensions = {},
+> = SandboxBase<N, X> &
   (Capability extends C ? Partial<MethodsFor<MethodCapability>> : MethodsFor<C>);
 
 /** The sandbox type a provider produces: `ProviderSandbox<ReturnType<typeof e2b>>`. */
 export type ProviderSandbox<P extends Provider> =
-  P extends Provider<infer N, infer C> ? Sandbox<N, C> : never;
+  P extends Provider<infer N, infer C, infer X> ? Sandbox<N, C, X> : never;
 
-export type { OutputChunk, Capability, SandboxInfo, FileInfo, Labels, Preview, Terminal };
+export type {
+  OutputChunk,
+  Capability,
+  SandboxInfo,
+  FileInfo,
+  Labels,
+  Preview,
+  Terminal,
+  TerminalOptions,
+};

@@ -1,6 +1,13 @@
-import { isObject } from "../../shared/narrow.js";
-import { SandboxError, describeNative, reason, redacting, type ErrorCode } from "../../errors.js";
-import type { FailedRequest, HttpFailure } from "../../http.js";
+import {
+  SandboxError,
+  describeNative,
+  reason,
+  redacting,
+  type ErrorCode,
+  type FailedRequest,
+  type HttpFailure,
+} from "../../provider.js";
+import { isObject } from "./narrow.js";
 
 /**
  * Connect error codes, from unary error bodies and stream end frames, as e2b's DEFAULT_ERROR_MAP reads them.

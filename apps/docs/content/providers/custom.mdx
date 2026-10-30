@@ -20,22 +20,24 @@ You don't implement any of these. The core builds them from your primitives:
 
 Import the types from `@opencoredev/sandbox-sdk/provider`. A `Provider` has:
 
-| Member                                    | What it does                                                                                |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `name`                                    | The provider name, shown in `box.provider` and errors                                       |
-| `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                   |
-| `capabilities`                            | The optional features you implement                                                         |
-| `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot |
-| `find(key)`                               | Find a sandbox by key, or `undefined`                                                       |
-| `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                  |
-| `list(labels)`                            | List sandboxes matching labels                                                              |
-| `destroy(id)`                             | Delete a sandbox                                                                            |
-| `exec(id, input)`                         | Run one command and stream its output                                                       |
-| `files`                                   | `read`, `write`, `list`, `stat`, `remove`, `mkdir`, and optionally `readRange`              |
-| `previewUrl(id, port)`                    | Return `{ url, headers?, expiresAt? }` for a port                                           |
-| `native(id)`                              | The service's own sandbox object, exposed as `box.native`                                   |
-| `pause`, `resume`, `snapshot`, `terminal` | Optional. Must match `capabilities`.                                                        |
-| `close`, `usage`, `startProcess`          | Optional hooks                                                                              |
+| Member                                    | What it does                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `name`                                    | The provider name, shown in `box.provider` and errors                                           |
+| `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                       |
+| `capabilities`                            | The optional features you implement                                                             |
+| `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot     |
+| `find(key)`                               | Find a sandbox by key, or `undefined`                                                           |
+| `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                      |
+| `list(labels)`                            | List sandboxes matching labels                                                                  |
+| `destroy(id)`                             | Delete a sandbox                                                                                |
+| `exec(id, input)`                         | Run one command and stream its output                                                           |
+| `files`                                   | `read`, `write`, `list`, `stat`, `remove`, `mkdir`, and optionally `readRange` and `watch`      |
+| `previewUrl(id, port)`                    | Return `{ url, headers?, expiresAt? }` for a port                                               |
+| `native(id)`                              | The service's own sandbox object, exposed as `box.native`                                       |
+| `pause`, `resume`, `snapshot`, `terminal` | Optional. Must match `capabilities`.                                                            |
+| `deleteSnapshot`, `buildTemplate`         | Optional. Behind `"snapshot-delete"` and `"templates"`, for the root functions of the same name |
+| `extensions`                              | Optional. Provider-specific features, exposed as `box.ext.<name>`                               |
+| `close`, `usage`, `startProcess`          | Optional hooks                                                                                  |
 
 Paths are absolute POSIX paths and times are epoch milliseconds.
 
@@ -46,6 +48,40 @@ Paths are absolute POSIX paths and times are epoch milliseconds.
 - **Translate errors.** Map the service's failures to `SandboxError` codes such as `auth`, `not_found`, `quota`, and `unavailable`. Don't attach the native error object, since it can hold credentials.
 - **Keep policy out.** Redaction, edit, git, process records, and readiness belong to the core.
 - **Declare what you implement.** A capability without its method fails at `createSandbox` with code `provider`.
+
+## Add features only your service has
+
+Put a feature the other providers can't offer in `extensions`, not on the shared API. Each entry is a factory that gets the sandbox ID and the handle and returns async methods. The core binds it the first time `box.ext.<name>` is read, refuses calls on a closed handle, and redacts the errors the methods throw. The third type parameter of `Provider` carries the methods' types to `box.ext`.
+
+```ts title="regions.ts"
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+
+type Regions = { regions: { current(): Promise<string> } };
+
+const base = memory();
+
+const provider: Provider<ReturnType<typeof base.native>, "network-policy", Regions> = {
+  ...base,
+  extensions: {
+    regions: (id) => ({ current: async () => `eu-west for ${id}` }),
+  },
+};
+
+await using box = await createSandbox(provider);
+console.log(await box.ext.regions.current());
+```
+
+Use a capability instead when other providers could implement the same thing with the same shape. `"terminal"`, `"snapshot-delete"` and `"templates"` are examples. `buildTemplate` takes the portable `TemplateSpec`, and an adapter can widen it with its own fields by typing its `buildTemplate` hook's `spec` parameter, as E2B does.
+
+For native file events, add `files.watch(id, path, { recursive, signal, onEvent })`. It calls `onEvent` for each change until `signal` aborts, then resolves. Reject with `unsupported` when the sandbox can't watch, such as an old guest agent, and the core polls instead. Any other rejection reaches the caller's `onError`, and the core starts the watch again a second later.
+
+For `box.usage()`, return the provider's newest sample from `usage(id)` using the shared names `cpuCount`, `cpuPercent`, `memoryBytes`, `memoryLimitBytes`, `diskBytes`, `diskLimitBytes`, and `metricsAt`. The core's counters always win over fields with the same name.
+
+## Maintain an adapter in its own package
+
+An adapter doesn't need to live in this repository. `@opencoredev/sandbox-sdk/provider` exports everything the built-in direct-HTTP adapters use: `SandboxError` and the error helpers (`describeNative`, `redacting`, `reason`), the HTTP client (`createHttpClient`, `createDeadline`, `sleep`), the native API helpers (`createNativeApi`, `sdkConstruct`, `sdkCall`), and the Connect stream codec (`connectEnvelope`, `connectEnvelopes`, `streamFault`). The E2B adapter imports from nothing else, and a test keeps it that way, so it can serve as the template for a package its provider maintains. Requests sent through `createHttpClient` carry `User-Agent: sandbox-sdk/<version>`.
 
 ## Check it with the conformance suite
 

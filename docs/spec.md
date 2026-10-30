@@ -151,6 +151,7 @@ const diff = await box.files.changes({ since: "start" });      // { added, modif
 ```
 
 - Relative paths resolve against `/workspace`.
+- `watch` uses the adapter's native file events when it has the `files.watch` primitive (E2B's envd WatchDir) and polls `list` otherwise. A native watch that reports `unsupported` falls back to polling; any other failure goes to `onError` and the watch restarts after a second.
 - `edit` fails with `edit_not_found` or `edit_not_unique`, including the line numbers of the matches.
 - `changes` compares against `box.files.mark()` for a named checkpoint, or against a snapshot taken at create time when the sandbox was created with `trackChanges: true` (off by default, so creating a sandbox costs no extra round trips). It works on any provider by using git internally on a hidden index.
 
@@ -168,19 +169,29 @@ These run through `run`, with credentials passed through a temporary credential 
 
 ## 6. Optional capabilities (type-gated)
 
-| Method                         | Returns                                                           |
-| ------------------------------ | ----------------------------------------------------------------- |
-| `box.pause()` / `box.resume()` | `void`                                                            |
-| `box.snapshot()`               | `{ id }`, used as `createSandbox(provider, { from: snapshotId })` |
-| `box.terminal({ cols, rows })` | PTY handle with `write`, `resize`, `onData`, `close`              |
+| Method                                     | Returns                                                                                             |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `box.pause()` / `box.resume()`             | `void`                                                                                              |
+| `box.snapshot()`                           | `{ id }`, used as `createSandbox(provider, { from: snapshotId })`                                   |
+| `box.terminal({ cols, rows, cwd?, env? })` | PTY handle with `write`, `resize`, `onData`, `close`, and `wait` when the provider reports the exit |
+
+Provider-level capabilities gate root functions that need no sandbox:
+
+| Function                                  | Capability          | Returns                                                   |
+| ----------------------------------------- | ------------------- | --------------------------------------------------------- |
+| `deleteSnapshot(provider, snapshotId)`    | `"snapshot-delete"` | `true` when deleted, `false` when already gone            |
+| `buildTemplate(provider, spec, options?)` | `"templates"`       | `{ id, name, buildId? }` once ready; `id` works as `from` |
 
 - `network` policy and `size` are creation-time options that fail closed when the provider can't enforce them.
-- `box.capabilities` is a `ReadonlySet<"pause" | "snapshot" | "terminal" | "network-policy" | "size">`.
+- `box.capabilities` is a `ReadonlySet<"pause" | "snapshot" | "snapshot-delete" | "templates" | "terminal" | "network-policy" | "size">`.
+- Passing a provider type without the capability to `deleteSnapshot` or `buildTemplate` is a type error; a provider typed as plain `Provider` throws `unsupported` before any request.
+- `TemplateSpec` is portable: `{ name, image?, env?, workdir?, run?, size? }`. `env` and `workdir` apply to the build steps only. An adapter may widen it by typing its hook's `spec` parameter, and the root function's `spec` type follows the provider passed (E2B adds `fromTemplate`, `startCommand`, `readyCommand`, `tags`, `skipCache`). `timeoutMs` is one deadline for the whole build.
 
 ## 7. Other handle members
 
 - `box.id`, `box.key`, `box.provider` (a name string), `box.created`, `box.labels`.
-- `box.usage()` returns `{ createdAt, runningMs, commands, bytesOut }`, plus native cost fields if the provider exposes them.
+- `box.usage()` returns `{ createdAt, runningMs, commands, bytesOut }`, plus the provider's newest metric sample under shared names (`cpuCount`, `cpuPercent`, `memoryBytes`, `memoryLimitBytes`, `diskBytes`, `diskLimitBytes`, `metricsAt`, each `undefined` without a sample), plus native cost fields if the provider exposes them. Core counters win over provider fields of the same name.
+- `box.ext` holds provider-specific features by name (`box.ext.e2b.metrics()`), typed from the provider's third type parameter. Features a second provider could offer with the same shape become capabilities instead. Each extension binds lazily, checks the handle is open on every call and redacts its errors; returned values are provider data, as with `box.native`.
 - `box.native` is the escape hatch for anything the SDK does not wrap. Its shape depends on the provider:
   - **Direct-HTTP providers** give a `NativeApi<Plane>` (exported from the root as a type):
     - `request<T>(method, path, options?)` calls any endpoint with the adapter's base URL, credentials, retries, error mapping and redaction, and returns the JSON body (`undefined` when empty).
@@ -224,14 +235,18 @@ Each adapter's key mode, capabilities, limits, and peer package range are listed
 - `exec(id, { command, cwd, env, stdin, timeoutMs, signal, onChunk })`, returning `{ exitCode, timedOut }`
 - `files` primitives: `read`, `write`, `list`, `stat`, `remove`, `mkdir`
 - `previewUrl(id, port)`
-- optional `pause`, `resume`, `snapshot`, `terminal`, and native process hooks
+- optional `pause`, `resume`, `snapshot`, `terminal`, `deleteSnapshot`, `buildTemplate`, `usage`, `files.watch`, and native process hooks
+- optional `extensions` for provider-specific features (`box.ext`)
 - `capabilities`
 - `keyMode`
 
 Everything else, including runs, processes, the `$` tag, edit, upload, search, changes, git, and readiness, lives once in core on top of these primitives.
 
-**Direct-HTTP adapters.** They share one transport from `/provider`: `createHttpClient` and `createNativeApi`, with stream readers (NDJSON, server-sent events, Connect envelopes) internal to the package. The transport guarantees:
+**Adapters outside this repo.** `/provider` exports everything a built-in direct-HTTP adapter uses: `SandboxError` and the error helpers, the HTTP client, the native API helpers, and the Connect stream codec. The E2B adapter imports from nothing else (`tests/provider-boundary.test.ts`), so it can move to a package its provider maintains.
 
+**Direct-HTTP adapters.** They share one transport from `/provider`: `createHttpClient` and `createNativeApi`, with the Connect envelope codec public and the NDJSON and server-sent event readers internal to the package. The transport guarantees:
+
+- Every request carries `User-Agent: sandbox-sdk/<version>` unless a plane or request header overrides it. Raw provider calls outside the client (Docker, Railway, Upstash) send it too; requests that peer SDKs make themselves do not.
 - Credentials attach only to the configured plane's origin. Absolute URLs, poll URLs, signed URLs and redirects to other origins get none.
 - Retries (at most 2, jittered backoff, `Retry-After` up to 20 s and within the deadline) cover 429, 502, 503, 504 and network errors, and only GET, HEAD, PUT and DELETE, or a POST that carries a server-supported idempotency key. A streamed request body is never retried.
 - A POST or PATCH that may have reached the server and then failed (a dropped connection after sending, a timeout, a 504) is `outcome_unknown`, never `unavailable`.

@@ -3,17 +3,14 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { promises as local } from "node:fs";
-import type { Provider, FileInfo, WriteOptions } from "./provider.js";
+import type { Provider, FileEvent, FileInfo, WriteOptions } from "./provider.js";
 import { SandboxError, invalid, isNotFound, type ErrorCode, type Redactor } from "./errors.js";
 import { neverSent } from "./http.js";
 import { pathOf, defaults } from "./run.js";
 import { quote } from "./shared/shell.js";
 import { isObject, isString } from "./shared/narrow.js";
 
-export interface FileEvent {
-  type: "added" | "modified" | "removed";
-  path: string;
-}
+export type { FileEvent };
 
 export interface FileDiff {
   added: string[];
@@ -894,6 +891,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       let stopped = false;
       let previous: Map<string, string> | undefined;
       let timer: ReturnType<typeof setTimeout>;
+      let wake = () => {};
+      const controller = new AbortController();
 
       const poll = async () => {
         try {
@@ -929,14 +928,56 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         }
       };
 
+      const pause = (ms: number) =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          timer = setTimeout(resolve, ms);
+          timer.unref?.();
+        });
+
+      // The adapter's own events when it has them. `unsupported` (an old guest, say) switches to polling
+      // for good; any other failure is reported and the watch starts again a second later.
+      const subscribe = async (native: NonNullable<typeof fs.watch>) => {
+        while (!stopped) {
+          try {
+            await ready();
+
+            if (stopped) return;
+            await native.call(fs, id, pathOf(path), {
+              recursive: options.recursive ?? false,
+              signal: controller.signal,
+              onEvent(event) {
+                if (!stopped) callback(event);
+              },
+            });
+          } catch (error) {
+            if (stopped) return;
+
+            if (error instanceof SandboxError && error.code === "unsupported") {
+              void poll();
+
+              return;
+            }
+
+            options.onError?.(redactor.error(error, provider.name, id));
+          }
+
+          if (!stopped) await pause(1000);
+        }
+      };
+
       const stop = () => {
         stopped = true;
         clearTimeout(timer);
+        wake();
+        controller.abort();
         watchers.delete(stop);
       };
 
       watchers.add(stop);
-      void poll();
+
+      if (fs.watch) void subscribe(fs.watch);
+      else void poll();
 
       return stop;
     },

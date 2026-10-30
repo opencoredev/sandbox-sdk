@@ -4,6 +4,7 @@ import { SandboxError, type ErrorCode } from "../../errors.js";
 import type { OutputChunk } from "../../provider.js";
 import { isJsonObject, type JsonObject, type JsonValue } from "../../shared/json.js";
 import { isNumber, isString } from "../../shared/narrow.js";
+import { userAgent } from "../../version.js";
 
 export const failure = (message: string, code: ErrorCode = "provider") =>
   new SandboxError(
@@ -106,7 +107,7 @@ export class Docker {
           socketPath: this.socketPath,
           path: `/v1.44${path}`,
           method,
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "User-Agent": userAgent },
         },
         (res) => {
           const chunks: Buffer[] = [];
@@ -191,7 +192,12 @@ export class Docker {
         socketPath: this.socketPath,
         path: `/v1.44/exec/${encode(execId)}/start`,
         method: "POST",
-        headers: { "Content-Type": "application/json", Connection: "Upgrade", Upgrade: "tcp" },
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": userAgent,
+          Connection: "Upgrade",
+          Upgrade: "tcp",
+        },
       });
 
       const consume = (stream: import("node:stream").Readable) => {

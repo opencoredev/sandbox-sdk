@@ -4,7 +4,22 @@
  * on timeout/abort. Optional methods must agree with capabilities. No core policy
  * (redaction, edit, git, process records, readiness) belongs in an adapter.
  */
-export type Capability = "pause" | "snapshot" | "terminal" | "network-policy" | "size";
+import type { SandboxBase } from "./types.js";
+
+/**
+ * Portable optional features. Sandbox-level ones add methods to the handle (`pause`, `snapshot`,
+ * `terminal`); provider-level ones gate root functions (`snapshot-delete` for `deleteSnapshot`,
+ * `templates` for `buildTemplate`); `network-policy` and `size` gate creation options.
+ * Provider-specific features belong in {@link Provider.extensions} instead.
+ */
+export type Capability =
+  | "pause"
+  | "snapshot"
+  | "snapshot-delete"
+  | "templates"
+  | "terminal"
+  | "network-policy"
+  | "size";
 
 export type Labels = Record<string, string>;
 
@@ -74,6 +89,12 @@ export interface SnapshotOptions {
   expiresInMs?: number;
 }
 
+/** One file change. Paths are absolute. */
+export interface FileEvent {
+  type: "added" | "modified" | "removed";
+  path: string;
+}
+
 export interface ProviderFiles {
   /** Use primitive file transfers when guest tar is missing or incompatible with GNU archives. */
   readonly transfer?: "files";
@@ -110,6 +131,16 @@ export interface ProviderFiles {
     path: string,
     options: { offset: number; length: number },
   ): Promise<Uint8Array>;
+  /**
+   * Native change events for `files.watch`, instead of the core's polling. Call `onEvent` for each change
+   * under `path` (children only unless `recursive`) until `signal` aborts, then resolve. Reject when the
+   * watch cannot start or breaks; reject with `unsupported` to make the core poll instead.
+   */
+  watch?(
+    id: string,
+    path: string,
+    options: { recursive: boolean; signal: AbortSignal; onEvent(event: FileEvent): void },
+  ): Promise<void>;
   read(id: string, path: string): Promise<Uint8Array>;
   write(id: string, path: string, data: Uint8Array, options?: WriteOptions): Promise<void>;
   list(id: string, path: string): Promise<FileInfo[]>;
@@ -124,12 +155,87 @@ export interface Preview {
   expiresAt?: number;
 }
 
+/** Options for `box.terminal()`. The adapter receives `cwd` as an absolute path and `env` merged with the handle's. */
+export interface TerminalOptions {
+  cols: number;
+  rows: number;
+  /** Working directory of the shell. Relative paths resolve against `/workspace`. Default: `/workspace`. */
+  cwd?: string;
+  /** Extra environment variables for the shell. */
+  env?: Record<string, string>;
+}
+
+/** An interactive PTY. Output arrives as text through `onData`. */
 export interface Terminal {
   write(data: string): void | Promise<void>;
   resize(cols: number, rows: number): void | Promise<void>;
   onData(callback: (data: string) => void): () => void;
   close(): void | Promise<void>;
+  /** Resolves when the shell exits. Present only when the provider reports the exit. */
+  wait?(): Promise<{ exitCode: number | null }>;
 }
+
+/** A portable template definition for {@link Provider.buildTemplate}. Providers may accept more fields. */
+export interface TemplateSpec {
+  /** Template name. Pass it to the provider factory's template option, or the returned `id` as `from`. */
+  name: string;
+  /** Base container image, such as `"node:22-bookworm"`. Default: the provider's base image. */
+  image?: string;
+  /** Environment variables for the build steps only. Give sandboxes their own with `createSandbox({ env })`. */
+  env?: Record<string, string>;
+  /** Working directory for the build steps that follow. Commands in sandboxes still default to `/workspace`. */
+  workdir?: string;
+  /** Shell commands run in order, each as one build step. */
+  run?: readonly string[];
+  /** CPU and memory for sandboxes made from the template, where the provider sets them per template. */
+  size?: { cpu: number; memoryMb: number };
+}
+
+/** Options for one template build. */
+export interface TemplateBuildOptions {
+  /** One deadline for the whole build, polling included. Default: the provider's (30 minutes for E2B). */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Build log lines as the provider reports them. */
+  onLog?(line: string): void;
+}
+
+/** A finished template. */
+export interface TemplateInfo {
+  /** The provider's template ID, usable as `createSandbox(provider, { from: id })`. */
+  id: string;
+  name: string;
+  buildId?: string;
+}
+
+/**
+ * One provider-specific feature set: async methods only. The core binds it lazily to each handle as
+ * `box.ext.<name>`, checks the handle is open before every call, and redacts the errors it throws.
+ * Returned values are the provider's own data, as with `box.native`.
+ */
+export type ExtensionMethods = {
+  readonly [method: string]: (...args: never[]) => Promise<ExtensionResult>;
+};
+
+/** What an extension method resolves with: any value, so each method keeps its own declared type. */
+export type ExtensionResult =
+  | object
+  | string
+  | number
+  | boolean
+  | bigint
+  | symbol
+  | null
+  | undefined
+  | void;
+
+/** Extension sets by name, such as `{ e2b: { metrics(): Promise<...> } }`. */
+export type Extensions = { readonly [name: string]: ExtensionMethods };
+
+/** What a provider declares for each extension: a factory given the sandbox ID and its handle. */
+export type ExtensionFactories<Native, X extends Extensions> = {
+  readonly [K in keyof X]: (id: string, box: SandboxBase<Native>) => X[K];
+};
 
 /** Native hooks are optional optimizations. Persistent records remain core-owned. */
 export interface NativeProcess {
@@ -138,7 +244,11 @@ export interface NativeProcess {
   stop(options: { graceMs: number }): Promise<void>;
 }
 
-export interface Provider<Native = unknown, C extends Capability = Capability> {
+export interface Provider<
+  Native = unknown,
+  C extends Capability = Capability,
+  X extends Extensions = {},
+> {
   readonly name: string;
   readonly keyMode: "exact" | "best-effort";
   /** Omission uses native hooks or the portable shell process-record shim. "stream" is for
@@ -176,7 +286,13 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   pause?(id: string): Promise<void>;
   resume?(id: string): Promise<void>;
   snapshot?(id: string, options?: SnapshotOptions): Promise<{ id: string }>;
-  terminal?(id: string, options: { cols: number; rows: number }): Promise<Terminal>;
+  terminal?(id: string, options: TerminalOptions): Promise<Terminal>;
+  /** Delete a snapshot by ID. `false` when it was already gone. Requires `"snapshot-delete"`. */
+  deleteSnapshot?(snapshotId: string): Promise<boolean>;
+  /** Build a template and wait until it is ready. Requires `"templates"`. Widen `spec` for provider fields. */
+  buildTemplate?(spec: TemplateSpec, options: TemplateBuildOptions): Promise<TemplateInfo>;
+  /** Provider-specific features, exposed as `box.ext.<name>`. They keep the portable API free of one provider's shape. */
+  readonly extensions?: ExtensionFactories<Native, X>;
   startProcess?(id: string, input: Omit<ExecInput, "timeoutMs">): Promise<NativeProcess>;
   /** Secret recovery without a shell, for runtimes that cannot run the core's recovery
    * command. Return the text of /tmp/.sandbox-sdk/secret-names.json and the environment a
@@ -187,8 +303,20 @@ export interface Provider<Native = unknown, C extends Capability = Capability> {
   ): Promise<{ record: string; environment: Record<string, string> } | undefined>;
 }
 
-// For adapter authors: the HTTP client and native API helpers the built-in direct-HTTP adapters use.
-export { createHttpClient, createDeadline } from "./http.js";
+// For adapter authors: everything a built-in adapter uses, so one can live outside this repo. The E2B
+// adapter imports only from this module (tests/provider-boundary.test.ts checks it).
+export { SandboxError, describeNative, redacting, reason } from "./errors.js";
+
+export type { ErrorCode, ErrorOptions, NativeDescription } from "./errors.js";
+
+export { connectEnvelope, connectEnvelopes, streamFault } from "./streams.js";
+
+export type { ConnectFrame, StreamFault, StreamOptions } from "./streams.js";
+
+export type { JsonValue, JsonObject } from "./shared/json.js";
+
+// The HTTP client and native API helpers the built-in direct-HTTP adapters use.
+export { createHttpClient, createDeadline, sleep } from "./http.js";
 
 export type {
   HttpClient,
