@@ -179,6 +179,7 @@ it.each(["e2b", "daytona", "boxd", "freestyle", "boat"])(
         Daytona: class {
           sandboxApi = { getSandbox: native.get };
           snapshot = { get: vi.fn(), list: vi.fn(), delete: vi.fn() };
+          get = vi.fn();
         },
       },
       "@boxd-sh/sdk": {
