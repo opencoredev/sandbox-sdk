@@ -16,7 +16,7 @@
  * Like the SDK, a lower `attached` offset is taken as is, so a replaced log's output is not dropped.
  */
 import { type JsonValue, isJsonObject, type JsonObject } from "../../shared/json.js";
-import { isNumber, isObject, isString } from "../../shared/narrow.js";
+import { isNumber, isString } from "../../shared/narrow.js";
 import { SandboxError } from "../../errors.js";
 import { createDeadline, sleep } from "../../http.js";
 import { ndjson, streamFault } from "../../streams.js";

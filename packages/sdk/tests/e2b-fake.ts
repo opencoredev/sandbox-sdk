@@ -326,7 +326,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
     const tag = isString(message.tag) ? message.tag : undefined;
 
     return async (script) => {
-      const env: Record<string, string | undefined> = { ...process.env, ...machine.env, ...envs };
+      const env = { ...process.env, ...machine.env, ...envs };
 
       for (const name of ["GIT_INDEX_FILE", "BASH_ENV"]) {
         const value = env[name];
@@ -768,13 +768,17 @@ export async function fakeE2B(): Promise<FakeE2B> {
 
         if (method === "List") {
           json(response, 200, {
-            processes: [...machine.processes.values()]
-              .filter((proc) => !proc.done)
-              .map((proc) => ({
-                pid: proc.pid,
-                ...(proc.tag ? { tag: proc.tag } : undefined),
-                config: { cmd: "/bin/bash", args: proc.args },
-              })),
+            processes: [...machine.processes.values()].flatMap((proc) =>
+              proc.done
+                ? []
+                : [
+                    {
+                      pid: proc.pid,
+                      ...(proc.tag ? { tag: proc.tag } : undefined),
+                      config: { cmd: "/bin/bash", args: proc.args },
+                    },
+                  ],
+            ),
           });
 
           return;

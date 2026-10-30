@@ -78,7 +78,7 @@ const supervisorHash = createHash("sha256").update(supervisor).digest("hex");
 // interrupted. Freestyle allows 64 entries with at most 63 characters each.
 const nativeInfo = "sandbox-sdk-info";
 
-function creationMetadata(input: CreateInput): Record<string, string> {
+function creationMetadata(input: CreateInput) {
   const encoded = Buffer.from(
     JSON.stringify({ key: input.key ?? null, labels: input.labels }),
   ).toString("base64url");

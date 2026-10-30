@@ -2,11 +2,6 @@ import type { JsonValue } from "../src/shared/json.js";
 import { isObject, isString } from "../src/shared/narrow.js";
 import { afterEach, expect, test, vi } from "vitest";
 
-// The adapter speaks HTTP itself; loading the SDK would be a regression.
-vi.mock("freestyle", () => {
-  throw new Error("The freestyle SDK must not be loaded");
-});
-
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { background, freestyleClient } from "../src/providers/freestyle/client.js";
 

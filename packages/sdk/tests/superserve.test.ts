@@ -971,9 +971,8 @@ describe("native API", () => {
     expect(account).toBe(Sandbox);
 
     // JavaScript callers can hand over anything; a module without Sandbox is invalid_argument.
-    const wrong: Promise<unknown> = Reflect.apply(native.sdk, undefined, [
-      async () => ({ Other: 1 }),
-    ]);
+    // @ts-expect-error the module has no Sandbox export
+    const wrong = native.sdk(async () => ({ Other: 1 }));
 
     await expect(wrong).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(

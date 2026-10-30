@@ -278,10 +278,7 @@ describe("session log stream", () => {
     });
 
     const text = (stream: string) =>
-      chunks
-        .filter((chunk) => chunk.stream === stream)
-        .map((chunk) => chunk.text)
-        .join("");
+      chunks.flatMap((chunk) => (chunk.stream === stream ? [chunk.text] : [])).join("");
 
     return { result, stdout: text("stdout"), stderr: text("stderr") };
   }
