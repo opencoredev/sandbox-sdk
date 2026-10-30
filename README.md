@@ -58,15 +58,15 @@ console.log(result.stdout); // "hello from the sandbox\n"
 
 ## What a sandbox can do
 
-| Task | API |
-| --- | --- |
-| Run a command, stream its output, time it out | `box.run("npm test")`, `` box.$`git checkout ${branch}` `` |
-| Read, write, edit and search files | `box.files.write()`, `read()`, `edit()`, `search()`, `upload()` |
-| Start a dev server and wait until it answers | `box.start("npm run dev", { ready: { port: 3000 } })` |
-| Get a URL for a port | `box.preview(3000)` |
-| Clone, commit and push without leaking tokens | `box.git.clone()`, `commit()`, `push()` |
-| Pause, resume and snapshot | `box.pause()`, `box.resume()`, `box.snapshot()` |
-| Find the same sandbox on the next request | `createSandbox(provider, { key: "user:123" })` |
+| Task                                          | API                                                             |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| Run a command, stream its output, time it out | `box.run("npm test")`, `` box.$`git checkout ${branch}` ``      |
+| Read, write, edit and search files            | `box.files.write()`, `read()`, `edit()`, `search()`, `upload()` |
+| Start a dev server and wait until it answers  | `box.start("npm run dev", { ready: { port: 3000 } })`           |
+| Get a URL for a port                          | `box.preview(3000)`                                             |
+| Clone, commit and push without leaking tokens | `box.git.clone()`, `commit()`, `push()`                         |
+| Pause, resume and snapshot                    | `box.pause()`, `box.resume()`, `box.snapshot()`                 |
+| Find the same sandbox on the next request     | `createSandbox(provider, { key: "user:123" })`                  |
 
 Pause and snapshot exist only on providers that support them, and TypeScript knows which ones do. Every failure is a `SandboxError` with a `code` you can branch on. The [package README](./packages/sdk/README.md) covers the full API.
 
@@ -103,35 +103,35 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 
 ## Providers
 
-| Provider | Import | Install |
-| --- | --- | --- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b) | `@opencoredev/sandbox-sdk/e2b` | `e2b` |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona) | `@opencoredev/sandbox-sdk/daytona` | `@daytonaio/sdk` |
-| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel) | `@opencoredev/sandbox-sdk/vercel` | `@vercel/sandbox` |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash) | `@opencoredev/sandbox-sdk/upstash` | `@upstash/box` |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway) | `@opencoredev/sandbox-sdk/railway` | `railway` |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki) | `@opencoredev/sandbox-sdk/tenki` | `@tenkicloud/sandbox` |
-| boxd | `@opencoredev/sandbox-sdk/boxd` | `@boxd-sh/sdk` |
-| Freestyle | `@opencoredev/sandbox-sdk/freestyle` | `freestyle` |
-| Superserve | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk` |
-| Boat | `@opencoredev/sandbox-sdk/boat` | `@boatdev/sdk` |
-| Sandboxer | `@opencoredev/sandbox-sdk/sandboxer` | `@boatdev/sdk` |
-| [Docker on your machine](https://sandbox-sdk.app/docs/providers/local) | `@opencoredev/sandbox-sdk/local` | nothing; needs Docker running |
-| [agentOS](https://sandbox-sdk.app/docs/providers/agentos) | `@opencoredev/sandbox-sdk/agentos` | `@rivet-dev/agentos-core` |
-| Memory, for tests | `@opencoredev/sandbox-sdk/memory` | nothing |
+| Provider                                                               | Import                                | Install                       |
+| ---------------------------------------------------------------------- | ------------------------------------- | ----------------------------- |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                         |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`              |
+| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |
+| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
+| [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
+| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
+| boxd                                                                   | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
+| Freestyle                                                              | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`                   |
+| Superserve                                                             | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`             |
+| Boat                                                                   | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`                |
+| Sandboxer                                                              | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`                |
+| [Docker on your machine](https://sandbox-sdk.app/docs/providers/local) | `@opencoredev/sandbox-sdk/local`      | nothing; needs Docker running |
+| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)              | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core`     |
+| Memory, for tests                                                      | `@opencoredev/sandbox-sdk/memory`     | nothing                       |
 
 [Compare providers](https://sandbox-sdk.app/docs/providers) for credentials, capabilities and preview rules. To add your own, implement `Provider` from `@opencoredev/sandbox-sdk/provider` and test it with `runConformance` from `@opencoredev/sandbox-sdk/testing`.
 
 ## Repository
 
-| Path | What it holds |
-| --- | --- |
-| [`packages/sdk`](./packages/sdk) | The `@opencoredev/sandbox-sdk` package |
-| [`examples`](./examples) | Runnable examples, starting with [getting-started](./examples/getting-started) |
-| [`bench`](./bench) | The provider benchmark harness |
-| [`apps/docs`](./apps/docs) | The documentation site |
-| [`apps/web`](./apps/web) | The landing page, and the logo and social images in [`apps/web/brand`](./apps/web/brand) |
-| [`docs`](./docs) | The 1.0 design spec and provider reference notes |
+| Path                             | What it holds                                                                            |
+| -------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`packages/sdk`](./packages/sdk) | The `@opencoredev/sandbox-sdk` package                                                   |
+| [`examples`](./examples)         | Runnable examples, starting with [getting-started](./examples/getting-started)           |
+| [`bench`](./bench)               | The provider benchmark harness                                                           |
+| [`apps/docs`](./apps/docs)       | The documentation site                                                                   |
+| [`apps/web`](./apps/web)         | The landing page, and the logo and social images in [`apps/web/brand`](./apps/web/brand) |
+| [`docs`](./docs)                 | The 1.0 design spec and provider reference notes                                         |
 
 [EARLY_ACCESS.md](./EARLY_ACCESS.md) has per-provider setup and known limits for the beta. Release steps are in [RELEASING.md](./RELEASING.md). Report bugs in [issues](https://github.com/opencoredev/sandbox-sdk/issues).
 
