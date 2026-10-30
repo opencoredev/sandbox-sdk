@@ -594,9 +594,9 @@ describe("streams", () => {
     const deadline = createDeadline(1);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(deadline.signal.aborted).toBe(true);
-    expect((await rejection(client().stream({ method: "GET", path: "/logs", deadline }))).code).toBe(
-      "timeout",
-    );
+    expect(
+      (await rejection(client().stream({ method: "GET", path: "/logs", deadline }))).code,
+    ).toBe("timeout");
     expect(server.requests).toHaveLength(0);
   });
 
