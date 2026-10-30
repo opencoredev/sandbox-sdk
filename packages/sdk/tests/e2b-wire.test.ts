@@ -430,6 +430,37 @@ describe("command streams", () => {
     );
   });
 
+  test("cancellation during startup destroys the sandbox when killing the launch PID fails", async () => {
+    const provider = await attached();
+    let tag = "";
+    server
+      .on("POST /process.Process/Start", (request, response) => {
+        if (scriptOf(request).startsWith("kill -")) {
+          response
+            .writeHead(200, { "content-type": "application/connect+json" })
+            .end(concat(start(99), exit(), done));
+
+          return;
+        }
+
+        tag = tagOf(request); // envd started it, but the start event never arrives
+      })
+      .on("POST /process.Process/SendSignal", {
+        status: 500,
+        json: { code: "internal", message: "signal failed" },
+      })
+      .on("DELETE /sandboxes/{id}", { status: 204 });
+    server.on("POST /process.Process/List", (_request, response) => {
+      response
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ processes: [{ pid: 42, tag, config: { cmd: "/bin/bash" } }] }));
+    });
+    expect(await exec(provider, [], 100)).toEqual({ exitCode: null, timedOut: true });
+    expect(server.calls("DELETE /sandboxes/{id}").map((request) => request.url)).toEqual([
+      "/sandboxes/sb1",
+    ]);
+  });
+
   test("a Start whose response is lost is outcome_unknown, and a process that never started is signalled by tag", async () => {
     const provider = await attached();
     server

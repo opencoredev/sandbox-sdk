@@ -480,6 +480,43 @@ test("snapshot waits within snapshotTimeoutMs and exposes its recovery name on f
   }
 });
 
+test.each(["error", "build_failed"])(
+  "a snapshot that ends in state %s rejects with its recovery name",
+  async (state) => {
+    const box = await createSandbox(daytona({ apiKey: "key", snapshotTimeoutMs: 5_000 }));
+    const native = guest(box.id);
+
+    const snapshot = vi.spyOn(native, "createSnapshot").mockImplementationOnce(async () => {
+      native.state = state;
+    });
+
+    const failed = box.snapshot();
+    await expect(failed).rejects.toMatchObject({ code: "provider", retryable: false });
+    const name = snapshot.mock.calls.at(-1)?.[0] ?? "";
+    expect(name).toMatch(/^sdk-/);
+    await expect(failed).rejects.toThrow(name);
+  },
+);
+
+test("a buffered read that stalls after headers times out within requestTimeoutMs", async () => {
+  const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 1_000 }));
+  await box.files.write("stalled", "never sent");
+
+  // The daemon sends headers and one chunk, then nothing.
+  vi.spyOn(guest(box.id).fs, "downloadFileStream").mockImplementation(async () => {
+    const body = new Readable({ read() {} });
+    body.push("partial");
+
+    return body;
+  });
+
+  const hung = new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 10_000));
+
+  await expect(Promise.race([box.files.read("stalled"), hung])).rejects.toMatchObject({
+    code: "timeout",
+  });
+});
+
 test("the snapshot wait is not bounded by requestTimeoutMs", async () => {
   const box = await createSandbox(daytona({ apiKey: "key", requestTimeoutMs: 200 }));
 

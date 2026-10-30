@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
+import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { localDocker, lookupError, nativeModules } from "./existence.js";
 import { deadline } from "./timing.js";
@@ -102,16 +102,16 @@ export async function snapshotCleaner(
   throw new Error("Snapshot cleanup not registered");
 }
 
-/** The Daytona adapter's native handle, as far as snapshot creation uses it. */
-type DaytonaHandle = Pick<DaytonaSandbox, "createSnapshot">;
+/** The Daytona adapter's native handle, as far as snapshot creation uses it: `sdk()` returns the SDK sandbox. */
+type DaytonaHandle = Pick<DaytonaNative, "sdk">;
 
-/** Whether a native handle can create a Daytona snapshot. `Provider` erases the handle's type. */
+/** Whether a native handle can reach the Daytona SDK sandbox. `Provider` erases the handle's type. */
 function isDaytonaHandle(handle: unknown): handle is DaytonaHandle {
   return (
     typeof handle === "object" &&
     handle !== null &&
-    "createSnapshot" in handle &&
-    typeof handle.createSnapshot === "function"
+    "sdk" in handle &&
+    typeof handle.sdk === "function"
   );
 }
 
@@ -125,7 +125,8 @@ export async function createNamedDaytonaSnapshot(
 
   if (!isDaytonaHandle(handle)) throw new Error("Daytona native handle unavailable");
 
-  await handle.createSnapshot(name, 600);
+  const sandbox = await handle.sdk(() => nativeModules.load("@daytonaio/sdk"));
+  await sandbox.createSnapshot(name, 600);
 
   return { id: name };
 }

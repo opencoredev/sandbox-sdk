@@ -514,7 +514,11 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     const found = (await envd.process.list(id)).find((entry) => entry.tag === tag);
 
     if (found) {
-      await envd.process.signal(id, { pid: found.pid }, "SIGNAL_SIGKILL").catch(() => {});
+      // The group signal cannot report a missing group, so a failed PID kill must surface: the caller then
+      // destroys the sandbox rather than leave a bootstrap that never made its group running.
+      await envd.process.signal(id, { pid: found.pid }, "SIGNAL_SIGKILL").catch((cause) => {
+        if (!(cause instanceof SandboxError && cause.code === "not_found")) throw cause;
+      });
       await groupSignal(id, found.pid, "KILL");
 
       return;
