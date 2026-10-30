@@ -19,13 +19,18 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "check": "bun run format && bun run lint && bun run typecheck && bun run test",
-    "bench": "bun run --cwd bench bench"
+    "bench": "bun run --cwd bench bench",
+    "changeset": "changeset",
+    "version-packages": "changeset version && oxfmt --write packages/sdk/CHANGELOG.md && bun install --lockfile-only",
+    "release": "bun scripts/release.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@changesets/changelog-git": "1.0.0",
+    "@changesets/cli": "3.0.3",
     "@oxlint/plugins": "1.90.0",
     "@shadcn/lint": "0.2.3",
     "@types/node": "^22.20.1",
