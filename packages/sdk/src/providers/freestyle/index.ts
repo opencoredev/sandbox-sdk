@@ -11,6 +11,7 @@ import {
   sdkConstruct,
   type NativeApi,
   type NativeSdkBinding,
+  sdkObject,
 } from "../../native.js";
 import type { Provider, SandboxInfo, CreateInput } from "../../provider.js";
 import { files, python, type Guest } from "../../shared/guest.js";
@@ -175,9 +176,11 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
 
       if (sandboxId === undefined) return sdk;
 
-      const vms: unknown = isObject(sdk) ? ("vms" in sdk ? sdk.vms : undefined) : undefined;
-
-      return await sdkCall(vms, "ref", [sandboxId], "freestyle");
+      return sdkObject(
+        await sdkCall(sdk.vms, "ref", [sandboxId], "freestyle"),
+        "vms.ref",
+        "freestyle",
+      );
     },
   };
 

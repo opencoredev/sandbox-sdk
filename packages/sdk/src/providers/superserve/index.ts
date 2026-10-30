@@ -16,7 +16,13 @@ import {
   sleep,
   type PlaneContext,
 } from "../../http.js";
-import { createNativeApi, sdkCall, type NativeApi, type NativeSdkBinding } from "../../native.js";
+import {
+  createNativeApi,
+  sdkCall,
+  type NativeApi,
+  type NativeSdkBinding,
+  sdkObject,
+} from "../../native.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { failure, superserveError } from "./errors.js";
 import { execute } from "./execute.js";
@@ -604,7 +610,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
   const binding: NativeSdkBinding = {
     package: sdkPackage,
     async connect(module, sandboxId) {
-      const Sandbox: unknown = "Sandbox" in module ? module.Sandbox : undefined;
+      const Sandbox = module.Sandbox;
 
       if (!(Sandbox instanceof Function))
         invalid(
@@ -613,10 +619,14 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
 
       if (sandboxId === undefined) return Sandbox;
 
-      return await sdkCall(
-        Sandbox,
-        "connect",
-        [sandboxId, { apiKey: config().apiKey, baseUrl: options.baseUrl }],
+      return sdkObject(
+        await sdkCall(
+          Sandbox,
+          "connect",
+          [sandboxId, { apiKey: config().apiKey, baseUrl: options.baseUrl }],
+          sdkPackage,
+        ),
+        "Sandbox.connect",
         sdkPackage,
       );
     },

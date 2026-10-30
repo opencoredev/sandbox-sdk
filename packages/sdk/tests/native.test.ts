@@ -441,7 +441,7 @@ describe("types", () => {
     });
 
     const result = await plain.sdk(async () => ({ anything: 1 }));
-    expectTypeOf(result).toEqualTypeOf<unknown>();
+    expectTypeOf(result).toEqualTypeOf<object>();
     expect(result).toEqual({ anything: 1 });
   });
 });

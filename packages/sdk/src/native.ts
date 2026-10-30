@@ -1,3 +1,4 @@
+import type { JsonValue } from "./shared/json.js";
 import { isObject, isString } from "./shared/narrow.js";
 import { SandboxError, invalid, nativeDetail } from "./errors.js";
 import type { HttpClient } from "./http.js";
@@ -50,10 +51,10 @@ export interface NativeRequestOptions<Plane extends string = string> {
  * Every provider's `sdk` is assignable to this one, so a plain `NativeApi` accepts any provider's native API.
  * Through a plain `NativeApi` the module is unknown, so `sdk` cannot be called; use the provider's own type.
  */
-export type NativeSdkLoader = (load: () => Promise<never>) => Promise<unknown>;
+export type NativeSdkLoader = (load: () => Promise<never>) => Promise<object>;
 
 /** The `sdk` loader of a provider that does not describe its module: any module in, `unknown` out. */
-export type AnyNativeSdk = <M extends object>(load: () => Promise<M>) => Promise<unknown>;
+export type AnyNativeSdk = <M extends object>(load: () => Promise<M>) => Promise<object>;
 
 /**
  * Direct access to a provider's HTTP API, with the adapter's base URLs, credentials, retries, error mapping
@@ -104,7 +105,30 @@ export interface NativeSdkBinding {
    * Build the SDK object for `sandboxId`, or the account client when it is undefined. `module` is untrusted:
    * use it through {@link sdkConstruct} and {@link sdkCall}, which throw `invalid_argument` when an export or method is missing.
    */
-  connect(module: object, sandboxId: string | undefined): unknown;
+  connect(module: SdkValue, sandboxId: string | undefined): object | Promise<object>;
+}
+
+/** A member of the caller's SDK module, or of an object it built, read by name and checked before use. */
+export type SdkMember = SdkValue | JsonValue | undefined;
+
+/** A module, class, function or object from the caller's SDK. */
+export interface SdkValue {
+  readonly [member: string]: SdkMember;
+}
+
+/** Whether a member is an object or function that can have members of its own. */
+function isSdkValue(value: SdkMember): value is SdkValue {
+  return value instanceof Function || (isObject(value) && !Array.isArray(value));
+}
+
+/** `value` when the SDK returned an object, else `invalid_argument` naming the package. */
+export function sdkObject(value: SdkMember, what: string, packageName: string): SdkValue {
+  if (!isSdkValue(value))
+    invalid(
+      `${what} from ${packageName} is not an object. Install a supported version of ${packageName}`,
+    );
+
+  return value;
 }
 
 /** Options for {@link createNativeApi}. */
@@ -140,15 +164,18 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
 
   function call(method: HttpMethod, path: string, request: NativeRequestOptions<Plane> = {}) {
     if (!isString(method) || !methods.has(method))
-      invalid(`Unsupported HTTP method ${isString(method) ? method.slice(0, 16) : typeof method}`);
+      invalid(`Unsupported HTTP method ${String(method).slice(0, 16)}`);
 
     if (!isString(path)) invalid("The path must be a string");
-    let params = request.params;
 
-    if (sandboxId !== undefined)
-      for (const name of names)
-        if (path.includes(`{${name}}`) && params?.[name] === undefined)
-          params = { ...params, [name]: sandboxId };
+    const filled = names.filter(
+      (name) => path.includes(`{${name}}`) && request.params?.[name] === undefined,
+    );
+
+    const params =
+      sandboxId === undefined || filled.length === 0
+        ? request.params
+        : { ...request.params, ...Object.fromEntries(filled.map((name) => [name, sandboxId])) };
 
     return {
       method,
@@ -165,21 +192,23 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
     };
   }
 
-  async function connect(load: () => Promise<unknown>): Promise<unknown> {
+  async function connect(load: () => Promise<object>): Promise<object> {
     if (!binding)
       throw new SandboxError(
         `${http.label} has no official SDK binding. Use native.request or native.fetch.`,
         { code: "unsupported", provider: http.provider, sandboxId },
       );
 
-    if (typeof load !== "function")
+    if (!(load instanceof Function))
       invalid(
         `Pass a function that imports the SDK: native.sdk(() => import("${binding.package}"))`,
       );
-    let module: unknown;
+    let module: SdkMember;
 
     try {
-      module = peerModule(await load());
+      // SAFETY: a module namespace or CommonJS exports object, or whatever the caller returned; it is
+      // checked below, and adapters read each export through sdkConstruct and sdkCall.
+      module = peerModule(await load()) as SdkMember;
     } catch (error) {
       const missing =
         error instanceof Error &&
@@ -204,7 +233,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
       );
     }
 
-    if (!isObject(module) || module === null)
+    if (!isSdkValue(module) || Array.isArray(module))
       invalid(`native.sdk() needs the module object. Pass () => import("${binding.package}")`);
 
     try {
@@ -227,7 +256,9 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
   // `Sdk` is the adapter's narrowed signature for this one runtime function; its result type is derived from
   // the caller's module type, which no runtime check can produce, so this is the single place it is asserted.
   // SAFETY: connect implements every overload of Sdk; TypeScript cannot check overloads against one function.
-  const sdk = connect as unknown as Sdk;
+  const loader: NativeSdkLoader = connect;
+  // SAFETY: the same function; Sdk only narrows the module and result types for the caller.
+  const sdk = loader as Sdk;
 
   return {
     sandboxId,
@@ -252,20 +283,20 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
  * the package when the export is missing or is not a class.
  */
 export function sdkConstruct(
-  module: object,
+  module: SdkValue,
   name: string,
   args: unknown[],
   packageName: string,
-): unknown {
-  const value: unknown = Reflect.get(module, name);
+): SdkValue {
+  const value = module[name];
 
-  if (typeof value !== "function")
+  if (!(value instanceof Function))
     invalid(
       `The module passed to native.sdk() has no ${name} export. Pass () => import("${packageName}")`,
     );
 
   try {
-    return Reflect.construct(value, args);
+    return sdkObject(Reflect.construct(value, args), name, packageName);
   } catch (error) {
     if (error instanceof TypeError && /constructor/i.test(error.message))
       invalid(
@@ -280,18 +311,19 @@ export function sdkConstruct(
  * the package when the method is missing, which means the installed SDK version does not match.
  */
 export async function sdkCall(
-  target: unknown,
+  target: SdkMember,
   name: string,
   args: unknown[],
   packageName: string,
-): Promise<unknown> {
-  const method: unknown =
-    isObject(target) || typeof target === "function" ? Reflect.get(target, name) : undefined;
+): Promise<SdkMember> {
+  const method = isSdkValue(target) ? target[name] : undefined;
 
-  if (typeof method !== "function")
+  if (!(method instanceof Function))
     invalid(
       `The ${packageName} object has no ${name} method. Install a supported version of ${packageName}`,
     );
 
-  return await Reflect.apply(method, target, args);
+  const result: SdkMember = await method.apply(target, args);
+
+  return result;
 }

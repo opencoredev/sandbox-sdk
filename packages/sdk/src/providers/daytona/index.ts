@@ -9,6 +9,7 @@ import {
   sdkConstruct,
   type NativeApi,
   type NativeSdkBinding,
+  sdkObject,
 } from "../../native.js";
 import { daytonaError, unsupported } from "./errors.js";
 import {
@@ -351,7 +352,11 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
 
       return sandboxId === undefined
         ? client
-        : await sdkCall(client, "get", [sandboxId], "@daytonaio/sdk");
+        : sdkObject(
+            await sdkCall(client, "get", [sandboxId], "@daytonaio/sdk"),
+            "Daytona.get",
+            "@daytonaio/sdk",
+          );
     },
   };
 
