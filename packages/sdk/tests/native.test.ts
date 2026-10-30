@@ -230,6 +230,20 @@ describe("request and fetch", () => {
     expect((await failure(box.fetch("GET", "/missing"))).code).toBe("not_found");
   });
 
+  test("fetch's timeoutMs covers time to headers, not the body", async () => {
+    // Headers come at once; the body takes about 500 ms, well past the 200 ms timeout.
+    server.on("GET /api/logs", { stream: ["a", "b", "c", "d", "e"], intervalMs: 100 });
+    const response = await acme().native("sb-1").fetch("GET", "/logs", { timeoutMs: 200 });
+    expect(await response.text()).toBe("abcde");
+  });
+
+  test("fetch's timeoutMs above the client default extends the wait for headers", async () => {
+    // The client default is 2 s; headers take 2.5 s.
+    server.on("GET /api/logs", { stream: ["ok"], delayMs: 2_500 });
+    const response = await acme().native("sb-1").fetch("GET", "/logs", { timeoutMs: 5_000 });
+    expect(await response.text()).toBe("ok");
+  });
+
   test("request sends bytes as is and returns undefined for 204", async () => {
     server.on("PUT /api/files", { status: 204 });
     expect(
