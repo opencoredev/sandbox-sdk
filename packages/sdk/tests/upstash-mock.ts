@@ -48,6 +48,10 @@ export const state = {
   boot: { polls: 0, outcome: "running" },
   statusReads: 0,
   deletes,
+  /** Whether the next create request never answers, as if the response were lost after sending. */
+  hangCreate: false,
+  /** Cleanup DELETEs that answer 503 before one goes through. */
+  deleteFailures: 0,
 };
 
 /** One mock machine. Every handle for the same box ID shares it. */
@@ -508,6 +512,11 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const create = /^https:\/\/us-east-1\.box\.upstash\.com\/v2\/box(\/from-snapshot)?$/.exec(url);
 
   if (create && method === "POST") {
+    if (state.hangCreate)
+      return new Promise<Response>((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+
     const wire: Wire = JSON.parse(String(init?.body));
     const config = configOf(wire, new Headers(init?.headers).get("X-Box-Api-Key"));
     let box: MockBox;
@@ -540,6 +549,13 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
 
   if (id !== undefined && method === "DELETE") {
     state.deletes.push(decodeURIComponent(id));
+
+    if (state.deleteFailures > 0) {
+      state.deleteFailures--;
+
+      return Response.json({ error: "unavailable" }, { status: 503 });
+    }
+
     const box = state.boxes.get(decodeURIComponent(id));
 
     if (!box) return Response.json({ error: "not found" }, { status: 404 });
@@ -563,6 +579,8 @@ export async function cleanup() {
   state.envWrites.length = 0;
   state.boot = { polls: 0, outcome: "running" };
   state.statusReads = 0;
+  state.hangCreate = false;
+  state.deleteFailures = 0;
   state.deletes.length = 0;
 }
 

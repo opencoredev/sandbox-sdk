@@ -51,3 +51,43 @@ test("a failed create request maps its HTTP status and allocates nothing", async
   ).rejects.toMatchObject({ code: "not_found", provider: "upstash" });
   expect(state.boxes.size).toBe(0);
 });
+
+test("the create request is bound by requestTimeoutMs, and a lost answer is outcome_unknown", async () => {
+  state.hangCreate = true;
+  const started = Date.now();
+
+  await expect(
+    createSandbox(upstash({ apiKey: "mock-key", requestTimeoutMs: 300 })),
+  ).rejects.toMatchObject({ code: "outcome_unknown", provider: "upstash" });
+  expect(Date.now() - started).toBeLessThan(5000);
+}, 10_000);
+
+test("a cleanup DELETE that fails transiently is retried", async () => {
+  state.boot = { polls: 1, outcome: "error" };
+  state.deleteFailures = 1;
+  await expect(createSandbox(upstash({ apiKey: "mock-key" }))).rejects.toMatchObject({
+    code: "provider",
+    message: expect.stringContaining("Box creation failed"),
+  });
+  expect(state.deletes).toHaveLength(2);
+  expect(state.boxes.size).toBe(0);
+});
+
+test("a cleanup DELETE that never succeeds is outcome_unknown with the box ID", async () => {
+  state.boot = { polls: 1, outcome: "error" };
+  state.deleteFailures = 100;
+
+  const error: unknown = await createSandbox(upstash({ apiKey: "mock-key" })).catch(
+    (cause: Error) => cause,
+  );
+
+  const [id] = state.boxes.keys();
+  expect(id).toBeDefined();
+  expect(error).toMatchObject({
+    code: "outcome_unknown",
+    provider: "upstash",
+    sandboxId: id,
+    message: expect.stringContaining("Box creation failed"),
+  });
+  expect(state.deletes.length).toBeGreaterThan(1);
+});

@@ -269,6 +269,30 @@ const baseUrlOf = (config: { baseUrl?: string }) =>
     "https://us-east-1.box.upstash.com"
   ).replace(/\/$/, "");
 
+/** Deletes a box, retrying transient failures briefly. True once Upstash confirms it is gone. */
+async function removeBox(baseUrl: string, headers: Record<string, string>, id: string) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+
+    try {
+      const response = await fetch(`${baseUrl}/v2/box/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (response.ok || response.status === 404) return true;
+
+      // Only rate limits and server errors can pass on a retry.
+      if (response.status !== 429 && response.status < 500) return false;
+    } catch {
+      // A network failure or timeout: the box may or may not be gone, so try again.
+    }
+  }
+
+  return false;
+}
+
 /** @internal The adapter behind `upstash()`. `load` imports the Upstash Box SDK; tests pass a
  * fixture. Ephemeral options leave pause and resume unset; `upstash()` types that per mode.
  */
@@ -363,12 +387,27 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
 
     if (config.networkPolicy) body.network_policy = wirePolicy(config.networkPolicy);
 
-    // No caller signal: an aborted request could still allocate a box, and only the response names it.
-    const response = await fetch(`${baseUrl}/v2/box${from === undefined ? "" : "/from-snapshot"}`, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    // One deadline covers the request and the boot. The request also stops at requestTimeoutMs.
+    const end = Date.now() + 300_000;
+    let response: Response;
+
+    try {
+      // No caller signal: an aborted request could still allocate a box, and only the response names it.
+      response = await fetch(`${baseUrl}/v2/box${from === undefined ? "" : "/from-snapshot"}`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Math.min(config.timeout ?? 600_000, end - Date.now())),
+      });
+    } catch (error) {
+      // The request may have reached Upstash, and only its lost answer named the box.
+      if (error instanceof Error && error.name === "TimeoutError")
+        throw new SandboxError(
+          "Upstash did not answer the create request in time, so a box may exist without its ID. List sandboxes and destroy any you do not expect before retrying.",
+          { code: "outcome_unknown", provider: "upstash", cause: error },
+        );
+      throw error;
+    }
 
     if (!response.ok) throw await httpError(response);
     const created: unknown = await response.json();
@@ -387,7 +426,6 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
         timeout: config.timeout,
       });
 
-      const end = Date.now() + 300_000;
       let status = created.status;
 
       while (status === "creating") {
@@ -419,10 +457,12 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
       return value;
     } catch (error) {
       // Box.create would leave a box that never booted in place. This create holds its ID, so remove it.
-      await fetch(`${baseUrl}/v2/box/${encodeURIComponent(created.id)}`, {
-        method: "DELETE",
-        headers,
-      }).catch(() => {});
+      if (!(await removeBox(baseUrl, headers, created.id)))
+        throw new SandboxError(
+          `Upstash box ${created.id} did not finish creating (${error instanceof Error ? error.message : "unknown error"}) and could not be deleted, so it may still be running. Destroy it before retrying.`,
+          { code: "outcome_unknown", provider: "upstash", sandboxId: created.id, cause: error },
+        );
+
       throw error;
     }
   }
