@@ -34,11 +34,18 @@ let client: Promise<PostHog> | undefined;
 export function loadPostHog(): Promise<PostHog> | undefined {
   if (process.env.NODE_ENV !== "production") return undefined;
 
-  client ??= import("posthog-js").then(({ default: posthog }) => {
+  if (client) return client;
+
+  const loading = import("posthog-js").then(({ default: posthog }) => {
     if (!posthog.__loaded) posthog.init(posthogKey, posthogConfig);
 
     return posthog;
   });
+  // a failed chunk load (say, briefly offline) shouldn't stick: the next call tries again
+  loading.catch(() => {
+    if (client === loading) client = undefined;
+  });
+  client = loading;
 
   return client;
 }
