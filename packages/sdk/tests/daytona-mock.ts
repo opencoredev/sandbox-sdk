@@ -354,7 +354,23 @@ export class MockSandbox {
   async delete(_timeout = 60, _wait = false) {
     if (!mockState.boxes.has(this.id)) throw missing();
     mockState.boxes.delete(this.id);
-    await fs.rm(this.root, { recursive: true, force: true });
+    // Deleting a Daytona sandbox ends its processes, including detached SDK background jobs.
+    const procs = this.mapped("/tmp/.sandbox-sdk/procs");
+
+    for (const name of await fs.readdir(procs).catch(() => [])) {
+      const pid = Number(await fs.readFile(join(procs, name, "pid"), "utf8").catch(() => ""));
+
+      if (pid > 1) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // The group already exited.
+        }
+      }
+    }
+
+    // A writer killed just before this can still be flushing into the tree; retry ENOTEMPTY.
+    await fs.rm(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
   async createSnapshot(name: string) {
     const root = await fs.mkdtemp(join(tmpdir(), "sdk-daytona-snapshot-"));

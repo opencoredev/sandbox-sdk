@@ -269,3 +269,133 @@ test("HTTP readiness allows a cloud handshake longer than 100ms", async () => {
     await box.destroy();
   }
 });
+
+test("concurrent start() calls with one name launch only one process", async () => {
+  const provider = await shellProvider();
+  const exec = provider.exec.bind(provider);
+  // Widen the gap between setup's running check and its record writes, so both calls
+  // reach the check before either writes spec.json unless setup reserves the name.
+  provider.exec = (id, input) =>
+    exec(id, {
+      ...input,
+      command: input.command.replace("then exit 73; fi;", "then exit 73; fi; sleep 0.3;"),
+    });
+  const box = await createSandbox(provider);
+
+  try {
+    const results = await Promise.allSettled([
+      box.start("sleep 30", { name: "twin" }),
+      box.start("sleep 30", { name: "twin" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({
+          code: "invalid_argument",
+          message: expect.stringContaining("already running"),
+        }),
+      }),
+    ]);
+    await box.process("twin").stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("concurrent start() calls with one name on a stream-mode provider launch only one process", async () => {
+  const box = await createSandbox(memory());
+
+  try {
+    const results = await Promise.allSettled([
+      box.start("sleep 5", { name: "twin" }),
+      box.start("sleep 5", { name: "twin" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({ code: "invalid_argument" }),
+      }),
+    ]);
+    await box.process("twin").stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+/** Poll a process's log until it contains `text`. */
+async function waitForLog(process: { logs(): Promise<{ text: string }> }, text: string) {
+  const end = Date.now() + 10_000;
+
+  while (!(await process.logs()).text.includes(text)) {
+    if (Date.now() > end) throw new Error(`Log never showed ${text}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** The pid of a process that has already exited. */
+async function deadPid(): Promise<number> {
+  const { spawn } = await import("node:child_process");
+  const child = spawn("true");
+  await new Promise((resolve) => child.on("exit", resolve));
+
+  if (child.pid === undefined) throw new Error("Missing child pid");
+
+  return child.pid;
+}
+
+test("logs() recovers a record lock abandoned by a killed writer", async () => {
+  const box = await createSandbox(await shellProvider());
+
+  try {
+    const process = await box.start("echo first; sleep 30", { name: "wedged" });
+    await waitForLog(process, "first");
+
+    // An owner killed between its mkdir and its owner entry leaves an empty lock.
+    await box.run("mkdir /tmp/.sandbox-sdk/procs/wedged/lock");
+    expect((await process.logs()).text).toContain("first");
+
+    // A writer killed inside its critical section leaves its own pid as the owner.
+    await box.run(`mkdir /tmp/.sandbox-sdk/procs/wedged/lock`);
+    await box.run(`touch /tmp/.sandbox-sdk/procs/wedged/lock/${await deadPid()}`);
+    expect((await process.logs()).text).toContain("first");
+
+    // The next run under the name can take the lock and append.
+    await process.stop({ graceMs: 100 });
+    await box.run(`mkdir /tmp/.sandbox-sdk/procs/wedged/lock`);
+    await box.run(`touch /tmp/.sandbox-sdk/procs/wedged/lock/${await deadPid()}`);
+    const next = await box.start("echo second; sleep 30", { name: "wedged" });
+    await waitForLog(next, "second");
+    await next.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+}, 30_000);
+
+test("logs() waits for a record lock whose owner is alive", async () => {
+  const provider = await shellProvider();
+  const box = await createSandbox(provider);
+
+  try {
+    const process = await box.start("echo first; sleep 30", { name: "held" });
+    await waitForLog(process, "first");
+    // This test runner stands in for a live writer that holds the lock for a moment.
+    await box.run(`mkdir /tmp/.sandbox-sdk/procs/held/lock`);
+    await box.run(`touch /tmp/.sandbox-sdk/procs/held/lock/${globalThis.process.pid}`);
+    const released = Date.now() + 500;
+
+    // Straight to the transport: the handle may queue this behind the waiting log read.
+    setTimeout(() => {
+      void provider.files.remove(box.id, "/tmp/.sandbox-sdk/procs/held/lock", {
+        recursive: true,
+      });
+    }, 500);
+
+    expect((await process.logs()).text).toContain("first");
+    expect(Date.now()).toBeGreaterThanOrEqual(released);
+    await process.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});

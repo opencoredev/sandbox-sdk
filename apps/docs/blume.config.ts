@@ -45,6 +45,14 @@ export default defineConfig({
     { from: "/quickstart", to: "/getting-started/quickstart" },
     { from: "/installation", to: "/getting-started/installation" },
     { from: "/providers/compare", to: "/providers" },
+    // The 0.2 docs had one API page per surface. Each now lives in a concept guide.
+    // These stay exact: Blume serves its own JSON under /api/docs.
+    { from: "/api/sandboxes", to: "/concepts/sandboxes-and-keys" },
+    { from: "/api/commands", to: "/concepts/running-commands" },
+    { from: "/api/files", to: "/concepts/files-and-git" },
+    { from: "/api/processes", to: "/concepts/processes-and-previews" },
+    { from: "/api/ports", to: "/concepts/processes-and-previews" },
+    { from: "/api/snapshots", to: "/concepts/lifecycle-and-cleanup" },
   ],
   navigation: {
     cta: { href: "https://github.com/opencoredev/sandbox-sdk", label: "GitHub" },

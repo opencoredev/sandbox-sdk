@@ -65,9 +65,10 @@ const packOutput = z.tuple(
   z.unknown(),
 );
 
+// Step 1 already built, and the prepack build would print into the JSON output.
 const packed = packOutput.safeParse(
   JSON.parse(
-    must("npm", ["pack", "--json", "--pack-destination", packDir], {
+    must("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir], {
       cwd: sdkDir,
       timeoutMs: 120_000,
     }),
