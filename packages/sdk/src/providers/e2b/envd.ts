@@ -132,6 +132,7 @@ const watchTypes: ReadonlyMap<string, WatchEvent["type"]> = new Map<string, Watc
 ]);
 
 const base64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
+const watchIdleMs = 120_000;
 const connectJson = "application/connect+json";
 
 /** proto3 JSON integers: a number or a decimal string. Absent is 0. */
@@ -614,6 +615,8 @@ export function createEnvd(options: {
             body: connectEnvelope({ path, recursive: options.recursive }),
             signal: options.signal,
             startupTimeoutMs: startupMs,
+            // envd pings every 50 s; a stream silent for longer has stalled, so it fails and the core retries.
+            idleTimeoutMs: watchIdleMs,
             readOnly: true,
             headers: {
               "content-type": connectJson,

@@ -164,6 +164,11 @@ test("provider-level capabilities, the E2B template spec and extensions are type
     // @ts-expect-error the portable spec has no startCommand
     await buildTemplate(runtimeProvider(), { name: "t", startCommand: "npm start" });
 
+    // A union passes only when every member declares the capability.
+    const either = Math.random() > 0.5 ? e2b() : memory();
+    // @ts-expect-error memory, one member of the union, has no snapshot-delete capability
+    await deleteSnapshot(either, "snap");
+
     const box = await createSandbox(e2b());
     const samples: { cpuUsedPct: number }[] = await box.ext.e2b.metrics({ startMs: 0 });
     const terminal = await box.terminal({ cols: 80, rows: 24 });

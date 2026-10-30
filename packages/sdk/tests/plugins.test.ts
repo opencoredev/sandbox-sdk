@@ -158,6 +158,49 @@ describe("extensions", () => {
     await blind.destroy();
   });
 
+  test("class instances keep their prototype methods, and a throwing getter is redacted", async () => {
+    const secret = "getter-secret-value";
+    const base = memory();
+
+    class Regions {
+      constructor(readonly id: string) {}
+      async current() {
+        return `eu-west for ${this.id}`;
+      }
+    }
+
+    const provider: Provider<
+      unknown,
+      "network-policy",
+      { regions: { current(): Promise<string> }; lazy: { ping(): Promise<void> } }
+    > = {
+      ...base,
+      extensions: {
+        regions: (id) => new Regions(id),
+        lazy: () => ({
+          get ping(): () => Promise<void> {
+            throw new Error(`lazy getter saw ${secret}`);
+          },
+        }),
+      },
+    };
+
+    const box = await createSandbox(provider, { secrets: { TOKEN: secret } });
+    expect(await box.ext.regions.current()).toBe(`eu-west for ${box.id}`);
+
+    let thrown: unknown;
+
+    try {
+      void box.ext.lazy;
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxError);
+    expect(String(thrown)).not.toContain(secret);
+    await box.destroy();
+  });
+
   test("a factory that throws surfaces as a redacted SandboxError on access", async () => {
     const secret = "factory-secret-value";
     const base = memory();
@@ -349,6 +392,41 @@ describe("terminal", () => {
     expect(await terminal.wait?.()).toEqual({ exitCode: 0 });
     expect(seen.join("")).toBe("done abc");
     await box.destroy();
+  });
+
+  test("a shell that finishes opening after close() is closed, not handed out", async () => {
+    let release = () => {};
+    let started = false;
+    let closedShells = 0;
+
+    const provider: Provider<unknown, "network-policy" | "terminal"> = {
+      ...memory(),
+      capabilities: new Set(["network-policy", "terminal"]),
+      async terminal(): Promise<Terminal> {
+        started = true;
+
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+
+        return {
+          write() {},
+          resize() {},
+          onData: () => () => {},
+          close() {
+            closedShells++;
+          },
+        };
+      },
+    };
+
+    const box = await createSandbox(provider, { key: "terminal-race" });
+    const opening = box.terminal({ cols: 80, rows: 24 });
+    await expect.poll(() => started).toBe(true);
+    await box.close();
+    release();
+    await expect(opening).rejects.toMatchObject({ code: "not_found" });
+    expect(closedShells).toBe(1);
   });
 
   test("rejects bad sizes and env names before opening, and is absent without the capability", async () => {

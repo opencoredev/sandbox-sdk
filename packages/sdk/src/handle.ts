@@ -25,6 +25,24 @@ function isNameList(value: unknown): value is string[] {
   );
 }
 
+/** Every method an extension object offers by name, its own or inherited from its class. Reads each one. */
+function methodsOf(methods: ExtensionMethods): [string, ExtensionMethods[string]][] {
+  const names = new Set<string>();
+
+  for (
+    let level: object | null = methods;
+    level !== null && level !== Object.prototype;
+    level = Object.getPrototypeOf(level)
+  )
+    for (const name of Object.getOwnPropertyNames(level)) if (name !== "constructor") names.add(name);
+
+  return [...names].flatMap((name) => {
+    const method = methods[name];
+
+    return method ? [[name, method]] : [];
+  });
+}
+
 export async function makeHandle<N>(
   provider: Provider<N>,
   info: SandboxInfo,
@@ -308,9 +326,12 @@ export async function makeHandle<N>(
 
         if (bound) return bound;
         let methods: ExtensionMethods;
+        let found: [string, ExtensionMethods[string]][];
 
+        // Discovery reads every method, so a throwing getter is caught here with the factory.
         try {
           methods = factory(info.id, box);
+          found = methodsOf(methods);
         } catch (error) {
           // A getter cannot wait for recovery.
           throw recovered
@@ -320,7 +341,7 @@ export async function makeHandle<N>(
 
         // Each method keeps its object as `this`, so methods may call one another.
         bound = Object.fromEntries(
-          Object.entries(methods).map(([method, call]) => [
+          found.map(([method, call]) => [
             method,
             async (...args: never[]) => {
               check();
@@ -495,6 +516,12 @@ export async function makeHandle<N>(
             cwd: pathOf(options.cwd),
             env: { ...baseEnv, ...options.env },
           });
+
+          // close() or destroy() may have landed while the shell started: close it rather than hand it out.
+          if (closed || destroyed) {
+            await Promise.resolve(raw.close()).catch(() => {});
+            check();
+          }
 
           const cleanups = new Set<() => void>();
           // Text a redaction filter holds back as a possible secret prefix. Flushed when the shell exits too.

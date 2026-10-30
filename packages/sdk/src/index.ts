@@ -374,11 +374,12 @@ export async function reapSandboxes(
   }
 }
 
-/** The capability union a provider type declares. */
-type CapabilitiesOf<P> = P extends Provider<infer _N, infer C, infer _X> ? C : never;
+/** The members of a provider type, or of a union of them, that do not declare `K`. */
+type Lacking<P, K extends Capability> =
+  P extends Provider<infer _N, infer C, infer _X> ? ([K] extends [C] ? never : P) : never;
 
-/** `unknown` when `P` declares `K`, else a property that names the missing capability in the type error. */
-type Requires<P, K extends Capability> = [K] extends [CapabilitiesOf<P>]
+/** `unknown` when every member of `P` declares `K`, else a property that names the missing capability. */
+type Requires<P, K extends Capability> = [Lacking<P, K>] extends [never]
   ? unknown
   : { readonly missingCapability: K };
 

@@ -271,6 +271,19 @@ describe("snapshots and templates", () => {
     expect(error.message).toContain("build b1 of tpl1");
   });
 
+  test("a build trigger lost after sending is outcome_unknown, and still names the build", async () => {
+    server
+      .on("POST /v3/templates", { json: { templateID: "tpl1", buildID: "b1" } })
+      .on("POST /v2/templates/{tid}/builds/{bid}", { hang: true });
+
+    const error = await rejection(
+      buildTemplate(e2b({ apiKey: key }), { name: "lost" }, { timeoutMs: 300 }),
+    );
+
+    expect(error.code).toBe("outcome_unknown");
+    expect(error.message).toContain("build b1 of tpl1");
+  });
+
   test("conflicting sources and a ready check without a start command are refused locally", async () => {
     const provider = e2b({ apiKey: key });
 
@@ -477,6 +490,30 @@ describe("terminal", () => {
     await expect(terminal.close()).rejects.toMatchObject({ code: "auth" });
     await expect.poll(() => shells.closed()).toBe(1);
   });
+
+  test("close still kills the shell when the session cleanup cannot run", async () => {
+    const provider = await attached();
+    const shells = starts([{ frames: [frame({ event: { start: { pid: 12 } } })], hold: true }]);
+
+    server
+      .on("POST /process.Process/Start", (request, response) => {
+        if (isRecord(envelopeOf(request).pty)) shells.handler(request, response);
+        else
+          response
+            .writeHead(400, { "content-type": "application/json" })
+            .end(JSON.stringify({ code: "invalid_argument", message: "no" }));
+      })
+      .on("POST /process.Process/SendSignal", { json: {} });
+
+    const terminal = await provider.terminal("sb1", { cols: 80, rows: 24 });
+    const closing = terminal.close();
+    await expect.poll(() => server.calls("POST /process.Process/SendSignal").length).toBe(1);
+    expect(bodyOf(server.calls("POST /process.Process/SendSignal")[0])).toEqual({
+      process: { pid: 12 },
+      signal: "SIGNAL_SIGKILL",
+    });
+    await closing;
+  }, 10_000);
 
   test("a shell whose start event never arrives is found by its tag and stopped", async () => {
     const provider = await attached("0.10.0", { requestTimeoutMs: 300 });

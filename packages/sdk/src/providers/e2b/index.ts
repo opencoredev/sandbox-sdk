@@ -696,11 +696,12 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
           try {
             // Bash gives each job its own process group, so stop the whole PTY session (envd makes the
             // shell its leader), then the shell. Children outlive a shell that already exited, too.
+            // Best effort: a guest that cannot start another command (envd before 0.3.0) still gets the shell killed.
             await runToEnd(
               id,
               `pkill -KILL -s ${command.pid} 2>/dev/null || kill -KILL -- -${command.pid} 2>/dev/null; true`,
               10_000,
-            );
+            ).catch(() => {});
 
             if (command.exitCode === undefined) await command.kill();
             // The end event normally follows the kill at once; do not hang on a stalled stream.
@@ -759,7 +760,11 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
 
     // Once the build is requested it runs on E2B whatever happens here, so later failures name it.
     const pending = (cause: unknown) => {
-      if (!(cause instanceof SandboxError) || !["timeout", "aborted"].includes(cause.code))
+      // outcome_unknown is a timeout after a POST was sent, the case that most needs the IDs.
+      if (
+        !(cause instanceof SandboxError) ||
+        !["timeout", "aborted", "outcome_unknown"].includes(cause.code)
+      )
         return cause;
 
       return new SandboxError(
