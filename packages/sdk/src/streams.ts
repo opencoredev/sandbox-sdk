@@ -55,7 +55,7 @@ function fault(
       provider: options.provider,
       sandboxId: options.sandboxId,
       retryable: kind === "disconnected" || kind === "truncated",
-      ...(cause === undefined ? undefined : { cause: nativeDetail(cause) ?? kind }),
+      cause: cause === undefined ? undefined : (nativeDetail(cause) ?? kind),
     },
   );
 
@@ -310,8 +310,8 @@ export async function* sse(
       ? {
           event: event || "message",
           data: data.join("\n"),
-          ...(lastId === undefined ? undefined : { id: lastId }),
-          ...(retry === undefined ? undefined : { retry }),
+          id: lastId,
+          retry,
         }
       : undefined;
 
@@ -498,8 +498,8 @@ export async function* connectEnvelopes(
         throw fault("malformed", "The Connect end-of-stream error has no code", options);
       frame.error = {
         code,
-        ...(isString(message) ? { message } : undefined),
-        ...(Array.isArray(details) ? { details } : undefined),
+        message: isString(message) ? message : undefined,
+        details: Array.isArray(details) ? details : undefined,
       };
     }
 

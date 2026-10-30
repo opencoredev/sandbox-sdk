@@ -151,20 +151,18 @@ function parseDetails(value: JsonValue | undefined): Details {
     // E2B has only these two states; a killed sandbox is gone.
     state: value.state === "paused" ? "paused" : "running",
     startedAt: Number.isFinite(startedAt) ? startedAt : 0,
-    ...(isBoolean(value.allowInternetAccess)
-      ? { allowInternetAccess: value.allowInternetAccess }
-      : undefined),
-    ...(network
+    allowInternetAccess: isBoolean(value.allowInternetAccess)
+      ? value.allowInternetAccess
+      : undefined,
+    network: network
       ? {
-          network: {
-            allowOut: strings(network.allowOut),
-            denyOut: strings(network.denyOut),
-            ...(isBoolean(network.allowPublicTraffic)
-              ? { allowPublicTraffic: network.allowPublicTraffic }
-              : undefined),
-          },
+          allowOut: strings(network.allowOut),
+          denyOut: strings(network.denyOut),
+          allowPublicTraffic: isBoolean(network.allowPublicTraffic)
+            ? network.allowPublicTraffic
+            : undefined,
         }
-      : undefined),
+      : undefined,
   };
 }
 
@@ -260,11 +258,12 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
         auth: ({ sandboxId }) => {
           const { envdAccessToken } = connection(sandboxId ?? "");
 
-          return {
+          const routing = {
             "e2b-sandbox-id": sandboxId ?? "",
             "e2b-sandbox-port": String(envdPort),
-            ...(envdAccessToken ? { "x-access-token": envdAccessToken } : undefined),
           };
+
+          return envdAccessToken ? { ...routing, "x-access-token": envdAccessToken } : routing;
         },
       },
     },
@@ -298,8 +297,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     return {
       sandboxId: value.sandboxID,
       envdVersion: value.envdVersion,
-      ...(envdAccessToken ? { envdAccessToken } : undefined),
-      ...(trafficAccessToken ? { trafficAccessToken } : undefined),
+      envdAccessToken,
+      trafficAccessToken,
       domain: text("domain") ?? domain(),
     };
   }
@@ -637,13 +636,14 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             ? undefined
             : createdAt + input.timeoutMs;
 
+        const allowOut = isObject(input.network) ? input.network.allow : undefined;
+
         const network =
-          isObject(input.network) || options.public === false
+          allowOut !== undefined || options.public === false
             ? {
-                ...(isObject(input.network)
-                  ? { denyOut: ["0.0.0.0/0"], allowOut: input.network.allow }
-                  : undefined),
-                ...(options.public === false ? { allowPublicTraffic: false } : undefined),
+                denyOut: allowOut === undefined ? undefined : ["0.0.0.0/0"],
+                allowOut,
+                allowPublicTraffic: options.public === false ? false : undefined,
               }
             : undefined;
 
@@ -654,32 +654,24 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
             path: "/v2/sandboxes",
             body: {
               templateID: input.from ?? options.template ?? "base",
+              // validate() keeps the reserved tags out of the labels.
               metadata: {
                 ...input.labels,
                 "sandbox-sdk": "1",
-                ...(input.key === undefined ? undefined : { [keyTag]: input.key }),
-                ...(deadline === undefined ? undefined : { [deadlineTag]: String(deadline) }),
+                [keyTag]: input.key,
+                [deadlineTag]: deadline === undefined ? undefined : String(deadline),
               },
               envVars: input.env,
-              ...(input.timeoutMs === undefined
-                ? undefined
-                : { timeout: seconds(input.timeoutMs) }),
-              ...(input.network === "none"
-                ? { allow_internet_access: false }
-                : isObject(input.network)
-                  ? {}
-                  : { allow_internet_access: true }),
-              ...(network === undefined ? undefined : { network }),
+              timeout: input.timeoutMs === undefined ? undefined : seconds(input.timeoutMs),
+              allow_internet_access:
+                input.network === "none" ? false : isObject(input.network) ? undefined : true,
+              network,
               autoPause: options.autoPause === true,
               autoResume: { enabled: options.autoPause === true && options.autoResume === true },
-              ...(options.volumes === undefined
-                ? undefined
-                : {
-                    volumeMounts: Object.entries(options.volumes).map(([path, name]) => ({
-                      name,
-                      path,
-                    })),
-                  }),
+              volumeMounts:
+                options.volumes === undefined
+                  ? undefined
+                  : Object.entries(options.volumes).map(([path, name]) => ({ name, path })),
             },
           }),
         );
