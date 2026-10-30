@@ -10,7 +10,8 @@
  *   updated: 2026-10-30
  *   ---
  *
- * The file name, without `.md`, is the slug. `updated` is optional and
+ * The file name, without `.md`, is the slug: lowercase letters, digits and
+ * single hyphens, so it goes into URLs and the RSS feed as is. `updated` is optional and
  * defaults to `published`; the sitemap and RSS feed use it as the last change.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -40,6 +41,7 @@ export type Post = PostMeta & { html: string };
 const BLOG_DIR = join(process.cwd(), "content", "blog");
 const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function parseDate({ value, field, file }: { value: string; field: string; file: string }) {
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -58,7 +60,15 @@ function parseDate({ value, field, file }: { value: string; field: string; file:
 }
 
 /** Splits a post file into its front matter fields and Markdown body. A missing field fails the build. */
-function parsePost({ file, source }: { file: string; source: string }) {
+function parsePost({ file, source: raw }: { file: string; source: string }) {
+  // Files saved with Windows line endings parse the same as LF ones.
+  const source = raw.replace(/\r\n/g, "\n");
+  const slug = file.replace(/\.md$/, "");
+
+  if (!SLUG.test(slug)) {
+    throw new Error(`${file}: file names must be lowercase letters, digits and single hyphens`);
+  }
+
   const match = FRONT_MATTER.exec(source);
 
   if (!match) throw new Error(`${file}: missing front matter`);
@@ -89,7 +99,7 @@ function parsePost({ file, source }: { file: string; source: string }) {
     : published;
 
   const meta: PostMeta = {
-    slug: file.replace(/\.md$/, ""),
+    slug,
     title: required("title"),
     description: required("description"),
     published,

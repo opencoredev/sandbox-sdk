@@ -126,7 +126,7 @@ What each option does:
 - `size: "small"` caps the container at 1 CPU and 1024 MiB of memory. `medium` is 2 CPUs and 4096 MiB, `large` is 4 and 8192, or pass `{ cpu, memoryMb }`. Without `size`, Docker sets no limit.
 - `pidsLimit` stops a fork bomb from taking the host down with it.
 - `capDrop` and `securityOpt` pass straight through to Docker. Dropping all capabilities and setting `no-new-privileges` removes most of what root can do inside the container.
-- `timeoutMs` and `idleTimeoutMs` set a lifetime. Docker has no timer of its own, so they are enforced when a client reconnects or when `reapSandboxes` runs. Schedule a reaper if nothing reconnects.
+- `timeoutMs` and `idleTimeoutMs` set a lifetime. Docker has no timer of its own, so the SDK checks them when a client reconnects and removes an expired container then. If nothing reconnects, create the containers with your own label, such as `labels: { app: "agent" }`, and schedule `reapSandboxes(local(), { labels: { app: "agent" }, olderThanMs: 30 * 60_000, idleOnly: true })`. The reaper goes by those filters, not by each container's own timeout: it removes every matching container older than `olderThanMs`, and `idleOnly` skips the ones still running a command or process.
 
 `local()` can't do everything a cloud sandbox can. It has no host allow lists (only `"none"`), no disk size, and no terminals. Asking for one of those fails with an `unsupported` error instead of quietly creating a looser sandbox. The [Local provider page](/docs/providers/local) lists every option and limit.
 
@@ -195,7 +195,7 @@ Code that takes a `Sandbox` runs the same against `memory()`, `local()` and ever
 
 ## Clean up
 
-`await using` destroys the container when the scope exits, including when your code throws. If you need a sandbox to outlive one request, give it a `key` and find it again later, or call `box.close()` to disconnect and leave it running. Containers the SDK creates carry the label `sandbox-sdk=1`, so a scheduled `reapSandboxes` call can remove forgotten ones. [Lifecycle and cleanup](/docs/concepts/lifecycle-and-cleanup) has the details.
+`await using` destroys the container when the scope exits, including when your code throws. If you need a sandbox to outlive one request, give it a `key`: then `await using` only disconnects, and the same `key` finds the container again later. [One sandbox per user](/docs/guides/per-user-sandboxes) builds that pattern step by step. Without a `key`, create it with a plain `const` instead of `await using`, and call `box.close()` to disconnect and leave it running or `box.destroy()` to remove it. Containers the SDK creates carry the label `sandbox-sdk=1`, so a scheduled `reapSandboxes` call can remove forgotten ones. [Lifecycle and cleanup](/docs/concepts/lifecycle-and-cleanup) has the details.
 
 ## Common questions
 
