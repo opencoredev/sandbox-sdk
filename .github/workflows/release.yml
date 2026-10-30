@@ -35,11 +35,11 @@ jobs:
       - name: Open the version PR, or publish to npm
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: bun run version-packages
-          publish: bun run release
-          commit: "chore: version packages"
-          title: "chore: version packages"
-          createGithubReleases: true
+          version-script: bun run version-packages
+          publish-script: bun run release
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          create-github-releases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
