@@ -1,15 +1,15 @@
-# Sandbox SDK 1.0 beta: early access
+# Sandbox SDK 1.0: early access notes
 
-`@opencoredev/sandbox-sdk` 1.0.0-beta.1 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
+`@opencoredev/sandbox-sdk` 1.0 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
 
-This is a beta. The API can still change before 1.0.0. If something breaks or reads wrong, tell us; the last section says what to include.
+If something breaks or reads wrong, tell us; the last section says what to include.
 
 ## Install
 
-Install from the `next` tag (`latest` is still 0.2, so a plain install gives you the old API):
+Install from npm:
 
 ```sh
-npm install @opencoredev/sandbox-sdk@next
+npm install @opencoredev/sandbox-sdk
 ```
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
@@ -132,7 +132,7 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 
 Open an issue at https://github.com/opencoredev/sandbox-sdk/issues, or message Leo directly. Include:
 
-- the SDK version (`1.0.0-beta.1`) and your runtime (Node.js or Bun version),
+- the SDK version (for example `1.0.0`) and your runtime (Node.js or Bun version),
 - the provider and the factory options you passed,
 - for a `SandboxError`: `code`, `message`, `hint`, `provider`, and `sandboxId`,
 - the smallest snippet that reproduces it.
