@@ -15,12 +15,12 @@
 Sandbox SDK gives your server-side TypeScript one API for creating sandboxes, running commands, editing files and serving previews. The same code runs on 11 cloud providers, including E2B, Daytona, Vercel Sandbox and Upstash Box, or in Docker on your own machine. Switching providers means changing one import.
 
 > [!NOTE]
-> 1.0 is in beta on the `next` tag, and the API can still change before 1.0.0. `npm install @opencoredev/sandbox-sdk` without a tag still installs 0.2.
+> Coming from 0.2? 1.0 changes the API. [Upgrade from 0.2](https://sandbox-sdk.app/docs/upgrade-from-0-2) walks through each change.
 
 ## Install
 
 ```sh
-npm install @opencoredev/sandbox-sdk@next
+npm install @opencoredev/sandbox-sdk
 ```
 
 It needs Node.js 22+ or Bun 1.3+. Each provider's own SDK is an optional peer, so you install only the ones you use, such as `npm install e2b`.
@@ -133,7 +133,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [`apps/web`](./apps/web)         | The landing page, and the logo and social images in [`apps/web/brand`](./apps/web/brand) |
 | [`docs`](./docs)                 | The 1.0 design spec and provider reference notes                                         |
 
-[EARLY_ACCESS.md](./EARLY_ACCESS.md) has per-provider setup and known limits for the beta. Release steps are in [RELEASING.md](./RELEASING.md). Report bugs in [issues](https://github.com/opencoredev/sandbox-sdk/issues).
+[EARLY_ACCESS.md](./EARLY_ACCESS.md) has per-provider setup and known limits. Release steps are in [RELEASING.md](./RELEASING.md). Report bugs in [issues](https://github.com/opencoredev/sandbox-sdk/issues).
 
 ## License
 
