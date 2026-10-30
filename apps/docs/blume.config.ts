@@ -236,6 +236,7 @@ export default defineConfig({
     og: {
       enabled: true,
       site: "sandbox-sdk.app/docs",
+      logo: "/logo.svg",
       palette: {
         accent: "#e8a33c",
         background: "#0b0b0c",
