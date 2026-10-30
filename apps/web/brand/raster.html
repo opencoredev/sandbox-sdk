@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      // Draws ?src= into a transparent canvas of ?w= by ?h= and exposes it as window.png.
+      // ?r= clips it to rounded corners of that radius.
+      const q = new URLSearchParams(location.search);
+      const w = Number(q.get("w"));
+      const h = Number(q.get("h"));
+      const r = Number(q.get("r") ?? 0);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext("2d");
+        if (r > 0) {
+          ctx.beginPath();
+          ctx.roundRect(0, 0, w, h, r);
+          ctx.clip();
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        window.png = c.toDataURL("image/png").split(",")[1];
+      };
+      img.src = q.get("src");
+    </script>
+  </body>
+</html>

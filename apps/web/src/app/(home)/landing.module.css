@@ -122,9 +122,9 @@
   letter-spacing: -0.01em;
 }
 .brandMark {
-  /* 16px lands the 32-unit mark grid on whole pixels */
-  width: 16px;
-  height: 16px;
+  /* larger than the wordmark so the pixel S reads at a glance */
+  width: 24px;
+  height: 24px;
   color: var(--amber);
 }
 .navLinks {
@@ -642,6 +642,19 @@
 }
 .dot:hover::before {
   background: var(--muted);
+}
+@media (max-width: 520px) {
+  /* fourteen providers: tighter dots so the row fits a phone */
+  .dots {
+    gap: 0;
+  }
+  .dot {
+    width: 22px;
+  }
+  .dotIndicator {
+    width: 18px;
+    left: 2px;
+  }
 }
 
 /* code */
