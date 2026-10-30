@@ -1,8 +1,15 @@
-import type { Provider, SandboxInfo, SnapshotOptions, Terminal } from "./provider.js";
+import type {
+  ExtensionMethods,
+  Provider,
+  SandboxInfo,
+  SnapshotOptions,
+  Terminal,
+  TerminalOptions,
+} from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
-import { Redactor, SandboxError, invalid } from "./errors.js";
+import { Redactor, SandboxError, invalid, type ErrorCode } from "./errors.js";
 import { attachHandle, detachHandle, forgetSandbox, withKeyLock } from "./keys.js";
-import { makeRun, chunkRedactor, defaults, secretRecoveryCommand } from "./run.js";
+import { makeRun, chunkRedactor, defaults, pathOf, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
 import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
@@ -58,6 +65,9 @@ export async function makeHandle<N>(
 
   let recovery: Promise<void> | undefined =
     created || !recoverSecrets ? Promise.resolve() : undefined;
+
+  // Whether the redactor knows every secret recorded at creation, for paths that skip recovery.
+  let recovered = recovery !== undefined;
 
   const ready = () =>
     (recovery ??= recover().catch((error) => {
@@ -115,7 +125,12 @@ export async function makeHandle<N>(
     // Values stay private to this step, and only explicitly recorded names enter the redactor/env.
     const found = await readSecretEnvironment();
 
-    if (!found) return;
+    if (!found) {
+      recovered = true;
+
+      return;
+    }
+
     let names: unknown;
 
     try {
@@ -128,11 +143,12 @@ export async function makeHandle<N>(
     }
 
     if (!isNameList(names)) invalid("Invalid secret names record");
-    const recovered: Record<string, string> = {};
+    const values: Record<string, string> = {};
 
-    for (const name of names) recovered[name] = found.environment.get(name) ?? "";
-    redactor.add(Object.values(recovered));
-    Object.assign(baseEnv, recovered, options.env, options.secrets);
+    for (const name of names) values[name] = found.environment.get(name) ?? "";
+    redactor.add(Object.values(values));
+    Object.assign(baseEnv, values, options.env, options.secrets);
+    recovered = true;
   }
 
   // Recovery can be slow, and close or destroy can land while it runs, so check again once it settles, even if it failed.
@@ -266,6 +282,67 @@ export async function makeHandle<N>(
     return wrapper;
   };
 
+  // Extensions bind on first access, so a handle that never uses one pays nothing. The factory and
+  // every method run behind the handle's closed check. A successful call skips secret recovery, like
+  // usage(); a failure recovers first so its error is redacted, and is withheld when that is impossible.
+  const ext: Record<string, ExtensionMethods> = {};
+
+  const withheld = (name: string, code: ErrorCode) =>
+    new SandboxError(
+      `Extension ${name} failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets enabled.`,
+      { code, provider: provider.name, sandboxId: info.id },
+    );
+
+  const factories: Readonly<
+    Record<string, ((id: string, box: SandboxBase<N>) => ExtensionMethods) | undefined>
+  > = provider.extensions ?? {};
+
+  for (const [name, factory] of Object.entries(factories)) {
+    if (!factory) continue;
+    let bound: ExtensionMethods | undefined;
+
+    Object.defineProperty(ext, name, {
+      enumerable: true,
+      get() {
+        check();
+
+        if (bound) return bound;
+        let methods: ExtensionMethods;
+
+        try {
+          methods = factory(info.id, box);
+        } catch (error) {
+          // A getter cannot wait for recovery.
+          throw recovered
+            ? redactor.error(error, provider.name, info.id)
+            : withheld(name, error instanceof SandboxError ? error.code : "provider");
+        }
+
+        // Each method keeps its object as `this`, so methods may call one another.
+        bound = Object.fromEntries(
+          Object.entries(methods).map(([method, call]) => [
+            method,
+            async (...args: never[]) => {
+              check();
+
+              try {
+                return await call.call(methods, ...args);
+              } catch (error) {
+                if (!recovered) await ready().catch(() => {});
+
+                throw recovered
+                  ? redactor.error(error, provider.name, info.id)
+                  : withheld(name, error instanceof SandboxError ? error.code : "provider");
+              }
+            },
+          ]),
+        );
+
+        return bound;
+      },
+    });
+  }
+
   const box: SandboxBase<N> = {
     id: info.id,
     key: info.key,
@@ -273,6 +350,7 @@ export async function makeHandle<N>(
     created,
     labels: info.labels,
     capabilities: new Set(provider.capabilities),
+    ext,
     get native() {
       check();
 
@@ -401,9 +479,23 @@ export async function makeHandle<N>(
 
   if (provider.capabilities.has("terminal") && terminal)
     Object.assign(box, {
-      terminal: (options: { cols: number; rows: number }) =>
+      terminal: (options: TerminalOptions) =>
         safe(async () => {
-          const raw = await terminal.call(provider, info.id, options);
+          for (const size of [options.cols, options.rows])
+            if (!Number.isSafeInteger(size) || size < 1)
+              invalid("Terminal cols and rows must be positive integers");
+
+          for (const name of Object.keys(options.env ?? {}))
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+              invalid("Invalid environment variable name");
+
+          const raw = await terminal.call(provider, info.id, {
+            cols: options.cols,
+            rows: options.rows,
+            cwd: pathOf(options.cwd),
+            env: { ...baseEnv, ...options.env },
+          });
+
           const cleanups = new Set<() => void>();
 
           const handle: Terminal = {
@@ -436,6 +528,10 @@ export async function makeHandle<N>(
                 await raw.close();
               }),
           };
+
+          const wait = raw.wait;
+
+          if (wait) handle.wait = () => direct(() => wait.call(raw));
 
           return handle;
         }),

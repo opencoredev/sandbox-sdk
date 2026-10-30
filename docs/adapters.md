@@ -12,6 +12,12 @@ Implement `Provider<Native, CapabilityLiterals>` from `src/provider.ts`. The cap
 - `native` returns the fully typed client. `close` detaches local transport resources; it must leave the remote sandbox running.
 - Optional native process hooks must keep their process alive when local resources detach. Core owns the durable records and log framing. A shell fallback requires Linux `sh`, `setsid`, `nohup`, `mkfifo`, GNU `sed -u`, and standard file utilities. File checkpoints require Git, and directory transfer requires tar.
 
+- Provider-level hooks: `deleteSnapshot(snapshotId)` (`"snapshot-delete"`, resolve `false` for a snapshot that is already gone) and `buildTemplate(spec, options)` (`"templates"`, honor `options.timeoutMs` as one deadline and name the remote build in timeout or abort errors). Widen `TemplateSpec` by typing the hook's `spec` parameter.
+- `terminal(id, { cols, rows, cwd, env })` receives an absolute `cwd` and the handle's merged environment, and must honor both. Implement `wait()` only when the provider reports the shell's exit.
+- `files.watch(id, path, { recursive, signal, onEvent })` emits absolute-path events until `signal` aborts. Reject with `unsupported` to make the core poll.
+- `usage(id)` returns the newest metric sample under the shared `Usage` names.
+- `extensions` holds features only this provider has, exposed as `box.ext.<name>` and typed by the third `Provider` type parameter. Each factory returns async methods; the core wraps them.
+
 All provider errors must use `SandboxError`. Core wraps unknown failures and sanitizes native causes to prevent nested credential objects from escaping. File reads preserve data exactly; command output, process output, search results, patches, and errors are redacted. Reconnect restores redaction values by reading the recorded secret variable names from the sandbox environment. That environment must survive connection changes.
 
 Run conformance from a provider test file:
@@ -30,6 +36,10 @@ runConformance(() => provider, {
 ```
 
 Use `timeout 120s vitest run --maxWorkers=4`. Cloud providers require `live: true`; the caller gates that flag on its credentials. `/testing` imports Vitest through an optional peer dependency. The core and memory entry points have no runtime package dependencies.
+
+## Maintaining an adapter outside this repo
+
+Import only from `@opencoredev/sandbox-sdk/provider`: the contract types, `SandboxError` and the error helpers, `createHttpClient`, `createDeadline`, `sleep`, the native API helpers, and the Connect stream codec. The E2B adapter (`src/providers/e2b`) follows this rule and `tests/provider-boundary.test.ts` enforces it, so it is the reference for a package a provider maintains itself. Test it with `runConformance` from `/testing`.
 
 ## Core limits and spec clarifications
 

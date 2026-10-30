@@ -110,6 +110,8 @@ stop();
 
 Each event has `type` (`"added"`, `"modified"`, or `"removed"`) and `path`. The function `watch` returns stops watching.
 
+On E2B the events come from the sandbox's file system as they happen. Every other provider lists the tree every `intervalMs` (250 by default) and reports what changed between two listings, so a file created and deleted within one interval is never seen. Pass `onError` to hear about failed listings or a broken event stream; watching carries on either way.
+
 ## See what changed
 
 `changes` tells you what files differ from a checkpoint. Use it to show a user what their agent did.

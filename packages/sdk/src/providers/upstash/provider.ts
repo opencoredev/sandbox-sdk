@@ -42,6 +42,7 @@ import { upstashError, unsupported } from "./errors.js";
 import { execute, startProcess } from "./exec.js";
 import { listDirectory, readFile, writeFile } from "./files.js";
 import { parseMetadata, type MetadataPart } from "../../shared/metadata.js";
+import { userAgent } from "../../version.js";
 
 type CommonOptions = {
   /** Defaults to UPSTASH_BOX_API_KEY; required on first use. */
@@ -363,7 +364,7 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
     } = await sdk();
 
     const baseUrl = baseUrlOf(config);
-    const headers = { "X-Box-Api-Key": apiKey };
+    const headers = { "X-Box-Api-Key": apiKey, "User-Agent": userAgent };
 
     const body: CreateRequest = {};
 
@@ -598,7 +599,7 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
     // The native SDK only lists snapshots per source box. The account endpoint
     // also covers snapshots whose source has been deleted, preserving native IDs.
     const response = await fetch(`${baseUrl}/v2/box/snapshots`, {
-      headers: { Authorization: `Bearer ${config.apiKey}` },
+      headers: { Authorization: `Bearer ${config.apiKey}`, "User-Agent": userAgent },
       signal: AbortSignal.timeout(options.requestTimeoutMs ?? 30_000),
     });
 

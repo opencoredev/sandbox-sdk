@@ -1,6 +1,6 @@
 ---
 title: E2B
-description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots, network allow lists, and a hard lifetime a reconnect can't extend.
+description: Run sandboxes as E2B microVMs. Pause with memory intact, snapshots, templates, a PTY terminal, native file watching, metrics, network allow lists, and a hard lifetime a reconnect can't extend.
 ---
 
 `e2b()` runs each sandbox as an [E2B](https://e2b.dev) microVM. It calls E2B's API and the daemon inside each sandbox over HTTP, so you install no E2B package.
@@ -62,13 +62,16 @@ This prints `4`. `await using` destroys the sandbox when the block ends.
 | Background processes           | Yes         |                                                                                                              |
 | Preview URLs                   | Yes         | Public `https://` URL by default, no ports to declare. `public: false` requires a token header               |
 | Pause and resume               | Yes         | Memory and files survive                                                                                     |
-| Snapshots                      | Yes         | Kept until you delete them. `expiresInMs` fails with `unsupported`                                           |
+| Snapshots                      | Yes         | Kept until you delete them with `deleteSnapshot`. `expiresInMs` fails with `unsupported`                     |
+| Templates                      | Yes         | `buildTemplate` builds from an image or another template                                                     |
+| File watching                  | Native      | Events come from envd as they happen, not by polling                                                         |
+| Metrics                        | Yes         | `box.usage()` adds the newest CPU, memory and disk sample; `box.ext.e2b.metrics()` returns the history       |
 | Machine size                   | No          | Fixed by the template                                                                                        |
 | Network policy                 | Yes         | `"none"` or a host allow list                                                                                |
 | Hard lifetime (`timeoutMs`)    | Yes         | Reconnect and resume never extend it. With `autoPause`, it is the running time before E2B pauses the sandbox |
 | Idle timeout (`idleTimeoutMs`) | No          | E2B measures elapsed time only                                                                               |
 | Keys                           | Best-effort | Found by metadata search                                                                                     |
-| Terminal                       | No          |                                                                                                              |
+| Terminal                       | Yes         | A login shell on a PTY, as root                                                                              |
 
 The [capability matrix](/reference/capabilities) compares these with every other provider.
 
@@ -151,7 +154,17 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(e2b(), { from: id });
 ```
 
-E2B keeps snapshots until you delete them, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted.
+E2B keeps snapshots until you delete them, so `snapshot({ expiresInMs })` fails with `unsupported`. `expiresInMs: 0` is accepted. Delete one with `deleteSnapshot`, which needs no sandbox and resolves `false` when the snapshot was already gone:
+
+```ts
+import { createSandbox, deleteSnapshot } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const provider = e2b();
+await using box = await createSandbox(provider);
+const { id } = await box.snapshot();
+console.log(await deleteSnapshot(provider, id)); // true
+```
 
 With `autoPause`, E2B pauses the sandbox when its timeout runs out instead of killing it. `timeoutMs` then sets the running time before that pause, and the SDK records no hard deadline. Add `autoResume` to wake the sandbox when a request reaches one of its preview URLs. Otherwise, `connectSandbox` or `box.resume()` brings it back.
 
@@ -164,6 +177,94 @@ const box = await createSandbox(e2b({ autoPause: true, autoResume: true }), {
   timeoutMs: 10 * 60_000, // paused after 10 minutes of running, not destroyed
 });
 ```
+
+## Templates
+
+`buildTemplate` builds a reusable E2B template and waits until it is ready. Start sandboxes from it with `from`, or pass its name as the factory's `template`.
+
+```ts
+import { buildTemplate, createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const provider = e2b();
+
+const template = await buildTemplate(
+  provider,
+  {
+    name: "node-dev",
+    image: "node:22-bookworm",
+    env: { NODE_ENV: "development" },
+    run: ["npm install -g pnpm"],
+    size: { cpu: 2, memoryMb: 2048 },
+  },
+  { onLog: (line) => console.log(line), timeoutMs: 15 * 60_000 },
+);
+
+await using box = await createSandbox(provider, { from: template.id });
+```
+
+Each `run` command is one build step and runs as root. Without `image`, E2B's base image is used. `env` and `workdir` apply to the build steps only, as in E2B's own template builder: pass `env` to `createSandbox` for the sandboxes. Files a step writes under `/tmp` don't survive into the template, so write to a path such as `/opt` instead. Beyond the portable fields, E2B accepts `fromTemplate` (start from another template instead of an image), `startCommand` and `readyCommand` (a process kept running in the template, and the check that must pass before E2B snapshots it), `tags`, and `skipCache`.
+
+`timeoutMs` covers the whole build, 30 minutes by default. When it runs out, or the signal aborts, the error names the template and build IDs, because the build keeps running on E2B. A failed build throws `provider` naming the failed step; the reason is in the log lines passed to `onLog`.
+
+## Terminal
+
+`box.terminal()` opens a login shell on a PTY. Output arrives as text through `onData`, with secrets redacted like command output. Output that arrives before the first `onData` call is kept, so the prompt is not lost.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+const terminal = await box.terminal({ cols: 120, rows: 40, cwd: "/workspace" });
+
+terminal.onData((data) => process.stdout.write(data));
+await terminal.write("ls -la\r");
+await terminal.resize(100, 30);
+
+await terminal.write("exit\r");
+console.log(await terminal.wait?.()); // { exitCode: 0 }
+```
+
+The shell starts with the sandbox's environment, plus `TERM=xterm-256color` and `LANG=C.UTF-8` unless you set them in `env`. `close()` kills it.
+
+## Watch files
+
+`box.files.watch` uses envd's file events, so changes arrive as they happen. Creating a file reports `added`, a write or a permission change `modified`, and a delete or a rename away `removed`. One write can report both `added` and `modified`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+const stop = box.files.watch("src", (event) => console.log(event.type, event.path), {
+  recursive: true,
+  onError: (error) => console.error(error.code),
+});
+
+await box.files.write("src/index.ts", "export {};\n");
+stop();
+```
+
+If the watch stream breaks, `onError` receives the error and the watch starts again a second later. A template with an envd older than 0.1.4 can't watch recursively, so the SDK polls instead.
+
+## Metrics
+
+`box.usage()` adds E2B's newest metric sample to the SDK's own counters. The fields are absent until E2B has taken a sample, a few seconds after creation.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+await using box = await createSandbox(e2b());
+const usage = await box.usage();
+console.log(usage.cpuPercent, usage.memoryBytes, usage.memoryLimitBytes, usage.diskBytes);
+
+const history = await box.ext.e2b.metrics({ startMs: Date.now() - 10 * 60_000 });
+console.log(history.length);
+```
+
+`box.ext.e2b` holds the features only E2B has. `metrics()` returns every sample in the window, oldest first, with E2B's own field names (`cpuUsedPct`, `memUsed`, `memTotal`, `diskUsed`, `diskTotal`).
 
 ## Size, network, and lifetime
 
@@ -277,8 +378,8 @@ In earlier betas, `box.native` was the `e2b` `Sandbox` itself. Replace `box.nati
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - `size` fails with `unsupported`. Pick the machine in the template.
 - `idleTimeoutMs` fails with `unsupported`. Use `timeoutMs`, or [Daytona](/providers/daytona) for idle auto-stop.
-- `snapshot({ expiresInMs })` fails with `unsupported`. Delete a snapshot with `provider.api.request("DELETE", "/templates/{id}", { params: { id } })`, as shown in [Call the API directly](#call-the-api-directly).
-- No terminals.
+- `snapshot({ expiresInMs })` fails with `unsupported`. Delete snapshots with [`deleteSnapshot`](#pause-resume-and-snapshots).
+- Template builds take the portable steps plus E2B's start and ready commands. Copying local files into a template, registry credentials, and Dockerfiles need the `e2b` package's `Template` builder through `provider.api.sdk`.
 
 ## How it works
 

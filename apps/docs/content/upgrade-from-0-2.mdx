@@ -148,7 +148,7 @@ await dev.stop();
 - `ready` waits for a port, an HTTP response, or a log line before `start` returns.
 - `output()` becomes `lines()` and `logs()`, both resumable from a cursor.
 - `kill()` becomes `stop()`, which sends SIGTERM and then SIGKILL.
-- `write()` to a process's stdin is removed. Pass input up front with `box.run(command, { stdin })`. The API reserves [`box.terminal()`](/reference/sandbox#optional-capabilities) for interactive input, but no built-in provider implements it in 1.0.
+- `write()` to a process's stdin is removed. Pass input up front with `box.run(command, { stdin })`. For interactive input, use [`box.terminal()`](/reference/sandbox#optional-capabilities) on a provider with the `"terminal"` capability (E2B).
 
 ## 6. ports
 

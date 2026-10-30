@@ -34,7 +34,7 @@ bun add @opencoredev/sandbox-sdk
   </Tab>
 </Tabs>
 
-The root entry exports `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types on this page. Providers live on subpaths: `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, and `/memory`. Agent tools live on `/ai`, `/mastra`, and `/openai`, and the framework-neutral tool schemas on `/tools`. The adapter contract is on `/provider` and the conformance suite on `/testing`.
+The root entry exports `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `deleteSnapshot`, `buildTemplate`, `hasCapability`, `SandboxError`, and the types on this page. Providers live on subpaths: `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, and `/memory`. Agent tools live on `/ai`, `/mastra`, and `/openai`, and the framework-neutral tool schemas on `/tools`. The adapter contract is on `/provider` and the conformance suite on `/testing`.
 
 ## `createSandbox(provider, options?)`
 
@@ -95,21 +95,32 @@ Options: `labels?`. Returns `{ id, key?, labels, state, createdAt }[]` for sandb
 
 Destroys matching sandboxes and returns the count. Options: `olderThanMs?`, `labels?`, `idleOnly?`. With `idleOnly`, a sandbox counts as idle when it has no SDK command in flight and no running SDK background process. Commands started outside the SDK are not seen. On E2B and Upstash, reaping finds SDK commands by the `SANDBOX_SDK_RUN=1` variable they and their child processes carry, so a process a command left running, such as a server started with `&`, keeps the sandbox busy until it exits. A process whose environment the check cannot read also counts as busy. Guide: [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup#find-and-reap-sandboxes).
 
+## `deleteSnapshot(provider, snapshotId)`
+
+Deletes a snapshot by the ID `box.snapshot()` returned. Resolves `true` when it was deleted and `false` when it was already gone. Needs the `"snapshot-delete"` capability: passing a provider type without it is a type error, and a provider typed as plain `Provider` that lacks it throws `unsupported` before any request.
+
+## `buildTemplate(provider, spec, options?)`
+
+Builds a reusable template and resolves `{ id, name, buildId? }` once it is ready. Start sandboxes from it with `createSandbox(provider, { from: template.id })`. Needs the `"templates"` capability, gated like `deleteSnapshot`.
+
+The portable `spec` is `{ name, image?, env?, workdir?, run?, size? }`: `run` is a list of shell commands, one build step each, `env` and `workdir` apply to those steps only, and `size` is `{ cpu, memoryMb }`. A provider may accept more fields, and the spec's type follows the provider you pass: [E2B](/providers/e2b#templates) adds `fromTemplate`, `startCommand`, `readyCommand`, `tags`, and `skipCache`. Options: `timeoutMs?` (one deadline for the whole build), `signal?`, and `onLog?(line)` for build log lines.
+
 ## Sandbox handle
 
 ### Properties
 
-| Member         | Type                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`           | `string`                                                                                                                                    |
-| `key`          | `string \| undefined`                                                                                                                       |
-| `provider`     | `string`                                                                                                                                    |
-| `created`      | `boolean`                                                                                                                                   |
-| `labels`       | `Record<string, string>`                                                                                                                    |
-| `capabilities` | `ReadonlySet<"pause" \| "snapshot" \| "terminal" \| "network-policy" \| "size">`                                                            |
-| `native`       | The provider's own API: a [`NativeApi`](/reference/native) for providers that call their API directly, or the provider SDK's sandbox object |
-| `files`        | [`Files`](#files)                                                                                                                           |
-| `git`          | [`Git`](#git)                                                                                                                               |
+| Member         | Type                                                                                                                                          |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | `string`                                                                                                                                      |
+| `key`          | `string \| undefined`                                                                                                                         |
+| `provider`     | `string`                                                                                                                                      |
+| `created`      | `boolean`                                                                                                                                     |
+| `labels`       | `Record<string, string>`                                                                                                                      |
+| `capabilities` | `ReadonlySet<Capability>`: `"pause"`, `"snapshot"`, `"snapshot-delete"`, `"templates"`, `"terminal"`, `"network-policy"`, `"size"`            |
+| `native`       | The provider's own API: a [`NativeApi`](/reference/native) for providers that call their API directly, or the provider SDK's sandbox object   |
+| `ext`          | Provider-specific features by name, such as `box.ext.e2b.metrics()`. An empty object for providers without any. See [Extensions](#extensions) |
+| `files`        | [`Files`](#files)                                                                                                                             |
+| `git`          | [`Git`](#git)                                                                                                                                 |
 
 ### `run(command, options?)`
 
@@ -163,7 +174,7 @@ Returns `{ url, headers?, expiresAt? }`. Options: `path?`, `waitMs?`. With `wait
 
 ### `usage()`
 
-Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the provider reports.
+Returns `{ createdAt, runningMs, commands, bytesOut }`, counted by this handle, plus the provider's newest metric sample where it reports one: `cpuCount`, `cpuPercent` (0 to 100 across all vCPUs), `memoryBytes`, `memoryLimitBytes`, `diskBytes`, `diskLimitBytes`, and `metricsAt` (epoch milliseconds). The metric fields are `undefined` when the provider has no sample. Providers may add other numeric fields, such as cost. E2B reports metrics; the other built-in providers do not yet.
 
 ### `close()`, `destroy()`, `[Symbol.asyncDispose]()`
 
@@ -173,11 +184,11 @@ Returns `{ createdAt, runningMs, commands, bytesOut }` plus any cost fields the 
 
 Present on the type only when the provider supports them. The [capability matrix](/reference/capabilities) lists which provider has which.
 
-| Method                       | Returns                                                                                                                                                                                                                                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pause()`, `resume()`        | `Promise<void>`                                                                                                                                                                                                                                                                                                                |
-| `snapshot({ expiresInMs? })` | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. `expiresInMs` deletes the snapshot after that many milliseconds, and `0` keeps it until you delete it. A provider that can't honor it throws `unsupported` or `invalid_argument` rather than ignoring it. A negative or fractional value throws `invalid_argument`. |
-| `terminal({ cols, rows })`   | A PTY with `write`, `resize`, `onData`, `close`. No built-in provider implements it in 1.0.                                                                                                                                                                                                                                    |
+| Method                                 | Returns                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pause()`, `resume()`                  | `Promise<void>`                                                                                                                                                                                                                                                                                                                |
+| `snapshot({ expiresInMs? })`           | `Promise<{ id }>`. Pass `id` as `from` to `createSandbox`. `expiresInMs` deletes the snapshot after that many milliseconds, and `0` keeps it until you delete it. A provider that can't honor it throws `unsupported` or `invalid_argument` rather than ignoring it. A negative or fractional value throws `invalid_argument`. |
+| `terminal({ cols, rows, cwd?, env? })` | A login shell on a PTY with `write(data)`, `resize(cols, rows)`, `onData(callback)` (returns an unsubscribe function), `close()`, and `wait()` where the provider reports the exit (`{ exitCode }`). Output is redacted like command output. `cwd` defaults to `/workspace`; the shell gets the sandbox's `env` and secrets.   |
 
 ## Files
 
@@ -195,7 +206,7 @@ Relative paths resolve against `/workspace`. Guide: [Files and git](/concepts/fi
 | `upload(localDir, remoteDir, { ignore? })`                     | `void`                                                                                                                                                                                                                                                                               |
 | `download(remoteDir, localDir)`                                | `void`                                                                                                                                                                                                                                                                               |
 | `search(query, { path?, glob?, maxMatches? })`                 | `{ path, line, text }[]`                                                                                                                                                                                                                                                             |
-| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`.                                                                                                                                                                |
+| `watch(path, callback, { recursive?, intervalMs?, onError? })` | A function that stops watching. `callback` gets `{ type, path }` with `type` `"added"`, `"modified"`, or `"removed"`. Providers with native file events (E2B) report each change as it happens; the rest list the tree every `intervalMs` (default 250) and report the differences.  |
 | `mark(name?)`                                                  | The checkpoint name                                                                                                                                                                                                                                                                  |
 | `changes({ since? })`                                          | `{ added, modified, removed, patch }`. `since` defaults to `"start"`, which exists only if you created the sandbox with `trackChanges: true` or called `mark("start")`. Otherwise it throws `invalid_argument`.                                                                      |
 
@@ -211,3 +222,7 @@ Every method resolves with a `RunResult`. Tokens go through a temporary credenti
 | `commit(dir, options)`   | `message`, `all?`, `author?`                              |
 | `push(dir, options?)`    | `token?`, `remote?`, `branch?`                            |
 | `checkout(dir, options)` | `branch`, `create?`                                       |
+
+## Extensions
+
+`box.ext` holds features only one provider has, so the shared API stays the same everywhere. Each provider page documents its own; today that is [`box.ext.e2b.metrics()`](/providers/e2b#metrics). The type of `box.ext` follows the provider, so `box.ext.e2b` on another provider is a type error. Every extension method checks that the handle is still open and throws a redacted `SandboxError` on failure. What it returns is the provider's own data, as with `box.native`.

@@ -1,4 +1,11 @@
-import type { Provider, Capability, SandboxInfo } from "./provider.js";
+import type {
+  Provider,
+  Capability,
+  SandboxInfo,
+  TemplateBuildOptions,
+  TemplateInfo,
+  TemplateSpec,
+} from "./provider.js";
 import type {
   ConnectOptions,
   CreateOptions,
@@ -38,9 +45,16 @@ export type {
   Labels,
   Preview,
   Terminal,
+  TerminalOptions,
 } from "./types.js";
 
-export type { WriteOptions, SnapshotOptions } from "./provider.js";
+export type {
+  WriteOptions,
+  SnapshotOptions,
+  TemplateSpec,
+  TemplateBuildOptions,
+  TemplateInfo,
+} from "./provider.js";
 
 export type { NativeApi, NativeRequestOptions, HttpMethod } from "./native.js";
 
@@ -71,7 +85,9 @@ function validate(provider: Provider, options: CreateOptions) {
     if (
       (cap === "pause" && (!provider.pause || !provider.resume)) ||
       (cap === "snapshot" && !provider.snapshot) ||
-      (cap === "terminal" && !provider.terminal)
+      (cap === "terminal" && !provider.terminal) ||
+      (cap === "snapshot-delete" && !provider.deleteSnapshot) ||
+      (cap === "templates" && !provider.buildTemplate)
     )
       throw new SandboxError(
         "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
@@ -353,6 +369,96 @@ export async function reapSandboxes(
     }
 
     return count;
+  } catch (error) {
+    throw new Redactor().error(error, provider.name);
+  }
+}
+
+/** The capability union a provider type declares. */
+type CapabilitiesOf<P> = P extends Provider<infer _N, infer C, infer _X> ? C : never;
+
+/** `unknown` when `P` declares `K`, else a property that names the missing capability in the type error. */
+type Requires<P, K extends Capability> = [K] extends [CapabilitiesOf<P>]
+  ? unknown
+  : { readonly missingCapability: K };
+
+/** The template spec a provider accepts: its own widened spec, or the portable one. */
+export type TemplateSpecOf<P> = P extends {
+  buildTemplate(
+    spec: infer S extends TemplateSpec,
+    options: TemplateBuildOptions,
+  ): Promise<TemplateInfo>;
+}
+  ? S
+  : TemplateSpec;
+
+/** The hook behind a provider-level capability, or `unsupported` before any request. */
+function hook<T>(
+  provider: Provider,
+  capability: Capability,
+  what: string,
+  found: T | undefined,
+): T {
+  if (!provider.capabilities.has(capability))
+    throw new SandboxError(
+      `${what} unavailable. Provider ${provider.name} lacks the "${capability}" capability. Choose a provider that has it.`,
+      { code: "unsupported", provider: provider.name },
+    );
+
+  if (found === undefined)
+    throw new SandboxError(
+      "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
+      { code: "provider", provider: provider.name },
+    );
+
+  return found;
+}
+
+/**
+ * Delete a snapshot by the ID `box.snapshot()` returned. Resolves `true` when it was deleted and `false`
+ * when it was already gone. Needs a provider with the `"snapshot-delete"` capability.
+ */
+export async function deleteSnapshot<P extends Provider>(
+  provider: P & Requires<P, "snapshot-delete">,
+  snapshotId: string,
+): Promise<boolean> {
+  try {
+    const remove = hook(provider, "snapshot-delete", "Snapshot deletion", provider.deleteSnapshot);
+
+    if (!snapshotId) invalid("snapshotId cannot be empty");
+
+    return await remove.call(provider, snapshotId);
+  } catch (error) {
+    throw new Redactor().error(error, provider.name);
+  }
+}
+
+/**
+ * Build a reusable template and wait until it is ready. Sandboxes start from it with
+ * `createSandbox(provider, { from: template.id })`. Needs a provider with the `"templates"` capability;
+ * the spec type widens to the provider's own fields.
+ */
+export async function buildTemplate<P extends Provider>(
+  provider: P & Requires<P, "templates">,
+  spec: TemplateSpecOf<P>,
+  options: TemplateBuildOptions = {},
+): Promise<TemplateInfo> {
+  try {
+    const build = hook(provider, "templates", "Template building", provider.buildTemplate);
+    const portable: TemplateSpec = spec;
+
+    if (!portable.name) invalid("Template name cannot be empty");
+
+    if (portable.run?.some((step) => !step.trim()))
+      invalid("Template run steps must be non-empty commands");
+
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+    )
+      invalid("Timeouts must be positive milliseconds");
+
+    return await build.call(provider, portable, options);
   } catch (error) {
     throw new Redactor().error(error, provider.name);
   }

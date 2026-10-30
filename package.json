@@ -23,7 +23,7 @@
     "check": "bun run format && bun run lint && bun run typecheck && bun run test",
     "bench": "bun run --cwd bench bench",
     "changeset": "changeset",
-    "version-packages": "changeset version && oxfmt --write packages/sdk/CHANGELOG.md && bun install --lockfile-only",
+    "version-packages": "changeset version && bun packages/sdk/scripts/sync-version.ts && oxfmt --write packages/sdk/CHANGELOG.md && bun install --lockfile-only",
     "release": "bun scripts/release.ts"
   },
   "dependencies": {

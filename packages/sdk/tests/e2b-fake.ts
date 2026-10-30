@@ -9,7 +9,7 @@
 import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isBoolean, isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, watch } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
@@ -627,6 +627,31 @@ export async function fakeE2B(): Promise<FakeE2B> {
       }),
     )
     .on(
+      "GET /sandboxes/{id}/metrics",
+      control((request, response) => {
+        const machine = machines.get(idOf(request));
+
+        if (!machine) {
+          json(response, 404, { code: 404, message: "sandbox not found" });
+
+          return;
+        }
+
+        json(response, 200, [
+          {
+            timestamp: new Date().toISOString(),
+            timestampUnix: Math.floor(Date.now() / 1000),
+            cpuCount: 2,
+            cpuUsedPct: 12.5,
+            memUsed: 268_435_456,
+            memTotal: 536_870_912,
+            diskUsed: 1_073_741_824,
+            diskTotal: 10_737_418_240,
+          },
+        ]);
+      }),
+    )
+    .on(
       "GET /health",
       envd((_machine, _request, response) => {
         response.writeHead(204).end();
@@ -671,6 +696,54 @@ export async function fakeE2B(): Promise<FakeE2B> {
       "POST /filesystem.Filesystem/{method}",
       envd(async (machine, request, response) => {
         const method = request.url.split("/").at(-1);
+
+        // WatchDir is a server stream: Node's watcher stands in for envd's, start event first.
+        if (method === "WatchDir") {
+          const message = unenvelope(request.body);
+          const path = isString(message.path) ? message.path : "";
+
+          if (
+            !(await fs.lstat(machine.mapped(path)).then(
+              () => true,
+              () => false,
+            ))
+          ) {
+            response
+              .writeHead(200, { "content-type": "application/connect+json" })
+              .end(connectEnvelope({ error: { code: "not_found", message: "no such dir" } }, true));
+
+            return;
+          }
+
+          response.writeHead(200, { "content-type": "application/connect+json" });
+          response.write(connectEnvelope({ start: {} }));
+          const watcher = watch(machine.mapped(path), { recursive: message.recursive === true });
+
+          watcher.on("change", (kind, name) => {
+            void fs
+              .lstat(join(machine.mapped(path), String(name)))
+              .then(
+                () => "present",
+                () => "gone",
+              )
+              .then((state) => {
+                const type =
+                  kind === "change"
+                    ? "EVENT_TYPE_WRITE"
+                    : state === "present"
+                      ? "EVENT_TYPE_CREATE"
+                      : "EVENT_TYPE_REMOVE";
+
+                if (!response.writableEnded)
+                  response.write(connectEnvelope({ filesystem: { name: String(name), type } }));
+              });
+          });
+          watcher.on("error", () => watcher.close());
+          response.on("close", () => watcher.close());
+
+          return;
+        }
+
         const { path } = parse(request.body);
 
         if (!isString(path)) {

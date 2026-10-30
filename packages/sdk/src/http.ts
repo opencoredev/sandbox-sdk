@@ -28,6 +28,7 @@ import {
   type ErrorCode,
 } from "./errors.js";
 import type { HttpMethod } from "./native.js";
+import { userAgent } from "./version.js";
 
 /** Blocks inference from a position, like TypeScript 5.4's `NoInfer`, for consumers on older compilers. */
 type NoInfer<T> = [T][T extends unknown ? 0 : never];
@@ -952,10 +953,11 @@ export function createHttpClient<Plane extends string>(
       let failed: HttpFailure | undefined;
 
       for (let hop = 0; ; hop++) {
+        // The SDK names itself first, so a plane or request header can still override it.
         const headers = new Headers(
           contentType && sendBody !== undefined
-            ? { ...plane.headers, "content-type": contentType }
-            : plane.headers,
+            ? { "user-agent": userAgent, ...plane.headers, "content-type": contentType }
+            : { "user-agent": userAgent, ...plane.headers },
         );
 
         if (request.idempotencyKey !== undefined && options.idempotencyHeader)

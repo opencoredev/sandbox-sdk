@@ -1,5 +1,6 @@
 /**
- * @internal Frame readers for streamed provider responses: NDJSON, server-sent events and Connect envelopes.
+ * Frame readers for streamed provider responses: NDJSON, server-sent events and Connect envelopes. The Connect
+ * codec and {@link streamFault} are public through `/provider`; the NDJSON and SSE readers stay internal.
  *
  * Each reads a `ReadableStream<Uint8Array>` and yields frames as an async iterable. Frames are split on bytes,
  * so a UTF-8 character or a frame header split across chunks is reassembled. Every frame is bounded

@@ -9,21 +9,23 @@ Sandbox SDK never drops an option it can't enforce. If you ask a provider for so
 
 Each row is an option or method. "No network" means `network: "none"`, and "Allow list" means a `network` policy with an `allow` array. "Partial" means a limit that matters, and the [notes](#notes) under the table explain each one. The table scrolls sideways.
 
-|                   | Local        | agentOS            | E2B         | Vercel             | Daytona           | Upstash            | Railway            | Boat               | Sandboxer          | Tenki       | Superserve        | boxd             | Freestyle              | Memory   |
-| ----------------- | ------------ | ------------------ | ----------- | ------------------ | ----------------- | ------------------ | ------------------ | ------------------ | ------------------ | ----------- | ----------------- | ---------------- | ---------------------- | -------- |
-| `pause()`         | Yes          | No                 | Yes         | Partial            | No                | Partial            | No                 | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
-| `snapshot()`      | Yes          | No                 | Yes         | Yes                | Yes               | Yes                | Files&nbsp;only    | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
-| `terminal()`      | No           | No                 | No          | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
-| No&nbsp;network   | Yes          | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No               | Yes                    | Recorded |
-| Allow&nbsp;list   | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes              | Empty&nbsp;only        | Recorded |
-| Size&nbsp;presets | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | No       |
-| Exact&nbsp;size   | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Fixed&nbsp;steps | No                     | No       |
-| `idleTimeoutMs`   | Partial      | No                 | No          | No                 | Minutes           | No                 | Minutes            | No                 | Minutes            | No          | No                | Seconds          | Seconds                | Yes      |
-| `timeoutMs`       | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes           | No                 | No                 | No                 | No                 | Yes         | No                | Seconds          | Seconds                | Yes      |
-| `ports`           | Yes          | No                 | No          | Up&nbsp;to&nbsp;15 | No                | No                 | Up&nbsp;to&nbsp;10 | No                 | No                 | No          | No                | No               | No                     | No       |
-| `labels`          | Yes          | Yes                | Yes         | Up&nbsp;to&nbsp;4  | Yes               | Yes                | Yes                | 120&nbsp;chars     | 120&nbsp;chars     | Yes         | Yes               | Yes              | About&nbsp;2.9&nbsp;KB | Yes      |
-| Key&nbsp;mode     | exact        | exact              | best-effort | exact              | best-effort       | best-effort        | best-effort        | best-effort        | best-effort        | best-effort | best-effort       | best-effort      | best-effort            | exact    |
-| Preview&nbsp;URL  | Localhost    | No                 | Public      | Public             | Token&nbsp;header | Bearer&nbsp;header | Public             | Cookie&nbsp;header | Cookie&nbsp;header | Public      | Token&nbsp;header | Public           | Public                 | Fake     |
+|                    | Local        | agentOS            | E2B         | Vercel             | Daytona           | Upstash            | Railway            | Boat               | Sandboxer          | Tenki       | Superserve        | boxd             | Freestyle              | Memory   |
+| ------------------ | ------------ | ------------------ | ----------- | ------------------ | ----------------- | ------------------ | ------------------ | ------------------ | ------------------ | ----------- | ----------------- | ---------------- | ---------------------- | -------- |
+| `pause()`          | Yes          | No                 | Yes         | Partial            | No                | Partial            | No                 | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `snapshot()`       | Yes          | No                 | Yes         | Yes                | Yes               | Yes                | Files&nbsp;only    | No                 | Yes                | Yes         | Yes               | Yes              | Yes                    | No       |
+| `deleteSnapshot()` | No           | No                 | Yes         | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
+| `buildTemplate()`  | No           | No                 | Yes         | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
+| `terminal()`       | No           | No                 | Yes         | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No       |
+| No&nbsp;network    | Yes          | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No               | Yes                    | Recorded |
+| Allow&nbsp;list    | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes              | Empty&nbsp;only        | Recorded |
+| Size&nbsp;presets  | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | No       |
+| Exact&nbsp;size    | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Fixed&nbsp;steps | No                     | No       |
+| `idleTimeoutMs`    | Partial      | No                 | No          | No                 | Minutes           | No                 | Minutes            | No                 | Minutes            | No          | No                | Seconds          | Seconds                | Yes      |
+| `timeoutMs`        | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes           | No                 | No                 | No                 | No                 | Yes         | No                | Seconds          | Seconds                | Yes      |
+| `ports`            | Yes          | No                 | No          | Up&nbsp;to&nbsp;15 | No                | No                 | Up&nbsp;to&nbsp;10 | No                 | No                 | No          | No                | No               | No                     | No       |
+| `labels`           | Yes          | Yes                | Yes         | Up&nbsp;to&nbsp;4  | Yes               | Yes                | Yes                | 120&nbsp;chars     | 120&nbsp;chars     | Yes         | Yes               | Yes              | About&nbsp;2.9&nbsp;KB | Yes      |
+| Key&nbsp;mode      | exact        | exact              | best-effort | exact              | best-effort       | best-effort        | best-effort        | best-effort        | best-effort        | best-effort | best-effort       | best-effort      | best-effort            | exact    |
+| Preview&nbsp;URL   | Localhost    | No                 | Public      | Public             | Token&nbsp;header | Bearer&nbsp;header | Public             | Cookie&nbsp;header | Cookie&nbsp;header | Public      | Token&nbsp;header | Public           | Public                 | Fake     |
 
 `timeoutMs` is the hard lifetime and `idleTimeoutMs` the idle timeout. "Minutes" and "Seconds" mean the provider enforces the limit in whole units of that size. In the `ports` row, an entry other than No means a preview port must be listed in `ports` when the sandbox is created. In the Preview URL row, "Public" means an `https://` URL anyone can open, and a header entry means `preview.headers` must go with every request.
 
@@ -40,7 +42,8 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox, so you get four labels, or three with a `key`. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded. Railway and boxd keep them in a marker file inside each VM.
 - **Key mode.** agentOS keys are exact within one application process.
 - **Previews.** Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. boxd gives one public route per machine, and previewing a new port moves it. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. agentOS has no preview URLs, and Memory returns fake ones.
-- **Terminal.** The `terminal()` method and the `"terminal"` capability are part of the API, but no built-in provider implements them in 1.0.
+- **Terminal.** E2B is the only built-in provider with a PTY. Its terminal is a login shell running as root, with `TERM=xterm-256color`.
+- **Snapshot deletion and templates.** `deleteSnapshot()` and `buildTemplate()` are root functions that take the provider, because neither needs a running sandbox. E2B stores snapshots as templates, so deleting a snapshot deletes that template.
 - **Upstash Box.** Listing SDK boxes reads metadata from inside each box and may wake idle boxes.
 - **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).
 - **agentOS.** Supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local (agentOS)](/providers/agentos).
@@ -73,19 +76,21 @@ Local needs a running Docker Engine instead. agentOS also needs its platform sid
 
 `box.capabilities` is a `ReadonlySet` of these names:
 
-| Capability         | Means                                                  |
-| ------------------ | ------------------------------------------------------ |
-| `"pause"`          | `pause()` and `resume()` exist                         |
-| `"snapshot"`       | `snapshot()` exists and `createSandbox` accepts `from` |
-| `"terminal"`       | `terminal()` exists                                    |
-| `"network-policy"` | `network` accepts `"none"`, and maybe `{ allow }`      |
-| `"size"`           | `size` accepts presets, and maybe exact numbers        |
+| Capability          | Means                                                  |
+| ------------------- | ------------------------------------------------------ |
+| `"pause"`           | `pause()` and `resume()` exist                         |
+| `"snapshot"`        | `snapshot()` exists and `createSandbox` accepts `from` |
+| `"snapshot-delete"` | `deleteSnapshot(provider, id)` works                   |
+| `"templates"`       | `buildTemplate(provider, spec)` works                  |
+| `"terminal"`        | `terminal()` exists                                    |
+| `"network-policy"`  | `network` accepts `"none"`, and maybe `{ allow }`      |
+| `"size"`            | `size` accepts presets, and maybe exact numbers        |
 
 A capability means the provider supports the feature in general. The matrix has the finer limits: for example, Local declares `"network-policy"` but only accepts `"none"`.
 
 ## Checked by TypeScript
 
-Methods for optional capabilities exist on the sandbox type only when the provider declares them. Calling `box.pause()` on Memory is a type error, not a runtime surprise.
+Methods for optional capabilities exist on the sandbox type only when the provider declares them. Calling `box.pause()` on Memory is a type error, not a runtime surprise. The same goes for the provider-level functions: `deleteSnapshot(memory(), id)` does not compile.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -109,7 +114,9 @@ await using box = await createSandbox(e2b());
 console.log([...box.capabilities]);
 ```
 
-This prints `[ "pause", "snapshot", "network-policy" ]`.
+This prints `[ "pause", "snapshot", "snapshot-delete", "templates", "terminal", "network-policy" ]`.
+
+A provider typed as plain `Provider` still compiles with `deleteSnapshot` and `buildTemplate`. They then throw `unsupported` before any request when the provider lacks the capability.
 
 ## What fails, and when
 

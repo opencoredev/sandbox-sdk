@@ -219,7 +219,7 @@ export function scrub(text: string): string {
 }
 
 /**
- * @internal `Name: message` of a native failure, redacted, scrubbed and bounded, with up to two nested causes.
+ * `Name: message` of a native failure, redacted, scrubbed and bounded, with up to two nested causes.
  * Undefined for thrown values that are not Errors, which carry no message to keep.
  */
 export function nativeDetail(
@@ -252,14 +252,14 @@ const meanings: Record<ErrorCode, string> = {
   provider: "the provider returned an unexpected error",
 };
 
-/** @internal What {@link describeNative} keeps: text for the message, and the error's cause. */
+/** What {@link describeNative} keeps: text for the message, and the error's cause. */
 export interface NativeDescription {
   detail?: string;
   cause?: string;
 }
 
 /**
- * @internal What an adapter keeps from a native failure. Only a failure the adapter did not recognize
+ * What an adapter keeps from a native failure. Only a failure the adapter did not recognize
  * (`code` is `provider`, unless `known` says otherwise) and that carries no `status` keeps its text:
  * that is an SDK bug or a network error, and the text is the only clue. A recognized error type or a response may carry server text that
  * echoes the request, so it keeps only its name and status. `detail` is the kept text, for the message;
@@ -312,7 +312,7 @@ export function evidenceCause(evidence: NativeEvidence): Error & NativeEvidence 
   return Object.assign(new Error(JSON.stringify(evidence)), evidence);
 }
 
-/** @internal A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
+/** A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
 export function redacting(values: Iterable<string | undefined>): (text: string) => string {
   const redactor = new Redactor();
 
@@ -321,7 +321,7 @@ export function redacting(values: Iterable<string | undefined>): (text: string) 
   return (text) => redactor.text(text);
 }
 
-/** @internal Why an adapter request failed, as a clause, never the code itself: the kept detail, or what `code` means. */
+/** Why an adapter request failed, as a clause, never the code itself: the kept detail, or what `code` means. */
 export function reason(code: ErrorCode, detail?: string): string {
   return detail ?? meanings[code];
 }

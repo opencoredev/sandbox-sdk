@@ -10,17 +10,17 @@
  * - Protobuf JSON: `bytes` fields are base64, int64 fields are strings, defaults (exit code 0, empty lists) are
  *   left out, enums are names.
  */
-import type { JsonObject, JsonValue } from "../../shared/json.js";
-import { isNumber, isString } from "../../shared/narrow.js";
-import { SandboxError } from "../../errors.js";
-import type { HttpClient } from "../../http.js";
 import {
+  SandboxError,
   connectEnvelope,
   connectEnvelopes,
   streamFault,
   type ConnectFrame,
-} from "../../streams.js";
+  type HttpClient,
+  type JsonValue,
+} from "../../provider.js";
 import { rpcError } from "./errors.js";
+import { isNumber, isRecord, isString } from "./narrow.js";
 
 export type E2BPlane = "api" | "envd";
 
@@ -52,6 +52,7 @@ export function versionAtLeast(version: string, minimum: string): boolean {
 /** The envd versions the SDK checks before it uses a feature. */
 export const envdGates = {
   minimum: "0.1.0",
+  recursiveWatch: "0.1.4",
   stdinFlag: "0.3.0",
   defaultUser: "0.4.0",
   closeStdin: "0.5.2",
@@ -63,6 +64,12 @@ export interface EntryInfo {
   size: number;
   /** Epoch ms, when envd sent one. */
   modifiedTime?: number;
+}
+
+/** One change from WatchDir, as envd names it: the path relative to the watched directory. */
+export interface WatchEvent {
+  name: string;
+  type: "create" | "write" | "remove" | "rename" | "chmod";
 }
 
 export interface StartOptions {
@@ -97,6 +104,10 @@ export interface Command {
   kill(): Promise<boolean>;
   sendStdin(data: string): Promise<void>;
   closeStdin(): Promise<void>;
+  /** PTY input, for a command started with `terminal`. */
+  sendPty(data: string): Promise<void>;
+  /** Change the PTY size. */
+  resize(cols: number, rows: number): Promise<void>;
   /** Stop reading without signalling the process. No callback fires after this. */
   disconnect(): void;
 }
@@ -106,13 +117,18 @@ export interface ProcessEntry {
   tag?: string;
 }
 
-const isRecord = (value: JsonValue | undefined): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 const fileTypes: ReadonlyMap<string, EntryInfo["type"]> = new Map<string, EntryInfo["type"]>([
   ["FILE_TYPE_FILE", "file"],
   ["FILE_TYPE_DIRECTORY", "dir"],
   ["FILE_TYPE_SYMLINK", "symlink"],
+]);
+
+const watchTypes: ReadonlyMap<string, WatchEvent["type"]> = new Map<string, WatchEvent["type"]>([
+  ["EVENT_TYPE_CREATE", "create"],
+  ["EVENT_TYPE_WRITE", "write"],
+  ["EVENT_TYPE_REMOVE", "remove"],
+  ["EVENT_TYPE_RENAME", "rename"],
+  ["EVENT_TYPE_CHMOD", "chmod"],
 ]);
 
 const base64 = /^[A-Za-z0-9+/_-]*={0,2}$/;
@@ -151,7 +167,7 @@ function parseEntry(value: JsonValue | undefined): EntryInfo | undefined {
 
 type ProcessEvent =
   | { kind: "start"; pid: number }
-  | { kind: "data"; stream: "stdout" | "stderr"; bytes: Uint8Array }
+  | { kind: "data"; stream: "stdout" | "stderr" | "pty"; bytes: Uint8Array }
   | { kind: "end"; exitCode: number }
   /** Keepalives, pty data and oneof members this client does not know. */
   | { kind: "other" };
@@ -170,7 +186,7 @@ function parseEvent(message: JsonValue | undefined): ProcessEvent | undefined {
   }
 
   if (isRecord(data)) {
-    for (const stream of ["stdout", "stderr"] as const) {
+    for (const stream of ["stdout", "stderr", "pty"] as const) {
       const value = data[stream];
 
       if (value === undefined) continue;
@@ -244,6 +260,7 @@ export function createEnvd(options: {
     options: Omit<StartOptions, "command" | "cwd" | "envs" | "user" | "stdin"> & {
       headers?: Record<string, string>;
       tag?: string;
+      onPty?(text: string): void;
     },
   ): Promise<Command> {
     const method = `process.Process/${rpc}`;
@@ -371,15 +388,21 @@ export function createEnvd(options: {
     const { frames, pid } = started;
     settleStartup();
 
-    const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+    const decoders = {
+      stdout: new TextDecoder(),
+      stderr: new TextDecoder(),
+      pty: new TextDecoder(),
+    };
+
     let disconnected = false;
     let exitCode: number | undefined;
 
-    const emit = (stream: "stdout" | "stderr", text: string) => {
+    const emit = (stream: "stdout" | "stderr" | "pty", text: string) => {
       if (!text || disconnected) return;
 
       if (stream === "stdout") options.onStdout?.(text);
-      else options.onStderr?.(text);
+      else if (stream === "stderr") options.onStderr?.(text);
+      else options.onPty?.(text);
     };
 
     const reading = (async (): Promise<number> => {
@@ -399,12 +422,13 @@ export function createEnvd(options: {
           else if (event.kind === "end") {
             exitCode = event.exitCode;
 
-            for (const stream of ["stdout", "stderr"] as const)
+            for (const stream of ["stdout", "stderr", "pty"] as const)
               emit(stream, decoders[stream].decode());
           }
         }
       } catch (error) {
-        for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
+        for (const stream of ["stdout", "stderr", "pty"] as const)
+          emit(stream, decoders[stream].decode());
 
         if (disconnected)
           throw new SandboxError(
@@ -457,6 +481,18 @@ export function createEnvd(options: {
             { code: "unsupported", provider: "e2b", sandboxId },
           );
         await unary(sandboxId, "process.Process/CloseStdin", { process: { pid } });
+      },
+      async sendPty(data) {
+        await unary(sandboxId, "process.Process/SendInput", {
+          process: { pid },
+          input: { pty: Buffer.from(data).toString("base64") },
+        });
+      },
+      async resize(cols, rows) {
+        await unary(sandboxId, "process.Process/Update", {
+          process: { pid },
+          pty: { size: { cols, rows } },
+        });
       },
       disconnect() {
         disconnected = true;
@@ -543,6 +579,91 @@ export function createEnvd(options: {
       async remove(sandboxId: string, path: string, user: string): Promise<void> {
         await unary(sandboxId, "filesystem.Filesystem/Remove", { path }, { user });
       },
+      /**
+       * WatchDir, a server stream: a start event once the watch is set up, then one event per change, with
+       * keepalives between. Resolves when `signal` aborts, rejects when the stream fails or ends.
+       */
+      async watch(
+        sandboxId: string,
+        path: string,
+        options: {
+          recursive: boolean;
+          user: string;
+          signal: AbortSignal;
+          onEvent(event: WatchEvent): void;
+        },
+      ): Promise<void> {
+        const method = "filesystem.Filesystem/WatchDir";
+        const { envdVersion } = connection(sandboxId);
+
+        if (options.recursive && !versionAtLeast(envdVersion, envdGates.recursiveWatch))
+          throw new SandboxError(
+            `envd ${envdVersion.slice(0, 16)} cannot watch recursively. Rebuild the template to pick up a newer envd.`,
+            { code: "unsupported", provider: "e2b", sandboxId },
+          );
+
+        if (options.signal.aborted) return;
+        let frames: AsyncGenerator<ConnectFrame, void, undefined> | undefined;
+
+        try {
+          const response = await http.stream({
+            method: "POST",
+            plane: "envd",
+            path: `/${method}`,
+            sandboxId,
+            body: connectEnvelope({ path, recursive: options.recursive }),
+            signal: options.signal,
+            startupTimeoutMs: startupMs,
+            readOnly: true,
+            headers: {
+              "content-type": connectJson,
+              "keepalive-ping-interval": "50",
+              ...basic(options.user),
+            },
+          });
+
+          if (
+            !(response.headers.get("content-type") ?? "").startsWith(connectJson) ||
+            !response.body
+          ) {
+            await response.body?.cancel().catch(() => {});
+            throw malformed(sandboxId, "a watch response that is not a Connect stream");
+          }
+
+          frames = connectEnvelopes(response.body, {
+            provider: "e2b",
+            sandboxId,
+            signal: options.signal,
+          });
+
+          for await (const frame of frames) {
+            if (frame.kind === "end") {
+              if (frame.error)
+                throw rpcError({ code: frame.error.code, method, sandboxId, file: true });
+              continue;
+            }
+
+            const event = isRecord(frame.message) ? frame.message.filesystem : undefined;
+
+            if (!isRecord(event)) continue;
+            const type = isString(event.type) ? watchTypes.get(event.type) : undefined;
+
+            if (type && isString(event.name)) options.onEvent({ name: event.name, type });
+          }
+        } catch (error) {
+          if (options.signal.aborted) return;
+          throw error;
+        } finally {
+          await frames?.return();
+        }
+
+        if (!options.signal.aborted)
+          throw new SandboxError("The E2B watch stream ended. The watch stopped; start it again.", {
+            code: "unavailable",
+            provider: "e2b",
+            sandboxId,
+          });
+      },
     },
     process: {
       /** Every Start carries a fresh tag, so a start whose outcome is unknown can still be found and stopped. */
@@ -568,6 +689,29 @@ export function createEnvd(options: {
         };
 
         return open(sandboxId, "Start", message, { ...options, tag, headers: basic(options.user) });
+      },
+      /** A login shell on a PTY, as `pty.create` starts it. Output arrives through `onPty`; no deadline. */
+      async terminal(
+        sandboxId: string,
+        options: {
+          cols: number;
+          rows: number;
+          cwd: string;
+          envs: Record<string, string>;
+          user: string;
+          onPty(text: string): void;
+        },
+      ): Promise<Command> {
+        const message = {
+          process: { cmd: "/bin/bash", args: ["-i", "-l"], envs: options.envs, cwd: options.cwd },
+          pty: { size: { cols: options.cols, rows: options.rows } },
+        };
+
+        return open(sandboxId, "Start", message, {
+          timeoutMs: 0,
+          onPty: options.onPty,
+          headers: basic(options.user),
+        });
       },
       /** Reattach to a running process. Output printed while detached is lost: envd does not buffer it. */
       connect(sandboxId: string, pid: number): Promise<Command> {

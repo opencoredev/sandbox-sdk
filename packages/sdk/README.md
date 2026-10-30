@@ -110,7 +110,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [agentOS](https://sandbox-sdk.app/docs/providers/agentos)      | `/agentos`    | `agentos()`             | none                                                                            |
 | Memory                                                         | `/memory`     | `memory()`              | none                                                                            |
 
-Capability meanings: `pause` adds `box.pause()` and `box.resume()`, `snapshot` adds `box.snapshot()` and `createSandbox(provider, { from })`, `size` allows the `size` option, and `network-policy` allows `network: "none"` or `{ allow: [...] }`. The SDK also defines `terminal` (`box.terminal()`, an interactive PTY), but no built-in provider supports it yet.
+Capability meanings: `pause` adds `box.pause()` and `box.resume()`, `snapshot` adds `box.snapshot()` and `createSandbox(provider, { from })`, `size` allows the `size` option, and `network-policy` allows `network: "none"` or `{ allow: [...] }`. `terminal` adds `box.terminal()`, an interactive PTY (E2B). Two capabilities gate root functions that need no sandbox: `snapshot-delete` for `deleteSnapshot(provider, id)` and `templates` for `buildTemplate(provider, spec)`. Features only one provider has live on `box.ext`, such as `box.ext.e2b.metrics()`.
 
 Every factory also accepts its credential as an option, such as `e2b({ apiKey })` or `railway({ token, environmentId })`. Endpoints use `baseUrl` (boxd, Daytona, Tenki, Upstash, Boat), and Boat's default machine size uses `machine`:
 
