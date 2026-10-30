@@ -106,7 +106,7 @@ export interface ProcessEntry {
   tag?: string;
 }
 
-const isRecord = (value: unknown): value is JsonObject =>
+const isRecord = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const fileTypes: Readonly<Record<string, EntryInfo["type"]>> = {

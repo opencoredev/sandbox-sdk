@@ -81,14 +81,14 @@ interface UploadStatus {
   receivedBytes: number;
 }
 
-const isRecord = (value: unknown): value is JsonObject =>
+const isRecord = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 function unexpected(what: string, sandboxId?: string): never {
   throw failure(`Freestyle returned an unexpected ${what}`, "provider", sandboxId);
 }
 
-function optionalNumber(value: unknown): value is number | null | undefined {
+function optionalNumber(value: JsonValue | undefined): value is number | null | undefined {
   return value === undefined || value === null || typeof value === "number";
 }
 
@@ -379,6 +379,7 @@ export function freestyleClient(options: FreestyleClientOptions) {
       const value: JsonValue | undefined = (
         await call({ method: "POST", path: "/v5/vms", body })
       ).json();
+
       const data = vmData(value);
 
       return {

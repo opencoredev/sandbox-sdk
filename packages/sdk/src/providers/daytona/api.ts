@@ -60,7 +60,7 @@ export interface DaytonaHttpOptions {
   fetch?: Fetch;
 }
 
-const record = (value: unknown): value is JsonObject =>
+const record = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const optional = <T>(
@@ -485,7 +485,7 @@ function toolbox(http: HttpClient<DaytonaPlane>, control: DaytonaControl, id: st
 
     // An error part carries the daemon's usual error JSON: map it like the same failure on its own route.
     const text = new TextDecoder().decode((await readAll(part.body)).subarray(0, 64 * 1024));
-    let json: unknown;
+    let json: JsonValue | undefined;
 
     try {
       json = JSON.parse(text);

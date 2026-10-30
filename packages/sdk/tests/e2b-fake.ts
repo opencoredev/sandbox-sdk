@@ -437,6 +437,7 @@ export async function fakeE2B(): Promise<FakeE2B> {
 
         if (snapshot) await fs.cp(snapshot, root, { recursive: true });
         const network = isRecord(body.network) ? body.network : undefined;
+
         const list = (value: JsonValue | undefined) =>
           Array.isArray(value) ? value.map(String) : undefined;
 

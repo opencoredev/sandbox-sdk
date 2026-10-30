@@ -116,9 +116,11 @@ export function parseSandboxPage(
     !Array.isArray(value.sandboxes)
   )
     throw invalidResponse(provider, label, "sandbox list");
+
   const sandboxes = value.sandboxes.map((item: JsonValue | undefined) =>
     parseSandbox(item, provider, label),
   );
+
   const page: unknown = "pageInfo" in value ? value.pageInfo : undefined;
 
   const hasMore = isObject(page) && "hasMore" in page && page.hasMore === true;

@@ -99,7 +99,7 @@ const unsupported = (message: string) =>
     { code: "unsupported", provider: "e2b" },
   );
 
-const isRecord = (value: unknown): value is JsonObject =>
+const isRecord = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const strings = (value: JsonValue | undefined): string[] | undefined =>
