@@ -4,23 +4,27 @@ import { isNumber, isObject, isString } from "../src/shared/narrow.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { MockGuest } from "./mock-guest.js";
+import { z } from "zod";
 
-interface InlineFirewallRule {
-  action: string;
-  source: JsonObject;
-  destination: JsonObject;
-}
+const jsonObject = z.record(z.string(), z.json());
 
-interface CreateVmOptions {
-  snapshotId?: string;
-  metadata?: Record<string, string>;
-  firewall: { rules: InlineFirewallRule[] };
-  tls?: { rules: unknown[] };
-  vpcs?: string[];
-  idleTimeoutSeconds?: number;
-  ttlSeconds?: number;
-  autoDeleteSeconds?: number;
-}
+/** `POST /v5/vms`. Unknown fields are kept, so tests can check what else the adapter sent. */
+const createVmOptions = z.looseObject({
+  snapshotId: z.string().optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  firewall: z.object({
+    rules: z.array(z.object({ action: z.string(), source: jsonObject, destination: jsonObject })),
+  }),
+  tls: z.object({ rules: z.array(z.unknown()) }).optional(),
+  vpcs: z.array(z.string()).optional(),
+  idleTimeoutSeconds: z.number().optional(),
+  ttlSeconds: z.number().optional(),
+  autoDeleteSeconds: z.number().optional(),
+});
+
+type CreateVmOptions = z.infer<typeof createVmOptions>;
+
+type InlineFirewallRule = CreateVmOptions["firewall"]["rules"][number];
 
 interface VmData {
   id: string;
@@ -36,29 +40,28 @@ interface VmData {
   autoDeleteSeconds?: number;
 }
 
-interface ExecOptions {
-  command: string;
-  stdin?: string;
-  linuxUser?: string;
-  timeoutMs?: number;
-}
+const execOptions = z.looseObject({
+  command: z.string(),
+  stdin: z.string().optional(),
+  linuxUser: z.string().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+type ExecOptions = z.infer<typeof execOptions>;
 
 type CreateTlsRuleOptions = JsonObject;
 
 export const freestyleState = {
   boxes: new Map<string, MockVm>(),
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  creates: [] as CreateVmOptions[],
+  creates: new Array<CreateVmOptions>(),
   snapshots: new Map<string, string>(),
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  rules: [] as CreateTlsRuleOptions[],
+  rules: new Array<CreateTlsRuleOptions>(),
   error: 0,
   listError: 0,
   widen: false,
   delay: 0,
   peak: 0,
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  snapshotOptions: [] as unknown[],
+  snapshotOptions: new Array<unknown>(),
 };
 
 const error = (status: number) => Object.assign(new Error("secret-native-error"), { status });
@@ -82,9 +85,7 @@ export class MockVm {
       updatedAt: new Date().toISOString(),
       idleTimeoutSeconds: params.idleTimeoutSeconds,
       ttlSeconds: params.ttlSeconds,
-      ...(params.autoDeleteSeconds === undefined
-        ? undefined
-        : { autoDeleteSeconds: params.autoDeleteSeconds }),
+      autoDeleteSeconds: params.autoDeleteSeconds,
     };
   }
   fs = {
@@ -296,15 +297,15 @@ async function route(
   if (v5 !== "v5") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
 
   if (vms === "tls" && method === "POST" && id === undefined)
-    // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-    return Response.json(await backend.tls.rules.create(json() as CreateTlsRuleOptions));
+    return Response.json(await backend.tls.rules.create(jsonObject.parse(json())));
 
   if (vms !== "vms") throw new Error(`Unexpected Freestyle route ${method} ${url.pathname}`);
 
   if (id === undefined) {
     if (method === "POST") {
-      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-      const { data, firewallRules, tlsRules } = await backend.vms.create(json() as CreateVmOptions);
+      const { data, firewallRules, tlsRules } = await backend.vms.create(
+        createVmOptions.parse(json()),
+      );
 
       return Response.json({ ...data, firewallRules, tlsRules }, { status: 201 });
     }
@@ -333,8 +334,7 @@ async function route(
 
   switch (`${method} ${action}`) {
     case "POST exec-await":
-      // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-      return Response.json(await vm.exec(json() as ExecOptions));
+      return Response.json(await vm.exec(execOptions.parse(json())));
     case "POST pause":
       return Response.json(await vm.pause());
     case "POST start":

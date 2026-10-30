@@ -18,6 +18,7 @@ import type { Readable } from "node:stream";
 import { afterAll } from "vitest";
 import type { OutputChunk } from "../src/provider.js";
 import { fakeServer, type RecordedRequest } from "./http-fake.js";
+import { z } from "zod";
 import { daytonaHttp } from "../src/providers/daytona/api.js";
 
 /** An error a guest operation throws; the server answers with its status, code and headers. */
@@ -35,26 +36,56 @@ export const failure = (
 
 const missing = () => failure(404, "not found", { code: "FILE_NOT_FOUND" });
 
-export interface CreateBody {
-  snapshot?: string;
-  buildInfo?: { dockerfileContent: string };
-  env?: Record<string, string>;
-  labels?: Record<string, string>;
-  public?: boolean;
-  target?: string;
-  cpu?: number;
-  memory?: number;
-  disk?: number;
-  networkBlockAll?: boolean;
-  domainAllowList?: string;
-  autoStopInterval?: number;
-  autoPauseInterval?: number;
-  autoArchiveInterval?: number;
-  autoDeleteInterval?: number;
-  ttlMinutes?: number;
-  volumes?: unknown[];
-  outboundProxyUrl?: string;
-}
+const stringMap = z.record(z.string(), z.string());
+
+/** `POST /api/sandbox`. Unknown fields are kept, so tests can check what else the adapter sent. */
+const createBody = z.looseObject({
+  snapshot: z.string().optional(),
+  buildInfo: z.object({ dockerfileContent: z.string() }).optional(),
+  env: stringMap.optional(),
+  labels: stringMap.optional(),
+  public: z.boolean().optional(),
+  target: z.string().optional(),
+  cpu: z.number().optional(),
+  memory: z.number().optional(),
+  disk: z.number().optional(),
+  networkBlockAll: z.boolean().optional(),
+  domainAllowList: z.string().optional(),
+  autoStopInterval: z.number().optional(),
+  autoPauseInterval: z.number().optional(),
+  autoArchiveInterval: z.number().optional(),
+  autoDeleteInterval: z.number().optional(),
+  ttlMinutes: z.number().optional(),
+  volumes: z.array(z.unknown()).optional(),
+  outboundProxyUrl: z.string().optional(),
+});
+
+export type CreateBody = z.infer<typeof createBody>;
+
+const resizeBody = z.looseObject({
+  cpu: z.number().optional(),
+  memory: z.number().optional(),
+  disk: z.number().optional(),
+});
+
+const snapshotBody = z.looseObject({ name: z.string() });
+const downloadBody = z.looseObject({ paths: z.array(z.string()) });
+
+const executeBody = z.looseObject({
+  command: z.string(),
+  cwd: z.string().optional(),
+  envs: stringMap.optional(),
+  timeout: z.number().optional(),
+});
+
+const codeRunBody = z.looseObject({ code: z.string(), language: z.string() });
+const sessionBody = z.looseObject({ sessionId: z.string() });
+
+const sessionCommandBody = z.looseObject({
+  command: z.string(),
+  runAsync: z.boolean().optional(),
+  suppressInputEcho: z.boolean().optional(),
+});
 
 type Command = {
   chunks: OutputChunk[];
@@ -65,10 +96,8 @@ type Command = {
 };
 
 export const mockState = {
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  creates: [] as CreateBody[],
-  // SAFETY: an empty start value, typed for what the tests store in it later.
-  permissions: [] as { path: string; mode?: string }[],
+  creates: new Array<CreateBody>(),
+  permissions: new Array<{ path: string; mode?: string }>(),
   boxes: new Map<string, MockSandbox>(),
   snapshots: new Map<string, string>(),
   launchDelayMs: 0,
@@ -503,8 +532,7 @@ function route(
 
 // Control plane: /api/sandbox/... Segments: ["", "api", "sandbox", id, action, ...].
 route("POST", "/api/sandbox", async (request) => {
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const box = await daytona.create(json(request) as CreateBody);
+  const box = await daytona.create(createBody.parse(json(request)));
   box.state =
     mockState.createState === "started" && mockState.startPolls
       ? "creating"
@@ -516,8 +544,7 @@ route("POST", "/api/sandbox", async (request) => {
 
 route("GET", "/api/sandbox", async (request) => {
   const params = query(request);
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const labels = JSON.parse(params.get("labels") ?? "{}") as Record<string, string>;
+  const labels = stringMap.parse(JSON.parse(params.get("labels") ?? "{}"));
   const all: MockSandbox[] = [];
 
   for await (const box of daytona.list({ labels })) all.push(box);
@@ -587,16 +614,14 @@ route("POST", "/api/sandbox/{id}/start", async (_request, _response, [, , , id =
 
 route("POST", "/api/sandbox/{id}/resize", async (request, _response, [, , , id = ""]) => {
   const box = await daytona.get(id);
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  await box.resize(json(request) as { cpu: number });
+  await box.resize(resizeBody.parse(json(request)));
 
   return box.dto();
 });
 
 route("POST", "/api/sandbox/{id}/snapshot", async (request, _response, [, , , id = ""]) => {
   const box = await daytona.get(id);
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const { name } = json(request) as { name: string };
+  const { name } = snapshotBody.parse(json(request));
   await box.createSnapshot(name);
 
   if (mockState.snapshotMs) {
@@ -659,8 +684,7 @@ tool("POST", "/files/bulk-upload", async (box, request) => {
 
 /** The daemon's bulk-download: one `file` or `error` part per path, with Daytona's fixed boundary. */
 tool("POST", "/files/bulk-download", async (box, request, response) => {
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const { paths } = json(request) as { paths: string[] };
+  const { paths } = downloadBody.parse(json(request));
   response.writeHead(200, {
     "content-type": "multipart/form-data; boundary=DAYTONA-FILE-BOUNDARY",
   });
@@ -723,20 +747,13 @@ tool("POST", "/files/permissions", async (box, request) => {
 });
 
 tool("POST", "/process/execute", async (box, request) => {
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const body = json(request) as {
-    command: string;
-    cwd?: string;
-    envs?: Record<string, string>;
-    timeout?: number;
-  };
+  const body = executeBody.parse(json(request));
 
   return box.process.executeCommand(body.command, body.cwd, body.envs, body.timeout);
 });
 
 tool("POST", "/process/code-run", async (box, request) => {
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  const body = json(request) as { code: string; language: string };
+  const body = codeRunBody.parse(json(request));
 
   if (body.language !== "python") throw failure(400, "unsupported language");
 
@@ -744,8 +761,7 @@ tool("POST", "/process/code-run", async (box, request) => {
 });
 
 tool("POST", "/process/session", async (box, request) => {
-  // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-  await box.process.createSession((json(request) as { sessionId: string }).sessionId);
+  await box.process.createSession(sessionBody.parse(json(request)).sessionId);
 });
 
 tool(
@@ -760,8 +776,7 @@ tool(
   "POST",
   "/process/session/{session}/exec",
   async (box, request, _response, [, , , , , session = ""]) =>
-    // SAFETY: the adapter under test sends this body shape, and the fake trusts its own client.
-    box.process.executeSessionCommand(session, json(request) as { command: string }),
+    box.process.executeSessionCommand(session, sessionCommandBody.parse(json(request))),
 );
 
 tool(
