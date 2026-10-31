@@ -1,11 +1,11 @@
 ---
 title: Testing with memory()
-description: Test code that uses sandboxes without Docker or cloud keys. memory() is an in-process fake with files, scripted commands, processes, and fake preview URLs.
+description: Test code that uses E2B, Daytona, or any other sandbox provider without creating real sandboxes. memory() is an in-process fake with files, scripted commands, processes, and fake preview URLs, and needs no Docker or cloud keys.
 ---
 
 Your tests shouldn't start real machines. `memory()` is a provider that runs entirely inside your test process. It keeps files in a map, answers commands from a table of handlers you write, and returns fake preview URLs. It never touches the network.
 
-Write your code against `createSandbox(provider)` and pass `memory()` in tests and a real provider in production.
+Write your code against `createSandbox(provider)` from `@opencoredev/sandbox-sdk`, then pass `memory()` in tests and a real provider, such as `e2b()`, `daytona()`, or `vercel()`, in production. That is how you test code that uses E2B without creating real sandboxes: the code under test stays the same and only the provider changes. Code that imports E2B's own `e2b` package directly can't use `memory()`. Mock that client yourself, or move those calls behind `createSandbox`.
 
 ## Code under test
 

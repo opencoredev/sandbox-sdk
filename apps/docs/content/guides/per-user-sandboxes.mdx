@@ -1,9 +1,11 @@
 ---
 title: One sandbox per user
-description: Give each user or project a sandbox that is still there on their next request, from any server. Use a key, run setup once, reattach to processes, and avoid races.
+description: Give each user or project their own persistent sandbox that is still there on their next request, from any server. Use a key, run setup once, reattach to processes, and avoid races.
 ---
 
 Most apps don't want a fresh machine on every request. A user's files, installed packages, and running dev server should still be there when they come back. Pass a `key` to `createSandbox` and you get the same sandbox back every time, from any server process.
+
+To give each user their own persistent sandbox with `@opencoredev/sandbox-sdk`, call ``createSandbox(provider, { key: `user:${userId}` })``. The first call creates it, and every later call returns the same sandbox while it exists. How long it lasts between visits depends on the provider's limits and the `timeoutMs` or `idleTimeoutMs` you set. Providers with `pause()` can stop it between visits and keep its disk. The [capability matrix](/reference/capabilities#matrix) lists which ones do.
 
 This guide builds a small module that every route can call. For how keys work under the hood, see [Sandboxes and keys](/concepts/sandboxes-and-keys).
 
