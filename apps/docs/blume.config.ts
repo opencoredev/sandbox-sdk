@@ -47,6 +47,8 @@ It is not a hosted service: it calls each provider's HTTP API or SDK with your k
 5. Check an option against the [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) before using it. An option a provider can't enforce fails with \`unsupported\` instead of being ignored.
 6. For agent tools, import \`sandboxTools\` from \`/ai\`, \`/mastra\`, or \`/openai\` ([agent tools](https://sandbox-sdk.app/docs/reference/agent-tools)).
 
+Guides: the [blog](https://sandbox-sdk.app/blog) ([RSS](https://sandbox-sdk.app/blog/rss.xml)) walks through whole tasks, starting with [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents).
+
 Source: [github.com/opencoredev/sandbox-sdk](https://github.com/opencoredev/sandbox-sdk). Package: [@opencoredev/sandbox-sdk on npm](https://www.npmjs.com/package/@opencoredev/sandbox-sdk).`;
 
 export default defineConfig({

@@ -10,7 +10,7 @@ import { track } from "@/lib/posthog";
 import { logo, marks } from "../../../brand/marks";
 
 import styles from "./landing.module.css";
-import { DOCS, GITHUB, NPM, SECURITY } from "./site";
+import { BLOG, DOCS, GITHUB, NPM, SECURITY } from "./site";
 
 /** The logo mark picked in brand/marks.ts. */
 export function Mark({ className }: { className?: string }) {
@@ -102,6 +102,7 @@ export function Nav() {
         <div className={styles.navLinks}>
           <Link href={DOCS.quickstart}>Docs</Link>
           <Link href={DOCS.providers}>Providers</Link>
+          <Link href={BLOG}>Blog</Link>
           <a href={SECURITY} target="_blank" rel="noopener noreferrer">
             Security
           </a>
@@ -183,12 +184,14 @@ export function Footer() {
         </div>
         <div className={styles.footerCol}>
           <p className={styles.eyebrow}>Docs</p>
-          <FooterLink href={DOCS.quickstart}>Quickstart</FooterLink>
+          <FooterLink href={DOCS.start}>Quickstart</FooterLink>
           <FooterLink href={DOCS.providers}>Providers</FooterLink>
+          <FooterLink href={DOCS.integrations}>Integrations</FooterLink>
         </div>
         <div className={styles.footerCol}>
           <p className={styles.eyebrow}>Project</p>
           <FooterLink href={GITHUB}>GitHub</FooterLink>
+          <FooterLink href={BLOG}>Blog</FooterLink>
           <FooterLink href={SECURITY}>Security</FooterLink>
           <FooterLink href={`${GITHUB}/releases`}>Releases</FooterLink>
         </div>

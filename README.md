@@ -122,6 +122,12 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 
 [Compare providers](https://sandbox-sdk.app/docs/providers) for credentials, capabilities and preview rules. To add your own, implement `Provider` from `@opencoredev/sandbox-sdk/provider` and test it with `runConformance` from `@opencoredev/sandbox-sdk/testing`.
 
+## Guides
+
+- [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents): run an agent's commands in a container, lock it down, then move to a cloud provider.
+
+More on the [blog](https://sandbox-sdk.app/blog).
+
 ## Repository
 
 | Path                             | What it holds                                                                            |
