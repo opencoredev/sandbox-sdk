@@ -125,6 +125,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 ## Guides
 
 - [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents): run an agent's commands in a container, lock it down, then move to a cloud provider.
+- [E2B self-hosted: E2B Embed, or Docker instead](https://sandbox-sdk.app/blog/e2b-self-hosted): run E2B on your own machine, or the same sandbox code in Docker.
 
 More on the [blog](https://sandbox-sdk.app/blog).
 

@@ -175,6 +175,35 @@
 .article .prose pre code {
   font-family: inherit;
 }
+/* Marked emits a bare <table>; display: block lets a wide one scroll on its own instead of squeezing its columns. */
+.article .prose table {
+  display: block;
+  max-width: 100%;
+  margin-top: 1.4em;
+  margin-bottom: 1.4em;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.article .prose th,
+.article .prose td {
+  min-width: 16ch;
+  padding: 10px 14px 10px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.article .prose th {
+  color: var(--text);
+  font-weight: 600;
+}
+.article .prose th:first-child,
+.article .prose td:first-child {
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+}
 
 .article .next {
   max-width: 70ch;
