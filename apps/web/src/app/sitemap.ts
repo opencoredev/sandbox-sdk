@@ -8,7 +8,7 @@ export const dynamic = "force-static";
  * The last content change to the homepage (apps/web/src/app/(home)). Builds
  * have no git history, so update this by hand when the homepage copy changes.
  */
-const HOME_UPDATED = "2026-10-30";
+const HOME_UPDATED = "2026-11-02";
 
 // The docs app (apps/docs) publishes its own sitemap at /docs/sitemap.xml, and
 // robots.ts lists both. Each lastModified is the page's real last change, not the build time.

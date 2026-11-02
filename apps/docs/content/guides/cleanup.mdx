@@ -1,9 +1,11 @@
 ---
 title: Clean up sandboxes
-description: Stop paying for sandboxes nobody uses. Pick the right limits for your provider, schedule a reaper, scope it with labels, and check what is still running.
+description: "Clean up cloud sandboxes automatically, even when your code throws or your server crashes: provider limits, a scheduled reaper, labels, and what still runs."
 ---
 
-Cloud sandboxes cost money while they run, and a keyed sandbox is meant to outlive the request that made it. If your app forgets one, it keeps running. This guide sets up two layers of protection: limits the provider enforces on its own, and a reaper you run on a schedule.
+To clean up a sandbox automatically when your code throws, create it with `await using box = await createSandbox(provider)` from `@opencoredev/sandbox-sdk`. When the block exits, by returning or by throwing, a sandbox without a `key` is destroyed at the provider. That covers E2B, Daytona, Vercel Sandbox, Docker and every other provider the same way.
+
+`await using` can't help when the process itself dies, or for a keyed sandbox, which is meant to outlive the request that made it. If your app forgets one, it keeps running, and cloud sandboxes cost money while they run. This guide sets up two layers of protection for those cases: limits the provider enforces on its own, and a reaper you run on a schedule.
 
 For what `close`, `destroy`, and `await using` do, see [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup).
 
