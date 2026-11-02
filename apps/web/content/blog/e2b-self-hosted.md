@@ -24,8 +24,9 @@ Everything stays on that one machine: templates, logs and sandbox data live on i
 
 ### What it needs
 
-- Linux on x86-64 or arm64, with hardware virtualization. `/dev/kvm` and `/dev/net/tun` must exist, so on a cloud VM you need nested virtualization or bare metal. The Terraform installs create a suitable VM for you.
-- About 12 GiB of RAM and 20 GiB of free disk, per the [Compose guide](https://github.com/e2b-dev/runtime/blob/main/embed/compose/README.md#requirements). Ubuntu 24.04 is the recommended host.
+- Linux on x86-64 or arm64 with a 4 KiB-page kernel and hardware virtualization. `/dev/kvm` and `/dev/net/tun` must exist, so on a cloud VM you need nested virtualization or bare metal. The Terraform installs create a suitable VM for you.
+- Ubuntu 24.04 is the recommended host. On arm64 the kernel must be 6.10 or newer: with Ubuntu 24.04's stock 6.8 kernel the stack starts but every sandbox fails to start until you install `linux-generic-hwe-24.04`. The guides were written and tested on x86-64.
+- About 12 GiB of RAM and 20 GiB of free disk, per the [Compose guide](https://github.com/e2b-dev/runtime/blob/main/embed/compose/README.md#requirements).
 - On a Mac, it runs inside a Linux VM, which needs Apple silicon M3 or newer and macOS 15 or newer.
 
 ### What it doesn't do
