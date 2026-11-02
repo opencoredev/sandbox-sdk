@@ -16,6 +16,14 @@ export const DOCS = {
 
 export const BLOG = "/blog";
 
+/** JSON-LD `@id`s: the layout defines these nodes on every page, and the homepage's SoftwareApplication points at them. */
+export const SCHEMA_IDS = {
+  website: "https://sandbox-sdk.app/#website",
+  organization: "https://sandbox-sdk.app/#organization",
+  sourceCode: "https://sandbox-sdk.app/#source",
+  application: "https://sandbox-sdk.app/#application",
+} as const;
+
 export const INK: readonly [number, number, number] = [0.043, 0.043, 0.047];
 
 export const CARD_DOTS: HalftoneDots = {

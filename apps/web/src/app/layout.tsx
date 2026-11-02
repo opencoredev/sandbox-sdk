@@ -6,6 +6,8 @@ import { fontVariables } from "@/lib/fonts";
 import { PostHogProvider } from "@/lib/posthog-provider";
 import { socialImage } from "@/lib/shared";
 
+import { SCHEMA_IDS } from "./(home)/site";
+
 import "./global.css";
 
 const siteUrl = "https://sandbox-sdk.app";
@@ -13,25 +15,47 @@ const siteUrl = "https://sandbox-sdk.app";
 const description =
   "Sandboxes for your agents and your users. Run commands, edit files, and serve previews on E2B, Daytona, Vercel, Docker, and more from one TypeScript SDK.";
 
-// Structured data for search engines. JSON.stringify leaves "<" alone, so it is
-// escaped to keep a string value from closing the script tag.
+// Structured data for search engines, on every page: the site, who publishes it,
+// and the open-source package. JSON.stringify leaves "<" alone, so it is escaped
+// to keep a string value from closing the script tag.
 const jsonLd = JSON.stringify({
   "@context": "https://schema.org",
-  "@type": "SoftwareSourceCode",
-  name: "Sandbox SDK",
-  description,
-  url: siteUrl,
-  codeRepository: "https://github.com/opencoredev/sandbox-sdk",
-  programmingLanguage: "TypeScript",
-  runtimePlatform: "Node.js",
-  license: "https://opensource.org/licenses/MIT",
-  author: { "@type": "Organization", name: "OpenCore" },
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": SCHEMA_IDS.website,
+      name: "Sandbox SDK",
+      url: siteUrl,
+      description,
+      inLanguage: "en",
+      publisher: { "@id": SCHEMA_IDS.organization },
+    },
+    {
+      "@type": "Organization",
+      "@id": SCHEMA_IDS.organization,
+      name: "OpenCore",
+      url: siteUrl,
+      sameAs: ["https://github.com/opencoredev"],
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": SCHEMA_IDS.sourceCode,
+      name: "Sandbox SDK",
+      description,
+      url: siteUrl,
+      codeRepository: "https://github.com/opencoredev/sandbox-sdk",
+      programmingLanguage: "TypeScript",
+      runtimePlatform: "Node.js",
+      license: "https://opensource.org/licenses/MIT",
+      author: { "@id": SCHEMA_IDS.organization },
+    },
+  ],
 }).replace(/</g, "\\u003c");
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "Sandbox SDK: one TypeScript API for E2B, Daytona, Vercel Sandbox, and more",
+    default: "Sandbox SDK: TypeScript API for E2B, Daytona, Vercel Sandbox",
     template: "%s · Sandbox SDK",
   },
   description,
