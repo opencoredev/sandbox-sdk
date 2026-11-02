@@ -206,22 +206,23 @@ Provider-level capabilities gate root functions that need no sandbox:
 
 ## 8. Providers
 
-| Factory            | Subpath       | Native API or SDK (optional peer) and notes                                                                     |
-| ------------------ | ------------- | --------------------------------------------------------------------------------------------------------------- |
-| `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git. |
-| `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.      |
-| `e2b(opts)`        | `/e2b`        | Direct HTTP to E2B's API and each sandbox's envd; no peer. Native commands and pause/snapshot.                  |
-| `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                   |
-| `daytona(opts)`    | `/daytona`    | Direct HTTP to Daytona's API and toolbox; no peer. Labels, preview token.                                       |
-| `upstash(opts)`    | `/upstash`    | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                                |
-| `railway(opts)`    | `/railway`    | `railway`.                                                                                                      |
-| `boat(opts)`       | `/boat`       | Direct HTTP to Boat's API; no peer.                                                                             |
-| `sandboxer(opts)`  | `/sandboxer`  | Direct HTTP, through the same API client as `boat`; no peer.                                                    |
-| `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                          |
-| `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
-| `freestyle(opts)`  | `/freestyle`  | Direct HTTP to Freestyle's API; no peer.                                                                        |
-| `superserve(opts)` | `/superserve` | Direct HTTP to Superserve's API and sandbox data plane; no peer.                                                |
-| `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                              |
+| Factory            | Subpath       | Native API or SDK (optional peer) and notes                                                                        |
+| ------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.    |
+| `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.         |
+| `createos(opts)`   | `/createos`   | Direct HTTP to CreateOS; no peer. Managed processes, PTY, pause/resume, size and network allowlists. No snapshots. |
+| `e2b(opts)`        | `/e2b`        | Direct HTTP to E2B's API and each sandbox's envd; no peer. Native commands and pause/snapshot.                     |
+| `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                      |
+| `daytona(opts)`    | `/daytona`    | Direct HTTP to Daytona's API and toolbox; no peer. Labels, preview token.                                          |
+| `upstash(opts)`    | `/upstash`    | `@upstash/box`. `ephemeral: true` selects the ephemeral product.                                                   |
+| `railway(opts)`    | `/railway`    | `railway`.                                                                                                         |
+| `boat(opts)`       | `/boat`       | Direct HTTP to Boat's API; no peer.                                                                                |
+| `sandboxer(opts)`  | `/sandboxer`  | Direct HTTP, through the same API client as `boat`; no peer.                                                       |
+| `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                             |
+| `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                    |
+| `freestyle(opts)`  | `/freestyle`  | Direct HTTP to Freestyle's API; no peer.                                                                           |
+| `superserve(opts)` | `/superserve` | Direct HTTP to Superserve's API and sandbox data plane; no peer.                                                   |
+| `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                                 |
 
 Each adapter's key mode, capabilities, limits, and peer package range are listed once, in the docs' [capability matrix](../apps/docs/content/reference/capabilities.mdx). `apps/docs/scripts/check-capabilities.ts` checks that page against the adapters.
 

@@ -1,6 +1,6 @@
 # Sandbox SDK
 
-One TypeScript API for running code in a sandbox. The same `createSandbox`, `run`, `files`, `start`, and `preview` calls work on E2B, Daytona, Vercel, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, Sandboxer, Docker on your machine, and an in-process fake for tests. Changing provider means changing one import.
+One TypeScript API for running code in a sandbox. The same `createSandbox`, `run`, `files`, `start`, and `preview` calls work on E2B, Daytona, CreateOS, Vercel, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, Sandboxer, Docker on your machine, and an in-process fake for tests. Changing provider means changing one import.
 
 > **Coming from 0.2?** 1.0 changes the API. [Upgrade from 0.2](https://sandbox-sdk.app/docs/upgrade-from-0-2) walks through each change.
 
@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk
 ```
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, CreateOS, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 

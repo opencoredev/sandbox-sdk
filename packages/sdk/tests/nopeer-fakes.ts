@@ -10,11 +10,13 @@ import { afterAll, runAfterAll } from "./vitest-shim.js";
 import { boatMock } from "./boat-mock.js";
 import { apiUrl as daytonaApiUrl, cleanupMock } from "./daytona-mock.js";
 import { fakeE2B } from "./e2b-fake.js";
+import { fakeCreateos } from "./createos-fake.js";
 import { cleanupFreestyle, freestyleFetch } from "./freestyle-mock.js";
 import { installSuperserveFake, resetSuperserveFake } from "./superserve-fake.js";
 
 /** Options for each converted provider's factory that point it at its fake. */
 export interface FakeProviders {
+  createos: { apiKey: string; baseUrl: string };
   e2b: { apiKey: string };
   daytona: { apiKey: string; apiUrl: string };
   freestyle: { apiKey: string };
@@ -27,6 +29,7 @@ export interface FakeProviders {
 export async function startFakes(): Promise<{ options: FakeProviders; close(): Promise<void> }> {
   const original = { fetch: globalThis.fetch, WebSocket: globalThis.WebSocket };
   const e2b = await fakeE2B();
+  const createos = await fakeCreateos();
   const boat = await boatMock("boat");
   const sandboxer = await boatMock("sandboxer");
   installSuperserveFake();
@@ -52,6 +55,7 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
 
   return {
     options: {
+      createos: createos.options,
       e2b: { apiKey: "mock" },
       daytona: { apiKey: "offline-test-key", apiUrl: daytonaApiUrl },
       freestyle: { apiKey: "mock-key" },
@@ -63,7 +67,7 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
       globalThis.fetch = original.fetch;
       globalThis.WebSocket = original.WebSocket;
       await runAfterAll();
-      await Promise.all([e2b.close(), boat.dispose(), sandboxer.dispose()]);
+      await Promise.all([e2b.close(), createos.close(), boat.dispose(), sandboxer.dispose()]);
     },
   };
 }

@@ -105,6 +105,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 
 | Provider                                                               | Import                                | Install                       |
 | ---------------------------------------------------------------------- | ------------------------------------- | ----------------------------- |
+| [CreateOS](https://sandbox-sdk.app/docs/providers/createos)            | `@opencoredev/sandbox-sdk/createos`   | nothing                       |
 | [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                         |
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`              |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |

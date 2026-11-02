@@ -1,0 +1,91 @@
+---
+title: CreateOS
+description: Run commands, edit files, expose previews, and use interactive terminals in CreateOS sandboxes. No additional provider package required.
+---
+
+`createos()` calls the CreateOS HTTP API directly. Install Sandbox SDK and set `CREATEOS_SANDBOX_API_KEY` on your server.
+
+```sh
+bun add @opencoredev/sandbox-sdk
+```
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { createos } from "@opencoredev/sandbox-sdk/createos";
+
+await using box = await createSandbox(createos(), {
+  size: "small",
+  idleTimeoutMs: 5 * 60_000,
+  network: { allow: ["registry.npmjs.org"] },
+});
+
+await box.files.write("hello.txt", "hello from CreateOS\n");
+console.log((await box.run("cat hello.txt")).stdout);
+```
+
+Without a key, `await using` destroys the sandbox. With a key, it closes the local handle and leaves the sandbox running. Call `destroy()` to delete it.
+
+## Configuration
+
+| Factory option     | Default                                                        | Purpose                                          |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------ |
+| `apiKey`           | `CREATEOS_SANDBOX_API_KEY`                                     | Account credential                               |
+| `baseUrl`          | `CREATEOS_SANDBOX_BASE_URL`, then `https://api.sb.createos.sh` | API endpoint                                     |
+| `shape`            | `s-1vcpu-1gb`                                                  | Native shape when no portable size is requested  |
+| `rootfs`           | `devbox:1`                                                     | Catalog image or existing template ID/name       |
+| `region`           | Provider default                                               | Region accepted by the selected API              |
+| `requestTimeoutMs` | `60000`                                                        | Control-request deadline, not a sandbox lifetime |
+
+Use an image with Python 3, Git, tar, base64, and standard Linux shell utilities. Shared file operations and durable process records depend on these tools. Relative paths resolve against `/workspace`, which the adapter creates.
+
+## Capabilities and limits
+
+Commands, files, git, background processes, previews, pause/resume, and PTYs are supported. The adapter uses managed processes to stream output, close stdin, and terminate the whole process tree on timeout or abort. Failed cleanup throws instead of reporting that a command was stopped.
+
+Portable sizes match the live shape catalog: `small` requests 1 CPU / 1024 MiB, `medium` 2 / 2048, and `large` 4 / 4096. An exact `{ cpu, memoryMb, diskGb? }` request must match a catalog CPU/memory allocation. Disk values convert to MiB at 1024 MiB per `diskGb`. Unavailable allocations fail with `unsupported`.
+
+Idle auto-pause accepts 60–86400 seconds; milliseconds round up to whole seconds. Allow additional time for the service's idle sweep and pause operation. `timeoutMs` at sandbox creation is rejected because this adapter cannot enforce a hard lifetime. Command `timeoutMs` is supported.
+
+Network allowlists accept hostnames and wildcard hostnames. `network: "none"` and an empty allowlist are rejected: empty native egress rules mean unrestricted access. Ingress is enabled at creation; previews are public and require no predeclared ports.
+
+Keyed sandboxes use a deterministic name and SDK labels. CreateOS names are unique per account. Reconnecting to a paused sandbox resumes it; `listSandboxes()` only reads metadata.
+
+Snapshots, snapshot deletion, and portable template builds are not exposed. Select an existing CreateOS template with the factory's `rootfs` option. File watching uses core polling.
+
+## Interactive terminal
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { createos } from "@opencoredev/sandbox-sdk/createos";
+
+await using box = await createSandbox(createos());
+const terminal = await box.terminal({ cols: 80, rows: 24 });
+const unsubscribe = terminal.onData((text) => process.stdout.write(text));
+await terminal.write("echo hello\n");
+await terminal.resize(100, 30);
+await terminal.close();
+unsubscribe();
+```
+
+Closing the sandbox handle detaches local terminal output and leaves remote processes running. Explicitly close the terminal to terminate its process tree.
+
+## Native access
+
+`box.native` and `createos().api` expose the `"api"` plane. Paths include `/v1`; `{sandboxId}` fills automatically on a sandbox handle. JSON responses retain CreateOS's JSend envelope (`{ status, data }`).
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { createos } from "@opencoredev/sandbox-sdk/createos";
+
+await using box = await createSandbox(createos());
+const details = await box.native.request("GET", "/v1/sandboxes/{sandboxId}");
+console.log(details);
+```
+
+For the official SDK's own handle, install `@nodeops-createos/sandbox` and call `box.native.sdk(() => import("@nodeops-createos/sandbox"))`. This package is optional and is never loaded by normal adapter operations.
+
+## Verification
+
+The offline tests use a local HTTP fixture and real shell processes. Live conformance is opt-in: set `CREATEOS_LIVE_TESTS=1` together with the API key, then run `timeout 900s vitest run tests/createos.live.test.ts --maxWorkers=1` from `packages/sdk`. This provisions billable sandboxes and includes an idle auto-pause check that can take several minutes.
+
+Live verification on November 1, 2026 covered 27 applicable scenarios across conformance and provider-specific tests, including actual HTTP previews, PTY resizing, process restart and reattachment, network enforcement, resource sizing, secret recovery, and idle auto-pause. The optional official SDK bridge was also exercised against `@nodeops-createos/sandbox` 0.8.2. Snapshot conformance is skipped because the adapter does not expose snapshots.
