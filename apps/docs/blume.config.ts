@@ -110,7 +110,7 @@ export default defineConfig({
               icon: "/integrations/agentos.svg",
             },
             { label: "E2B", root: "/providers/e2b", icon: "/integrations/e2b.svg" },
-            { label: "CreateOS", root: "/providers/createos", icon: "server" },
+            { label: "CreateOS", root: "/providers/createos", icon: "/integrations/createos.svg" },
             {
               label: "Vercel Sandbox",
               root: "/providers/vercel",
