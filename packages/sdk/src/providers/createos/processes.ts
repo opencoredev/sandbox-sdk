@@ -70,11 +70,13 @@ export function processes(api: CreateosApi) {
       await sleep(100, deadline, "createos");
       result = await wait(id, processId, deadline);
     }
+
+    return result;
   }
 
   async function terminate(id: string, processId: string, graceMs = 1000) {
     try {
-      await stopTree(id, processId, graceMs);
+      return await stopTree(id, processId, graceMs);
     } catch {
       // Cleanup failure must never be converted to a successful timedOut result.
       throw failure(
@@ -369,7 +371,9 @@ exec sh -c ${quote(command.command)}`;
 
     return {
       pid: proc.pid,
-      stop: ({ graceMs }) => terminate(id, proc.id, graceMs),
+      stop: async ({ graceMs }) => {
+        await terminate(id, proc.id, graceMs);
+      },
       async wait() {
         for (;;) {
           try {
@@ -423,14 +427,24 @@ exec sh -c ${quote(command.command)}`;
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, session(id)]);
     const listeners = new Set<(data: string) => void>();
+    let backlog = "";
+    let subscribed = false;
+    let confirmedExit: { exitCode: number | null } | undefined;
 
     const done = follow(id, proc.id, signal, (chunk) => {
-      for (const listener of listeners) listener(chunk.text);
-    }).then(async () => {
-      const result = await wait(id, proc.id, createDeadline(10_000));
+      if (!subscribed) backlog = (backlog + chunk.text).slice(-65_536);
 
-      return { exitCode: result.exitCode };
-    });
+      for (const listener of listeners) listener(chunk.text);
+    })
+      .catch((cause) => {
+        if (!confirmedExit) throw cause;
+      })
+      .then(async () => {
+        if (confirmedExit) return confirmedExit;
+        const result = await wait(id, proc.id, createDeadline(10_000));
+
+        return { exitCode: result.exitCode };
+      });
 
     // Errors remain observable through wait(), even if callers only subscribe to onData().
     void done.catch(() => {});
@@ -450,13 +464,26 @@ exec sh -c ${quote(command.command)}`;
       },
       onData(callback) {
         listeners.add(callback);
+        subscribed = true;
+        const pending = backlog;
+        backlog = "";
+
+        if (pending) callback(pending);
 
         return () => {
           listeners.delete(callback);
         };
       },
       wait: () => done,
-      close: () => (closing ??= terminate(id, proc.id).finally(() => controller.abort())),
+      close: () =>
+        (closing ??= (async () => {
+          try {
+            const result = await terminate(id, proc.id);
+            confirmedExit = { exitCode: result?.exitCode ?? null };
+          } finally {
+            controller.abort();
+          }
+        })()),
     };
   }
 

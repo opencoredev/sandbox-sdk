@@ -18,6 +18,204 @@ afterEach(async () => {
 });
 
 describe("CreateOS provider", () => {
+  test("waits for startup before issuing the first guest command", async () => {
+    let reads = 0;
+    fake.server.on("GET /v1/sandboxes/sb-test", (_request, response) => {
+      reads++;
+
+      if (reads < 3)
+        expect(fake.server.calls("POST /v1/sandboxes/sb-test/processes")).toHaveLength(0);
+      response.end(
+        JSON.stringify({
+          status: "success",
+          data: {
+            id: "sb-test",
+            status: reads < 3 ? "creating" : "running",
+            created_at: "2026-01-01T00:00:00Z",
+            labels: { "sandbox-sdk": "1" },
+          },
+        }),
+      );
+    });
+    await using box = await createSandbox(createos(fake.options));
+    expect(reads).toBeGreaterThanOrEqual(3);
+    expect((await box.run("true")).ok).toBe(true);
+  });
+
+  test("a sandbox that never starts is deleted at the create deadline", async () => {
+    fake.server.on("GET /v1/sandboxes/sb-test", {
+      json: {
+        status: "success",
+        data: {
+          id: "sb-test",
+          status: "creating",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      },
+    });
+    await expect(
+      createSandbox(createos({ ...fake.options, requestTimeoutMs: 100 })),
+    ).rejects.toMatchObject({ code: "timeout" });
+    expect(fake.server.calls("DELETE /v1/sandboxes/sb-test")).toHaveLength(1);
+    expect(fake.server.calls("POST /v1/sandboxes/sb-test/processes")).toHaveLength(0);
+  });
+
+  test.each(["failed", "error"])("replaces a keyed sandbox in %s state", async (status) => {
+    const labels = { "sandbox-sdk": "1", "sandbox-sdk-key": "recover" };
+    const view = { id: "old", status, labels, created_at: "2026-01-01T00:00:00Z" };
+    let deleted = false;
+    fake.server.on("GET /v1/sandboxes", (_request, response) => {
+      response.end(JSON.stringify({ status: "success", data: { data: deleted ? [] : [view] } }));
+    });
+    fake.server.on("GET /v1/sandboxes/old", (_request, response) => {
+      if (deleted) response.writeHead(404).end();
+      else response.end(JSON.stringify({ status: "success", data: view }));
+    });
+    fake.server.on("DELETE /v1/sandboxes/old", (_request, response) => {
+      deleted = true;
+      response.end(JSON.stringify({ status: "success", data: {} }));
+    });
+    const provider = createos(fake.options);
+    expect(await provider.list({})).toEqual([]);
+    await using box = await createSandbox(provider, { key: "recover" });
+    expect(box.id).toBe("sb-test");
+    expect(deleted).toBe(true);
+    expect(box.created).toBe(true);
+    await box.destroy();
+  });
+
+  test("a stale failed listing never deletes a sandbox that recovered", async () => {
+    await using box = await createSandbox(createos(fake.options), { key: "recovered" });
+    fake.server.on("GET /v1/sandboxes", {
+      json: {
+        status: "success",
+        data: {
+          data: [
+            {
+              id: box.id,
+              status: "failed",
+              labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "recovered" },
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+        },
+      },
+    });
+    expect((await createos(fake.options).find("recovered"))?.id).toBe(box.id);
+    expect(fake.server.calls("DELETE /v1/sandboxes/sb-test")).toHaveLength(0);
+    await box.destroy();
+  });
+
+  test("failed-key recovery waits for deletion and tolerates another client's deletion", async () => {
+    const view = {
+      id: "old",
+      status: "error",
+      labels: { "sandbox-sdk": "1", "sandbox-sdk-key": "recover" },
+      created_at: "2026-01-01T00:00:00Z",
+    };
+
+    const success = (status: string) => ({
+      json: { status: "success", data: { ...view, status } },
+    });
+
+    fake.server.on("GET /v1/sandboxes", { json: { status: "success", data: { data: [view] } } });
+    fake.server.on(
+      "GET /v1/sandboxes/old",
+      success("error"),
+      success("destroying"),
+      success("destroyed"),
+    );
+    fake.server.on("DELETE /v1/sandboxes/old", { json: { status: "success", data: {} } });
+    const provider = createos(fake.options);
+    expect(await provider.find("recover")).toBeUndefined();
+    expect(fake.server.calls("GET /v1/sandboxes/old")).toHaveLength(3);
+    fake.server.on("GET /v1/sandboxes/old", { status: 404 });
+    expect(await provider.find("recover")).toBeUndefined();
+    expect(fake.server.calls("DELETE /v1/sandboxes/old")).toHaveLength(1);
+  });
+
+  test("ranged reads preserve missing-file errors and do not disguise other failures", async () => {
+    const provider = createos(fake.options);
+    await using box = await createSandbox(provider);
+    await expect(
+      provider.files.readRange!(box.id, "/workspace/missing", { offset: 0, length: 10 }),
+    ).rejects.toMatchObject({ code: "file_not_found" });
+    await box.files.write("plain", "file");
+    await expect(
+      provider.files.readRange!(box.id, "/workspace/plain/child", { offset: 0, length: 10 }),
+    ).rejects.toMatchObject({ code: "file_not_found" });
+    await expect(
+      provider.files.readRange!(box.id, "/workspace", { offset: 0, length: 10 }),
+    ).rejects.toMatchObject({ code: "provider" });
+  });
+
+  test(
+    "large ranges are chunked and honor offsets, EOF, and zero length",
+    { timeout: 30_000 },
+    async () => {
+      const provider = createos(fake.options);
+      await using box = await createSandbox(provider);
+      const bytes = Buffer.alloc(13 * 1024 * 1024 + 71);
+
+      for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+      await box.files.write("large.bin", bytes);
+
+      const read = (offset: number, length: number) =>
+        provider.files.readRange!(box.id, "/workspace/large.bin", { offset, length });
+
+      expect(Buffer.from(await read(37, bytes.length)).equals(bytes.subarray(37))).toBe(true);
+      expect(await read(bytes.length + 1, 10)).toHaveLength(0);
+      expect(await read(0, 0)).toHaveLength(0);
+    },
+  );
+
+  test("terminal replays a bounded backlog only to its first subscriber", async () => {
+    await using box = await createSandbox(createos(fake.options));
+    const terminal = await box.terminal({ cols: 80, rows: 24 });
+    await terminal.write('python3 -c \'print("x" * 100000 + "prompt", end="")\'; exit\n');
+    await terminal.wait?.();
+    let output = "";
+
+    const off = terminal.onData((text) => {
+      output += text;
+    });
+
+    expect(output).toHaveLength(65_536);
+    expect(output.endsWith("prompt")).toBe(true);
+    off();
+    let replayed = "";
+    terminal.onData((text) => {
+      replayed += text;
+    });
+    expect(replayed).toBe("");
+    await terminal.close();
+  });
+
+  test("terminal wait returns confirmed termination when its exit stream stalls", async () => {
+    await using box = await createSandbox(createos(fake.options));
+    fake.server.on("GET /v1/sandboxes/sb-test/processes/p-3/connect", {
+      stream: ['{"type":"heartbeat"}\n'],
+      hold: true,
+    });
+    const terminal = await box.terminal({ cols: 80, rows: 24 });
+    const exited = terminal.wait?.();
+    await terminal.close();
+    expect(await exited).toEqual({ exitCode: 137 });
+    await terminal.close();
+  });
+
+  test("terminal cleanup failure cannot turn a stalled stream into a successful wait", async () => {
+    await using box = await createSandbox(createos(fake.options));
+    fake.server.on("GET /v1/sandboxes/sb-test/processes/p-3/connect", {
+      stream: ['{"type":"heartbeat"}\n'],
+      hold: true,
+    });
+    fake.server.on("DELETE /v1/sandboxes/sb-test/processes/p-3", { status: 403 });
+    const terminal = await box.terminal({ cols: 80, rows: 24 });
+    await expect(terminal.close()).rejects.toMatchObject({ code: "provider" });
+    await expect(terminal.wait?.()).rejects.toMatchObject({ code: "aborted" });
+  });
+
   test("creates, reconnects by key, resumes, lists only SDK resources, and destroys", async () => {
     const provider = createos(fake.options);
 
@@ -215,9 +413,22 @@ describe("CreateOS provider", () => {
       onChunk() {},
     });
 
+    let settled = false;
+    void running.wait().then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
     await box.close();
+    const polls = fake.server.calls("GET /v1/sandboxes/sb-test/processes/{id}/wait").length;
     expect(fake.server.calls("DELETE /v1/sandboxes/sb-test/processes/{id}")).toHaveLength(0);
     await running.stop({ graceMs: 100 });
+    expect(settled).toBe(false);
+    expect(fake.server.calls("GET /v1/sandboxes/sb-test/processes/{id}/wait")).toHaveLength(polls);
     expect(fake.server.calls("DELETE /v1/sandboxes/sb-test/processes/{id}")).toHaveLength(1);
   });
 });

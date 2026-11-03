@@ -42,7 +42,7 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 - **Labels.** Vercel allows five tags per sandbox. The SDK uses one, and a second for a keyed sandbox, so you get four labels, or three with a `key`. Boat and Sandboxer store the key and labels in a compressed display name of at most 120 characters. Freestyle stores them in native VM metadata, which holds about 2.9 KB once encoded. Railway and boxd keep them in a marker file inside each VM.
 - **Key mode.** agentOS keys are exact within one application process.
 - **Previews.** Local returns `http://127.0.0.1` on the Docker host, so the URL works only on that machine. boxd gives one public route per machine, and previewing a new port moves it. Daytona, Upstash Box, and Superserve can make previews public with a factory option, and E2B can make them private. agentOS has no preview URLs, and Memory returns fake ones.
-- **Terminal.** E2B and CreateOS expose PTYs. Its terminal is a login shell running as root, with `TERM=xterm-256color`.
+- **Terminal.** E2B and CreateOS expose PTYs with `TERM=xterm-256color`. E2B opens a login shell as root. CreateOS opens `sh` without a login option, so login profiles are not loaded.
 - **Snapshot deletion and templates.** `deleteSnapshot()` and `buildTemplate()` are root functions that take the provider, because neither needs a running sandbox. E2B stores snapshots as templates, so deleting a snapshot deletes that template.
 - **Upstash Box.** Listing SDK boxes reads metadata from inside each box and may wake idle boxes.
 - **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).

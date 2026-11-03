@@ -38,6 +38,8 @@ Without a key, `await using` destroys the sandbox. With a key, it closes the loc
 
 Use an image with Python 3, Git, tar, base64, and standard Linux shell utilities. Shared file operations and durable process records depend on these tools. Relative paths resolve against `/workspace`, which the adapter creates.
 
+Ranged file reads use bounded chunks to stay within CreateOS's process-output replay limit. A large range requires multiple network round trips and shares one `requestTimeoutMs` deadline. Raise that option for bulk reads; the 13 MiB live regression uses `requestTimeoutMs: 120_000`.
+
 ## Capabilities and limits
 
 Commands, files, git, background processes, previews, pause/resume, and PTYs are supported. The adapter uses managed processes to stream output, close stdin, and terminate the whole process tree on timeout or abort. Failed cleanup throws instead of reporting that a command was stopped.

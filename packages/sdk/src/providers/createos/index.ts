@@ -151,11 +151,7 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
 
     return rows
       .map(sandboxRecord)
-      .filter(
-        (box) =>
-          !dead.has(box.status) &&
-          Object.entries(expected).every(([key, value]) => box.labels[key] === value),
-      );
+      .filter((box) => Object.entries(expected).every(([key, value]) => box.labels[key] === value));
   }
 
   async function settled(id: string, state: "running" | "paused", deadline: Deadline) {
@@ -306,7 +302,7 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
       if (deadline.signal.aborted)
         throw failure("Creation cancelled after submission", "aborted", id);
       // The create response does not guarantee created_at. Read authoritative metadata for reaping.
-      const box = await get(id, deadline);
+      const box = await settled(id, "running", deadline);
       await commands.raw(id, "mkdir -p /workspace", undefined, deadline);
 
       return infoOf(box);
@@ -357,17 +353,38 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
     read: (file, range) =>
       transfer(id, async () => {
         if (range) {
-          const text = await commands.raw(
-            id,
-            python(
-              "import sys,base64; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())",
-              file,
-              String(range.offset),
-              String(range.length),
-            ),
-          );
+          const deadline = createDeadline(requestTimeoutMs);
+          const chunks: Buffer[] = [];
+          let offset = range.offset;
+          let remaining = range.length;
 
-          return Buffer.from(text.trim(), "base64");
+          do {
+            // Base64 plus framing must fit CreateOS's 1 MiB per-process replay buffer.
+            const length = Math.min(remaining, 512 * 1024);
+
+            const text = await commands.raw(
+              id,
+              python(
+                "import sys,base64\ntry:\n with open(sys.argv[1],'rb') as f:\n  f.seek(int(sys.argv[2])); print(base64.b64encode(f.read(int(sys.argv[3]))).decode())\nexcept (FileNotFoundError,NotADirectoryError):\n print('missing:')",
+                file,
+                String(offset),
+                String(length),
+              ),
+              undefined,
+              deadline,
+            );
+
+            if (text.trim() === "missing:")
+              throw failure("File does not exist", "file_not_found", id);
+            const chunk = Buffer.from(text.trim(), "base64");
+            chunks.push(chunk);
+            offset += chunk.length;
+            remaining -= chunk.length;
+
+            if (chunk.length < length) break;
+          } while (remaining > 0);
+
+          return Buffer.concat(chunks);
         }
 
         return (
@@ -389,9 +406,32 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
     capabilities: new Set<CreateosCapability>(["pause", "terminal", "size", "network-policy"]),
     create,
     async find(key) {
-      const box = (await list({ [keyLabel]: key }))[0];
+      const deadline = createDeadline(requestTimeoutMs);
 
-      return box ? provider.connect(box.id) : undefined;
+      for (const candidate of await list({ [keyLabel]: key }, deadline)) {
+        if (candidate.status === "destroyed") continue;
+
+        try {
+          // Recheck by immutable ID: a stale list must not delete a recovered sandbox.
+          let box = await get(candidate.id, deadline);
+
+          if (box.status === "failed" || box.status === "error") {
+            await destroy(box.id);
+            box = await get(box.id, deadline);
+          }
+
+          while (box.status === "destroying") {
+            await sleep(250, deadline, "createos");
+            box = await get(box.id, deadline);
+          }
+
+          if (box.status !== "destroyed") return await provider.connect(box.id);
+        } catch (cause) {
+          if (!(cause instanceof SandboxError && cause.code === "not_found")) throw cause;
+        }
+      }
+
+      return undefined;
     },
     async connect(id) {
       const deadline = createDeadline(requestTimeoutMs);
@@ -407,7 +447,7 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
 
       return infoOf(box.status === "running" ? box : await settled(id, "running", deadline));
     },
-    list: async (labels) => (await list(labels)).map(infoOf),
+    list: async (labels) => (await list(labels)).filter((box) => !dead.has(box.status)).map(infoOf),
     destroy,
     exec: commands.execute,
     files: files(guest, safe),
