@@ -1,9 +1,11 @@
 ---
 title: Daytona
-description: Run sandboxes on Daytona. Exact machine sizes, idle auto-stop, wall-clock lifetimes, network allow lists, snapshots, and token-protected previews.
+description: Run sandboxes on Daytona, or move E2B code to it by changing one line. Exact sizes, idle auto-stop, lifetimes, network allow lists, snapshots, and previews.
 ---
 
 `daytona()` runs each sandbox on [Daytona](https://daytona.io). It calls Daytona's HTTP API directly, so it needs no other package.
+
+To switch from E2B to Daytona without rewriting your code, write it against `@opencoredev/sandbox-sdk` and change `createSandbox(e2b())` to `createSandbox(daytona())`. `box.run`, `box.files`, background processes and previews work the same. Daytona has no pause or resume, and its previews need a token header, so check those against the [capability matrix](/reference/capabilities) first. [E2B SDK and API in TypeScript](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript) shows one task on both.
 
 ## Install
 
