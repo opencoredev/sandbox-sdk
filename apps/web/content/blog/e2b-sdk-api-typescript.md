@@ -1,12 +1,12 @@
 ---
 title: E2B SDK and API in TypeScript, with examples
-description: How the e2b npm package and E2B's REST API fit together, the same file-and-Python task in each, and how to keep that code portable to Daytona or Docker.
+description: How the e2b npm package and E2B's REST API fit together, one upload-and-run-Python task in TypeScript, and how to keep it portable to Daytona or Docker.
 published: 2026-11-03
 ---
 
 E2B gives you two ways in. The [`e2b`](https://www.npmjs.com/package/e2b) npm package is the TypeScript SDK: it creates sandboxes, runs commands and reads and writes files. The [REST API](https://e2b.dev/docs/api-reference) at `https://api.e2b.app` manages sandboxes and templates: create, list, pause, set a timeout, delete. Commands and files don't go through the REST API at all. They go to envd, a daemon inside each sandbox, which the SDK talks to for you.
 
-This guide shows the same task three ways: with the `e2b` package, with the REST API, and with [Sandbox SDK](/) (`@opencoredev/sandbox-sdk`), which runs the same code on E2B, Daytona, Vercel Sandbox, Docker and other providers. The task is the common one for AI agents: upload a Python file into a sandbox, run it, read the output, and clean up.
+This guide runs one task with the `e2b` package and with [Sandbox SDK](/) (`@opencoredev/sandbox-sdk`), which runs the same code on E2B, Daytona, Vercel Sandbox, Docker and other providers, and explains where the REST API fits. The task is the common one for AI agents: upload a Python file into a sandbox, run it, read the output, and clean up.
 
 ## The E2B SDK in TypeScript
 
@@ -115,7 +115,7 @@ const result = await box.run("python3 main.py");
 console.log(result.ok, result.stdout);
 ```
 
-`local()` runs it in a Docker container on your machine the same way. What doesn't carry over is anything a provider can't do. Daytona has no pause or resume, and its previews need a token header. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For speed and price comparisons between providers, see [AI Sandbox Bench](https://aisandboxbench.com).
+`local()` runs it in a Docker container on your machine the same way. What doesn't carry over is anything a provider can't do. Daytona has no pause or resume, and its previews need a token header unless you create the sandbox with `daytona({ public: true })`. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For speed and price comparisons between providers, see [AI Sandbox Bench](https://aisandboxbench.com).
 
 ## Test without E2B
 
@@ -143,7 +143,7 @@ console.log((await box.run("python3 main.py")).stdout); // hello from E2B
 
 ## Which one to use
 
-- **The `e2b` package** if you only use E2B and want every feature it has, including Code Interpreter's `runCode` and E2B Desktop.
+- **E2B's own SDKs** if you only use E2B and want every feature it has: `e2b` for sandboxes, plus [`@e2b/code-interpreter`](https://www.npmjs.com/package/@e2b/code-interpreter) for `runCode` and [`@e2b/desktop`](https://www.npmjs.com/package/@e2b/desktop) for E2B Desktop.
 - **The REST API** to manage sandboxes from a language or tool with no E2B SDK. You still need an SDK for commands and files.
 - **Sandbox SDK's `e2b()`** if you want E2B today and the option to move to Daytona, Vercel Sandbox or Docker later. The same package gives you `sandboxTools` for the AI SDK, Mastra and the OpenAI Agents SDK, and `memory()` for unit tests without an E2B account.
 
