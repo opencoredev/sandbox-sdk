@@ -18,6 +18,104 @@ afterEach(async () => {
 });
 
 describe("CreateOS provider", () => {
+  test.each(["disk", "full"] as const)(
+    "captures %s snapshots and waits for readiness",
+    async (snapshotType) => {
+      const provider = createos({ ...fake.options, snapshotType });
+      await using box = await createSandbox(provider);
+      fake.server.on("POST /v1/sandboxes/sb-test/snapshots", {
+        json: { status: "success", data: { id: "snap-1", status: "creating" } },
+      });
+      fake.server.on(
+        "GET /v1/snapshots/snap-1",
+        { json: { status: "success", data: { id: "snap-1", status: "creating" } } },
+        { json: { status: "success", data: { id: "snap-1", status: "ready" } } },
+      );
+      expect(await box.snapshot({ expiresInMs: 0 })).toEqual({ id: "snap-1" });
+      expect(
+        JSON.parse(fake.server.calls("POST /v1/sandboxes/sb-test/snapshots")[0]!.body.toString()),
+      ).toEqual({ type: snapshotType });
+      expect(fake.server.calls("GET /v1/snapshots/snap-1")).toHaveLength(2);
+    },
+  );
+
+  test("snapshot expiration is rejected before capture", async () => {
+    await using box = await createSandbox(createos(fake.options));
+    await expect(box.snapshot({ expiresInMs: 1000 })).rejects.toMatchObject({
+      code: "unsupported",
+    });
+    expect(fake.server.calls("POST /v1/sandboxes/sb-test/snapshots")).toHaveLength(0);
+  });
+
+  test("failed captures are deleted and pending timeouts identify the snapshot", async () => {
+    const provider = createos({ ...fake.options, snapshotTimeoutMs: 100 });
+    await using box = await createSandbox(provider);
+    fake.server.on("POST /v1/sandboxes/sb-test/snapshots", {
+      json: { status: "success", data: { id: "snap-1" } },
+    });
+    fake.server.on("GET /v1/snapshots/snap-1", {
+      json: { status: "success", data: { id: "snap-1", status: "failed" } },
+    });
+    fake.server.on("DELETE /v1/snapshots/snap-1", {
+      json: { status: "success", data: { status: "deleting" } },
+    });
+    await expect(box.snapshot()).rejects.toMatchObject({ code: "provider" });
+    expect(fake.server.calls("DELETE /v1/snapshots/snap-1")).toHaveLength(1);
+    fake.server.on("GET /v1/snapshots/snap-1", {
+      json: { status: "success", data: { id: "snap-1", status: "creating" } },
+    });
+    await expect(box.snapshot()).rejects.toMatchObject({
+      code: "timeout",
+      message: expect.stringContaining("snap-1"),
+    });
+  });
+
+  test("snapshot deletion is idempotent without hiding auth failures", async () => {
+    const provider = createos(fake.options);
+    fake.server.on(
+      "DELETE /v1/snapshots/snap-1",
+      { json: { status: "success", data: { status: "deleting" } } },
+      { status: 404 },
+      { status: 403 },
+    );
+    expect(await provider.deleteSnapshot!("snap-1")).toBe(true);
+    expect(await provider.deleteSnapshot!("snap-1")).toBe(false);
+    await expect(provider.deleteSnapshot!("snap-1")).rejects.toMatchObject({ code: "auth" });
+  });
+
+  test("restore inherits snapshot resources and omits the default rootfs", async () => {
+    await using box = await createSandbox(createos(fake.options), { from: "snap-1" });
+    expect(box.created).toBe(true);
+    const body = JSON.parse(fake.server.calls("POST /v1/sandboxes")[0]!.body.toString());
+    expect(body.snapshot_id).toBe("snap-1");
+    expect(body).not.toHaveProperty("rootfs");
+    expect(body).not.toHaveProperty("shape");
+    expect(body).not.toHaveProperty("disk_mib");
+  });
+
+  test("restore forwards explicit size while letting CreateOS enforce snapshot compatibility", async () => {
+    await using box = await createSandbox(
+      createos({ ...fake.options, rootfs: "ignored-on-restore" }),
+      {
+        from: "snap-1",
+        size: { cpu: 2, memoryMb: 2048, diskGb: 20 },
+      },
+    );
+
+    expect(box.created).toBe(true);
+    const body = JSON.parse(fake.server.calls("POST /v1/sandboxes")[0]!.body.toString());
+    // oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- CreateOS wire field.
+    expect(body).toMatchObject({ snapshot_id: "snap-1", shape: "s-2vcpu-2gb", disk_mib: 20480 });
+    expect(body).not.toHaveProperty("rootfs");
+  });
+
+  test("ambiguous snapshot submission is not retried", async () => {
+    await using box = await createSandbox(createos(fake.options));
+    fake.server.on("POST /v1/sandboxes/sb-test/snapshots", { drop: true });
+    await expect(box.snapshot()).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(fake.server.calls("POST /v1/sandboxes/sb-test/snapshots")).toHaveLength(1);
+  });
+
   test("waits for startup before issuing the first guest command", async () => {
     let reads = 0;
     fake.server.on("GET /v1/sandboxes/sb-test", (_request, response) => {
@@ -319,19 +417,21 @@ describe("CreateOS provider", () => {
     await expect(box.files.read("app/a.txt")).rejects.toMatchObject({ code: "file_not_found" });
   });
 
-  test("pause and terminal are available while snapshots and templates are absent", async () => {
+  test("pause, terminal, and snapshots are available while templates are absent", async () => {
     const provider = createos(fake.options);
     expect([...provider.capabilities].sort()).toEqual([
       "network-policy",
       "pause",
       "size",
+      "snapshot",
+      "snapshot-delete",
       "terminal",
     ]);
     await using box = await createSandbox(provider);
     expectTypeOf(box.pause).toBeFunction();
     expectTypeOf(box.terminal).toBeFunction();
 
-    expectTypeOf(box).not.toHaveProperty("snapshot");
+    expectTypeOf(box.snapshot).toBeFunction();
     const terminal = await box.terminal({ cols: 80, rows: 24, env: { CUSTOM: "terminal-secret" } });
     let output = "";
     terminal.onData((text) => {
@@ -357,7 +457,6 @@ describe("CreateOS provider", () => {
     { network: { allow: [] } },
     { idleTimeoutMs: 1000 },
     { idleTimeoutMs: 86_400_001 },
-    { from: "snapshot" },
   ])("rejects unsupported creation options before any request: %j", async (options) => {
     await expect(createSandbox(createos(fake.options), options)).rejects.toMatchObject({
       code: "unsupported",

@@ -35,6 +35,8 @@ Without a key, `await using` destroys the sandbox. With a key, it closes the loc
 | `rootfs`           | `devbox:1`                                                     | Catalog image or existing template ID/name       |
 | `region`           | Provider default                                               | Region accepted by the selected API              |
 | `requestTimeoutMs` | `60000`                                                        | Control-request deadline, not a sandbox lifetime |
+| `snapshotType` | `"disk"` | Capture disk state, or `"full"` for disk and VM memory |
+| `snapshotTimeoutMs` | `300000` | Deadline for asynchronous snapshot capture |
 
 Use an image with Python 3, Git, tar, base64, and standard Linux shell utilities. Shared file operations and durable process records depend on these tools. Relative paths resolve against `/workspace`, which the adapter creates.
 
@@ -52,7 +54,31 @@ Network allowlists accept hostnames and wildcard hostnames. `network: "none"` an
 
 Keyed sandboxes use a deterministic name and SDK labels. CreateOS names are unique per account. Reconnecting to a paused sandbox resumes it; `listSandboxes()` only reads metadata.
 
-Snapshots, snapshot deletion, and portable template builds are not exposed. Select an existing CreateOS template with the factory's `rootfs` option. File watching uses core polling.
+Reusable snapshots and deletion are supported. Portable template builds are not exposed. Select an existing CreateOS template with the factory's `rootfs` option. File watching uses core polling.
+
+## Snapshots
+
+```ts
+import { createSandbox, deleteSnapshot } from "@opencoredev/sandbox-sdk";
+import { createos } from "@opencoredev/sandbox-sdk/createos";
+
+const provider = createos();
+await using source = await createSandbox(provider);
+await source.files.write("hello.txt", "saved");
+const snapshot = await source.snapshot();
+try {
+  await using restored = await createSandbox(provider, { from: snapshot.id });
+  console.log(await restored.files.read("hello.txt"));
+} finally {
+  await deleteSnapshot(provider, snapshot.id);
+}
+```
+
+Snapshots default to disk state. Use `createos({ snapshotType: "full" })` to capture VM memory as well. Capture requires a running sandbox without attached external disks and briefly freezes the guest. The adapter polls until ready; `snapshotTimeoutMs` defaults to 300000 milliseconds. If that deadline expires, the error includes the snapshot ID for inspection through the native API. Pending captures cannot be deleted yet.
+
+Restores inherit captured resources unless you explicitly supply `size` or a factory `shape`. Disk snapshots allow different CPU/memory and a larger disk. Full snapshots require the captured CPU, memory, and disk allocation. Restore omits `rootfs`, including the factory default, because the snapshot supplies it.
+
+Snapshots survive source deletion and can create independent sandboxes repeatedly. The API currently permits five snapshots per user. Automatic expiration is unavailable: omit `expiresInMs` or pass `0`. Deletion hides the snapshot from the API; storage artifacts are retained for in-flight restores. `deleteSnapshot()` returns `false` if it is already gone.
 
 ## Interactive terminal
 
@@ -90,4 +116,4 @@ For the official SDK's own handle, install `@nodeops-createos/sandbox` and call 
 
 The offline tests use a local HTTP fixture and real shell processes. Live conformance is opt-in: set `CREATEOS_LIVE_TESTS=1` together with the API key, then run `timeout 900s vitest run tests/createos.live.test.ts --maxWorkers=1` from `packages/sdk`. This provisions billable sandboxes and includes an idle auto-pause check that can take several minutes.
 
-Live verification on November 1, 2026 covered 27 applicable scenarios across conformance and provider-specific tests, including actual HTTP previews, PTY resizing, process restart and reattachment, network enforcement, resource sizing, secret recovery, and idle auto-pause. The optional official SDK bridge was also exercised against `@nodeops-createos/sandbox` 0.8.2. Snapshot conformance is skipped because the adapter does not expose snapshots.
+Live verification on November 1, 2026 covered 27 applicable scenarios across conformance and provider-specific tests, including actual HTTP previews, PTY resizing, process restart and reattachment, network enforcement, resource sizing, secret recovery, and idle auto-pause. The optional official SDK bridge was also exercised against `@nodeops-createos/sandbox` 0.8.2. Snapshot support was added after that verification run.

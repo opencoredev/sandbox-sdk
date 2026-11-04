@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { createSandbox, connectSandbox } from "../src/index.js";
+import { createSandbox, connectSandbox, deleteSnapshot } from "../src/index.js";
 import { createos, type CreateosOptions } from "../src/providers/createos/index.js";
 import { runConformance } from "../src/testing.js";
 
@@ -12,6 +12,7 @@ if (live) vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 describe.skipIf(!live)("CreateOS live (billable)", () => {
   const run = crypto.randomUUID();
   const owned = new Set<string>();
+  const ownedSnapshots = new Set<string>();
 
   function liveProvider(options?: CreateosOptions) {
     const provider = createos(options);
@@ -32,13 +33,42 @@ describe.skipIf(!live)("CreateOS live (billable)", () => {
     for (const box of await provider.list({ "createos-live-run": run })) owned.add(box.id);
 
     for (const id of owned) await provider.destroy(id);
+
+    for (const id of ownedSnapshots) await deleteSnapshot(provider, id);
     expect(await provider.list({ "createos-live-run": run })).toEqual([]);
     console.info(
       `CreateOS cleanup verified: ${owned.size} test sandboxes, no remaining live resources (run ${run}).`,
     );
   });
 
-  runConformance(() => liveProvider(), { live: true });
+  runConformance(() => liveProvider(), { live: true, snapshotExpiry: "refused" });
+
+  test.each(["disk", "full"] as const)(
+    "reusable %s snapshot survives source deletion",
+    { timeout: 600_000 },
+    async (snapshotType) => {
+      const provider = liveProvider({ snapshotType, requestTimeoutMs: 300_000 });
+      await using source = await createSandbox(provider);
+      await source.files.write("saved.txt", "original");
+      const snapshot = await source.snapshot();
+      ownedSnapshots.add(snapshot.id);
+
+      try {
+        expect((await source.run("cat saved.txt")).stdout).toBe("original");
+        await source.destroy();
+        await using restored = await createSandbox(provider, { from: snapshot.id });
+        expect(await restored.files.read("saved.txt")).toBe("original");
+        await restored.files.write("saved.txt", "changed");
+        await using other = await createSandbox(provider, { from: snapshot.id });
+        expect(await other.files.read("saved.txt")).toBe("original");
+        expect(await deleteSnapshot(provider, snapshot.id)).toBe(true);
+        expect(await deleteSnapshot(provider, snapshot.id)).toBe(false);
+        ownedSnapshots.delete(snapshot.id);
+      } finally {
+        await deleteSnapshot(provider, snapshot.id);
+      }
+    },
+  );
 
   test(
     "ranged reads exceed 12 MiB and preserve missing-file errors",

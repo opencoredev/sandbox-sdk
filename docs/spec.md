@@ -210,7 +210,7 @@ Provider-level capabilities gate root functions that need no sandbox:
 | ------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `local()`          | `/local`      | Docker Engine API, no peer. Real Linux; ports map to localhost URLs. Default image `node:22-bookworm` with git.    |
 | `memory()`         | `/memory`     | No peer. In-process fake for tests: files, a small shell subset, processes, fake preview URLs. No network.         |
-| `createos(opts)`   | `/createos`   | Direct HTTP to CreateOS; no peer. Managed processes, PTY, pause/resume, size and network allowlists. No snapshots. |
+| `createos(opts)`   | `/createos`   | Direct HTTP to CreateOS; no peer. Managed processes, PTY, pause/resume, size and network allowlists. Disk/full snapshots and deletion. |
 | `e2b(opts)`        | `/e2b`        | Direct HTTP to E2B's API and each sandbox's envd; no peer. Native commands and pause/snapshot.                     |
 | `vercel(opts)`     | `/vercel`     | `@vercel/sandbox`. Named sandboxes, ports declared at create.                                                      |
 | `daytona(opts)`    | `/daytona`    | Direct HTTP to Daytona's API and toolbox; no peer. Labels, preview token.                                          |

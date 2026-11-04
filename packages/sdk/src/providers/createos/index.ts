@@ -20,8 +20,13 @@ import { isString, isNumber } from "../../shared/narrow.js";
 import { createosApi, sandboxRecord, record, type SandboxRecord } from "./api.js";
 import { processes } from "./processes.js";
 import { failure } from "./errors.js";
+import { snapshots } from "./snapshots.js";
 
 export interface CreateosOptions {
+  /** State captured by snapshot(). Default: disk. Full includes VM memory. */
+  snapshotType?: "disk" | "full";
+  /** Deadline for asynchronous snapshot capture. Default: 300000 ms. */
+  snapshotTimeoutMs?: number;
   /** Defaults to CREATEOS_SANDBOX_API_KEY. Read on first use, never at import time. */
   apiKey?: string;
   /** Defaults to CREATEOS_SANDBOX_BASE_URL, then https://api.sb.createos.sh. */
@@ -54,7 +59,13 @@ export type CreateosClientSdk = <M extends CreateosSdkModule>(
 /** Raw native requests return CreateOS's JSend envelope. `{sandboxId}` fills automatically. */
 export type CreateosNative = NativeApi<"api", CreateosSandboxSdk>;
 
-type CreateosCapability = "pause" | "terminal" | "size" | "network-policy";
+type CreateosCapability =
+  | "pause"
+  | "terminal"
+  | "size"
+  | "network-policy"
+  | "snapshot"
+  | "snapshot-delete";
 
 export type CreateosProvider = Provider<CreateosNative, CreateosCapability> & {
   readonly api: NativeApi<"api", CreateosClientSdk>;
@@ -86,7 +97,7 @@ function infoOf(box: SandboxRecord): SandboxInfo {
   };
 }
 
-/** CreateOS's fetch-only provider. Snapshots and template builds are deliberately not capabilities. */
+/** CreateOS's fetch-only provider. */
 export function createos(options: CreateosOptions = {}): CreateosProvider {
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
 
@@ -109,6 +120,14 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
 
   const api = createosApi({ baseUrl, apiKey, requestTimeoutMs });
   const commands = processes(api);
+  const snapshotTimeoutMs = options.snapshotTimeoutMs ?? 300_000;
+
+  if (!Number.isSafeInteger(snapshotTimeoutMs) || snapshotTimeoutMs <= 0)
+    throw failure("snapshotTimeoutMs must be positive milliseconds", "invalid_argument");
+
+  if (options.snapshotType !== undefined && !["disk", "full"].includes(options.snapshotType))
+    throw failure("snapshotType must be disk or full", "invalid_argument");
+  const snapshot = snapshots(api, options.snapshotType ?? "disk", snapshotTimeoutMs);
 
   const binding: NativeSdkBinding = {
     package: "@nodeops-createos/sandbox",
@@ -239,8 +258,6 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
   }
 
   async function create(input: CreateInput) {
-    if (input.from !== undefined) throw failure("Snapshot restore is not supported", "unsupported");
-
     if (input.timeoutMs !== undefined)
       throw failure("CreateOS cannot enforce a hard sandbox lifetime", "unsupported");
 
@@ -263,7 +280,11 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
     if (idle !== undefined && (!Number.isSafeInteger(idle) || idle < 60 || idle > 86_400))
       throw failure("CreateOS idle auto-pause must be between 60 and 86400 seconds", "unsupported");
     const deadline = createDeadline(requestTimeoutMs, input.signal);
-    const resources = await resource(input.size, deadline);
+
+    const resources =
+      input.from !== undefined && input.size === undefined && options.shape === undefined
+        ? {}
+        : await resource(input.size, deadline);
 
     if (deadline.signal.aborted) throw failure("Creation aborted before submission", "aborted");
     const labels: Labels = { ...input.labels, "sandbox-sdk": "1" };
@@ -284,7 +305,8 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
         name: input.key
           ? `sdk-${createHash("sha256").update(input.key).digest("hex").slice(0, 18)}`
           : undefined,
-        rootfs: options.rootfs ?? "devbox:1",
+        rootfs: input.from === undefined ? (options.rootfs ?? "devbox:1") : undefined,
+        snapshot_id: input.from,
         region: options.region,
         ingress_enabled: true,
         auto_pause_after_seconds: idle,
@@ -403,7 +425,16 @@ export function createos(options: CreateosOptions = {}): CreateosProvider {
   const provider: CreateosProvider = {
     name: "createos",
     keyMode: "exact",
-    capabilities: new Set<CreateosCapability>(["pause", "terminal", "size", "network-policy"]),
+    capabilities: new Set<CreateosCapability>([
+      "pause",
+      "terminal",
+      "size",
+      "network-policy",
+      "snapshot",
+      "snapshot-delete",
+    ]),
+    snapshot: snapshot.capture,
+    deleteSnapshot: snapshot.remove,
     create,
     async find(key) {
       const deadline = createDeadline(requestTimeoutMs);
