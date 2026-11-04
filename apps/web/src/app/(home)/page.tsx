@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 
 import landing from "./landing.module.css";
 import { Arrow, Brackets, Footer, Nav } from "./parts";
-import { CARD_DOTS, DOCS, INSTALL } from "./site";
+import { CARD_DOTS, DOCS, GITHUB, INSTALL, NPM, SCHEMA_IDS } from "./site";
 import { ProvidersCarousel } from "./providers-carousel";
 import { Closing } from "./closing";
 import { FilesDiagram, LifecycleDiagram, RunDiagram, SwapDiagram, TestsDiagram } from "./diagrams";
@@ -192,9 +192,32 @@ function Tests() {
   );
 }
 
+// The app itself, on the homepage only. Free and MIT licensed; no ratings, because
+// there are none to cite. "<" is escaped so a value can't close the script tag.
+const applicationJsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "@id": SCHEMA_IDS.application,
+  name: "Sandbox SDK",
+  description:
+    "One TypeScript API for sandboxes on E2B, Daytona, Vercel Sandbox, Docker and more: run commands, edit files and serve previews for AI agents and per-user environments.",
+  url: "https://sandbox-sdk.app",
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "Any (Node.js 22+ or Bun 1.3+)",
+  downloadUrl: NPM,
+  installUrl: NPM,
+  license: "https://opensource.org/licenses/MIT",
+  isAccessibleForFree: true,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  publisher: { "@id": SCHEMA_IDS.organization },
+  isPartOf: { "@id": SCHEMA_IDS.website },
+  sameAs: [GITHUB],
+}).replace(/</g, "\\u003c");
+
 export default function HomePage() {
   return (
     <main className={`${landing.page} ${styles.page}`}>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: applicationJsonLd }} />
       <a href="#content" className={landing.skipLink}>
         Skip to content
       </a>
