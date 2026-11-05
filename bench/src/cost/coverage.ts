@@ -5,10 +5,18 @@
  * scenario is frozen. With the pilot's variance it then recommends a batch count from 10 to 20, or
  * says that no count certifies a winner and the profile runs at 10 batches as descriptive only.
  *
- * Simultaneous coverage means: every pair's true difference lies inside its interval. The sign-flip
- * test has no intervals, so for it coverage means no false directional claim in any pair (the
- * share of simulations where every separated pair is separated the right way). Both are reported
- * for every procedure.
+ * Two guarantees are measured, and they are not the same:
+ * - simultaneous coverage: every pair's true difference lies inside its interval (the bootstrap
+ *   procedures, which give intervals);
+ * - directional error control: no pair is separated the wrong way (all three procedures).
+ * Coverage implies directional control, not the reverse. A procedure with intervals that reaches
+ * 95% coverage in every scenario is preferred. The sign-flip test, which has no intervals, is
+ * frozen only when no interval procedure qualifies, and the report then names the weaker
+ * guarantee so the page can state it.
+ *
+ * Power runs the real pick rules on each simulated data set: the completion rule (at most one
+ * incomplete run), separation from every other eligible provider, and the accounting-sensitivity
+ * check with each provider's reconciliation miss and resolution.
  */
 import { z } from "zod";
 import {
@@ -21,6 +29,8 @@ import {
   type Procedure,
   type ProviderBatches,
 } from "./batch-stats.js";
+import { MAX_INCOMPLETE_RUNS } from "./eligibility.js";
+import { decide, type Candidate } from "./picks.js";
 
 export const REQUIRED_COVERAGE = 0.95;
 
@@ -43,6 +53,10 @@ export const pilotVarianceSchema = z.object({
         failureRate: z.number().min(0).max(0.95),
         /** A failed attempt's cost as a share of a completed one's. */
         failedCostFraction: share.default(0.5),
+        /** Reconciliation miss as a share of our figure, for the sensitivity check. */
+        accountingShift: z.number().finite().min(0).max(1).default(0),
+        /** Monetary resolution in USD per attempt, for the sensitivity check. */
+        resolutionUSDPerAttempt: z.number().finite().nonnegative().default(0),
       }),
     )
     .min(2),
@@ -51,6 +65,27 @@ export const pilotVarianceSchema = z.object({
   /** Lognormal sigma of a batch effect specific to each provider. */
   providerBatchLogSigma: z.number().finite().nonnegative().default(0),
   attemptsPerBatch: z.int().positive().default(1),
+  /**
+   * Floors for the stress scenarios: each scenario uses the larger of a multiple of the pilot's
+   * value and this floor. Defaults are a starting point; the values used are frozen and published
+   * with the gate, before any provider result is examined.
+   */
+  stress: z
+    .object({
+      /** Every provider's attempt spread in "heavy-skew" (pilot x 2, at least this). */
+      skewLogSigma: z.number().finite().nonnegative().default(0.6),
+      /** One provider's spread in "equal-costs-unequal-spread" (pilot x 3, at least this). */
+      unequalSpreadLogSigma: z.number().finite().nonnegative().default(0.6),
+      /** Shared batch effect in "strong-batch-effects" (pilot x 2, at least this). */
+      batchLogSigma: z.number().finite().nonnegative().default(0.4),
+      /** Per-provider batch effect in "strong-batch-effects" (pilot x 2, at least this). */
+      providerBatchLogSigma: z.number().finite().nonnegative().default(0.2),
+      /** The priciest provider's failure rate in "failures-and-zero-completions". */
+      rareCompletionFailureRate: z.number().min(0).max(0.95).default(0.8),
+      /** Everyone else's failure rate floor in that scenario. */
+      failureRateFloor: z.number().min(0).max(0.95).default(0.1),
+    })
+    .prefault({}),
 });
 
 export type PilotVariance = z.infer<typeof pilotVarianceSchema>;
@@ -137,11 +172,12 @@ function medianOf(values: readonly number[]): number {
   return sorted.length % 2 ? (sorted[mid] ?? 0) : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
 }
 
-/** Stress scenarios for coverage: the pilot, equal costs, heavy skew, strong batch effects, failures. */
+/** Stress scenarios: the pilot, equal costs (equal and unequal spread), heavy skew, strong batch effects, failures. */
 export function coverageScenarios(spec: PilotVariance): Scenario[] {
   const typical = medianOf(spec.providers.map(trueCost));
   const costs = spec.providers.map(trueCost);
   const priciest = costs.indexOf(Math.max(...costs));
+  const stress = spec.stress;
 
   return [
     { name: "pilot", spec },
@@ -150,18 +186,42 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
       spec: { ...spec, providers: spec.providers.map((p) => withCost(p, typical)) },
     },
     {
+      // Equal means, very different spread: sign flips assume the two providers' batch totals are
+      // interchangeable, which equal cost per completed task does not make true.
+      name: "equal-costs-unequal-spread",
+      spec: {
+        ...spec,
+        providers: spec.providers.map((p, i) =>
+          withCost(
+            {
+              ...p,
+              logSigma:
+                i === 0 ? Math.max(stress.unequalSpreadLogSigma, 3 * p.logSigma) : p.logSigma,
+            },
+            typical,
+          ),
+        ),
+      },
+    },
+    {
       name: "heavy-skew",
       spec: {
         ...spec,
-        providers: spec.providers.map((p) => ({ ...p, logSigma: Math.max(2 * p.logSigma, 0.6) })),
+        providers: spec.providers.map((p) => ({
+          ...p,
+          logSigma: Math.max(2 * p.logSigma, stress.skewLogSigma),
+        })),
       },
     },
     {
       name: "strong-batch-effects",
       spec: {
         ...spec,
-        batchLogSigma: Math.max(2 * spec.batchLogSigma, 0.4),
-        providerBatchLogSigma: Math.max(2 * spec.providerBatchLogSigma, 0.2),
+        batchLogSigma: Math.max(2 * spec.batchLogSigma, stress.batchLogSigma),
+        providerBatchLogSigma: Math.max(
+          2 * spec.providerBatchLogSigma,
+          stress.providerBatchLogSigma,
+        ),
       },
     },
     {
@@ -170,8 +230,8 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
         ...spec,
         providers: spec.providers.map((p, i) =>
           i === priciest
-            ? { ...p, failureRate: 0.8 }
-            : { ...p, failureRate: Math.max(p.failureRate, 0.1) },
+            ? { ...p, failureRate: stress.rareCompletionFailureRate }
+            : { ...p, failureRate: Math.max(p.failureRate, stress.failureRateFloor) },
         ),
       },
     },
@@ -228,23 +288,39 @@ function noFalseClaim(
   });
 }
 
-/** The observed cheapest, when it is separated in its favour from every other provider. */
-export function certifiedCheapest(
-  data: readonly ProviderBatches[],
-  pairs: readonly PairComparison[],
-): string | null {
-  const [cheapest] = [...data].sort(
-    (x, y) => costPerCompleted(x.batches) - costPerCompleted(y.batches),
-  );
+/** Simulated providers that pass the completion rule, cheapest first, as pick candidates. */
+function eligibleCandidates(data: readonly ProviderBatches[], spec: PilotVariance): Candidate[] {
+  return data
+    .flatMap((p): Candidate[] => {
+      const provider = spec.providers.find((s) => s.name === p.provider);
+      let incomplete = 0;
 
-  if (!cheapest) return null;
+      for (const b of p.batches) incomplete += b.attempts - b.completions;
 
-  const separated = pairs.every(
-    (p) =>
-      (p.a !== cheapest.provider && p.b !== cheapest.provider) || p.favours === cheapest.provider,
-  );
+      if (!provider || incomplete > MAX_INCOMPLETE_RUNS) return [];
 
-  return separated ? cheapest.provider : null;
+      return [
+        {
+          provider: p.provider,
+          batches: p.batches,
+          eligibility: {
+            kind: "eligible",
+            status: { costKind: "billed", settled: true, provisional: null },
+          },
+          audit: {
+            reconciliation: {
+              kind: "reconciled",
+              window: "profile-track",
+              reportedUSD: 1,
+              settledUSD: 1 - provider.accountingShift,
+            },
+            resolutionUSDPerAttempt: provider.resolutionUSDPerAttempt,
+            provisional: null,
+          },
+        },
+      ];
+    })
+    .sort((x, y) => costPerCompleted(x.batches) - costPerCompleted(y.batches));
 }
 
 interface Tally {
@@ -268,29 +344,43 @@ function runScenario(scenario: Scenario, options: SimulationOptions, seed: numbe
   );
 
   for (let s = 0; s < options.simulations; s++) {
-    // A provider that never completed is "did not complete" and is not compared.
-    const data = simulateBatches(scenario.spec, options.batches, random).filter((p) =>
-      Number.isFinite(costPerCompleted(p.batches)),
-    );
+    const all = simulateBatches(scenario.spec, options.batches, random);
+    // Coverage is judged on every provider with a completion, the hardest set for the procedure.
+    const data = all.filter((p) => Number.isFinite(costPerCompleted(p.batches)));
+    const eligible = eligibleCandidates(all, scenario.spec);
+    const compareSeed = Math.floor(random() * 2 ** 32);
+    const settings = { replicates: options.replicates, flips: options.flips, seed: compareSeed };
+    const results = compareWith(data, procedures, settings);
 
-    const results = compareWith(data, procedures, {
-      replicates: options.replicates,
-      flips: options.flips,
-      seed: Math.floor(random() * 2 ** 32),
-    });
+    // Picks compare only eligible providers; rerun when the completion rule removed any.
+    const pickResults =
+      eligible.length === data.length || eligible.length < 2
+        ? results
+        : compareWith(eligible, procedures, settings);
 
     for (const { procedure, pairs } of results) {
       const tally = tallies.get(procedure);
 
       if (!tally) continue;
-      const winner = certifiedCheapest(data, pairs);
 
       if (covers(pairs, truth)) tally.covered++;
 
       if (noFalseClaim(pairs, truth)) tally.noFalseClaim++;
+      const [first, ...rest] = eligible;
 
-      if (winner !== null && winner === best) tally.certifiedTrue++;
-      else if (winner !== null) tally.certifiedWrong++;
+      if (!first) continue;
+
+      const pickPairs =
+        eligible.length < 2
+          ? []
+          : (pickResults.find((r) => r.procedure === procedure)?.pairs ?? []);
+
+      const decision = decide([first, ...rest], pickPairs);
+
+      if (decision.kind !== "certified") continue;
+
+      if (decision.provider === best) tally.certifiedTrue++;
+      else tally.certifiedWrong++;
     }
   }
 
@@ -309,7 +399,7 @@ function runScenario(scenario: Scenario, options: SimulationOptions, seed: numbe
       scenario: scenario.name,
       intervalCoverage: procedure === "sign-flip-permutation" ? null : t.covered / n,
       noFalseClaimRate: t.noFalseClaim / n,
-      /** Share of simulations that certified the true cheapest; null when the truth is a tie. */
+      /** Share of simulations whose pick was the true cheapest; null when the truth is a tie. */
       power: best === null ? null : t.certifiedTrue / n,
       wrongPickRate: t.certifiedWrong / n,
     };
@@ -318,10 +408,16 @@ function runScenario(scenario: Scenario, options: SimulationOptions, seed: numbe
 
 export type ScenarioResult = ReturnType<typeof runScenario>[number];
 
+export type Guarantee = "simultaneous-coverage" | "directional-error-control";
+
 export interface ProcedureReport {
   readonly procedure: Procedure;
-  /** Lowest simultaneous coverage over the coverage scenarios. */
-  readonly minCoverage: number;
+  readonly guarantee: Guarantee;
+  /** Lowest interval coverage over the coverage scenarios; null without intervals. */
+  readonly minCoverage: number | null;
+  /** Lowest rate of no false directional claim over the coverage scenarios. */
+  readonly minNoFalseClaim: number;
+  /** Meets 95% on its own guarantee in every coverage scenario. */
   readonly meetsCoverage: boolean;
   /** Power on the pilot scenario; null when the pilot's cheapest providers tie. */
   readonly pilotPower: number | null;
@@ -335,12 +431,12 @@ export interface CoverageReport {
   /** Monte Carlo standard error of a coverage estimate near 95% at this simulation count. */
   readonly coverageStandardError: number;
   readonly procedures: readonly ProcedureReport[];
-  /** The procedure to freeze: meets coverage, then highest pilot power, then listed order. */
+  /**
+   * The procedure to freeze: one with 95% simultaneous coverage if any (highest pilot power, then
+   * listed order), else the sign-flip test if it controls directional error, else none.
+   */
   readonly chosen: Procedure | null;
-}
-
-function simultaneousCoverage(result: ScenarioResult): number {
-  return result.intervalCoverage ?? result.noFalseClaimRate;
+  readonly chosenGuarantee: Guarantee | null;
 }
 
 export function coverageReport(
@@ -362,21 +458,27 @@ export function coverageReport(
 
   const reports = procedures.map((procedure): ProcedureReport => {
     const own = coverage.filter((r) => r.procedure === procedure);
-    const minCoverage = Math.min(...own.map(simultaneousCoverage));
+    const intervals = procedure !== "sign-flip-permutation";
+    const minNoFalseClaim = Math.min(...own.map((r) => r.noFalseClaimRate));
+    const minCoverage = intervals ? Math.min(...own.map((r) => r.intervalCoverage ?? 0)) : null;
 
     return {
       procedure,
+      guarantee: intervals ? "simultaneous-coverage" : "directional-error-control",
       minCoverage,
-      meetsCoverage: minCoverage >= REQUIRED_COVERAGE,
+      minNoFalseClaim,
+      meetsCoverage: (minCoverage ?? minNoFalseClaim) >= REQUIRED_COVERAGE,
       pilotPower: own.find((r) => r.scenario === "pilot")?.power ?? null,
       coverage: own,
       power: power.filter((r) => r.procedure === procedure),
     };
   });
 
+  const rank = (r: ProcedureReport) => (r.guarantee === "simultaneous-coverage" ? 0 : 1);
+
   const [chosen] = reports
     .filter((r) => r.meetsCoverage)
-    .sort((x, y) => (y.pilotPower ?? 0) - (x.pilotPower ?? 0));
+    .sort((x, y) => rank(x) - rank(y) || (y.pilotPower ?? 0) - (x.pilotPower ?? 0));
 
   return {
     batches: options.batches,
@@ -386,6 +488,7 @@ export function coverageReport(
     ),
     procedures: reports,
     chosen: chosen?.procedure ?? null,
+    chosenGuarantee: chosen?.guarantee ?? null,
   };
 }
 
@@ -394,20 +497,28 @@ export type Recommendation =
       readonly kind: "batch-count";
       readonly batches: number;
       readonly procedure: Procedure;
-      readonly pilotPower: number;
+      readonly guarantee: Guarantee;
+      /** The power scenario the count was chosen on. */
+      readonly basis: string;
+      readonly power: number;
       readonly reports: readonly CoverageReport[];
     }
   | {
       readonly kind: "descriptive-only";
       /** Run at the minimum count and publish descriptive intervals, no certified pick. */
       readonly batches: typeof MIN_BATCHES;
+      readonly basis: string;
       readonly reason: string;
       readonly reports: readonly CoverageReport[];
     };
 
+/** The gap used for the recommendation when the pilot's cheapest providers tie. */
+const TIE_BASIS = "gap-20%";
+
 /**
- * The smallest count from 10 to 20 at which a procedure meets coverage and certifies the pilot's
- * cheapest provider with at least `targetPower`.
+ * The smallest count from 10 to 20 at which a frozen procedure certifies the true cheapest
+ * provider with at least `targetPower`: on the pilot as measured, or at a 20% gap when the pilot's
+ * cheapest providers tie (a tie in the pilot does not show a real gap is undetectable).
  */
 export function recommendBatchCount(input: {
   readonly spec: PilotVariance;
@@ -415,43 +526,49 @@ export function recommendBatchCount(input: {
   readonly counts: readonly number[];
   readonly targetPower: number;
 }): Recommendation {
-  if (trueCheapest(input.spec) === null)
-    return {
-      kind: "descriptive-only",
-      batches: MIN_BATCHES,
-      reason: "the pilot shows no gap between its cheapest providers",
-      reports: [],
-    };
-
+  const basis = trueCheapest(input.spec) === null ? TIE_BASIS : "pilot";
   const reports: CoverageReport[] = [];
   const counts = [...new Set(input.counts)].sort((x, y) => x - y);
 
   for (const batches of counts) {
     if (batches < MIN_BATCHES || batches > MAX_BATCHES)
       throw new Error(`Batch counts must be from ${MIN_BATCHES} to ${MAX_BATCHES}`);
-    const report = coverageReport(input.spec, { ...input.options, batches });
+    const report = coverageReport(input.spec, { ...input.options, batches }, [0.1, 0.2, 0.3]);
     reports.push(report);
     const chosen = report.procedures.find((p) => p.procedure === report.chosen);
+    const power = chosen?.power.find((r) => r.scenario === basis)?.power ?? null;
 
-    if (chosen && chosen.pilotPower !== null && chosen.pilotPower >= input.targetPower)
+    if (chosen && power !== null && power >= input.targetPower)
       return {
         kind: "batch-count",
         batches,
         procedure: chosen.procedure,
-        pilotPower: chosen.pilotPower,
+        guarantee: chosen.guarantee,
+        basis,
+        power,
         reports,
       };
   }
 
-  const last = reports.at(-1);
-  const best = last?.procedures.find((p) => p.procedure === last.chosen);
+  // The best the sweep reached, so the reason names the count and power behind "descriptive only".
+  const reached = reports.flatMap((report) => {
+    const chosen = report.procedures.find((p) => p.procedure === report.chosen);
+    const power = chosen?.power.find((r) => r.scenario === basis)?.power;
+
+    return chosen && power !== undefined && power !== null
+      ? [{ batches: report.batches, procedure: chosen.procedure, power }]
+      : [];
+  });
+
+  const best = reached.sort((x, y) => y.power - x.power)[0];
 
   return {
     kind: "descriptive-only",
     batches: MIN_BATCHES,
+    basis,
     reason: best
-      ? `at ${last?.batches} batches ${best.procedure} certifies the pilot's cheapest provider in only ${((best.pilotPower ?? 0) * 100).toFixed(0)}% of simulations`
-      : `no procedure reached ${REQUIRED_COVERAGE * 100}% simultaneous coverage`,
+      ? `the best was ${best.procedure} at ${best.batches} batches, certifying the true cheapest provider (${basis}) in ${(best.power * 100).toFixed(0)}% of simulations, below the ${(input.targetPower * 100).toFixed(0)}% target`
+      : `no procedure reached ${REQUIRED_COVERAGE * 100}% on its guarantee in every scenario at any count`,
     reports,
   };
 }
