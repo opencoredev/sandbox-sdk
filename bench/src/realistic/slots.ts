@@ -17,7 +17,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { shuffle } from "../v2-stats.js";
 import { runAttempt, SlotTimeout, type AttemptEnvironment, type AttemptPlan } from "./attempt.js";
 import type { Clock } from "./gaps.js";
-import type { IdlePlan } from "./idle.js";
+import type { IdlePlan, StatePreservation } from "./idle.js";
 import type { HarnessManifest } from "./manifest.js";
 import type { PrepareSettings } from "./prepare.js";
 import {
@@ -51,8 +51,13 @@ export interface SlotProvider {
   paddingMs: number;
   /** Size, image and lifetime per track. */
   create?(track: string): Omit<CreateOptions, "labels" | "signal" | "key">;
-  /** Account-wide listing for window edges. Default: the adapter's `list({})`. */
+  /**
+   * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
+   * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
+   */
   listAccount?(signal: AbortSignal): Promise<string[]>;
+  /** The state-preservation check this provider passed (or not) before the batch; managed idle needs it. */
+  statePreservation?: StatePreservation;
   /** Reserved-gap cleanup of this run's leftovers; returns the IDs it removed. */
   cleanup?(signal: AbortSignal): Promise<string[]>;
 }
@@ -96,6 +101,27 @@ export function slotOrder(slots: readonly SlotSpec[], seed: number, batch: numbe
   }
 
   return shuffle(slots, batchSeed(seed, batch));
+}
+
+/** The last settlement edge at or before `time`. */
+export function edgeAtOrBefore(time: number, settlementMs: number | null) {
+  return settlementMs ? Math.floor(time / settlementMs) * settlementMs : time;
+}
+
+/** Resolve with the value, or null once `ms` passes. The timer is always cleared. */
+async function within<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      work,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The first settlement edge at or after `time`. */
@@ -142,6 +168,8 @@ export interface BatchPlan {
   /** Consecutive unavailable slots that pause a provider for the batch. Default 3. */
   unavailableLimit?: number;
   listTimeoutMs?: number;
+  /** How long past the slot timeout an attempt that ignores the abort is waited for. Default 150 s. */
+  timeoutGraceMs?: number;
   onRecord(record: AttemptRecord): Promise<void>;
   onSandbox?(provider: string, id: string): Promise<void>;
   /** Injected in tests; defaults to `runAttempt`. */
@@ -206,6 +234,7 @@ export function emptyRecord(
     idle: null,
     costEvidence: { attribution, window: null, usageFiles: [] },
     outputDir: null,
+    outputError: null,
   };
 }
 
@@ -215,6 +244,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
   const startWindowMs = plan.startWindowMs ?? 5 * 60_000;
   const limit = plan.unavailableLimit ?? 3;
   const listTimeoutMs = plan.listTimeoutMs ?? 30_000;
+  const graceMs = plan.timeoutGraceMs ?? 150_000;
   const attempt = plan.attempt ?? runAttempt;
   const unavailableRun = new Map(plan.providers.map((entry) => [entry.name, 0]));
   const paused: BatchReport["paused"] = [];
@@ -224,25 +254,37 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
     const profile = plan.manifest.profiles[slot.profile];
 
     if (!profile) throw new Error(`Slot ${slot.id} runs unknown profile ${slot.profile}`);
-    // Open every provider's window at its next settlement edge, then wait out its padding.
+    // The slot starts once every provider's next settlement edge plus padding has passed. Each window
+    // opens at its own boundary: the last edge (or exact time) that leaves its padding before the start.
     const now = clock.now();
-
-    const opens = new Map(
-      plan.providers.map((entry) => [entry.name, edgeAtOrAfter(now, entry.settlementMs)]),
-    );
 
     const startAt = Math.max(
       now,
-      ...plan.providers.map((entry) => (opens.get(entry.name) ?? now) + entry.paddingMs),
+      ...plan.providers.map((entry) => edgeAtOrAfter(now, entry.settlementMs) + entry.paddingMs),
     );
 
-    await clock.sleep(startAt - clock.now());
+    const opens = new Map(
+      plan.providers.map((entry) => [
+        entry.name,
+        edgeAtOrBefore(startAt - entry.paddingMs, entry.settlementMs),
+      ]),
+    );
+
     const listings = new Map<string, AccountListing[]>();
     const active: SlotProvider[] = [];
     const records = new Map<string, AttemptRecord>();
-    const slotStartedAt = clock.now();
+    const attemptId = (provider: string) => `${plan.runId}-b${plan.batch}-s${index}-${provider}`;
 
-    const base = {
+    const record = (entry: SlotProvider, reason: IncompleteReason, detail: string) =>
+      emptyRecord(
+        { ...base(startAt), provider: entry.name, attemptId: attemptId(entry.name) },
+        reason,
+        detail,
+        clock.now(),
+        entry.attribution,
+      );
+
+    const base = (slotStartedAt: number) => ({
       runId: plan.runId,
       manifest: plan.manifest,
       manifestSha256: plan.manifestSha256,
@@ -253,27 +295,25 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
       slot: { index, id: slot.id },
       seed: plan.seed,
       slotStartedAt,
-    };
+    });
 
-    const attemptId = (provider: string) => `${plan.runId}-b${plan.batch}-s${index}-${provider}`;
-
+    // Open edge: each provider is listed at its own window opening. The listing is the health check.
     await Promise.all(
       plan.providers.map(async (entry) => {
         if (paused.some((item) => item.provider === entry.name)) {
           records.set(
             entry.name,
-            emptyRecord(
-              { ...base, provider: entry.name, attemptId: attemptId(entry.name) },
+            record(
+              entry,
               "provider-paused",
               `Unavailable for ${limit} slots in a row in batch ${plan.batch}`,
-              clock.now(),
-              entry.attribution,
             ),
           );
 
           return;
         }
 
+        await clock.sleep((opens.get(entry.name) ?? now) - clock.now());
         const at = clock.now();
         const ids = await listAccount(entry, listTimeoutMs);
         listings.set(entry.name, [{ edge: "open", at, ids, unexpected: ids ?? [] }]);
@@ -281,13 +321,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         if (ids === null) {
           records.set(
             entry.name,
-            emptyRecord(
-              { ...base, provider: entry.name, attemptId: attemptId(entry.name) },
-              "unavailable",
-              "Health check (account listing) failed before the slot",
-              clock.now(),
-              entry.attribution,
-            ),
+            record(entry, "unavailable", "Health check (account listing) failed before the slot"),
           );
           const run = (unavailableRun.get(entry.name) ?? 0) + 1;
           unavailableRun.set(entry.name, run);
@@ -302,96 +336,107 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
       }),
     );
 
+    await clock.sleep(startAt - clock.now());
+    const slotStartedAt = clock.now();
     const deadline = slotStartedAt + profile.slotTimeoutMs;
-    const controllers = new Map(active.map((entry) => [entry.name, new AbortController()]));
-
-    const timer = setTimeout(
-      () => {
-        for (const controller of controllers.values())
-          controller.abort(new SlotTimeout(`Slot ${slot.id} reached its frozen timeout`));
-      },
-      Math.max(0, deadline - clock.now()),
-    );
-
     const ends = new Map<string, number>();
+    const closes = new Map<string, number>();
 
-    try {
-      await Promise.all(
-        active.map(async (entry) => {
-          const signal = controllers.get(entry.name)?.signal ?? new AbortController().signal;
+    await Promise.all(
+      active.map(async (entry) => {
+        const controller = new AbortController();
+        const created: string[] = [];
 
-          const environment: AttemptEnvironment = {
-            clock,
-            signal,
-            blobs: plan.blobs,
-            prepare: plan.prepare,
-            attribution: entry.attribution,
-          };
+        const environment: AttemptEnvironment = {
+          clock,
+          signal: controller.signal,
+          blobs: plan.blobs,
+          prepare: plan.prepare,
+          attribution: entry.attribution,
+          onSandbox: async (provider, id) => {
+            created.push(id);
+            await plan.onSandbox?.(provider, id);
+          },
+        };
 
-          if (plan.outputDir) environment.outputDir = plan.outputDir;
+        if (plan.outputDir) environment.outputDir = plan.outputDir;
 
-          if (plan.onSandbox) environment.onSandbox = plan.onSandbox;
+        const attemptPlan: AttemptPlan = {
+          ...base(slotStartedAt),
+          attemptId: attemptId(entry.name),
+          provider: { name: entry.name, provider: entry.provider },
+        };
 
-          const attemptPlan: AttemptPlan = {
-            ...base,
-            attemptId: attemptId(entry.name),
-            provider: { name: entry.name, provider: entry.provider },
-          };
+        if (entry.create) attemptPlan.create = entry.create(slot.track);
 
-          if (entry.create) attemptPlan.create = entry.create(slot.track);
+        if (slot.idle) attemptPlan.idle = slot.idle;
 
-          if (slot.idle) attemptPlan.idle = slot.idle;
+        if (slot.gapScale !== undefined) attemptPlan.gapScale = slot.gapScale;
 
-          if (slot.gapScale !== undefined) attemptPlan.gapScale = slot.gapScale;
+        if (entry.statePreservation) attemptPlan.statePreservation = entry.statePreservation;
 
-          try {
-            const { record } = await attempt(attemptPlan, environment);
-            records.set(entry.name, record);
-          } catch (error) {
-            records.set(
-              entry.name,
-              emptyRecord(
-                { ...attemptPlan, provider: entry.name },
-                "error",
-                error instanceof Error ? error.message : String(error),
-                clock.now(),
-                entry.attribution,
-              ),
+        // The frozen timeout aborts the attempt; one that ignores the abort is abandoned after the grace.
+        const abort = setTimeout(
+          () => controller.abort(new SlotTimeout(`Slot ${slot.id} reached its frozen timeout`)),
+          Math.max(0, deadline - clock.now()),
+        );
+
+        try {
+          const outcome = await within(
+            attempt(attemptPlan, environment).then(({ record: done }) => done),
+            Math.max(0, deadline + graceMs - clock.now()),
+          );
+
+          if (outcome) records.set(entry.name, outcome);
+          else {
+            const abandoned = record(
+              entry,
+              "slot-timeout",
+              "The attempt did not return within the slot timeout plus its grace; abandoned",
             );
+
+            abandoned.sandboxIds = created;
+            // Deletion is unconfirmed: the reserved-gap cleanup must remove these IDs.
+            abandoned.deletionConfirmed = created.length === 0;
+            records.set(entry.name, abandoned);
           }
+        } catch (error) {
+          const failed = record(
+            entry,
+            "error",
+            error instanceof Error ? error.message : String(error),
+          );
 
-          ends.set(entry.name, clock.now());
-        }),
-      );
-    } finally {
-      clearTimeout(timer);
-    }
+          failed.sandboxIds = created;
+          failed.deletionConfirmed = created.length === 0;
+          records.set(entry.name, failed);
+        } finally {
+          clearTimeout(abort);
+        }
 
-    // Close each window at the next settlement edge after its attempt, plus padding.
-    const closes = new Map(
-      plan.providers.map((entry) => [
-        entry.name,
-        edgeAtOrAfter((ends.get(entry.name) ?? clock.now()) + entry.paddingMs, entry.settlementMs),
-      ]),
+        ends.set(entry.name, clock.now());
+        // Close edge: the next settlement edge after the attempt plus padding, listed at that time.
+        const closeAt = edgeAtOrAfter(clock.now() + entry.paddingMs, entry.settlementMs);
+        closes.set(entry.name, closeAt);
+        await clock.sleep(closeAt - clock.now());
+        const at = clock.now();
+        const ids = await listAccount(entry, listTimeoutMs);
+        listings.get(entry.name)?.push({ edge: "close", at, ids, unexpected: ids ?? [] });
+      }),
     );
 
-    await clock.sleep(Math.max(0, ...closes.values()) - clock.now());
     const windows: BillingWindow[] = [];
     const cleanup: SlotReport["cleanup"] = [];
 
     for (const entry of plan.providers) {
-      const record = records.get(entry.name);
+      const result = records.get(entry.name);
       const edges = listings.get(entry.name) ?? [];
-      const own = new Set(record?.sandboxIds ?? []);
-
-      // Only a provider that ran lists again; an unavailable or paused one gets no further calls.
-      if (active.includes(entry)) {
-        const at = clock.now();
-        const ids = await listAccount(entry, listTimeoutMs);
-        edges.push({ edge: "close", at, ids, unexpected: ids ?? [] });
-      }
-
+      const own = new Set(result?.sandboxIds ?? []);
+      const scope = entry.listAccount ? "account" : "sdk-scoped";
       const reasons: string[] = [];
+
+      if (scope === "sdk-scoped")
+        reasons.push("Listing is SDK-scoped: sandboxes made outside the SDK are invisible");
 
       for (const listing of edges) {
         if (listing.ids === null) reasons.push(`${listing.edge} listing failed`);
@@ -401,7 +446,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
           );
       }
 
-      if (!edges.length) reasons.push("No attempt in this window");
+      if (!active.includes(entry)) reasons.push("No attempt in this window");
 
       const window: BillingWindow = {
         id: `${plan.runId}/b${plan.batch}/s${index}/${entry.name}`,
@@ -410,6 +455,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         closedAt: closes.get(entry.name) ?? clock.now(),
         settlementMs: entry.settlementMs,
         paddingMs: entry.paddingMs,
+        listingScope: scope,
         listings: edges,
         void: reasons.length > 0,
         voidReasons: reasons,
@@ -417,9 +463,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
 
       windows.push(window);
 
-      if (record) {
-        record.costEvidence.window = window;
-        await plan.onRecord(record);
+      if (result) {
+        result.costEvidence.window = window;
+        await plan.onRecord(result);
       }
     }
 

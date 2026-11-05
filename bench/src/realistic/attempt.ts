@@ -9,7 +9,12 @@ import { join } from "node:path";
 import { createSandbox, type CreateOptions, type Sandbox } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { ProviderTrace, traceProvider, type Clock } from "./gaps.js";
-import { holdIdle, managedIdleCapabilities, type IdlePlan } from "./idle.js";
+import {
+  holdIdle,
+  managedIdleCapabilities,
+  type IdlePlan,
+  type StatePreservation,
+} from "./idle.js";
 import type { HarnessManifest, Profile } from "./manifest.js";
 import { prepare, type PrepareSettings } from "./prepare.js";
 import {
@@ -43,6 +48,8 @@ export interface AttemptPlan {
   idle?: IdlePlan;
   /** Multiply every recorded think gap (0 for the dense run, 3 for gap scaling). Default 1. */
   gapScale?: number;
+  /** The provider's state-preservation check; managed idle runs only after a passing one. */
+  statePreservation?: StatePreservation;
 }
 
 export interface AttemptEnvironment {
@@ -136,12 +143,17 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
     }
   };
 
-  if (plan.idle?.policy === "managed" && !managedIdleCapabilities(plan.provider.provider).pause)
-    completion = {
-      kind: "incomplete",
-      reason: "not-available",
-      detail: "No state-preserving pause in the adapter; managed idle reads not available",
-    };
+  const managedBlocker =
+    plan.idle?.policy !== "managed"
+      ? null
+      : !managedIdleCapabilities(plan.provider.provider).pause
+        ? "No pause in the adapter; managed idle reads not available"
+        : plan.statePreservation?.verdict !== "state-preserving"
+          ? `State-preservation check ${plan.statePreservation?.verdict ?? "not run"}; managed idle needs a passing one`
+          : null;
+
+  if (managedBlocker)
+    completion = { kind: "incomplete", reason: "not-available", detail: managedBlocker };
   else
     try {
       box = await span("create", () =>
@@ -298,12 +310,19 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
   phases.sort((a, b) => a.startedAt - b.startedAt);
   let outputDir: string | null = null;
 
-  if (environment.outputDir && outputs.size) {
-    outputDir = join(environment.outputDir, plan.attemptId);
-    await mkdir(outputDir, { recursive: true });
+  let outputError: string | null = null;
 
-    for (const [id, output] of outputs) await writeFile(join(outputDir, `${id}.log`), output);
-  }
+  // Raw output is for inspection only: failing to write it never loses the record.
+  if (environment.outputDir && outputs.size)
+    try {
+      const directory = join(environment.outputDir, plan.attemptId);
+      await mkdir(directory, { recursive: true });
+
+      for (const [id, output] of outputs) await writeFile(join(directory, `${id}.log`), output);
+      outputDir = directory;
+    } catch (error) {
+      outputError = error instanceof Error ? error.message : String(error);
+    }
 
   const record: AttemptRecord = {
     schema: attemptSchemaVersion,
@@ -338,6 +357,7 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
     idle,
     costEvidence: { attribution: environment.attribution, window: null, usageFiles: [] },
     outputDir,
+    outputError,
   };
 
   return { record, trace };

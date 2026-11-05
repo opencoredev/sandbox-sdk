@@ -18,6 +18,7 @@
  * Bump `schema` on any incompatible change.
  */
 import { z } from "zod";
+import { outputInvariantsSchema } from "./manifest.js";
 import type { BackgroundEvent, StepResult } from "./steps.js";
 import type { DownloadRecord } from "./prepare.js";
 
@@ -92,7 +93,7 @@ const ranStepSchema = z.object({
   timedOut: z.boolean(),
   outputBytes: z.number(),
   outputSha256: z.string(),
-  invariants: z.looseObject({}),
+  invariants: outputInvariantsSchema,
   failures: z.array(failureSchema),
   excluded: z.array(
     z.object({
@@ -140,6 +141,8 @@ export const billingWindowSchema = z.object({
   /** Settlement edge the window was padded to, ms (boxd: 15 minutes), or null. */
   settlementMs: z.number().nullable(),
   paddingMs: z.number(),
+  /** "account": a native account-wide listing; "sdk-scoped": the adapter list, blind to other sandboxes. */
+  listingScope: z.enum(["account", "sdk-scoped"]),
   listings: z.array(accountListingSchema),
   /** Unexpected activity or an unreadable listing voids this window's reconciliation. */
   void: z.boolean(),
@@ -232,6 +235,8 @@ export const attemptRecordSchema = z.object({
   }),
   /** Directory holding each step's raw output, kept for inspection only. */
   outputDir: z.string().nullable(),
+  /** Writing the raw output failed; the record itself is kept. */
+  outputError: z.string().nullable(),
 });
 
 export type AttemptRecord = z.infer<typeof attemptRecordSchema>;

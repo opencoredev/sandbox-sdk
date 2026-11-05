@@ -228,7 +228,12 @@ function tracedMember(target: Provider, key: string | symbol, trace: ProviderTra
     case "buildTemplate":
       return target.buildTemplate && timed(trace, key, target.buildTemplate.bind(target));
     case "startProcess":
-      return target.startProcess && timed(trace, key, target.startProcess.bind(target));
+      // A native process hook can keep a client-side monitor polling the provider through think gaps,
+      // invisible to this tracer. Hide it, so background processes use the SDK's detached shell
+      // records, unless the runtime has no shell ("stream" mode) and needs the hook.
+      return target.processMode === "stream" && target.startProcess
+        ? timed(trace, key, target.startProcess.bind(target))
+        : undefined;
     case "readSecretEnvironment":
       return (
         target.readSecretEnvironment && timed(trace, key, target.readSecretEnvironment.bind(target))
@@ -238,7 +243,10 @@ function tracedMember(target: Provider, key: string | symbol, trace: ProviderTra
   }
 }
 
-/** Wrap an adapter so every call that reaches the provider is timed in `trace`. */
+/**
+ * Wrap an adapter so every call that reaches the provider is timed in `trace`. This sees adapter calls
+ * only; traffic an adapter makes on its own (transport keepalives) needs a network capture in the pilot.
+ */
 export function traceProvider(provider: Provider, trace: ProviderTrace): Provider {
   const files = tracedFiles(provider.files, trace);
 
