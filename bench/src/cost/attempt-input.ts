@@ -78,7 +78,7 @@ export interface CostedAttempt {
   readonly record: AttemptRecord;
   readonly outcome: Outcome;
   readonly lifecycle: Lifecycle;
-  /** The record's attribution, or "none" when its isolated billing window was voided. */
+  /** The record's attribution; account-window attribution reads "none" without a clean window. */
   readonly attribution: Attribution;
   readonly product: string | null;
   readonly allocation: Allocation;
@@ -86,7 +86,11 @@ export interface CostedAttempt {
   readonly charge: Charge;
 }
 
-const notRun: ReadonlySet<IncompleteReason> = new Set(["exceeds-plan-limit", "not-available"]);
+const notRun: ReadonlySet<IncompleteReason> = new Set([
+  "exceeds-plan-limit",
+  "not-available",
+  "default-size-too-small",
+]);
 
 export function outcomeOf(record: AttemptRecord): Outcome {
   if (record.completion.kind === "completed") return "completed";
@@ -109,6 +113,18 @@ const unknownSize: Allocation = {
   provisioned: null,
   measured: { cpuQuota: null, memoryGiB: null },
 };
+
+/**
+ * Only account-window attribution depends on the window being clean: per-sandbox and per-machine
+ * charges are tied to our IDs whatever else ran on the account (plan section 6).
+ */
+function attributionOf(record: AttemptRecord): Attribution {
+  const { attribution, window } = record.costEvidence;
+
+  return attribution === "account-window" && (window === null || window.void)
+    ? "none"
+    : attribution;
+}
 
 /** The adapter: one harness record plus its billing entry (absent when none was collected). */
 export function costedAttempt(record: AttemptRecord, billing?: AttemptBilling): CostedAttempt {
@@ -134,7 +150,7 @@ export function costedAttempt(record: AttemptRecord, billing?: AttemptBilling): 
     record,
     outcome: outcomeOf(record),
     lifecycle: lifecycleOf(record),
-    attribution: record.costEvidence.window?.void ? "none" : record.costEvidence.attribution,
+    attribution: attributionOf(record),
     product: billing?.product ?? null,
     allocation: billing?.allocation ?? unknownSize,
     usage: billing?.usage ?? null,

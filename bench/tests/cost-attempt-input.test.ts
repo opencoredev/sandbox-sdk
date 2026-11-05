@@ -75,9 +75,17 @@ describe("cost adapter over the harness record", () => {
     expect(reason("slot-timeout")).toBe("incomplete");
   });
 
-  it("takes attribution from the record and drops it when the billing window was voided", () => {
+  it("takes attribution from the record; only account-window attribution needs a clean window", () => {
     expect(attempt({ attribution: "account-window" }).attribution).toBe("account-window");
     expect(attempt({ attribution: "account-window", windowVoid: true }).attribution).toBe("none");
+    expect(attempt({ attribution: "account-window", window: false }).attribution).toBe("none");
+    // Per-sandbox charges are tied to our IDs even when an SDK-scoped listing voided the window.
+    expect(attempt({ attribution: "per-sandbox", windowVoid: true }).attribution).toBe(
+      "per-sandbox",
+    );
+    expect(attempt({ attribution: "per-machine", windowVoid: true }).attribution).toBe(
+      "per-machine",
+    );
   });
 
   it("costs nothing without a sandbox and is unavailable when billing collected nothing", () => {

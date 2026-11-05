@@ -126,7 +126,8 @@ describe("harness records through the cost model", () => {
 
     expect(outageAttempt).toMatchObject({
       outcome: "incomplete",
-      attribution: "none",
+      // Its window was voided by the failed listing; per-sandbox attribution does not depend on it.
+      attribution: "per-sandbox",
       charge: { kind: "no-sandbox" },
     });
 
