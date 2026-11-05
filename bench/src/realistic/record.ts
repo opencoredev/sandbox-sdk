@@ -65,6 +65,8 @@ export const incompleteReasonSchema = z.enum([
   "exceeds-plan-limit",
   /** Managed idle needs a state-preserving pause, stop or snapshot this provider lacks. */
   "not-available",
+  /** The fit check (FIT.md) found the provider's default size cannot complete the profile: not run, not a failure. */
+  "default-size-too-small",
   "error",
 ]);
 
@@ -227,6 +229,23 @@ export const attemptRecordSchema = z.object({
     ),
   }),
   idle: idleSchema.nullable(),
+  /**
+   * The sandbox's size as measured inside it, and the CPU time it used between the end of create and
+   * the start of destroy. Two cgroup reads, not a sampler. null when the sandbox could not be read.
+   */
+  resources: z
+    .object({
+      /** vCPUs by cgroup quota, or online CPUs when no quota is set. */
+      cpuQuota: z.number().positive().nullable(),
+      /** Usable memory in GiB: the cgroup limit or MemTotal, whichever is lower. */
+      memoryGiB: z.number().positive().nullable(),
+      arch: z.string().nullable(),
+      /** CPU-seconds used over the measured span, null when either read failed. */
+      cpuSeconds: z.number().nonnegative().nullable(),
+      source: z.enum(["cgroup", "proc-stat"]).nullable(),
+    })
+    .nullable()
+    .default(null),
   costEvidence: z.object({
     attribution: attributionSchema,
     window: billingWindowSchema.nullable(),

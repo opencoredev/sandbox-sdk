@@ -17,6 +17,7 @@ import {
 } from "./idle.js";
 import type { HarnessManifest, Profile } from "./manifest.js";
 import { prepare, type PrepareSettings } from "./prepare.js";
+import { readResources, resourcesBetween, type ResourceRead } from "./resources.js";
 import {
   attemptSchemaVersion,
   type Attribution,
@@ -50,6 +51,10 @@ export interface AttemptPlan {
   gapScale?: number;
   /** The provider's state-preservation check; managed idle runs only after a passing one. */
   statePreservation?: StatePreservation;
+  /** Working directory for this provider when the manifest's is not writable there. */
+  workdir?: string;
+  /** Worker count for this provider when its size differs from the track's (the default track). */
+  vcpu?: number;
 }
 
 export interface AttemptEnvironment {
@@ -129,6 +134,9 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
   let idle: IdleRecord | null = null;
   let deletionConfirmed = false;
   let box: Sandbox | undefined;
+  let firstRead: ResourceRead | null = null;
+  let lastRead: ResourceRead | null = null;
+  const vcpu = plan.vcpu ?? track.vcpu;
 
   const span = async <T>(name: PhaseSpan["name"], action: () => Promise<T>, label?: string) => {
     const start = clock.now();
@@ -170,7 +178,8 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
       sandboxIds.push(box.id);
       await environment.onSandbox?.(plan.provider.name, box.id);
       const created = box;
-      const workdir = plan.manifest.workdir;
+      firstRead = await readResources(created, signal);
+      const workdir = plan.workdir ?? plan.manifest.workdir;
       const effective = scaled(profile, plan.gapScale ?? 1);
 
       const prepared = await span("prepare", async () => {
@@ -180,7 +189,7 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
           signal,
           manifest: plan.manifest,
           profile: effective,
-          vcpu: track.vcpu,
+          vcpu,
           workdir,
           blobs: environment.blobs,
           settings: environment.prepare,
@@ -276,6 +285,8 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
     } finally {
       if (box) {
         const target = box;
+        // A fresh signal: the end read must happen even after a slot timeout.
+        lastRead = await readResources(target, AbortSignal.timeout(30_000));
         deletionConfirmed = await span("destroy", async () => {
           const timeout = AbortSignal.timeout(environment.destroyTimeoutMs ?? 120_000);
 
@@ -355,6 +366,7 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
       ),
     },
     idle,
+    resources: resourcesBetween(firstRead, lastRead),
     costEvidence: { attribution: environment.attribution, window: null, usageFiles: [] },
     outputDir,
     outputError,

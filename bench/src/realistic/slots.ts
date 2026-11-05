@@ -52,6 +52,10 @@ export interface SlotProvider {
   paddingMs: number;
   /** Size, image and lifetime per track. */
   create?(track: string): Omit<CreateOptions, "labels" | "signal" | "key">;
+  /** Working directory when the manifest's is not writable on this provider. */
+  workdir?: string;
+  /** Worker count on a track whose size differs per provider (the default track). */
+  vcpuFor?(track: string): number | undefined;
   /**
    * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
    * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
@@ -231,6 +235,7 @@ export function emptyRecord(
     gaps: { count: 0, totalMs: 0, traffic: [] },
     idle: null,
     costEvidence: { attribution, window: null, usageFiles: [] },
+    resources: null,
     outputDir: null,
     outputError: null,
   };
@@ -336,7 +341,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
 
     await clock.sleep(startAt - clock.now());
     const slotStartedAt = clock.now();
-    const deadline = slotStartedAt + profile.slotTimeoutMs;
+    // A held-open slot waits its idle time on top of the profile's work.
+    const deadline = slotStartedAt + profile.slotTimeoutMs + (slot.idle?.idleMs ?? 0);
     const ends = new Map<string, number>();
     const closes = new Map<string, number>();
 
@@ -366,6 +372,11 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         };
 
         if (entry.create) attemptPlan.create = entry.create(slot.track);
+
+        if (entry.workdir) attemptPlan.workdir = entry.workdir;
+        const vcpu = entry.vcpuFor?.(slot.track);
+
+        if (vcpu !== undefined) attemptPlan.vcpu = vcpu;
 
         if (slot.idle) attemptPlan.idle = slot.idle;
 

@@ -4,6 +4,10 @@
  * toolchain and the dependency cache by hash from one URL we host, rejects any hash mismatch before
  * extracting, and uploads the frozen patches. Each download is timed on its own, so network time is
  * reported apart from compute.
+ *
+ * Without a hosted URL, `upload` sends each artifact from a local store through the SDK's file
+ * transfer instead, in fixed-size chunks joined inside the sandbox. The joined file goes through the
+ * same sha256 check before extraction, and the upload is timed as the artifact's transfer.
  */
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
@@ -21,9 +25,25 @@ import {
 } from "./manifest.js";
 import { sha256Hex, type BlobStore } from "./steps.js";
 
+/** Local artifacts by sha256, for the upload transfer. */
+export interface ArtifactSource {
+  /** The artifact's bytes; the store checks the hash once when it first reads the file. */
+  read(sha256: string): Promise<Uint8Array>;
+}
+
+export interface UploadSettings {
+  source: ArtifactSource;
+  /** Bytes per `files.write` call. Default 8 MiB, inside every adapter's single-write limit. */
+  chunkBytes?: number;
+  /** Chunks in flight at once. Default 4. */
+  concurrency?: number;
+}
+
 export interface PrepareSettings {
   /** The one URL we host. Every object is fetched from `<cacheBaseUrl>/<sha256>`. */
   cacheBaseUrl: string;
+  /** Upload from a local store through the SDK instead of fetching from `cacheBaseUrl`. */
+  upload?: UploadSettings;
   /** Fetch command with `{url}` and `{dest}`; the default is curl. */
   fetchCommand?: string;
   fetchTimeoutMs?: number;
@@ -82,6 +102,72 @@ export function layout(workdir: string, vcpu: number): Placeholders {
 }
 
 const tail = (text: string) => text.slice(-800);
+
+/** Local files by sha256; each is read and hash-checked once, then shared by every attempt. */
+export function fileArtifacts(paths: ReadonlyMap<string, string>): ArtifactSource {
+  const cache = new Map<string, Promise<Uint8Array>>();
+
+  return {
+    read(sha256) {
+      let pending = cache.get(sha256);
+
+      if (!pending) {
+        const path = paths.get(sha256);
+
+        if (!path) return Promise.reject(new Error(`No local artifact ${sha256}`));
+
+        pending = readFile(path).then((data) => {
+          const actual = sha256Hex(data);
+
+          if (actual !== sha256) throw new Error(`Local artifact ${path} has hash ${actual}`);
+
+          return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        });
+
+        cache.set(sha256, pending);
+      }
+
+      return pending;
+    },
+  };
+}
+
+/** Write `data` to `dest` through the SDK in chunks, then join them inside the sandbox. */
+async function uploadArtifact(input: {
+  box: Sandbox;
+  data: Uint8Array;
+  dest: string;
+  settings: UploadSettings;
+  signal: AbortSignal;
+}): Promise<{ exitCode: number | null; output: string }> {
+  const size = input.settings.chunkBytes ?? 8 * 1024 * 1024;
+  const count = Math.max(1, Math.ceil(input.data.byteLength / size));
+  const name = (index: number) => `${input.dest}.part-${String(index).padStart(5, "0")}`;
+  let next = 0;
+
+  const worker = async () => {
+    while (next < count) {
+      const index = next++;
+
+      input.signal.throwIfAborted();
+      await input.box.files.write(
+        name(index),
+        input.data.subarray(index * size, (index + 1) * size),
+      );
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(count, input.settings.concurrency ?? 4) }, worker),
+  );
+
+  const joined = await input.box.run(
+    `cat ${quote(input.dest)}.part-* > ${quote(input.dest)} && rm -f -- ${quote(input.dest)}.part-*`,
+    { cwd: "/", timeoutMs: 600_000, signal: input.signal, maxOutputBytes: 64 * 1024 },
+  );
+
+  return { exitCode: joined.exitCode, output: joined.output };
+}
 
 /** Blobs read from a local directory of `<sha256>` files, each checked on read. */
 export function directoryBlobs(directory: string): BlobStore {
@@ -148,15 +234,31 @@ export async function prepare(input: PrepareInput): Promise<PrepareResult> {
     ): Promise<PrepareFailure | null> => {
       if (!artifact) return { kind: "missing-artifact", role, arch: arch.data };
       const dest = posix.join(workdir, ".rw/dl", artifact.sha256);
-      const url = `${settings.cacheBaseUrl.replace(/\/+$/, "")}/${artifact.sha256}`;
+      const upload = settings.upload;
+
+      const url = upload
+        ? `sdk-upload:${artifact.sha256}`
+        : `${settings.cacheBaseUrl.replace(/\/+$/, "")}/${artifact.sha256}`;
+
       const startedAt = clock.now();
 
-      const fetched = await run(
-        expand(settings.fetchCommand ?? defaultFetchCommand, placeholders)
-          .replaceAll("{url}", quote(url))
-          .replaceAll("{dest}", quote(dest)),
-        settings.fetchTimeoutMs ?? 600_000,
-      );
+      const fetched = upload
+        ? await uploadArtifact({
+            box,
+            data: await upload.source.read(artifact.sha256),
+            dest,
+            settings: upload,
+            signal,
+          }).catch((cause: unknown) => ({
+            exitCode: null,
+            output: cause instanceof Error ? cause.message : String(cause),
+          }))
+        : await run(
+            expand(settings.fetchCommand ?? defaultFetchCommand, placeholders)
+              .replaceAll("{url}", quote(url))
+              .replaceAll("{dest}", quote(dest)),
+            settings.fetchTimeoutMs ?? 600_000,
+          );
 
       const endedAt = clock.now();
 
