@@ -113,6 +113,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
 | boxd                                                                   | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
 | Freestyle                                                              | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`                   |
+| Briq                                                                   | `@opencoredev/sandbox-sdk/briq`       | `@briq-cloud/sdk`             |
 | Superserve                                                             | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`             |
 | Boat                                                                   | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`                |
 | Sandboxer                                                              | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`                |

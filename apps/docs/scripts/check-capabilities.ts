@@ -34,6 +34,7 @@ import {
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
+import { briq } from "../../../packages/sdk/src/providers/briq/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
 import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
@@ -133,6 +134,7 @@ const subjects: readonly Subject[] = [
     column: "Freestyle",
     build: () => freestyle({ apiKey: offlineKey }),
   },
+  { column: "Briq", build: () => briq({ apiKey: offlineKey }) },
   { column: "Memory", build: () => memory() },
 ];
 
@@ -313,11 +315,14 @@ const rows: readonly Row[] = [
       Yes: [accepts({ labels: labels(5) }), accepts({ labels: { app: noise(4000) } })],
       "Up to 4": [accepts({ labels: labels(4) }), rejects({ labels: labels(5) })],
       "120 chars": [accepts({ labels: labels(1) }), rejects({ labels: { app: noise(400) } })],
+      "30 pairs": [accepts({ labels: labels(30) })],
       "About 2.9 KB": [
         accepts({ labels: { app: noise(2000) } }),
         rejects({ labels: { app: noise(4000) } }),
       ],
     },
+    unchecked:
+      'the "30 pairs" upper bound, which the Briq adapter reports as invalid_argument rather than unsupported',
   },
   {
     label: "Key mode",
@@ -337,6 +342,7 @@ const rows: readonly Row[] = [
       "Token header": [],
       "Bearer header": [],
       "Cookie header": [],
+      "Private URL": [],
       No: [],
     },
     unchecked: "every Preview URL cell except Fake needs a live provider",

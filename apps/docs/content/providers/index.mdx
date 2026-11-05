@@ -2,7 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, and Memory side by side. Factories, credentials, and what each one is best for.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, Briq, and Memory side by side. Factories, credentials, and what each one is best for.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -13,22 +13,23 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 
 ## At a glance
 
-| Provider                                                                              | Factory                           | Credentials                                                    | Best for                                                |
-| ------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
-| <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local)               | `local()` from `/local`           | None                                                           | Development and CI                                      |
-| <img src="/integrations/agentos.svg" alt="" /> [Local (agentOS)](/providers/agentos)  | `agentos()` from `/agentos`       | None                                                           | Local command and file tasks without Docker             |
-| <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b)                      | `e2b()` from `/e2b`               | `E2B_API_KEY`                                                  | Pause with memory, hard lifetimes                       |
-| <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel)     | `vercel()` from `/vercel`         | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel                                 |
-| <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona)          | `daytona()` from `/daytona`       | `DAYTONA_API_KEY`                                              | Custom sizes, idle auto-stop                            |
-| <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash)      | `upstash()` from `/upstash`       | `UPSTASH_BOX_API_KEY`                                          | Durable state, filesystem snapshots                     |
-| <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway)          | `railway()` from `/railway`       | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                  | Ephemeral VMs, filesystem checkpoints                   |
-| <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer)    | `sandboxer()` from `/sandboxer`   | `SANDBOXER_API_KEY`                                            | Ubuntu microVMs, memory pause, named disk snapshots     |
-| <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat)                   | `boat()` from `/boat`             | `BOAT_API_KEY`                                                 | Persistent VMs for long-running agents                  |
-| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki)                | `tenki()` from `/tenki`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                     |
-| <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                  |
-| <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                   |
-| <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots |
-| <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory)             | `memory()` from `/memory`         | None                                                           | Unit tests                                              |
+| Provider                                                                              | Factory                           | Credentials                                                    | Best for                                                 |
+| ------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------- |
+| <img src="/integrations/docker.svg" alt="" /> [Local](/providers/local)               | `local()` from `/local`           | None                                                           | Development and CI                                       |
+| <img src="/integrations/agentos.svg" alt="" /> [Local (agentOS)](/providers/agentos)  | `agentos()` from `/agentos`       | None                                                           | Local command and file tasks without Docker              |
+| <img src="/integrations/e2b.svg" alt="" /> [E2B](/providers/e2b)                      | `e2b()` from `/e2b`               | `E2B_API_KEY`                                                  | Pause with memory, hard lifetimes                        |
+| <img src="/integrations/vercel.svg" alt="" /> [Vercel Sandbox](/providers/vercel)     | `vercel()` from `/vercel`         | OIDC, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Apps deployed on Vercel                                  |
+| <img src="/integrations/daytona.svg" alt="" /> [Daytona](/providers/daytona)          | `daytona()` from `/daytona`       | `DAYTONA_API_KEY`                                              | Custom sizes, idle auto-stop                             |
+| <img src="/integrations/upstash.svg" alt="" /> [Upstash Box](/providers/upstash)      | `upstash()` from `/upstash`       | `UPSTASH_BOX_API_KEY`                                          | Durable state, filesystem snapshots                      |
+| <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway)          | `railway()` from `/railway`       | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                  | Ephemeral VMs, filesystem checkpoints                    |
+| <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer)    | `sandboxer()` from `/sandboxer`   | `SANDBOXER_API_KEY`                                            | Ubuntu microVMs, memory pause, named disk snapshots      |
+| <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat)                   | `boat()` from `/boat`             | `BOAT_API_KEY`                                                 | Persistent VMs for long-running agents                   |
+| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki)                | `tenki()` from `/tenki`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                      |
+| <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                   |
+| <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                    |
+| <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots  |
+| <img src="/integrations/briq.svg" alt="" /> [Briq](/providers/briq)                   | `briq()` from `/briq`             | `BRIQ_API_KEY`                                                 | Commands, files, and private previews on one fixed image |
+| <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory)             | `memory()` from `/memory`         | None                                                           | Unit tests                                               |
 
 ## What each provider supports
 
@@ -77,6 +78,9 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="Freestyle" href="/providers/freestyle" icon="/integrations/freestyle.svg">
     Persistent VMs with default-deny networking and memory snapshots.
+  </Card>
+  <Card title="Briq" href="/providers/briq" icon="/integrations/briq.svg">
+    Sandboxes on one fixed image with commands, files, background processes, and private previews.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

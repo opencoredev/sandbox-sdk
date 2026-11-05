@@ -14,6 +14,7 @@ export const PROVIDERS = {
   freestyle: { name: "Freestyle", logo: "/integrations/freestyle.svg" },
   boxd: { name: "boxd", logo: "/integrations/boxd.svg" },
   tenki: { name: "Tenki", logo: "/integrations/tenki.svg" },
+  briq: { name: "Briq", logo: "/integrations/briq.svg" },
   agentos: { name: "agentOS", logo: "/integrations/agentos.svg" },
   memory: { name: "Memory", logo: "/integrations/memory.svg" },
 } as const satisfies Record<string, { name: string; logo: string | undefined }>;
