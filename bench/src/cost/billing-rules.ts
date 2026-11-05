@@ -177,6 +177,7 @@ export const billingRules: readonly BillingRule[] = [
     confirmation: unconfirmed,
     notes: [
       "Tier price per active box-hour (size table, engineer confirmation over the FAQ example).",
+      "Observed 2026-11-05 (SBX-100, 20 headline attempts): the per-box charge equals the tier price times the CPU-seconds measured in the box's cgroup / 3600 ($0.2001 per CPU-hour on medium, $0.1001 on small). A busy 4 vCPU box costs up to 4x the tier price per wall-hour, which the per-box-hour list price understates. Unconfirmed by Upstash.",
     ],
   },
   {
