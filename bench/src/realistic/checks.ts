@@ -158,7 +158,9 @@ function readVitestReport(text: string) {
       outcomes.push({ file: file.name, name: test.fullName, status });
     }
 
-    if ((file.status === "failed" || file.message) && failedTests === 0)
+    // A suite-level message (collection, hook or runtime error) is never one test's failure.
+    if (file.message) suiteErrors.push(`${file.name}: ${file.message.slice(0, 200)}`);
+    else if (file.status === "failed" && failedTests === 0)
       suiteErrors.push(`${file.name}: failed without a failing test`);
   }
 
@@ -182,8 +184,13 @@ function excludeFromText(normalised: string, exclusions: readonly ExcludedTest[]
   const filesExcluded = new Set<string>();
   const filesOther = new Set<string>();
 
-  for (const line of normalised.split("\n")) {
-    const match = failId.exec(line);
+  const lines = normalised.split("\n");
+  // Like the rig, only the last run counts: its FAIL lines follow the previous run's Tests summary.
+  const summaries = lines.flatMap((line, index) => (/^\s*Tests\s/.test(line) ? [index] : []));
+  const segmentStart = summaries.length > 1 ? (summaries.at(-2) ?? -1) + 1 : 0;
+
+  for (const [index, line] of lines.entries()) {
+    const match = index >= segmentStart ? failId.exec(line) : null;
 
     if (match?.[1] && match[2]) {
       const id = `${match[1]} > ${match[2]}`;

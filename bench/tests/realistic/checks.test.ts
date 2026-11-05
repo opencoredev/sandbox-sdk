@@ -228,6 +228,45 @@ describe("frozen step checks", () => {
       ).toContainEqual({ kind: "exit", expected: 0, actual: 1 });
   });
 
+  it("uses only the last run's FAIL lines, as the rig does", () => {
+    const twoRuns = [
+      vueRun(
+        [`${timing.file} > ${timing.name}`],
+        "1 failed | 199 passed (200);1 failed | 4027 passed | 6 skipped (4034)",
+      ),
+      vueRun([], "200 passed (200);4028 passed | 6 skipped (4034)"),
+    ].join("\n");
+
+    const result = evaluateCheck(textCheck, observation({ exitCode: 0, output: twoRuns }));
+
+    expect(result.invariants.tests).toEqual({ passed: 4026, skipped: 6 });
+    expect(result.invariants.testFiles).toEqual({ passed: 200 });
+    expect(result.passed).toBe(true);
+  });
+
+  it("does not excuse a suite error in a file whose only failing test is excluded", () => {
+    const report = JSON.stringify({
+      testResults: [
+        {
+          name: "/w/repo/timing.spec.ts",
+          status: "failed",
+          message: "Error: afterAll hook threw",
+          assertionResults: [{ fullName: "t > slow", status: "failed" }],
+        },
+      ],
+    });
+
+    const check = stepCheckSchema.parse({
+      exit: 0,
+      testReport: { kind: "vitest-json", path: "report.json" },
+      exclude: [{ file: "timing.spec.ts", name: "t > slow", reason: "timing" }],
+    });
+
+    expect(evaluateCheck(check, observation({ exitCode: 1, testReport: report })).passed).toBe(
+      false,
+    );
+  });
+
   it("does not excuse a report file that failed to collect, even with only excluded failures", () => {
     const report = JSON.stringify({
       testResults: [

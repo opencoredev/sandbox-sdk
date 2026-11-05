@@ -214,6 +214,11 @@ describe("slot execution", () => {
 
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(report.slots[0]?.timedOut).toEqual(["e2b"]);
+    const [abandoned] = records;
+
+    if (!abandoned) throw new Error("Expected the abandoned attempt's record");
+    expect(abandoned.endedAt - abandoned.startedAt).toBeGreaterThanOrEqual(150);
+    expect(abandoned.startOffsetMs).toBeLessThan(50);
     expect(records[0]).toMatchObject({
       sandboxIds: ["stuck-1"],
       deletionConfirmed: false,

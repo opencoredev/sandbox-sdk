@@ -381,6 +381,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
           Math.max(0, deadline - clock.now()),
         );
 
+        const invokedAt = clock.now();
+
         try {
           const outcome = await within(
             attempt(attemptPlan, environment).then(({ record: done }) => done),
@@ -395,6 +397,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
               "The attempt did not return within the slot timeout plus its grace; abandoned",
             );
 
+            abandoned.startedAt = invokedAt;
+            abandoned.startOffsetMs = invokedAt - slotStartedAt;
             abandoned.sandboxIds = created;
             // Deletion is unconfirmed: the reserved-gap cleanup must remove these IDs.
             abandoned.deletionConfirmed = created.length === 0;
