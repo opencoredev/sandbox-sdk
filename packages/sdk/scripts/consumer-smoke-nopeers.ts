@@ -32,6 +32,7 @@ import { externalPackages } from "./externals.ts";
 
 /** Provider subpaths that must work with no peer installed. Add a provider when its adapter stops loading its SDK. */
 const noPeerProviders: string[] = [
+  "createos",
   "boat",
   "daytona",
   "e2b",

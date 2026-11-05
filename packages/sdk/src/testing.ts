@@ -336,7 +336,7 @@ export function runConformance(
 
       const { box } = await setup();
 
-      const process = await box.start("echo READY; sleep 5", {
+      const process = await box.start("echo READY; sleep 60", {
         name: "dev",
         ready: { log: /READY/ },
         readyTimeoutMs: 2000,
@@ -366,7 +366,8 @@ export function runConformance(
 
       const { box } = await setup();
       await expect(
-        box.start("sleep 5", { name: "unready", ready: { log: /never/ }, readyTimeoutMs: 30 }),
+        // Keep the command alive through remote setup and inspection round trips.
+        box.start("sleep 60", { name: "unready", ready: { log: /never/ }, readyTimeoutMs: 30 }),
       ).rejects.toMatchObject({ code: "timeout" });
       expect(box.process("unready").ready).toBe(false);
       expect((await box.processes())[0]?.status).toBe("running");

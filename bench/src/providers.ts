@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 
 const templateKeys = new Map([
+  ["createos", "rootfs"],
   ["e2b", "template"],
   ["superserve", "template"],
   ["daytona", "snapshot"],
@@ -47,6 +48,7 @@ export interface SkippedProvider {
 export type LoadedProvider = ReadyProvider | SkippedProvider;
 
 const credentials = new Map([
+  ["createos", ["CREATEOS_SANDBOX_API_KEY"]],
   ["superserve", ["SUPERSERVE_API_KEY"]],
   ["e2b", ["E2B_API_KEY"]],
   ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],

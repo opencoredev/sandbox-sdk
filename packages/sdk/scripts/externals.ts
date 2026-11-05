@@ -7,6 +7,7 @@
 export const externalPackages: readonly string[] = [
   // Provider SDKs.
   "@boatdev/sdk",
+  "@nodeops-createos/sandbox",
   "@boxd-sh/sdk",
   "@daytonaio/sdk",
   "@daytona/api-client",

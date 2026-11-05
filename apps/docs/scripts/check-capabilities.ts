@@ -34,6 +34,7 @@ import {
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
+import { createos } from "../../../packages/sdk/src/providers/createos/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
 import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
@@ -90,6 +91,7 @@ interface Subject {
 }
 
 const subjects: readonly Subject[] = [
+  { column: "CreateOS", build: () => createos({ apiKey: offlineKey }) },
   { column: "Local", build: () => local({ dockerHost: `unix://${dockerSocket}` }) },
   {
     column: "agentOS",

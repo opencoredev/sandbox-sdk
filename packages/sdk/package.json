@@ -82,6 +82,10 @@
       "types": "./dist/providers/vercel/index.d.ts",
       "default": "./dist/providers/vercel/index.js"
     },
+    "./createos": {
+      "types": "./dist/providers/createos/index.d.ts",
+      "default": "./dist/providers/createos/index.js"
+    },
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
       "default": "./dist/providers/daytona/index.js"
