@@ -20,6 +20,16 @@ afterAll(async () => {
   await fixture.cleanup();
 });
 
+const preserving = {
+  verdict: "state-preserving",
+  mechanism: "pause",
+  filesystem: true,
+  process: true,
+  memory: true,
+  suspendMs: 1,
+  restoreMs: 1,
+} as const;
+
 const plan = (overrides: Partial<AttemptPlan>): AttemptPlan => ({
   runId: "rw-idle",
   attemptId: `rw-idle-${Math.random().toString(36).slice(2, 8)}`,
@@ -99,6 +109,7 @@ describe("held-open diagnostic", () => {
     const { record, trace } = await run({
       variant: "managed-idle",
       idle: { policy: "managed", idleMs: 500, thresholdMs: 100 },
+      statePreservation: preserving,
     });
 
     expect(record.completion).toEqual({ kind: "completed" });
@@ -113,6 +124,24 @@ describe("held-open diagnostic", () => {
     expect(members.indexOf("resume")).toBeGreaterThan(members.indexOf("pause"));
     expect(record.idle?.suspendMs).not.toBeNull();
   }, 60_000);
+
+  it("refuses managed idle unless this provider passed the state-preservation check", async () => {
+    for (const statePreservation of [
+      undefined,
+      { ...preserving, verdict: "restore-and-rebuild" as const, process: false, memory: false },
+    ]) {
+      const overrides: Partial<AttemptPlan> = {
+        variant: "managed-idle",
+        idle: { policy: "managed", idleMs: 500, thresholdMs: 100 },
+      };
+
+      if (statePreservation) overrides.statePreservation = statePreservation;
+      const { record } = await run(overrides);
+
+      expect(record.completion).toMatchObject({ kind: "incomplete", reason: "not-available" });
+      expect(record.sandboxIds).toEqual([]);
+    }
+  });
 
   it("reads not available, without creating anything, where the adapter has no pause", async () => {
     const provider = memory();

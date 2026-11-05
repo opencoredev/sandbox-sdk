@@ -60,7 +60,7 @@ const session = profileSchema.parse({
       dependsOn: ["s3"],
       gapAfterPrereqMs: 250,
       needs: ["watcher"],
-      op: { kind: "read", path: "src/a.ts" },
+      op: { kind: "shell", script: "sleep 0.4; cat src/a.ts" },
     },
     {
       id: "s5",
@@ -69,7 +69,7 @@ const session = profileSchema.parse({
       gapAfterPrereqMs: 250,
       op: {
         kind: "shell",
-        script: "printf ' Tests  1 failed | 2 passed (3)\\n'; exit 1",
+        script: "sleep 0.4; printf ' Tests  1 failed | 2 passed (3)\\n'; exit 1",
       },
       check: { exit: 1, outputInvariants: { tests: { failed: 1, passed: 2 } } },
     },
@@ -161,7 +161,8 @@ describe("session replay by cause", () => {
     expect(watcher?.readyAt).not.toBeNull();
     expect(s4.startedAt).toBeGreaterThanOrEqual(watcher?.readyAt ?? Infinity);
     // Both followed s3 after the same gap, so they ran at the same time.
-    expect(Math.abs(s4.startedAt - s5.startedAt)).toBeLessThan(400);
+    expect(s4.startedAt).toBeLessThan(s5.endedAt);
+    expect(s5.startedAt).toBeLessThan(s4.endedAt);
     expect(watcher?.shutdown).toBe("harness");
     const s6 = byId.get("s6");
 

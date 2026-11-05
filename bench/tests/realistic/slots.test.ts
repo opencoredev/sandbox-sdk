@@ -180,6 +180,108 @@ describe("slot execution", () => {
     expect(records.find((r) => r.provider === "boxd")?.startOffsetMs).toBeGreaterThanOrEqual(120);
   });
 
+  it("abandons an attempt that ignores the abort after the grace, keeping its sandbox IDs", async () => {
+    const records: AttemptRecord[] = [];
+
+    const quick = {
+      ...fixture.manifest,
+      profiles: {
+        "fix-and-test": { ...fixture.manifest.profiles["fix-and-test"]!, slotTimeoutMs: 100 },
+      },
+    };
+
+    const stubborn: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "stuck-1");
+      await sleep(5_000);
+
+      throw new Error("never seen");
+    };
+
+    const started = Date.now();
+
+    const report = await runBatch(
+      batch(
+        {
+          manifest: quick,
+          slots: slots.slice(0, 1),
+          providers: [provider("e2b")],
+          timeoutGraceMs: 100,
+          attempt: stubborn,
+        },
+        records,
+      ),
+    );
+
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(report.slots[0]?.timedOut).toEqual(["e2b"]);
+    expect(records[0]).toMatchObject({
+      sandboxIds: ["stuck-1"],
+      deletionConfirmed: false,
+      completion: { kind: "incomplete", reason: "slot-timeout" },
+    });
+  });
+
+  it("voids a window whose listing is only SDK-scoped", async () => {
+    const records: AttemptRecord[] = [];
+    await runBatch(
+      batch(
+        {
+          slots: slots.slice(0, 1),
+          providers: [provider("e2b")],
+          attempt: scripted(() => ({}), []),
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]?.costEvidence.window).toMatchObject({
+      listingScope: "sdk-scoped",
+      void: true,
+      voidReasons: ["Listing is SDK-scoped: sandboxes made outside the SDK are invisible"],
+    });
+  });
+
+  it("lists each provider at its own window edges", async () => {
+    const records: AttemptRecord[] = [];
+
+    const boxd = provider("boxd", {
+      settlementMs: 300,
+      paddingMs: 30,
+      listAccount: async () => [],
+    });
+
+    const e2b = provider("e2b", { paddingMs: 10, listAccount: async () => [] });
+
+    const report = await runBatch(
+      batch(
+        {
+          slots: slots.slice(0, 1),
+          providers: [boxd, e2b],
+          attempt: scripted(() => ({ durationMs: 30 }), []),
+        },
+        records,
+      ),
+    );
+
+    const slot = report.slots[0];
+
+    for (const window of slot?.windows ?? []) {
+      const [open, close] = window.listings;
+
+      expect(open?.at).toBeGreaterThanOrEqual(window.openedAt);
+      expect(open?.at).toBeLessThanOrEqual(slot?.startedAt ?? -Infinity);
+      expect(close?.at).toBeGreaterThanOrEqual(window.closedAt);
+    }
+
+    const e2bWindow = slot?.windows.find((w) => w.provider === "e2b");
+
+    // e2b's window opens just before the start and closes just after its attempt, not at boxd's edges.
+    expect((slot?.startedAt ?? 0) - (e2bWindow?.openedAt ?? 0)).toBeLessThan(50);
+    expect(e2bWindow?.closedAt).toBeLessThan(
+      slot?.windows.find((w) => w.provider === "boxd")?.closedAt ?? -Infinity,
+    );
+  });
+
   it("ends a hung attempt at the slot's frozen timeout and goes on", async () => {
     const records: AttemptRecord[] = [];
 
@@ -348,6 +450,8 @@ describe("end to end through the scheduler", () => {
         attribution: "per-sandbox",
         settlementMs: 200,
         paddingMs: 20,
+        // The fake host's list is account-wide, as a native account listing would be.
+        listAccount: async () => (await host.list({})).map((item) => item.id),
       }),
     );
 

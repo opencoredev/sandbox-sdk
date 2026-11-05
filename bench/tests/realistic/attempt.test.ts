@@ -112,6 +112,17 @@ describe("fix-and-test attempt on the host provider", () => {
     }
   }, 60_000);
 
+  it("keeps the record when raw output cannot be written", async () => {
+    const blocked = join(fixture.root, "not-a-directory");
+    await writeFile(blocked, "file");
+    const { record } = await runAttempt(plan(), { ...environment(), outputDir: blocked });
+
+    expect(record.completion).toEqual({ kind: "completed" });
+    expect(record.sandboxIds).toHaveLength(1);
+    expect(record.outputDir).toBeNull();
+    expect(record.outputError).toMatch(/ENOTDIR|EEXIST/);
+  }, 60_000);
+
   it("fails the attempt when a frozen count does not match", async () => {
     const profile = fixture.manifest.profiles["fix-and-test"];
 
