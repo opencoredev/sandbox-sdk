@@ -22,6 +22,12 @@ export async function main(load: typeof loadProvider = loadProvider) {
     return;
   }
 
+  if (args[0] === "coverage") {
+    await (await import("./cost/coverage-cli.js")).coverageCommand(args.slice(1));
+
+    return;
+  }
+
   if (args[0] === "merge") {
     const { mergeCommand } = await import("./merge.js");
     await mergeCommand(args.slice(1));
