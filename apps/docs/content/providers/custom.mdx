@@ -83,6 +83,12 @@ For `box.usage()`, return the provider's newest sample from `usage(id)` using th
 
 An adapter doesn't need to live in this repository. `@opencoredev/sandbox-sdk/provider` exports everything the built-in direct-HTTP adapters use: `SandboxError` and the error helpers (`describeNative`, `redacting`, `reason`), the HTTP client (`createHttpClient`, `createDeadline`, `sleep`), the native API helpers (`createNativeApi`, `sdkConstruct`, `sdkCall`), and the Connect stream codec (`connectEnvelope`, `connectEnvelopes`, `streamFault`). The E2B adapter imports from nothing else, and a test keeps it that way, so it can serve as the template for a package its provider maintains. Requests sent through `createHttpClient` carry `User-Agent: sandbox-sdk/<version>`.
 
+These adapters are maintained outside this repository by their providers:
+
+| Provider                                | Package                                                                                | Runs on                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [Raft](https://github.com/Microck/raft) | [`@microck/sandbox-sdk-raft`](https://www.npmjs.com/package/@microck/sandbox-sdk-raft) | Incus containers on your own Linux hosts |
+
 ## Check it with the conformance suite
 
 `runConformance` from `@opencoredev/sandbox-sdk/testing` runs the suite every built-in provider passes. It covers create and find by key, commands, `$` escaping, processes, files, git, previews, and cleanup. It needs `vitest` 3 or later.
