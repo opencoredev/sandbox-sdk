@@ -40,8 +40,12 @@ export function decompose(input: {
 }): Decomposition {
   const { rule, fx } = input;
 
-  if (rule.tariff.kind !== "known" || rule.tariff.value.kind !== "per-unit")
-    return { kind: "unavailable", reason: "only for per-unit tariffs" };
+  if (
+    rule.tariff.kind !== "known" ||
+    rule.tariff.value.kind !== "per-unit" ||
+    rule.tariff.value.charges !== "usage"
+  )
+    return { kind: "unavailable", reason: "only for tariffs priced per unit of use" };
   const price = rule.pricingKey === null ? undefined : pricing[rule.pricingKey];
 
   if (!price) return { kind: "unavailable", reason: "no list rates" };
@@ -137,6 +141,23 @@ export interface ProviderLineInput {
   readonly provisional: string | null;
 }
 
+/**
+ * A decomposition explains a line only if it describes the same totals: its reported-to-whole
+ * ratio must match the line's (the line is per completed task, the decomposition over attempts).
+ */
+function sameRatio(
+  d: Extract<Decomposition, { kind: "decomposed" }>,
+  input: ProviderLineInput,
+): boolean {
+  if (input.wholeMachineUSD === null || input.wholeMachineUSD <= 0 || d.wholeMachineUSD <= 0)
+    return false;
+
+  const shown = input.reportedUSD / input.wholeMachineUSD;
+  const decomposed = d.reportedUSD / d.wholeMachineUSD;
+
+  return Math.abs(shown - decomposed) <= 1e-9 * Math.max(1, Math.abs(shown));
+}
+
 /** One plain-language line for a provider, or null when no number supports one. */
 export function providerLine(input: ProviderLineInput): string | null {
   const clauses: string[] = [];
@@ -163,7 +184,7 @@ export function providerLine(input: ProviderLineInput): string | null {
   let line = clauses.join(", and ");
   const d = input.decomposition;
 
-  if (d?.kind === "decomposed" && sumsToReported(d)) {
+  if (d?.kind === "decomposed" && sumsToReported(d) && sameRatio(d, input)) {
     const gap = d.wholeMachineUSD - d.reportedUSD;
 
     const parts = [

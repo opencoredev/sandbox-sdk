@@ -7,7 +7,8 @@
  *   list price, such as disk a billing source leaves out, are marked estimated.
  * - Whole machine at list price: allocation x billed time x published rate. A counterfactual for
  *   providers that charge less than the allocation.
- * - Usage at list price: only for per-unit tariffs; "not applicable" for bundles and
+ * - Usage at list price: only for tariffs priced per unit of use (per active vCPU-hour, per GiB
+ *   in use); "not applicable" for bundles and allocation pricing, and
  *   "unavailable" when usage was not measured or not validated.
  */
 import { computeHourly, priceAtSize, pricing, type Price } from "../pricing.js";
@@ -316,6 +317,9 @@ export function usageListPrice(input: AttemptCostInput): UsagePrice {
 
   if (tariff.value.kind === "bundle")
     return { kind: "not-applicable", reason: "sold as a fixed bundle; no per-unit price" };
+
+  if (tariff.value.charges !== "usage")
+    return { kind: "not-applicable", reason: "priced on the allocation, not on use" };
   const usage = input.attempt.usage;
 
   if (!usage) return { kind: "unavailable", reason: "usage not measured" };

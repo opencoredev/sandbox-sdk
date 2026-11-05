@@ -65,7 +65,7 @@ describe("within-provider decomposition", () => {
       decompose({ attempts: [attempt({ provider: "boat" })], rule: rule("boat"), fx }),
     ).toEqual({
       kind: "unavailable",
-      reason: "only for per-unit tariffs",
+      reason: "only for tariffs priced per unit of use",
     });
 
     expect(decompose({ attempts: [boxd({ usage: null })], rule: rule("boxd"), fx }).kind).toBe(
@@ -82,7 +82,7 @@ describe("plain-language lines", () => {
       provider: "boxd",
       kind: "metered",
       reportedUSD: 0.003,
-      wholeMachineUSD: 0.031973333,
+      wholeMachineUSD: decomposition.kind === "decomposed" ? decomposition.wholeMachineUSD : 0,
       denseOverPaced: 4,
       provisional: null,
     } as const;
@@ -93,6 +93,22 @@ describe("plain-language lines", () => {
 
     expect(providerLine({ ...base, decomposition })).toBe(
       "boxd's usage meter showed 0.094 of what the whole machine would cost at its own list price, and removing the pauses raised its cost 4x, mainly because of unused memory (53% of the difference).",
+    );
+  });
+
+  it("drops 'mainly' when the decomposition describes different totals", () => {
+    expect(
+      providerLine({
+        provider: "boxd",
+        kind: "metered",
+        reportedUSD: 90,
+        wholeMachineUSD: 100,
+        decomposition,
+        denseOverPaced: null,
+        provisional: null,
+      }),
+    ).toBe(
+      "boxd's usage meter showed 0.9 of what the whole machine would cost at its own list price.",
     );
   });
 

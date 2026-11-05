@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { cloudProviders } from "../src/attempts.js";
 import { pricing } from "../src/pricing.js";
 import { parseAttemptRecords } from "../src/cost/attempt-record.js";
-import { billingModelLabel, billingRule, billingRules } from "../src/cost/billing-rules.js";
+import {
+  billingModelLabel,
+  billingRule,
+  billingRules,
+  type BillingRule,
+} from "../src/cost/billing-rules.js";
 import {
   billedTime,
   reportedCost,
@@ -75,9 +80,16 @@ describe("billing rules", () => {
   });
 });
 
+/** E2B's row with its billing events marked known, as a written confirmation would. */
+const withEvents = (): BillingRule => ({
+  ...rule("e2b"),
+  billingStarts: { kind: "known", value: "sandbox-created", source: "fixture" },
+  billingStops: { kind: "known", value: "delete-confirmed", source: "fixture" },
+});
+
 describe("billed time", () => {
   it("uses the rule's events when observed", () => {
-    expect(billedTime(attempt(), rule("e2b"))).toEqual({
+    expect(billedTime(attempt(), withEvents())).toEqual({
       seconds: 298,
       basis: "billing-events",
       assumptions: ["billing minimum unknown; none assumed"],
@@ -87,7 +99,7 @@ describe("billed time", () => {
   it("falls back to the elapsed envelope and says so", () => {
     const time = billedTime(
       attempt({ lifecycle: { createdAt: null, deleteRequestedAt: null, deletedAt: at(300) } }),
-      rule("e2b"),
+      withEvents(),
     );
 
     expect(time.seconds).toBe(300);
@@ -144,8 +156,21 @@ describe("cost columns", () => {
     expect(usageListPrice(input("boxd")).kind).toBe("unavailable");
   });
 
-  it("reads 'not applicable' for a bundled tariff's usage column", () => {
+  it("reads 'not applicable' for a bundled or allocation-priced tariff's usage column", () => {
     expect(usageListPrice(input("boat")).kind).toBe("not-applicable");
+
+    const used = {
+      source: "provider-report",
+      validated: true,
+      cpuSeconds: 1,
+      memoryGiBSeconds: 1,
+      diskGiBSeconds: 1,
+    } as const;
+
+    expect(usageListPrice(input("daytona", { usage: used }))).toEqual({
+      kind: "not-applicable",
+      reason: "priced on the allocation, not on use",
+    });
     const whole = wholeMachineListPrice(input("boat"));
     expect(whole).toMatchObject({ kind: "list-price", counterfactual: false });
 
