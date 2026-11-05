@@ -60,6 +60,8 @@ export interface SlotProvider {
   runLabelOnly?: boolean;
   /** Chunks in flight during an upload (Tenki fails concurrent writes with gRPC INTERNAL). */
   uploadConcurrency?: number;
+  /** Capture usage the provider reports only while the sandbox exists; returns the file written. */
+  beforeDestroy?(id: string): Promise<string | null>;
   /**
    * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
    * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
@@ -371,6 +373,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         };
 
         if (plan.outputDir) environment.outputDir = plan.outputDir;
+        const capture = entry.beforeDestroy;
+
+        if (capture) environment.beforeDestroy = (_, id) => capture(id);
 
         const attemptPlan: AttemptPlan = {
           ...base(slotStartedAt),

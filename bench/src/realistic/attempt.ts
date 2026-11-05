@@ -74,6 +74,11 @@ export interface AttemptEnvironment {
   onSandbox?(provider: string, id: string): Promise<void>;
   /** Deadline for the deletion that always follows, even after a slot timeout. */
   destroyTimeoutMs?: number;
+  /**
+   * Called with each sandbox ID just before deletion, for usage a provider only reports while the
+   * sandbox exists (Boat). Returns the file it wrote, which the record lists in usageFiles.
+   */
+  beforeDestroy?(provider: string, id: string): Promise<string | null>;
 }
 
 export class SlotTimeout extends Error {}
@@ -139,6 +144,7 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
   let deletionConfirmed = false;
   let box: Sandbox | undefined;
   let firstRead: ResourceRead | null = null;
+  const usageFiles: string[] = [];
   let lastRead: ResourceRead | null = null;
   const vcpu = plan.vcpu ?? track.vcpu;
 
@@ -299,6 +305,15 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
         const target = box;
         // A fresh signal: the end read must happen even after a slot timeout.
         lastRead = await readResources(target, AbortSignal.timeout(30_000));
+
+        if (environment.beforeDestroy) {
+          const file = await environment
+            .beforeDestroy(plan.provider.name, target.id)
+            .catch(() => null);
+
+          if (file) usageFiles.push(file);
+        }
+
         deletionConfirmed = await span("destroy", async () => {
           const timeout = AbortSignal.timeout(environment.destroyTimeoutMs ?? 120_000);
 
@@ -379,7 +394,7 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
     },
     idle,
     resources: resourcesBetween(firstRead, lastRead),
-    costEvidence: { attribution: environment.attribution, window: null, usageFiles: [] },
+    costEvidence: { attribution: environment.attribution, window: null, usageFiles },
     outputDir,
     outputError,
   };

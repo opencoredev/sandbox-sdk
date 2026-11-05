@@ -175,10 +175,56 @@ async function spentUSD(path: string) {
   );
 }
 
+/** Boat reports a sandbox's usage only while it exists; the billing collector reads it then. */
+function captureUsage(adapter: string, usageDir: string) {
+  return async (id: string) => {
+    const collected = await collectProvider(
+      adapter,
+      [
+        {
+          provider: adapter,
+          id,
+          scenarios: new Set(["pre-destroy"]),
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+      process.env,
+    );
+
+    await mkdir(usageDir, { recursive: true });
+    const file = join(usageDir, `${adapter}-${id}.json`);
+    await writeFile(
+      file,
+      JSON.stringify({ capturedAt: new Date().toISOString(), ...collected }) + "\n",
+    );
+
+    return file;
+  };
+}
+
+/** The billing collector's per-sandbox cost, as saved in a usage file. */
+const costSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.enum(["billed", "metered"]),
+    usd: z.number().finite().nonnegative(),
+    scope: z.enum(["sandbox-lifetime", "window"]),
+    complete: z.boolean(),
+    confidence: z.enum(["high", "medium", "low"]),
+    note: z.string(),
+  }),
+  z.object({ kind: z.literal("unavailable"), confidence: z.literal("none"), note: z.string() }),
+]);
+
+const usageFileSchema = z.object({
+  sandboxes: z.array(z.object({ id: z.string(), cost: costSchema })),
+});
+
 async function loadSlotProvider(
   setup: ProviderSetup,
   track: TrackId,
   slotMs: number,
+  usageDir?: string,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -211,6 +257,9 @@ async function loadSlotProvider(
       return options;
     },
   };
+
+  if (setup.adapter === "boat" && usageDir)
+    entry.beforeDestroy = captureUsage(setup.adapter, usageDir);
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
   if (setup.adapter === "tenki") entry.uploadConcurrency = 1;
@@ -285,7 +334,7 @@ async function run(args: string[]) {
   for (const track of trackIds)
     for (const setup of setups) {
       const slotMs = (manifest.profiles["fix-and-test"]?.slotTimeoutMs ?? 0) + longest;
-      const result = await loadSlotProvider(setup, track, slotMs);
+      const result = await loadSlotProvider(setup, track, slotMs, join(out, "usage"));
 
       if (result.kind === "skipped")
         await note({ kind: "provider-skipped", provider: setup.name, track, reason: result.note });
@@ -486,8 +535,20 @@ async function billing(args: string[]) {
   const withSandbox = records.filter((r) => r.sandboxIds.length > 0);
   const byAdapter = new Map<string, AttemptRecord[]>();
 
+  const captured = new Map<string, z.infer<typeof costSchema>>();
+
   for (const record of withSandbox) {
     const adapter = providerSetup(record.provider).adapter;
+
+    // Usage captured before deletion (Boat) is the only evidence once the sandbox is gone.
+    for (const file of record.costEvidence.usageFiles) {
+      const saved = usageFileSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
+
+      for (const sandbox of saved.success ? saved.data.sandboxes : [])
+        captured.set(sandbox.id, sandbox.cost);
+    }
+
+    if (record.sandboxIds.every((id) => captured.has(id))) continue;
     byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), record]);
   }
 
@@ -542,7 +603,7 @@ async function billing(args: string[]) {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },
       };
-    const found = record.sandboxIds.map((id) => costs.get(id));
+    const found = record.sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
     const missing = found.find((cost) => cost === undefined || cost.kind === "unavailable");
 
     if (missing !== undefined || found.length === 0)
