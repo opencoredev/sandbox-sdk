@@ -1,7 +1,7 @@
 /**
  * Coverage and power simulation (gate A3.5). Before any provider result is examined, each
  * candidate procedure runs on simulated paired batch data with skew, batch effects, failures and
- * zero-completion cases. The procedure that reaches at least 95% simultaneous coverage in every
+ * zero-completion cases. The procedure that reaches an estimated 96% simultaneous coverage (95% nominal plus a noise margin) in every
  * scenario is frozen. With the pilot's variance it then recommends a batch count from 10 to 20, or
  * says that no count certifies a winner and the profile runs at 10 batches as descriptive only.
  *
@@ -10,7 +10,7 @@
  *   procedures, which give intervals);
  * - directional error control: no pair is separated the wrong way (all three procedures).
  * Coverage implies directional control, not the reverse. A procedure with intervals that reaches
- * 95% coverage in every scenario is preferred. The sign-flip test, which has no intervals, is
+ * 96% estimated coverage in every scenario is preferred. The sign-flip test, which has no intervals, is
  * frozen only when no interval procedure qualifies, and the report then names the weaker
  * guarantee so the page can state it.
  *
@@ -32,7 +32,14 @@ import {
 import { MAX_INCOMPLETE_RUNS } from "./eligibility.js";
 import { decide, type Candidate } from "./picks.js";
 
-export const REQUIRED_COVERAGE = 0.95;
+/** Nominal simultaneous coverage. */
+export const NOMINAL_COVERAGE = 0.95;
+
+/**
+ * Estimated coverage a procedure needs to qualify: one point above nominal, so a procedure at the
+ * edge of 95% cannot flip in or out on simulation noise (plan section 3).
+ */
+export const QUALIFYING_COVERAGE = 0.96;
 
 export const MIN_BATCHES = 10;
 
@@ -66,27 +73,66 @@ export const pilotVarianceSchema = z.object({
   providerBatchLogSigma: z.number().finite().nonnegative().default(0),
   attemptsPerBatch: z.int().positive().default(1),
   /**
-   * Floors for the stress scenarios: each scenario uses the larger of a multiple of the pilot's
-   * value and this floor. Defaults are a starting point; the values used are frozen and published
-   * with the gate, before any provider result is examined.
+   * Stress levels the pilot measured. Any level left out uses its published default
+   * (STRESS_DEFAULTS); the report says which source each level came from.
    */
   stress: z
     .object({
-      /** Every provider's attempt spread in "heavy-skew" (pilot x 2, at least this). */
-      skewLogSigma: z.number().finite().nonnegative().default(0.6),
-      /** One provider's spread in "equal-costs-unequal-spread" (pilot x 3, at least this). */
-      unequalSpreadLogSigma: z.number().finite().nonnegative().default(0.6),
-      /** Shared batch effect in "strong-batch-effects" (pilot x 2, at least this). */
-      batchLogSigma: z.number().finite().nonnegative().default(0.4),
-      /** Per-provider batch effect in "strong-batch-effects" (pilot x 2, at least this). */
-      providerBatchLogSigma: z.number().finite().nonnegative().default(0.2),
-      /** The priciest provider's failure rate in "failures-and-zero-completions". */
-      rareCompletionFailureRate: z.number().min(0).max(0.95).default(0.8),
-      /** Everyone else's failure rate floor in that scenario. */
-      failureRateFloor: z.number().min(0).max(0.95).default(0.1),
+      /** Attempt-cost spread (lognormal sigma) for every provider in "heavy-skew". */
+      skewLogSigma: z.number().finite().nonnegative(),
+      /** One provider's spread in "equal-costs-unequal-spread". */
+      unequalSpreadLogSigma: z.number().finite().nonnegative(),
+      /** Shared batch effect in "strong-batch-effects". */
+      batchLogSigma: z.number().finite().nonnegative(),
+      /** Per-provider batch effect in "strong-batch-effects". */
+      providerBatchLogSigma: z.number().finite().nonnegative(),
+      /** Failure rate for every provider in "failures-and-zero-completions". */
+      failureRate: z.number().min(0).max(0.95),
+      /** Share of batches in which the stressed provider completes nothing, in that scenario. */
+      zeroCompletionRate: z.number().min(0).max(0.95),
     })
+    .partial()
     .prefault({}),
 });
+
+/** Published defaults for stress levels the pilot did not measure. */
+export const STRESS_DEFAULTS = {
+  skewLogSigma: 0.6,
+  unequalSpreadLogSigma: 0.6,
+  batchLogSigma: 0.4,
+  providerBatchLogSigma: 0.2,
+  failureRate: 0.1,
+  zeroCompletionRate: 0.8,
+} as const;
+
+export type StressName = keyof typeof STRESS_DEFAULTS;
+
+export interface StressLevel {
+  readonly value: number;
+  readonly source: "pilot" | "default";
+}
+
+export type StressLevels = { readonly [K in StressName]: StressLevel };
+
+/** Each stress level with the source it came from: the pilot's measurement, else the default. */
+export function stressLevels(spec: { readonly stress: PilotVariance["stress"] }): StressLevels {
+  const level = (name: StressName): StressLevel => {
+    const measured = spec.stress[name];
+
+    return measured === undefined
+      ? { value: STRESS_DEFAULTS[name], source: "default" }
+      : { value: measured, source: "pilot" };
+  };
+
+  return {
+    skewLogSigma: level("skewLogSigma"),
+    unequalSpreadLogSigma: level("unequalSpreadLogSigma"),
+    batchLogSigma: level("batchLogSigma"),
+    providerBatchLogSigma: level("providerBatchLogSigma"),
+    failureRate: level("failureRate"),
+    zeroCompletionRate: level("zeroCompletionRate"),
+  };
+}
 
 export type PilotVariance = z.infer<typeof pilotVarianceSchema>;
 
@@ -101,7 +147,7 @@ export interface SimulationOptions {
 }
 
 export const defaultSimulation: Omit<SimulationOptions, "batches"> = {
-  simulations: 200,
+  simulations: 1000,
   replicates: 999,
   flips: 1023,
   seed: 20_261_202,
@@ -177,7 +223,7 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
   const typical = medianOf(spec.providers.map(trueCost));
   const costs = spec.providers.map(trueCost);
   const priciest = costs.indexOf(Math.max(...costs));
-  const stress = spec.stress;
+  const stress = stressLevels(spec);
 
   return [
     { name: "pilot", spec },
@@ -196,7 +242,7 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
             {
               ...p,
               logSigma:
-                i === 0 ? Math.max(stress.unequalSpreadLogSigma, 3 * p.logSigma) : p.logSigma,
+                i === 0 ? Math.max(stress.unequalSpreadLogSigma.value, p.logSigma) : p.logSigma,
             },
             typical,
           ),
@@ -209,7 +255,7 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
         ...spec,
         providers: spec.providers.map((p) => ({
           ...p,
-          logSigma: Math.max(2 * p.logSigma, stress.skewLogSigma),
+          logSigma: Math.max(p.logSigma, stress.skewLogSigma.value),
         })),
       },
     },
@@ -217,10 +263,10 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
       name: "strong-batch-effects",
       spec: {
         ...spec,
-        batchLogSigma: Math.max(2 * spec.batchLogSigma, stress.batchLogSigma),
+        batchLogSigma: Math.max(spec.batchLogSigma, stress.batchLogSigma.value),
         providerBatchLogSigma: Math.max(
-          2 * spec.providerBatchLogSigma,
-          stress.providerBatchLogSigma,
+          spec.providerBatchLogSigma,
+          stress.providerBatchLogSigma.value,
         ),
       },
     },
@@ -230,8 +276,12 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
         ...spec,
         providers: spec.providers.map((p, i) =>
           i === priciest
-            ? { ...p, failureRate: stress.rareCompletionFailureRate }
-            : { ...p, failureRate: Math.max(p.failureRate, stress.failureRateFloor) },
+            ? {
+                ...p,
+                // Zero completions in a batch means every attempt in it failed.
+                failureRate: stress.zeroCompletionRate.value ** (1 / spec.attemptsPerBatch),
+              }
+            : { ...p, failureRate: Math.max(p.failureRate, stress.failureRate.value) },
         ),
       },
     },
@@ -417,7 +467,7 @@ export interface ProcedureReport {
   readonly minCoverage: number | null;
   /** Lowest rate of no false directional claim over the coverage scenarios. */
   readonly minNoFalseClaim: number;
-  /** Meets 95% on its own guarantee in every coverage scenario. */
+  /** Reaches 96% on its own guarantee in every coverage scenario. */
   readonly meetsCoverage: boolean;
   /** Power on the pilot scenario; null when the pilot's cheapest providers tie. */
   readonly pilotPower: number | null;
@@ -430,9 +480,11 @@ export interface CoverageReport {
   readonly options: SimulationOptions;
   /** Monte Carlo standard error of a coverage estimate near 95% at this simulation count. */
   readonly coverageStandardError: number;
+  /** The stress levels used, each with its source; published before the gate runs. */
+  readonly stress: StressLevels;
   readonly procedures: readonly ProcedureReport[];
   /**
-   * The procedure to freeze: one with 95% simultaneous coverage if any (highest pilot power, then
+   * The procedure to freeze: one with 96% estimated simultaneous coverage if any (highest pilot power, then
    * listed order), else the sign-flip test if it controls directional error, else none.
    */
   readonly chosen: Procedure | null;
@@ -467,7 +519,7 @@ export function coverageReport(
       guarantee: intervals ? "simultaneous-coverage" : "directional-error-control",
       minCoverage,
       minNoFalseClaim,
-      meetsCoverage: (minCoverage ?? minNoFalseClaim) >= REQUIRED_COVERAGE,
+      meetsCoverage: (minCoverage ?? minNoFalseClaim) >= QUALIFYING_COVERAGE,
       pilotPower: own.find((r) => r.scenario === "pilot")?.power ?? null,
       coverage: own,
       power: power.filter((r) => r.procedure === procedure),
@@ -483,8 +535,9 @@ export function coverageReport(
   return {
     batches: options.batches,
     options,
+    stress: stressLevels(spec),
     coverageStandardError: Math.sqrt(
-      (REQUIRED_COVERAGE * (1 - REQUIRED_COVERAGE)) / options.simulations,
+      (NOMINAL_COVERAGE * (1 - NOMINAL_COVERAGE)) / options.simulations,
     ),
     procedures: reports,
     chosen: chosen?.procedure ?? null,
@@ -568,7 +621,7 @@ export function recommendBatchCount(input: {
     basis,
     reason: best
       ? `the best was ${best.procedure} at ${best.batches} batches, certifying the true cheapest provider (${basis}) in ${(best.power * 100).toFixed(0)}% of simulations, below the ${(input.targetPower * 100).toFixed(0)}% target`
-      : `no procedure reached ${REQUIRED_COVERAGE * 100}% on its guarantee in every scenario at any count`,
+      : `no procedure reached ${QUALIFYING_COVERAGE * 100}% on its guarantee in every scenario at any count`,
     reports,
   };
 }

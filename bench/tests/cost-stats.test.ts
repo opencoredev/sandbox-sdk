@@ -11,7 +11,7 @@ import {
   type ProviderBatches,
 } from "../src/cost/batch-stats.js";
 import type { Eligibility } from "../src/cost/eligibility.js";
-import { PICK_LABEL, pick, type Candidate } from "../src/cost/picks.js";
+import { ONLY_VERIFIED_LABEL, PICK_LABEL, pick, type Candidate } from "../src/cost/picks.js";
 import { attempt, cleanAudit, failed } from "./cost-fixtures.js";
 
 /** Ten batches around `mean` with a shared batch effect and ±`spread` noise, one completion each. */
@@ -267,6 +267,26 @@ describe("picks", () => {
         reasons: ["unsettled (10 attempts)"],
       },
     ]);
+  });
+
+  it("labels a sole eligible provider as the only verified cost, not the lowest", () => {
+    const verdict = pick({
+      candidates: [
+        candidate("a", batches(1, 0.05, 2)),
+        candidate("b", batches(0.5, 0.05, 3), { eligibility: unsettled }),
+      ],
+      procedure: "centred-max-deviation",
+      options,
+    });
+
+    expect(verdict).toMatchObject({
+      kind: "lowest-verified-cost",
+      label: ONLY_VERIFIED_LABEL,
+      provider: "a",
+      eligible: ["a"],
+    });
+
+    expect(verdict.lowerUnverified.map((u) => u.provider)).toEqual(["b"]);
   });
 
   it("reads 'no certified winner' without a frozen procedure or without eligible providers", () => {

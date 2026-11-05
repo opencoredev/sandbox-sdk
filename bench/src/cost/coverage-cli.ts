@@ -7,6 +7,7 @@ import {
   MIN_BATCHES,
   pilotVarianceSchema,
   recommendBatchCount,
+  stressLevels,
 } from "./coverage.js";
 
 const usage = `bun bench coverage --input pilot-variance.json [--out coverage.json]
@@ -90,12 +91,22 @@ export async function coverageCommand(args: readonly string[]) {
 
   if (!input) throw new Error(`coverage requires --input\n${usage}`);
   const spec = pilotVarianceSchema.parse(JSON.parse(await readFile(resolve(input), "utf8")));
+  const stress = stressLevels(spec);
+
+  // Stress levels and their sources are published before the gate runs, so always print them.
+  process.stderr.write(
+    `Stress levels:\n${Object.entries(stress)
+      .map(([name, level]) => `  ${name} = ${level.value} (${level.source})`)
+      .join("\n")}\n`,
+  );
+
   const atBatches = coverageReport(spec, { ...options, batches });
   const recommendation = recommendBatchCount({ spec, options, counts, targetPower });
 
   const result = {
     generatedAt: new Date().toISOString(),
     input: spec,
+    stress,
     targetPower,
     atBatches,
     recommendation,

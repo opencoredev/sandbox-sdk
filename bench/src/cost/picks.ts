@@ -29,6 +29,9 @@ import {
 
 export const PICK_LABEL = "lowest verified cost among eligible providers";
 
+/** With one eligible provider there is nothing to be lowest against (plan section 3). */
+export const ONLY_VERIFIED_LABEL = "the only verified cost among eligible providers";
+
 export interface Candidate {
   readonly provider: string;
   readonly batches: readonly BatchTotal[];
@@ -54,7 +57,7 @@ interface VerdictContext {
 export type Verdict =
   | (VerdictContext & {
       readonly kind: "lowest-verified-cost";
-      readonly label: typeof PICK_LABEL;
+      readonly label: typeof PICK_LABEL | typeof ONLY_VERIFIED_LABEL;
       readonly provider: string;
       readonly costPerCompletedUSD: number;
     })
@@ -229,7 +232,7 @@ export function pick(input: PickInput): Verdict {
   return {
     ...context,
     kind: "lowest-verified-cost",
-    label: PICK_LABEL,
+    label: eligible.length === 1 ? ONLY_VERIFIED_LABEL : PICK_LABEL,
     provider: cheapest.provider,
     costPerCompletedUSD: cheapestCost,
   };

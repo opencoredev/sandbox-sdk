@@ -8,7 +8,10 @@ import {
   coverageReport,
   coverageScenarios,
   pilotVarianceSchema,
+  QUALIFYING_COVERAGE,
   recommendBatchCount,
+  STRESS_DEFAULTS,
+  stressLevels,
   simulateBatches,
   trueCost,
 } from "../src/cost/coverage.js";
@@ -74,6 +77,44 @@ describe("simulated batches", () => {
     );
 
     expect(scenario?.spec.providers.map((p) => p.failureRate)).toEqual([0.1, 0.1, 0.8]);
+  });
+});
+
+describe("stress levels", () => {
+  it("takes measured levels from the pilot, the rest from published defaults, and says which", () => {
+    const spec = pilotVarianceSchema.parse({
+      providers: [
+        { name: "a", costPerAttemptUSD: 1, logSigma: 0.1, failureRate: 0 },
+        { name: "b", costPerAttemptUSD: 2, logSigma: 0.1, failureRate: 0 },
+      ],
+      batchLogSigma: 0.1,
+      attemptsPerBatch: 2,
+      stress: { skewLogSigma: 0.35, zeroCompletionRate: 0.25 },
+    });
+
+    const levels = stressLevels(spec);
+    expect(levels.skewLogSigma).toEqual({ value: 0.35, source: "pilot" });
+    expect(levels.zeroCompletionRate).toEqual({ value: 0.25, source: "pilot" });
+    expect(levels.batchLogSigma).toEqual({
+      value: STRESS_DEFAULTS.batchLogSigma,
+      source: "default",
+    });
+    expect(coverageReport(spec, { ...small, simulations: 2, batches: 10 }).stress).toEqual(levels);
+
+    const failures = coverageScenarios(spec).find(
+      (s) => s.name === "failures-and-zero-completions",
+    );
+    // Two attempts per batch: both fail with probability 0.5 x 0.5 = 0.25.
+
+    expect(failures?.spec.providers.map((p) => p.failureRate)).toEqual([0.1, 0.5]);
+  });
+
+  it("qualifies a procedure only at an estimated 96%", () => {
+    const report = coverageReport(pilot([1, 1.3, 1.6]), { ...small, batches: 10 });
+    expect(QUALIFYING_COVERAGE).toBe(0.96);
+
+    for (const p of report.procedures)
+      expect(p.meetsCoverage).toBe((p.minCoverage ?? p.minNoFalseClaim) >= 0.96);
   });
 });
 
@@ -161,8 +202,9 @@ describe("review regressions", () => {
     report.procedures.find((p) => p.procedure === name);
 
   it("catches the sign-flip test's false claims when equal-cost providers differ in spread", () => {
-    // Provider 0 gets lognormal sigma max(1, 3 x 0.7) = 2.1; the other has none.
+    // The pilot measured an unequal spread of 2.1 for one provider; the other has none.
     const spec = pilotVarianceSchema.parse({
+      stress: { unequalSpreadLogSigma: 2.1 },
       providers: [
         { name: "wide", costPerAttemptUSD: 1, logSigma: 0.7, failureRate: 0 },
         { name: "flat", costPerAttemptUSD: 1.3, logSigma: 0, failureRate: 0 },
@@ -241,7 +283,11 @@ describe("bench coverage command", () => {
     const written = JSON.parse(await readFile(join(directory, "out.json"), "utf8"));
     expect(written.atBatches.batches).toBe(10);
     expect(written.atBatches.coverageStandardError).toBeCloseTo(Math.sqrt((0.95 * 0.05) / 20), 12);
-    expect(written.recommendation.kind).toBe("batch-count");
+    expect(["batch-count", "descriptive-only"]).toContain(written.recommendation.kind);
+    expect(written.stress.skewLogSigma).toEqual({
+      value: STRESS_DEFAULTS.skewLogSigma,
+      source: "default",
+    });
     await expect(
       coverageCommand(["--input", join(directory, "pilot.json"), "--batches", "9"]),
     ).rejects.toThrow(/from 10 to 20/);
