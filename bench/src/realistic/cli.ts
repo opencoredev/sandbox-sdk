@@ -607,6 +607,89 @@ const median = (values: readonly number[]) => {
       : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
 };
 
+const heldSlots = ["zero-wait", "held-10", "held-60"] as const;
+
+interface HeldRow {
+  provider: string;
+  idle: (typeof heldSlots)[number];
+  runs: number;
+  completed: number;
+  costKind: string | null;
+  /** Median reported cost of one whole run: fix-and-test, the idle wait and the resume step. */
+  medianCostUSD: number | null;
+  /** Against the same provider's zero-wait twin, from the medians. */
+  changeVsZeroWait: number | null;
+  medianWakeMs: number | null;
+  /** Provider state before and after the idle wait, when the adapter reports one. */
+  transitions: string[];
+}
+
+function heldOpen(attempts: readonly CostedAttempt[]): HeldRow[] {
+  const rows: HeldRow[] = [];
+
+  const providers = [
+    ...new Set(
+      attempts.flatMap((a) => (a.record.variant === "headline" ? [] : [a.record.provider])),
+    ),
+  ].sort();
+
+  for (const provider of providers) {
+    const rule = billingRule(provider, null);
+    let zeroWait: number | null = null;
+
+    for (const idle of heldSlots) {
+      const runs = attempts.filter(
+        (a) => a.record.provider === provider && a.record.slot.id === idle,
+      );
+
+      if (!runs.length) continue;
+      const costs = rule ? runs.map((attempt) => reportedCost({ attempt, rule, fx })) : [];
+      const priced = costs.flatMap((c) => (c.kind === "unavailable" ? [] : [c.usd]));
+      const medianCostUSD = costs.length && priced.length === costs.length ? median(priced) : null;
+
+      if (idle === "zero-wait") zeroWait = medianCostUSD;
+
+      rows.push({
+        provider,
+        idle,
+        runs: runs.length,
+        completed: runs.filter((a) => a.outcome === "completed").length,
+        costKind:
+          [
+            ...new Set(
+              costs.flatMap((c) =>
+                c.kind === "unavailable" || c.kind === "nothing-created" ? [] : [c.kind],
+              ),
+            ),
+          ].join("+") || null,
+        medianCostUSD,
+        changeVsZeroWait:
+          idle !== "zero-wait" && medianCostUSD !== null && zeroWait !== null && zeroWait > 0
+            ? medianCostUSD / zeroWait - 1
+            : null,
+        medianWakeMs: median(
+          runs.flatMap((a) =>
+            a.record.idle?.wakeLatencyMs == null ? [] : [a.record.idle.wakeLatencyMs],
+          ),
+        ),
+        transitions: [
+          ...new Set(
+            runs.flatMap((a) =>
+              a.record.idle?.stateBefore &&
+              a.record.idle.stateAfter &&
+              a.record.idle.stateBefore !== a.record.idle.stateAfter
+                ? [`${a.record.idle.stateBefore} -> ${a.record.idle.stateAfter}`]
+                : [],
+            ),
+          ),
+        ],
+      });
+    }
+  }
+
+  return rows;
+}
+
 const pilotAudit: CostSourceAudit = {
   reconciliation: {
     kind: "not-reconciled",
@@ -788,11 +871,6 @@ async function summary(args: string[]) {
   });
 
   const outDir = resolve(values.out[0] ?? ".");
-  await writeFile(
-    join(outDir, "summary.json"),
-    JSON.stringify({ generatedAt: new Date().toISOString(), fx, rows, picks }, null, 2) + "\n",
-  );
-
   const usd = (v: number | null) => (v === null ? "n/a" : `$${(v * 1000).toFixed(2)}`);
   const s = (v: number | null) => (v === null ? "n/a" : v.toFixed(0));
 
@@ -805,16 +883,39 @@ async function summary(args: string[]) {
     ),
   ].join("\n");
 
+  const held = heldOpen(attempts);
+
+  const heldTable = held.length
+    ? [
+        "",
+        "Held-open diagnostic (fix-and-test, same-machine, provider-default idle; descriptive):",
+        "",
+        "| Provider | Idle | Runs | Completed | Median total cost (fix, wait, resume) | Change vs zero-wait | Median wake latency (ms) | Idle state transitions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ...held.map(
+          (h) =>
+            `| ${h.provider} | ${h.idle} | ${h.runs} | ${h.completed} | ${h.medianCostUSD === null ? "n/a" : `$${h.medianCostUSD.toFixed(5)}`}${h.costKind ? ` (${h.costKind})` : ""} | ${h.changeVsZeroWait === null ? "n/a" : `${h.changeVsZeroWait >= 0 ? "+" : ""}${(h.changeVsZeroWait * 100).toFixed(0)}%`} | ${h.medianWakeMs === null ? "n/a" : h.medianWakeMs.toFixed(0)} | ${h.transitions.join(", ") || "none seen"} |`,
+        ),
+      ].join("\n")
+    : "";
+
   const pickLines = picks.map(
     (p) =>
       `- ${p.profile} / ${p.track}: ${p.label}${p.lowest ? `; lowest eligible cost: ${p.lowest}` : ""}; eligible: ${p.eligible.join(", ") || "none"}${p.lowerUnverified.length ? `; lower unverified: ${p.lowerUnverified.map((u) => `${u.provider} ($${(u.costPerCompletedUSD * 1000).toFixed(2)}/1,000: ${u.reasons.join(", ")})`).join("; ")}` : ""}`,
   );
 
+  const text = `${table}\n\nPicks (descriptive; no statistical gate claimed):\n${pickLines.join("\n")}\n${heldTable}\n`;
+
+  await writeFile(join(outDir, "summary.md"), text);
   await writeFile(
-    join(outDir, "summary.md"),
-    `${table}\n\nPicks (descriptive; no statistical gate claimed):\n${pickLines.join("\n")}\n`,
+    join(outDir, "summary.json"),
+    JSON.stringify(
+      { generatedAt: new Date().toISOString(), fx, rows, picks, heldOpen: held },
+      null,
+      2,
+    ) + "\n",
   );
-  process.stdout.write(`${table}\n\n${pickLines.join("\n")}\n`);
+  process.stdout.write(text);
 }
 
 export async function realisticCommand(args: string[]) {
