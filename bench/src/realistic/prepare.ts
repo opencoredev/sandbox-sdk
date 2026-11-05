@@ -103,6 +103,22 @@ export function layout(workdir: string, vcpu: number): Placeholders {
 
 const tail = (text: string) => text.slice(-800);
 
+/**
+ * Extract an archive that already passed its hash check. Images without `xz` (Superserve's) cannot
+ * open the pinned `.tar.xz` toolchain with tar alone, so an xz stream is decompressed by Python's
+ * lzma there; the artifact and its hash are unchanged.
+ */
+export function untar(archive: string, into: string, strip: number): string {
+  const plain = `tar -xf ${quote(archive)} -C ${quote(into)} --strip-components=${strip}`;
+
+  const viaPython = `python3 -c 'import lzma, shutil, sys; shutil.copyfileobj(lzma.open(sys.argv[1]), sys.stdout.buffer)' ${quote(archive)} | tar -x -C ${quote(into)} --strip-components=${strip}`;
+
+  // An xz stream starts with fd 37 7a 58 5a 00.
+  const isXz = `[ "$(head -c 6 ${quote(archive)} | od -An -tx1 | tr -d ' \\n')" = fd377a585a00 ]`;
+
+  return `if command -v xz >/dev/null 2>&1 || ! ${isXz}; then ${plain}; else ${viaPython}; fi`;
+}
+
 /** Local files by sha256; each is read and hash-checked once, then shared by every attempt. */
 export function fileArtifacts(paths: ReadonlyMap<string, string>): ArtifactSource {
   const cache = new Map<string, Promise<Uint8Array>>();
@@ -149,11 +165,20 @@ async function uploadArtifact(input: {
     while (next < count) {
       const index = next++;
 
-      input.signal.throwIfAborted();
-      await input.box.files.write(
-        name(index),
-        input.data.subarray(index * size, (index + 1) * size),
-      );
+      const chunk = input.data.subarray(index * size, (index + 1) * size);
+
+      // Rewriting the same bytes to the same path is idempotent, so a failed chunk is retried.
+      for (let attempt = 1; ; attempt++) {
+        input.signal.throwIfAborted();
+
+        try {
+          await input.box.files.write(name(index), chunk);
+          break;
+        } catch (cause) {
+          if (attempt >= 3) throw cause;
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+        }
+      }
     }
   };
 
@@ -290,7 +315,7 @@ export async function prepare(input: PrepareInput): Promise<PrepareResult> {
       }
 
       const extracted = await run(
-        `mkdir -p ${quote(into)} && tar -xf ${quote(dest)} -C ${quote(into)} --strip-components=${strip} && rm -f -- ${quote(dest)}`,
+        `mkdir -p ${quote(into)} && ${untar(dest, into, strip)} && rm -f -- ${quote(dest)}`,
         600_000,
       );
 

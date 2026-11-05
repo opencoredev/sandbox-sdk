@@ -98,7 +98,14 @@ const homeEnv = {
   npm_config_update_notifier: "false",
 };
 
-/** `$CACHE` in an env value is not shell-expanded; the harness expands `{cache}`. */
+/**
+ * `$CACHE` in an env value is not shell-expanded; the harness expands `{cache}`. npm reads its
+ * config from env case-insensitively and some images (Upstash) set `NPM_CONFIG_CACHE`, which then
+ * wins, so the frozen cache is set in both cases.
+ */
+const npmCacheUpper = (env: Record<string, string>) =>
+  env.npm_config_cache === undefined ? {} : { NPM_CONFIG_CACHE: env.npm_config_cache };
+
 const placeholderEnv = (env: Record<string, string>) =>
   Object.fromEntries(
     Object.entries(env).map(([key, value]) => [key, value.replaceAll("$CACHE", "{cache}")]),
@@ -194,6 +201,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
         env: {
           ...placeholderEnv(fat.env),
           ...placeholderEnv(fat.commands.installEnv),
+          ...npmCacheUpper(placeholderEnv(fat.commands.installEnv)),
           ...homeEnv,
           pnpm_config_update_notifier: "false",
         },
@@ -286,7 +294,11 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
         commit: build.commit,
         lockfile: build.lockfile,
         toolchain: { node: build.toolchain.node, packageManager: "npm" },
-        env: { ...placeholderEnv(build.env), ...homeEnv },
+        env: {
+          ...placeholderEnv(build.env),
+          ...npmCacheUpper(placeholderEnv(build.env)),
+          ...homeEnv,
+        },
         commands: {
           clone: build.commands.clone,
           packageManager: build.commands.packageManager,

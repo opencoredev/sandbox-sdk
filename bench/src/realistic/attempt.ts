@@ -55,6 +55,10 @@ export interface AttemptPlan {
   workdir?: string;
   /** Worker count for this provider when its size differs from the track's (the default track). */
   vcpu?: number;
+  /** Only the run label, for providers whose labels share a short name budget (Boat). */
+  runLabelOnly?: boolean;
+  /** Chunks in flight during an upload, for providers that refuse concurrent writes (Tenki). */
+  uploadConcurrency?: number;
 }
 
 export interface AttemptEnvironment {
@@ -167,11 +171,13 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
       box = await span("create", () =>
         createSandbox(provider, {
           ...plan.create,
-          labels: {
-            "sandbox-bench-run": plan.runId,
-            "rw-attempt": plan.attemptId,
-            "rw-variant": plan.variant,
-          },
+          labels: plan.runLabelOnly
+            ? { "sandbox-bench-run": plan.runId }
+            : {
+                "sandbox-bench-run": plan.runId,
+                "rw-attempt": plan.attemptId,
+                "rw-variant": plan.variant,
+              },
           signal,
         }),
       );
@@ -192,7 +198,13 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
           vcpu,
           workdir,
           blobs: environment.blobs,
-          settings: environment.prepare,
+          settings:
+            plan.uploadConcurrency !== undefined && environment.prepare.upload
+              ? {
+                  ...environment.prepare,
+                  upload: { ...environment.prepare.upload, concurrency: plan.uploadConcurrency },
+                }
+              : environment.prepare,
         });
 
         downloads = result.downloads;

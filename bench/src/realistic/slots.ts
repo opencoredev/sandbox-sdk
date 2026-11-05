@@ -56,6 +56,10 @@ export interface SlotProvider {
   workdir?: string;
   /** Worker count on a track whose size differs per provider (the default track). */
   vcpuFor?(track: string): number | undefined;
+  /** Label sandboxes with the run only (labels share a short name budget on Boat). */
+  runLabelOnly?: boolean;
+  /** Chunks in flight during an upload (Tenki fails concurrent writes with gRPC INTERNAL). */
+  uploadConcurrency?: number;
   /**
    * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
    * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
@@ -276,7 +280,10 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
     const listings = new Map<string, AccountListing[]>();
     const active: SlotProvider[] = [];
     const records = new Map<string, AttemptRecord>();
-    const attemptId = (provider: string) => `${plan.runId}-b${plan.batch}-s${index}-${provider}`;
+    // The slot id keeps IDs unique when a batch's slots run through several runBatch calls.
+
+    const attemptId = (provider: string) =>
+      `${plan.runId}-b${plan.batch}-s${index}-${slot.id}-${provider}`;
 
     const record = (entry: SlotProvider, reason: IncompleteReason, detail: string) =>
       emptyRecord(
@@ -374,6 +381,11 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         if (entry.create) attemptPlan.create = entry.create(slot.track);
 
         if (entry.workdir) attemptPlan.workdir = entry.workdir;
+
+        if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
+
+        if (entry.uploadConcurrency !== undefined)
+          attemptPlan.uploadConcurrency = entry.uploadConcurrency;
         const vcpu = entry.vcpuFor?.(slot.track);
 
         if (vcpu !== undefined) attemptPlan.vcpu = vcpu;
