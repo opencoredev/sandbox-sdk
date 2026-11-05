@@ -154,7 +154,7 @@
     "esbuild": "0.28.1",
     "freestyle": "0.2.20",
     "railway": "3.16.0",
-    "vitest": "^3.2.4",
+    "vitest": "^4.1.12",
     "zod": "^4.6.7"
   },
   "peerDependencies": {
