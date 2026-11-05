@@ -1,49 +1,142 @@
-import type { AttemptRecord } from "../src/cost/attempt-record.js";
+import {
+  attemptBillingSchema,
+  costedAttempt,
+  type AttemptBilling,
+  type CostedAttempt,
+} from "../src/cost/attempt-input.js";
 import type { BillingRule } from "../src/cost/billing-rules.js";
 import type { CostSourceAudit } from "../src/cost/eligibility.js";
+import {
+  attemptRecordSchema,
+  attemptSchemaVersion,
+  type Attribution,
+  type Completion,
+  type PhaseSpan,
+  type Variant,
+} from "../src/realistic/record.js";
 
 const start = Date.parse("2026-11-05T10:00:00.000Z");
 
-export const at = (seconds: number) => new Date(start + seconds * 1000).toISOString();
+/** Epoch milliseconds `seconds` after the fixture's create request. */
+export const at = (seconds: number) => start + seconds * 1000;
 
-/** A completed 300 s same-spec attempt with a settled per-sandbox bill; override what a test needs. */
-export function attempt(patch: Partial<AttemptRecord> = {}): AttemptRecord {
-  return {
-    version: 1,
-    attemptId: `a-${Math.random().toString(36).slice(2)}`,
-    provider: "upstash",
-    product: null,
-    profile: "fix-and-test",
-    track: "same-spec",
-    purpose: "headline",
-    batch: 0,
-    slot: 0,
-    sandboxIds: ["sbx-1"],
+let next = 0;
+
+export interface AttemptSpec {
+  readonly attemptId?: string;
+  readonly provider?: string;
+  readonly product?: string | null;
+  readonly profile?: string;
+  readonly track?: string;
+  readonly variant?: Variant;
+  readonly batch?: number;
+  readonly sandboxIds?: string[];
+  readonly completion?: Completion;
+  /** Seconds after the create request; null leaves the event unobserved. */
+  readonly createdAt?: number | null;
+  readonly deleteRequestedAt?: number | null;
+  /** Deletion confirmed; null means it never was. */
+  readonly deletedAt?: number | null;
+  readonly endedAt?: number;
+  readonly attribution?: Attribution;
+  readonly windowVoid?: boolean;
+  readonly allocation?: AttemptBilling["allocation"];
+  readonly usage?: AttemptBilling["usage"];
+  readonly charge?: AttemptBilling["charge"];
+  /** false: billing collected nothing for this attempt. */
+  readonly billing?: boolean;
+}
+
+/**
+ * A completed 300 s same-machine headline attempt as the harness writes it (`rw-attempt/1`,
+ * schema-checked), with a settled per-sandbox bill, passed through the cost adapter.
+ */
+export function attempt(spec: AttemptSpec = {}): CostedAttempt {
+  const attemptId = spec.attemptId ?? `a-${++next}`;
+  const endedAt = at(spec.endedAt ?? 300);
+  const createdAt = spec.createdAt === undefined ? 2 : spec.createdAt;
+  const deleteRequestedAt = spec.deleteRequestedAt === undefined ? 298 : spec.deleteRequestedAt;
+  const deletedAt = spec.deletedAt === undefined ? 300 : spec.deletedAt;
+  const phases: PhaseSpan[] = [];
+
+  if (createdAt !== null) phases.push({ name: "create", startedAt: at(0), endedAt: at(createdAt) });
+
+  if (deleteRequestedAt !== null)
+    phases.push({
+      name: "destroy",
+      startedAt: at(deleteRequestedAt),
+      endedAt: deletedAt === null ? endedAt : at(deletedAt),
+    });
+
+  const windowed = spec.attribution === "account-window" || spec.windowVoid !== undefined;
+
+  const record = attemptRecordSchema.parse({
+    schema: attemptSchemaVersion,
+    attemptId,
+    runId: "fixture",
+    provider: spec.provider ?? "upstash",
+    profile: spec.profile ?? "fix-and-test",
+    profileKind: "fix-and-test",
+    track: spec.track ?? "same-machine",
+    variant: spec.variant ?? "headline",
+    batch: spec.batch ?? 0,
+    slot: { index: 0, id: "fat-same" },
+    seed: 42,
+    manifestSha256: null,
+    sandboxIds: spec.sandboxIds ?? [`sbx-${attemptId}`],
     startedAt: at(0),
-    finishedAt: at(300),
-    lifecycle: { createdAt: at(2), deleteRequestedAt: at(298), deletedAt: at(300) },
-    completion: { kind: "completed" },
-    phases: [],
-    allocation: {
+    endedAt,
+    startOffsetMs: 0,
+    completion: spec.completion ?? { kind: "completed" },
+    deletionConfirmed: deletedAt !== null,
+    phases,
+    steps: [],
+    downloads: [],
+    background: [],
+    gaps: { count: 0, totalMs: 0, traffic: [] },
+    idle: null,
+    costEvidence: {
+      attribution: spec.attribution ?? "per-sandbox",
+      window: windowed
+        ? {
+            id: `w-${attemptId}`,
+            provider: spec.provider ?? "upstash",
+            openedAt: at(-1),
+            closedAt: at(301),
+            settlementMs: null,
+            paddingMs: 0,
+            listingScope: "account",
+            listings: [],
+            void: spec.windowVoid ?? false,
+            voidReasons: spec.windowVoid ? ["unexpected sandbox"] : [],
+          }
+        : null,
+      usageFiles: [],
+    },
+    outputDir: null,
+    outputError: null,
+  });
+
+  if (spec.billing === false) return costedAttempt(record);
+
+  const billing = attemptBillingSchema.parse({
+    attemptId,
+    product: spec.product ?? null,
+    allocation: spec.allocation ?? {
       provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 10 },
       measured: { cpuQuota: 4, memoryGiB: 8 },
     },
-    usage: null,
-    cost: {
-      kind: "billed",
-      usd: 0.02,
-      settled: true,
-      attribution: "per-sandbox",
-      source: "fixture",
-    },
-    ...patch,
-  };
+    usage: spec.usage ?? null,
+    charge: spec.charge ?? { kind: "billed", usd: 0.02, settled: true, source: "fixture" },
+  });
+
+  return costedAttempt(record, billing);
 }
 
-export const failed = (patch: Partial<AttemptRecord> = {}) =>
+export const failed = (spec: AttemptSpec = {}) =>
   attempt({
     completion: { kind: "incomplete", reason: "check-failed", detail: "fixture" },
-    ...patch,
+    ...spec,
   });
 
 export const cleanAudit: CostSourceAudit = {

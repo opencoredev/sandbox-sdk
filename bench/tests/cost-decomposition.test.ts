@@ -33,13 +33,8 @@ const boxd = (patch: Parameters<typeof attempt>[0] = {}) =>
       memoryGiBSeconds: 600,
       diskGiBSeconds: null,
     },
-    cost: {
-      kind: "metered",
-      usd: 0.003,
-      settled: true,
-      attribution: "per-machine",
-      source: "meter",
-    },
+    attribution: "per-machine",
+    charge: { kind: "metered", usd: 0.003, settled: true, source: "meter" },
     ...patch,
   });
 

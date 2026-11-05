@@ -15,6 +15,7 @@
 import type { CreateOptions } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { shuffle } from "../v2-stats.js";
+import { billingRule } from "../cost/billing-rules.js";
 import { runAttempt, SlotTimeout, type AttemptEnvironment, type AttemptPlan } from "./attempt.js";
 import type { Clock } from "./gaps.js";
 import type { IdlePlan, StatePreservation } from "./idle.js";
@@ -62,22 +63,19 @@ export interface SlotProvider {
   cleanup?(signal: AbortSignal): Promise<string[]>;
 }
 
-const attributionTable = new Map<string, { attribution: Attribution; settlementMs: number | null }>(
-  [
-    ["boat", { attribution: "per-sandbox", settlementMs: null }],
-    ["upstash", { attribution: "per-sandbox", settlementMs: null }],
-    ["e2b", { attribution: "per-sandbox", settlementMs: null }],
-    ["daytona", { attribution: "per-sandbox", settlementMs: null }],
-    ["boxd", { attribution: "per-machine", settlementMs: 15 * 60_000 }],
-    ["superserve", { attribution: "account-window", settlementMs: null }],
-    ["tenki", { attribution: "none", settlementMs: null }],
-    ["freestyle", { attribution: "none", settlementMs: null }],
-  ],
-);
+/**
+ * The plan's attribution table (section 6), with boxd's 15-minute settlement edge, read from the
+ * billing-rules table that owns it. A provider without a row is not attributable.
+ */
+export function attributionFor(provider: string): {
+  attribution: Attribution;
+  settlementMs: number | null;
+} {
+  const rule = billingRule(provider, null);
 
-/** The plan's attribution table (section 6), with boxd's 15-minute settlement. Unknown: none. */
-export function attributionFor(provider: string) {
-  return attributionTable.get(provider) ?? { attribution: "none", settlementMs: null };
+  return rule
+    ? { attribution: rule.attribution, settlementMs: rule.settlementMs }
+    : { attribution: "none", settlementMs: null };
 }
 
 /** The seed for one batch, derived from the published run seed. */

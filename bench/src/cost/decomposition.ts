@@ -11,7 +11,7 @@
  * the observed difference with each side's billing model, never a percentage split.
  */
 import { pricing } from "../pricing.js";
-import type { AttemptRecord } from "./attempt-record.js";
+import type { CostedAttempt } from "./attempt-input.js";
 import { billingModelLabel, type BillingRule } from "./billing-rules.js";
 import { billedTime, reportedCost, wholeMachineListPrice, type ExchangeRate } from "./columns.js";
 import type { CostKind } from "./eligibility.js";
@@ -34,7 +34,7 @@ const SUM_TOLERANCE = 1e-9;
 
 /** Decompose one provider's attempts (one profile and track) against its whole-machine price. */
 export function decompose(input: {
-  readonly attempts: readonly AttemptRecord[];
+  readonly attempts: readonly CostedAttempt[];
   readonly rule: BillingRule;
   readonly fx: ExchangeRate;
 }): Decomposition {
@@ -58,7 +58,7 @@ export function decompose(input: {
     unusedMemoryUSD = 0;
 
   for (const attempt of input.attempts) {
-    if (attempt.completion.kind === "not-run") continue;
+    if (attempt.outcome === "not-run") continue;
     const reported = reportedCost({ attempt, rule, fx });
 
     if (reported.kind === "unavailable")

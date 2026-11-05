@@ -8,8 +8,7 @@ import {
   type Eligibility,
   type EligibilityInput,
 } from "../src/cost/eligibility.js";
-import type { AttemptRecord } from "../src/cost/attempt-record.js";
-import { attempt, cleanAudit, confirmed, failed } from "./cost-fixtures.js";
+import { attempt, cleanAudit, confirmed, failed, type AttemptSpec } from "./cost-fixtures.js";
 
 function rule(provider: string) {
   const found = billingRule(provider, null);
@@ -19,7 +18,7 @@ function rule(provider: string) {
   return found;
 }
 
-const ten = (patch: Partial<AttemptRecord> = {}) =>
+const ten = (patch: AttemptSpec = {}) =>
   Array.from({ length: 10 }, (_, batch) => attempt({ batch, ...patch }));
 
 function check(input: Partial<EligibilityInput> & { provider?: string }): Eligibility {
@@ -39,13 +38,8 @@ const kinds = (result: Eligibility) =>
 const metered = (patch: { settled?: boolean; attribution?: "per-machine" | "none" } = {}) =>
   ten({
     provider: "boxd",
-    cost: {
-      kind: "metered",
-      usd: 0.01,
-      settled: patch.settled ?? true,
-      attribution: patch.attribution ?? "per-machine",
-      source: "meter",
-    },
+    attribution: patch.attribution ?? "per-machine",
+    charge: { kind: "metered", usd: 0.01, settled: patch.settled ?? true, source: "meter" },
   });
 
 /** Our figure is (1 + residual) x a $1.00 settled charge. */
@@ -70,13 +64,7 @@ describe("eligibility table", () => {
       provider: "daytona",
       attempts: ten({
         provider: "daytona",
-        cost: {
-          kind: "billed",
-          usd: 0.02,
-          settled: false,
-          attribution: "per-sandbox",
-          source: "x",
-        },
+        charge: { kind: "billed", usd: 0.02, settled: false, source: "x" },
       }),
     });
 
@@ -143,7 +131,7 @@ describe("eligibility table", () => {
   });
 
   it("accepts estimates only with confirmed rules and an isolated reconciled window", () => {
-    const attempts = ten({ provider: "tenki", cost: { kind: "estimate", source: "rules" } });
+    const attempts = ten({ provider: "tenki", charge: { kind: "estimate", source: "rules" } });
     const base = { provider: "tenki", attempts } as const;
     const unconfirmed = check({ ...base, audit: reconciled(0.05) });
     expect(unconfirmed.kind).toBe("ineligible");
@@ -179,8 +167,14 @@ describe("eligibility table", () => {
   it("does not count runs that exceed the plan limit", () => {
     const attempts = [
       ...ten().slice(0, 8),
-      failed({ batch: 8, completion: { kind: "not-run", reason: "exceeds-plan-limit" } }),
-      failed({ batch: 9, completion: { kind: "not-run", reason: "exceeds-plan-limit" } }),
+      failed({
+        batch: 8,
+        completion: { kind: "incomplete", reason: "exceeds-plan-limit", detail: "plan limit" },
+      }),
+      failed({
+        batch: 9,
+        completion: { kind: "incomplete", reason: "exceeds-plan-limit", detail: "plan limit" },
+      }),
     ];
 
     expect(completionCounts(attempts)).toEqual({ attempts: 8, completed: 8, incomplete: 0 });
@@ -188,18 +182,16 @@ describe("eligibility table", () => {
   });
 
   it("reports zero completions as did-not-complete", () => {
-    const attempts = Array.from({ length: 3 }, (_, batch) =>
-      failed({ batch, cost: { kind: "no-sandbox" }, sandboxIds: [] }),
-    );
+    const attempts = Array.from({ length: 3 }, (_, batch) => failed({ batch, sandboxIds: [] }));
 
     expect(kinds(check({ attempts }))).toEqual(["did-not-complete", "too-many-incomplete"]);
   });
 
   it("rejects unavailable and mixed cost evidence", () => {
     const attempts = ten();
-    attempts[3] = attempt({ batch: 3, cost: { kind: "unavailable", reason: "HTTP 500" } });
+    attempts[3] = attempt({ batch: 3, charge: { kind: "unavailable", reason: "HTTP 500" } });
     expect(kinds(check({ attempts }))).toEqual(["cost-unavailable"]);
-    attempts[3] = attempt({ batch: 3, cost: { kind: "estimate", source: "rules" } });
+    attempts[3] = attempt({ batch: 3, charge: { kind: "estimate", source: "rules" } });
     expect(kinds(check({ attempts }))).toEqual(["mixed-cost-kinds"]);
   });
 });
@@ -231,7 +223,7 @@ describe("same-machine compliance", () => {
   });
 
   it("refuses inputs that mix providers or use diagnostics", () => {
-    expect(() => check({ attempts: [attempt(), attempt({ purpose: "instrumented" })] })).toThrow();
-    expect(() => check({ attempts: ten({ track: "default" }) })).toThrow(/same-spec/);
+    expect(() => check({ attempts: [attempt(), attempt({ variant: "instrumented" })] })).toThrow();
+    expect(() => check({ attempts: ten({ track: "default" }) })).toThrow(/same-machine/);
   });
 });

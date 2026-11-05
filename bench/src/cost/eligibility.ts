@@ -13,7 +13,7 @@
  * pick needs a verified 4 vCPU / 8 GiB sandbox. Reconciliation is per profile and track; a window
  * that mixes profiles counts only when every charge is attributable to its own sandbox.
  */
-import type { AttemptRecord } from "./attempt-record.js";
+import type { CostedAttempt } from "./attempt-input.js";
 import type { BillingRule } from "./billing-rules.js";
 
 /** Usage at published rates against settled charges, |usage - settled| / settled. */
@@ -24,6 +24,9 @@ const FLOAT_SLACK = 1e-12;
 
 /** At most this many incomplete runs per profile and track for a pick. */
 export const MAX_INCOMPLETE_RUNS = 1;
+
+/** The harness manifest's track id for the same-machine comparison. */
+export const SAME_MACHINE_TRACK = "same-machine";
 
 /** The same-machine track's frozen target. */
 export const SAME_MACHINE = { cpu: 4, memoryGiB: 8, memoryTolerance: 0.1 } as const;
@@ -96,12 +99,12 @@ export interface EligibilityInput {
   readonly rule: BillingRule;
   readonly comparison: Comparison;
   /** Headline attempts of one provider, profile and track. */
-  readonly attempts: readonly AttemptRecord[];
+  readonly attempts: readonly CostedAttempt[];
   readonly audit: CostSourceAudit;
 }
 
 /** Exactly 4 vCPUs by quota and usable memory within 10% of 8 GiB, on every measured attempt. */
-export function sameMachineCompliance(attempts: readonly AttemptRecord[]): SizeCompliance {
+export function sameMachineCompliance(attempts: readonly CostedAttempt[]): SizeCompliance {
   const measured = attempts.map((a) => a.allocation.measured);
 
   if (measured.some((m) => m.cpuQuota === null || m.memoryGiB === null))
@@ -134,13 +137,13 @@ export interface CompletionCounts {
   readonly incomplete: number;
 }
 
-export function completionCounts(attempts: readonly AttemptRecord[]): CompletionCounts {
+export function completionCounts(attempts: readonly CostedAttempt[]): CompletionCounts {
   let completed = 0,
     incomplete = 0;
 
   for (const attempt of attempts)
-    if (attempt.completion.kind === "completed") completed++;
-    else if (attempt.completion.kind === "incomplete") incomplete++;
+    if (attempt.outcome === "completed") completed++;
+    else if (attempt.outcome === "incomplete") incomplete++;
 
   return { attempts: completed + incomplete, completed, incomplete };
 }
@@ -152,19 +155,19 @@ function assertOneGroup(input: EligibilityInput) {
 
   for (const a of input.attempts)
     if (
-      a.provider !== first.provider ||
+      a.record.provider !== first.record.provider ||
       a.product !== first.product ||
-      a.profile !== first.profile ||
-      a.track !== first.track ||
-      a.purpose !== "headline"
+      a.record.profile !== first.record.profile ||
+      a.record.track !== first.record.track ||
+      a.record.variant !== "headline"
     )
       throw new Error("Eligibility needs headline attempts of one provider, profile and track");
 
-  if (first.provider !== input.rule.provider || first.product !== input.rule.product)
+  if (first.record.provider !== input.rule.provider || first.product !== input.rule.product)
     throw new Error("Billing rule does not match the attempts' provider");
 
-  if (input.comparison === "same-machine" && first.track !== "same-spec")
-    throw new Error("Same-machine picks use the same-spec track");
+  if (input.comparison === "same-machine" && first.record.track !== SAME_MACHINE_TRACK)
+    throw new Error(`Same-machine picks use the ${SAME_MACHINE_TRACK} track`);
 }
 
 type Reconciled = Extract<Reconciliation, { kind: "reconciled" }>;
@@ -216,7 +219,7 @@ function storageGap(input: EligibilityInput): string | null {
 
   if (
     storage.value === "excluded" &&
-    input.attempts.some((a) => a.cost.kind !== "no-sandbox" && a.allocation.provisioned === null)
+    input.attempts.some((a) => a.charge.kind !== "no-sandbox" && a.allocation.provisioned === null)
   )
     return "billing source leaves storage out and the disk size is unknown";
 
@@ -235,7 +238,10 @@ export function eligibility(input: EligibilityInput): Eligibility {
   if (counts.incomplete > MAX_INCOMPLETE_RUNS)
     reasons.push({ kind: "too-many-incomplete", incomplete: counts.incomplete });
 
-  const evidence = input.attempts.flatMap((a) => (a.cost.kind === "no-sandbox" ? [] : [a.cost]));
+  const evidence = input.attempts.flatMap((a) =>
+    a.charge.kind === "no-sandbox" ? [] : [a.charge],
+  );
+
   const unavailable = evidence.filter((e) => e.kind === "unavailable").length;
 
   if (unavailable > 0) reasons.push({ kind: "cost-unavailable", attempts: unavailable });
@@ -246,8 +252,10 @@ export function eligibility(input: EligibilityInput): Eligibility {
   let settled = true;
   let provisional = input.audit.provisional;
 
-  const reported = evidence.flatMap((e) =>
-    e.kind === "billed" || e.kind === "metered" ? [e] : [],
+  const reported = input.attempts.flatMap((a) =>
+    a.charge.kind === "billed" || a.charge.kind === "metered"
+      ? [{ settled: a.charge.settled, attribution: a.attribution }]
+      : [],
   );
 
   const unsettled = reported.filter((e) => !e.settled).length;

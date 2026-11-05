@@ -8,6 +8,7 @@
  * Filled from `src/billing/providers.ts`, `src/pricing.ts` and plan section 6. Every row is
  * "unconfirmed, from docs" until the provider confirms it in writing.
  */
+import type { Attribution } from "../realistic/record.js";
 
 export type Fact<T> =
   | { readonly kind: "known"; readonly value: T; readonly source: string }
@@ -37,9 +38,10 @@ export type StorageCoverage = "included" | "excluded" | "not-charged";
 
 /**
  * How a provider's charges can be tied to our sandboxes (plan section 6): per sandbox, per
- * machine from a meter, account totals over a time range (isolated windows only), or not at all.
+ * machine from a meter, account totals over an isolated window, or not at all. The harness record
+ * owns the enum; this table owns each provider's value, and the scheduler reads it from here.
  */
-export type Attribution = "per-sandbox" | "per-machine" | "account-totals" | "none";
+export type { Attribution } from "../realistic/record.js";
 
 export type Confirmation =
   | { readonly kind: "confirmed-in-writing"; readonly date: string; readonly reference: string }
@@ -63,6 +65,8 @@ export interface BillingRule {
   /** Kind of today's best evidence: the provider's bill, its usage meter, or our estimate. */
   readonly reportedKind: "billed" | "metered" | "estimate";
   readonly attribution: Attribution;
+  /** Settlement edge the scheduler pads billing windows to, in ms (boxd: 15 minutes), or null. */
+  readonly settlementMs: number | null;
   readonly confirmation: Confirmation;
   readonly notes: readonly string[];
 }
@@ -118,6 +122,7 @@ export const billingRules: readonly BillingRule[] = [
     settledChargeSource: settledPending,
     reportedKind: "metered",
     attribution: "per-sandbox",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: [
       "Usage API is a meter (execution segments at published rates), not an invoice.",
@@ -143,6 +148,7 @@ export const billingRules: readonly BillingRule[] = [
     ),
     reportedKind: "billed",
     attribution: "per-sandbox",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: ["5 GiB disk free; credits and tax separate."],
   },
@@ -167,6 +173,7 @@ export const billingRules: readonly BillingRule[] = [
     ),
     reportedKind: "billed",
     attribution: "per-sandbox",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: [
       "Tier price per active box-hour (size table, engineer confirmation over the FAQ example).",
@@ -190,6 +197,7 @@ export const billingRules: readonly BillingRule[] = [
     ),
     reportedKind: "billed",
     attribution: "per-sandbox",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: [
       "Plan section 6 lists Upstash Ephemeral as per-sandbox; its tariff is not yet recorded.",
@@ -211,6 +219,7 @@ export const billingRules: readonly BillingRule[] = [
     settledChargeSource: settledPending,
     reportedKind: "metered",
     attribution: "per-sandbox",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: [
       "Per-sandbox usage API reports list-price dollars, not an invoice.",
@@ -233,6 +242,7 @@ export const billingRules: readonly BillingRule[] = [
     settledChargeSource: known("Org-wide charges posted per 15-minute bucket", docs.boxdActivity),
     reportedKind: "metered",
     attribution: "per-machine",
+    settlementMs: 15 * 60_000,
     confirmation: unconfirmed,
     notes: [
       "Prices in EUR; each release freezes the EUR to USD rate and its date.",
@@ -257,7 +267,8 @@ export const billingRules: readonly BillingRule[] = [
       docs.superserveUsage,
     ),
     reportedKind: "billed",
-    attribution: "account-totals",
+    attribution: "account-window",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: ["Attributable only through isolated windows: one attempt per window."],
   },
@@ -277,6 +288,7 @@ export const billingRules: readonly BillingRule[] = [
     settledChargeSource: unknown("No billing data we can read"),
     reportedKind: "estimate",
     attribution: "none",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: ["5 GiB disk free. Credits excluded."],
   },
@@ -296,6 +308,7 @@ export const billingRules: readonly BillingRule[] = [
     settledChargeSource: unknown("No billing data we can read"),
     reportedKind: "estimate",
     attribution: "none",
+    settlementMs: null,
     confirmation: unconfirmed,
     notes: ["Overage rates; allowances and $0.02/GB transfer excluded."],
   },

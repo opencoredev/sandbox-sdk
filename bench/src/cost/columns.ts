@@ -12,7 +12,8 @@
  *   "unavailable" when usage was not measured or not validated.
  */
 import { computeHourly, priceAtSize, pricing, type Price } from "../pricing.js";
-import type { AttemptRecord } from "./attempt-record.js";
+import type { Attribution } from "../realistic/record.js";
+import type { CostedAttempt } from "./attempt-input.js";
 import { chargesBelowAllocation, type BillingRule } from "./billing-rules.js";
 
 /** EUR to USD rate frozen and published per release, with its date. */
@@ -43,7 +44,7 @@ export type ReportedCost =
       readonly usd: number;
       readonly parts: readonly CostPart[];
       readonly settled: boolean;
-      readonly attribution: "per-sandbox" | "per-machine" | "isolated-window" | "none";
+      readonly attribution: Attribution;
       readonly storage: StorageTreatment;
       readonly assumptions: readonly string[];
     }
@@ -90,7 +91,7 @@ export interface SmallestSufficientSize {
 }
 
 export interface AttemptCostInput {
-  readonly attempt: AttemptRecord;
+  readonly attempt: CostedAttempt;
   readonly rule: BillingRule;
   readonly fx: ExchangeRate;
 }
@@ -104,13 +105,14 @@ function toUSD(amount: number, price: Price, fx: ExchangeRate): number {
 }
 
 interface EventTime {
-  readonly at: string;
+  /** Epoch milliseconds. */
+  readonly at: number;
   readonly observed: boolean;
 }
 
 function eventTime(
-  observed: string | null,
-  fallback: string,
+  observed: number | null,
+  fallback: number,
   name: string,
   assumptions: string[],
 ): EventTime {
@@ -139,35 +141,25 @@ export function roundBilledSeconds(
 }
 
 /** Billed time under the provider's start and stop rules, falling back to the elapsed envelope. */
-export function billedTime(attempt: AttemptRecord, rule: BillingRule): BilledTime {
+export function billedTime(attempt: CostedAttempt, rule: BillingRule): BilledTime {
+  const { record, lifecycle } = attempt;
   const assumptions: string[] = [];
-  let start: EventTime = { at: attempt.startedAt, observed: false };
+  let start: EventTime = { at: record.startedAt, observed: false };
 
   if (rule.billingStarts.kind !== "known")
     assumptions.push("billing start event unknown; create request used");
   else if (rule.billingStarts.value === "create-request")
-    start = { at: attempt.startedAt, observed: true };
-  else
-    start = eventTime(
-      attempt.lifecycle.createdAt,
-      attempt.startedAt,
-      "sandbox-created",
-      assumptions,
-    );
-  let stop: EventTime = { at: attempt.finishedAt, observed: false };
+    start = { at: record.startedAt, observed: true };
+  else start = eventTime(lifecycle.createdAt, record.startedAt, "sandbox-created", assumptions);
+  let stop: EventTime = { at: record.endedAt, observed: false };
 
   if (rule.billingStops.kind !== "known")
     assumptions.push("billing stop event unknown; confirmed deletion used");
   else if (rule.billingStops.value === "delete-request")
-    stop = eventTime(
-      attempt.lifecycle.deleteRequestedAt,
-      attempt.finishedAt,
-      "delete-request",
-      assumptions,
-    );
-  else stop = eventTime(attempt.lifecycle.deletedAt, attempt.finishedAt, "deletion", assumptions);
+    stop = eventTime(lifecycle.deleteRequestedAt, record.endedAt, "delete-request", assumptions);
+  else stop = eventTime(lifecycle.deletedAt, record.endedAt, "deletion", assumptions);
 
-  const raw = (Date.parse(stop.at) - Date.parse(start.at)) / 1000;
+  const raw = (stop.at - start.at) / 1000;
 
   return {
     seconds: roundBilledSeconds(rule, raw, assumptions),
@@ -243,7 +235,7 @@ export function wholeMachineListPrice(input: AttemptCostInput): ListPrice {
 }
 
 export function reportedCost(input: AttemptCostInput): ReportedCost {
-  const evidence = input.attempt.cost;
+  const evidence = input.attempt.charge;
 
   switch (evidence.kind) {
     case "no-sandbox":
@@ -296,7 +288,7 @@ export function reportedCost(input: AttemptCostInput): ReportedCost {
         usd: sumParts(parts),
         parts,
         settled: evidence.settled,
-        attribution: evidence.attribution,
+        attribution: input.attempt.attribution,
         storage,
         assumptions,
       };
@@ -388,7 +380,7 @@ export interface AttemptCosts {
 
 export function attemptCosts(input: AttemptCostInput): AttemptCosts {
   return {
-    attemptId: input.attempt.attemptId,
+    attemptId: input.attempt.record.attemptId,
     reported: reportedCost(input),
     wholeMachine: wholeMachineListPrice(input),
     usage: usageListPrice(input),

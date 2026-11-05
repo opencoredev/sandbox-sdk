@@ -16,7 +16,7 @@
  * infinite: missing completions widen every interval rather than vanish. This file is committed
  * before any provider result is examined.
  */
-import type { AttemptRecord } from "./attempt-record.js";
+import type { CostedAttempt } from "./attempt-input.js";
 
 /** Published seed for every bootstrap and permutation draw in a release. */
 export const BOOTSTRAP_SEED = 20_261_202;
@@ -127,7 +127,7 @@ export function costPerCompleted(batches: readonly BatchTotal[]): number {
 export function pairedBatches(
   groups: readonly {
     readonly provider: string;
-    readonly attempts: readonly AttemptRecord[];
+    readonly attempts: readonly CostedAttempt[];
     /** Reported cost of each attempt in the denominator, by attempt ID. */
     readonly costUSD: ReadonlyMap<string, number>;
   }[],
@@ -135,33 +135,33 @@ export function pairedBatches(
   const counted = groups.map((g) => ({
     provider: g.provider,
     costUSD: g.costUSD,
-    attempts: g.attempts.filter((a) => a.completion.kind !== "not-run"),
+    attempts: g.attempts.filter((a) => a.outcome !== "not-run"),
   }));
 
-  const numbers = [...new Set(counted.flatMap((g) => g.attempts.map((a) => a.batch)))].sort(
+  const numbers = [...new Set(counted.flatMap((g) => g.attempts.map((a) => a.record.batch)))].sort(
     (x, y) => x - y,
   );
 
   return counted.map((group) => ({
     provider: group.provider,
     batches: numbers.map((batch) => {
-      const inBatch = group.attempts.filter((a) => a.batch === batch);
+      const inBatch = group.attempts.filter((a) => a.record.batch === batch);
 
       if (inBatch.length === 0)
         throw new Error(`${group.provider} has no attempt in batch ${batch}`);
       let costUSD = 0;
 
       for (const attempt of inBatch) {
-        const cost = group.costUSD.get(attempt.attemptId);
+        const cost = group.costUSD.get(attempt.record.attemptId);
 
-        if (cost === undefined) throw new Error(`No cost for attempt ${attempt.attemptId}`);
+        if (cost === undefined) throw new Error(`No cost for attempt ${attempt.record.attemptId}`);
         costUSD += cost;
       }
 
       return {
         costUSD,
         attempts: inBatch.length,
-        completions: inBatch.filter((a) => a.completion.kind === "completed").length,
+        completions: inBatch.filter((a) => a.outcome === "completed").length,
       };
     }),
   }));

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cloudProviders } from "../src/attempts.js";
 import { pricing } from "../src/pricing.js";
-import { parseAttemptRecords } from "../src/cost/attempt-record.js";
 import {
   billingModelLabel,
   billingRule,
@@ -16,7 +15,7 @@ import {
   wholeMachineListPrice,
   type AttemptCostInput,
 } from "../src/cost/columns.js";
-import { at, attempt } from "./cost-fixtures.js";
+import { attempt } from "./cost-fixtures.js";
 
 const fx = { eurToUsd: 1.1, date: "2026-11-05" };
 
@@ -32,20 +31,6 @@ const input = (provider: string, patch: Parameters<typeof attempt>[0] = {}): Att
   attempt: attempt({ provider, ...patch }),
   rule: rule(provider),
   fx,
-});
-
-describe("attempt record", () => {
-  it("parses a valid record and rejects contradictions", () => {
-    const record = attempt({ attemptId: "one" });
-    expect(parseAttemptRecords([record])).toHaveLength(1);
-    expect(() => parseAttemptRecords([record, record])).toThrow(/Duplicate attempt/);
-
-    expect(() =>
-      parseAttemptRecords([attempt({ cost: { kind: "no-sandbox" }, sandboxIds: ["x"] })]),
-    ).toThrow(/no-sandbox/);
-
-    expect(() => parseAttemptRecords([attempt({ sandboxIds: [] })])).toThrow(/completed attempt/);
-  });
 });
 
 describe("billing rules", () => {
@@ -97,10 +82,7 @@ describe("billed time", () => {
   });
 
   it("falls back to the elapsed envelope and says so", () => {
-    const time = billedTime(
-      attempt({ lifecycle: { createdAt: null, deleteRequestedAt: null, deletedAt: at(300) } }),
-      withEvents(),
-    );
+    const time = billedTime(attempt({ createdAt: null, deleteRequestedAt: null }), withEvents());
 
     expect(time.seconds).toBe(300);
     expect(time.basis).toBe("elapsed-envelope");
@@ -190,7 +172,10 @@ describe("cost columns", () => {
   });
 
   it("prices Tenki estimates from the billing rules, every part estimated", () => {
-    const reported = reportedCost(input("tenki", { cost: { kind: "estimate", source: "rules" } }));
+    const reported = reportedCost(
+      input("tenki", { charge: { kind: "estimate", source: "rules" } }),
+    );
+
     expect(reported.kind).toBe("estimate");
 
     if (reported.kind !== "estimate") return;
@@ -203,13 +188,13 @@ describe("cost columns", () => {
   });
 
   it("costs nothing when nothing was created, and is unavailable without evidence", () => {
-    expect(reportedCost(input("e2b", { cost: { kind: "no-sandbox" }, sandboxIds: [] }))).toEqual({
+    expect(reportedCost(input("e2b", { sandboxIds: [] }))).toEqual({
       kind: "nothing-created",
       usd: 0,
     });
 
     expect(
-      reportedCost(input("e2b", { cost: { kind: "unavailable", reason: "HTTP 500" } })).kind,
+      reportedCost(input("e2b", { charge: { kind: "unavailable", reason: "HTTP 500" } })).kind,
     ).toBe("unavailable");
   });
 

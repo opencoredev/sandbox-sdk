@@ -75,7 +75,7 @@ describe("cost per completed task", () => {
     const skipped = failed({
       attemptId: "skip",
       batch: 1,
-      completion: { kind: "not-run", reason: "exceeds-plan-limit" },
+      completion: { kind: "incomplete", reason: "exceeds-plan-limit", detail: "plan limit" },
     });
 
     const next = attempt({ attemptId: "next", batch: 1 });
