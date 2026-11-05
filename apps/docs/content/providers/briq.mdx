@@ -124,7 +124,7 @@ console.log(preview.url);
 
 ## Environment variables
 
-Values you pass in `env` at creation are stored as encrypted secrets, and every value stays literal: `{{briq:name}}` and similar text is not expanded. Briq's API must report `features.literalEnvSecrets`. Without it, creating a sandbox with `env` fails with `unsupported` and nothing is allocated.
+Values you pass in `env` at creation are stored as encrypted secrets, and every value stays literal: `{{briq:name}}` and similar text is not expanded. This needs Briq's literal secrets feature. Without it, creating a sandbox with `env` fails with `unsupported` and nothing is allocated.
 
 ## Configuration
 
