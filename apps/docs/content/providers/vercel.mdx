@@ -1,9 +1,13 @@
 ---
 title: Vercel Sandbox
-description: Run sandboxes on Vercel Sandbox microVMs. Exact keys, OIDC auth inside Vercel, pinned images, session lifetimes, vCPU sizing, native network policies, and up to 15 declared preview ports.
+seo:
+  title: Vercel Sandbox SDK in TypeScript
+description: Use the Vercel Sandbox SDK (@vercel/sandbox) from TypeScript through one portable API. OIDC auth, exact keys, vCPU sizing, network policies and previews.
 ---
 
 `vercel()` runs each sandbox as a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) microVM through the official `@vercel/sandbox` SDK.
+
+`@vercel/sandbox` is Vercel's own Sandbox SDK. With `@opencoredev/sandbox-sdk` you call `createSandbox(vercel())` and then `box.run`, `box.files` and `box.preview`, and the same code runs on E2B or Daytona when you swap `vercel()` for `e2b()` or `daytona()`. Vercel Sandbox has no idle timeout or terminal through this API; the [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) reaches the `@vercel/sandbox` object when you need the rest.
 
 ## Install
 

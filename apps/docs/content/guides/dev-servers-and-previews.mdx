@@ -1,9 +1,11 @@
 ---
 title: Dev servers and previews
-description: Start a dev server in a sandbox, wait until it answers, show its preview URL to a user, follow its logs, and restart it after a resume, on every provider.
+description: Start a dev server inside a sandbox and get a preview URL with one call to box.start. Wait until it answers, show it to a user, follow logs, restart after a resume.
 ---
 
 You want to run a dev server in a sandbox and show it to someone, in an iframe or a new tab. That takes three steps: start the server in the background, wait until it answers, and get a URL the browser can open. `box.start` and `box.preview` do all three.
+
+To start a dev server inside a sandbox and get a preview URL with `@opencoredev/sandbox-sdk`, create the sandbox with the port in `ports`, then call `box.start(command, { ready: { http: { port } } })`. It resolves once the server answers on that port, and the returned process's `url` is the preview URL. The same code works on E2B, Daytona, Vercel Sandbox and Docker through `local()`. Some providers, such as Daytona, need a header with every preview request (step 2), and agentOS has no previews.
 
 For the full process API, see [Processes and previews](/concepts/processes-and-previews).
 
