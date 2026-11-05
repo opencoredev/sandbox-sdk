@@ -6,8 +6,17 @@ import {
   elapsedSeconds,
 } from "../src/cost/attempt-input.js";
 import { billingRule } from "../src/cost/billing-rules.js";
+import { billedTime } from "../src/cost/columns.js";
 import { attributionFor } from "../src/realistic/slots.js";
 import { at, attempt, failed } from "./cost-fixtures.js";
+
+function billingRuleOrThrow(provider: string) {
+  const rule = billingRule(provider, null);
+
+  if (!rule) throw new Error(`No rule for ${provider}`);
+
+  return rule;
+}
 
 const billing = (attemptId: string) =>
   attemptBillingSchema.parse({
@@ -36,6 +45,19 @@ describe("cost adapter over the harness record", () => {
       deletedAt: at(299),
     });
     expect(elapsedSeconds(a)).toBe(299);
+  });
+
+  it("ends the envelope at confirmed deletion, not when the host finished writing output", () => {
+    // Deleted at 300 s, record finalised at 400 s after slow raw-output writes.
+    const late = attempt({ endedAt: 400 });
+    expect(elapsedSeconds(late)).toBe(300);
+    expect(billedTime(late, billingRuleOrThrow("daytona")).seconds).toBe(300);
+    expect(elapsedSeconds(attempt({ endedAt: 400, deletedAt: null }))).toBe(400);
+  });
+
+  it("rejects records no cost rule can use", () => {
+    expect(() => attempt({ sandboxIds: [] })).toThrow(/completed without a sandbox/);
+    expect(() => attempt({ endedAt: -1, deletedAt: null })).toThrow(/ends before it starts/);
   });
 
   it("leaves deletion unobserved when the harness could not confirm it", () => {

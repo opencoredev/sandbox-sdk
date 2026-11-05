@@ -109,6 +109,23 @@ describe("stress levels", () => {
     expect(failures?.spec.providers.map((p) => p.failureRate)).toEqual([0.1, 0.5]);
   });
 
+  it("never lowers a stressed provider's failure rate below its pilot rate or the failure level", () => {
+    const spec = pilotVarianceSchema.parse({
+      providers: [
+        { name: "a", costPerAttemptUSD: 1, logSigma: 0.1, failureRate: 0 },
+        { name: "b", costPerAttemptUSD: 2, logSigma: 0.1, failureRate: 0.7 },
+      ],
+      batchLogSigma: 0.1,
+      stress: { failureRate: 0.4, zeroCompletionRate: 0.01 },
+    });
+
+    const failures = coverageScenarios(spec).find(
+      (s) => s.name === "failures-and-zero-completions",
+    );
+
+    expect(failures?.spec.providers.map((p) => p.failureRate)).toEqual([0.4, 0.7]);
+  });
+
   it("qualifies a procedure only at an estimated 96%", () => {
     const report = coverageReport(pilot([1, 1.3, 1.6]), { ...small, batches: 10 });
     expect(QUALIFYING_COVERAGE).toBe(0.96);

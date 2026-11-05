@@ -278,8 +278,13 @@ export function coverageScenarios(spec: PilotVariance): Scenario[] {
           i === priciest
             ? {
                 ...p,
-                // Zero completions in a batch means every attempt in it failed.
-                failureRate: stress.zeroCompletionRate.value ** (1 / spec.attemptsPerBatch),
+                // Zero completions in a batch means every attempt in it failed. Never below the
+                // provider's own pilot rate or the scenario's failure level.
+                failureRate: Math.max(
+                  p.failureRate,
+                  stress.failureRate.value,
+                  stress.zeroCompletionRate.value ** (1 / spec.attemptsPerBatch),
+                ),
               }
             : { ...p, failureRate: Math.max(p.failureRate, stress.failureRate.value) },
         ),

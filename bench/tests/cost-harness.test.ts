@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { attemptBillingSchema, costedAttempts } from "../src/cost/attempt-input.js";
+import { attemptBillingSchema, costedAttempts, elapsedSeconds } from "../src/cost/attempt-input.js";
 import { pairedBatches } from "../src/cost/batch-stats.js";
 import { billingRule } from "../src/cost/billing-rules.js";
 import { reportedCost } from "../src/cost/columns.js";
@@ -44,19 +44,33 @@ describe("harness records through the cost model", () => {
     // the host-process fake, so no cloud is touched.
     const names = ["upstash", "e2b"] as const;
 
-    const providers = hosts.map(
-      (host, index): SlotProvider => ({
-        name: names[index] ?? "upstash",
+    // E2B's open-edge listing (the slot's health check) fails once in batch 1: an unavailable slot.
+    let outage = false;
+
+    const providers = hosts.map((host, index): SlotProvider => {
+      const name = names[index] ?? "upstash";
+
+      return {
+        name,
         provider: host,
-        ...attributionFor(names[index] ?? "upstash"),
+        ...attributionFor(name),
         paddingMs: 0,
-        listAccount: async () => (await host.list({})).map((item) => item.id),
-      }),
-    );
+        listAccount: async () => {
+          if (name === "e2b" && outage) {
+            outage = false;
+            throw new Error("health check failed");
+          }
+
+          return (await host.list({})).map((item) => item.id);
+        },
+      };
+    });
 
     const lines: string[] = [];
 
-    for (let batch = 0; batch < 3; batch++)
+    for (let batch = 0; batch < 3; batch++) {
+      outage = batch === 1;
+
       await runBatch({
         runId: "rw-cost-e2e",
         batch,
@@ -72,34 +86,69 @@ describe("harness records through the cost model", () => {
           lines.push(JSON.stringify(record));
         },
       });
+    }
 
     // What attempts.jsonl holds, read back through the harness's own schema.
     const records = lines.map((line) => attemptRecordSchema.parse(JSON.parse(line)));
-    expect(records).toHaveLength(6);
-    expect(
-      records.every((r) => r.completion.kind === "completed" && r.sandboxIds.length === 1),
-    ).toBe(true);
 
-    // Billing collection's entries for the same attempts: Upstash bills, E2B meters.
-    const billing = records.map((r) =>
-      attemptBillingSchema.parse({
-        attemptId: r.attemptId,
-        product: null,
-        allocation: {
-          provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 10 },
-          measured: { cpuQuota: 4, memoryGiB: 7.8 },
-        },
-        usage: null,
-        charge:
-          r.provider === "upstash"
-            ? { kind: "billed", usd: 0.01 + r.batch * 0.0001, settled: true, source: "fixture" }
-            : { kind: "metered", usd: 0.02 + r.batch * 0.0001, settled: true, source: "fixture" },
-      }),
+    expect(records.map((r) => [r.batch, r.provider, r.completion.kind])).toEqual([
+      [0, "upstash", "completed"],
+      [0, "e2b", "completed"],
+      [1, "upstash", "completed"],
+      [1, "e2b", "incomplete"],
+      [2, "upstash", "completed"],
+      [2, "e2b", "completed"],
+    ]);
+
+    // Billing collection has entries only for attempts that made a sandbox: Upstash bills, E2B meters.
+    const billing = records.flatMap((r) =>
+      r.sandboxIds.length === 0
+        ? []
+        : [
+            attemptBillingSchema.parse({
+              attemptId: r.attemptId,
+              product: null,
+              allocation: {
+                provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 10 },
+                measured: { cpuQuota: 4, memoryGiB: 7.8 },
+              },
+              usage: null,
+              charge:
+                r.provider === "upstash"
+                  ? { kind: "billed", usd: 0.01, settled: true, source: "fixture" }
+                  : { kind: "metered", usd: 0.02, settled: true, source: "fixture" },
+            }),
+          ],
     );
 
     const attempts = costedAttempts(records, billing);
-    expect(attempts.map((a) => a.attribution)).toEqual(records.map(() => "per-sandbox"));
-    expect(attempts.every((a) => a.lifecycle.deletedAt !== null)).toBe(true);
+    const outageAttempt = attempts.find((a) => a.record.batch === 1 && a.record.provider === "e2b");
+
+    expect(outageAttempt).toMatchObject({
+      outcome: "incomplete",
+      attribution: "none",
+      charge: { kind: "no-sandbox" },
+    });
+
+    expect(outageAttempt?.record.completion).toMatchObject({ reason: "unavailable" });
+
+    // Lifecycle comes from the record's own create and destroy spans, and elapsed time ends at
+    // confirmed deletion.
+    for (const a of attempts.filter((x) => x.record.sandboxIds.length > 0)) {
+      const create = a.record.phases.find((p) => p.name === "create");
+      const destroy = a.record.phases.find((p) => p.name === "destroy");
+
+      expect(a.attribution).toBe("per-sandbox");
+      expect(a.record.deletionConfirmed).toBe(true);
+
+      expect(a.lifecycle).toEqual({
+        createdAt: create?.endedAt,
+        deleteRequestedAt: destroy?.startedAt,
+        deletedAt: destroy?.endedAt,
+      });
+
+      expect(elapsedSeconds(a)).toBe(((destroy?.endedAt ?? 0) - a.record.startedAt) / 1000);
+    }
 
     const audits: Record<(typeof names)[number], CostSourceAudit> = {
       upstash: {
@@ -111,49 +160,62 @@ describe("harness records through the cost model", () => {
         reconciliation: {
           kind: "reconciled",
           window: "profile-track",
-          reportedUSD: 0.06,
-          settledUSD: 0.061,
+          reportedUSD: 0.04,
+          settledUSD: 0.041,
         },
         resolutionUSDPerAttempt: 0,
         provisional: null,
       },
     };
 
-    const candidates: Candidate[] = names.map((name) => {
-      const rule = billingRule(name, null);
+    const rule = (name: (typeof names)[number]) => {
+      const found = billingRule(name, null);
 
-      if (!rule) throw new Error(`No rule for ${name}`);
+      if (!found) throw new Error(`No rule for ${name}`);
+
+      return found;
+    };
+
+    const groups = names.map((name) => {
       const mine = attempts.filter((a) => a.record.provider === name);
 
       const costUSD = new Map(
         mine.map((a) => {
-          const cost = reportedCost({ attempt: a, rule, fx });
+          const cost = reportedCost({ attempt: a, rule: rule(name), fx });
 
           return [a.record.attemptId, cost.kind === "unavailable" ? NaN : cost.usd];
         }),
       );
 
-      const [row] = pairedBatches([{ provider: name, attempts: mine, costUSD }]);
-
-      return {
-        provider: name,
-        batches: row?.batches ?? [],
-        eligibility: eligibility({
-          rule,
-          comparison: "same-machine",
-          attempts: mine,
-          audit: audits[name],
-        }),
-        audit: audits[name],
-      };
+      return { provider: name, attempts: mine, costUSD };
     });
 
+    // Batches pair across providers: E2B's outage batch is present with no completion.
+    const rows = pairedBatches(groups);
+    expect(rows.map((r) => r.batches.map((b) => b.completions))).toEqual([
+      [1, 1, 1],
+      [1, 0, 1],
+    ]);
+
+    expect(rows[1]?.batches[1]?.costUSD).toBe(0);
+
+    const candidates: Candidate[] = groups.map((group, index) => ({
+      provider: group.provider,
+      batches: rows[index]?.batches ?? [],
+      eligibility: eligibility({
+        rule: rule(group.provider),
+        comparison: "same-machine",
+        attempts: group.attempts,
+        audit: audits[group.provider],
+      }),
+      audit: audits[group.provider],
+    }));
+
+    // One unavailable slot is within the at-most-one-incomplete rule.
     expect(candidates.map((c) => [c.provider, c.eligibility.kind])).toEqual([
       ["upstash", "eligible"],
       ["e2b", "eligible"],
     ]);
-
-    expect(candidates.map((c) => c.batches.length)).toEqual([3, 3]);
 
     const verdict = pick({
       candidates,

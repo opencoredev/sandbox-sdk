@@ -115,6 +115,13 @@ export function costedAttempt(record: AttemptRecord, billing?: AttemptBilling): 
   if (billing && billing.attemptId !== record.attemptId)
     throw new Error(`Billing for ${billing.attemptId} joined to attempt ${record.attemptId}`);
 
+  // Invariants the harness schema does not state but every cost rule relies on.
+  if (record.endedAt < record.startedAt)
+    throw new Error(`Attempt ${record.attemptId} ends before it starts`);
+
+  if (record.completion.kind === "completed" && record.sandboxIds.length === 0)
+    throw new Error(`Attempt ${record.attemptId} completed without a sandbox`);
+
   const charge: Charge =
     record.sandboxIds.length === 0
       ? { kind: "no-sandbox" }
@@ -159,5 +166,14 @@ export function costedAttempts(
 
 /** Elapsed time, the same for every provider: create request to confirmed deletion. */
 export function elapsedSeconds(attempt: CostedAttempt): number {
-  return (attempt.record.endedAt - attempt.record.startedAt) / 1000;
+  return (endOf(attempt) - attempt.record.startedAt) / 1000;
+}
+
+/**
+ * The end of the attempt's envelope: confirmed deletion when observed. `record.endedAt` also
+ * covers host-side work after deletion (writing raw output), so it is only the fallback for an
+ * attempt whose deletion was never confirmed.
+ */
+export function endOf(attempt: CostedAttempt): number {
+  return attempt.lifecycle.deletedAt ?? attempt.record.endedAt;
 }

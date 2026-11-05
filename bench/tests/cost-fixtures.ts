@@ -40,6 +40,8 @@ export interface AttemptSpec {
   readonly endedAt?: number;
   readonly attribution?: Attribution;
   readonly windowVoid?: boolean;
+  /** false: no billing window at all (an empty record outside any slot). */
+  readonly window?: boolean;
   readonly allocation?: AttemptBilling["allocation"];
   readonly usage?: AttemptBilling["usage"];
   readonly charge?: AttemptBilling["charge"];
@@ -68,8 +70,6 @@ export function attempt(spec: AttemptSpec = {}): CostedAttempt {
       endedAt: deletedAt === null ? endedAt : at(deletedAt),
     });
 
-  const windowed = spec.attribution === "account-window" || spec.windowVoid !== undefined;
-
   const record = attemptRecordSchema.parse({
     schema: attemptSchemaVersion,
     attemptId,
@@ -97,20 +97,22 @@ export function attempt(spec: AttemptSpec = {}): CostedAttempt {
     idle: null,
     costEvidence: {
       attribution: spec.attribution ?? "per-sandbox",
-      window: windowed
-        ? {
-            id: `w-${attemptId}`,
-            provider: spec.provider ?? "upstash",
-            openedAt: at(-1),
-            closedAt: at(301),
-            settlementMs: null,
-            paddingMs: 0,
-            listingScope: "account",
-            listings: [],
-            void: spec.windowVoid ?? false,
-            voidReasons: spec.windowVoid ? ["unexpected sandbox"] : [],
-          }
-        : null,
+      // The scheduler gives every provider its own billing window in every slot.
+      window:
+        spec.window === false
+          ? null
+          : {
+              id: `w-${attemptId}`,
+              provider: spec.provider ?? "upstash",
+              openedAt: at(-1),
+              closedAt: at(301),
+              settlementMs: null,
+              paddingMs: 0,
+              listingScope: "account",
+              listings: [],
+              void: spec.windowVoid ?? false,
+              voidReasons: spec.windowVoid ? ["unexpected sandbox"] : [],
+            },
       usageFiles: [],
     },
     outputDir: null,

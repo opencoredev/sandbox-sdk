@@ -13,7 +13,7 @@
  */
 import { computeHourly, priceAtSize, pricing, type Price } from "../pricing.js";
 import type { Attribution } from "../realistic/record.js";
-import type { CostedAttempt } from "./attempt-input.js";
+import { endOf, type CostedAttempt } from "./attempt-input.js";
 import { chargesBelowAllocation, type BillingRule } from "./billing-rules.js";
 
 /** EUR to USD rate frozen and published per release, with its date. */
@@ -151,13 +151,14 @@ export function billedTime(attempt: CostedAttempt, rule: BillingRule): BilledTim
   else if (rule.billingStarts.value === "create-request")
     start = { at: record.startedAt, observed: true };
   else start = eventTime(lifecycle.createdAt, record.startedAt, "sandbox-created", assumptions);
-  let stop: EventTime = { at: record.endedAt, observed: false };
+  const end = endOf(attempt);
+  let stop: EventTime = { at: end, observed: false };
 
   if (rule.billingStops.kind !== "known")
     assumptions.push("billing stop event unknown; confirmed deletion used");
   else if (rule.billingStops.value === "delete-request")
-    stop = eventTime(lifecycle.deleteRequestedAt, record.endedAt, "delete-request", assumptions);
-  else stop = eventTime(lifecycle.deletedAt, record.endedAt, "deletion", assumptions);
+    stop = eventTime(lifecycle.deleteRequestedAt, end, "delete-request", assumptions);
+  else stop = eventTime(lifecycle.deletedAt, end, "deletion", assumptions);
 
   const raw = (stop.at - start.at) / 1000;
 

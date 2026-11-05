@@ -105,12 +105,15 @@ export interface EligibilityInput {
 
 /** Exactly 4 vCPUs by quota and usable memory within 10% of 8 GiB, on every measured attempt. */
 export function sameMachineCompliance(attempts: readonly CostedAttempt[]): SizeCompliance {
-  const measured = attempts.map((a) => a.allocation.measured);
+  // Only attempts that created a sandbox have a size; an unavailable slot has none to measure.
+  const measured = attempts.flatMap((a) =>
+    a.record.sandboxIds.length > 0 ? [a.allocation.measured] : [],
+  );
 
   if (measured.some((m) => m.cpuQuota === null || m.memoryGiB === null))
-    return { kind: "unverified", detail: "CPU quota or memory not measured on every attempt" };
+    return { kind: "unverified", detail: "CPU quota or memory not measured on every sandbox" };
 
-  if (measured.length === 0) return { kind: "unverified", detail: "no attempts" };
+  if (measured.length === 0) return { kind: "unverified", detail: "no sandbox to measure" };
 
   for (const m of measured) {
     if (m.cpuQuota !== SAME_MACHINE.cpu)
@@ -284,7 +287,16 @@ export function eligibility(input: EligibilityInput): Eligibility {
     if (input.rule.confirmation.kind !== "confirmed-in-writing")
       missing.push("rules-confirmed-in-writing");
 
+    // Each estimated attempt must sit in its own clean billing window: a voided window (unexpected
+    // account activity, unreadable listing) cannot carry a reconciliation.
+    const cleanWindows = input.attempts.every(
+      (a) =>
+        a.charge.kind !== "estimate" ||
+        (a.record.costEvidence.window !== null && !a.record.costEvidence.window.void),
+    );
+
     const isolated =
+      cleanWindows &&
       input.audit.reconciliation.kind === "reconciled" &&
       input.audit.reconciliation.window === "profile-track" &&
       reconciles(input.audit.reconciliation, false);

@@ -157,6 +157,40 @@ describe("eligibility table", () => {
     );
   });
 
+  it("checks size only on attempts that created a sandbox, so one unavailable slot is allowed", () => {
+    const unavailable = failed({
+      batch: 9,
+      sandboxIds: [],
+      billing: false,
+      completion: { kind: "incomplete", reason: "unavailable", detail: "health check failed" },
+    });
+
+    expect(check({ attempts: [...ten().slice(0, 9), unavailable] }).kind).toBe("eligible");
+  });
+
+  it("rejects an estimate whose billing window was voided", () => {
+    const estimates = (windowVoid: boolean) =>
+      ten({
+        provider: "tenki",
+        attribution: "none",
+        windowVoid,
+        charge: { kind: "estimate", source: "rules" },
+      });
+
+    const base = {
+      provider: "tenki",
+      rule: confirmed(rule("tenki")),
+      audit: reconciled(0.05),
+    } as const;
+
+    expect(check({ ...base, attempts: estimates(false) }).kind).toBe("eligible");
+
+    const voided = check({ ...base, attempts: estimates(true) });
+    expect(voided.kind === "ineligible" && voided.reasons).toEqual([
+      { kind: "unverified-estimate", missing: ["isolated-window-reconciliation"] },
+    ]);
+  });
+
   it("allows one incomplete run and rejects two", () => {
     const one = [...ten().slice(0, 9), failed({ batch: 9 })];
     expect(check({ attempts: one }).kind).toBe("eligible");
@@ -184,7 +218,7 @@ describe("eligibility table", () => {
   it("reports zero completions as did-not-complete", () => {
     const attempts = Array.from({ length: 3 }, (_, batch) => failed({ batch, sandboxIds: [] }));
 
-    expect(kinds(check({ attempts }))).toEqual(["did-not-complete", "too-many-incomplete"]);
+    expect(kinds(check({ attempts }))).toEqual(["did-not-complete", "too-many-incomplete", "size"]);
   });
 
   it("rejects unavailable and mixed cost evidence", () => {

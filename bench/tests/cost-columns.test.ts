@@ -188,7 +188,14 @@ describe("cost columns", () => {
   });
 
   it("costs nothing when nothing was created, and is unavailable without evidence", () => {
-    expect(reportedCost(input("e2b", { sandboxIds: [] }))).toEqual({
+    expect(
+      reportedCost(
+        input("e2b", {
+          sandboxIds: [],
+          completion: { kind: "incomplete", reason: "create-failed", detail: "fixture" },
+        }),
+      ),
+    ).toEqual({
       kind: "nothing-created",
       usd: 0,
     });
