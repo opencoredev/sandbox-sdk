@@ -133,6 +133,31 @@ describe("simultaneous comparisons", () => {
     const pairs = compareAll(sparse, { procedure: "centred-max-deviation", ...options });
     expect(pairs.every((p) => p.interval?.high === Infinity && p.favours === null)).toBe(true);
   });
+  it.each(procedures)(
+    "%s gives an unbounded interval, never NaN, when a provider never completed",
+    (procedure) => {
+      const none = {
+        provider: "z",
+        batches: batches(
+          1,
+          0.05,
+          6,
+          Array.from({ length: 10 }, () => 0),
+        ),
+      };
+
+      const pairs = compareAll([...clear, none], { procedure, ...options }).filter(
+        (p) => p.b === "z",
+      );
+
+      for (const pair of pairs) {
+        expect(pair.favours).toBeNull();
+
+        if (pair.interval) expect(pair.interval).toEqual({ low: -Infinity, high: Infinity });
+        else expect(pair.adjustedP).toBe(1);
+      }
+    },
+  );
 });
 
 describe("picks", () => {
@@ -175,26 +200,25 @@ describe("picks", () => {
   });
 
   it("lets the accounting-sensitivity check flip a separated winner to 'no clear winner'", () => {
-    const tight = [candidate("a", batches(1, 0.01, 2)), candidate("b", batches(1.15, 0.01, 3))];
-    expect(pick({ candidates: tight, procedure: "centred-max-deviation", options }).kind).toBe(
-      "lowest-verified-cost",
-    );
+    // a's meter read $0.90 for a window the provider settled at $1.00: an 11.1% miss on our figure.
+    const meterLow = {
+      ...cleanAudit,
+      reconciliation: {
+        kind: "reconciled",
+        window: "profile-track",
+        reportedUSD: 0.9,
+        settledUSD: 1,
+      },
+    } as const;
 
-    const residual = (r: number) =>
-      ({
-        ...cleanAudit,
-        reconciliation: { kind: "reconciled", window: "profile-track", residualFraction: r },
-      }) as const;
+    const a = candidate("a", batches(1, 0.01, 2));
+    const b = candidate("b", batches(1.105, 0.01, 2));
+    const clean = pick({ candidates: [a, b], procedure: "centred-max-deviation", options });
+    expect(clean.kind).toBe("lowest-verified-cost");
 
-    const [a, b] = tight;
-
-    if (!a || !b) throw new Error("fixture");
-
+    // Moving a up by 10% of its cost would leave it below b; moving it by the real miss does not.
     const verdict = pick({
-      candidates: [
-        { ...a, audit: residual(0.1) },
-        { ...b, audit: { ...residual(-0.05), resolutionUSDPerAttempt: 0.001 } },
-      ],
+      candidates: [{ ...a, audit: meterLow }, b],
       procedure: "centred-max-deviation",
       options,
     });
@@ -204,6 +228,15 @@ describe("picks", () => {
       cause: "accounting-sensitivity",
       inseparable: ["a", "b"],
     });
+
+    // Monetary resolution counts too: $0.12 per attempt on b closes the same gap.
+    const coarse = pick({
+      candidates: [a, { ...b, audit: { ...cleanAudit, resolutionUSDPerAttempt: 0.12 } }],
+      procedure: "centred-max-deviation",
+      options,
+    });
+
+    expect(coarse).toMatchObject({ kind: "no-clear-winner", cause: "accounting-sensitivity" });
   });
 
   it("flags lower unverified costs and providers that did not complete", () => {

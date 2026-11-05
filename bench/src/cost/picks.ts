@@ -20,7 +20,12 @@ import {
   type PairComparison,
   type Procedure,
 } from "./batch-stats.js";
-import { describeIneligibility, type CostSourceAudit, type Eligibility } from "./eligibility.js";
+import {
+  describeIneligibility,
+  reportedShiftFraction,
+  type CostSourceAudit,
+  type Eligibility,
+} from "./eligibility.js";
 
 export const PICK_LABEL = "lowest verified cost among eligible providers";
 
@@ -81,8 +86,7 @@ export function accountingBound(candidate: Candidate, direction: "up" | "down"):
   const theta = costPerCompleted(candidate.batches);
   const reconciliation = candidate.audit.reconciliation;
 
-  const residual =
-    reconciliation.kind === "reconciled" ? Math.abs(reconciliation.residualFraction) : 0;
+  const residual = reconciliation.kind === "reconciled" ? reportedShiftFraction(reconciliation) : 0;
 
   let attempts = 0,
     completions = 0;
@@ -116,6 +120,53 @@ function unverified(candidates: readonly Candidate[], below: number): Unverified
     .sort((x, y) => x.costPerCompletedUSD - y.costPerCompletedUSD);
 }
 
+export type Decision =
+  | { readonly kind: "certified"; readonly provider: string }
+  | {
+      readonly kind: "no-clear-winner";
+      readonly inseparable: readonly string[];
+      readonly cause: "intervals" | "accounting-sensitivity";
+    };
+
+/**
+ * Steps 2 and 3 for eligible providers sorted cheapest first: the cheapest must be separated from
+ * every rival, then survive the accounting-sensitivity check. Shared with the coverage simulation.
+ */
+export function decide(
+  eligible: readonly [Candidate, ...Candidate[]],
+  comparisons: readonly PairComparison[],
+): Decision {
+  const [cheapest] = eligible;
+
+  const notSeparated = comparisons.flatMap((c) =>
+    (c.a === cheapest.provider || c.b === cheapest.provider) && c.favours !== cheapest.provider
+      ? [c.a === cheapest.provider ? c.b : c.a]
+      : [],
+  );
+
+  if (notSeparated.length > 0)
+    return {
+      kind: "no-clear-winner",
+      inseparable: [cheapest.provider, ...notSeparated],
+      cause: "intervals",
+    };
+
+  const winnerHigh = accountingBound(cheapest, "up");
+
+  const flipped = eligible
+    .slice(1)
+    .flatMap((rival) => (accountingBound(rival, "down") <= winnerHigh ? [rival.provider] : []));
+
+  if (flipped.length > 0)
+    return {
+      kind: "no-clear-winner",
+      inseparable: [cheapest.provider, ...flipped],
+      cause: "accounting-sensitivity",
+    };
+
+  return { kind: "certified", provider: cheapest.provider };
+}
+
 export function pick(input: PickInput): Verdict {
   const didNotComplete = input.candidates
     .filter((c) => !Number.isFinite(costPerCompleted(c.batches)))
@@ -127,7 +178,7 @@ export function pick(input: PickInput): Verdict {
     )
     .sort((x, y) => costPerCompleted(x.batches) - costPerCompleted(y.batches));
 
-  const [cheapest] = eligible;
+  const [cheapest, ...rest] = eligible;
   const names = eligible.map((c) => c.provider);
 
   if (!cheapest)
@@ -163,38 +214,16 @@ export function pick(input: PickInput): Verdict {
       : [];
 
   const context = { eligible: names, lowerUnverified, didNotComplete, comparisons };
+  const decision = decide([cheapest, ...rest], comparisons);
 
-  const notSeparated = comparisons.flatMap((c) =>
-    (c.a === cheapest.provider || c.b === cheapest.provider) && c.favours !== cheapest.provider
-      ? [c.a === cheapest.provider ? c.b : c.a]
-      : [],
-  );
-
-  if (notSeparated.length > 0)
+  if (decision.kind === "no-clear-winner")
     return {
       ...context,
       kind: "no-clear-winner",
       label: "no clear winner",
       cheapest: cheapest.provider,
-      inseparable: [cheapest.provider, ...notSeparated],
-      cause: "intervals",
-    };
-
-  const winnerHigh = accountingBound(cheapest, "up");
-
-  const flipped = eligible
-    .slice(1)
-    .filter((rival) => accountingBound(rival, "down") <= winnerHigh)
-    .map((rival) => rival.provider);
-
-  if (flipped.length > 0)
-    return {
-      ...context,
-      kind: "no-clear-winner",
-      label: "no clear winner",
-      cheapest: cheapest.provider,
-      inseparable: [cheapest.provider, ...flipped],
-      cause: "accounting-sensitivity",
+      inseparable: decision.inseparable,
+      cause: decision.cause,
     };
 
   return {

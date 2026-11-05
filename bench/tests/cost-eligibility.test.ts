@@ -48,12 +48,13 @@ const metered = (patch: { settled?: boolean; attribution?: "per-machine" | "none
     },
   });
 
+/** Our figure is (1 + residual) x a $1.00 settled charge. */
 const reconciled = (
-  residualFraction: number,
+  residual: number,
   window: "profile-track" | "mixed-profiles" = "profile-track",
 ): CostSourceAudit => ({
   ...cleanAudit,
-  reconciliation: { kind: "reconciled", window, residualFraction },
+  reconciliation: { kind: "reconciled", window, reportedUSD: 1 + residual, settledUSD: 1 },
 });
 
 describe("eligibility table", () => {
@@ -79,8 +80,20 @@ describe("eligibility table", () => {
       }),
     });
 
-    expect(kinds(result)).toEqual(["unsettled"]);
+    // Daytona's analytics price may or may not include disk, so it is also provisional.
+    expect(kinds(result)).toEqual(["unsettled", "provisional"]);
     expect(result.status.settled).toBe(false);
+    expect(result.status.provisional).toBe("storage coverage of the billing source unknown");
+  });
+
+  it("holds a compute-only bill as provisional when the disk to add is unknown", () => {
+    const attempts = ten({
+      allocation: { provisioned: null, measured: { cpuQuota: 4, memoryGiB: 8 } },
+    });
+
+    expect(check({ attempts }).status.provisional).toBe(
+      "billing source leaves storage out and the disk size is unknown",
+    );
   });
 
   it("holds unreconciled meters as provisional", () => {

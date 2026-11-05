@@ -47,7 +47,7 @@ export const failed = (patch: Partial<AttemptRecord> = {}) =>
   });
 
 export const cleanAudit: CostSourceAudit = {
-  reconciliation: { kind: "reconciled", window: "profile-track", residualFraction: 0 },
+  reconciliation: { kind: "reconciled", window: "profile-track", reportedUSD: 1, settledUSD: 1 },
   resolutionUSDPerAttempt: 0,
   provisional: null,
 };

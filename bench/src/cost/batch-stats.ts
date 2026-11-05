@@ -422,6 +422,12 @@ export function compareWith(
     const [i = 0, j = 0] = base.pairs[q] ?? [];
     const difference = base.difference[q] ?? 0;
 
+    // A provider with zero observed completions has no cost: nothing can be said about the pair.
+    if (!Number.isFinite(difference)) {
+      interval = interval === null ? null : { low: -Infinity, high: Infinity };
+      adjustedP = adjustedP === null ? null : 1;
+    }
+
     const separated =
       interval !== null
         ? interval.high < 0 || interval.low > 0

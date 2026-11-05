@@ -19,6 +19,9 @@ import type { BillingRule } from "./billing-rules.js";
 /** Usage at published rates against settled charges, |usage - settled| / settled. */
 export const MAX_RECONCILIATION_RESIDUAL = 0.1;
 
+/** Keeps "within 10%" true at exactly 10% despite floating-point division. */
+const FLOAT_SLACK = 1e-12;
+
 /** At most this many incomplete runs per profile and track for a pick. */
 export const MAX_INCOMPLETE_RUNS = 1;
 
@@ -30,7 +33,10 @@ export type Reconciliation =
       readonly kind: "reconciled";
       /** "profile-track": the window held only this profile's runs on this track. */
       readonly window: "profile-track" | "mixed-profiles";
-      readonly residualFraction: number;
+      /** Our figure for the window: usage at published rates, or our estimate. */
+      readonly reportedUSD: number;
+      /** The provider's settled charge for the same window. */
+      readonly settledUSD: number;
     }
   | { readonly kind: "not-reconciled"; readonly reason: string };
 
@@ -161,10 +167,33 @@ function assertOneGroup(input: EligibilityInput) {
     throw new Error("Same-machine picks use the same-spec track");
 }
 
+type Reconciled = Extract<Reconciliation, { kind: "reconciled" }>;
+
+/** How far our figure misses the settled charge, as a share of the settled charge (the 10% gate). */
+export function residualFraction(r: Reconciled): number {
+  return r.settledUSD > 0
+    ? Math.abs(r.reportedUSD - r.settledUSD) / r.settledUSD
+    : r.reportedUSD === 0
+      ? 0
+      : Infinity;
+}
+
+/**
+ * The same miss as a share of our figure, which is what the published cost is built from, so the
+ * sensitivity check moves a cost by exactly the discrepancy found in its window.
+ */
+export function reportedShiftFraction(r: Reconciled): number {
+  return r.reportedUSD > 0
+    ? Math.abs(r.reportedUSD - r.settledUSD) / r.reportedUSD
+    : r.settledUSD === 0
+      ? 0
+      : Infinity;
+}
+
 function reconciles(reconciliation: Reconciliation, attributable: boolean): boolean {
   return (
     reconciliation.kind === "reconciled" &&
-    Math.abs(reconciliation.residualFraction) <= MAX_RECONCILIATION_RESIDUAL &&
+    residualFraction(reconciliation) <= MAX_RECONCILIATION_RESIDUAL + FLOAT_SLACK &&
     (reconciliation.window === "profile-track" || attributable)
   );
 }
@@ -173,10 +202,25 @@ function reconciliationGap(reconciliation: Reconciliation, attributable: boolean
   if (reconciliation.kind === "not-reconciled")
     return `not reconciled with settled charges: ${reconciliation.reason}`;
 
-  if (Math.abs(reconciliation.residualFraction) > MAX_RECONCILIATION_RESIDUAL)
-    return `settled charges differ by ${(reconciliation.residualFraction * 100).toFixed(1)}%`;
+  if (residualFraction(reconciliation) > MAX_RECONCILIATION_RESIDUAL + FLOAT_SLACK)
+    return `settled charges differ by ${(residualFraction(reconciliation) * 100).toFixed(1)}%`;
 
   return attributable ? "" : "reconciled only across a window that mixes profiles";
+}
+
+/** Why a billed or metered total may miss storage, or null when storage is covered. */
+function storageGap(input: EligibilityInput): string | null {
+  const storage = input.rule.storage;
+
+  if (storage.kind !== "known") return "storage coverage of the billing source unknown";
+
+  if (
+    storage.value === "excluded" &&
+    input.attempts.some((a) => a.cost.kind !== "no-sandbox" && a.allocation.provisioned === null)
+  )
+    return "billing source leaves storage out and the disk size is unknown";
+
+  return null;
 }
 
 /** Apply the eligibility table to one provider's headline attempts in one profile and track. */
@@ -222,6 +266,9 @@ export function eligibility(input: EligibilityInput): Eligibility {
 
   if (costKind === "metered" && !reconciles(input.audit.reconciliation, attributable))
     provisional ??= `meter ${reconciliationGap(input.audit.reconciliation, attributable)}`;
+
+  // The frozen cost scope includes storage: a total that may leave it out is not final.
+  if (reported.length > 0) provisional ??= storageGap(input);
 
   if (costKind === "estimate") {
     const missing: ("rules-confirmed-in-writing" | "isolated-window-reconciliation")[] = [];
