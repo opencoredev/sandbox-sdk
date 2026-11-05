@@ -5,7 +5,7 @@ description: Add a sandbox tool to the OpenAI Agents SDK in TypeScript with sand
 
 `sandboxTools(box)` from `@opencoredev/sandbox-sdk/openai` returns a tool array for the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/). Pass it as `tools` to `new Agent` and the agent can run commands, read and edit files, and start dev servers in the sandbox.
 
-The Agents SDK also ships its own `SandboxAgent` in `@openai/agents/sandbox`, which takes a sandbox client such as `UnixLocalSandboxClient` or `DockerSandboxClient` from `@openai/agents/sandbox/local`. `sandboxTools` is the other route: plain function tools on a regular `Agent`, backed by any Sandbox SDK provider, so the same agent runs on E2B, Daytona, Vercel Sandbox or Docker through `local()` when you swap `e2b()` for another provider factory. It is not a `SandboxAgent` client.
+The Agents SDK also ships its own `SandboxAgent` in `@openai/agents/sandbox`, and you pass it a sandbox client such as `UnixLocalSandboxClient` or `DockerSandboxClient` (from `@openai/agents/sandbox/local`) through the run's `sandbox.client` option. `sandboxTools` is a different route, not a `SandboxAgent` client: plain function tools on a regular `Agent`, backed by a Sandbox SDK sandbox, so you move the agent between E2B, Daytona, Vercel Sandbox and Docker through `local()` by swapping the provider factory. On Vercel and Local, list dev-server ports in `ports` when you create the sandbox. agentOS has no background processes or previews, and the [capability matrix](/reference/capabilities) lists what else differs.
 
 For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
 
