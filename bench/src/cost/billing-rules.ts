@@ -180,8 +180,9 @@ export const billingRules: readonly BillingRule[] = [
     ],
   },
   {
-    provider: "upstash",
-    product: "ephemeral",
+    // The harness runs Upstash's ephemeral product as its own provider name.
+    provider: "upstash-ephemeral",
+    product: null,
     pricingKey: null,
     tariff: unknown("Ephemeral pricing not recorded"),
     billingStarts: unknown("Not stated"),
@@ -316,7 +317,13 @@ export const billingRules: readonly BillingRule[] = [
 
 /** The rule for a provider and product, or null when the provider has no row. */
 export function billingRule(provider: string, product: string | null): BillingRule | null {
-  return billingRules.find((r) => r.provider === provider && r.product === product) ?? null;
+  // The bench's older form: Upstash with the "ephemeral" product.
+  const [name, item] =
+    provider === "upstash" && product === "ephemeral"
+      ? ["upstash-ephemeral", null]
+      : [provider, product];
+
+  return billingRules.find((r) => r.provider === name && r.product === item) ?? null;
 }
 
 /** The phrase printed on a provider's bar, or null when its tariff is not known. */

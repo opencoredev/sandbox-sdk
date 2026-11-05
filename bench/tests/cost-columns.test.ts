@@ -37,6 +37,7 @@ describe("billing rules", () => {
   it("has a row for every cloud provider and Upstash Ephemeral, all unconfirmed", () => {
     for (const provider of cloudProviders) expect(billingRule(provider, null)).not.toBeNull();
     expect(billingRule("upstash", "ephemeral")).not.toBeNull();
+    expect(billingRule("upstash-ephemeral", null)).toBe(billingRule("upstash", "ephemeral"));
 
     expect(billingRules.every((r) => r.confirmation.kind === "unconfirmed-from-docs")).toBe(true);
   });
