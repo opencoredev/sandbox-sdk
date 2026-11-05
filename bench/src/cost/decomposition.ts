@@ -105,7 +105,13 @@ export function sumsToReported(d: Extract<Decomposition, { kind: "decomposed" }>
   return Math.abs(rebuilt - d.reportedUSD) <= SUM_TOLERANCE * Math.max(1e-12, d.wholeMachineUSD);
 }
 
-function ratio(value: number): string {
+/** A share such as "0.12" or "1.0": two significant figures, trailing zero kept. */
+function share(value: number): string {
+  return value >= 10 ? value.toFixed(0) : value.toPrecision(2);
+}
+
+/** A multiplier such as "4x" or "2.5x": two significant figures, trailing zero dropped. */
+function multiple(value: number): string {
   return value >= 10 ? value.toFixed(0) : Number(value.toPrecision(2)).toString();
 }
 
@@ -164,14 +170,14 @@ export function providerLine(input: ProviderLineInput): string | null {
 
   if (input.wholeMachineUSD !== null && input.wholeMachineUSD > 0)
     clauses.push(
-      `${costPhrase(input.kind, input.provider, true)} ${ratio(input.reportedUSD / input.wholeMachineUSD)} of what the whole machine would cost at its own list price`,
+      `${costPhrase(input.kind, input.provider, true)} ${share(input.reportedUSD / input.wholeMachineUSD)} of what the whole machine would cost at its own list price`,
     );
 
   if (input.denseOverPaced !== null) {
     const change =
       input.denseOverPaced >= 1
-        ? `raised its cost ${ratio(input.denseOverPaced)}x`
-        : `lowered its cost to ${ratio(input.denseOverPaced)} of the paced cost`;
+        ? `raised its cost ${multiple(input.denseOverPaced)}x`
+        : `lowered its cost to ${share(input.denseOverPaced)} of the paced cost`;
 
     clauses.push(
       clauses.length > 0

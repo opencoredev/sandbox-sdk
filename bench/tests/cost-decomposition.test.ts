@@ -108,7 +108,7 @@ describe("plain-language lines", () => {
         provisional: null,
       }),
     ).toBe(
-      "boxd's usage meter showed 0.9 of what the whole machine would cost at its own list price.",
+      "boxd's usage meter showed 0.90 of what the whole machine would cost at its own list price.",
     );
   });
 
@@ -124,7 +124,7 @@ describe("plain-language lines", () => {
     });
 
     expect(line).toBe(
-      "upstash charged 0.5 of what the whole machine would cost at its own list price. Provisional: settles in 48 hours.",
+      "upstash charged 0.50 of what the whole machine would cost at its own list price. Provisional: settles in 48 hours.",
     );
 
     expect(
@@ -137,7 +137,7 @@ describe("plain-language lines", () => {
         denseOverPaced: null,
         provisional: null,
       }),
-    ).toMatch(/^We estimate tenki at 1 of/);
+    ).toMatch(/^We estimate tenki at 1\.0 of/);
 
     expect(
       providerLine({
