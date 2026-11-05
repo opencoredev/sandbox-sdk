@@ -102,7 +102,7 @@ export const defaultNormalisation: NormaliseRule[] = [
 
 /** A test excluded from completion (timing-sensitive). It still runs; its outcome is recorded. */
 export const excludedTestSchema = z.object({
-  /** Matched as a path suffix of the report's test file, since checkout paths differ. */
+  /** The test file: a path suffix of the report's file, or, from output, the FAIL line's file. */
   file: z.string().min(1).optional(),
   /** The runner's full test name (vitest `fullName`). */
   name: z.string().min(1),
@@ -124,7 +124,7 @@ export const stepCheckSchema = z
     /** Expected exit status. Non-zero is data: a recorded failing run must fail again. */
     exit: expectedExitSchema.default(0),
     outputInvariants: outputInvariantsSchema.default({}),
-    /** Per-test report (path relative to the working directory), read after the step; required for exclusions. */
+    /** Optional per-test report (relative to the working directory). Without one, exclusions use FAIL lines. */
     testReport: z.object({ kind: z.literal("vitest-json"), path: relativePath }).optional(),
     exclude: z.array(excludedTestSchema).default([]),
     postconditions: z
@@ -137,8 +137,9 @@ export const stepCheckSchema = z
       .default({ files: {}, exists: [] }),
     normalise: z.array(normaliseRuleSchema).default(defaultNormalisation),
   })
-  .refine((check) => check.exclude.length === 0 || check.testReport, {
-    message: "Excluded tests need a per-test report (testReport) to be counted out",
+  .refine((check) => check.testReport !== undefined || check.exclude.every((item) => item.file), {
+    message:
+      "Without a per-test report, excluded tests are matched as `file > name` in FAIL lines and need a file",
     path: ["exclude"],
   });
 

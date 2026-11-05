@@ -158,9 +158,101 @@ describe("frozen step checks", () => {
     ).toMatchObject({ kind: "test-report" });
   });
 
-  it("refuses exclusions without a per-test report", () => {
+  it("refuses output-matched exclusions that name no file", () => {
     expect(() => stepCheckSchema.parse({ exclude: [{ name: "x", reason: "timing" }] })).toThrow(
-      /per-test report/,
+      /need a file/,
+    );
+  });
+
+  const vueRun = (fails: string[], summary: string, extra = "") =>
+    [
+      ...fails.map((id) => ` FAIL  |unit| ${id}`),
+      extra,
+      ` Test Files  ${summary.split(";")[0]}`,
+      `      Tests  ${summary.split(";")[1]}`,
+    ].join("\n");
+
+  const timing = {
+    file: "packages/runtime-core/__tests__/scheduler.spec.ts",
+    name: "scheduler > flush timing",
+    reason: "timing-sensitive",
+  };
+
+  const other = { file: "packages/shared/__tests__/a.spec.ts", name: "a > b", reason: "timing" };
+
+  const textCheck = stepCheckSchema.parse({
+    exit: 0,
+    outputInvariants: { tests: { passed: 4026, skipped: 6 }, testFiles: { passed: 200 } },
+    exclude: [timing, other],
+  });
+
+  it("applies the rig's text-mode exclusion: FAIL lines matched as file > name, out of the counts", () => {
+    // As tools/completion.py: excluded failures leave the failed count and every excluded test
+    // leaves the passes, since all of them ran.
+    const output = vueRun(
+      [`${timing.file} > ${timing.name}`],
+      "1 failed | 199 passed (200);1 failed | 4027 passed | 6 skipped (4034)",
+    );
+
+    const result = evaluateCheck(textCheck, observation({ exitCode: 1, output }));
+
+    expect(result.invariants.tests).toEqual({ passed: 4026, skipped: 6 });
+    expect(result.invariants.testFiles).toEqual({ passed: 200 });
+    expect(result.excluded).toEqual([
+      { file: timing.file, name: timing.name, status: "failed" },
+      { file: other.file, name: other.name, status: "passed" },
+    ]);
+    expect(result.passed).toBe(true);
+  });
+
+  it("never excuses a counted failure, a file error, or an unhandled error alongside an excluded one", () => {
+    const counted = vueRun(
+      [`${timing.file} > ${timing.name}`, "packages/x/__tests__/y.spec.ts > y > z"],
+      "2 failed | 198 passed (200);2 failed | 4026 passed | 6 skipped (4034)",
+    );
+
+    const collection = vueRun(
+      [`${timing.file} > ${timing.name}`],
+      "2 failed | 198 passed (200);1 failed | 4027 passed | 6 skipped (4034)",
+    );
+
+    const unhandled = vueRun(
+      [`${timing.file} > ${timing.name}`],
+      "1 failed | 199 passed (200);1 failed | 4027 passed | 6 skipped (4034)",
+      " Errors  1 error",
+    );
+
+    for (const output of [counted, collection, unhandled])
+      expect(
+        evaluateCheck(textCheck, observation({ exitCode: 1, output })).failures,
+      ).toContainEqual({ kind: "exit", expected: 0, actual: 1 });
+  });
+
+  it("does not excuse a report file that failed to collect, even with only excluded failures", () => {
+    const report = JSON.stringify({
+      testResults: [
+        {
+          name: "/w/repo/timing.spec.ts",
+          status: "failed",
+          assertionResults: [{ fullName: "t > slow", status: "failed" }],
+        },
+        {
+          name: "/w/repo/broken.spec.ts",
+          status: "failed",
+          message: "SyntaxError",
+          assertionResults: [],
+        },
+      ],
+    });
+
+    const check = stepCheckSchema.parse({
+      exit: 0,
+      testReport: { kind: "vitest-json", path: "report.json" },
+      exclude: [{ file: "timing.spec.ts", name: "t > slow", reason: "timing" }],
+    });
+
+    expect(evaluateCheck(check, observation({ exitCode: 1, testReport: report })).failures).toEqual(
+      [{ kind: "exit", expected: 0, actual: 1 }],
     );
   });
 

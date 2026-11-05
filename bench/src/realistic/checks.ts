@@ -106,9 +106,12 @@ export function extractInvariants(normalised: string): OutputInvariants {
 }
 
 const vitestReport = z.object({
+  numRuntimeErrorTestSuites: z.number().int().nonnegative().optional(),
   testResults: z.array(
     z.object({
       name: z.string(),
+      status: z.string().optional(),
+      message: z.string().optional(),
       assertionResults: z.array(
         z.object({
           fullName: z.string(),
@@ -125,25 +128,119 @@ export interface TestOutcome {
   status: "passed" | "failed" | "skipped" | "todo";
 }
 
+function outcomeStatus(status: string): TestOutcome["status"] {
+  if (status === "passed" || status === "failed" || status === "todo") return status;
+
+  return "skipped";
+}
+
 /** Parse vitest's `--reporter=json` output into per-test outcomes. */
 export function parseVitestReport(text: string): TestOutcome[] {
+  return readVitestReport(text).outcomes;
+}
+
+/** Per-test outcomes, plus files that failed without a failing test (collection or runtime errors). */
+function readVitestReport(text: string) {
   const report = vitestReport.parse(JSON.parse(text));
   const outcomes: TestOutcome[] = [];
+  const suiteErrors: string[] = [];
 
-  for (const file of report.testResults)
-    for (const test of file.assertionResults)
-      outcomes.push({
-        file: file.name,
-        name: test.fullName,
-        status:
-          test.status === "pending" || test.status === "disabled"
-            ? "skipped"
-            : test.status === "todo"
-              ? "todo"
-              : test.status,
-      });
+  if (report.numRuntimeErrorTestSuites)
+    suiteErrors.push(`${report.numRuntimeErrorTestSuites} suite(s) with runtime errors`);
 
-  return outcomes;
+  for (const file of report.testResults) {
+    let failedTests = 0;
+
+    for (const test of file.assertionResults) {
+      const status = outcomeStatus(test.status);
+
+      if (status === "failed") failedTests++;
+      outcomes.push({ file: file.name, name: test.fullName, status });
+    }
+
+    if ((file.status === "failed" || file.message) && failedTests === 0)
+      suiteErrors.push(`${file.name}: failed without a failing test`);
+  }
+
+  return { outcomes, suiteErrors };
+}
+
+const failId = /^\s*FAIL\s+(?:\|[^|]+\|\s+)?(\S+\.(?:spec|test)\.[cm]?[jt]sx?)\s+>\s+(.+?)\s*$/;
+const errorsLine = /^\s*Errors\s+\d+\s+errors?/m;
+
+/**
+ * The rig's text-mode exclusion (`rig/common.py exclude_tests`, `tools/completion.py`): excluded tests
+ * are identified as `file > name` in the normalised FAIL lines; their FAIL lines are dropped, and they
+ * are taken out of the counts (every excluded test runs, so passes lose the ones that passed). A test
+ * file moves from failed to passed only when all of its failures are excluded.
+ */
+function excludeFromText(normalised: string, exclusions: readonly ExcludedTest[]) {
+  const ids = new Map(exclusions.map((item) => [`${item.file ?? ""} > ${item.name}`, item]));
+  const kept: string[] = [];
+  const excludedFailed = new Set<string>();
+  const otherFailed = new Set<string>();
+  const filesExcluded = new Set<string>();
+  const filesOther = new Set<string>();
+
+  for (const line of normalised.split("\n")) {
+    const match = failId.exec(line);
+
+    if (match?.[1] && match[2]) {
+      const id = `${match[1]} > ${match[2]}`;
+
+      if (ids.has(id)) {
+        excludedFailed.add(id);
+        filesExcluded.add(match[1]);
+        continue;
+      }
+
+      otherFailed.add(id);
+      filesOther.add(match[1]);
+    }
+
+    kept.push(line);
+  }
+
+  const invariants = extractInvariants(kept.join("\n"));
+
+  if (invariants.tests) {
+    const failed = (invariants.tests.failed ?? 0) - excludedFailed.size;
+    const passed = (invariants.tests.passed ?? 0) - (ids.size - excludedFailed.size);
+    invariants.tests = { ...invariants.tests, passed };
+
+    if (failed > 0) invariants.tests.failed = failed;
+    else delete invariants.tests.failed;
+  }
+
+  if (invariants.testFiles) {
+    const moved = [...filesExcluded].filter((file) => !filesOther.has(file)).length;
+    const failed = (invariants.testFiles.failed ?? 0) - moved;
+    invariants.testFiles = {
+      ...invariants.testFiles,
+      passed: (invariants.testFiles.passed ?? 0) + moved,
+    };
+
+    if (failed > 0) invariants.testFiles.failed = failed;
+    else delete invariants.testFiles.failed;
+  }
+
+  const excluded: TestOutcome[] = [...ids].map(([id, item]) => ({
+    file: item.file ?? "",
+    name: item.name,
+    status: excludedFailed.has(id) ? "failed" : "passed",
+  }));
+
+  const suiteErrors = errorsLine.test(normalised) ? ["Runner reported unhandled errors"] : [];
+
+  if ((invariants.testFiles?.failed ?? 0) > 0 && (invariants.tests?.failed ?? 0) === 0)
+    suiteErrors.push("A test file failed without a failing test");
+
+  return {
+    invariants,
+    excluded,
+    onlyExcludedFailed: excludedFailed.size > 0 && otherFailed.size === 0,
+    suiteErrors,
+  };
 }
 
 export function isExcluded(outcome: TestOutcome, exclusions: readonly ExcludedTest[]) {
@@ -218,7 +315,8 @@ export interface CheckResult {
 /** Decide a step from its frozen check only. Raw output is kept by the caller for inspection. */
 export function evaluateCheck(check: StepCheck, observed: StepObservation): CheckResult {
   const failures: CheckFailure[] = [];
-  const invariants = extractInvariants(normalise(observed.output, check.normalise, observed.paths));
+  const normalised = normalise(observed.output, check.normalise, observed.paths);
+  let invariants = extractInvariants(normalised);
   let excluded: TestOutcome[] = [];
   let excludedOnlyFailures = false;
 
@@ -229,12 +327,13 @@ export function evaluateCheck(check: StepCheck, observed: StepObservation): Chec
       failures.push({ kind: "test-report", detail: `${check.testReport.path} was not written` });
     else {
       try {
-        const outcomes = parseVitestReport(observed.testReport);
-        excluded = outcomes.filter((outcome) => isExcluded(outcome, check.exclude));
-        const counted = outcomes.filter((outcome) => !isExcluded(outcome, check.exclude));
+        const report = readVitestReport(observed.testReport);
+        excluded = report.outcomes.filter((outcome) => isExcluded(outcome, check.exclude));
+        const counted = report.outcomes.filter((outcome) => !isExcluded(outcome, check.exclude));
         // Per-test counts replace the summary line, which cannot leave excluded tests out.
         invariants.tests = tally(counted);
         excludedOnlyFailures =
+          report.suiteErrors.length === 0 &&
           excluded.some((outcome) => outcome.status === "failed") &&
           !counted.some((outcome) => outcome.status === "failed");
       } catch (error) {
@@ -244,6 +343,14 @@ export function evaluateCheck(check: StepCheck, observed: StepObservation): Chec
         });
       }
     }
+  } else if (check.exclude.length) {
+    const result = excludeFromText(normalised, check.exclude);
+    invariants = result.invariants;
+    excluded = result.excluded;
+    excludedOnlyFailures =
+      result.onlyExcludedFailed &&
+      result.suiteErrors.length === 0 &&
+      (invariants.tests?.failed ?? 0) === 0;
   }
 
   // An excluded test failing makes the runner exit 1; the frozen exit describes the counted set.
