@@ -68,7 +68,6 @@ export function createBriqProvider(
     return {
       apiKey,
       baseUrl: options.baseUrl ?? (process.env.BRIQ_API_URL || undefined),
-      stack: options.stack,
       fetch: options.fetch,
     };
   };

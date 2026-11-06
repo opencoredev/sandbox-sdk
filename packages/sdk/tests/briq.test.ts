@@ -250,6 +250,7 @@ describe("Briq provider", () => {
 
     const request = f.calls.find((call) => call.method === "POST" && call.path === "/v1/briqs");
 
+    expect(request?.body).not.toHaveProperty("stack");
     expect(request?.body?.spec?.env).toEqual({
       TOKEN: {
         secret: expect.stringMatching(/^OC_[a-f0-9]{32}_0$/),

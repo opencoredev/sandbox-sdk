@@ -2,6 +2,6 @@
 
 Install `@briq-cloud/sdk` and import `briq` from `@opencoredev/sandbox-sdk/briq`. Pass `apiKey`, or set `BRIQ_API_KEY`. The SDK loads on first use, so the factory never throws for a missing key; the first call does.
 
-`briq({ apiKey, baseUrl, stack, fetch })` accepts an API origin, a stack name (default `opencore`), and a `fetch` implementation. `baseUrl` falls back to `BRIQ_API_URL`, then `https://api.briq.cloud`. The image is fixed to `ghcr.io/briq-cloud/sandbox:latest`; an `image` option fails with `unsupported`.
+`briq({ apiKey, baseUrl, fetch })` accepts an API origin and a `fetch` implementation. `baseUrl` falls back to `BRIQ_API_URL`, then `https://api.briq.cloud`. The image is fixed to `ghcr.io/briq-cloud/sandbox:latest`; an `image` option fails with `unsupported`. Each sandbox has its own network, so sandboxes cannot reach each other by name.
 
 The provider declares one optional capability, `size`: `"small"`, `"medium"` and `"large"` select the Briq sizes of the same names, and no `size` uses Briq's default. An exact size (`{ cpu, memoryMb }`) fails with `unsupported`. `network` other than unrestricted access, `idleTimeoutMs`, `timeoutMs`, and `from` fail with `unsupported` before any request. Keys are best-effort. The subpath exports `BriqOptions`, `BriqNative`, and `BriqProvider`.

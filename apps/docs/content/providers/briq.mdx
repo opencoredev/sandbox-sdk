@@ -132,10 +132,9 @@ Values you pass in `env` at creation are stored as encrypted secrets, and every 
 | --------- | -------------- | ------------------------ | -------------- |
 | `apiKey`  | `string`       |                          | `BRIQ_API_KEY` |
 | `baseUrl` | `string`       | `https://api.briq.cloud` | `BRIQ_API_URL` |
-| `stack`   | `string`       | `opencore`               |                |
 | `fetch`   | `typeof fetch` | Global `fetch`           |                |
 
-`baseUrl` is an HTTP or HTTPS origin, and the adapter refuses redirects. `stack` names the Briq stack that holds your sandboxes, so a second integration can use its own. Unlike the other SDK-backed providers, `box.native` is not the SDK's own object. It gives the sandbox `id` and a `status()` call, nothing more, and never exposes credentials.
+`baseUrl` is an HTTP or HTTPS origin, and the adapter refuses redirects. Each sandbox has its own network, so sandboxes cannot reach each other by name. Unlike the other SDK-backed providers, `box.native` is not the SDK's own object. It gives the sandbox `id` and a `status()` call, nothing more, and never exposes credentials.
 
 ## Limitations
 

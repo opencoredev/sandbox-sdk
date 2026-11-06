@@ -6,8 +6,6 @@ export interface BriqOptions {
   apiKey?: string;
   /** HTTP(S) API origin. Defaults to BRIQ_API_URL, then https://api.briq.cloud. */
   baseUrl?: string;
-  /** Stack that holds this provider's sandboxes. Default: `opencore`. */
-  stack?: string;
   /** Custom HTTP transport. It must honor `AbortSignal`. The adapter refuses redirects. */
   fetch?: typeof fetch;
 }
