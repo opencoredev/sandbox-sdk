@@ -110,7 +110,7 @@ Reads and writes of file contents use Briq's file transfer. Listing, `stat`, `mk
 
 ## Background processes and previews
 
-A preview is a private URL that carries its own credential, so anyone who has the URL can open it. Briq serves one port at a time: previewing a second port replaces the first.
+A preview is a private URL that carries its own credential, so anyone who has the URL can open it. `preview.headers` carries the same credential as a cookie, so a path you add with `box.preview(3000, { path: "/health" })` still opens. Briq serves one port at a time: previewing a second port replaces the first.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -135,7 +135,7 @@ Values you pass in `env` at creation are stored as encrypted secrets, and every 
 | `stack`   | `string`       | `opencore`               |                |
 | `fetch`   | `typeof fetch` | Global `fetch`           |                |
 
-`baseUrl` is an HTTP or HTTPS origin, and the adapter refuses redirects. `stack` names the Briq stack that holds your sandboxes, so a second integration can use its own. `box.native` gives the sandbox `id` and a `status()` call. It never exposes credentials.
+`baseUrl` is an HTTP or HTTPS origin, and the adapter refuses redirects. `stack` names the Briq stack that holds your sandboxes, so a second integration can use its own. Unlike the other SDK-backed providers, `box.native` is not the SDK's own object. It gives the sandbox `id` and a `status()` call, nothing more, and never exposes credentials.
 
 ## Limitations
 

@@ -153,7 +153,7 @@ function fixture(
     }
 
     if (url.pathname.endsWith("/expose"))
-      return Response.json({ url: "https://private-preview.invalid/?token=private" });
+      return Response.json({ url: "https://private-preview.invalid/?briq_token=private" });
 
     return Response.json({ briq: row });
   };
@@ -222,7 +222,8 @@ describe("Briq provider", () => {
     expect((await f.provider.connect(made.id)).id).toBe(made.id);
     expect(await f.provider.native(made.id).status()).not.toHaveProperty("apiKey");
     expect(await f.provider.previewUrl(made.id, 3000)).toEqual({
-      url: "https://private-preview.invalid/?token=private",
+      url: "https://private-preview.invalid/?briq_token=private",
+      headers: { cookie: "briq_token=private" },
     });
     expect(f.calls.find((call) => call.path.endsWith("/expose"))?.body).toEqual({
       port: 3000,
@@ -439,6 +440,33 @@ describe("Briq provider", () => {
       code: "outcome_unknown",
     });
     expect(connections - before).toBe(1);
+  });
+
+  it("keeps the preview credential when the core applies a path", async () => {
+    const f = fixture();
+    const box = await createSandbox(f.provider);
+    const preview = await box.preview(3000, { path: "/health?x=1" });
+
+    expect(preview.url).toBe("https://private-preview.invalid/health?x=1");
+    expect(preview.headers).toEqual({ cookie: "briq_token=private" });
+    expect((await box.preview(3000)).url).toContain("briq_token=private");
+  });
+
+  it("keeps a guest search over 32 KiB off stdin, where Briq's limit is 512 KiB", async () => {
+    const f = fixture();
+    const box = await createSandbox(f.provider);
+    expect(await f.provider.files.guestInput?.(box.id)).toBe("env");
+
+    const exec = vi.spyOn(f.provider, "exec");
+    const sent = () => exec.mock.calls.map(([, call]) => call);
+    // The fixture serves no file RPC, so the search itself fails; what it ran is what counts.
+    await box.files.search("a".repeat(40_000)).catch(() => undefined);
+    expect(sent().filter((call) => call.stdin !== undefined)).toEqual([]);
+    expect(sent().filter((call) => call.env.SANDBOX_SDK_INPUT)).toEqual([]);
+
+    // A small query still takes the one guest search, through the environment.
+    await box.files.search("needle").catch(() => undefined);
+    expect(sent().some((call) => call.env.SANDBOX_SDK_INPUT?.includes("needle"))).toBe(true);
   });
 
   it("declares the file flags of the SDK's own file layer", () => {

@@ -1,5 +1,5 @@
 import type * as BriqSdk from "@briq-cloud/sdk";
-import type { CreateInput } from "../../provider.js";
+import type { CreateInput, Preview } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { briqError } from "./errors.js";
@@ -30,6 +30,17 @@ function size(input: CreateInput["size"]): "small" | "medium" | "large" | undefi
     );
 
   return mapped;
+}
+
+// A private preview URL carries its credential in the `briq_token` query parameter. The core
+// resolves a preview path with `new URL(path, base)`, which drops the query, so the credential
+// also goes out as the cookie Briq accepts in its place. The URL keeps it for a browser.
+function preview(url: string): Preview {
+  const token = new URL(url).searchParams.get("briq_token");
+
+  return token === null
+    ? { url }
+    : { url, headers: { cookie: `briq_token=${encodeURIComponent(token)}` } };
 }
 
 /**
@@ -94,6 +105,9 @@ export function createBriqProvider(
     files: {
       transfer: "files",
       listOrder: "name",
+      // A Briq exec takes at most 512 KiB on stdin and the core caps nothing it sends there past
+      // 32 KiB. Environment only: a larger guest search or edit uses the file-by-file path.
+      guestInput: async () => "env",
       writeSupportsMode: true,
       read: (id, path) => use((briq) => briq.files.read(id, path)),
       write: (id, path, data, writeOptions) =>
@@ -104,7 +118,7 @@ export function createBriqProvider(
       remove: (id, path, removeOptions) =>
         use((briq) => briq.files.remove(id, path, removeOptions)),
     },
-    previewUrl: (id, port) => use((briq) => briq.previewUrl(id, port)),
+    previewUrl: (id, port) => use(async (briq) => preview((await briq.previewUrl(id, port)).url)),
     native: (id) => ({ id, status: () => use((briq) => briq.native(id).status()) }),
   };
 }
