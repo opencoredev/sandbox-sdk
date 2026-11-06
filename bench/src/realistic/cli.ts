@@ -781,7 +781,20 @@ interface Row {
 }
 
 async function summary(args: string[]) {
-  const { values } = parseArgs({ args, options: { out: { type: "string", multiple: true } } });
+  const { values } = parseArgs({
+    args,
+    options: {
+      out: { type: "string", multiple: true },
+      // provider@runId: attempts superseded by a rerun, left out of the table and listed in it.
+      drop: { type: "string", multiple: true },
+    },
+  });
+
+  const drops = (values.drop ?? []).map((item) => {
+    const [provider = "", runId = ""] = item.split("@");
+
+    return { provider, runId };
+  });
 
   if (!values.out?.length) throw new Error("realistic summary needs --out");
   const records: AttemptRecord[] = [];
@@ -792,7 +805,18 @@ async function summary(args: string[]) {
     bills.push(...(await readJsonLines(join(dir, "billing.jsonl"), attemptBillingSchema)));
   }
 
-  const attempts = costedAttempts(records, bills);
+  const isDropped = (r: AttemptRecord) =>
+    drops.some((d) => d.provider === r.provider && d.runId === r.runId);
+
+  const dropped = records.filter(isDropped);
+  const kept = records.filter((r) => !isDropped(r));
+  const keptIds = new Set(kept.map((r) => r.attemptId));
+
+  const attempts = costedAttempts(
+    kept,
+    bills.filter((b) => keptIds.has(b.attemptId)),
+  );
+
   const groups = new Map<string, CostedAttempt[]>();
 
   for (const a of attempts) {
@@ -965,7 +989,11 @@ async function summary(args: string[]) {
       `- ${p.profile} / ${p.track}: ${p.label}${p.lowest ? `; lowest eligible cost: ${p.lowest}` : ""}; eligible: ${p.eligible.join(", ") || "none"}${p.lowerUnverified.length ? `; lower unverified: ${p.lowerUnverified.map((u) => `${u.provider} ($${(u.costPerCompletedUSD * 1000).toFixed(2)}/1,000: ${u.reasons.join(", ")})`).join("; ")}` : ""}`,
   );
 
-  const text = `${table}\n\nPicks (descriptive; no statistical gate claimed):\n${pickLines.join("\n")}\n${heldTable}\n`;
+  const droppedNote = drops.length
+    ? `\nLeft out (superseded by a rerun): ${drops.map((d) => `${d.provider}@${d.runId} (${dropped.filter((r) => r.provider === d.provider && r.runId === d.runId).length} attempts)`).join(", ")}\n`
+    : "";
+
+  const text = `${table}\n\nPicks (descriptive; no statistical gate claimed):\n${pickLines.join("\n")}\n${heldTable}\n${droppedNote}`;
 
   await writeFile(join(outDir, "summary.md"), text);
   await writeFile(
