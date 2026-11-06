@@ -8,6 +8,7 @@ export const externalPackages: readonly string[] = [
   // Provider SDKs.
   "@boatdev/sdk",
   "@boxd-sh/sdk",
+  "@briq-cloud/sdk",
   "@daytonaio/sdk",
   "@daytona/api-client",
   "@daytona/toolbox-api-client",

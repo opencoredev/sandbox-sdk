@@ -5,6 +5,7 @@ import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { boat } from "../src/providers/boat/index.js";
+import { briq } from "../src/providers/briq/index.js";
 import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
@@ -155,6 +156,7 @@ for (const [name, factory, env, label, next] of [
   ["boxd", boxd, "BOXD_API_KEY", "boxd", "BOXD_API_KEY"],
   ["daytona", daytona, "DAYTONA_API_KEY", "Daytona", "DAYTONA_API_KEY"],
   ["boat", boat, "BOAT_API_KEY", "Boat", "BOAT_API_KEY"],
+  ["briq", briq, "BRIQ_API_KEY", "Briq", "BRIQ_API_KEY"],
   ["tenki", tenki, "TENKI_API_KEY", "Tenki", "TENKI_API_KEY or TENKI_AUTH_TOKEN"],
   ["freestyle", freestyle, "FREESTYLE_API_KEY", "Freestyle", "FREESTYLE_API_KEY"],
   ["superserve", superserve, "SUPERSERVE_API_KEY", "Superserve", "SUPERSERVE_API_KEY"],

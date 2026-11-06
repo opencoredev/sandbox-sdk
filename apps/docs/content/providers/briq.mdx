@@ -1,0 +1,157 @@
+---
+title: Briq
+description: Run coding agents in Briq sandboxes. Commands, files, background processes, and private previews on a fixed image, with the three size presets but no network or lifetime options.
+---
+
+`briq()` runs each sandbox on [Briq](https://briq.cloud) through the official `@briq-cloud/sdk` package.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk @briq-cloud/sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk @briq-cloud/sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk @briq-cloud/sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk @briq-cloud/sdk
+```
+
+  </Tab>
+</Tabs>
+
+The adapter needs `@briq-cloud/sdk` 0.1.2 or later and Node 22.6 or later. Set `BRIQ_API_KEY` to a Briq API key on your server, and keep it out of browser bundles.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { briq } from "@opencoredev/sandbox-sdk/briq";
+
+await using box = await createSandbox(briq());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+`await using` destroys the sandbox when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                   |
+| ------------------------------ | ----------- | ------------------------------------------------------- |
+| Commands and streaming         | Yes         | Output keeps its arrival order across stdout and stderr |
+| Files                          | Yes         |                                                         |
+| Background processes           | Yes         | Built from shell commands                               |
+| Preview URLs                   | Yes         | Private `https://` URL, one port at a time              |
+| Pause and resume               | No          |                                                         |
+| Snapshots                      | No          |                                                         |
+| Machine size                   | Partial     | Presets only; no exact numbers                          |
+| Network policy                 | No          | Only unrestricted access                                |
+| Hard lifetime (`timeoutMs`)    | No          |                                                         |
+| Idle timeout (`idleTimeoutMs`) | No          | Briq puts an unused sandbox to sleep on its own         |
+| Keys                           | Best-effort | Stored in labels                                        |
+| Terminal                       | No          |                                                         |
+
+An option the adapter can't enforce fails with `unsupported` before any request is made. The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { briq } from "@opencoredev/sandbox-sdk/briq";
+
+await using box = await createSandbox(briq());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+A command that times out or is aborted returns a `null` exit code with `timedOut: true` once Briq confirms it stopped it. If the connection drops or Briq can't confirm, `run` throws `outcome_unknown`. The adapter never retries a command, so check the sandbox before you run it again.
+
+## Files
+
+Relative paths resolve against `/workspace`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { briq } from "@opencoredev/sandbox-sdk/briq";
+
+await using box = await createSandbox(briq());
+await box.files.write("notes/todo.txt", "ship the docs\n");
+console.log(await box.files.read("notes/todo.txt"));
+console.log(await box.files.list("notes"));
+await box.files.write("secrets/token", "abc123", { mode: 0o600 });
+```
+
+Reads and writes of file contents use Briq's file transfer. Listing, `stat`, `mkdir`, and `remove` run a short Python command in the sandbox, so nothing stays installed there.
+
+## Background processes and previews
+
+A preview is a private URL that carries its own credential, so anyone who has the URL can open it. `preview.headers` carries the same credential as a cookie, so a path you add with `box.preview(3000, { path: "/health" })` still opens. Briq serves one port at a time: previewing a second port replaces the first.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { briq } from "@opencoredev/sandbox-sdk/briq";
+
+await using box = await createSandbox(briq());
+await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
+const preview = await box.preview(3000);
+console.log(preview.url);
+```
+
+## Environment variables
+
+Values you pass in `env` at creation are stored as encrypted secrets, and every value stays literal: `{{briq:name}}` and similar text is not expanded. This needs Briq's literal secrets feature. Without it, creating a sandbox with `env` fails with `unsupported` and nothing is allocated.
+
+## Configuration
+
+| Option    | Type           | Default                  | Env var        |
+| --------- | -------------- | ------------------------ | -------------- |
+| `apiKey`  | `string`       |                          | `BRIQ_API_KEY` |
+| `baseUrl` | `string`       | `https://api.briq.cloud` | `BRIQ_API_URL` |
+| `fetch`   | `typeof fetch` | Global `fetch`           |                |
+
+`baseUrl` is an HTTP or HTTPS origin, and the adapter refuses redirects. Each sandbox has its own network, so sandboxes cannot reach each other by name. Unlike the other SDK-backed providers, `box.native` is not the SDK's own object. It gives the sandbox `id` and a `status()` call, nothing more, and never exposes credentials.
+
+## Limitations
+
+- One fixed image, `ghcr.io/briq-cloud/sandbox:latest`, with POSIX `sh`, Python 3, Git, and common development tools. A custom image fails with `unsupported`.
+- `size` takes `"small"`, `"medium"` or `"large"`, the Briq sizes of the same names. Without `size`, Briq's default size is used. An exact size (`{ cpu, memoryMb }`) fails with `unsupported` before any request, and so does a size your Briq plan does not offer.
+- No network policy, hard lifetime, idle timeout, snapshots, pause, or terminal.
+- Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
+- Labels hold at most 30 pairs (29 with a `key`), keys up to 128 characters, values up to 1024, and 16 KiB in all.
+- Commands take at most one hour, and finite stdin at most 512 KiB.
+
+## How it works
+
+- Creation checks that Python 3 is present and that the sandbox streams command output before it returns. If that check fails, the adapter destroys the sandbox it just made.
+- Creation sends one request with a random name and doesn't replay it when the outcome is unknown.
+- The adapter turns Briq errors into fixed `SandboxError` messages. Briq's response text never reaches your logs.
+
+## Next steps
+
+- [Processes and previews](/concepts/processes-and-previews)
+- [Lifecycle and cleanup](/concepts/lifecycle-and-cleanup)
