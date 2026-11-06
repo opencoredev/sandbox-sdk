@@ -24,4 +24,4 @@ export interface BriqNative {
   }>;
 }
 
-export type BriqProvider = Provider<BriqNative, never>;
+export type BriqProvider = Provider<BriqNative, "size">;

@@ -1,6 +1,6 @@
 ---
 title: Briq
-description: Run coding agents in Briq sandboxes. Commands, files, background processes, and private previews on a fixed image, with no size, network, or lifetime options yet.
+description: Run coding agents in Briq sandboxes. Commands, files, background processes, and private previews on a fixed image, with the three size presets but no network or lifetime options.
 ---
 
 `briq()` runs each sandbox on [Briq](https://briq.cloud) through the official `@briq-cloud/sdk` package.
@@ -38,7 +38,7 @@ bun add @opencoredev/sandbox-sdk @briq-cloud/sdk
   </Tab>
 </Tabs>
 
-The adapter needs `@briq-cloud/sdk` 0.1.0 or later and Node 22.6 or later. Set `BRIQ_API_KEY` to a Briq API key on your server, and keep it out of browser bundles.
+The adapter needs `@briq-cloud/sdk` 0.1.1 or later and Node 22.6 or later. Set `BRIQ_API_KEY` to a Briq API key on your server, and keep it out of browser bundles.
 
 ## Quickstart
 
@@ -63,7 +63,7 @@ console.log(result.stdout);
 | Preview URLs                   | Yes         | Private `https://` URL, one port at a time              |
 | Pause and resume               | No          |                                                         |
 | Snapshots                      | No          |                                                         |
-| Machine size                   | No          | Briq's default size                                     |
+| Machine size                   | Partial     | Presets only; no exact numbers                          |
 | Network policy                 | No          | Only unrestricted access                                |
 | Hard lifetime (`timeoutMs`)    | No          |                                                         |
 | Idle timeout (`idleTimeoutMs`) | No          | Briq puts an unused sandbox to sleep on its own         |
@@ -140,7 +140,8 @@ Values you pass in `env` at creation are stored as encrypted secrets, and every 
 ## Limitations
 
 - One fixed image, `ghcr.io/briq-cloud/sandbox:latest`, with POSIX `sh`, Python 3, Git, and common development tools. A custom image fails with `unsupported`.
-- No size, network policy, hard lifetime, idle timeout, snapshots, pause, or terminal.
+- `size` takes `"small"`, `"medium"` or `"large"`, the Briq sizes of the same names. Without `size`, Briq's default size is used. An exact size (`{ cpu, memoryMb }`) fails with `unsupported` before any request, and so does a size your Briq plan does not offer.
+- No network policy, hard lifetime, idle timeout, snapshots, pause, or terminal.
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - Labels hold at most 30 pairs (29 with a `key`), keys up to 128 characters, values up to 1024, and 16 KiB in all.
 - Commands take at most one hour, and finite stdin at most 512 KiB.

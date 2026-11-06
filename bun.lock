@@ -170,7 +170,7 @@
       "version": "1.0.3",
       "devDependencies": {
         "@boatdev/sdk": "1.9.9",
-        "@briq-cloud/sdk": "0.1.0",
+        "@briq-cloud/sdk": "0.1.1",
         "@boxd-sh/sdk": "0.2.17",
         "@daytonaio/sdk": "^0.225.0",
         "@mastra/core": "^1.78.0",
@@ -191,7 +191,7 @@
         "zod": "^4.6.7",
       },
       "peerDependencies": {
-        "@briq-cloud/sdk": "^0.1.0",
+        "@briq-cloud/sdk": "^0.1.1",
         "@boxd-sh/sdk": "^0.2.17",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
@@ -354,7 +354,7 @@
     "@boxd-sh/sdk": ["@boxd-sh/sdk@0.2.17", "", { "dependencies": { "@bufbuild/protobuf": "^2.10.2", "@grpc/grpc-js": "^1.12.0" } }, "sha512-Ap9DSCvkCgw9P/+7NOdaauLBO7V5Gbr91XnW+u3bQW4w37MLqeAmZFvIJ/EnAd94xDZjX2bqPnWoTRBNXhJlQw=="],
 
     "@braintree/sanitize-url": ["@braintree/sanitize-url@7.1.2", "", {}, "sha512-jigsZK+sMF/cuiB7sERuo9V7N9jx+dhmHHnQyDSVdpZwVutaBu7WvNYqMDLSgFgfB30n452TP3vjDAvFC973mA=="],
-    "@briq-cloud/sdk": ["@briq-cloud/sdk@0.1.0", "", { "dependencies": { "ws": "^8.21.0" } }, "sha512-EU+8kasJYjF74v7kPfMdlwoctxc6zCVFinrFzfIY+KNxrXEjT5gtQz4KhR0CX3/h9yoFMMpMNI6aRkhZ2/wHhQ=="],
+    "@briq-cloud/sdk": ["@briq-cloud/sdk@0.1.1", "", { "dependencies": { "ws": "^8.21.0" } }, "sha512-856zBp/mAkTf6FSwt8l//XmadYL7nv9GsUui1vUDmfX69dBEXDFIq3RSXFBpitkynyHPmTef/eI3cQ57o0Bv/Q=="],
 
 
     "@bruits/satteri-darwin-arm64": ["@bruits/satteri-darwin-arm64@0.10.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-27KTVl4TJkVahMy/ohyA7qd4938G5UNneFUz/PsScYfpIhj0IVAS23mpcJXdPF44sa6nva198lmV/cKIb2YPyA=="],

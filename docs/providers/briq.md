@@ -4,4 +4,4 @@ Install `@briq-cloud/sdk` and import `briq` from `@opencoredev/sandbox-sdk/briq`
 
 `briq({ apiKey, baseUrl, stack, fetch })` accepts an API origin, a stack name (default `opencore`), and a `fetch` implementation. `baseUrl` falls back to `BRIQ_API_URL`, then `https://api.briq.cloud`. The image is fixed to `ghcr.io/briq-cloud/sandbox:latest`; an `image` option fails with `unsupported`.
 
-The provider declares no optional capability. `size`, `network` other than unrestricted access, `idleTimeoutMs`, `timeoutMs`, and `from` fail with `unsupported` before any request. Keys are best-effort. The subpath exports `BriqOptions`, `BriqNative`, and `BriqProvider`.
+The provider declares one optional capability, `size`: `"small"`, `"medium"` and `"large"` select the Briq sizes of the same names, and no `size` uses Briq's default. An exact size (`{ cpu, memoryMb }`) fails with `unsupported`. `network` other than unrestricted access, `idleTimeoutMs`, `timeoutMs`, and `from` fail with `unsupported` before any request. Keys are best-effort. The subpath exports `BriqOptions`, `BriqNative`, and `BriqProvider`.

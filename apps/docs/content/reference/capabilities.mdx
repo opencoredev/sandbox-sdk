@@ -18,7 +18,7 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 | `terminal()`       | No           | No                 | Yes         | No                 | No                | No                 | No                 | No                 | No                 | No          | No                | No               | No                     | No               | No       |
 | No&nbsp;network    | Yes          | Yes                | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | No               | Yes                    | No               | Recorded |
 | Allow&nbsp;list    | No           | Literal&nbsp;hosts | Yes         | Yes                | Yes               | Yes                | No                 | No                 | No                 | Yes         | Yes               | Yes              | Empty&nbsp;only        | No               | Recorded |
-| Size&nbsp;presets  | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | No               | No       |
+| Size&nbsp;presets  | Yes          | No                 | No          | Yes                | Yes               | Yes                | No                 | Yes                | Yes                | Yes         | No                | Yes              | No                     | Yes              | No       |
 | Exact&nbsp;size    | No&nbsp;disk | No                 | No          | vCPUs&nbsp;only    | Yes               | No                 | No                 | No                 | No                 | Yes         | No                | Fixed&nbsp;steps | No                     | No               | No       |
 | `idleTimeoutMs`    | Partial      | No                 | No          | No                 | Minutes           | No                 | Minutes            | No                 | Minutes            | No          | No                | Seconds          | Seconds                | No               | Yes      |
 | `timeoutMs`        | Partial      | No                 | Yes         | Per&nbsp;session   | Minutes           | No                 | No                 | No                 | No                 | Yes         | No                | Seconds          | Seconds                | No               | Yes      |
@@ -48,7 +48,7 @@ Each row is an option or method. "No network" means `network: "none"`, and "Allo
 - **Railway.** Rejects all common sizes because Railway can't set a disk size; set CPU and memory with the factory's `resources` option. Its idle timeout destroys the VM. See [Railway](/providers/railway).
 - **agentOS.** Supports only the `"network-policy"` optional capability. It runs locally in V8 and WebAssembly, with in-process identity. SDK process handles and previews are unsupported; native process and HTTP APIs remain available. See [Local (agentOS)](/providers/agentos).
 - **boxd.** A restored snapshot keeps the source's size, image, and env. See [boxd](/providers/boxd).
-- **Briq.** Every sandbox runs one fixed image on Briq's default size, so `size`, `network`, `idleTimeoutMs`, `timeoutMs`, and `from` fail with `unsupported`. Keys are best-effort. See [Briq](/providers/briq).
+- **Briq.** Every sandbox runs one fixed image. `size` takes the presets `small`, `medium` and `large`, which are the Briq sizes of the same names; an exact size fails with `unsupported`. `network`, `idleTimeoutMs`, `timeoutMs`, and `from` fail with `unsupported`. Keys are best-effort. See [Briq](/providers/briq).
 
 ## Peer packages
 
@@ -69,7 +69,7 @@ E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer call their provider's H
 | [Superserve](/providers/superserve) | `@opencoredev/sandbox-sdk/superserve` | None                      | None      |
 | [boxd](/providers/boxd)             | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`            | `^0.2.17` |
 | [Freestyle](/providers/freestyle)   | `@opencoredev/sandbox-sdk/freestyle`  | None                      | None      |
-| [Briq](/providers/briq)             | `@opencoredev/sandbox-sdk/briq`       | `@briq-cloud/sdk`         | `^0.1.0`  |
+| [Briq](/providers/briq)             | `@opencoredev/sandbox-sdk/briq`       | `@briq-cloud/sdk`         | `^0.1.1`  |
 | [Memory](/providers/memory)         | `@opencoredev/sandbox-sdk/memory`     | None                      | None      |
 
 Local needs a running Docker Engine instead. agentOS also needs its platform sidecar package; see [Local (agentOS)](/providers/agentos).

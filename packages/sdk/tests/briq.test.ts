@@ -24,6 +24,7 @@ type Peer = { socket: WebSocket; start: Start; cancel: () => void };
 
 type Spec = {
   name?: string;
+  size?: string;
   labels?: Record<string, string>;
   env?: Record<string, { secret: string; value: string; literal: boolean }>;
 };
@@ -86,7 +87,12 @@ afterEach(() => {
 });
 
 function fixture(
-  options: { labelsSupported?: boolean; literalSupported?: boolean; createStatus?: number } = {},
+  options: {
+    labelsSupported?: boolean;
+    literalSupported?: boolean;
+    createStatus?: number;
+    availableSizes?: string[];
+  } = {},
 ) {
   const calls: Array<{ method: string; path: string; body: Body; headers: Headers }> = [];
   const rows: Row[] = [];
@@ -104,7 +110,7 @@ function fixture(
           briqLabels: options.labelsSupported ?? true,
           literalEnvSecrets: options.literalSupported ?? true,
         },
-        availableSizes: ["small"],
+        availableSizes: options.availableSizes ?? ["small"],
         team: { id: "tm_owned" },
       });
 
@@ -205,7 +211,7 @@ describe("Briq provider", () => {
     const f = fixture();
     const made = await f.provider.create(input({ key: "unicode 雪" }));
     expect(f.provider.keyMode).toBe("best-effort");
-    expect(f.provider.capabilities.size).toBe(0);
+    expect([...f.provider.capabilities]).toEqual(["size"]);
     expect(made).toMatchObject({
       key: "unicode 雪",
       labels: { suite: "contract" },
@@ -265,7 +271,6 @@ describe("Briq provider", () => {
 
   it("rejects unsupported options before any API call, and an API without the features it needs", async () => {
     for (const extra of [
-      { size: "small" as const },
       { network: "none" as const },
       { idleTimeoutMs: 1 },
       { timeoutMs: 1 },
@@ -285,6 +290,47 @@ describe("Briq provider", () => {
     const old = fixture({ labelsSupported: false });
     await expect(old.provider.create(input())).rejects.toMatchObject({ code: "unsupported" });
     expect(old.calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+
+  it("maps the core's named sizes to the Briq sizes, and none to the default", async () => {
+    const f = fixture({ availableSizes: ["small", "medium", "large", "xlarge"] });
+
+    for (const size of ["small", "medium", "large"] as const) {
+      const made = await f.provider.create(input({ size }));
+      expect(f.rows.find((row) => row.id === made.id)?.size).toBe(size);
+    }
+
+    const plain = await f.provider.create(input());
+    expect(f.rows.find((row) => row.id === plain.id)?.size).toBe("small");
+  });
+
+  it("refuses any other size before any API call", async () => {
+    for (const size of [
+      { cpu: 2, memoryMb: 4096 },
+      { cpu: 1, memoryMb: 1024, diskGb: 10 },
+      "xs",
+      "xl",
+      "xlarge",
+      "2xl",
+      "toString",
+      "",
+      null,
+      7,
+    ]) {
+      const f = fixture({ availableSizes: ["small", "medium", "large", "xlarge"] });
+      // JS callers can pass values outside CreateInput["size"]; Object.assign keeps the type loose.
+      const extra: Partial<CreateInput> = Object.assign<Partial<CreateInput>, object>({}, { size });
+      await expect(f.provider.create(input(extra))).rejects.toMatchObject({ code: "unsupported" });
+      expect(f.calls).toEqual([]);
+    }
+  });
+
+  it("reports a size the plan does not offer as unsupported without creating", async () => {
+    const f = fixture({ availableSizes: ["small"] });
+    await expect(f.provider.create(input({ size: "large" }))).rejects.toMatchObject({
+      code: "unsupported",
+    });
+    expect(f.calls.filter((call) => call.method === "POST")).toEqual([]);
   });
 
   it("rejects a custom image option", () => {

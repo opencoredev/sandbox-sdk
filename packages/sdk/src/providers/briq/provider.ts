@@ -1,4 +1,5 @@
 import type * as BriqSdk from "@briq-cloud/sdk";
+import type { CreateInput } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { briqError } from "./errors.js";
@@ -8,6 +9,28 @@ import type { BriqOptions, BriqProvider } from "./types.js";
 export type BriqModule = typeof BriqSdk;
 
 type Client = ReturnType<BriqModule["nativeSandbox"]>;
+
+// The core's named sizes and the Briq sizes they select. Anything else, including a resources
+// object, is refused: a Briq size is a fixed set of CPU, memory and disk.
+const SIZES = new Map<CreateInput["size"], "small" | "medium" | "large">([
+  ["small", "small"],
+  ["medium", "medium"],
+  ["large", "large"],
+]);
+
+function size(input: CreateInput["size"]): "small" | "medium" | "large" | undefined {
+  if (input === undefined) return undefined;
+
+  const mapped = SIZES.get(input);
+
+  if (!mapped)
+    throw briqError(
+      "unsupported",
+      "Briq sizes are small, medium and large; custom sizes are unsupported",
+    );
+
+  return mapped;
+}
 
 /**
  * Sandboxes on Briq through `@briq-cloud/sdk`, which owns the create, exec and file logic. This
@@ -56,8 +79,12 @@ export function createBriqProvider(
   return {
     name: "briq",
     keyMode: "best-effort",
-    capabilities: new Set<never>(),
-    create: (input) => use((briq) => briq.create(input)),
+    capabilities: new Set<"size">(["size"]),
+    create: async (input) => {
+      const mapped = size(input.size);
+
+      return use((briq) => briq.create({ ...input, size: mapped }));
+    },
     find: (key) => use((briq) => briq.find(key)),
     connect: (id) => use((briq) => briq.connect(id)),
     list: (labels) => use((briq) => briq.list(labels)),

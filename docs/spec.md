@@ -218,7 +218,7 @@ Provider-level capabilities gate root functions that need no sandbox:
 | `boat(opts)`       | `/boat`       | Direct HTTP to Boat's API; no peer.                                                                             |
 | `sandboxer(opts)`  | `/sandboxer`  | Direct HTTP, through the same API client as `boat`; no peer.                                                    |
 | `tenki(opts)`      | `/tenki`      | `@tenkicloud/sandbox`.                                                                                          |
-| `briq(opts)`       | `/briq`       | `@briq-cloud/sdk`. Fixed image, no optional capability.                                                         |
+| `briq(opts)`       | `/briq`       | `@briq-cloud/sdk`. Fixed image, `size` presets only.                                                            |
 | `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
 | `freestyle(opts)`  | `/freestyle`  | Direct HTTP to Freestyle's API; no peer.                                                                        |
 | `superserve(opts)` | `/superserve` | Direct HTTP to Superserve's API and sandbox data plane; no peer.                                                |
