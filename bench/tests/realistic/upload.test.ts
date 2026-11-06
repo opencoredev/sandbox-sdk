@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { existsSync, readFileSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -121,6 +122,7 @@ describe("resource reads", () => {
 
     expect(read).toEqual({
       cpuQuota: 4,
+      cpuQuotaSource: "cgroup",
       memoryGiB: 8,
       arch: "x86_64",
       cpuSeconds: 5,
@@ -137,6 +139,7 @@ describe("resource reads", () => {
 
     expect(read).toEqual({
       cpuQuota: 2,
+      cpuQuotaSource: "online-cpus",
       memoryGiB: 8,
       arch: "aarch64",
       cpuSeconds: 12,
@@ -187,10 +190,73 @@ describe.skipIf(!existsSync(frozen) || !existsSync(reference))("the frozen SBX-9
       expect(result.excluded.map((outcome) => outcome.status)).toEqual(["passed"]);
     }
 
-    expect(manifest.profiles.build?.steps.at(-1)?.check.postconditions.exists).toEqual([
+    const build = manifest.profiles.build?.steps ?? [];
+
+    expect(build.find((step) => step.id === "build")?.check.postconditions.exists).toEqual([
       "repo/build/app.bundle.min.js",
       "repo/build/external_api.min.js",
       "repo/build/alwaysontop.min.js",
     ]);
+
+    // The frozen check is "exists and non-empty".
+    expect(build.at(-1)?.op).toEqual({
+      kind: "shell",
+      script:
+        "test -s build/app.bundle.min.js && test -s build/external_api.min.js && test -s build/alwaysontop.min.js",
+    });
+  });
+
+  it("fails a run whose failing tests differ from the frozen ones, or whose report has suite errors", () => {
+    const manifest = harnessManifestFromFrozen(readFileSync(frozen, "utf8"));
+
+    const check = manifest.profiles["fix-and-test"]?.steps.find(
+      (step) => step.id === "test-a",
+    )?.check;
+
+    if (!check) throw new Error("No test-a check");
+
+    const report = z
+      .looseObject({
+        testResults: z.array(
+          z.looseObject({
+            message: z.string().optional(),
+            assertionResults: z.array(z.looseObject({ status: z.string(), fullName: z.string() })),
+          }),
+        ),
+      })
+      .parse(JSON.parse(readFileSync(join(reference, "report-a.json"), "utf8")));
+
+    // Same counts, different identities: one frozen failure passes, an unrelated test fails.
+    const swapped = structuredClone(report);
+    const tests = swapped.testResults.flatMap((file) => file.assertionResults);
+
+    const frozenFailure = tests.find(
+      (t) => t.fullName === "utils/looseEqual compares arrays correctly",
+    );
+
+    const other = tests.find((t) => t.status === "passed" && !t.fullName.includes("exponential"));
+
+    if (!frozenFailure || !other) throw new Error("fixture");
+    frozenFailure.status = "passed";
+    other.status = "failed";
+
+    const observe = (text: string) =>
+      evaluateCheck(check, {
+        exitCode: 1,
+        timedOut: false,
+        output: "",
+        testReport: text,
+        fileHashes: {},
+        paths: { workdir: "/w" },
+      });
+
+    expect(observe(JSON.stringify(swapped)).failures.map((f) => f.kind)).toContain("failing-tests");
+
+    const broken = structuredClone(report);
+    const first = broken.testResults[0];
+
+    if (!first) throw new Error("fixture");
+    first.message = "Error: Failed to load url ./missing (resolved id: ./missing)";
+    expect(observe(JSON.stringify(broken)).failures.map((f) => f.kind)).toContain("test-report");
   });
 });

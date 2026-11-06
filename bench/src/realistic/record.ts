@@ -237,6 +237,11 @@ export const attemptRecordSchema = z.object({
     .object({
       /** vCPUs by cgroup quota, or online CPUs when no quota is set. */
       cpuQuota: z.number().positive().nullable(),
+      /**
+       * "cgroup": from cpu.max. "online-cpus": no quota is set, so the count of online CPUs, which is
+       * the allocation in a VM but can be the host's count in a container. null when unread.
+       */
+      cpuQuotaSource: z.enum(["cgroup", "online-cpus"]).nullable().default(null),
       /** Usable memory in GiB: the cgroup limit or MemTotal, whichever is lower. */
       memoryGiB: z.number().positive().nullable(),
       arch: z.string().nullable(),

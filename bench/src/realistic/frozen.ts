@@ -51,9 +51,11 @@ const frozenSchema = z.looseObject({
       completionChecks: z.object({
         afterPatchA: z.object({
           testsExcludingTimingSensitive: z.record(z.string(), z.number()),
+          failingTests: z.array(z.string()),
         }),
         afterPatchB: z.object({
           testsExcludingTimingSensitive: z.record(z.string(), z.number()),
+          failingTests: z.array(z.string()),
         }),
       }),
       minFreeDiskGiB: z.number(),
@@ -155,6 +157,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
     report: string;
     phase: "workload" | "resume";
     counts: Record<string, number>;
+    failing: readonly string[];
     exit: 0 | 1;
   }) => ({
     id: input.id,
@@ -166,6 +169,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
       outputInvariants: { tests: input.counts },
       testReport: { kind: "vitest-json", path: `.rw/${input.report}` },
       exclude,
+      failing: input.failing.map(splitTestId),
     },
   });
 
@@ -250,6 +254,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
             report: "report-a.json",
             phase: "workload",
             counts: fat.completionChecks.afterPatchA.testsExcludingTimingSensitive,
+            failing: fat.completionChecks.afterPatchA.failingTests,
             exit: 1,
           }),
           {
@@ -270,6 +275,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
             report: "report-b.json",
             phase: "workload",
             counts: fat.completionChecks.afterPatchB.testsExcludingTimingSensitive,
+            failing: fat.completionChecks.afterPatchB.failingTests,
             exit: 0,
           }),
           {
@@ -284,6 +290,7 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
             report: "report-resume.json",
             phase: "resume",
             counts: fat.completionChecks.afterPatchB.testsExcludingTimingSensitive,
+            failing: fat.completionChecks.afterPatchB.failingTests,
             exit: 0,
           }),
         ],
@@ -329,6 +336,18 @@ export function harnessManifestFromFrozen(json: string): HarnessManifest {
               postconditions: {
                 exists: Object.keys(build.completionChecks.outputs).map((path) => `repo/${path}`),
               },
+            },
+          },
+          {
+            // The frozen check is "exists and non-empty"; existence alone is a postcondition above.
+            id: "outputs-non-empty",
+            phase: "workload",
+            cwd: "repo",
+            op: {
+              kind: "shell",
+              script: Object.keys(build.completionChecks.outputs)
+                .map((path) => `test -s ${path}`)
+                .join(" && "),
             },
           },
         ],

@@ -10,6 +10,7 @@ export type Resources = NonNullable<AttemptRecord["resources"]>;
 
 export interface ResourceRead {
   readonly cpuQuota: number | null;
+  readonly cpuQuotaSource: "cgroup" | "online-cpus" | null;
   readonly memoryGiB: number | null;
   readonly arch: string | null;
   /** CPU time used so far, from the cgroup when it exposes one, else /proc/stat. */
@@ -50,10 +51,8 @@ export function parseResourceRead(output: string): ResourceRead {
   const quotaValue = number(quota);
   const periodValue = number(period);
 
-  const cpuQuota =
-    quotaValue !== null && periodValue !== null && periodValue > 0
-      ? quotaValue / periodValue
-      : online;
+  const fromCgroup = quotaValue !== null && periodValue !== null && periodValue > 0;
+  const cpuQuota = fromCgroup ? quotaValue / periodValue : online;
 
   const limitBytes = number(values.get("m"));
   const totalKiB = number(values.get("t"));
@@ -76,6 +75,8 @@ export function parseResourceRead(output: string): ResourceRead {
 
   return {
     cpuQuota: cpuQuota !== null && cpuQuota > 0 ? cpuQuota : null,
+    cpuQuotaSource:
+      cpuQuota !== null && cpuQuota > 0 ? (fromCgroup ? "cgroup" : "online-cpus") : null,
     memoryGiB: candidates.length ? Math.min(...candidates) : null,
     arch: values.get("a") || null,
     cpuSeconds,
@@ -115,6 +116,7 @@ export function resourcesBetween(
 
   return {
     cpuQuota: first.cpuQuota,
+    cpuQuotaSource: first.cpuQuotaSource,
     memoryGiB: first.memoryGiB,
     arch: first.arch,
     cpuSeconds,

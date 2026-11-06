@@ -127,6 +127,11 @@ export const stepCheckSchema = z
     /** Optional per-test report (relative to the working directory). Without one, exclusions use FAIL lines. */
     testReport: z.object({ kind: z.literal("vitest-json"), path: relativePath }).optional(),
     exclude: z.array(excludedTestSchema).default([]),
+    /**
+     * The exact set of counted tests that must fail (SBX-95's `failingTests`), matched like
+     * exclusions. With a test report, any other failing test fails the check. Omitted: counts only.
+     */
+    failing: z.array(excludedTestSchema.omit({ reason: true })).optional(),
     postconditions: z
       .object({
         /** sha256 of files the step leaves behind, relative to the working directory. */

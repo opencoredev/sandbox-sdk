@@ -306,6 +306,7 @@ export type CheckFailure =
       actual: OutputInvariants[keyof OutputInvariants] | null;
     }
   | { kind: "test-report"; detail: string }
+  | { kind: "failing-tests"; unexpected: string[]; missing: string[] }
   | { kind: "file-hash"; path: string; expected: string; actual: string | null }
   | { kind: "missing-file"; path: string }
   | { kind: "readiness"; process: string; timeoutMs: number }
@@ -343,6 +344,31 @@ export function evaluateCheck(check: StepCheck, observed: StepObservation): Chec
           report.suiteErrors.length === 0 &&
           excluded.some((outcome) => outcome.status === "failed") &&
           !counted.some((outcome) => outcome.status === "failed");
+
+        // A collection, hook or runtime error is never part of a frozen result.
+        if (report.suiteErrors.length)
+          failures.push({
+            kind: "test-report",
+            detail: `Suite errors: ${report.suiteErrors.slice(0, 3).join("; ")}`,
+          });
+
+        if (check.failing) {
+          const failed = counted.filter((outcome) => outcome.status === "failed");
+          const expected = check.failing.map((item) => ({ ...item, reason: "" }));
+
+          const unexpected = failed.flatMap((outcome) =>
+            isExcluded(outcome, expected) ? [] : [`${outcome.file} > ${outcome.name}`],
+          );
+
+          const missing = check.failing.flatMap((item) =>
+            failed.some((outcome) => isExcluded(outcome, [{ ...item, reason: "" }]))
+              ? []
+              : [`${item.file ?? ""} > ${item.name}`],
+          );
+
+          if (unexpected.length || missing.length)
+            failures.push({ kind: "failing-tests", unexpected, missing });
+        }
       } catch (error) {
         failures.push({
           kind: "test-report",

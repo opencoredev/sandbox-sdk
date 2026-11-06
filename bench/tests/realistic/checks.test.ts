@@ -290,9 +290,11 @@ describe("frozen step checks", () => {
       exclude: [{ file: "timing.spec.ts", name: "t > slow", reason: "timing" }],
     });
 
-    expect(evaluateCheck(check, observation({ exitCode: 1, testReport: report })).failures).toEqual(
-      [{ kind: "exit", expected: 0, actual: 1 }],
-    );
+    const failures = evaluateCheck(check, observation({ exitCode: 1, testReport: report })).failures;
+
+    // The exit is not excused, and the collection error fails the check on its own too.
+    expect(failures).toContainEqual({ kind: "exit", expected: 0, actual: 1 });
+    expect(failures.map((f) => f.kind)).toContain("test-report");
   });
 
   it("parses vitest's JSON reporter and maps pending to skipped", () => {

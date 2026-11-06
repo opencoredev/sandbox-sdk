@@ -31,7 +31,7 @@ import { billingModelLabel, billingRule } from "../cost/billing-rules.js";
 import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
 import { describeIneligibility, eligibility, type CostSourceAudit } from "../cost/eligibility.js";
 import { pick, type Candidate } from "../cost/picks.js";
-import { budgetUSD, estimateCost } from "../pricing.js";
+import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
 import { loadProvider } from "../providers.js";
 import { shuffle } from "../v2-stats.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
@@ -153,7 +153,16 @@ async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[])
 /** Budget estimate for one attempt at list price for its provisioned size (EUR counted at 2x). */
 function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number): number {
   const size = setup.tracks[track].provisioned;
-  const cost = estimateCost(setup.pricingKey, durationMs, size);
+
+  // Upstash charges its tier price per CPU-hour used (observed, SBX-100), so a busy box can cost
+  // that price times its vCPUs per wall-hour: bound it by every vCPU busy.
+  const upstash = setup.pricingKey === "upstash" ? pricing.upstash : undefined;
+  const tier = upstash ? computeHourly(upstash, size) : null;
+
+  const cost =
+    upstash && tier !== null
+      ? (tier * size.cpu * durationMs) / 3_600_000
+      : estimateCost(setup.pricingKey, durationMs, size);
 
   // Unknown prices are counted at a conservative $1 per hour.
   return cost === null ? (durationMs / 3_600_000) * 1 : budgetUSD(setup.pricingKey, cost);
@@ -353,102 +362,106 @@ async function run(args: string[]) {
           })),
         );
 
-  for (let batch = firstBatch; batch < firstBatch + batches; batch++) {
-    for (const slot of shuffle(combos, batchSeed(seed, batch))) {
-      const track = z.enum(tracks).parse(slot.track);
-      const profile = manifest.profiles[slot.profile];
+  try {
+    slots: for (let batch = firstBatch; batch < firstBatch + batches; batch++) {
+      for (const slot of shuffle(combos, batchSeed(seed, batch))) {
+        const track = z.enum(tracks).parse(slot.track);
+        const profile = manifest.profiles[slot.profile];
 
-      if (!profile) throw new Error(`Unknown profile ${slot.profile}`);
-      const slotMs = profile.slotTimeoutMs + (slot.idle?.idleMs ?? 0);
-      const active: SlotProvider[] = [];
-      const slotStartedAt = Date.now();
+        if (!profile) throw new Error(`Unknown profile ${slot.profile}`);
+        const slotMs = profile.slotTimeoutMs + (slot.idle?.idleMs ?? 0);
+        const active: SlotProvider[] = [];
+        const slotStartedAt = Date.now();
 
-      for (const setup of setups) {
-        const tooSmall = setup.tracks[track].tooSmall[slot.profile];
+        for (const setup of setups) {
+          const tooSmall = setup.tracks[track].tooSmall[slot.profile];
 
-        if (tooSmall) {
-          const record = emptyRecord(
-            {
-              runId: values.run,
-              attemptId: `${values.run}-b${batch}-${slot.id}-${setup.name}`,
-              provider: setup.name,
-              manifest,
-              manifestSha256,
-              profileName: slot.profile,
-              track: slot.track,
-              variant: slot.variant,
-              batch,
-              slot: { index: 0, id: slot.id },
-              seed,
+          if (tooSmall) {
+            const record = emptyRecord(
+              {
+                runId: values.run,
+                attemptId: `${values.run}-b${batch}-${slot.id}-${setup.name}`,
+                provider: setup.name,
+                manifest,
+                manifestSha256,
+                profileName: slot.profile,
+                track: slot.track,
+                variant: slot.variant,
+                batch,
+                slot: { index: 0, id: slot.id },
+                seed,
+                slotStartedAt,
+              },
+              "default-size-too-small",
+              tooSmall,
               slotStartedAt,
-            },
-            "default-size-too-small",
-            tooSmall,
-            slotStartedAt,
-            attributionFor(setup.name).attribution,
-          );
+              attributionFor(setup.name).attribution,
+            );
 
-          await appendFile(attemptsPath, JSON.stringify(record) + "\n");
-          continue;
+            await appendFile(attemptsPath, JSON.stringify(record) + "\n");
+            continue;
+          }
+
+          const entry = loaded.get(`${setup.name}/${track}`);
+
+          if (entry) active.push(entry);
         }
 
-        const entry = loaded.get(`${setup.name}/${track}`);
+        if (!active.length) continue;
+        const spent = await spentUSD(attemptsPath);
 
-        if (entry) active.push(entry);
-      }
-
-      if (!active.length) continue;
-      const spent = await spentUSD(attemptsPath);
-
-      const reserve = active.reduce(
-        (sum, entry) => sum + attemptBudget(providerSetup(entry.name), track, slotMs),
-        0,
-      );
-
-      if (spent + reserve > cap) {
-        await note({
-          kind: "budget-stop",
-          batch,
-          slot: slot.id,
-          spentUSD: spent,
-          reserveUSD: reserve,
-          capUSD: cap,
-        });
-        process.stdout.write(
-          `Budget guard: $${spent.toFixed(2)} spent + $${reserve.toFixed(2)} reserved > $${cap}; stopping.\n`,
+        const reserve = active.reduce(
+          (sum, entry) => sum + attemptBudget(providerSetup(entry.name), track, slotMs),
+          0,
         );
 
-        return;
-      }
-
-      process.stdout.write(
-        `[${new Date().toISOString()}] batch ${batch} slot ${slot.id}: ${active.map((e) => e.name).join(", ")} (est. spent $${spent.toFixed(2)})\n`,
-      );
-
-      await runBatch({
-        runId: values.run,
-        batch,
-        seed,
-        manifest,
-        manifestSha256,
-        slots: [slot],
-        providers: active,
-        clock: systemClock,
-        blobs,
-        prepare: { cacheBaseUrl: "sdk-upload", upload: { source } },
-        outputDir: join(out, "outputs"),
-        onRecord: async (record) => {
-          await appendFile(attemptsPath, JSON.stringify(record) + "\n");
+        if (spent + reserve > cap) {
+          await note({
+            kind: "budget-stop",
+            batch,
+            slot: slot.id,
+            spentUSD: spent,
+            reserveUSD: reserve,
+            capUSD: cap,
+          });
           process.stdout.write(
-            `  ${record.provider}: ${record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s)\n`,
+            `Budget guard: $${spent.toFixed(2)} spent + $${reserve.toFixed(2)} reserved > $${cap}; stopping.\n`,
           );
-        },
-        onSandbox: (provider, id) => note({ kind: "sandbox", provider, id, batch, slot: slot.id }),
-      });
-    }
-  }
 
-  await sweepProviders(values.run, [...loaded.values()], note);
+          break slots;
+        }
+
+        process.stdout.write(
+          `[${new Date().toISOString()}] batch ${batch} slot ${slot.id}: ${active.map((e) => e.name).join(", ")} (est. spent $${spent.toFixed(2)})\n`,
+        );
+
+        await runBatch({
+          runId: values.run,
+          batch,
+          seed,
+          manifest,
+          manifestSha256,
+          slots: [slot],
+          providers: active,
+          clock: systemClock,
+          blobs,
+          prepare: { cacheBaseUrl: "sdk-upload", upload: { source } },
+          outputDir: join(out, "outputs"),
+          onRecord: async (record) => {
+            await appendFile(attemptsPath, JSON.stringify(record) + "\n");
+            process.stdout.write(
+              `  ${record.provider}: ${record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s)\n`,
+            );
+          },
+          onSandbox: (provider, id) =>
+            note({ kind: "sandbox", provider, id, batch, slot: slot.id }),
+        });
+      }
+    }
+  } finally {
+    // Always, after a budget stop or an error too: nothing this run made is left running.
+    await sweepProviders(values.run, [...loaded.values()], note);
+  }
 }
 
 async function sweepProviders(
@@ -604,19 +617,16 @@ async function billing(args: string[]) {
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },
       };
     const found = record.sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
-    const missing = found.find((cost) => cost === undefined || cost.kind === "unavailable");
+    const unpriced = found.filter((cost) => cost === undefined || cost.kind === "unavailable");
 
-    if (missing !== undefined || found.length === 0)
+    if (unpriced.length > 0 || found.length === 0) {
+      const note = unpriced.flatMap((cost) => (cost?.kind === "unavailable" ? [cost.note] : []))[0];
+
       return {
         ...base,
-        charge: {
-          kind: "unavailable",
-          reason:
-            missing && missing.kind === "unavailable"
-              ? missing.note
-              : "no billing row for this sandbox",
-        },
+        charge: { kind: "unavailable", reason: note ?? "no billing row for this sandbox" },
       };
+    }
 
     const priced = found.flatMap((cost) => (cost && cost.kind !== "unavailable" ? [cost] : []));
     const kind = priced[0]?.kind ?? "metered";
@@ -681,6 +691,8 @@ interface HeldRow {
   /** Against the same provider's zero-wait twin, from the medians. */
   changeVsZeroWait: number | null;
   medianWakeMs: number | null;
+  /** "settled", "unsettled" (any charge not final) or "estimate". */
+  status: string | null;
   /** Provider state before and after the idle wait, when the adapter reports one. */
   transitions: string[];
 }
@@ -728,6 +740,13 @@ function heldOpen(attempts: readonly CostedAttempt[]): HeldRow[] {
           idle !== "zero-wait" && medianCostUSD !== null && zeroWait !== null && zeroWait > 0
             ? medianCostUSD / zeroWait - 1
             : null,
+        status: costs.some((c) => (c.kind === "billed" || c.kind === "metered") && !c.settled)
+          ? "unsettled"
+          : costs.some((c) => c.kind === "estimate")
+            ? "estimate"
+            : costs.length
+              ? "settled"
+              : null,
         medianWakeMs: median(
           runs.flatMap((a) =>
             a.record.idle?.wakeLatencyMs == null ? [] : [a.record.idle.wakeLatencyMs],
@@ -785,15 +804,15 @@ async function summary(args: string[]) {
     args,
     options: {
       out: { type: "string", multiple: true },
-      // provider@runId: attempts superseded by a rerun, left out of the table and listed in it.
+      // provider@runId[@track]: attempts superseded by a rerun, left out of the table and listed in it.
       drop: { type: "string", multiple: true },
     },
   });
 
   const drops = (values.drop ?? []).map((item) => {
-    const [provider = "", runId = ""] = item.split("@");
+    const [provider = "", runId = "", track] = item.split("@");
 
-    return { provider, runId };
+    return { provider, runId, track };
   });
 
   if (!values.out?.length) throw new Error("realistic summary needs --out");
@@ -806,7 +825,12 @@ async function summary(args: string[]) {
   }
 
   const isDropped = (r: AttemptRecord) =>
-    drops.some((d) => d.provider === r.provider && d.runId === r.runId);
+    drops.some(
+      (d) =>
+        d.provider === r.provider &&
+        d.runId === r.runId &&
+        (d.track === undefined || d.track === r.track),
+    );
 
   const dropped = records.filter(isDropped);
   const kept = records.filter((r) => !isDropped(r));
@@ -975,11 +999,11 @@ async function summary(args: string[]) {
         "",
         "Held-open diagnostic (fix-and-test, same-machine, provider-default idle; descriptive):",
         "",
-        "| Provider | Idle | Runs | Completed | Median total cost (fix, wait, resume) | Change vs zero-wait | Median wake latency (ms) | Idle state transitions |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Provider | Idle | Runs | Completed | Median total cost (fix, wait, resume) | Status | Change vs zero-wait | Median wake latency (ms) | Idle state transitions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ...held.map(
           (h) =>
-            `| ${h.provider} | ${h.idle} | ${h.runs} | ${h.completed} | ${h.medianCostUSD === null ? "n/a" : `$${h.medianCostUSD.toFixed(5)}`}${h.costKind ? ` (${h.costKind})` : ""} | ${h.changeVsZeroWait === null ? "n/a" : `${h.changeVsZeroWait >= 0 ? "+" : ""}${(h.changeVsZeroWait * 100).toFixed(0)}%`} | ${h.medianWakeMs === null ? "n/a" : h.medianWakeMs.toFixed(0)} | ${h.transitions.join(", ") || "none seen"} |`,
+            `| ${h.provider} | ${h.idle} | ${h.runs} | ${h.completed} | ${h.medianCostUSD === null ? "n/a" : `$${h.medianCostUSD.toFixed(5)}`}${h.costKind ? ` (${h.costKind})` : ""} | ${h.status ?? "n/a"} | ${h.changeVsZeroWait === null ? "n/a" : `${h.changeVsZeroWait >= 0 ? "+" : ""}${(h.changeVsZeroWait * 100).toFixed(0)}%`} | ${h.medianWakeMs === null ? "n/a" : h.medianWakeMs.toFixed(0)} | ${h.transitions.join(", ") || "none seen"} |`,
         ),
       ].join("\n")
     : "";
@@ -990,7 +1014,7 @@ async function summary(args: string[]) {
   );
 
   const droppedNote = drops.length
-    ? `\nLeft out (superseded by a rerun): ${drops.map((d) => `${d.provider}@${d.runId} (${dropped.filter((r) => r.provider === d.provider && r.runId === d.runId).length} attempts)`).join(", ")}\n`
+    ? `\nLeft out (superseded by a rerun): ${drops.map((d) => `${d.provider}@${d.runId}${d.track ? `@${d.track}` : ""} (${dropped.filter((r) => r.provider === d.provider && r.runId === d.runId && (d.track === undefined || d.track === r.track)).length} attempts)`).join(", ")}\n`
     : "";
 
   const text = `${table}\n\nPicks (descriptive; no statistical gate claimed):\n${pickLines.join("\n")}\n${heldTable}\n${droppedNote}`;
@@ -999,7 +1023,22 @@ async function summary(args: string[]) {
   await writeFile(
     join(outDir, "summary.json"),
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), fx, rows, picks, heldOpen: held },
+      {
+        generatedAt: new Date().toISOString(),
+        fx,
+        rows,
+        picks,
+        heldOpen: held,
+        // Attempts kept on disk but left out of this table, each with its run and outcome.
+        dropped: dropped.map((r) => ({
+          attemptId: r.attemptId,
+          runId: r.runId,
+          provider: r.provider,
+          track: r.track,
+          completion: r.completion,
+        })),
+        dropRules: drops,
+      },
       null,
       2,
     ) + "\n",
