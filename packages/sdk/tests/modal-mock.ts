@@ -75,6 +75,7 @@ export async function modalMock() {
   const deletedImages: string[] = [];
   const lists: SandboxListParams[] = [];
   const apps: string[] = [];
+  const existingApps = new Set<string>();
   let loads = 0;
 
   class MockImage implements NativeImage {
@@ -110,9 +111,13 @@ export async function modalMock() {
     detached = false;
     readonly children = new Set<ChildProcess>();
     readonly ports = new Map<number, number>();
-    /** Fault injection: the next setTags, terminate or stdin call rejects with this error. */
+    /** Fault injection: setTags, terminate or stdin calls reject with this error. */
     tagFailure?: Error;
+    /** With `tagFailure`, how many setTags calls fail before writes go through again. */
+    tagFailureCount?: number;
     terminateFailure?: Error;
+    /** Fault injection: these calls never settle, as a stalled gRPC request would not. */
+    stall: Partial<Record<"setTags" | "poll" | "terminate", boolean>> = {};
     stdinFailure?: { on: "write" | "close"; error: Error; afterExit?: boolean };
     terminateCalls = 0;
     constructor(
@@ -275,11 +280,25 @@ export async function modalMock() {
       return { ...this.tags };
     }
     async setTags(tags: Record<string, string>) {
-      if (this.tagFailure) throw this.tagFailure;
+      if (this.stall.setTags) return new Promise<void>(() => {});
+
+      if (this.tagFailure) {
+        const failure = this.tagFailure;
+
+        if (this.tagFailureCount !== undefined && --this.tagFailureCount <= 0) {
+          this.tagFailure = undefined;
+          this.tagFailureCount = undefined;
+        }
+
+        throw failure;
+      }
+
       this.alive();
       this.tags = { ...tags };
     }
     async poll() {
+      if (this.stall.poll) return new Promise<number | null>(() => {});
+
       return this.exit;
     }
     /** Modal sometimes reports a terminated sandbox running for ~30 s; tests set this to model it. */
@@ -287,6 +306,8 @@ export async function modalMock() {
     stopping?: Promise<void>;
     async terminate() {
       this.terminateCalls++;
+
+      if (this.stall.terminate) return new Promise<void>(() => {});
 
       if (this.terminateFailure) throw this.terminateFailure;
       this.stopping ??= (async () => {
@@ -357,8 +378,13 @@ export async function modalMock() {
 
   const client: ModalClientSlice<MockSandbox> = {
     apps: {
-      async fromName(name) {
+      async fromName(name, params) {
         apps.push(name);
+
+        // Like Modal, a lookup without createIfMissing fails for an App that was never created.
+        if (!params?.createIfMissing && !existingApps.has(name))
+          throw modalFailure("NotFoundError", `App '${name}' not found in environment 'main'`);
+        existingApps.add(name);
 
         return { appId: `ap-${name}` };
       },
@@ -497,6 +523,7 @@ export async function modalMock() {
       for (const box of sandboxes.values()) {
         box.stopDelayMs = 0;
         box.terminateFailure = undefined;
+        box.stall = {};
         await box.terminate();
         await box.stopping;
       }

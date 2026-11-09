@@ -12,7 +12,8 @@ import type {
   TemplateInfo,
   TemplateSpec,
 } from "../../provider.js";
-import { SandboxError, type ErrorCode } from "../../errors.js";
+import { SandboxError } from "../../errors.js";
+import { decodeNative, type NativeError } from "../../shared/native-error.js";
 import { invalid, modalError, unsupported } from "./errors.js";
 import type {
   ModalClientSlice,
@@ -56,7 +57,10 @@ export interface ModalOptions {
    * `prepareApp` beforehand keeps it out of create timing.
    */
   createApp?: (input: { readonly labels: Readonly<Labels> }) => string | undefined;
-  /** How long `destroy` waits for Modal to report the sandbox stopped. Default: 60 seconds. */
+  /**
+   * One deadline for `destroy`: the terminate request and Modal's report that the sandbox stopped
+   * must both land within it. Default: 60 seconds.
+   */
   destroyWaitMs?: number;
   /** Called after each terminate request with its latency and the confirmed-stop latency. */
   onDestroy?: (event: ModalDestroyEvent) => void;
@@ -223,10 +227,36 @@ async function drain(stream: ReadableStream<string>, emit: (text: string) => voi
   }
 }
 
-/** Error codes that mean the request itself failed, never that the command had already exited. */
-const transportCodes: ReadonlySet<ErrorCode> = new Set(["unavailable", "auth", "timeout", "quota"]);
+// gRPC FAILED_PRECONDITION. Modal answers a stdin write to a finished command with it ("Exec has
+// already completed; stdin is no longer accepting writes", measured November 9, 2026).
+const failedPrecondition = 9;
+
+/** Whether a stdin error is Modal's refusal of a write to a command that has already finished. */
+function exitedRefusal(native: NativeError): boolean {
+  return native.code === failedPrecondition;
+}
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+type Bounded<T> = { settled: true; value: T } | { settled: false };
+
+/** `work`'s result if it settles within `ms`; a rejection within `ms` rejects. */
+async function within<T>(work: Promise<T>, ms: number): Promise<Bounded<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A late rejection, after the bound, is not an unhandled one.
+  work.catch(() => {});
+
+  try {
+    return await Promise.race([
+      work.then((value): Bounded<T> => ({ settled: true, value })),
+      new Promise<Bounded<T>>((resolve) => {
+        timer = setTimeout(() => resolve({ settled: false }), Math.max(0, ms));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function destroying(tags: Labels): boolean {
   return tags[destroyingTag] !== undefined || tags[sdkTag] === legacyDestroyed;
@@ -243,9 +273,26 @@ function fileInfo(entry: Awaited<ReturnType<NativeFilesystem["stat"]>>): FileInf
 
 /** Internal injection point used by the offline SDK contract tests. */
 /** The Modal adapter: a {@link Provider} plus Modal-only helpers. */
+/** An App `prepareApp` resolved. */
+export interface ModalPreparedApp {
+  name: string;
+  appId: string;
+}
+
+export interface PrepareAppOptions {
+  /**
+   * Create the App when it does not exist. Default: `true`. Recovery passes `false`: an App that
+   * was journaled but never created holds no sandboxes, and the lookup then resolves `null`.
+   */
+  createIfMissing?: boolean;
+}
+
 export type ModalAdapter<N extends NativeSandbox> = Provider<N, ModalCapability> & {
-  /** Look up or create an App ahead of time, so a later create that uses it pays no App lookup. */
-  prepareApp(name: string): Promise<void>;
+  /**
+   * Look up (or create) an App ahead of time, so a later create that uses it pays no App lookup,
+   * and so `list()` scans it. After a restart, call it for every App sandboxes may be in.
+   */
+  prepareApp(name: string, options?: PrepareAppOptions): Promise<ModalPreparedApp | null>;
 };
 
 export function createModalProvider<N extends NativeSandbox>(
@@ -257,6 +304,11 @@ export function createModalProvider<N extends NativeSandbox>(
   const declared = new Map<string, ReadonlySet<number>>();
   // The last tags seen for each sandbox, so destroy can mark it without reading them first.
   const seen = new Map<string, Labels>();
+  // Sandboxes this instance asked Modal to terminate, until Modal reports them stopped. Tracked here
+  // whatever the advisory tag write does, so this process never hands one out again. Another
+  // process sees a termination only through the tag: if every tag write failed, its find() can
+  // return the sandbox until Modal stops it.
+  const terminating = new Set<string>();
   const appName = options.app ?? "sandbox-sdk";
   const defaultLifetime = lifetime(options.timeoutMs);
   const destroyWaitMs = options.destroyWaitMs ?? defaultDestroyWaitMs;
@@ -341,7 +393,7 @@ export function createModalProvider<N extends NativeSandbox>(
     const { [keyTag]: key, [createdTag]: created, [destroyingTag]: _destroying, ...labels } = tags;
 
     // A sandbox being destroyed is still running until Modal says otherwise; it is not usable.
-    const state = destroying(tags) ? "stopped" : "running";
+    const state = destroying(tags) || terminating.has(id) ? "stopped" : "running";
 
     return { id, key, labels, state, createdAt: Number(created) || 0 };
   }
@@ -387,15 +439,9 @@ export function createModalProvider<N extends NativeSandbox>(
       throw error;
     }
 
-    if (!destroying(await holder.getTags())) return false;
-    const deadline = Date.now() + 60_000;
+    if (!terminating.has(holder.sandboxId) && !destroying(await holder.getTags())) return false;
 
-    while ((await holder.poll()) === null) {
-      if (Date.now() >= deadline) return false;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-
-    return true;
+    return stopsBy(holder, Date.now() + 60_000);
   }
 
   async function shell(box: N, script: string): Promise<number> {
@@ -411,29 +457,46 @@ export function createModalProvider<N extends NativeSandbox>(
     return exit;
   }
 
-  /** Set or clear the destroying tag. Best effort: returns whether the write went through. */
-  async function mark(box: N, on: boolean): Promise<boolean> {
-    try {
-      const { [destroyingTag]: _previous, ...rest } =
-        seen.get(box.sandboxId) ?? (await box.getTags());
+  /**
+   * Set or clear the destroying tag, trying up to `attempts` times while `wanted()` holds. Advisory:
+   * returns whether a write went through, and nothing waits on it to finish a destroy.
+   */
+  async function mark(
+    box: N,
+    on: boolean,
+    attempts = 1,
+    wanted: () => boolean = () => true,
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < attempts && wanted(); attempt++) {
+      if (attempt) await delay(250 * attempt);
 
-      const tags = on ? { ...rest, [destroyingTag]: String(Date.now()) } : rest;
-      await box.setTags(tags);
-      seen.set(box.sandboxId, tags);
+      try {
+        const { [destroyingTag]: _previous, ...rest } =
+          seen.get(box.sandboxId) ?? (await box.getTags());
 
-      return true;
-    } catch {
-      return false;
+        const tags = on ? { ...rest, [destroyingTag]: String(Date.now()) } : rest;
+        await box.setTags(tags);
+        seen.set(box.sandboxId, tags);
+
+        return true;
+      } catch {
+        // Retried below; a sandbox that stopped meanwhile no longer needs the mark.
+      }
     }
+
+    return false;
   }
 
-  /** Whether Modal reports the sandbox stopped within `ms`. A sandbox Modal no longer knows is stopped. */
-  async function stopsWithin(box: N, ms: number): Promise<boolean> {
-    const deadline = Date.now() + ms;
-
+  /**
+   * Whether Modal reports the sandbox stopped by `deadline`. Each poll is bounded by the time left,
+   * so a stalled request cannot hold the caller. A sandbox Modal no longer knows is stopped.
+   */
+  async function stopsBy(box: N, deadline: number): Promise<boolean> {
     for (;;) {
       try {
-        if ((await box.poll()) !== null) return true;
+        const polled = await within(box.poll(), deadline - Date.now());
+
+        if (polled.settled && polled.value !== null) return true;
       } catch (error) {
         if (modalError(error).code === "not_found") return true;
         throw error;
@@ -451,6 +514,7 @@ export function createModalProvider<N extends NativeSandbox>(
     boxes.delete(id);
     declared.delete(id);
     seen.delete(id);
+    terminating.delete(id);
   }
 
   async function killGroup(box: N, group: number) {
@@ -554,20 +618,19 @@ export function createModalProvider<N extends NativeSandbox>(
     };
 
     // Closing stdin right away gives the command EOF. A command that has already exited refuses the
-    // write or the close; that is no failure. Any other stdin error is a transport failure: it
-    // propagates, and the catch below kills the command, which would otherwise run on half its input.
+    // write or the close with FAILED_PRECONDITION; that is no failure. Any other stdin error (a
+    // transport failure, a stream reset, anything unrecognized) propagates, and the catch below
+    // kills the command, which would otherwise run on half its input.
     const feed = async () => {
       try {
         if (input.stdin !== undefined) await proc.stdin.writeText(input.stdin);
         await proc.stdin.close();
       } catch (error) {
-        const failure = modalError(error, box.sandboxId);
-
-        // Transport failures always propagate. Anything else counts as the exited command's refusal
-        // only if the command has exited or does within a second, the time its exit status can lag.
-        // Stdin is not closed first: a command still reading it stays blocked and cannot pass as done.
-        if (transportCodes.has(failure.code) || !(finished || (await exitsWithin(1_000))))
-          throw failure;
+        // The refusal counts only if the command has exited or does within a second, the time its
+        // exit status can lag. Stdin is not closed first: a command still reading it stays blocked
+        // and cannot pass as done.
+        if (!exitedRefusal(decodeNative(error)) || !(finished || (await exitsWithin(1_000))))
+          throw modalError(error, box.sandboxId);
         void proc.stdin.close().catch(() => {});
       }
     };
@@ -807,25 +870,56 @@ export function createModalProvider<N extends NativeSandbox>(
       safe(id, async () => {
         const box = await get(id);
         const started = Date.now();
-        // The mark is advisory and runs beside terminate: a failed tag write never blocks termination.
-        const marking = mark(box, true);
+        // One deadline covers the terminate request and the confirmed stop.
+        const deadline = started + destroyWaitMs;
+        let settled = false;
+
+        const unconfirmed = (what: string) =>
+          new SandboxError(
+            `Sandbox termination was requested, but ${what} within ${destroyWaitMs} ms. It stays listed with state "stopped". Call destroy again to keep waiting.`,
+            { code: "timeout", provider: "modal", sandboxId: id, retryable: true },
+          );
+
+        terminating.add(id);
+        // The mark is advisory and runs beside terminate, retried a few times so other processes
+        // see it; nothing below waits for it, so a stalled or failed tag write never holds destroy.
+        const marking = mark(box, true, 3, () => !settled);
+
+        let request: Bounded<void>;
 
         try {
-          await box.terminate();
+          request = await within(box.terminate(), deadline - Date.now());
         } catch (error) {
-          const marked = await marking;
+          settled = true;
 
           if (modalError(error).code === "not_found") return forget(id);
 
-          // Still running and not stopping: drop the mark, so it stays an ordinary running sandbox.
-          if (marked) await mark(box, false);
+          // Still running and not stopping: drop the mark if it landed, within what is left of
+          // the deadline, so it stays an ordinary running sandbox.
+          terminating.delete(id);
+          const marked = await within(marking, deadline - Date.now());
+
+          if (marked.settled && marked.value) await within(mark(box, false), deadline - Date.now());
           throw error;
         }
 
+        // The request may still land, so the sandbox stays tracked as terminating.
+        if (!request.settled) {
+          settled = true;
+          throw unconfirmed("Modal did not accept the request");
+        }
+
         const requestMs = Date.now() - started;
-        await marking;
+
         // Modal sometimes takes ~30 s to stop a sandbox after terminate, and bills until it stops.
-        const stopped = await stopsWithin(box, destroyWaitMs);
+        let stopped: boolean;
+
+        try {
+          stopped = await stopsBy(box, deadline);
+        } finally {
+          settled = true;
+        }
+
         const stoppedMs = stopped ? Date.now() - started : null;
 
         try {
@@ -834,11 +928,7 @@ export function createModalProvider<N extends NativeSandbox>(
           // An observer failure is not a destroy failure.
         }
 
-        if (!stopped)
-          throw new SandboxError(
-            `Sandbox termination was requested, but Modal still reports it running after ${Math.round(destroyWaitMs / 1000)} s. It stays listed with state "stopped". Call destroy again to keep waiting.`,
-            { code: "timeout", provider: "modal", sandboxId: id, retryable: true },
-          );
+        if (!stopped) throw unconfirmed("Modal still reports it running");
         forget(id);
       }),
     exec: (id, input) =>
@@ -948,10 +1038,28 @@ export function createModalProvider<N extends NativeSandbox>(
       }),
   };
 
-  return Object.assign(provider, {
-    prepareApp: (name: string) =>
-      safe(undefined, async () => {
-        await application(name);
-      }),
-  });
+  const prepareApp = (name: string, settings: PrepareAppOptions = {}) =>
+    safe(undefined, async (): Promise<ModalPreparedApp | null> => {
+      if (settings.createIfMissing ?? true) return { name, appId: (await application(name)).appId };
+
+      if (!appNamePattern.test(name)) return null;
+      const known = apps.get(name);
+
+      if (known) return { name, appId: (await known).appId };
+
+      try {
+        const found = await (
+          await sdk()
+        ).apps.fromName(name, { createIfMissing: false, environment: options.environment });
+
+        apps.set(name, Promise.resolve(found));
+
+        return { name, appId: found.appId };
+      } catch (error) {
+        if (modalError(error).code === "not_found") return null;
+        throw error;
+      }
+    });
+
+  return Object.assign(provider, { prepareApp });
 }
