@@ -107,25 +107,24 @@ export function allocated(app: JournalApp, id: string, sandboxId: string) {
   if (!app.sandboxes.includes(sandboxId)) app.sandboxes.push(sandboxId);
 }
 
-// Codes with which a provider refuses a create before allocating anything. Any other failure,
-// a transport error above all, can follow an allocation whose response was lost.
-const refusals: ReadonlySet<string> = new Set(["invalid_argument", "unsupported", "auth", "quota"]);
-
 /**
- * Record a failed create: `rejected` only for the provider's definitive refusal; anything else
- * stays `submitted`, so billing treats the App as ambiguous until a listing finds the sandbox.
+ * Record a failed create. A failure naming the sandbox it came after (a restore whose setup failed
+ * once Modal had allocated it) is `allocated`, so billing sees that sandbox in the App. Any other
+ * failure stays `submitted`, whatever its code: Modal's client allocates a sandbox and then waits
+ * for it to be scheduled, so even a refusal (PERMISSION_DENIED, quota) can follow an allocation it
+ * does not name. Billing treats the App as ambiguous until a listing ties a sandbox to the create.
+ * (`rejected` stays readable in older journals, but no failure proves nothing was allocated.)
  */
 export function failedAllocation(app: JournalApp, id: string, provider: string, cause: unknown) {
   const index = app.allocations.findIndex((entry) => entry.id === id);
 
   if (
     index >= 0 &&
-    app.allocations[index]?.state === "submitted" &&
     cause instanceof SandboxError &&
     cause.provider === provider &&
-    refusals.has(cause.code)
+    cause.sandboxId !== undefined
   )
-    app.allocations[index] = { id, state: "rejected" };
+    allocated(app, id, cause.sandboxId);
 }
 
 /** Creates in `app` that may have allocated a sandbox the journal does not name. */

@@ -14,6 +14,10 @@ import {
   allocationLabel,
   appLabel,
   attemptApp,
+  ambiguousAllocations,
+  beginAllocation,
+  failedAllocation,
+  journalApp,
   journalAppSchema,
   type PendingSandbox,
 } from "../src/modal-apps.js";
@@ -573,6 +577,20 @@ describe("Modal billing collector", () => {
     expect(missing.account?.apps[0]?.missingIntervals).toEqual(["2026-11-09T14:00:00.000Z"]);
   });
 
+  it("a short sandbox crossing an hour boundary needs both hours' rows", async () => {
+    // Ran 13:59:30 to 14:00:30; only the 13:00 row exists. The 14:00 charge must not be dropped.
+    const straddling: OwnedSandbox = {
+      ...row("sb-a", appA),
+      startedAt: "2026-11-09T13:59:30.000Z",
+      finishedAt: "2026-11-09T14:00:30.000Z",
+      confirmedStopAt: "2026-11-09T14:00:30.000Z",
+    };
+
+    const charges = await collectModal([straddling], { report, now: stop + 6 * hour });
+    expect(cost(charges, "sb-a")).toMatchObject({ complete: false });
+    expect(charges.account?.apps[0]?.missingIntervals).toEqual(["2026-11-09T14:00:00.000Z"]);
+  });
+
   it("never attributes an App's charge to one sandbox while a create in it is unresolved", async () => {
     const ambiguous = { ...appA, ambiguous: 1 };
     const charges = await collectModal([row("sb-a", ambiguous)], { report, now: stop + 2 * hour });
@@ -792,7 +810,8 @@ describe("lost creates and pending restores", () => {
       { id: expect.any(String), state: "allocated", sandboxId: leaked },
     ]);
 
-    // A definitive refusal allocated nothing: the create is journaled as rejected.
+    // Even a refusal can follow an allocation Modal's client does not name (it allocates, then
+    // waits for scheduling), so the create stays submitted and the App ambiguous.
     const refusedOut = await directory();
 
     const refusing = modalCloud().process({
@@ -810,7 +829,7 @@ describe("lost creates and pending restores", () => {
       async () => {},
     );
     expect((await journalApps(refusedOut))[0]?.allocations).toEqual([
-      { id: expect.any(String), state: "rejected" },
+      { id: expect.any(String), state: "submitted" },
     ]);
   });
 
@@ -940,4 +959,32 @@ describe("lost creates and pending restores", () => {
     );
     expect((await journalApps(out))[0]?.allocations).toEqual([{ id: "x1", state: "submitted" }]);
   });
+});
+
+it("a create that fails after Modal allocated its sandbox is journaled as allocated, not rejected", () => {
+  const app = journalApp("modal", "sandbox-bench-r-i0");
+  const started = beginAllocation(app);
+  // A restore whose setup was refused (PERMISSION_DENIED) after allocation, then cleaned up.
+  failedAllocation(
+    app,
+    started.id,
+    "modal",
+    new SandboxError("tags refused", { code: "auth", provider: "modal", sandboxId: "sb-restored" }),
+  );
+
+  expect(app.allocations).toEqual([
+    { id: started.id, state: "allocated", sandboxId: "sb-restored" },
+  ]);
+  expect(app.sandboxes).toContain("sb-restored");
+
+  // A refusal naming no sandbox proves nothing: scheduling can refuse after allocation.
+  const refused = beginAllocation(app);
+  failedAllocation(
+    app,
+    refused.id,
+    "modal",
+    new SandboxError("quota", { code: "quota", provider: "modal" }),
+  );
+  expect(app.allocations.at(-1)).toEqual({ id: refused.id, state: "submitted" });
+  expect(ambiguousAllocations(app)).toBe(1);
 });

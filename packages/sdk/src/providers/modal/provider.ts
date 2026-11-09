@@ -240,12 +240,32 @@ function exitedRefusal(native: NativeError): boolean {
   return native.code === failedPrecondition && /Exec has already completed/.test(native.message);
 }
 
-// gRPC statuses with which Modal refuses a request without acting on it: INVALID_ARGUMENT,
-// PERMISSION_DENIED, RESOURCE_EXHAUSTED, FAILED_PRECONDITION, UNIMPLEMENTED and UNAUTHENTICATED.
-// Anything else, a transport failure above all, may come after Modal already acted.
-const refusals: ReadonlySet<number> = new Set([3, 7, 8, 9, 12, 16]);
+// gRPC statuses with which Modal refuses a terminate without acting on it: INVALID_ARGUMENT,
+// PERMISSION_DENIED, RESOURCE_EXHAUSTED, UNIMPLEMENTED and UNAUTHENTICATED. FAILED_PRECONDITION
+// is left out: it can mean the sandbox is already stopping. Anything else, a transport failure
+// above all, may come after Modal already acted.
+const refusals: ReadonlySet<number> = new Set([3, 7, 8, 12, 16]);
 
-/** Whether a failed request is Modal's definitive refusal, so the request did not take effect. */
+/** Whether a failed terminate is Modal's definitive refusal, so the request did not take effect. */
+/**
+ * A failure after Modal allocated `sandboxId`, carrying that ID so callers know a sandbox existed
+ * (and was billed), whatever the error code: a refusal code here does not mean nothing was allocated.
+ */
+function allocatedFailure(cause: unknown, sandboxId: string): SandboxError {
+  const mapped = modalError(cause, sandboxId);
+
+  if (mapped.sandboxId === sandboxId) return mapped;
+
+  return new SandboxError(mapped.message, {
+    code: mapped.code,
+    retryable: mapped.retryable,
+    hint: mapped.hint,
+    provider: "modal",
+    sandboxId,
+    cause,
+  });
+}
+
 function refused(native: NativeError): boolean {
   return (isNumber(native.code) && refusals.has(native.code)) || native.name === "InvalidError";
 }
@@ -869,7 +889,7 @@ export function createModalProvider<N extends NativeSandbox>(
           return info(box.sandboxId, tags);
         } catch (error) {
           await provider.destroy(box.sandboxId).catch(() => {});
-          throw error;
+          throw allocatedFailure(error, box.sandboxId);
         }
       }),
     find: (key) =>
@@ -938,6 +958,9 @@ export function createModalProvider<N extends NativeSandbox>(
             { code: "timeout", provider: "modal", sandboxId: id, retryable: true },
           );
 
+        // An earlier destroy whose outcome is still unknown (lost response, unconfirmed stop) may
+        // yet stop the sandbox, whatever Modal answers this time.
+        const earlier = terminating.has(id);
         terminating.add(id);
         // The mark is advisory and runs beside terminate, retried a few times so other processes
         // see it; nothing below waits for it, so a stalled or failed tag write never holds destroy.
@@ -956,6 +979,10 @@ export function createModalProvider<N extends NativeSandbox>(
 
           if (refused(decodeNative(error))) {
             settled = true;
+
+            // A refusal of this request says nothing about an earlier one still unresolved.
+            if (earlier) throw error;
+
             // Modal refused it: still running and not stopping. Drop the mark if it landed,
             // within what is left of the deadline, so it stays an ordinary running sandbox.
             terminating.delete(id);
