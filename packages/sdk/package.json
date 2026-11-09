@@ -12,6 +12,7 @@
     "e2b",
     "mastra",
     "microvm",
+    "modal",
     "openai-agents",
     "sandbox",
     "typescript",
@@ -81,6 +82,10 @@
     "./vercel": {
       "types": "./dist/providers/vercel/index.d.ts",
       "default": "./dist/providers/vercel/index.js"
+    },
+    "./modal": {
+      "types": "./dist/providers/modal/index.d.ts",
+      "default": "./dist/providers/modal/index.js"
     },
     "./daytona": {
       "types": "./dist/providers/daytona/index.d.ts",
@@ -153,6 +158,7 @@
     "e2b": "2.56.0",
     "esbuild": "0.28.1",
     "freestyle": "0.2.20",
+    "modal": "0.11.1",
     "railway": "3.16.0",
     "vitest": "^3.2.4",
     "zod": "^4.6.7"
@@ -166,6 +172,7 @@
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "^3.8.0",
     "ai": "^7.0.143",
+    "modal": "^0.11.1",
     "railway": "^3.16.0",
     "vitest": ">=3",
     "zod": "^4.6.7"
@@ -202,6 +209,9 @@
       "optional": true
     },
     "@boxd-sh/sdk": {
+      "optional": true
+    },
+    "modal": {
       "optional": true
     }
   },
