@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { ModalClient } from "modal";
 import { buildTemplate, createSandbox, deleteSnapshot } from "../src/index.js";
-import { modal, type ModalOptions } from "../src/providers/modal/index.js";
+import { modal, type ModalDestroyEvent, type ModalOptions } from "../src/providers/modal/index.js";
 import { runConformance } from "../src/testing.js";
 
 const credentials = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
@@ -25,8 +25,21 @@ describe.skipIf(!credentials)("Modal live (billable)", { timeout: 180_000 }, () 
 });
 
 describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => {
-  test("same-spec size gives 4 CPUs of throughput and 8 GiB", async () => {
+  test("same-spec size shows 4 CPUs and 8 GiB and runs 4 threads of parallel throughput", async () => {
     const box = await createSandbox(liveProvider(), { size: { cpu: 4, memoryMb: 8192 } });
+
+    // Fixed pure-CPU work: SHA-256 over an in-memory 64 MiB buffer, 24 times. Wall seconds for k copies.
+    const job = `python3 -c "import hashlib; b=b'x'*(64<<20); [hashlib.sha256(b).digest() for _ in range(24)]"`;
+
+    const wall = async (copies: number) =>
+      Number(
+        (
+          await box.run(
+            `s=$(date +%s.%N); for i in $(seq ${copies}); do ${job} & done; wait; e=$(date +%s.%N); python3 -c "print($e-$s)"`,
+            { timeoutMs: 120_000 },
+          )
+        ).stdout.trim(),
+      );
 
     try {
       const probe = await box.run(
@@ -34,6 +47,11 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
       );
 
       expect(probe.stdout.trim().split("\n")).toEqual(["4", "4", String(8192 * 1024)]);
+      await wall(1);
+      const single = Math.min(await wall(1), await wall(1));
+      const parallel = Math.min(await wall(4), await wall(4));
+      // Effective threads: four copies finishing in about one copy's time means four full CPUs.
+      expect((4 * single) / parallel).toBeGreaterThan(3.4);
     } finally {
       await box.destroy();
     }
@@ -133,13 +151,19 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
     }
   });
 
-  test("destroy returns at once and the key is free for the next create", async () => {
-    const provider = liveProvider();
+  test("destroy waits for a confirmed stop, reports both latencies, and frees the key", async () => {
+    const events: ModalDestroyEvent[] = [];
+    const provider = liveProvider({ onDestroy: (event) => events.push(event) });
     const key = `live-${crypto.randomUUID()}`;
     const first = await createSandbox(provider, { key });
-    const started = Date.now();
     await first.destroy();
-    expect(Date.now() - started).toBeLessThan(5000);
+    expect(events).toEqual([
+      { sandboxId: first.id, requestMs: expect.any(Number), stoppedMs: expect.any(Number) },
+    ]);
+    expect(events[0]!.stoppedMs!).toBeGreaterThanOrEqual(events[0]!.requestMs);
+    console.info(
+      `Modal destroy: request ${events[0]?.requestMs} ms, stopped ${events[0]?.stoppedMs} ms`,
+    );
     await expect(modal({ app: "sandbox-sdk-conformance" }).connect(first.id)).rejects.toMatchObject(
       {
         code: "not_found",
@@ -155,25 +179,50 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
     }
   });
 
-  // Destroyed sandboxes can take Modal ~30 s to stop, so wait that out before calling one a leak.
+  test("createApp puts an unkeyed sandbox in its own App, and list still finds it", async () => {
+    const app = `sandbox-sdk-conformance-${run.slice(-12).replace(/[^\w.-]/g, "")}`;
+    const provider = liveProvider({ createApp: () => app });
+    await provider.prepareApp(app);
+    const box = await createSandbox(provider, { labels: { "own-app": "1" } });
+
+    try {
+      const client = new ModalClient();
+
+      try {
+        const owner = await client.apps.fromName(app);
+        const inApp: string[] = [];
+
+        for await (const listed of client.sandboxes.list({ appId: owner.appId }))
+          inApp.push(listed.sandboxId);
+        expect(inApp).toContain(box.id);
+      } finally {
+        client.close();
+      }
+
+      expect((await provider.list({ "own-app": "1", "live-run": run })).map((i) => i.id)).toEqual([
+        box.id,
+      ]);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  // destroy now waits for the stop, so anything still running here is a leak.
   test("no sandbox from this run is left running", { timeout: 150_000 }, async () => {
     const client = new ModalClient();
-    const app = await client.apps.fromName("sandbox-sdk-conformance", { createIfMissing: true });
 
+    // Every App in the Environment: the createApp test uses its own.
     const running = async () => {
       const left: string[] = [];
 
-      for await (const box of client.sandboxes.list({
-        appId: app.appId,
-        tags: { "live-run": run },
-      }))
+      for await (const box of client.sandboxes.list({ tags: { "live-run": run } }))
         left.push(box.sandboxId);
 
       return left;
     };
 
     try {
-      await expect.poll(running, { timeout: 90_000, interval: 5000 }).toEqual([]);
+      await expect.poll(running, { timeout: 20_000, interval: 5000 }).toEqual([]);
     } finally {
       client.close();
     }

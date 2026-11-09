@@ -1,6 +1,7 @@
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
+import { lifetimeOptions } from "./lifetime.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
@@ -101,7 +102,37 @@ function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
 }
 
-const factoryOptions = z.record(z.string(), z.union([z.string(), z.boolean()]).optional());
+const factoryOptions = z.record(
+  z.string(),
+  z.union([z.string(), z.boolean(), z.number(), z.function()]).optional(),
+);
+
+/** One destroy as Modal's adapter reports it through `onDestroy` (`ModalDestroyEvent`). */
+export interface DestroyTiming {
+  sandboxId: string;
+  /** Until the provider accepted the terminate request. */
+  requestMs: number;
+  /** Until the provider reported the sandbox stopped; `null` when unconfirmed. */
+  stoppedMs: number | null;
+}
+
+/**
+ * Destroy timings from adapters whose destroy waits past the provider's accept (Modal's `onDestroy`),
+ * keyed `provider/sandboxId`. The runner moves them into the destroy row's phases.
+ */
+export const destroyTimings = new Map<string, DestroyTiming>();
+
+const destroyObservers: ReadonlySet<string> = new Set(["modal"]);
+
+function observerOptions(name: string): FactoryOptions {
+  if (!destroyObservers.has(name)) return {};
+
+  return {
+    onDestroy: (event: DestroyTiming) => {
+      destroyTimings.set(`${name}/${event.sandboxId}`, event);
+    },
+  };
+}
 
 export type FactoryOptions = z.infer<typeof factoryOptions>;
 
@@ -120,7 +151,8 @@ export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<object> = (specifier) => import(specifier),
-  config?: Pick<ConfigV2, "template" | "product">,
+  config?: Pick<ConfigV2, "template" | "product"> &
+    Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">>,
 ): Promise<LoadedProvider> {
   if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
@@ -154,6 +186,8 @@ export async function loadProvider(
   const provider = await factory.data({
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
+    ...lifetimeOptions(name, config ?? {}),
+    ...observerOptions(name),
   });
 
   assertProvider(provider);

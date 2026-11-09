@@ -13,7 +13,12 @@ import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
-import { providerMember, type LoadedProvider, type ReadyProvider } from "./providers.js";
+import {
+  destroyTimings,
+  providerMember,
+  type LoadedProvider,
+  type ReadyProvider,
+} from "./providers.js";
 import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
@@ -23,7 +28,9 @@ import {
   parseFingerprint,
   type Fingerprint,
 } from "./fingerprint.js";
-import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js";
+import { estimateCost, budgetUSD, settledBudgetUSD } from "./pricing.js";
+import { pricedResources, reservationResources } from "./billed-resources.js";
+import { iterationBoundMs, scenarioNames } from "./scenarios.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
@@ -51,23 +58,14 @@ import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
 import { failureOutcome } from "./failure.js";
 
-export const scenarioNames = [
-  "command",
-  "files-1kb",
-  "files-10mb",
-  "reconnect",
-  "pause-resume",
-  "snapshot",
-  "fingerprint",
-  "perf",
-  "git-clone",
-  "npm-install",
-  "dev-server",
-  "preview-first-byte",
-  "edit-loop",
-  "tool-replay",
-  "pip-install",
-];
+/**
+ * Providers whose snapshots keep files but not CPU and memory, so a restore must ask for the
+ * source's size again. Other providers' snapshots or templates own their resources, and their
+ * restores stay as published.
+ */
+const restoreNeedsSize: ReadonlySet<string> = new Set(["modal"]);
+
+export { scenarioNames } from "./scenarios.js";
 
 const workloadNames = new Set([
   "git-clone",
@@ -186,10 +184,12 @@ export function summarize(samples: Sample[], seed: number) {
       cost = costs.every((c) => c !== null) ? costs.reduce((a, b) => a + b, 0) : null;
 
     const efficiency = successes.map((row) => {
+      // Samples carry no region, so this rate excludes a region multiplier.
       const rate = estimateCost(
         row.provider,
         1000,
-        row.fingerprint ? resources(row.fingerprint) : (pricing[row.provider]?.fixed ?? null),
+        pricedResources(row.provider, row.fingerprint, row.requestedSize ?? null)?.resources ??
+          null,
       );
 
       if (!rate || row.outcome.kind !== "sample" || row.outcome.value <= 0) return null;
@@ -286,7 +286,7 @@ export async function runV2(
       "Fingerprint includes public ipinfo.io lookup (optional); region and org are observed egress, not a promise about placement. Host counters are cumulative: difference before/after to derive CPU and network load.",
       "CPython fixed LCG iterations/s; all-core uses ceil of min(nproc, cgroup quota), capped at 64 with worker count recorded. Python version and CPU flags retained: runtime differences remain a confounder. 16 MiB memory copy; 64 MiB buffered sequential I/O; fsync writes and 256 random 4 KiB operations at queue depth 1. Reads may be cached; no O_DIRECT. Decimal MB/s.",
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
-      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
+      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Modal is priced on its requested allocation, never the guest view: exact when sized (request = limit), a lower bound on the default track (0.125 CPU / 128 MiB minimum request; billed burst usage above it is not counted), with Modal's region multiplier for a pinned region. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
     ],
   };
@@ -570,14 +570,19 @@ export async function runV2(
       product: config.product[p.name] ?? null,
     };
 
+    // Request-billed providers (Modal) are priced on the request, never on the guest's view.
+    const priced = (fingerprint: Fingerprint | null) =>
+      pricedResources(p.name, fingerprint, allocation.requestedSize)?.resources ?? null;
+
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
     reserve = budgetUSD(
       p.name,
       estimateCost(
         p.name,
-        timeout * (costSuite ? 4 : burst ? 2 : scenarioNames.length + 4),
-        state.fp ? resources(state.fp) : { cpu: 8, memoryGiB: 16, diskGiB: 100 },
+        costSuite ? timeout * 4 : burst ? timeout * 2 : iterationBoundMs(timeout),
+        reservationResources(p.name, state.fp, allocation.requestedSize),
+        p.region,
       ) ?? dollarsMax,
     );
 
@@ -872,11 +877,7 @@ export async function runV2(
         hostAfter,
         headroom: headroom(before, hostAfter),
         fingerprint: fp,
-        estimatedCost: estimateCost(
-          p.name,
-          durationMs,
-          fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
-        ),
+        estimatedCost: estimateCost(p.name, durationMs, priced(fp), p.region),
         details,
       };
 
@@ -896,7 +897,20 @@ export async function runV2(
       return measure(
         scenario,
         async () => {
-          await remove(p, id, { clock, phases });
+          try {
+            await remove(p, id, { clock, phases });
+          } finally {
+            // Modal: the row times a confirmed stop; these split it into the request and the stop.
+            const timing = destroyTimings.get(`${p.name}/${id}`);
+            destroyTimings.delete(`${p.name}/${id}`);
+
+            if (timing) {
+              phases.terminateRequestMs = timing.requestMs;
+
+              if (timing.stoppedMs !== null) phases.confirmedStopMs = timing.stoppedMs;
+            }
+          }
+
           ids.delete(id);
 
           if (clock.start === null)
@@ -1070,7 +1084,7 @@ export async function runV2(
         for (const sample of report.samples)
           if (sample.provider === p.name && sample.iteration === index && !sample.fingerprint) {
             sample.fingerprint = fp;
-            sample.estimatedCost = estimateCost(p.name, sample.durationMs, resources(fp));
+            sample.estimatedCost = estimateCost(p.name, sample.durationMs, priced(fp), p.region);
           }
 
         return fp;
@@ -1371,12 +1385,17 @@ export async function runV2(
                 await measure(
                   "create-from-snapshot",
                   async (signal) => {
-                    restored = await createSandbox(tracked, {
+                    const restoreOptions: CreateOptions = {
                       from: id,
                       labels: { "sandbox-bench-run": config.run },
                       ports: [3000],
                       signal,
-                    });
+                    };
+
+                    // Only where the snapshot keeps files but not resources; elsewhere it stays unchanged.
+                    if (createSize !== null && restoreNeedsSize.has(p.name))
+                      restoreOptions.size = createSize;
+                    restored = await createSandbox(tracked, restoreOptions);
                     createPhases.sdkReadyMs = performance.now() - (createClock.start ?? lifeStart);
 
                     return { ...createPhases };
@@ -1439,9 +1458,8 @@ export async function runV2(
                 const cost = estimateCost(
                   p.name,
                   restoredMs,
-                  restoredFingerprint
-                    ? resources(restoredFingerprint)
-                    : (pricing[p.name]?.fixed ?? null),
+                  priced(restoredFingerprint),
+                  p.region,
                 );
 
                 restoredCost = restoredCost === null || cost === null ? null : restoredCost + cost;
@@ -1487,9 +1505,8 @@ export async function runV2(
                     sample.estimatedCost = estimateCost(
                       p.name,
                       sample.durationMs,
-                      restoredFingerprint
-                        ? resources(restoredFingerprint)
-                        : (pricing[p.name]?.fixed ?? null),
+                      priced(restoredFingerprint),
+                      p.region,
                     );
                   }
                 }
@@ -1802,16 +1819,25 @@ export async function runV2(
         });
       const duration = performance.now() - lifeStart;
 
-      const sourceCost = estimateCost(
-        p.name,
-        duration,
-        fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
-      );
+      const sourceCost = estimateCost(p.name, duration, priced(fp), p.region);
 
       const cost = sourceCost === null || restoredCost === null ? null : sourceCost + restoredCost;
       state.reserved -= reserve;
 
-      if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
+      // A lower-bound estimate would under-charge the guard, so it charges the reservation's resources.
+      const lowerBound = pricedResources(p.name, fp, allocation.requestedSize)?.bound === "lower";
+
+      if (cost !== null && lowerBound)
+        state.estimatedUSD += budgetUSD(
+          p.name,
+          estimateCost(
+            p.name,
+            duration + restoredDurationMs,
+            reservationResources(p.name, fp, allocation.requestedSize),
+            p.region,
+          ) ?? reserve,
+        );
+      else if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
       else if (p.cloud) {
         // An unpriced iteration (usually a failed create) is charged for its measured
         // duration at conservative resources; it must not end the provider's run.

@@ -314,9 +314,9 @@ const rows: readonly Row[] = [
     cells: {
       Yes: [accepts({ labels: labels(5) }), accepts({ labels: { app: noise(4000) } })],
       "Up to 4": [accepts({ labels: labels(4) }), rejects({ labels: labels(5) })],
-      "Up to 8": [
-        accepts({ labels: labels(8) }),
-        rejects({ labels: labels(9) }),
+      "Up to 7": [
+        accepts({ labels: labels(7) }),
+        rejects({ labels: labels(8) }),
         rejects({ labels: { app: noise(1100) } }),
       ],
       "120 chars": [accepts({ labels: labels(1) }), rejects({ labels: { app: noise(400) } })],

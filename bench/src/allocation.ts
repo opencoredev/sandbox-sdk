@@ -1,7 +1,7 @@
 import type { Sample } from "./v2-model.js";
 import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
-import { isSizePreset } from "./v2-config.js";
+import { isSizePreset, type Size } from "./v2-config.js";
 import { distribution } from "./v2-stats.js";
 
 /** Each provider's named size presets. */
@@ -28,6 +28,12 @@ const presets: SizePresets = {
     medium: { cpu: 2, memoryGiB: 8 },
     large: { cpu: 4, memoryGiB: 16 },
   },
+  // The Modal adapter's presets, each pinning request and limit.
+  modal: {
+    small: { cpu: 1, memoryGiB: 2 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
 };
 
 const standardPresets = {
@@ -35,6 +41,13 @@ const standardPresets = {
   medium: { cpu: 2, memoryGiB: 4 },
   large: { cpu: 4, memoryGiB: 8 },
 };
+
+/** The CPU and memory a `--size` request asks the provider for. */
+export function requestedSize(provider: string, size: Size): { cpu: number; memoryGiB: number } {
+  return isSizePreset(size)
+    ? (presets[provider] ?? standardPresets)[size]
+    : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+}
 
 type AllocationRow = Pick<
   Sample,
@@ -52,9 +65,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const requestedCompute =
     size === null
       ? provisioned && { cpu: provisioned.cpu, memoryGiB: provisioned.memoryGiB }
-      : isSizePreset(size)
-        ? (presets[provider] ?? standardPresets)[size]
-        : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+      : requestedSize(provider, size);
 
   const observed = rows
     .filter((s) => ["fingerprint", "restore-fingerprint"].includes(s.scenario))

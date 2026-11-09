@@ -130,6 +130,17 @@ export interface NativeModules {
     ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
   };
   "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
+  /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
+  modal: {
+    ModalClient: new () => {
+      readonly images: {
+        fromId(imageId: string): Promise<{ readonly imageId: string }>;
+        delete(imageId: string): Promise<void>;
+      };
+      close(): void;
+    };
+    NotFoundError: abstract new (...args: never[]) => Error;
+  };
 }
 
 /** The installed SDKs. Each must satisfy its `NativeModules` entry, which `sdk` checks. */
@@ -142,6 +153,9 @@ interface InstalledModules {
   freestyle: typeof import("freestyle");
   "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
   "@superserve/sdk": typeof import("@superserve/sdk");
+  // `modal` is an SDK dependency the bench cannot resolve types for; the slice above is hand-typed
+  // from modal 0.11.1 and checked by the live snapshot run.
+  modal: NativeModules["modal"];
 }
 
 type NativePackage = keyof NativeModules;

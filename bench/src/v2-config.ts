@@ -136,6 +136,8 @@ const schema = z.object({
   "max-dollars": z.coerce.number().positive().finite().default(5),
   "provider-max-sandboxes": overrides,
   "provider-max-dollars": overrides,
+  // Hard sandbox lifetime per provider, for factories that take one (Modal); see lifetime.ts.
+  "lifetime-ms": overrides,
   "account-limits": overrides,
   "burst-cohorts": integer.max(100).default(3),
   bursts: z
