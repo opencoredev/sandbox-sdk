@@ -1,9 +1,11 @@
 ---
 title: Mastra
-description: Give a Mastra agent sandbox tools with sandboxTools from @opencoredev/sandbox-sdk/mastra. A tool map for new Agent, with abort support.
+description: Give a Mastra agent a sandbox on E2B, Daytona, Vercel Sandbox or Docker with sandboxTools from @opencoredev/sandbox-sdk/mastra. How it differs from Workspace.
 ---
 
 `sandboxTools(box)` from `@opencoredev/sandbox-sdk/mastra` returns a Mastra tool map. Pass it as `tools` to `new Agent` and the agent can run commands, read and edit files, and start dev servers in the sandbox.
+
+Mastra also has its own sandbox API: a `Workspace` from `@mastra/core/workspace` with a sandbox such as `LocalSandbox`, passed to `new Agent` as `workspace`. `sandboxTools` takes the other route. The sandbox comes from `createSandbox` and the tools go in `tools`, so the same agent code runs on E2B, Daytona, Vercel Sandbox, Docker on your own machine through `local()`, and the other providers. Switching providers changes the import, the factory call and any options that provider needs, such as `ports` for a dev server on Vercel Sandbox, but not the agent. A tool or option the provider can't support fails with `unsupported`: agentOS, for example, has no SDK background processes, so `start_process` fails there. [Capabilities](/reference/capabilities) lists what each provider supports.
 
 For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
 
