@@ -12,6 +12,7 @@
  * - The next slot starts only when every attempt has finished or the slot's frozen timeout ended it.
  * - Cleanup runs only in the reserved gap after a window closes, and every ID it removes is recorded.
  */
+import type { AttemptApp } from "./apps.js";
 import type { CreateOptions } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { shuffle } from "../v2-stats.js";
@@ -62,6 +63,12 @@ export interface SlotProvider {
   uploadConcurrency?: number;
   /** Capture usage the provider reports only while the sandbox exists; returns the file written. */
   beforeDestroy?(id: string): Promise<string | null>;
+  /**
+   * Per-attempt setup before anything is timed: Modal journals and resolves the attempt's own App.
+   * Its labels go on the attempt's creates, and `created` journals each sandbox. A failure fails
+   * the attempt before any sandbox exists.
+   */
+  beforeAttempt?(attemptId: string): Promise<AttemptApp>;
   /**
    * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
    * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
@@ -359,6 +366,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
       active.map(async (entry) => {
         const controller = new AbortController();
         const created: string[] = [];
+        let app: AttemptApp | undefined;
 
         const environment: AttemptEnvironment = {
           clock,
@@ -368,6 +376,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
           attribution: entry.attribution,
           onSandbox: async (provider, id) => {
             created.push(id);
+            await app?.created(id);
             await plan.onSandbox?.(provider, id);
           },
         };
@@ -410,6 +419,12 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         const invokedAt = clock.now();
 
         try {
+          // Outside the attempt's spans, so its create timing excludes the App lookup.
+          if (entry.beforeAttempt) {
+            app = await entry.beforeAttempt(attemptPlan.attemptId);
+            attemptPlan.labels = app.labels;
+          }
+
           const outcome = await within(
             attempt(attemptPlan, environment).then(({ record: done }) => done),
             Math.max(0, deadline + graceMs - clock.now()),

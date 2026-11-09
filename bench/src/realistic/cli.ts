@@ -31,8 +31,11 @@ import { billingModelLabel, billingRule } from "../cost/billing-rules.js";
 import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
 import { describeIneligibility, eligibility, type CostSourceAudit } from "../cost/eligibility.js";
 import { pick, type Candidate } from "../cost/picks.js";
+import { reservationResources } from "../billed-resources.js";
+import { prepareJournaledApps, type JournalApp } from "../modal-apps.js";
 import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
-import { loadProvider } from "../providers.js";
+import { loadProvider, providerRegion } from "../providers.js";
+import { appJournalFile, prepareAttemptApp, readAppJournal } from "./apps.js";
 import { shuffle } from "../v2-stats.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
 import { systemClock } from "./gaps.js";
@@ -159,7 +162,7 @@ async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[])
 }
 
 /** Budget estimate for one attempt at list price for its provisioned size (EUR counted at 2x). */
-function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number): number {
+export function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number): number {
   const size = setup.tracks[track].provisioned;
 
   // Upstash charges its tier price per CPU-hour used (observed, SBX-100), so a busy box can cost
@@ -167,10 +170,22 @@ function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number)
   const upstash = setup.pricingKey === "upstash" ? pricing.upstash : undefined;
   const tier = upstash ? computeHourly(upstash, size) : null;
 
+  // Request-billed (Modal): the requested size at the pinned region's rate; the unsized default
+  // bursts above its billed minimum, so it reserves the conservative 8 CPU / 16 GiB.
+  const requestBilled = pricing[setup.pricingKey]?.requestBilled;
+  const trackSize = setup.tracks[track].size;
+
   const cost =
     upstash && tier !== null
       ? (tier * size.cpu * durationMs) / 3_600_000
-      : estimateCost(setup.pricingKey, durationMs, size);
+      : requestBilled
+        ? estimateCost(
+            setup.pricingKey,
+            durationMs,
+            reservationResources(setup.pricingKey, null, trackSize ?? null),
+            providerRegion(setup.adapter, process.env),
+          )
+        : estimateCost(setup.pricingKey, durationMs, size);
 
   // Unknown prices are counted at a conservative $1 per hour.
   return cost === null ? (durationMs / 3_600_000) * 1 : budgetUSD(setup.pricingKey, cost);
@@ -204,6 +219,7 @@ function captureUsage(adapter: string, usageDir: string) {
           scenarios: new Set(["pre-destroy"]),
           startedAt: null,
           finishedAt: null,
+          app: null,
         },
       ],
       process.env,
@@ -242,12 +258,18 @@ async function loadSlotProvider(
   track: TrackId,
   slotMs: number,
   usageDir?: string,
+  appJournal?: string,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
+
+  // Modal's factory lifetime for creates without one; each attempt also passes its own below.
+  const lifetime: Record<string, number> =
+    setup.adapter === "modal" ? { modal: slotMs + 15 * 60_000 } : {};
 
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
+    "lifetime-ms": lifetime,
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };
@@ -277,6 +299,13 @@ async function loadSlotProvider(
 
   if (setup.adapter === "boat" && usageDir)
     entry.beforeDestroy = captureUsage(setup.adapter, usageDir);
+
+  // Modal bills per App: each attempt gets its own App, journaled before allocation (apps.ts).
+  if (setup.adapter === "modal") {
+    if (!appJournal) throw new Error("Modal attempts need an App journal");
+    const { provider } = loaded;
+    entry.beforeAttempt = (attemptId) => prepareAttemptApp(appJournal, provider, attemptId);
+  }
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
   if (setup.adapter === "tenki") entry.uploadConcurrency = 1;
@@ -351,7 +380,14 @@ async function run(args: string[]) {
   for (const track of trackIds)
     for (const setup of setups) {
       const slotMs = (manifest.profiles["fix-and-test"]?.slotTimeoutMs ?? 0) + longest;
-      const result = await loadSlotProvider(setup, track, slotMs, join(out, "usage"));
+
+      const result = await loadSlotProvider(
+        setup,
+        track,
+        slotMs,
+        join(out, "usage"),
+        join(out, appJournalFile),
+      );
 
       if (result.kind === "skipped")
         await note({ kind: "provider-skipped", provider: setup.name, track, reason: result.note });
@@ -468,14 +504,20 @@ async function run(args: string[]) {
     }
   } finally {
     // Always, after a budget stop or an error too: nothing this run made is left running.
-    await sweepProviders(values.run, [...loaded.values()], note);
+    await sweepProviders(
+      values.run,
+      [...loaded.values()],
+      note,
+      await readAppJournal(join(out, appJournalFile)),
+    );
   }
 }
 
-async function sweepProviders(
+export async function sweepProviders(
   runId: string,
   providers: readonly SlotProvider[],
   note: (entry: RunNote) => Promise<void>,
+  apps: readonly JournalApp[],
 ) {
   const seen = new Set<Provider>();
 
@@ -484,6 +526,8 @@ async function sweepProviders(
     seen.add(entry.provider);
 
     try {
+      // Modal lists only the Apps this process knows: prepare every journaled one first.
+      await prepareJournaledApps(entry.provider, apps);
       const left = await entry.provider.list({ "sandbox-bench-run": runId });
 
       for (const item of left) {
@@ -518,6 +562,7 @@ async function sweep(args: string[]) {
 
   if (!values.out || !values.run?.length) throw new Error("realistic sweep needs --out and --run");
   const notesPath = join(resolve(values.out), "notes.jsonl");
+  const apps = await readAppJournal(join(resolve(values.out), appJournalFile));
 
   const note = (entry: RunNote) =>
     appendFile(notesPath, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
@@ -537,7 +582,7 @@ async function sweep(args: string[]) {
         if (loaded.kind === "ready") providers.push(loaded.entry);
       }
 
-      await sweepProviders(runId, providers, note);
+      await sweepProviders(runId, providers, note, apps);
     }
 
   process.stdout.write(`Swept; see ${notesPath}\n`);
@@ -554,6 +599,17 @@ async function billing(args: string[]) {
   const out = resolve(values.out);
   const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
   const withSandbox = records.filter((r) => r.sandboxIds.length > 0);
+
+  // Each journaled App's sandboxes, for the per-App collector (Modal).
+  const appOf = new Map(
+    (await readAppJournal(join(out, appJournalFile))).flatMap((app) =>
+      app.sandboxes.map((id) => [
+        `${app.provider}/${id}`,
+        { name: app.name, appId: app.appId, sandboxes: app.sandboxes },
+      ]),
+    ),
+  );
+
   const byAdapter = new Map<string, AttemptRecord[]>();
 
   const captured = new Map<string, z.infer<typeof costSchema>>();
@@ -590,6 +646,8 @@ async function billing(args: string[]) {
         scenarios: new Set([`${record.profile}/${record.track}/${record.variant}`]),
         startedAt: new Date(record.startedAt).toISOString(),
         finishedAt: new Date(record.endedAt).toISOString(),
+        // Modal prices a sandbox from its App's charge, when it is the App's only sandbox.
+        app: appOf.get(`${adapter}/${id}`) ?? null,
       })),
     );
 

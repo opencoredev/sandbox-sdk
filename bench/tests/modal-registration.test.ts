@@ -40,7 +40,11 @@ describe("Modal bench registration", () => {
   it("has a billing rule: metered per App, one sandbox per App", () => {
     const rule = billingRule("modal", null);
 
-    expect(rule).toMatchObject({ pricingKey: "modal", reportedKind: "metered", attribution: "per-sandbox" });
+    expect(rule).toMatchObject({
+      pricingKey: "modal",
+      reportedKind: "metered",
+      attribution: "per-sandbox",
+    });
     expect(attributionFor("modal").attribution).toBe("per-sandbox");
   });
 });

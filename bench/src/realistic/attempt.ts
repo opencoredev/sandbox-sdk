@@ -57,6 +57,8 @@ export interface AttemptPlan {
   vcpu?: number;
   /** Only the run label, for providers whose labels share a short name budget (Boat). */
   runLabelOnly?: boolean;
+  /** Extra create labels, such as the label that routes a Modal create to the attempt's App. */
+  labels?: Readonly<Record<string, string>>;
   /** Chunks in flight during an upload, for providers that refuse concurrent writes (Tenki). */
   uploadConcurrency?: number;
 }
@@ -178,8 +180,9 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
         createSandbox(provider, {
           ...plan.create,
           labels: plan.runLabelOnly
-            ? { "sandbox-bench-run": plan.runId }
+            ? { ...plan.labels, "sandbox-bench-run": plan.runId }
             : {
+                ...plan.labels,
                 "sandbox-bench-run": plan.runId,
                 "rw-attempt": plan.attemptId,
                 "rw-variant": plan.variant,
