@@ -33,18 +33,17 @@ export function modalSettledAt(stoppedAt: number): number {
   return Math.floor(stoppedAt / hourMs) * hourMs + hourMs + modalSettleBufferMs;
 }
 
-// An hour the sandbox overlaps by less than this may have no row of its own (it started or
-// stopped right at the boundary), so its absence does not hold a charge provisional.
-const boundaryMs = 60_000;
-
-/** The hours (interval starts, ms) a sandbox running from `start` to `stop` should have rows for. */
+/**
+ * The hours (interval starts, ms) a sandbox running from `start` to `stop` should have rows for:
+ * every hour it overlaps at all. Modal does not say a short overlap has no charge, so a missing row
+ * for any of them keeps the charge provisional rather than dropping part of it.
+ */
 export function expectedIntervals(start: number, stop: number): number[] {
   const hours: number[] = [];
 
   for (let hour = Math.floor(start / hourMs) * hourMs; hour < stop; hour += hourMs)
-    if (Math.min(stop, hour + hourMs) - Math.max(start, hour) >= boundaryMs) hours.push(hour);
+    hours.push(hour);
 
-  // A sandbox shorter than the boundary still has at least the row of the hour it started in.
   return hours.length ? hours : [Math.floor(start / hourMs) * hourMs];
 }
 

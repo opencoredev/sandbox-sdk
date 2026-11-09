@@ -553,6 +553,61 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     expect(events.at(-1)).toMatchObject({ requestMs: null, stoppedMs: expect.any(Number) });
   });
 
+  test("a refused retry does not clear an earlier terminate whose response was lost", async () => {
+    const key = `retry-${crypto.randomUUID()}`;
+    const adapter = provider({ destroyWaitMs: 200 });
+    const box = await createSandbox(adapter, { key });
+    const native = mock.sandboxes.get(box.id)!;
+    // The first terminate is accepted but its response is lost, and the stop takes a while.
+    native.stopDelayMs = 3000;
+    native.terminateLostResponse = grpcFailure(14, "UNAVAILABLE: connection reset");
+    await expect(adapter.destroy(box.id)).rejects.toMatchObject({ code: "unavailable" });
+    // The retry is refused outright; that says nothing about the first request.
+    native.terminateLostResponse = undefined;
+    native.terminateFailure = grpcFailure(7, "PERMISSION_DENIED: terminate refused");
+    await expect(adapter.destroy(box.id)).rejects.toMatchObject({ code: "auth" });
+    expect(await adapter.find(key)).toBeUndefined();
+    expect(await adapter.connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
+    native.terminateFailure = undefined;
+  });
+
+  test("FAILED_PRECONDITION on terminate is not taken as a refusal", async () => {
+    const key = `precondition-${crypto.randomUUID()}`;
+    const adapter = provider({ destroyWaitMs: 200 });
+    const box = await createSandbox(adapter, { key });
+    const native = mock.sandboxes.get(box.id)!;
+    native.terminateFailure = grpcFailure(9, "FAILED_PRECONDITION: sandbox is stopping");
+    await expect(adapter.destroy(box.id)).rejects.toBeDefined();
+    // It may already be stopping, so it is never handed out again.
+    expect(await adapter.find(key)).toBeUndefined();
+    native.terminateFailure = undefined;
+  });
+
+  test("a restore whose setup fails after allocation reports the allocated sandbox", async () => {
+    const box = await createSandbox(provider());
+    const { id } = await box.snapshot();
+    const create = mock.client.sandboxes.create;
+    let restoredId: string | undefined;
+    // The restored sandbox exists, then its tag write is refused (PERMISSION_DENIED).
+    mock.client.sandboxes.create = async (...args: Parameters<typeof create>) => {
+      const created = await create(...args);
+      created.tagFailure = grpcFailure(7, "PERMISSION_DENIED: tags refused");
+      restoredId = created.sandboxId;
+
+      return created;
+    };
+
+    try {
+      const attempt = createSandbox(provider(), { from: id });
+      await expect(attempt).rejects.toMatchObject({ code: "auth", provider: "modal" });
+      expect(restoredId).toBeDefined();
+      await expect(attempt).rejects.toHaveProperty("sandboxId", restoredId);
+    } finally {
+      mock.client.sandboxes.create = create;
+      await box.destroy();
+    }
+  });
+
   test("only Modal's finished-command refusal counts as stdin to an exited command", async () => {
     const box = await createSandbox(provider());
     const native = mock.sandboxes.get(box.id)!;

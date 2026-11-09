@@ -112,11 +112,24 @@ export function allocated(app: JournalApp, id: string, sandboxId: string) {
 const refusals: ReadonlySet<string> = new Set(["invalid_argument", "unsupported", "auth", "quota"]);
 
 /**
- * Record a failed create: `rejected` only for the provider's definitive refusal; anything else
- * stays `submitted`, so billing treats the App as ambiguous until a listing finds the sandbox.
+ * Record a failed create. A failure naming the sandbox it came after (a restore whose setup failed
+ * once Modal had allocated it) is `allocated`, so billing sees that sandbox in the App. Otherwise
+ * `rejected` only for the provider's definitive refusal; anything else stays `submitted`, so
+ * billing treats the App as ambiguous until a listing finds the sandbox.
  */
 export function failedAllocation(app: JournalApp, id: string, provider: string, cause: unknown) {
   const index = app.allocations.findIndex((entry) => entry.id === id);
+
+  if (
+    index >= 0 &&
+    cause instanceof SandboxError &&
+    cause.provider === provider &&
+    cause.sandboxId !== undefined
+  ) {
+    allocated(app, id, cause.sandboxId);
+
+    return;
+  }
 
   if (
     index >= 0 &&
