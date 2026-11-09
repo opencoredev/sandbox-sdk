@@ -1,13 +1,12 @@
 import type { ModalClientParams, Sandbox } from "modal";
-import type { Provider } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import {
   createModalProvider,
-  type ModalCapability,
+  type ModalAdapter,
   type ModalOptions as NativeModalOptions,
 } from "./provider.js";
 
-export type { ModalCapability, ModalResources } from "./provider.js";
+export type { ModalCapability, ModalDestroyEvent, ModalResources } from "./provider.js";
 
 export type ModalOptions = NativeModalOptions & {
   /** Defaults to MODAL_TOKEN_ID, then the active profile in ~/.modal.toml. */
@@ -18,7 +17,7 @@ export type ModalOptions = NativeModalOptions & {
   client?: Omit<ModalClientParams, "tokenId" | "tokenSecret" | "environment">;
 };
 
-export type ModalProvider = Provider<Sandbox, ModalCapability>;
+export type ModalProvider = ModalAdapter<Sandbox>;
 
 /** Modal Sandboxes through the official `modal` SDK, an optional peer loaded on first use. */
 export function modal(options: ModalOptions = {}): ModalProvider {

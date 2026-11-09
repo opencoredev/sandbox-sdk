@@ -23,7 +23,12 @@ console.log((await box.run("cat hello.txt")).stdout);
 Authentication uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, or the active
 profile in `~/.modal.toml`. Explicit `modal({ tokenId, tokenSecret })` values
 take precedence. Every sandbox lives in one Modal App, `sandbox-sdk` by
-default, created on first use.
+default, created on first use. `createApp` can pick another App for an unkeyed
+create (one App per job, so Modal's per-App billing report prices each job).
+`list()` scans `app` plus every App the provider has created into or prepared
+(Modal deprecates Environment-wide listing), so a new process calls
+`prepareApp(name)` for each App it must see; `prepareApp` also takes the App
+lookup out of create timing.
 
 Keys map to `sdk-` plus 56 hex characters of SHA-256, under Modal's 64-character
 name limit. Modal allows one running sandbox per name in an App, and create
@@ -31,14 +36,18 @@ raises `AlreadyExistsError` for a second one, so `keyMode` is `"exact"` and the
 core resolves a concurrent create through `find`. Labels become native tags.
 Modal allows ten tags and 1024 bytes per sandbox; the SDK reserves `sandbox-sdk`,
 `sandbox-sdk-created` (the creation time, which Modal's JS SDK does not expose),
-and `sandbox-sdk-key` for keyed sandboxes. Extra tags fail with `unsupported`.
+`sandbox-sdk-key` for keyed sandboxes, and keeps room for
+`sandbox-sdk-destroying`. Extra tags fail with `unsupported`.
 Listing filters by tags on the server and returns only running sandboxes.
 
 Sizes map to `cpu` 1, 2, and 4 with 2048 MiB per CPU, and set Modal's request
 and limit to the same values, so a sized sandbox cannot burst. A live check on
 2026-11-09 found that `cpu: N` with an equal limit gives `nproc` N and N threads
-of parallel throughput, so one Modal CPU unit counts as one vCPU here, even
-though Modal bills it as a physical core. The sandbox runtime is gVisor, so
+of parallel throughput (a fixed SHA-256 job: effective threads 2.0 for `cpu: 2`
+and 4.1 for `cpu: 4` at eight copies; an E2B 4 vCPU sandbox reached 3.0, and
+Modal `cpu: 4` did 1.10x its work). One Modal CPU unit therefore counts as one
+vCPU of guest-visible capacity here, while Modal bills it as a physical core it
+calls "2 vCPU equivalent". The sandbox runtime is gVisor, so
 `/sys/fs/cgroup/cpu.max` and `memory.max` do not exist; `nproc`,
 `/proc/cpuinfo` and `/proc/meminfo` reflect the request and limit instead.
 `diskGb` fails with `unsupported`. Without `size`, Modal's default request is
@@ -59,8 +68,10 @@ working directory, prints the new process group ID as the first stderr line
 --signal=KILL`, so the remote deadline kills the whole group even when the
 client disconnects. Timeout and abort kill the group from a second exec. Modal's
 native exec `timeoutMs` is not used: a live check showed it leaves background
-children running. stdin closes after any supplied input. Background processes
-use the core's shell records.
+children running. stdin closes after any supplied input. A stdin write or close
+error is ignored only when the command has exited (or does within a second);
+transport errors (`unavailable`, `auth`, `timeout`, `quota`) always reject and
+kill the command. Background processes use the core's shell records.
 
 Files use Modal's filesystem API (`readBytes`, `writeBytes`, `listFiles`,
 `stat`, `remove`, `makeDirectory`); Modal creates parents on write. Snapshots
@@ -71,11 +82,15 @@ image up first, because Modal's delete succeeds for an image that is gone.
 `buildTemplate()` builds `RUN` layers in exec form with build-only env and
 returns the image ID.
 
-`destroy()` sets the `sandbox-sdk` tag to `destroyed` and requests termination
-without waiting. Modal sometimes takes about 30 seconds to stop a sandbox (2 of
-18 in a 2026-11-09 probe); every client treats the tag as gone, and a keyed
-create that collides with the stopping sandbox's name waits up to a minute for
-Modal to free it.
+`destroy()` requests termination and, beside it, sets `sandbox-sdk-destroying`;
+a failed tag write never blocks the request. It then polls until Modal reports
+the sandbox stopped, up to `destroyWaitMs` (default 60 s), because Modal
+sometimes takes about 30 seconds (2 of 18 in a 2026-11-09 probe) and bills until
+then. A failed terminate rejects and clears the tag. An unconfirmed stop rejects
+with a retryable `timeout`; until Modal stops it, `list()` and `connect()` return
+the sandbox with state `"stopped"`, `find()` skips it, and a keyed create that
+collides with its name waits up to a minute for Modal to free it. `onDestroy`
+reports `requestMs` (terminate accepted) and `stoppedMs` (stop confirmed).
 
 There is no pause (Modal sandboxes cannot run again once stopped; memory
 snapshots restore into a new sandbox ID, so they are not a resume), and no
@@ -92,5 +107,5 @@ timeout 1200s bunx vitest run tests/modal.live.test.ts --maxWorkers=1
 
 Run this command from `packages/sdk`. It creates and terminates billable
 sandboxes, about 30 of them, and ends by checking that none from the run is
-still running. The implementation was checked against the published `modal`
+still running in any App. The implementation was checked against the published `modal`
 0.11.1 types and source and [Modal's sandbox guide](https://modal.com/docs/guide/sandbox).

@@ -12,7 +12,7 @@ import type {
   TemplateInfo,
   TemplateSpec,
 } from "../../provider.js";
-import { SandboxError } from "../../errors.js";
+import { SandboxError, type ErrorCode } from "../../errors.js";
 import { invalid, modalError, unsupported } from "./errors.js";
 import type {
   ModalClientSlice,
@@ -35,9 +35,31 @@ export type ModalResources = Pick<
   "cpu" | "cpuLimit" | "memoryMiB" | "memoryLimitMiB"
 >;
 
+/** One destroy, timed from the terminate request. */
+export interface ModalDestroyEvent {
+  sandboxId: string;
+  /** Until Modal accepted the terminate request. */
+  requestMs: number;
+  /** Until Modal reported the sandbox stopped; `null` when it did not within `destroyWaitMs`. */
+  stoppedMs: number | null;
+}
+
 export interface ModalOptions {
   /** Modal App that owns the sandboxes. Created on first use. Default: `"sandbox-sdk"`. */
   app?: string;
+  /**
+   * Pick the App for one unkeyed create, for example one App per benchmark attempt so Modal's
+   * per-App billing report prices it. Return `undefined` to use `app`. Keyed creates always use
+   * `app`, because Modal keeps sandbox names unique only inside one App. `list()` scans `app` and
+   * every App this provider has created into or prepared; after a restart, call `prepareApp` for
+   * each App to clean up. A new App costs one lookup inside the create that first uses it;
+   * `prepareApp` beforehand keeps it out of create timing.
+   */
+  createApp?: (input: { readonly labels: Readonly<Labels> }) => string | undefined;
+  /** How long `destroy` waits for Modal to report the sandbox stopped. Default: 60 seconds. */
+  destroyWaitMs?: number;
+  /** Called after each terminate request with its latency and the confirmed-stop latency. */
+  onDestroy?: (event: ModalDestroyEvent) => void;
   /** Modal Environment for the App and its sandboxes. Default: the profile's, or `MODAL_ENVIRONMENT`. */
   environment?: string;
   /** Registry image for fresh sandboxes; ignored with `from`. Default: `node:22-bookworm`. */
@@ -61,12 +83,22 @@ export interface ModalOptions {
 const sdkTag = "sandbox-sdk";
 const keyTag = "sandbox-sdk-key";
 const createdTag = "sandbox-sdk-created";
-const destroyedTag = "destroyed";
+
+// Set when termination is requested: list() keeps showing the sandbox (state "stopped") until Modal
+// reports it stopped, and find() stops handing it out for its key.
+const destroyingTag = "sandbox-sdk-destroying";
+
+// Earlier adapter versions overwrote the sandbox-sdk tag with this instead.
+const legacyDestroyed = "destroyed";
+const defaultDestroyWaitMs = 60_000;
 const defaultImage = "node:22-bookworm";
 const hour = 3_600_000;
 const maxLifetimeMs = 24 * hour;
 const maxTags = 10;
 const maxTagBytes = 1024;
+
+// Modal App names: letters, digits, dashes, periods and underscores, shorter than 64 characters.
+const appNamePattern = /^[\w.-]{1,63}$/;
 
 // Modal sandbox names must be shorter than 64 characters.
 const keyName = (key: string) =>
@@ -191,6 +223,15 @@ async function drain(stream: ReadableStream<string>, emit: (text: string) => voi
   }
 }
 
+/** Error codes that mean the request itself failed, never that the command had already exited. */
+const transportCodes: ReadonlySet<ErrorCode> = new Set(["unavailable", "auth", "timeout", "quota"]);
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function destroying(tags: Labels): boolean {
+  return tags[destroyingTag] !== undefined || tags[sdkTag] === legacyDestroyed;
+}
+
 function fileInfo(entry: Awaited<ReturnType<NativeFilesystem["stat"]>>): FileInfo {
   return {
     path: entry.path,
@@ -201,10 +242,16 @@ function fileInfo(entry: Awaited<ReturnType<NativeFilesystem["stat"]>>): FileInf
 }
 
 /** Internal injection point used by the offline SDK contract tests. */
+/** The Modal adapter: a {@link Provider} plus Modal-only helpers. */
+export type ModalAdapter<N extends NativeSandbox> = Provider<N, ModalCapability> & {
+  /** Look up or create an App ahead of time, so a later create that uses it pays no App lookup. */
+  prepareApp(name: string): Promise<void>;
+};
+
 export function createModalProvider<N extends NativeSandbox>(
   load: () => Promise<ModalClientSlice<N>>,
   options: ModalOptions = {},
-): Provider<N, ModalCapability> {
+): ModalAdapter<N> {
   const boxes = new Map<string, N>();
   // Ports declared at creation by this provider instance; a connected sandbox's come from Modal.
   const declared = new Map<string, ReadonlySet<number>>();
@@ -212,8 +259,9 @@ export function createModalProvider<N extends NativeSandbox>(
   const seen = new Map<string, Labels>();
   const appName = options.app ?? "sandbox-sdk";
   const defaultLifetime = lifetime(options.timeoutMs);
+  const destroyWaitMs = options.destroyWaitMs ?? defaultDestroyWaitMs;
   let client: Promise<ModalClientSlice<N>> | undefined;
-  let app: Promise<NativeApp> | undefined;
+  const apps = new Map<string, Promise<NativeApp>>();
   let base: NativeImage | undefined;
 
   // A failed load or lookup is not cached, so a fixed credential or network works on the next call.
@@ -227,17 +275,30 @@ export function createModalProvider<N extends NativeSandbox>(
       }
     })());
 
-  const application = () =>
-    (app ??= (async () => {
+  const application = (name = appName): Promise<NativeApp> => {
+    if (!appNamePattern.test(name))
+      invalid(
+        "Modal App names use letters, digits, dashes, periods and underscores, under 64 characters.",
+      );
+    const known = apps.get(name);
+
+    if (known) return known;
+
+    const lookup = (async () => {
       try {
         return await (
           await sdk()
-        ).apps.fromName(appName, { createIfMissing: true, environment: options.environment });
+        ).apps.fromName(name, { createIfMissing: true, environment: options.environment });
       } catch (error) {
-        app = undefined;
+        apps.delete(name);
         throw error;
       }
-    })());
+    })();
+
+    apps.set(name, lookup);
+
+    return lookup;
+  };
 
   const safe = async <T>(id: string | undefined, action: () => Promise<T>): Promise<T> => {
     try {
@@ -277,17 +338,22 @@ export function createModalProvider<N extends NativeSandbox>(
   };
 
   function info(id: string, tags: Labels): SandboxInfo {
-    const { [keyTag]: key, [createdTag]: created, ...labels } = tags;
+    const { [keyTag]: key, [createdTag]: created, [destroyingTag]: _destroying, ...labels } = tags;
 
-    return { id, key, labels, state: "running", createdAt: Number(created) || 0 };
+    // A sandbox being destroyed is still running until Modal says otherwise; it is not usable.
+    const state = destroying(tags) ? "stopped" : "running";
+
+    return { id, key, labels, state, createdAt: Number(created) || 0 };
   }
 
-  /** Read a sandbox's tags once it is running and set up. A finished sandbox is `not_found`. */
+  /**
+   * Read a sandbox's tags once it is running and set up. A finished sandbox is `not_found`; one whose
+   * termination was requested but not yet confirmed is `stopped`, so cleanup can still find it.
+   */
   async function attach(box: N): Promise<SandboxInfo> {
     const [exit, first] = await Promise.all([box.poll(), box.getTags()]);
 
-    // Destroy marks the sandbox first; Modal can take up to ~30 s more to report it stopped.
-    if (exit !== null || first[sdkTag] === destroyedTag) throw ended(box.sandboxId);
+    if (exit !== null) throw ended(box.sandboxId);
     let tags = first;
     const deadline = Date.now() + 60_000;
 
@@ -298,7 +364,7 @@ export function createModalProvider<N extends NativeSandbox>(
           "Sandbox initialization is incomplete. The creator has not finished setup. Retry connection later.",
           { code: "unavailable", provider: "modal", sandboxId: box.sandboxId, retryable: true },
         );
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await delay(250);
       tags = await box.getTags();
     }
 
@@ -321,7 +387,7 @@ export function createModalProvider<N extends NativeSandbox>(
       throw error;
     }
 
-    if ((await holder.getTags())[sdkTag] !== destroyedTag) return false;
+    if (!destroying(await holder.getTags())) return false;
     const deadline = Date.now() + 60_000;
 
     while ((await holder.poll()) === null) {
@@ -343,6 +409,48 @@ export function createModalProvider<N extends NativeSandbox>(
     ]);
 
     return exit;
+  }
+
+  /** Set or clear the destroying tag. Best effort: returns whether the write went through. */
+  async function mark(box: N, on: boolean): Promise<boolean> {
+    try {
+      const { [destroyingTag]: _previous, ...rest } =
+        seen.get(box.sandboxId) ?? (await box.getTags());
+
+      const tags = on ? { ...rest, [destroyingTag]: String(Date.now()) } : rest;
+      await box.setTags(tags);
+      seen.set(box.sandboxId, tags);
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Whether Modal reports the sandbox stopped within `ms`. A sandbox Modal no longer knows is stopped. */
+  async function stopsWithin(box: N, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+
+    for (;;) {
+      try {
+        if ((await box.poll()) !== null) return true;
+      } catch (error) {
+        if (modalError(error).code === "not_found") return true;
+        throw error;
+      }
+
+      const left = deadline - Date.now();
+
+      if (left <= 0) return false;
+      await delay(Math.min(250, left));
+    }
+  }
+
+  function forget(id: string) {
+    boxes.get(id)?.detach();
+    boxes.delete(id);
+    declared.delete(id);
+    seen.delete(id);
   }
 
   async function killGroup(box: N, group: number) {
@@ -421,16 +529,54 @@ export function createModalProvider<N extends NativeSandbox>(
       if (rest) input.onChunk({ stream: "stderr", text: rest });
     };
 
+    const exited = proc.wait();
+    let finished = false;
+    void exited.then(
+      () => (finished = true),
+      () => {},
+    );
+
+    /** Whether the command exits within `ms`, as it does when it ended before reading its input. */
+    const exitsWithin = async (ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      try {
+        return await Promise.race([
+          exited.then(
+            () => true,
+            () => false,
+          ),
+          new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms))),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    // Closing stdin right away gives the command EOF. A command that has already exited refuses the
+    // write or the close; that is no failure. Any other stdin error is a transport failure: it
+    // propagates, and the catch below kills the command, which would otherwise run on half its input.
+    const feed = async () => {
+      try {
+        if (input.stdin !== undefined) await proc.stdin.writeText(input.stdin);
+        await proc.stdin.close();
+      } catch (error) {
+        const failure = modalError(error, box.sandboxId);
+
+        // Transport failures always propagate. Anything else counts as the exited command's refusal
+        // only if the command has exited or does within a second, the time its exit status can lag.
+        // Stdin is not closed first: a command still reading it stays blocked and cannot pass as done.
+        if (transportCodes.has(failure.code) || !(finished || (await exitsWithin(1_000))))
+          throw failure;
+        void proc.stdin.close().catch(() => {});
+      }
+    };
+
     try {
-      // Closing stdin right away gives the command EOF. A command that exits first may refuse the input.
-      const stdin = (
-        input.stdin === undefined
-          ? proc.stdin.close()
-          : proc.stdin.writeText(input.stdin).then(() => proc.stdin.close())
-      ).catch(() => {});
+      const stdin = feed();
 
       const [exit] = await Promise.all([
-        proc.wait(),
+        exited,
         drain(proc.stdout, (text) => input.onChunk({ stream: "stdout", text })),
         drain(proc.stderr, (text) => {
           if (headDone) input.onChunk({ stream: "stderr", text });
@@ -521,12 +667,13 @@ export function createModalProvider<N extends NativeSandbox>(
 
         if (input.key !== undefined) tags[keyTag] = input.key;
 
-        if (Object.keys(tags).length > maxTags)
+        // Room stays for the tag destroy adds.
+        if (Object.keys(tags).length + 1 > maxTags)
           unsupported(
-            "Modal allows ten tags per sandbox, and the SDK uses up to three of them (sandbox-sdk, sandbox-sdk-created, sandbox-sdk-key)",
+            "Modal allows ten tags per sandbox, and the SDK uses up to four of them (sandbox-sdk, sandbox-sdk-created, sandbox-sdk-key, sandbox-sdk-destroying)",
           );
 
-        if (tagBytes(tags) > maxTagBytes)
+        if (tagBytes({ ...tags, [destroyingTag]: String(Date.now()) }) > maxTagBytes)
           unsupported("Modal allows 1024 bytes of tag names and values per sandbox, key included");
         const ports = [...new Set(input.ports)];
 
@@ -553,7 +700,12 @@ export function createModalProvider<N extends NativeSandbox>(
             ? (base ??= modal.images.fromRegistry(options.image ?? defaultImage))
             : await modal.images.fromId(input.from);
 
-        const owner = await application();
+        const owner = await application(
+          input.key === undefined
+            ? (options.createApp?.({ labels: input.labels }) ?? appName)
+            : appName,
+        );
+
         let box: N;
 
         try {
@@ -603,7 +755,9 @@ export function createModalProvider<N extends NativeSandbox>(
           throw error;
         }
 
-        if (found.labels[sdkTag] !== "1" || found.key !== key) return undefined;
+        // A sandbox being destroyed is not handed out; create waits for Modal to free its name.
+        if (found.labels[sdkTag] !== "1" || found.key !== key || found.state === "stopped")
+          return undefined;
 
         return found;
       }),
@@ -612,20 +766,28 @@ export function createModalProvider<N extends NativeSandbox>(
     list: (labels) =>
       safe(undefined, async () => {
         const modal = await sdk();
-        const owner = await application();
+        await application();
+
+        // Modal deprecates listing a whole Environment, so scan each App this provider has used or
+        // prepared: `app` alone unless createApp has picked others.
+        const owners = (await Promise.allSettled(apps.values())).flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+
         const filter = { ...labels, [sdkTag]: "1" };
-        const found: N[] = [];
+        const found = new Map<string, N>();
 
         // Modal filters by tags server-side and lists only running sandboxes.
-        for await (const box of modal.sandboxes.list({
-          appId: owner.appId,
-          tags: filter,
-          environment: options.environment,
-        }))
-          found.push(box);
+        for (const owner of owners)
+          for await (const box of modal.sandboxes.list({
+            appId: owner.appId,
+            tags: filter,
+            environment: options.environment,
+          }))
+            found.set(box.sandboxId, box);
 
         const items = await Promise.all(
-          found.map(async (box) => {
+          [...found.values()].map(async (box) => {
             try {
               return await attach(box);
             } catch (error) {
@@ -644,21 +806,40 @@ export function createModalProvider<N extends NativeSandbox>(
     destroy: (id) =>
       safe(id, async () => {
         const box = await get(id);
+        const started = Date.now();
+        // The mark is advisory and runs beside terminate: a failed tag write never blocks termination.
+        const marking = mark(box, true);
 
         try {
-          // Modal sometimes takes ~30 s to stop a sandbox after terminate. The tag tells every client
-          // at once that the sandbox is gone: connect, find and list skip it from here on.
-          const tags = seen.get(id) ?? (await box.getTags());
-          await box.setTags({ ...tags, [sdkTag]: destroyedTag });
           await box.terminate();
         } catch (error) {
-          if (modalError(error).code !== "not_found") throw error;
+          const marked = await marking;
+
+          if (modalError(error).code === "not_found") return forget(id);
+
+          // Still running and not stopping: drop the mark, so it stays an ordinary running sandbox.
+          if (marked) await mark(box, false);
+          throw error;
         }
 
-        box.detach();
-        boxes.delete(id);
-        declared.delete(id);
-        seen.delete(id);
+        const requestMs = Date.now() - started;
+        await marking;
+        // Modal sometimes takes ~30 s to stop a sandbox after terminate, and bills until it stops.
+        const stopped = await stopsWithin(box, destroyWaitMs);
+        const stoppedMs = stopped ? Date.now() - started : null;
+
+        try {
+          options.onDestroy?.({ sandboxId: id, requestMs, stoppedMs });
+        } catch {
+          // An observer failure is not a destroy failure.
+        }
+
+        if (!stopped)
+          throw new SandboxError(
+            `Sandbox termination was requested, but Modal still reports it running after ${Math.round(destroyWaitMs / 1000)} s. It stays listed with state "stopped". Call destroy again to keep waiting.`,
+            { code: "timeout", provider: "modal", sandboxId: id, retryable: true },
+          );
+        forget(id);
       }),
     exec: (id, input) =>
       safe(id, async () => {
@@ -705,12 +886,7 @@ export function createModalProvider<N extends NativeSandbox>(
 
         return { url: tunnel.url };
       }),
-    close: async (id) => {
-      boxes.get(id)?.detach();
-      boxes.delete(id);
-      declared.delete(id);
-      seen.delete(id);
-    },
+    close: async (id) => forget(id),
     snapshot: (id, settings = {}) =>
       safe(id, async () => {
         const { expiresInMs } = settings;
@@ -772,5 +948,10 @@ export function createModalProvider<N extends NativeSandbox>(
       }),
   };
 
-  return provider;
+  return Object.assign(provider, {
+    prepareApp: (name: string) =>
+      safe(undefined, async () => {
+        await application(name);
+      }),
+  });
 }

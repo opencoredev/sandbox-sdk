@@ -152,7 +152,17 @@ await using box = await createSandbox(modal({ region: "us-east" }), {
 });
 ```
 
-A `size` sets both Modal's request and its limit, so the sandbox gets exactly that CPU and memory and cannot burst. `cpu` is Modal's CPU count, from 0.125 up, and may be fractional. Modal bills each unit as a physical core and calls it "2 vCPU equivalent", but a sandbox with `cpu: 4` reports `nproc` 4 and runs four threads in parallel, so treat one unit as one vCPU: 4 vCPU and 8 GiB is `{ cpu: 4, memoryMb: 8192 }`. Modal has no disk setting, so `diskGb` fails with `unsupported`.
+A `size` sets both Modal's request and its limit, so the sandbox gets exactly that CPU and memory and cannot burst. `cpu` is Modal's CPU count, from 0.125 up, and may be fractional. Modal has no disk setting, so `diskGb` fails with `unsupported`.
+
+What a Modal `cpu` is depends on whose words you use. Modal's docs call one `cpu` a physical core, billed as "2 vCPU equivalent". Inside the sandbox, `cpu: N` shows N processors and runs N threads at full speed, not 2N. On November 9, 2026 we ran a fixed CPU job (SHA-256 over an in-memory buffer, 1, 2, 4 and 8 copies at once, three repeats each) on Modal and on an E2B 4 vCPU / 8 GiB sandbox:
+
+| Sandbox                    | `nproc` | One copy (s) | Effective threads at 4 / 8 copies | Throughput at 8 copies vs E2B |
+| -------------------------- | ------- | ------------ | --------------------------------- | ----------------------------- |
+| Modal `cpu: 2`, 8 GiB      | 2       | 1.27         | 2.2 / 2.0                         | 0.53×                         |
+| Modal `cpu: 4`, 8 GiB      | 4       | 1.27         | 4.0 / 4.1                         | 1.10×                         |
+| E2B 4 vCPU, 8 GiB template | 4       | 1.02         | 3.0 / 3.0                         | 1.00×                         |
+
+Effective threads is copies × one-copy time ÷ wall time. So 4 vCPU and 8 GiB on Modal is `{ cpu: 4, memoryMb: 8192 }`: it matches E2B's four CPUs and 8 GiB as the guest sees them, and its parallel throughput is about 10% higher. `cpu: 2` delivers half. You pay for four Modal cores, which Modal itself would call 8 vCPU equivalent. That is one sandbox per setting on one day, so treat the percentages as rough.
 
 Without `size`, Modal's default applies: a request of 0.125 CPU and 128 MiB that bursts into spare host capacity, about 16 more CPUs and the host's free memory. Billing follows the higher of the request and what the sandbox uses. Set `resources` on the factory for Modal's own request and limit fields, such as a request with a higher burst limit.
 
@@ -182,35 +192,39 @@ To see what you were charged, use Modal's [billing reports](https://modal.com/do
 
 ## Configuration
 
-| Option        | Type                                                  | Default                 | Env var                |
-| ------------- | ----------------------------------------------------- | ----------------------- | ---------------------- |
-| `tokenId`     | `string`                                              | Profile                 | `MODAL_TOKEN_ID`       |
-| `tokenSecret` | `string`                                              | Profile                 | `MODAL_TOKEN_SECRET`   |
-| `environment` | `string`                                              | Profile's               | `MODAL_ENVIRONMENT`    |
-| `app`         | `string`                                              | `"sandbox-sdk"`         |                        |
-| `image`       | `string`, a registry tag such as `"python:3.13-slim"` | `"node:22-bookworm"`    |                        |
-| `region`      | `string` or `string[]`, such as `"us-east"`           | Modal's choice          | `MODAL_SANDBOX_REGION` |
-| `runtime`     | `"gvisor"` or `"vm"`                                  | Modal's choice (gVisor) |                        |
-| `resources`   | `{ cpu?, cpuLimit?, memoryMiB?, memoryLimitMiB? }`    | Modal's default         |                        |
-| `timeoutMs`   | `number`, at most 24 hours                            | Modal's 5 minutes       |                        |
-| `client`      | Other `ModalClient` settings, such as `timeoutMs`     |                         |                        |
+| Option          | Type                                                  | Default                 | Env var                |
+| --------------- | ----------------------------------------------------- | ----------------------- | ---------------------- |
+| `tokenId`       | `string`                                              | Profile                 | `MODAL_TOKEN_ID`       |
+| `tokenSecret`   | `string`                                              | Profile                 | `MODAL_TOKEN_SECRET`   |
+| `environment`   | `string`                                              | Profile's               | `MODAL_ENVIRONMENT`    |
+| `app`           | `string`                                              | `"sandbox-sdk"`         |                        |
+| `image`         | `string`, a registry tag such as `"python:3.13-slim"` | `"node:22-bookworm"`    |                        |
+| `region`        | `string` or `string[]`, such as `"us-east"`           | Modal's choice          | `MODAL_SANDBOX_REGION` |
+| `runtime`       | `"gvisor"` or `"vm"`                                  | Modal's choice (gVisor) |                        |
+| `resources`     | `{ cpu?, cpuLimit?, memoryMiB?, memoryLimitMiB? }`    | Modal's default         |                        |
+| `timeoutMs`     | `number`, at most 24 hours                            | Modal's 5 minutes       |                        |
+| `createApp`     | `({ labels }) => string \| undefined`                 | always `app`            |                        |
+| `destroyWaitMs` | `number`                                              | 60 seconds              |                        |
+| `onDestroy`     | `({ sandboxId, requestMs, stoppedMs }) => void`       |                         |                        |
+| `client`        | Other `ModalClient` settings, such as `timeoutMs`     |                         |                        |
 
-`app` is created on first use and holds every sandbox this provider makes; keyed names are unique within it. `image` applies to fresh sandboxes only. With `from`, the snapshot or template supplies the file system. The first sandbox from a new image waits while Modal builds it, about a minute for `node:22-bookworm`; later creates take a fraction of a second. Pass `size` to `createSandbox` or `resources` to `modal()`, not both, or creation fails with `invalid_argument`.
+`app` is created on first use and holds every sandbox this provider makes; keyed names are unique within it. `createApp` picks a different App for one unkeyed create, for example one per job, so Modal's per-App billing report prices each job on its own; keyed creates stay in `app`. `list()` covers `app` and every App the provider has created sandboxes in or prepared; in a new process, call `await provider.prepareApp(name)` for each App you want listed. `prepareApp` also takes the App lookup out of the first create that uses it. `image` applies to fresh sandboxes only. With `from`, the snapshot or template supplies the file system. The first sandbox from a new image waits while Modal builds it, about a minute for `node:22-bookworm`; later creates take a fraction of a second. Pass `size` to `createSandbox` or `resources` to `modal()`, not both, or creation fails with `invalid_argument`.
 
 ## Limitations
 
 - No pause and resume, and no terminal.
 - Snapshots keep files, not running processes.
 - Preview ports must be declared at creation.
-- At most eight labels, or seven with a `key`, within 1024 bytes of tags in total.
+- At most seven labels, or six with a `key`, within 1024 bytes of tags in total.
 - No disk size.
 - A sandbox lives at most 24 hours.
 
 ## How it works
 
 - Modal allows one running sandbox per name in an App, so concurrent calls with the same key share one sandbox.
-- Your `labels` become Modal tags. Modal allows ten; the SDK uses `sandbox-sdk` and `sandbox-sdk-created`, and `sandbox-sdk-key` for a keyed sandbox.
-- `destroy()` marks the sandbox destroyed in its tags, then asks Modal to terminate it, and returns without waiting. Modal sometimes takes about 30 seconds to stop a sandbox; every client already treats it as gone. A key used again in that window waits for Modal to free the name.
+- Your `labels` become Modal tags. Modal allows ten; the SDK uses `sandbox-sdk` and `sandbox-sdk-created`, `sandbox-sdk-key` for a keyed sandbox, and keeps room for `sandbox-sdk-destroying`.
+- `destroy()` asks Modal to terminate the sandbox, tags it `sandbox-sdk-destroying` alongside, and returns once Modal reports it stopped, which sometimes takes about 30 seconds. A failed tag write never stops the terminate request. If the request fails, `destroy()` rejects and the sandbox stays an ordinary running sandbox. If Modal hasn't confirmed the stop within `destroyWaitMs`, `destroy()` rejects with a retryable `timeout`; until the stop, `list()` and `connect()` still return the sandbox with state `"stopped"` so cleanup can find it and call `destroy()` again, while `find()` no longer hands it out for its key. `onDestroy` receives the terminate request's latency and the confirmed stop's.
+- A stdin write or close that fails because the command already exited is ignored. Any other stdin failure, such as a dropped connection, rejects the call and kills the command, which would otherwise run on half its input.
 - Commands run in a new session under GNU `timeout`, so a timeout or abort kills the whole process tree, even if this client disconnects. The default image has the needed `setsid` and `timeout`; a custom image needs them too.
 
 ## Next steps

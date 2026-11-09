@@ -121,6 +121,54 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     });
   });
 
+  test("createApp picks the App per unkeyed create; list and find still see every sandbox", async () => {
+    const attempt = crypto.randomUUID().slice(0, 8);
+
+    const adapter = provider({
+      app: "sandbox-sdk-default",
+      createApp: ({ labels }) => (labels.attempt ? `bench-${labels.attempt}` : undefined),
+    });
+
+    const box = await createSandbox(adapter, { labels: { attempt } });
+    const keyed = await createSandbox(adapter, { key: `k-${attempt}`, labels: { attempt } });
+
+    try {
+      expect(mock.creates.at(-2)?.name).toBeUndefined();
+      expect(mock.sandboxes.get(box.id)?.appId).toBe(`ap-bench-${attempt}`);
+      // Keys are unique names inside one App, so keyed sandboxes stay in the default App.
+      expect(mock.sandboxes.get(keyed.id)?.appId).toBe("ap-sandbox-sdk-default");
+      expect(
+        (await listSandboxes(adapter, { labels: { attempt } })).map((info) => info.id).sort(),
+      ).toEqual([box.id, keyed.id].sort());
+      expect(await adapter.find(`k-${attempt}`)).toMatchObject({ id: keyed.id });
+
+      // Modal deprecates environment-wide listing: list() scans only Apps this provider knows.
+      expect(mock.lists.at(-1)).toHaveProperty("appId");
+      expect(mock.lists.every((params) => params.appId !== undefined)).toBe(true);
+      const fresh = provider({ app: "sandbox-sdk-default", createApp: () => undefined });
+      expect((await fresh.list({ attempt })).map((info) => info.id)).toEqual([keyed.id]);
+      await fresh.prepareApp(`bench-${attempt}`);
+      expect((await fresh.list({ attempt })).map((info) => info.id).sort()).toEqual(
+        [box.id, keyed.id].sort(),
+      );
+
+      await expect(
+        createSandbox(provider({ createApp: () => "bad name!" }), {}),
+      ).rejects.toMatchObject({ code: "invalid_argument" });
+
+      // prepareApp takes the App lookup out of the create it would otherwise slow down.
+      const next = `bench-${attempt}-2`;
+      await adapter.prepareApp(next);
+      const lookups = mock.apps.filter((name) => name === next).length;
+      const prepared = await createSandbox(adapter, { labels: { attempt: `${attempt}-2` } });
+      await prepared.destroy();
+      expect(mock.apps.filter((name) => name === next).length).toBe(lookups);
+    } finally {
+      await box.destroy();
+      await keyed.destroy();
+    }
+  });
+
   test("keys become short unique names, and concurrent creates share one sandbox", async () => {
     const key = `user:${crypto.randomUUID()}`;
 
@@ -167,6 +215,43 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
       expect(await box.files.exists("late")).toBe(false);
       expect(await box.files.exists("aborted-child")).toBe(false);
     } finally {
+      await box.destroy();
+    }
+  });
+
+  test("stdin transport failures propagate and kill the command; refusals after exit do not", async () => {
+    const box = await createSandbox(provider());
+    const native = mock.sandboxes.get(box.id)!;
+
+    try {
+      native.stdinFailure = { on: "write", error: grpcFailure(14, "stdin unavailable") };
+      const started = Date.now();
+      await expect(
+        box.run("sleep 1; echo late > after-write-failure", { stdin: "input", timeoutMs: 10_000 }),
+      ).rejects.toMatchObject({ code: "unavailable", provider: "modal" });
+      expect(Date.now() - started).toBeLessThan(5_000);
+
+      native.stdinFailure = { on: "close", error: grpcFailure(14, "stdin close unavailable") };
+      await expect(box.run("cat", { timeoutMs: 8_000 })).rejects.toMatchObject({
+        code: "unavailable",
+      });
+
+      // A command that finishes before reading its input refuses the write; that is not a failure.
+      native.stdinFailure = {
+        on: "write",
+        error: modalFailure("InvalidError", "process has exited"),
+        afterExit: true,
+      };
+      expect(await box.run("exit 3", { stdin: "unread" })).toMatchObject({
+        exitCode: 3,
+        timedOut: false,
+      });
+
+      native.stdinFailure = undefined;
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(await box.files.exists("after-write-failure")).toBe(false);
+    } finally {
+      native.stdinFailure = undefined;
       await box.destroy();
     }
   });
@@ -269,24 +354,74 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     await expect(provider().destroy("sb-unknown")).resolves.toBeUndefined();
   });
 
-  test("destroy marks the sandbox gone for every client while Modal is still stopping it", async () => {
+  test("destroy resolves only once Modal reports the sandbox stopped, and reports both latencies", async () => {
     const key = `slow-${crypto.randomUUID()}`;
-    const box = await createSandbox(provider(), { key, labels: { slow: key } });
+    const events: { sandboxId: string; requestMs: number; stoppedMs: number | null }[] = [];
+    const adapter = provider({ onDestroy: (event) => events.push(event) });
+    const box = await createSandbox(adapter, { key, labels: { slow: key } });
     const native = mock.sandboxes.get(box.id)!;
-    native.stopDelayMs = 2000;
-    const started = Date.now();
-    await box.destroy();
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(await native.poll()).toBe(null);
-    expect(native.tags).toMatchObject({
-      "sandbox-sdk": "destroyed",
-      "sandbox-sdk-key": key,
-      slow: key,
-    });
-    await expect(provider().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+    native.stopDelayMs = 1500;
+    const destroying = box.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // While Modal stops it, the sandbox stays listed for cleanup but is not handed out for a key.
+    expect(await listSandboxes(provider(), { labels: { slow: key } })).toMatchObject([
+      { id: box.id, state: "stopped", labels: { slow: key, "sandbox-sdk": "1" } },
+    ]);
+    expect(await provider().connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
     expect(await provider().find(key)).toBeUndefined();
-    expect(await listSandboxes(provider(), { labels: { slow: key } })).toEqual([]);
-    await native.stopping;
+
+    await destroying;
+    expect(await native.poll()).toBe(137);
+    expect(native.terminateCalls).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.requestMs).toBeLessThan(500);
+    expect(events[0]?.stoppedMs).toBeGreaterThanOrEqual(1400);
+    await expect(provider().connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  test("a failed tag write still terminates the sandbox", async () => {
+    const box = await createSandbox(provider());
+    const native = mock.sandboxes.get(box.id)!;
+    native.tagFailure = grpcFailure(14, "tag write unavailable");
+    await box.destroy();
+    expect(native.terminateCalls).toBe(1);
+    expect(await native.poll()).toBe(137);
+  });
+
+  test("a failed termination surfaces and leaves the sandbox listed and connectable", async () => {
+    const label = crypto.randomUUID();
+    const box = await createSandbox(provider(), { labels: { failing: label } });
+    const native = mock.sandboxes.get(box.id)!;
+    native.terminateFailure = grpcFailure(14, "terminate unavailable");
+    await expect(box.destroy()).rejects.toMatchObject({ code: "unavailable", provider: "modal" });
+    expect(await native.poll()).toBe(null);
+    expect(native.tags).not.toHaveProperty("sandbox-sdk-destroying");
+    expect(await listSandboxes(provider(), { labels: { failing: label } })).toMatchObject([
+      { id: box.id, state: "running" },
+    ]);
+    expect(await provider().connect(box.id)).toMatchObject({ id: box.id, state: "running" });
+    native.terminateFailure = undefined;
+    await provider().destroy(box.id);
+    expect(await native.poll()).toBe(137);
+  });
+
+  test("a stop Modal does not confirm in time is a retryable timeout, still listed", async () => {
+    const label = crypto.randomUUID();
+    const events: { stoppedMs: number | null }[] = [];
+
+    const adapter = provider({ destroyWaitMs: 300, onDestroy: (event) => events.push(event) });
+
+    const box = await createSandbox(adapter, { labels: { unconfirmed: label } });
+    const native = mock.sandboxes.get(box.id)!;
+    native.stopDelayMs = 1500;
+    await expect(box.destroy()).rejects.toMatchObject({ code: "timeout", retryable: true });
+    expect(events).toMatchObject([{ stoppedMs: null }]);
+    expect(await listSandboxes(provider(), { labels: { unconfirmed: label } })).toMatchObject([
+      { id: box.id, state: "stopped" },
+    ]);
+    // A retry waits for the stop already in progress.
+    await provider().destroy(box.id);
     expect(await native.poll()).toBe(137);
   });
 

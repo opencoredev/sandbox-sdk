@@ -10,6 +10,7 @@ import { createServer, type AddressInfo } from "node:net";
 import type {
   ImageDockerfileCommandsParams,
   SandboxCreateParams,
+  SandboxListParams,
   SandboxSnapshotFilesystemParams,
 } from "modal";
 import type {
@@ -72,6 +73,7 @@ export async function modalMock() {
   const execs: string[][] = [];
   const snapshotCalls: (SandboxSnapshotFilesystemParams | undefined)[] = [];
   const deletedImages: string[] = [];
+  const lists: SandboxListParams[] = [];
   const apps: string[] = [];
   let loads = 0;
 
@@ -103,10 +105,16 @@ export async function modalMock() {
   class MockSandbox implements NativeSandbox {
     readonly sandboxId = `sb-${crypto.randomUUID().replaceAll("-", "")}`;
     exit: number | null = null;
+    appId = "";
     tags: Record<string, string>;
     detached = false;
     readonly children = new Set<ChildProcess>();
     readonly ports = new Map<number, number>();
+    /** Fault injection: the next setTags, terminate or stdin call rejects with this error. */
+    tagFailure?: Error;
+    terminateFailure?: Error;
+    stdinFailure?: { on: "write" | "close"; error: Error; afterExit?: boolean };
+    terminateCalls = 0;
     constructor(
       readonly directory: string,
       readonly params: SandboxCreateParams,
@@ -237,12 +245,24 @@ export async function modalMock() {
         });
       });
 
+      // A failure models Modal's command router: either a transport error or a refused write to a finished command.
+      const fail = async (on: "write" | "close") => {
+        const failure = this.stdinFailure;
+
+        if (failure?.on !== on) return;
+
+        if (failure.afterExit) await exit;
+        throw failure.error;
+      };
+
       return {
         stdin: {
           writeText: async (text) => {
+            await fail("write");
             child.stdin.write(this.rewrite(text));
           },
           close: async () => {
+            await fail("close");
             child.stdin.end();
           },
         },
@@ -255,6 +275,8 @@ export async function modalMock() {
       return { ...this.tags };
     }
     async setTags(tags: Record<string, string>) {
+      if (this.tagFailure) throw this.tagFailure;
+      this.alive();
       this.tags = { ...tags };
     }
     async poll() {
@@ -264,6 +286,9 @@ export async function modalMock() {
     stopDelayMs = 0;
     stopping?: Promise<void>;
     async terminate() {
+      this.terminateCalls++;
+
+      if (this.terminateFailure) throw this.terminateFailure;
       this.stopping ??= (async () => {
         await new Promise((resolve) => setTimeout(resolve, this.stopDelayMs));
         await this.killAll();
@@ -353,9 +378,14 @@ export async function modalMock() {
       },
     },
     sandboxes: {
-      async create(_app, image, params = {}) {
+      async create(app, image, params = {}) {
         for (const box of sandboxes.values())
-          if (params.name && box.exit === null && box.params.name === params.name)
+          if (
+            params.name &&
+            box.exit === null &&
+            box.appId === app.appId &&
+            box.params.name === params.name
+          )
             throw modalFailure(
               "AlreadyExistsError",
               `sandbox name "${params.name}" is already in use`,
@@ -366,6 +396,7 @@ export async function modalMock() {
         creates.push(params);
         const directory = join(root, crypto.randomUUID());
         const box = new MockSandbox(directory, params);
+        box.appId = app.appId;
         sandboxes.set(box.sandboxId, box);
         const built = await image.build({ appId: "ap-mock" });
         const known = images.get(built.imageId);
@@ -421,17 +452,21 @@ export async function modalMock() {
 
         return ghost;
       },
-      async fromName(_app, name) {
+      async fromName(appName, name) {
         for (const box of sandboxes.values())
-          if (box.exit === null && box.params.name === name) return box;
+          if (box.exit === null && box.appId === `ap-${appName}` && box.params.name === name)
+            return box;
 
         throw modalFailure("NotFoundError", `Sandbox with name '${name}' not found`);
       },
       list: (params = {}) =>
         (async function* () {
+          lists.push(params);
+
           for (const box of sandboxes.values())
             if (
               box.exit === null &&
+              (params.appId === undefined || box.appId === params.appId) &&
               Object.entries(params.tags ?? {}).every(([k, v]) => box.tags[k] === v)
             )
               yield box;
@@ -456,10 +491,12 @@ export async function modalMock() {
     execs,
     snapshotCalls,
     deletedImages,
+    lists,
     apps,
     async dispose() {
       for (const box of sandboxes.values()) {
         box.stopDelayMs = 0;
+        box.terminateFailure = undefined;
         await box.terminate();
         await box.stopping;
       }
