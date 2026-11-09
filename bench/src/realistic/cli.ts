@@ -577,7 +577,13 @@ async function sweep(args: string[]) {
       const providers: SlotProvider[] = [];
 
       for (const setup of setups) {
-        const loaded = await loadSlotProvider(setup, track, 0);
+        const loaded = await loadSlotProvider(
+          setup,
+          track,
+          0,
+          undefined,
+          join(resolve(values.out ?? "."), appJournalFile),
+        );
 
         if (loaded.kind === "ready") providers.push(loaded.entry);
       }
