@@ -142,19 +142,23 @@ export interface AttemptApp {
 /**
  * Journal the attempt's App, look it up or create it, then journal its one create before it is
  * submitted. Throws, failing the attempt before any sandbox exists, when the adapter cannot
- * prepare Apps or Modal does not return one.
+ * prepare Apps, Modal does not return one, or `signal` aborted (the slot deadline passed).
  */
 export async function prepareAttemptApp(
   paths: { apps: string; stops: string },
   provider: Provider,
   attemptId: string,
-  now: () => number = Date.now,
+  { now = Date.now, signal }: { now?: () => number; signal?: AbortSignal } = {},
 ): Promise<AttemptApp> {
+  signal?.throwIfAborted();
   const app = journalApp(provider.name, realisticAttemptApp(attemptId));
   await persistApp(paths.apps, app);
 
   if (!preparesApps(provider)) throw new Error(`${provider.name} cannot prepare an App`);
   const prepared = await provider.prepareApp(app.name);
+
+  // Past the slot deadline the attempt has already failed: journal no create it will never submit.
+  signal?.throwIfAborted();
 
   if (!prepared) throw new Error(`App ${app.name} could not be created`);
   app.appId = prepared.appId;

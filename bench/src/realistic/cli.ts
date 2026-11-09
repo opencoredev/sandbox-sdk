@@ -321,7 +321,8 @@ async function loadSlotProvider(
       stops: join(journalDir, stopJournalFile),
     };
 
-    entry.beforeAttempt = (attemptId) => prepareAttemptApp(paths, provider, attemptId);
+    entry.beforeAttempt = (attemptId, signal) =>
+      prepareAttemptApp(paths, provider, attemptId, { signal });
   }
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
