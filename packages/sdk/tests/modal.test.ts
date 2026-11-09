@@ -388,7 +388,7 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
 
   test("destroy resolves only once Modal reports the sandbox stopped, and reports both latencies", async () => {
     const key = `slow-${crypto.randomUUID()}`;
-    const events: { sandboxId: string; requestMs: number; stoppedMs: number | null }[] = [];
+    const events: { sandboxId: string; requestMs: number | null; stoppedMs: number | null }[] = [];
     const adapter = provider({ onDestroy: (event) => events.push(event) });
     const box = await createSandbox(adapter, { key, labels: { slow: key } });
     const native = mock.sandboxes.get(box.id)!;
@@ -498,12 +498,13 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     await second;
   });
 
-  test("a failed termination surfaces and leaves the sandbox listed and connectable", async () => {
+  test("a refused termination surfaces and leaves the sandbox listed and connectable", async () => {
     const label = crypto.randomUUID();
     const box = await createSandbox(provider(), { labels: { failing: label } });
     const native = mock.sandboxes.get(box.id)!;
-    native.terminateFailure = grpcFailure(14, "terminate unavailable");
-    await expect(box.destroy()).rejects.toMatchObject({ code: "unavailable", provider: "modal" });
+    // PERMISSION_DENIED is Modal's definitive answer: it did not act on the request.
+    native.terminateFailure = grpcFailure(7, "PERMISSION_DENIED: terminate refused");
+    await expect(box.destroy()).rejects.toMatchObject({ code: "auth", provider: "modal" });
     expect(await native.poll()).toBe(null);
     expect(native.tags).not.toHaveProperty("sandbox-sdk-destroying");
     expect(await listSandboxes(provider(), { labels: { failing: label } })).toMatchObject([
@@ -513,6 +514,106 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     native.terminateFailure = undefined;
     await provider().destroy(box.id);
     expect(await native.poll()).toBe(137);
+  });
+
+  test("a lost terminate response keeps the sandbox out of find() until a poll resolves it", async () => {
+    const key = `lost-${crypto.randomUUID()}`;
+    const events: { requestMs: number | null; stoppedMs: number | null }[] = [];
+
+    const adapter = provider({ destroyWaitMs: 300, onDestroy: (event) => events.push(event) });
+
+    const box = await createSandbox(adapter, { key, labels: { lost: key } });
+    const native = mock.sandboxes.get(box.id)!;
+    // Modal accepts the terminate, then the response is lost (gRPC UNAVAILABLE).
+    native.stopDelayMs = 1500;
+    native.terminateLostResponse = grpcFailure(14, "UNAVAILABLE: connection reset");
+    await expect(adapter.destroy(box.id)).rejects.toMatchObject({
+      code: "unavailable",
+      retryable: true,
+    });
+
+    // Still terminating as far as this provider knows: never handed out, listed as stopped.
+    expect(await adapter.find(key)).toBeUndefined();
+    expect(await adapter.connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
+    expect(await adapter.list({ lost: key })).toMatchObject([{ id: box.id, state: "stopped" }]);
+
+    // A retry with time to spare waits for the stop already under way.
+    native.terminateLostResponse = undefined;
+    await provider().destroy(box.id);
+    expect(await native.poll()).toBe(137);
+
+    // With room in the deadline, the poll after a lost response confirms the stop itself.
+    const second = await createSandbox(provider({ onDestroy: (event) => events.push(event) }));
+    const secondNative = mock.sandboxes.get(second.id)!;
+    secondNative.stopDelayMs = 200;
+    secondNative.terminateLostResponse = grpcFailure(14, "UNAVAILABLE: connection reset");
+    await provider({ onDestroy: (event) => events.push(event) }).destroy(second.id);
+    expect(await secondNative.poll()).toBe(137);
+    // The request's own latency is unknown when its response was lost.
+    expect(events.at(-1)).toMatchObject({ requestMs: null, stoppedMs: expect.any(Number) });
+  });
+
+  test("only Modal's finished-command refusal counts as stdin to an exited command", async () => {
+    const box = await createSandbox(provider());
+    const native = mock.sandboxes.get(box.id)!;
+
+    try {
+      // Another FAILED_PRECONDITION is no proof the command read its input, even once it exited.
+      native.stdinFailure = {
+        on: "write",
+        error: grpcFailure(9, "FAILED_PRECONDITION: Sandbox is not accepting new execs"),
+        afterExit: true,
+      };
+      await expect(box.run("exit 3", { stdin: "lost" })).rejects.toMatchObject({
+        provider: "modal",
+      });
+    } finally {
+      native.stdinFailure = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("list() and listPending() look Apps up without creating them", async () => {
+    const missing = `sandbox-sdk-never-${crypto.randomUUID().slice(0, 8)}`;
+    const adapter = provider({ app: missing });
+    expect(await adapter.list({})).toEqual([]);
+    expect(mock.existingApps.has(missing)).toBe(false);
+    expect(await adapter.listPending({})).toEqual([]);
+    expect(mock.existingApps.has(missing)).toBe(false);
+  });
+
+  test("listPending finds a restore allocation still tagged pending, in Apps the provider knows", async () => {
+    const run = crypto.randomUUID();
+    const app = `bench-pending-${run.slice(0, 8)}`;
+    // As a creator that crashed after Modal allocated the restore and before it cleared the marker.
+    const owner = await mock.client.apps.fromName(app, { createIfMissing: true });
+
+    const pending = await mock.client.sandboxes.create(
+      owner,
+      mock.client.images.fromRegistry("x"),
+      {
+        tags: { "sandbox-sdk": "pending", run, "sandbox-sdk-created": "1" },
+      },
+    );
+
+    try {
+      const fresh = provider();
+      // list() shows only finished sandboxes, and a fresh provider does not know the App yet.
+      expect(await fresh.listPending({ run })).toEqual([]);
+      await fresh.prepareApp(app, { createIfMissing: false });
+      expect(await fresh.list({ run })).toEqual([]);
+      expect(await fresh.listPending({ run })).toEqual([
+        { id: pending.sandboxId, labels: { "sandbox-sdk": "pending", run }, createdAt: 1 },
+      ]);
+      expect(await fresh.listPending({ run: "other" })).toEqual([]);
+
+      // Destroy needs no attach, so cleanup does not wait for the marker to clear.
+      await fresh.destroy(pending.sandboxId);
+      expect(await pending.poll()).toBe(137);
+      expect(await fresh.listPending({ run })).toEqual([]);
+    } finally {
+      await pending.terminate().catch(() => {});
+    }
   });
 
   test("a stop Modal does not confirm in time is a retryable timeout, still listed", async () => {

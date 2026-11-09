@@ -67,9 +67,13 @@ const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
   ["daytona", "DAYTONA_TARGET"],
-  // The adapter reads it too, and pins sandboxes there at Modal's region price multiplier.
+  // Pins sandboxes at Modal's region price multiplier; loadProvider passes it to the adapter.
   ["modal", "MODAL_SANDBOX_REGION"],
 ]);
+
+// Providers whose region places the sandbox and sets its price, so the label and the placement
+// must be one value: loadProvider passes the resolved region to the adapter.
+const placedRegions: ReadonlySet<string> = new Set(["modal"]);
 
 /** The members every adapter has. Methods are checked to be functions, not their signatures. */
 const providerSchema = z
@@ -111,8 +115,8 @@ const factoryOptions = z.record(
 /** One destroy as Modal's adapter reports it through `onDestroy` (`ModalDestroyEvent`). */
 export interface DestroyTiming {
   sandboxId: string;
-  /** Until the provider accepted the terminate request. */
-  requestMs: number;
+  /** Until the provider accepted the terminate request; `null` when its response was lost. */
+  requestMs: number | null;
   /** Until the provider reported the sandbox stopped; `null` when unconfirmed. */
   stoppedMs: number | null;
 }
@@ -146,12 +150,41 @@ function appOptions(name: string): FactoryOptions {
   return name === "modal" ? { createApp: createAppByLabel } : {};
 }
 
+/** A comma-separated region list as one canonical string, or null when it names none. */
+function regionList(value: string | undefined): string | null {
+  const list = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return list.length ? list.join(",") : null;
+}
+
 /**
  * The region a provider's runs are labelled with (and, for Modal, pinned to), or null: the run's
- * `configuredRegion`, which every published price and efficiency figure multiplies by.
+ * `configuredRegion`, which every published price and efficiency figure multiplies by. For Modal
+ * it is resolved once from `BENCH_REGION_MODAL` or `MODAL_SANDBOX_REGION`, and the same value
+ * goes to the adapter; when both are set and differ, the run is refused.
  */
 export function providerRegion(name: string, env: NodeJS.ProcessEnv): string | null {
-  return env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys.get(name) ?? ""] ?? null;
+  const labelKey = `BENCH_REGION_${name.toUpperCase()}`;
+  const nativeKey = regionKeys.get(name) ?? "";
+
+  if (!placedRegions.has(name)) return env[labelKey] ?? env[nativeKey] ?? null;
+  const label = regionList(env[labelKey]);
+  const native = regionList(env[nativeKey]);
+
+  if (label !== null && native !== null && label !== native)
+    throw new Error(
+      `${labelKey} (${label}) and ${nativeKey} (${native}) conflict: the first labels and prices the run, the second places its sandboxes. Set one, or set both to the same region.`,
+    );
+
+  return label ?? native;
+}
+
+/** The adapter option that places sandboxes in the run's region, so placement matches the label. */
+function regionOptions(name: string, region: string | null): FactoryOptions {
+  return placedRegions.has(name) && region !== null ? { region } : {};
 }
 
 /** A provider entry point's factory. Its result is checked by `assertProvider`. */
@@ -172,6 +205,9 @@ export async function loadProvider(
   config?: Pick<ConfigV2, "template" | "product"> &
     Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">>,
 ): Promise<LoadedProvider> {
+  // Before anything else: a conflicting region configuration refuses the run.
+  const region = providerRegion(name, env);
+
   if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
       kind: "skipped",
@@ -207,6 +243,7 @@ export async function loadProvider(
     ...lifetimeOptions(name, config ?? {}),
     ...observerOptions(name),
     ...appOptions(name),
+    ...regionOptions(name, region),
   });
 
   assertProvider(provider);
@@ -215,7 +252,7 @@ export async function loadProvider(
     kind: "ready",
     name,
     cloud: credentials.has(name),
-    region: providerRegion(name, env),
+    region,
     provider,
   };
 }

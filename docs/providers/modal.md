@@ -30,7 +30,10 @@ create (one App per job, so Modal's per-App billing report prices each job).
 `prepareApp(name)` for each App it must see; `prepareApp` also takes the App
 lookup out of create timing and resolves `{ name, appId }`. Recovery passes
 `{ createIfMissing: false }`, which resolves `null` for an App that was never
-created instead of creating it.
+created instead of creating it. `list()` is lookup-only too: it never creates
+the default App. `listPending(labels)` returns restores still tagged
+`sandbox-sdk=pending` (their creator stopped between Modal's allocation and
+setup), in the same Apps, with tags re-read by ID; `destroy(id)` stops one.
 
 Keys map to `sdk-` plus 56 hex characters of SHA-256, under Modal's 64-character
 name limit. Modal allows one running sandbox per name in an App, and create
@@ -72,10 +75,10 @@ client disconnects. Timeout and abort kill the group from a second exec. Modal's
 native exec `timeoutMs` is not used: a live check showed it leaves background
 children running. stdin closes after any supplied input. A stdin write or close
 error is ignored only when it is Modal's refusal of a finished command (gRPC
-FAILED_PRECONDITION, "Exec has already completed", measured 2026-11-09) and the
-command has exited (or does within a second). Every other stdin error, including
-a stream reset (gRPC INTERNAL) or an unrecognized one, rejects and kills the
-command. Background processes use the core's shell records.
+FAILED_PRECONDITION with the message "Exec has already completed", measured
+2026-11-09) and the command has exited (or does within a second). Every other
+stdin error, including another FAILED_PRECONDITION, a stream reset (gRPC
+INTERNAL) or an unrecognized one, rejects and kills the command. Background processes use the core's shell records.
 
 Files use Modal's filesystem API (`readBytes`, `writeBytes`, `listFiles`,
 `stat`, `remove`, `makeDirectory`); Modal creates parents on write. Snapshots
@@ -92,7 +95,13 @@ write never blocks or delays destroy. It then polls until Modal reports the
 sandbox stopped, because Modal sometimes takes about 30 seconds (2 of 18 in a
 2026-11-09 probe) and bills until then. One deadline, `destroyWaitMs` (default
 60 s), covers the terminate request and every poll, so a stalled request cannot
-hold destroy past it. A failed terminate rejects and clears the tag. An
+hold destroy past it. A terminate Modal refuses (INVALID_ARGUMENT,
+PERMISSION_DENIED, RESOURCE_EXHAUSTED, FAILED_PRECONDITION, UNIMPLEMENTED,
+UNAUTHENTICATED) rejects and clears the tag: the sandbox is an ordinary running
+one again. Any other failure, such as a lost response (UNAVAILABLE), may follow
+an accepted terminate, so the sandbox stays tracked as terminating and destroy
+polls for the stop within the deadline: a confirmed stop resolves (`requestMs`
+is then `null`), otherwise the original error rejects, retryable. An
 unconfirmed stop, or a terminate request that did not return in time, rejects
 with a retryable `timeout`; until Modal stops it, `list()` and `connect()` return
 the sandbox with state `"stopped"`, `find()` skips it, and a keyed create that

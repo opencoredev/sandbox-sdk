@@ -57,7 +57,17 @@ import {
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
 import { failureOutcome } from "./failure.js";
-import { appLabel, attemptApp, preparesApps, type JournalApp } from "./modal-apps.js";
+import {
+  allocated,
+  attemptApp,
+  beginAllocation,
+  failedAllocation,
+  journalApp,
+  pendingForRun,
+  preparesApps,
+  reconcileDiscovered,
+  type JournalApp,
+} from "./modal-apps.js";
 
 /**
  * Providers whose snapshots keep files but not CPU and memory, so a restore must ask for the
@@ -361,6 +371,8 @@ export async function runV2(
   // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
   // never removed, so recovery can list their sandboxes and billing can attribute their charges.
   const apps = new Map<string, JournalApp>();
+  // Restores still tagged pending, owned by the exact tag read that listed them (Modal).
+  const pendingOwned = new Set<string>();
 
   let journal = Promise.resolve();
 
@@ -439,13 +451,15 @@ export async function runV2(
       let verified: boolean;
 
       try {
-        verified = await verifyRunOwnership(
-          loaded.provider,
-          id,
-          config.run,
-          config["timeout-ms"],
-          config["ownership-visibility-ms"],
-        );
+        verified =
+          pendingOwned.has(`${loaded.name}/${id}`) ||
+          (await verifyRunOwnership(
+            loaded.provider,
+            id,
+            config.run,
+            config["timeout-ms"],
+            config["ownership-visibility-ms"],
+          ));
       } finally {
         if (measurement)
           measurement.phases.ownershipVerifyMs =
@@ -654,7 +668,7 @@ export async function runV2(
       const known = apps.get(`${p.name}/${name}`);
 
       if (known?.appId) return known;
-      const entry = known ?? { provider: p.name, name, appId: null, sandboxes: [] };
+      const entry = known ?? journalApp(p.name, name);
       apps.set(`${p.name}/${name}`, entry);
       await persist();
 
@@ -673,6 +687,8 @@ export async function runV2(
         if (key === "create")
           return (input: CreateInput) => {
             let restore: RestoreAttempt | undefined;
+            // This create, journaled in its App before submission (per-attempt Apps).
+            let allocation: { app: JournalApp; id: string } | undefined;
 
             return pending.track(
               (async () => {
@@ -697,13 +713,20 @@ export async function runV2(
 
                 createEvidence = { settled: false, stage: "adapter-create" };
                 clockPhase = "adapter-create";
-                // Before allocation and outside create timing: the App is journaled and resolved.
+                // Before allocation and outside create timing: the App is journaled and resolved,
+                // and so is this create, so a lost response still leaves a record in the App.
                 const owner = app === undefined ? undefined : await prepareApp(app);
+                const attempt = owner && beginAllocation(owner);
+
+                if (owner && attempt) {
+                  allocation = { app: owner, id: attempt.id };
+                  await persist();
+                }
 
                 const request =
-                  owner === undefined
+                  attempt === undefined
                     ? input
-                    : { ...input, labels: { ...input.labels, [appLabel]: owner.name } };
+                    : { ...input, labels: { ...input.labels, ...attempt.labels } };
 
                 createClock.begin();
                 adapterCreateRejected = false;
@@ -713,10 +736,12 @@ export async function runV2(
                   info = await target.create(request);
                 } catch (error) {
                   adapterCreateRejected = true;
+
+                  if (allocation) failedAllocation(allocation.app, allocation.id, p.name, error);
                   throw error;
                 }
 
-                owner?.sandboxes.push(info.id);
+                if (allocation) allocated(allocation.app, allocation.id, info.id);
 
                 const returned = performance.now();
 
@@ -806,6 +831,8 @@ export async function runV2(
                 return info;
               })()
                 .catch(async (cause: unknown) => {
+                  // The create's journal entry: refused, or still unknown (a lost response).
+                  if (allocation) await persist();
                   const failure = failureOutcome(cause, sanitize);
                   createEvidence.code = failure.code;
                   createEvidence.cause = failure.cause;
@@ -848,6 +875,8 @@ export async function runV2(
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
                     ids.add(nativeId);
+
+                    if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
                     if (input.from) restoredId = nativeId;
                     owned.set(`${p.name}/${nativeId}`, {
@@ -959,7 +988,7 @@ export async function runV2(
             destroyTimings.delete(`${p.name}/${id}`);
 
             if (timing) {
-              phases.terminateRequestMs = timing.requestMs;
+              if (timing.requestMs !== null) phases.terminateRequestMs = timing.requestMs;
 
               if (timing.stoppedMs !== null) phases.confirmedStopMs = timing.stoppedMs;
             }
@@ -2086,15 +2115,43 @@ export async function runV2(
       ),
     );
 
+    const journaled = [...apps.values()].filter((app) => app.provider === p.name);
+
     try {
       const listed = await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run }),
       );
 
-      for (const item of listed) if (hasRunOwnership(item, config.run)) ids.add(item.id);
+      for (const item of listed)
+        if (hasRunOwnership(item, config.run)) {
+          ids.add(item.id);
+          // A sandbox whose create response was lost joins its App's journal entry.
+          reconcileDiscovered(journaled, p.name, item);
+        }
     } catch (e) {
       errors.push(errorNote(e));
     }
+
+    // Restores whose setup never finished stay tagged pending and out of list() (Modal).
+    try {
+      for (const item of await deadline(config["timeout-ms"], () =>
+        pendingForRun(p.provider, config.run),
+      )) {
+        pendingOwned.add(`${p.name}/${item.id}`);
+        ids.add(item.id);
+        reconcileDiscovered(journaled, p.name, item);
+        owned.set(`${p.name}/${item.id}`, {
+          provider: p.name,
+          id: item.id,
+          kind: "sandbox",
+          parent: null,
+        });
+      }
+    } catch (e) {
+      errors.push(errorNote(e));
+    }
+
+    await persist();
 
     const sourceIds = new Set(
       [...owned.values()]
@@ -2239,13 +2296,18 @@ export async function runV2(
 
         if (budget <= 0) break;
 
-        const after = await deadline(budget, () =>
-          p.provider.list({ "sandbox-bench-run": config.run }),
+        const [after, pending] = await deadline(budget, () =>
+          Promise.all([
+            p.provider.list({ "sandbox-bench-run": config.run }),
+            pendingForRun(p.provider, config.run),
+          ]),
         );
 
         remaining.clear();
 
         for (const item of after) if (hasRunOwnership(item, config.run)) remaining.add(item.id);
+
+        for (const item of pending) remaining.add(item.id);
 
         if (
           !remaining.size ||

@@ -14,6 +14,7 @@ import type {
 } from "../../provider.js";
 import { SandboxError } from "../../errors.js";
 import { decodeNative, type NativeError } from "../../shared/native-error.js";
+import { isNumber } from "../../shared/narrow.js";
 import { invalid, modalError, unsupported } from "./errors.js";
 import type {
   ModalClientSlice,
@@ -39,8 +40,8 @@ export type ModalResources = Pick<
 /** One destroy, timed from the terminate request. */
 export interface ModalDestroyEvent {
   sandboxId: string;
-  /** Until Modal accepted the terminate request. */
-  requestMs: number;
+  /** Until Modal accepted the terminate request; `null` when its response was lost in transport. */
+  requestMs: number | null;
   /** Until Modal reported the sandbox stopped; `null` when it did not within `destroyWaitMs`. */
   stoppedMs: number | null;
 }
@@ -231,9 +232,22 @@ async function drain(stream: ReadableStream<string>, emit: (text: string) => voi
 // already completed; stdin is no longer accepting writes", measured November 9, 2026).
 const failedPrecondition = 9;
 
-/** Whether a stdin error is Modal's refusal of a write to a command that has already finished. */
+/**
+ * Whether a stdin error is Modal's refusal of a write to a command that has already finished: that
+ * status with that message. Any other FAILED_PRECONDITION is no proof the command read its input.
+ */
 function exitedRefusal(native: NativeError): boolean {
-  return native.code === failedPrecondition;
+  return native.code === failedPrecondition && /Exec has already completed/.test(native.message);
+}
+
+// gRPC statuses with which Modal refuses a request without acting on it: INVALID_ARGUMENT,
+// PERMISSION_DENIED, RESOURCE_EXHAUSTED, FAILED_PRECONDITION, UNIMPLEMENTED and UNAUTHENTICATED.
+// Anything else, a transport failure above all, may come after Modal already acted.
+const refusals: ReadonlySet<number> = new Set([3, 7, 8, 9, 12, 16]);
+
+/** Whether a failed request is Modal's definitive refusal, so the request did not take effect. */
+function refused(native: NativeError): boolean {
+  return (isNumber(native.code) && refusals.has(native.code)) || native.name === "InvalidError";
 }
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -271,8 +285,6 @@ function fileInfo(entry: Awaited<ReturnType<NativeFilesystem["stat"]>>): FileInf
   };
 }
 
-/** Internal injection point used by the offline SDK contract tests. */
-/** The Modal adapter: a {@link Provider} plus Modal-only helpers. */
 /** An App `prepareApp` resolved. */
 export interface ModalPreparedApp {
   name: string;
@@ -287,12 +299,30 @@ export interface PrepareAppOptions {
   createIfMissing?: boolean;
 }
 
+/**
+ * A running sandbox a snapshot restore allocated but never finished setting up: its `sandbox-sdk`
+ * tag is still `"pending"`, so `list()` and `find()` skip it. Its tags were re-read by ID.
+ */
+export interface ModalPendingSandbox {
+  id: string;
+  /** Its labels, `sandbox-sdk: "pending"` included. */
+  labels: Labels;
+  createdAt: number;
+}
+
+/** The Modal adapter: a {@link Provider} plus Modal-only helpers. */
 export type ModalAdapter<N extends NativeSandbox> = Provider<N, ModalCapability> & {
   /**
    * Look up (or create) an App ahead of time, so a later create that uses it pays no App lookup,
    * and so `list()` scans it. After a restart, call it for every App sandboxes may be in.
    */
   prepareApp(name: string, options?: PrepareAppOptions): Promise<ModalPreparedApp | null>;
+  /**
+   * Restores whose creator stopped between Modal's allocation and setup (a crash, a lost
+   * response), still running and tagged pending, in the same Apps `list()` scans. Lookup-only:
+   * creates no App. `destroy(id)` stops one without waiting for setup.
+   */
+  listPending(labels: Labels): Promise<ModalPendingSandbox[]>;
 };
 
 export function createModalProvider<N extends NativeSandbox>(
@@ -351,6 +381,52 @@ export function createModalProvider<N extends NativeSandbox>(
 
     return lookup;
   };
+
+  /** Look an App up without creating it: `null` when it does not exist. A found App is kept. */
+  const existing = async (name: string): Promise<NativeApp | null> => {
+    const known = apps.get(name);
+
+    if (known) return known;
+
+    try {
+      const found = await (
+        await sdk()
+      ).apps.fromName(name, { createIfMissing: false, environment: options.environment });
+
+      apps.set(name, Promise.resolve(found));
+
+      return found;
+    } catch (error) {
+      if (modalError(error).code === "not_found") return null;
+      throw error;
+    }
+  };
+
+  /**
+   * Running sandboxes carrying `filter`, across `app` (only if it exists) and every App this
+   * provider has created into or prepared. Modal deprecates listing a whole Environment.
+   */
+  async function scan(filter: Labels): Promise<N[]> {
+    const modal = await sdk();
+    await existing(appName);
+
+    const owners = (await Promise.allSettled(apps.values())).flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+
+    const found = new Map<string, N>();
+
+    // Modal filters by tags server-side and lists only running sandboxes.
+    for (const owner of owners)
+      for await (const box of modal.sandboxes.list({
+        appId: owner.appId,
+        tags: filter,
+        environment: options.environment,
+      }))
+        found.set(box.sandboxId, box);
+
+    return [...found.values()];
+  }
 
   const safe = async <T>(id: string | undefined, action: () => Promise<T>): Promise<T> => {
     try {
@@ -828,29 +904,11 @@ export function createModalProvider<N extends NativeSandbox>(
       safe(id, async () => attach(boxes.get(id) ?? (await (await sdk()).sandboxes.fromId(id)))),
     list: (labels) =>
       safe(undefined, async () => {
-        const modal = await sdk();
-        await application();
-
-        // Modal deprecates listing a whole Environment, so scan each App this provider has used or
-        // prepared: `app` alone unless createApp has picked others.
-        const owners = (await Promise.allSettled(apps.values())).flatMap((result) =>
-          result.status === "fulfilled" ? [result.value] : [],
-        );
-
+        // Lookup-only: listing never creates the default App.
         const filter = { ...labels, [sdkTag]: "1" };
-        const found = new Map<string, N>();
-
-        // Modal filters by tags server-side and lists only running sandboxes.
-        for (const owner of owners)
-          for await (const box of modal.sandboxes.list({
-            appId: owner.appId,
-            tags: filter,
-            environment: options.environment,
-          }))
-            found.set(box.sandboxId, box);
 
         const items = await Promise.all(
-          [...found.values()].map(async (box) => {
+          (await scan(filter)).map(async (box) => {
             try {
               return await attach(box);
             } catch (error) {
@@ -890,17 +948,49 @@ export function createModalProvider<N extends NativeSandbox>(
         try {
           request = await within(box.terminate(), deadline - Date.now());
         } catch (error) {
-          settled = true;
+          if (modalError(error).code === "not_found") {
+            settled = true;
 
-          if (modalError(error).code === "not_found") return forget(id);
+            return forget(id);
+          }
 
-          // Still running and not stopping: drop the mark if it landed, within what is left of
-          // the deadline, so it stays an ordinary running sandbox.
-          terminating.delete(id);
-          const marked = await within(marking, deadline - Date.now());
+          if (refused(decodeNative(error))) {
+            settled = true;
+            // Modal refused it: still running and not stopping. Drop the mark if it landed,
+            // within what is left of the deadline, so it stays an ordinary running sandbox.
+            terminating.delete(id);
+            const marked = await within(marking, deadline - Date.now());
 
-          if (marked.settled && marked.value) await within(mark(box, false), deadline - Date.now());
-          throw error;
+            if (marked.settled && marked.value)
+              await within(mark(box, false), deadline - Date.now());
+            throw error;
+          }
+
+          // A transport failure: Modal may have accepted the request and lost the response. The
+          // sandbox stays tracked as terminating until a poll says it stopped.
+          let stopped = false;
+
+          try {
+            stopped = await stopsBy(box, deadline);
+          } catch {
+            // An unreadable state is no stop; the original failure is reported.
+          } finally {
+            settled = true;
+          }
+
+          if (!stopped) throw error;
+
+          try {
+            options.onDestroy?.({
+              sandboxId: id,
+              requestMs: null,
+              stoppedMs: Date.now() - started,
+            });
+          } catch {
+            // An observer failure is not a destroy failure.
+          }
+
+          return forget(id);
         }
 
         // The request may still land, so the sandbox stays tracked as terminating.
@@ -1043,23 +1133,36 @@ export function createModalProvider<N extends NativeSandbox>(
       if (settings.createIfMissing ?? true) return { name, appId: (await application(name)).appId };
 
       if (!appNamePattern.test(name)) return null;
-      const known = apps.get(name);
+      const found = await existing(name);
 
-      if (known) return { name, appId: (await known).appId };
-
-      try {
-        const found = await (
-          await sdk()
-        ).apps.fromName(name, { createIfMissing: false, environment: options.environment });
-
-        apps.set(name, Promise.resolve(found));
-
-        return { name, appId: found.appId };
-      } catch (error) {
-        if (modalError(error).code === "not_found") return null;
-        throw error;
-      }
+      return found && { name, appId: found.appId };
     });
 
-  return Object.assign(provider, { prepareApp });
+  const listPending = (labels: Labels) =>
+    safe(undefined, async (): Promise<ModalPendingSandbox[]> => {
+      const filter = { ...labels, [sdkTag]: "pending" };
+
+      const items = await Promise.all(
+        (await scan(filter)).map(async (box): Promise<ModalPendingSandbox | undefined> => {
+          try {
+            // Exact reads by ID: the listing's tag filter is not taken on trust.
+            const [exit, tags] = await Promise.all([box.poll(), box.getTags()]);
+
+            if (exit !== null || !Object.entries(filter).every(([k, v]) => tags[k] === v))
+              return undefined;
+            const { [keyTag]: _key, [createdTag]: created, [destroyingTag]: _d, ...rest } = tags;
+
+            return { id: box.sandboxId, labels: rest, createdAt: Number(created) || 0 };
+          } catch (error) {
+            // Ended between the listing and the read.
+            if (modalError(error, box.sandboxId).code === "not_found") return undefined;
+            throw error;
+          }
+        }),
+      );
+
+      return items.filter((item): item is ModalPendingSandbox => item !== undefined);
+    });
+
+  return Object.assign(provider, { prepareApp, listPending });
 }

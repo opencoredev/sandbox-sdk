@@ -160,7 +160,7 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
     expect(events).toEqual([
       { sandboxId: first.id, requestMs: expect.any(Number), stoppedMs: expect.any(Number) },
     ]);
-    expect(events[0]!.stoppedMs!).toBeGreaterThanOrEqual(events[0]!.requestMs);
+    expect(events[0]!.stoppedMs!).toBeGreaterThanOrEqual(events[0]!.requestMs!);
     console.info(
       `Modal destroy: request ${events[0]?.requestMs} ms, stopped ${events[0]?.stoppedMs} ms`,
     );
@@ -218,10 +218,47 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
   test("recovery looks an App up without creating it", async () => {
     const never = `sandbox-sdk-never-${run.slice(-12).replace(/[^\w.-]/g, "")}`;
     expect(await liveProvider().prepareApp(never, { createIfMissing: false })).toBeNull();
+    // Listing never creates the default App either.
+    expect(await modal({ app: never }).list({})).toEqual([]);
+    expect(await modal({ app: never }).listPending({})).toEqual([]);
     const client = new ModalClient();
 
     try {
       await expect(client.apps.fromName(never)).rejects.toMatchObject({ name: "NotFoundError" });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a restore left tagged pending is found by listPending and stopped by destroy", async () => {
+    const client = new ModalClient();
+    const label = crypto.randomUUID();
+
+    try {
+      // As a creator that crashed after Modal allocated a restore, before it cleared the marker.
+      const app = await client.apps.fromName("sandbox-sdk-conformance", { createIfMissing: true });
+
+      const box = await client.sandboxes.create(
+        app,
+        client.images.fromRegistry("node:22-bookworm"),
+        {
+          timeoutMs: 600_000,
+          tags: { "sandbox-sdk": "pending", "live-run": run, pending: label },
+        },
+      );
+
+      try {
+        const provider = liveProvider();
+        expect(await provider.list({ pending: label })).toEqual([]);
+        expect(await provider.listPending({ pending: label })).toMatchObject([
+          { id: box.sandboxId, labels: { "sandbox-sdk": "pending", pending: label } },
+        ]);
+        await provider.destroy(box.sandboxId);
+        expect(await box.poll()).not.toBeNull();
+        expect(await provider.listPending({ pending: label })).toEqual([]);
+      } finally {
+        await box.terminate().catch(() => {});
+      }
     } finally {
       client.close();
     }
