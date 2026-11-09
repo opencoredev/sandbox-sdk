@@ -11,7 +11,7 @@
  *   in use); "not applicable" for bundles and allocation pricing, and
  *   "unavailable" when usage was not measured or not validated.
  */
-import { computeHourly, priceAtSize, pricing, type Price } from "../pricing.js";
+import { computeHourly, priceAtSize, pricing, regionMultiplier, type Price } from "../pricing.js";
 import type { Attribution } from "../realistic/record.js";
 import { endOf, type CostedAttempt } from "./attempt-input.js";
 import { chargesBelowAllocation, type BillingRule } from "./billing-rules.js";
@@ -94,6 +94,11 @@ export interface AttemptCostInput {
   readonly attempt: CostedAttempt;
   readonly rule: BillingRule;
   readonly fx: ExchangeRate;
+  /**
+   * The region the run pinned its sandboxes to, as `providerRegion` resolves it: list prices take
+   * the provider's region multiplier (Modal: 1.75x narrow, 1.15x broad). Absent or null is unpinned.
+   */
+  readonly region?: string | null;
 }
 
 function priceFor(rule: BillingRule): Price | null {
@@ -201,16 +206,19 @@ function wholeMachineParts(input: AttemptCostInput): {
   if (hourly === null) return null;
   const time = billedTime(input.attempt, input.rule);
   const assumptions = [...time.assumptions];
+  // The pinned region scales compute and disk, as estimateCost does.
+  const region =
+    input.rule.pricingKey === null ? 1 : regionMultiplier(input.rule.pricingKey, input.region);
 
   const parts: CostPart[] = [
     {
       label: "compute and memory",
-      usd: toUSD((hourly / 3600) * time.seconds, price, input.fx),
+      usd: toUSD((hourly / 3600) * time.seconds, price, input.fx) * region,
       estimated: true,
     },
     {
       label: "disk",
-      usd: diskUSD(price, size.diskGiB, time.seconds, input.fx),
+      usd: diskUSD(price, size.diskGiB, time.seconds, input.fx) * region,
       estimated: true,
     },
     ...perStartFee(input.rule, assumptions),

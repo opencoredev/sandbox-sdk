@@ -12,6 +12,8 @@
  * sweep    List every provider for sandboxes labelled with this run and delete any left.
  */
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { requestBilledCompute } from "../allocation.js";
+import { isMissingFile } from "../files.js";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
@@ -83,6 +85,45 @@ const defaultArtifactDirs = [
 ];
 
 const fx = { eurToUsd: 1.08, date: "2026-11-05" } as const;
+
+/**
+ * Each provider's pinned region for a run folder, as `providerRegion` resolved it when the run
+ * placed its sandboxes (null: unpinned). The summary prices list-price columns at it.
+ */
+export const regionsFile = "regions.json";
+
+const regionsSchema = z.record(z.string(), z.string().nullable());
+
+async function readRegions(dir: string): Promise<Record<string, string | null>> {
+  try {
+    return regionsSchema.parse(JSON.parse(await readFile(join(dir, regionsFile), "utf8")));
+  } catch (error) {
+    if (isMissingFile(error)) return {};
+    throw error;
+  }
+}
+
+/**
+ * The region an adapter's attempts in `dir` ran in: the run's recorded one, else (for folders from
+ * before it was recorded) the environment's, resolved as the run resolved it. A recorded region
+ * that the environment contradicts is refused rather than priced either way.
+ */
+function regionFor(
+  recorded: Record<string, string | null>,
+  { adapter, dir }: { adapter: string; dir: string },
+): string | null {
+  const resolved = providerRegion(adapter, process.env);
+
+  if (!(adapter in recorded)) return resolved;
+  const region = recorded[adapter] ?? null;
+
+  if (resolved !== null && resolved !== region)
+    throw new Error(
+      `${dir} ran ${adapter} in ${region ?? "no pinned region"}, but the environment resolves ${resolved}; unset it or set it to the run's region`,
+    );
+
+  return region;
+}
 
 export const heldOpenProviders = [
   "e2b",
@@ -391,6 +432,21 @@ async function run(args: string[]) {
   const firstBatch = Number(values["first-batch"]);
   const batches = Number(values.batches);
   const setups = providerNames.map(providerSetup);
+
+  // Record each adapter's resolved region; a later run into the same folder must match it.
+  const regions = await readRegions(out);
+
+  for (const setup of setups) {
+    const region = providerRegion(setup.adapter, process.env);
+
+    if (setup.adapter in regions && regions[setup.adapter] !== region)
+      throw new Error(
+        `${out} already ran ${setup.adapter} in ${regions[setup.adapter] ?? "no pinned region"}, not ${region ?? "no pinned region"}`,
+      );
+    regions[setup.adapter] = region;
+  }
+
+  await writeFile(join(out, regionsFile), JSON.stringify(regions, null, 2) + "\n");
 
   const loaded = new Map<string, SlotProvider>();
   const longest = plan === "held-open" ? 60 * 60_000 : 0;
@@ -912,8 +968,24 @@ interface Row {
   costPerCompletedUSD: number | null;
   costNote: string | null;
   wholeMachinePerCompletedUSD: number | null;
+  /**
+   * "lower" when the whole-machine price is a floor: a request-billed provider's unsized track
+   * (Modal's default 0.125 CPU request) bursts above the request and that usage is billed too.
+   */
+  wholeMachineBound: "exact" | "lower";
   billingModel: string | null;
   eligibility: string;
+}
+
+/** Whether a group's whole-machine price is exact or a floor (request-billed, unsized track). */
+function wholeMachineBound(group: readonly CostedAttempt[]): "exact" | "lower" {
+  const first = group[0];
+
+  if (!first) return "exact";
+  const setup = providerSetup(first.record.provider);
+  const size = setup.tracks[trackOf(first.record)].size ?? null;
+
+  return requestBilledCompute(setup.pricingKey, size)?.bound ?? "exact";
 }
 
 async function summary(args: string[]) {
@@ -921,6 +993,8 @@ async function summary(args: string[]) {
     args,
     options: {
       out: { type: "string", multiple: true },
+      // Where summary.json and summary.md go; the first --out by default.
+      to: { type: "string" },
       // provider@runId[@track]: attempts superseded by a rerun, left out of the table and listed in it.
       drop: { type: "string", multiple: true },
     },
@@ -936,8 +1010,20 @@ async function summary(args: string[]) {
   const records: AttemptRecord[] = [];
   const bills: AttemptBilling[] = [];
 
+  // Each attempt's pinned region, from its run folder.
+  const regionOf = new Map<string, string | null>();
+
   for (const dir of values.out.map((d) => resolve(d))) {
-    records.push(...(await readJsonLines(join(dir, "attempts.jsonl"), attemptRecordSchema)));
+    const read = await readJsonLines(join(dir, "attempts.jsonl"), attemptRecordSchema);
+    const recorded = await readRegions(dir);
+
+    for (const record of read)
+      regionOf.set(
+        record.attemptId,
+        regionFor(recorded, { adapter: providerSetup(record.provider).adapter, dir }),
+      );
+
+    records.push(...read);
     bills.push(...(await readJsonLines(join(dir, "billing.jsonl"), attemptBillingSchema)));
   }
 
@@ -1009,7 +1095,14 @@ async function summary(args: string[]) {
         costPerCompletedUSD =
           costs.reduce((sum, c) => sum + (c.kind === "unavailable" ? 0 : c.usd), 0) / done.length;
 
-      const whole = counted.map((attempt) => wholeMachineListPrice({ attempt, rule, fx }));
+      const whole = counted.map((attempt) =>
+        wholeMachineListPrice({
+          attempt,
+          rule,
+          fx,
+          region: regionOf.get(attempt.record.attemptId) ?? null,
+        }),
+      );
 
       if (done.length && whole.every((w) => w.kind === "list-price"))
         wholeMachinePerCompletedUSD =
@@ -1071,6 +1164,7 @@ async function summary(args: string[]) {
       costPerCompletedUSD,
       costNote,
       wholeMachinePerCompletedUSD,
+      wholeMachineBound: wholeMachineBound(group),
       billingModel: rule ? billingModelLabel(rule) : null,
       eligibility: eligible,
     });
@@ -1096,7 +1190,8 @@ async function summary(args: string[]) {
     };
   });
 
-  const outDir = resolve(values.out[0] ?? ".");
+  const outDir = resolve(values.to ?? values.out[0] ?? ".");
+  await mkdir(outDir, { recursive: true });
   const usd = (v: number | null) => (v === null ? "n/a" : `$${(v * 1000).toFixed(2)}`);
   const s = (v: number | null) => (v === null ? "n/a" : v.toFixed(0));
 
@@ -1105,7 +1200,7 @@ async function summary(args: string[]) {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.variant} | ${r.profile} | ${r.track} | ${r.provider} | ${r.attempts} | ${r.completed} | ${r.notRun} | ${s(r.medianWallS)} | ${s(r.medianCpuS)} | ${usd(r.costPerCompletedUSD)} | ${r.costKind ?? "n/a"} | ${usd(r.wholeMachinePerCompletedUSD)} | ${[r.eligibility, r.costNote].filter((x) => x && x !== "n/a").join("; ")} |`,
+        `| ${r.variant} | ${r.profile} | ${r.track} | ${r.provider} | ${r.attempts} | ${r.completed} | ${r.notRun} | ${s(r.medianWallS)} | ${s(r.medianCpuS)} | ${usd(r.costPerCompletedUSD)} | ${r.costKind ?? "n/a"} | ${r.wholeMachineBound === "lower" && r.wholeMachinePerCompletedUSD !== null ? "≥ " : ""}${usd(r.wholeMachinePerCompletedUSD)} | ${[r.eligibility, r.costNote].filter((x) => x && x !== "n/a").join("; ")} |`,
     ),
   ].join("\n");
 

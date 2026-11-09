@@ -1,10 +1,12 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { realisticAttemptApp, type JournalApp } from "../../src/modal-apps.js";
 import { appJournalFile, stopJournalFile } from "../../src/realistic/apps.js";
-import { realisticCommand } from "../../src/realistic/cli.js";
+import { billingRule } from "../../src/cost/billing-rules.js";
+import { wholeMachineListPrice } from "../../src/cost/columns.js";
+import { realisticCommand, regionsFile } from "../../src/realistic/cli.js";
 import { attributionFor, emptyRecord } from "../../src/realistic/slots.js";
 import { attemptRecordSchema } from "../../src/realistic/record.js";
 import { attemptBillingSchema, costedAttempt } from "../../src/cost/attempt-input.js";
@@ -43,10 +45,13 @@ async function attemptDir(
     /** The App journal's last snapshot, when it differs from one allocated sb-1. */
     journal?: Pick<JournalApp, "sandboxes" | "allocations">;
     completed?: boolean;
+    track?: "same-machine" | "default";
   },
 ) {
   const out = join(root, name);
-  const attemptId = `${name}-b0-s0-fat-same-modal`;
+  const track = options.track ?? "same-machine";
+  const slotId = track === "default" ? "fat-default" : "fat-same";
+  const attemptId = `${name}-b0-s0-${slotId}-modal`;
   const app = realisticAttemptApp(attemptId);
 
   const record = emptyRecord(
@@ -57,10 +62,10 @@ async function attemptDir(
       manifest: fixture.manifest,
       manifestSha256: null,
       profileName: "fix-and-test",
-      track: "same-machine",
+      track,
       variant: "headline",
       batch: 0,
-      slot: { index: 0, id: "fat-same" },
+      slot: { index: 0, id: slotId },
       seed: 20261105,
       slotStartedAt: startedAt,
     },
@@ -149,6 +154,10 @@ async function attemptDir(
 async function entries(out: string) {
   await realisticCommand(["billing", "--out", out]);
 
+  return readBilling(out);
+}
+
+async function readBilling(out: string) {
   return (await readFile(join(out, "billing.jsonl"), "utf8"))
     .trim()
     .split("\n")
@@ -232,5 +241,55 @@ describe("realistic billing for Modal", () => {
 
     expect(await entries(out)).toEqual([]);
     expect(costedAttempt(await record(out)).charge.kind).toBe("no-sandbox");
+  });
+
+  it("prices the summary's whole machine at the run's recorded region, with its bound", async () => {
+    const rows: Record<string, unknown>[] = [];
+
+    for (const track of ["same-machine", "default"] as const) {
+      const out = await attemptDir(`rw-region-${track}`, { stopped: true, track });
+      await realisticCommand(["billing", "--out", out]);
+      await writeFile(join(out, regionsFile), JSON.stringify({ modal: "us-east" }) + "\n");
+      const to = join(root, `rw-region-${track}-summary`);
+      await mkdir(to, { recursive: true });
+      await realisticCommand(["summary", "--out", out, "--to", to]);
+
+      const [row] = JSON.parse(await readFile(join(to, "summary.json"), "utf8")).rows;
+      const [entry] = await readBilling(out);
+      const attempt = costedAttempt(await record(out), entry);
+      const rule = billingRule("modal", null);
+
+      if (!rule) throw new Error("No Modal rule");
+      const at = (region: string | null) => {
+        const whole = wholeMachineListPrice({
+          attempt,
+          rule,
+          fx: { eurToUsd: 1.08, date: "2026-11-05" },
+          region,
+        });
+
+        return whole.kind === "list-price" ? whole.usd : null;
+      };
+
+      expect(at("us-east")).toBeCloseTo((at(null) ?? 0) * 1.75, 12);
+      expect(row.wholeMachinePerCompletedUSD).toBeCloseTo(at("us-east") ?? 0, 12);
+      rows.push(row);
+    }
+
+    // Same-machine pins request = limit; the default track's 0.125 CPU request bursts above it.
+    expect(rows.map((row) => row.wholeMachineBound)).toEqual(["exact", "lower"]);
+    // Costs come from Modal's billing report, unchanged.
+    expect(rows.map((row) => row.costPerCompletedUSD)).toEqual([0.012, 0.012]);
+  });
+
+  it("refuses a summary whose environment region differs from the run's recorded one", async () => {
+    const out = await attemptDir("rw-region-conflict", { stopped: true });
+    await realisticCommand(["billing", "--out", out]);
+    await writeFile(join(out, regionsFile), JSON.stringify({ modal: "us-east" }) + "\n");
+    vi.stubEnv("BENCH_REGION_MODAL", "eu-west");
+
+    await expect(
+      realisticCommand(["summary", "--out", out, "--to", join(root, "rw-region-conflict-to")]),
+    ).rejects.toThrow(/us-east.*eu-west|eu-west.*us-east/);
   });
 });
