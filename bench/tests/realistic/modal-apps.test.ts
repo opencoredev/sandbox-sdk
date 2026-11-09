@@ -155,27 +155,37 @@ describe("realistic per-attempt Modal Apps", () => {
     ]);
   });
 
-  it("keeps a failed create ambiguous unless Modal definitively refused it", async () => {
+  it("keeps a failed create ambiguous unless the failure names the sandbox it allocated", async () => {
     const at = await paths();
     const lost = await prepareAttemptApp(at, modalLike([], at.apps), "rw-2-b0-s0-lost-modal");
     const refused = await prepareAttemptApp(at, modalLike([], at.apps), "rw-2-b0-s1-refused-modal");
+    const named = await prepareAttemptApp(at, modalLike([], at.apps), "rw-2-b0-s2-named-modal");
 
     await lost.failed(new Error("socket hang up"));
     await refused.failed(new SandboxError("Quota exceeded", { code: "quota", provider: "modal" }));
+    await named.failed(
+      new SandboxError("Setup failed", {
+        code: "unavailable",
+        provider: "modal",
+        sandboxId: "sb-n",
+      }),
+    );
 
     const owned = await readAppJournal(at.apps);
 
     expect(owned.map((app) => app.allocations.map((entry) => entry.state))).toEqual([
       ["submitted"],
-      ["rejected"],
+      ["submitted"],
+      ["allocated"],
     ]);
+    expect(owned[2]?.sandboxes).toEqual(["sb-n"]);
 
-    // The billing view: an ambiguous create keeps the App's charge unattributable.
+    // The billing view: a submitted create keeps the App's charge unattributable.
     const views = owned.map((app) =>
       ownedApps([{ ...app, sandboxes: ["sb-x"] }]).get("modal/sb-x"),
     );
 
-    expect(views.map((view) => view?.ambiguous)).toEqual([1, 0]);
+    expect(views.map((view) => view?.ambiguous)).toEqual([1, 1, 0]);
   });
 
   it("journals the confirmed stop after destroy, and nothing when the stop was not confirmed", async () => {
