@@ -14,6 +14,7 @@ import {
   allocationLabel,
   appLabel,
   attemptApp,
+  ambiguousAllocations,
   beginAllocation,
   failedAllocation,
   journalApp,
@@ -809,7 +810,8 @@ describe("lost creates and pending restores", () => {
       { id: expect.any(String), state: "allocated", sandboxId: leaked },
     ]);
 
-    // A definitive refusal allocated nothing: the create is journaled as rejected.
+    // Even a refusal can follow an allocation Modal's client does not name (it allocates, then
+    // waits for scheduling), so the create stays submitted and the App ambiguous.
     const refusedOut = await directory();
 
     const refusing = modalCloud().process({
@@ -827,7 +829,7 @@ describe("lost creates and pending restores", () => {
       async () => {},
     );
     expect((await journalApps(refusedOut))[0]?.allocations).toEqual([
-      { id: expect.any(String), state: "rejected" },
+      { id: expect.any(String), state: "submitted" },
     ]);
   });
 
@@ -975,7 +977,7 @@ it("a create that fails after Modal allocated its sandbox is journaled as alloca
   ]);
   expect(app.sandboxes).toContain("sb-restored");
 
-  // A refusal with no sandbox is still a refusal.
+  // A refusal naming no sandbox proves nothing: scheduling can refuse after allocation.
   const refused = beginAllocation(app);
   failedAllocation(
     app,
@@ -983,5 +985,6 @@ it("a create that fails after Modal allocated its sandbox is journaled as alloca
     "modal",
     new SandboxError("quota", { code: "quota", provider: "modal" }),
   );
-  expect(app.allocations.at(-1)).toEqual({ id: refused.id, state: "rejected" });
+  expect(app.allocations.at(-1)).toEqual({ id: refused.id, state: "submitted" });
+  expect(ambiguousAllocations(app)).toBe(1);
 });
