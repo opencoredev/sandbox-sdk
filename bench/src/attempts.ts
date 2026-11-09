@@ -49,9 +49,25 @@ const identity = z.object({
   track: z.enum(["default", "same-spec"]).optional(),
 });
 
+/**
+ * Iterations of one source run that a rerun replaces, with every sample they recorded, for failures
+ * on our side that never reached the provider (SBX-103: Modal's 200-App limit stopped the App lookup
+ * before any create). They are dropped as "superseded-by-rerun" and counted in selectionRemoved.
+ */
+const supersededIterations = z.object({
+  provider: z.enum(cloudProviders),
+  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  track: z.enum(["default", "same-spec"]).optional(),
+  sourceRunId: z.string().min(1),
+  iterations: z.array(z.number().int().nonnegative()).min(1),
+  rerunSourceRunIds: z.array(z.string().min(1)).min(1),
+  reason: z.string().min(1),
+});
+
 export const attemptPolicySchema = z.object({
   replacements: z.array(identity.extend({ sourceRunIds: z.array(z.string()).min(1) })),
   notRun: z.array(identity.extend({ reason: z.string().min(1) })),
+  superseded: z.array(supersededIterations).optional(),
 });
 
 export type AttemptPolicy = z.infer<typeof attemptPolicySchema>;
@@ -107,6 +123,18 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
         return drop("replaced-source");
 
       if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run");
+
+      if (
+        (policy.superseded ?? []).some(
+          (r) =>
+            r.provider === s.provider &&
+            r.suite === s.suite &&
+            (r.track ?? "default") === (s.track ?? "default") &&
+            r.sourceRunId === s.sourceRunId &&
+            r.iterations.includes(s.sourceIteration),
+        )
+      )
+        return drop("superseded-by-rerun");
 
       if (s.failureClass === "provider-account-limit" || s.failureClass === "client-third-party")
         return drop(s.failureClass);

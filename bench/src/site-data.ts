@@ -15,6 +15,7 @@ import {
   type Suite,
 } from "./merge.js";
 import { statistics } from "./stats.js";
+import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
@@ -338,6 +339,59 @@ export function pauseSplit(samples: readonly PauseInput[], provider: string) {
     : { pause: pause.p50, resume: resume.p50, n: pause.count };
 }
 
+/**
+ * Providers whose destroy waits for the provider's confirmed stop (Modal's `destroy` waits up to 60 s
+ * after the terminate request). Their published destroy row times the terminate request
+ * (`terminateRequestMs`), like the other adapters' delete call; the confirmed stop is published
+ * beside it. A destroy whose request response was lost (no `terminateRequestMs`) has no request
+ * time: it is counted in `requestUnknown` and left out of the request distribution, never imputed.
+ */
+const requestTimedDestroy: ReadonlySet<string> = new Set(["modal"]);
+
+/** Seconds, from millisecond phase values. */
+const secondsOf = (values: readonly number[]) => values.map((v) => v / 1000);
+
+export function destroyRequestTiming(
+  samples: PublicationReport["samples"],
+  provider: string,
+  seed: number,
+) {
+  const rows = samples.filter(
+    (s) =>
+      s.suite === "main" &&
+      s.provider === provider &&
+      s.scenario === "destroy" &&
+      s.outcome.kind === "sample",
+  );
+
+  const request = rows.flatMap((s) => {
+    const ms = s.phases?.terminateRequestMs;
+
+    return ms === undefined || !Number.isFinite(ms) ? [] : [ms];
+  });
+
+  const stops = rows.flatMap((s) => {
+    const ms = s.phases?.confirmedStopMs;
+
+    return ms === undefined || !Number.isFinite(ms) ? [] : [ms];
+  });
+
+  const requestStats = distribution(secondsOf(request), seed);
+  const stopStats = statistics(secondsOf(stops));
+
+  return {
+    request: requestStats,
+    requestUnknown: rows.length - request.length,
+    confirmedStop: {
+      n: stopStats.count,
+      p50: stopStats.p50,
+      p95: stopStats.p95,
+      max: stopStats.max,
+      unconfirmed: rows.length - stops.length,
+    },
+  };
+}
+
 export function siteData(input: PublicationReport, track: "default" | "same-spec" = "default") {
   const r = publicationTrack(input, track);
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
@@ -379,19 +433,37 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
           ourFailure(x),
       ).length;
 
+      const row = {
+        provider,
+        n: s.stats.count,
+        p50: scaled(s.stats.p50),
+        p95: scaled(s.stats.p95),
+        min: scaled(s.stats.min),
+        ciLow: scaled(s.stats.p50CI?.low),
+        ciHigh: scaled(s.stats.p50CI?.high),
+        successes: s.reliability.successes,
+        failures: s.reliability.failures - ours,
+        ourFailures: ours,
+        limitFailures: s.reliability.classes["provider-account-limit"],
+      };
+
+      if (def.id !== "destroy" || !requestTimedDestroy.has(provider)) return [row];
+
+      // Already in seconds: the request distribution replaces the confirmed-stop one.
+      const timing = destroyRequestTiming(r.samples, provider, r.bootstrapSeed);
+
       return [
         {
-          provider,
-          n: s.stats.count,
-          p50: scaled(s.stats.p50),
-          p95: scaled(s.stats.p95),
-          min: scaled(s.stats.min),
-          ciLow: scaled(s.stats.p50CI?.low),
-          ciHigh: scaled(s.stats.p50CI?.high),
-          successes: s.reliability.successes,
-          failures: s.reliability.failures - ours,
-          ourFailures: ours,
-          limitFailures: s.reliability.classes["provider-account-limit"],
+          ...row,
+          n: timing.request.count,
+          p50: timing.request.p50,
+          p95: timing.request.p95,
+          min: timing.request.min,
+          ciLow: timing.request.p50CI?.low ?? null,
+          ciHigh: timing.request.p50CI?.high ?? null,
+          timed: "terminate-request" as const,
+          requestUnknown: timing.requestUnknown,
+          confirmedStop: timing.confirmedStop,
         },
       ];
     }),
