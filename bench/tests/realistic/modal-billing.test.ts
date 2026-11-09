@@ -6,6 +6,8 @@ import { realisticAttemptApp, type JournalApp } from "../../src/modal-apps.js";
 import { appJournalFile, stopJournalFile } from "../../src/realistic/apps.js";
 import { realisticCommand } from "../../src/realistic/cli.js";
 import { attributionFor, emptyRecord } from "../../src/realistic/slots.js";
+import { attemptRecordSchema } from "../../src/realistic/record.js";
+import { attemptBillingSchema, costedAttempt } from "../../src/cost/attempt-input.js";
 import { fakeNativeModules } from "../native-fakes.js";
 import { buildFixture, type Fixture } from "./fixture.js";
 
@@ -32,7 +34,17 @@ const startedAt = Date.parse("2026-11-01T10:05:00Z");
 const endedAt = Date.parse("2026-11-01T10:08:00Z");
 
 /** One finished Modal attempt with its journaled App, and a billing report for that App. */
-async function attemptDir(name: string, options: { stopped: boolean }) {
+async function attemptDir(
+  name: string,
+  options: {
+    stopped: boolean;
+    /** The record's sandbox IDs; empty when the create's response was lost. */
+    recordSandboxes?: string[];
+    /** The App journal's last snapshot, when it differs from one allocated sb-1. */
+    journal?: Pick<JournalApp, "sandboxes" | "allocations">;
+    completed?: boolean;
+  },
+) {
   const out = join(root, name);
   const attemptId = `${name}-b0-s0-fat-same-modal`;
   const app = realisticAttemptApp(attemptId);
@@ -58,8 +70,8 @@ async function attemptDir(name: string, options: { stopped: boolean }) {
     attributionFor("modal").attribution,
   );
 
-  record.completion = { kind: "completed" };
-  record.sandboxIds = ["sb-1"];
+  if (options.completed ?? true) record.completion = { kind: "completed" };
+  record.sandboxIds = options.recordSandboxes ?? ["sb-1"];
   record.startedAt = startedAt;
   record.endedAt = endedAt;
   record.deletionConfirmed = true;
@@ -70,6 +82,7 @@ async function attemptDir(name: string, options: { stopped: boolean }) {
     appId: "ap-1",
     sandboxes: ["sb-1"],
     allocations: [{ id: "alloc-1", state: "allocated", sandboxId: "sb-1" }],
+    ...options.journal,
   };
 
   await rm(out, { recursive: true, force: true });
@@ -133,6 +146,22 @@ async function attemptDir(name: string, options: { stopped: boolean }) {
   return out;
 }
 
+async function entries(out: string) {
+  await realisticCommand(["billing", "--out", out]);
+
+  return (await readFile(join(out, "billing.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .filter((line) => line)
+    .map((line) => attemptBillingSchema.parse(JSON.parse(line)));
+}
+
+async function record(out: string) {
+  return attemptRecordSchema.parse(
+    JSON.parse((await readFile(join(out, "attempts.jsonl"), "utf8")).trim()),
+  );
+}
+
 async function charges(out: string) {
   await realisticCommand(["billing", "--out", out]);
 
@@ -157,5 +186,51 @@ describe("realistic billing for Modal", () => {
     expect(await charges(out)).toEqual([
       expect.objectContaining({ kind: "billed", usd: 0.012, settled: false }),
     ]);
+  });
+
+  it("keeps a lost create's cost unavailable instead of reporting nothing created", async () => {
+    const out = await attemptDir("rw-lost-create", {
+      stopped: false,
+      completed: false,
+      recordSandboxes: [],
+      journal: { sandboxes: [], allocations: [{ id: "alloc-1", state: "submitted" }] },
+    });
+
+    const [entry, ...rest] = await entries(out);
+
+    expect(rest).toEqual([]);
+    expect(entry?.charge).toEqual(
+      expect.objectContaining({ kind: "unavailable", reason: expect.stringMatching(/unknown/) }),
+    );
+
+    // An explicit unavailable entry wins over "no-sandbox", which would report nothing-created, $0.
+    expect(costedAttempt(await record(out), entry).charge.kind).toBe("unavailable");
+  });
+
+  it("bills a sandbox that reconciliation recovered for an attempt that lost its create response", async () => {
+    const out = await attemptDir("rw-recovered", {
+      stopped: true,
+      completed: false,
+      recordSandboxes: [],
+    });
+
+    const [entry] = await entries(out);
+
+    expect(entry?.charge).toEqual(
+      expect.objectContaining({ kind: "billed", usd: 0.012, settled: true }),
+    );
+    expect(costedAttempt(await record(out), entry).charge.kind).toBe("billed");
+  });
+
+  it("still writes no billing for an attempt whose App never received a create", async () => {
+    const out = await attemptDir("rw-no-create", {
+      stopped: false,
+      completed: false,
+      recordSandboxes: [],
+      journal: { sandboxes: [], allocations: [] },
+    });
+
+    expect(await entries(out)).toEqual([]);
+    expect(costedAttempt(await record(out)).charge.kind).toBe("no-sandbox");
   });
 });

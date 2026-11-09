@@ -37,6 +37,7 @@ import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
 import { loadProvider, providerRegion } from "../providers.js";
 import {
   appJournalFile,
+  attemptAllocation,
   ownedApps,
   persistApp,
   prepareAttemptApp,
@@ -621,18 +622,40 @@ async function billing(args: string[]) {
   if (!values.out) throw new Error("realistic billing needs --out");
   const out = resolve(values.out);
   const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
-  const withSandbox = records.filter((r) => r.sandboxIds.length > 0);
+  const apps = await readAppJournal(join(out, appJournalFile));
+
+  // Each attempt's sandboxes: its record's, plus any its App journal names (a reconciliation can
+  // recover one whose create response was lost). An attempt whose App still has a create of unknown
+  // result is billed as unavailable even when no sandbox ID is known.
+  const billable = records.flatMap((record) => {
+    const creates = attemptAllocation(apps, {
+      provider: providerSetup(record.provider).adapter,
+      attemptId: record.attemptId,
+    });
+
+    const sandboxIds = [
+      ...new Set([
+        ...record.sandboxIds,
+        ...(creates.kind === "no-create" ? [] : creates.sandboxIds),
+      ]),
+    ];
+
+    return sandboxIds.length > 0 || creates.kind === "unresolved"
+      ? [{ record, sandboxIds, creates }]
+      : [];
+  });
 
   // Each journaled App's sandboxes, for the per-App collector (Modal).
-  const appOf = ownedApps(await readAppJournal(join(out, appJournalFile)));
+  const appOf = ownedApps(apps);
   // A Modal charge settles only after its sandbox's confirmed stop.
   const stops = await readStops(join(out, stopJournalFile));
 
-  const byAdapter = new Map<string, AttemptRecord[]>();
+  const byAdapter = new Map<string, (typeof billable)[number][]>();
 
   const captured = new Map<string, z.infer<typeof costSchema>>();
 
-  for (const record of withSandbox) {
+  for (const item of billable) {
+    const { record, sandboxIds } = item;
     const adapter = providerSetup(record.provider).adapter;
 
     // Usage captured before deletion (Boat) is the only evidence once the sandbox is gone.
@@ -643,8 +666,8 @@ async function billing(args: string[]) {
         captured.set(sandbox.id, sandbox.cost);
     }
 
-    if (record.sandboxIds.every((id) => captured.has(id))) continue;
-    byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), record]);
+    if (sandboxIds.every((id) => captured.has(id))) continue;
+    byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), item]);
   }
 
   const costs = new Map<
@@ -657,8 +680,8 @@ async function billing(args: string[]) {
   for (const [adapter, items] of byAdapter) {
     if (adapter === "tenki" || adapter === "freestyle") continue;
 
-    const rows: OwnedSandbox[] = items.flatMap((record) =>
-      record.sandboxIds.map((id) => ({
+    const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
+      sandboxIds.map((id) => ({
         provider: adapter,
         id,
         scenarios: new Set([`${record.profile}/${record.track}/${record.variant}`]),
@@ -683,7 +706,7 @@ async function billing(args: string[]) {
     raw.push({ ...collected, sandboxes: collected.sandboxes.length });
   }
 
-  const entries: AttemptBilling[] = withSandbox.map((record) => {
+  const entries: AttemptBilling[] = billable.map(({ record, sandboxIds, creates }) => {
     const setup = providerSetup(record.provider);
     const track = trackOf(record);
 
@@ -701,7 +724,15 @@ async function billing(args: string[]) {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },
       };
-    const found = record.sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
+    if (creates.kind === "unresolved")
+      return {
+        ...base,
+        charge: {
+          kind: "unavailable",
+          reason: `${creates.unresolved} create(s) for this attempt have an unknown result (lost response), so a sandbox may exist that no ID names`,
+        },
+      };
+    const found = sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
     const unpriced = found.filter((cost) => cost === undefined || cost.kind === "unavailable");
 
     if (unpriced.length > 0 || found.length === 0) {

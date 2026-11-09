@@ -74,6 +74,38 @@ export function ownedApps(apps: readonly JournalApp[]): Map<string, OwnedApp> {
   );
 }
 
+/**
+ * What one realistic attempt's App journal says about its creates, by attempt ID (each attempt has
+ * its own App, `realisticAttemptApp`). `sandboxIds` are the sandboxes journaled in the App, which
+ * include those a reconciliation recovered for a create whose response was lost. `unresolved`
+ * counts creates whose result is still unknown: a sandbox may exist that no ID names, so the
+ * attempt's cost stays unavailable.
+ */
+export type AttemptAllocation =
+  | { readonly kind: "no-create" }
+  | { readonly kind: "resolved"; readonly sandboxIds: readonly string[] }
+  | {
+      readonly kind: "unresolved";
+      readonly sandboxIds: readonly string[];
+      readonly unresolved: number;
+    };
+
+export function attemptAllocation(
+  apps: readonly JournalApp[],
+  { provider, attemptId }: { provider: string; attemptId: string },
+): AttemptAllocation {
+  const name = realisticAttemptApp(attemptId);
+  const app = apps.find((entry) => entry.provider === provider && entry.name === name);
+
+  if (!app || (app.allocations.length === 0 && app.sandboxes.length === 0))
+    return { kind: "no-create" };
+  const unresolved = ambiguousAllocations(app);
+
+  return unresolved > 0
+    ? { kind: "unresolved", sandboxIds: app.sandboxes, unresolved }
+    : { kind: "resolved", sandboxIds: app.sandboxes };
+}
+
 const stopSchema = z.object({
   provider: z.string(),
   sandboxId: z.string(),
