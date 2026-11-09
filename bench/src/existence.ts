@@ -137,9 +137,40 @@ export interface NativeModules {
         fromId(imageId: string): Promise<{ readonly imageId: string }>;
         delete(imageId: string): Promise<void>;
       };
+      readonly sandboxes: {
+        /** Makes no request; `poll` is the exact read. */
+        fromId(sandboxId: string): Promise<{
+          readonly sandboxId: string;
+          /** The exit code once the sandbox has finished, else null. */
+          poll(): Promise<number | null>;
+        }>;
+      };
+      /**
+       * Modal's control-plane client. `workspaceBillingReport` is the call behind the documented
+       * `modal billing report` (https://modal.com/docs/reference/cli/billing); Modal's JS SDK marks
+       * the client `@ignore`. It streams one item per App and interval.
+       */
+      readonly cpClient: {
+        workspaceBillingReport(request: {
+          startTimestamp: Date;
+          endTimestamp: Date;
+          resolution: string;
+          tagNames: string[];
+          environmentIds: string[];
+          appIds: string[];
+        }): AsyncIterable<object>;
+      };
       close(): void;
     };
     NotFoundError: abstract new (...args: never[]) => Error;
+  };
+  /**
+   * The gRPC client library Modal's SDK uses, resolved from Modal's own install so `instanceof`
+   * matches the errors it throws. Modal answers a lookup of an unknown sandbox with NOT_FOUND.
+   */
+  "nice-grpc": {
+    ClientError: abstract new (...args: never[]) => Error & { readonly code: number };
+    Status: { readonly NOT_FOUND: number };
   };
 }
 
@@ -156,6 +187,8 @@ interface InstalledModules {
   // `modal` is an SDK dependency the bench cannot resolve types for; the slice above is hand-typed
   // from modal 0.11.1 and checked by the live snapshot run.
   modal: NativeModules["modal"];
+  // Modal's dependency, resolved next to it; hand-typed from nice-grpc 2.
+  "nice-grpc": NativeModules["nice-grpc"];
 }
 
 type NativePackage = keyof NativeModules;
@@ -164,7 +197,11 @@ const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
 
 // Resolve from the SDK package so the bench shares the adapters' module instances.
 async function sdk<P extends NativePackage>(name: P): Promise<NativeModules[P]> {
-  const installed: InstalledModules[P] = await import(import.meta.resolve(name, sdkPackage.href));
+  // nice-grpc is Modal's dependency, not the SDK's: resolve it from Modal's install.
+  const parent =
+    name === "nice-grpc" ? import.meta.resolve("modal", sdkPackage.href) : sdkPackage.href;
+
+  const installed: InstalledModules[P] = await import(import.meta.resolve(name, parent));
 
   return installed;
 }
@@ -227,6 +264,7 @@ const lookupKeys = new Map([
   ["boat", "BOAT_API_KEY"],
   ["freestyle", "FREESTYLE_API_KEY"],
   ["superserve", "SUPERSERVE_API_KEY"],
+  ["modal", "MODAL_TOKEN_SECRET"],
 ]);
 
 const nativeInfo = z.object({
@@ -341,6 +379,28 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
           return nativeInfo.parse(await response.json());
+        }
+
+        case "modal": {
+          const { ModalClient } = await nativeModules.load("modal");
+          const { ClientError, Status } = await nativeModules.load("nice-grpc");
+          const client = new ModalClient();
+
+          try {
+            // fromId makes no request; poll is one exact read: null while it runs, else its exit.
+            const sandbox = await client.sandboxes.fromId(id);
+            const exit = await sandbox.poll();
+
+            return { id: sandbox.sandboxId, status: exit === null ? "running" : "terminated" };
+          } catch (error) {
+            // Only Modal's NOT_FOUND is absence. A malformed ID is INVALID_ARGUMENT, and any
+            // transport or auth failure stays unavailable.
+            if (error instanceof ClientError && error.code === Status.NOT_FOUND)
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+            throw error;
+          } finally {
+            client.close();
+          }
         }
 
         case "local": {

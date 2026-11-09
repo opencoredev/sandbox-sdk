@@ -253,6 +253,14 @@ it("registers Modal snapshot cleanup and metadata through Modal's own client", a
           },
         };
 
+        readonly sandboxes = {
+          fromId: async (sandboxId: string) => ({ sandboxId, poll: async () => null }),
+        };
+
+        readonly cpClient = {
+          async *workspaceBillingReport() {},
+        };
+
         close() {
           closed.push(1);
         }
@@ -295,7 +303,11 @@ it("gives Modal sandboxes a hard lifetime covering a whole iteration, or the con
   );
 
   expect(loaded.kind).toBe("ready");
-  expect(factory).toHaveBeenCalledWith({ timeoutMs: 5_400_000, onDestroy: expect.any(Function) });
+  expect(factory).toHaveBeenCalledWith({
+    timeoutMs: 5_400_000,
+    onDestroy: expect.any(Function),
+    createApp: expect.any(Function),
+  });
 });
 
 it("splits a Modal destroy row into the terminate request and the confirmed stop", async () => {

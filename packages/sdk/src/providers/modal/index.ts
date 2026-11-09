@@ -6,7 +6,13 @@ import {
   type ModalOptions as NativeModalOptions,
 } from "./provider.js";
 
-export type { ModalCapability, ModalDestroyEvent, ModalResources } from "./provider.js";
+export type {
+  ModalCapability,
+  ModalDestroyEvent,
+  ModalPreparedApp,
+  ModalResources,
+  PrepareAppOptions,
+} from "./provider.js";
 
 export type ModalOptions = NativeModalOptions & {
   /** Defaults to MODAL_TOKEN_ID, then the active profile in ~/.modal.toml. */

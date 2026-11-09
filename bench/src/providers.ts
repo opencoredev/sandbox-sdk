@@ -2,6 +2,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import { lifetimeOptions } from "./lifetime.js";
+import { createAppByLabel } from "./modal-apps.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
@@ -136,6 +137,23 @@ function observerOptions(name: string): FactoryOptions {
 
 export type FactoryOptions = z.infer<typeof factoryOptions>;
 
+/**
+ * Modal's `createApp`: a create labelled `sandbox-bench-app` goes to that App, so per-attempt Apps
+ * (`--app-per-attempt modal`) can be priced from Modal's per-App billing report. Unlabelled
+ * creates stay in the adapter's default App.
+ */
+function appOptions(name: string): FactoryOptions {
+  return name === "modal" ? { createApp: createAppByLabel } : {};
+}
+
+/**
+ * The region a provider's runs are labelled with (and, for Modal, pinned to), or null: the run's
+ * `configuredRegion`, which every published price and efficiency figure multiplies by.
+ */
+export function providerRegion(name: string, env: NodeJS.ProcessEnv): string | null {
+  return env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys.get(name) ?? ""] ?? null;
+}
+
 /** A provider entry point's factory. Its result is checked by `assertProvider`. */
 const providerFactory = z.function({ input: [factoryOptions] });
 
@@ -188,6 +206,7 @@ export async function loadProvider(
     ...productOptions(name, config?.product[name]),
     ...lifetimeOptions(name, config ?? {}),
     ...observerOptions(name),
+    ...appOptions(name),
   });
 
   assertProvider(provider);
@@ -196,7 +215,7 @@ export async function loadProvider(
     kind: "ready",
     name,
     cloud: credentials.has(name),
-    region: env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys.get(name) ?? ""] ?? null,
+    region: providerRegion(name, env),
     provider,
   };
 }

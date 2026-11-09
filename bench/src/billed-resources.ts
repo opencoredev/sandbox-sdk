@@ -1,4 +1,4 @@
-import { requestedSize } from "./allocation.js";
+import { requestBilledCompute } from "./allocation.js";
 import { resources, type Fingerprint } from "./fingerprint.js";
 import { fallbackResources, pricing, type Resources } from "./pricing.js";
 import type { Size } from "./v2-config.js";
@@ -20,14 +20,10 @@ export function pricedResources(
   size: Size | null,
 ): PricedResources | null {
   const price = pricing[provider];
+  const billed = requestBilledCompute(provider, size);
 
-  if (price?.requestBilled) {
-    // Disk is not billed separately by request-billed providers.
-    if (size !== null)
-      return { resources: { ...requestedSize(provider, size), diskGiB: 0 }, bound: "exact" };
-
-    return { resources: { ...price.requestBilled.minimum, diskGiB: 0 }, bound: "lower" };
-  }
+  // Disk is not billed separately by request-billed providers.
+  if (billed) return { resources: { ...billed.compute, diskGiB: 0 }, bound: billed.bound };
 
   if (fp) return { resources: resources(fp), bound: "observed" };
 

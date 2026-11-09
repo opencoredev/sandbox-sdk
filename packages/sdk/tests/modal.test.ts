@@ -156,9 +156,19 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
         createSandbox(provider({ createApp: () => "bad name!" }), {}),
       ).rejects.toMatchObject({ code: "invalid_argument" });
 
+      // Recovery looks Apps up without creating them: a journaled App that was never created is
+      // null, and no App appears for it.
+      const never = `bench-${attempt}-never`;
+      const fresher = provider({ app: "sandbox-sdk-default" });
+      expect(await fresher.prepareApp(never, { createIfMissing: false })).toBeNull();
+      expect(await fresher.prepareApp(never, { createIfMissing: false })).toBeNull();
+      await expect(
+        createModalProvider(mock.load).prepareApp(`bench-${attempt}`, { createIfMissing: false }),
+      ).resolves.toEqual({ name: `bench-${attempt}`, appId: `ap-bench-${attempt}` });
+
       // prepareApp takes the App lookup out of the create it would otherwise slow down.
       const next = `bench-${attempt}-2`;
-      await adapter.prepareApp(next);
+      expect(await adapter.prepareApp(next)).toEqual({ name: next, appId: `ap-${next}` });
       const lookups = mock.apps.filter((name) => name === next).length;
       const prepared = await createSandbox(adapter, { labels: { attempt: `${attempt}-2` } });
       await prepared.destroy();
@@ -237,14 +247,36 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
       });
 
       // A command that finishes before reading its input refuses the write; that is not a failure.
+      // Modal answers it with FAILED_PRECONDITION (measured live on November 9, 2026).
       native.stdinFailure = {
         on: "write",
-        error: modalFailure("InvalidError", "process has exited"),
+        error: grpcFailure(
+          9,
+          "/modal.task_command_router.TaskCommandRouter/TaskExecStdinWrite FAILED_PRECONDITION: Exec has already completed; stdin is no longer accepting writes",
+        ),
         afterExit: true,
       };
       expect(await box.run("exit 3", { stdin: "unread" })).toMatchObject({
         exitCode: 3,
         timedOut: false,
+      });
+
+      // Any other stdin error rejects, even when the command exits right away: a stream reset
+      // (gRPC INTERNAL) or an unmapped error is no proof the command saw all its input.
+      for (const error of [grpcFailure(13, "RST_STREAM"), new Error("socket hang up")]) {
+        native.stdinFailure = { on: "write", error, afterExit: true };
+        await expect(box.run("exit 3", { stdin: "lost" })).rejects.toMatchObject({
+          provider: "modal",
+        });
+      }
+
+      // A refusal while the command is still running is no refusal: it rejects.
+      native.stdinFailure = {
+        on: "write",
+        error: grpcFailure(9, "FAILED_PRECONDITION: Exec has already completed"),
+      };
+      await expect(box.run("sleep 3", { stdin: "x", timeoutMs: 10_000 })).rejects.toMatchObject({
+        provider: "modal",
       });
 
       native.stdinFailure = undefined;
@@ -387,6 +419,83 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     await box.destroy();
     expect(native.terminateCalls).toBe(1);
     expect(await native.poll()).toBe(137);
+  });
+
+  test("one deadline bounds destroy: a stalled tag write never holds it, a stalled poll times out", async () => {
+    const adapter = provider({ destroyWaitMs: 20 });
+
+    // The stop is confirmed at once; the advisory tag write never returns. (A little more than
+    // 20 ms, since the mock's own terminate removes a directory before it returns.)
+    const tagged = await createSandbox(provider({ destroyWaitMs: 60 }));
+    const stalledTags = mock.sandboxes.get(tagged.id)!;
+    stalledTags.stall.setTags = true;
+
+    // How a destroy has settled 150 ms after it started: resolved, its error code, or pending.
+    const outcome = async (promise: Promise<void>) => {
+      try {
+        await promise;
+
+        return "resolved";
+      } catch (error) {
+        return modalError(error).code;
+      }
+    };
+
+    const settled = (promise: Promise<void>) =>
+      Promise.race([
+        outcome(promise),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 150)),
+      ]);
+
+    expect(await settled(provider({ destroyWaitMs: 60 }).destroy(tagged.id))).toBe("resolved");
+    expect(await stalledTags.poll()).toBe(137);
+
+    // Modal never answers the poll: destroy is a retryable timeout within the deadline.
+    const polled = await createSandbox(adapter);
+    const stalledPoll = mock.sandboxes.get(polled.id)!;
+    stalledPoll.stall.poll = true;
+    expect(await settled(adapter.destroy(polled.id))).toBe("timeout");
+    stalledPoll.stall = {};
+
+    // The terminate request itself never returns: also a timeout, inside the same deadline.
+    const terminating = await createSandbox(adapter);
+    const stalledTerminate = mock.sandboxes.get(terminating.id)!;
+    stalledTerminate.stall.terminate = true;
+    expect(await settled(adapter.destroy(terminating.id))).toBe("timeout");
+    stalledTerminate.stall = {};
+    await provider().destroy(terminating.id);
+    await provider().destroy(polled.id);
+  });
+
+  test("a termination this process requested is never handed out, even when the tag write fails", async () => {
+    const key = `dying-${crypto.randomUUID()}`;
+    const adapter = provider({ destroyWaitMs: 5_000 });
+    const box = await createSandbox(adapter, { key });
+    const native = mock.sandboxes.get(box.id)!;
+    native.stopDelayMs = 1500;
+    native.tagFailure = grpcFailure(14, "tag write unavailable");
+    const destroying = adapter.destroy(box.id);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // The same provider tracks the pending termination locally.
+    expect(await adapter.find(key)).toBeUndefined();
+    expect(await adapter.connect(box.id)).toMatchObject({ id: box.id, state: "stopped" });
+    expect(await adapter.list({})).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: box.id, state: "stopped" })]),
+    );
+    await destroying;
+
+    // A tag write that fails once is retried, so another process sees the marker as well.
+    const retried = await createSandbox(adapter, { key: `${key}-retry` });
+    const flaky = mock.sandboxes.get(retried.id)!;
+    flaky.stopDelayMs = 1500;
+    flaky.tagFailure = grpcFailure(14, "tag write unavailable");
+    flaky.tagFailureCount = 1;
+    const second = adapter.destroy(retried.id);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(flaky.tags).toHaveProperty("sandbox-sdk-destroying");
+    expect(await provider().find(`${key}-retry`)).toBeUndefined();
+    await second;
   });
 
   test("a failed termination surfaces and leaves the sandbox listed and connectable", async () => {

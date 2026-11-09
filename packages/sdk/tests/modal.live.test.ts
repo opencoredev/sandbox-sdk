@@ -202,6 +202,39 @@ describe.skipIf(!credentials)("Modal live options", { timeout: 300_000 }, () => 
       expect((await provider.list({ "own-app": "1", "live-run": run })).map((i) => i.id)).toEqual([
         box.id,
       ]);
+
+      // A restarted process lists the App only once it prepares it, without creating anything.
+      const fresh = liveProvider();
+      expect(await fresh.list({ "own-app": "1", "live-run": run })).toEqual([]);
+      expect(await fresh.prepareApp(app, { createIfMissing: false })).toMatchObject({ name: app });
+      expect((await fresh.list({ "own-app": "1", "live-run": run })).map((i) => i.id)).toEqual([
+        box.id,
+      ]);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("recovery looks an App up without creating it", async () => {
+    const never = `sandbox-sdk-never-${run.slice(-12).replace(/[^\w.-]/g, "")}`;
+    expect(await liveProvider().prepareApp(never, { createIfMissing: false })).toBeNull();
+    const client = new ModalClient();
+
+    try {
+      await expect(client.apps.fromName(never)).rejects.toMatchObject({ name: "NotFoundError" });
+    } finally {
+      client.close();
+    }
+  });
+
+  test("stdin to a command that exits before reading it is no failure", async () => {
+    const box = await createSandbox(liveProvider());
+
+    try {
+      expect(await box.run("exit 3", { stdin: "x".repeat(1 << 20) })).toMatchObject({
+        exitCode: 3,
+        timedOut: false,
+      });
     } finally {
       await box.destroy();
     }
