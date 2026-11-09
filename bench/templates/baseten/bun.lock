@@ -1,0 +1,17 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "sandbox-bench-baseten-template",
+      "dependencies": {
+        "@basetenlabs/sandbox": "0.5.0",
+      },
+    },
+  },
+  "packages": {
+    "@basetenlabs/client": ["@basetenlabs/client@0.5.0", "", {}, "sha512-5Ubj1fWD8GxCXfymSjF50tBQ9sZj/G+0r2JVpMZk148+oW+hlnWGHPnaRAIWVvvBh4vhFaNQeYOMpmuUT3xQmw=="],
+
+    "@basetenlabs/sandbox": ["@basetenlabs/sandbox@0.5.0", "", { "dependencies": { "@basetenlabs/client": "0.5.0" } }, "sha512-GOtEBCcj/a3dEOd8GKN6cPebvLB5N2UTjTUYnWjKToz6qPcaMLvgva1o2d2jNZX8yZlsRkd1aRUWBVI52gtUTg=="],
+  }
+}
