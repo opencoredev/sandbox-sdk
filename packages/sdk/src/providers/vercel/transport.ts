@@ -20,6 +20,7 @@ export type NativeSandbox = Pick<
   | "delete"
   | "update"
   | "writeFiles"
+  | "vcpus"
 > & {
   fs: Pick<Sandbox["fs"], "writeFile" | "mkdir" | "rm" | "chmod"> & {
     readFile(path: string): Promise<Buffer>;

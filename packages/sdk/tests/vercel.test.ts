@@ -563,6 +563,29 @@ describe("Vercel native options", { timeout: 30_000 }, () => {
     }
   });
 
+  test("a restore keeps the source's vCPUs unless a size is given", async () => {
+    const adapter = provider();
+    const box = await createSandbox(adapter, { size: "large" });
+
+    try {
+      const { id } = await box.snapshot();
+      const same = await createSandbox(adapter, { from: id });
+      await same.destroy();
+      expect(mock.creates.at(-1)).toMatchObject({ resources: { vcpus: 4 } });
+
+      const resized = await createSandbox(adapter, { from: id, size: "small" });
+      await resized.destroy();
+      expect(mock.creates.at(-1)).toMatchObject({ resources: { vcpus: 1 } });
+
+      // Another provider instance knows nothing of the snapshot, so Vercel picks its default.
+      const elsewhere = await createSandbox(provider(), { from: id });
+      await elsewhere.destroy();
+      expect(mock.creates.at(-1)?.resources).toBeUndefined();
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("exact sizes map to vCPUs at 2048 MiB each", async () => {
     const box = await createSandbox(provider(), { size: { cpu: 8, memoryMb: 16_384 } });
 
