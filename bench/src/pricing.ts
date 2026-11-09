@@ -161,7 +161,7 @@ export const pricing: PriceTable = {
     offeredSizes: [1, 2, 4, 6, 8].map((cpu) => ({ cpu, memoryGiB: cpu * 2 })),
     source: "https://vercel.com/docs/sandbox/pricing",
     notes:
-      "Pro, iad1: Active CPU $0.128 per vCPU-hour of CPU time (I/O wait not billed), provisioned memory $0.0212 per GB-hour of wall time in 1-minute minimum increments, $0.60 per million creations. Allocation-priced estimates bound CPU from above. $20 monthly Pro credit, data transfer (Flat Rate CDN on Pro) and snapshot storage ($0.08/GB-month) excluded.",
+      "Pro, iad1: active CPU $0.128 per vCPU-hour of CPU time (I/O wait not billed), memory $0.0212 per GB-hour of wall time in one-minute minimum increments, $0.60 per million creations. Vercel's docs leave rounding after the first minute open; we charge whole minutes, the dearer reading. Metered: the bench stops each sandbox to read Vercel's meter before deleting it, so the meter includes the stop's disk snapshot (about 3% in one probe; approximate, not corrected per task). Hourly assumes every vCPU busy. Pro's $20 credit, data transfer and snapshot storage excluded.",
   },
   local: {
     ...base,

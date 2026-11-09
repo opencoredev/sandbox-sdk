@@ -35,6 +35,7 @@ import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
 import { loadProvider } from "../providers.js";
 import { shuffle } from "../v2-stats.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
+import { heldStatus, type HeldStatus } from "./held-status.js";
 import { systemClock } from "./gaps.js";
 import type { HarnessManifest } from "./manifest.js";
 import { fileArtifacts } from "./prepare.js";
@@ -704,8 +705,8 @@ interface HeldRow {
   /** Against the same provider's zero-wait twin, from the medians. */
   changeVsZeroWait: number | null;
   medianWakeMs: number | null;
-  /** "settled", "unsettled" (any charge not final) or "estimate". */
-  status: string | null;
+  /** Billed charges settle; metered costs stay unreconciled (see `heldStatus`). */
+  status: HeldStatus | null;
   /** Provider state before and after the idle wait, when the adapter reports one. */
   transitions: string[];
 }
@@ -753,13 +754,7 @@ function heldOpen(attempts: readonly CostedAttempt[]): HeldRow[] {
           idle !== "zero-wait" && medianCostUSD !== null && zeroWait !== null && zeroWait > 0
             ? medianCostUSD / zeroWait - 1
             : null,
-        status: costs.some((c) => (c.kind === "billed" || c.kind === "metered") && !c.settled)
-          ? "unsettled"
-          : costs.some((c) => c.kind === "estimate")
-            ? "estimate"
-            : costs.length
-              ? "settled"
-              : null,
+        status: heldStatus(costs),
         medianWakeMs: median(
           runs.flatMap((a) =>
             a.record.idle?.wakeLatencyMs == null ? [] : [a.record.idle.wakeLatencyMs],
