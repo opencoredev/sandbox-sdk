@@ -9,6 +9,7 @@ import {
 export type {
   ModalCapability,
   ModalDestroyEvent,
+  ModalPendingSandbox,
   ModalPreparedApp,
   ModalResources,
   PrepareAppOptions,

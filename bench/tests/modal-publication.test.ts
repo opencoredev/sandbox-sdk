@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
+import { allocationEvidence } from "../src/allocation.js";
 import type { Fingerprint } from "../src/fingerprint.js";
 import { mergeSources, sampleSchema, type MergeSource } from "../src/merge.js";
 import { estimateCost } from "../src/pricing.js";
@@ -121,6 +122,32 @@ const defaultTrack = (hostGiB: number) => [
 const minimumHour = (0.125 * 0.00003942 + 0.125 * 0.00000667) * 3600;
 
 describe("Modal publication pricing", () => {
+  it("prices the minimum request when a restore lands on a host with other memory, keeping the caveat", () => {
+    // Source on a 1,024 GiB host, restore on a 203 GiB one: the guest views differ, the request does not.
+    const samples = [
+      ...defaultTrack(1024),
+      sample("restore-fingerprint", 1000, { fingerprint: hostFingerprint(203), sandboxId: "sb-2" }),
+    ];
+
+    const evidence = allocationEvidence(samples, "modal");
+    expect(evidence.mismatches).toContain("Restored allocation differs from source");
+    expect(evidence.verified).toBe(false);
+    expect(evidence.pricingAllocation).toEqual({ cpu: 0.125, memoryGiB: 0.125 });
+    expect(evidence.pricingBound).toBe("lower");
+
+    const report = mergeSources([source("modal-hosts", null, samples)]);
+    expect(hourly(report, "modal")).toBeCloseTo(minimumHour, 6);
+    expect(publicationMarkdown(report)).toMatch(/caveat: Restored allocation differs from source/);
+
+    // A request that varies still leaves no price.
+    const mixed = [
+      ...defaultTrack(1024),
+      sample("command", 100, { requestedSize: { cpu: 4, memoryMb: 8192 } }),
+    ];
+
+    expect(allocationEvidence(mixed, "modal").pricingAllocation).toBeNull();
+  });
+
   it("prices the published sandbox-hour on the request, never the guest's 1 TiB, and labels it a lower bound", () => {
     const report = mergeSources([source("modal-1tib", null, defaultTrack(1024))]);
 

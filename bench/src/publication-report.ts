@@ -174,9 +174,9 @@ export function headline(r: PublicationReport) {
       latency(summary(r, p, "tool-replay")),
       latency(summary(r, p, "burst-25/all-ready", "burst")),
       `${pct(rel.raw?.rate)} / ${pct(rel.excludingLimitsAndClient?.rate)}`,
-      allocation.mismatches.length
+      allocation.pricingAllocation === null && allocation.mismatches.length
         ? `Allocation mismatch: ${allocation.mismatches.join("; ")}`
-        : priced(hourlyPrice(r, p), pricing[p]?.currency ?? "unknown"),
+        : `${priced(hourlyPrice(r, p), pricing[p]?.currency ?? "unknown")}${allocation.mismatches.length ? ` (caveat: ${allocation.mismatches.join("; ")})` : ""}`,
     ];
   });
 

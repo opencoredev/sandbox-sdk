@@ -105,7 +105,8 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
 
   if (estimate) {
     const allocation = allocationEvidence(report.samples, provider);
-    const resources = allocation.mismatches.length === 0 ? allocation.pricingAllocation : null;
+    // Null on any mismatch, except a request-billed provider's guest caveat (allocation.ts).
+    const resources = allocation.pricingAllocation;
 
     if (!resources)
       return { ...empty, source: `${empty.source}; matching verified allocation required` };
@@ -152,7 +153,8 @@ type Lifetime = PublicationReport["samples"][number];
 function modalEstimate(report: PublicationReport, lifetimes: readonly Lifetime[]): TaskCost | null {
   const allocation = allocationEvidence(report.samples, "modal");
 
-  if (allocation.mismatches.length) return null;
+  // Guest-view caveats (host memory on the default track) do not change the request Modal bills.
+  if (allocation.pricingAllocation === null) return null;
   const priced = pricedResources("modal", null, allocation.requested.size);
 
   if (!priced) return null;

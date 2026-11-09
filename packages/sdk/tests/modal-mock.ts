@@ -116,6 +116,8 @@ export async function modalMock() {
     /** With `tagFailure`, how many setTags calls fail before writes go through again. */
     tagFailureCount?: number;
     terminateFailure?: Error;
+    /** Fault injection: terminate takes effect, then its response is lost with this error. */
+    terminateLostResponse?: Error;
     /** Fault injection: these calls never settle, as a stalled gRPC request would not. */
     stall: Partial<Record<"setTags" | "poll" | "terminate", boolean>> = {};
     stdinFailure?: { on: "write" | "close"; error: Error; afterExit?: boolean };
@@ -318,6 +320,8 @@ export async function modalMock() {
       })();
 
       if (!this.stopDelayMs) await this.stopping;
+
+      if (this.terminateLostResponse) throw this.terminateLostResponse;
     }
     async killAll() {
       const procs = this.map("/tmp/.sandbox-sdk/procs");
@@ -519,10 +523,13 @@ export async function modalMock() {
     deletedImages,
     lists,
     apps,
+    /** Apps that exist: created by a lookup with createIfMissing. */
+    existingApps,
     async dispose() {
       for (const box of sandboxes.values()) {
         box.stopDelayMs = 0;
         box.terminateFailure = undefined;
+        box.terminateLostResponse = undefined;
         box.stall = {};
         await box.terminate();
         await box.stopping;

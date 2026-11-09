@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
-import { resources, type Fingerprint } from "../src/fingerprint.js";
+import { resources, verifyRestoredResources, type Fingerprint } from "../src/fingerprint.js";
 import { estimateCost, pricing } from "../src/pricing.js";
 import { pricedResources, reservationResources } from "../src/billed-resources.js";
 import { lifetimeOptions } from "../src/lifetime.js";
+import { main } from "../src/cli.js";
 import { loadProvider, type DestroyTiming, type FactoryOptions } from "../src/providers.js";
 import * as snapshots from "../src/snapshots.js";
 import { runV2 } from "../src/v2-runner.js";
@@ -254,8 +255,16 @@ it("registers Modal snapshot cleanup and metadata through Modal's own client", a
         };
 
         readonly sandboxes = {
-          fromId: async (sandboxId: string) => ({ sandboxId, poll: async () => null }),
+          fromId: async (sandboxId: string) => ({
+            sandboxId,
+            poll: async () => null,
+            getTags: async () => ({}),
+            terminate: async () => {},
+          }),
+          async *list() {},
         };
+
+        readonly environments = { objects: { async *list() {} } };
 
         readonly cpClient = {
           async *workspaceBillingReport() {},
@@ -358,4 +367,71 @@ it("splits a Modal destroy row into the terminate request and the confirmed stop
     terminateRequestMs: 120,
     confirmedStopMs: 2400,
   });
+});
+
+it("resolves Modal's region once, pins the adapter to it, and refuses conflicting variables", async () => {
+  const credentials = { MODAL_TOKEN_ID: "id", MODAL_TOKEN_SECRET: "secret" };
+  const config = parseV2(["--providers", "modal"]);
+
+  const load = async (env: NodeJS.ProcessEnv) => {
+    const factory = vi.fn((options: FactoryOptions) => ({ ...memory(), name: "modal", options }));
+    const loaded = await loadProvider("modal", env, async () => ({ modal: factory }), config);
+
+    return { loaded, options: factory.mock.calls[0]?.[0] };
+  };
+
+  // The label alone also places the sandboxes: the report's region is where they ran.
+  const labelled = await load({ ...credentials, BENCH_REGION_MODAL: "us-east" });
+  expect(labelled.loaded).toMatchObject({ kind: "ready", region: "us-east" });
+  expect(labelled.options).toMatchObject({ region: "us-east" });
+
+  const native = await load({ ...credentials, MODAL_SANDBOX_REGION: "us-east, us-central" });
+  expect(native.loaded).toMatchObject({ region: "us-east,us-central" });
+  expect(native.options).toMatchObject({ region: "us-east,us-central" });
+
+  const agreeing = await load({
+    ...credentials,
+    BENCH_REGION_MODAL: "us-east",
+    MODAL_SANDBOX_REGION: " us-east ",
+  });
+
+  expect(agreeing.loaded).toMatchObject({ region: "us-east" });
+
+  // Unset: Modal picks, and nothing is pinned or labelled.
+  const unset = await load(credentials);
+  expect(unset.loaded).toMatchObject({ region: null });
+  expect(unset.options).not.toHaveProperty("region");
+
+  await expect(
+    load({ ...credentials, BENCH_REGION_MODAL: "us-east", MODAL_SANDBOX_REGION: "us-west" }),
+  ).rejects.toThrow(/BENCH_REGION_MODAL \(us-east\) and MODAL_SANDBOX_REGION \(us-west\) conflict/);
+
+  // The CLI refuses the whole run before loading any provider.
+  vi.stubEnv("BENCH_REGION_MODAL", "us-east");
+  vi.stubEnv("MODAL_SANDBOX_REGION", "eu-west");
+  const argv = process.argv;
+  process.argv = ["bun", "cli.ts", "--providers", "modal", "--runs", "1"];
+  const loader = vi.fn(loadProvider);
+
+  try {
+    await expect(main(loader)).rejects.toThrow(/conflict/);
+    expect(loader).not.toHaveBeenCalled();
+  } finally {
+    process.argv = argv;
+    vi.unstubAllEnvs();
+  }
+});
+
+it("an unsized Modal restore on a host with other memory is not a mismatch, but a CPU change still is", () => {
+  const source = defaultTrackFingerprint(1024);
+  const restored = defaultTrackFingerprint(203);
+
+  expect(verifyRestoredResources(source, restored).mismatches).toEqual(["memoryGiB"]);
+  expect(verifyRestoredResources(source, restored, { compareMemory: false })).toMatchObject({
+    matches: true,
+    mismatches: [],
+  });
+  expect(
+    verifyRestoredResources(source, { ...restored, nproc: 2 }, { compareMemory: false }).mismatches,
+  ).toEqual(["cpu"]);
 });

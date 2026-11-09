@@ -106,10 +106,11 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
 
   if (restoredMismatch) mismatches.push("Restored allocation differs from source");
 
-  if (
-    new Set(rows.map((s) => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1
-  )
-    mismatches.push("Multiple requested allocations");
+  const multipleRequests =
+    new Set(rows.map((s) => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size >
+    1;
+
+  if (multipleRequests) mismatches.push("Multiple requested allocations");
 
   if (requestedCompute && observed.some((r) => r.cpu !== requestedCompute.cpu))
     mismatches.push("Measured vCPU differs from requested allocation");
@@ -135,12 +136,16 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
 
   const billed = requestBilledCompute(provider, size);
 
-  // Request-billed providers price the request whatever the guest shows (Modal's default guest
-  // shows the host's memory); every other provider prices the verified or measured allocation.
-  const pricingAllocation = mismatches.length
-    ? null
-    : billed
-      ? billed.compute
+  // Request-billed providers price the request whatever the guest shows: Modal's default guest
+  // shows the host's memory, which differs between a source and its restore. Guest mismatches stay
+  // as caveats; only a request that varies leaves no price. Every other provider prices the
+  // verified or measured allocation.
+  const pricingAllocation = billed
+    ? multipleRequests
+      ? null
+      : billed.compute
+    : mismatches.length
+      ? null
       : requested.template && !requestedCompute
         ? null
         : requestedCompute && observed.length

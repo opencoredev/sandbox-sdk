@@ -43,7 +43,7 @@ export function resources(fp: Fingerprint) {
 export function verifyRestoredResources(
   source: Fingerprint | null,
   restored: Fingerprint,
-  options: { compareDisk?: boolean } = {},
+  options: { compareDisk?: boolean; compareMemory?: boolean } = {},
 ) {
   const actual = resources(restored);
 
@@ -58,7 +58,8 @@ export function verifyRestoredResources(
 
   const mismatches = [
     ...(original.cpu === actual.cpu ? [] : ["cpu"]),
-    ...(Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05
+    ...(options.compareMemory === false ||
+    Math.abs(actual.memoryGiB - original.memoryGiB) <= original.memoryGiB * 0.05
       ? []
       : ["memoryGiB"]),
     ...(options.compareDisk === false ||

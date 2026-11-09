@@ -143,10 +143,12 @@ const sources = new Map<string, BillingSource>(
     modal: {
       source: modalBillingSource,
       granularity: "App per hour; a sandbox alone in its App (per-attempt Apps) is priced",
-      delay: "minutes; full hours only; provisional until 30 minutes after the hour of the stop",
+      delay:
+        "minutes; full hours only; provisional until a confirmed stop, 30 minutes after its hour (this bench's heuristic, not Modal's) and a row for every hour",
       key: "MODAL_TOKEN_SECRET",
       notes: [
-        "Modal's per-App charge before credits, reservations and the egress allowance (https://modal.com/docs/guide/billing). Sandbox tags are not in the report, so only a sandbox that is the one sandbox in its App gets a cost; others stay unavailable, never zero.",
+        "Modal's per-App charge before credits, reservations and the egress allowance (https://modal.com/docs/guide/billing). Sandbox tags are not in the report, so only a sandbox that is the one sandbox in its App, with no create of unknown outcome beside it, gets a cost; others stay unavailable, never zero.",
+        "A sandbox's cost is compute only (CPU and memory); egress and the App total are kept in account.apps.",
       ],
     },
     freestyle: {

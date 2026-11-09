@@ -132,18 +132,32 @@ export interface NativeModules {
   "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
   /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
   modal: {
-    ModalClient: new () => {
+    ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
       readonly images: {
         fromId(imageId: string): Promise<{ readonly imageId: string }>;
         delete(imageId: string): Promise<void>;
       };
       readonly sandboxes: {
         /** Makes no request; `poll` is the exact read. */
-        fromId(sandboxId: string): Promise<{
-          readonly sandboxId: string;
-          /** The exit code once the sandbox has finished, else null. */
-          poll(): Promise<number | null>;
-        }>;
+        fromId(sandboxId: string): Promise<ModalNativeSandbox>;
+        /** Running sandboxes: of one App with `appId`, else of the whole Environment. */
+        list(params?: {
+          appId?: string;
+          environment?: string;
+          tags?: Record<string, string>;
+        }): AsyncIterable<{ readonly sandboxId: string }>;
+      };
+      readonly environments: {
+        readonly objects: {
+          /** Every Environment in the workspace. */
+          list(): AsyncIterable<{
+            readonly name: string;
+            /** Live (not stopped or disabled) Apps. Listing creates none. */
+            readonly apps: {
+              list(): AsyncIterable<{ readonly appId: string; readonly name?: string }>;
+            };
+          }>;
+        };
       };
       /**
        * Modal's control-plane client. `workspaceBillingReport` is the call behind the documented
@@ -171,6 +185,48 @@ export interface NativeModules {
   "nice-grpc": {
     ClientError: abstract new (...args: never[]) => Error & { readonly code: number };
     Status: { readonly NOT_FOUND: number };
+  };
+}
+
+/** One Modal sandbox handle, from `fromId`. */
+export interface ModalNativeSandbox {
+  readonly sandboxId: string;
+  /** The exit code once the sandbox has finished, else null. */
+  poll(): Promise<number | null>;
+  getTags(): Promise<Record<string, string>>;
+  terminate(): Promise<void>;
+}
+
+/** The options of one gRPC call as nice-grpc 2 middleware sees them; other fields pass through. */
+export interface GrpcCallOptions {
+  signal?: AbortSignal;
+}
+
+/** One gRPC call in a nice-grpc 2 client middleware: its request, and the next layer. */
+export interface GrpcMiddlewareCall<Request, Response> {
+  readonly request: Request;
+  next(
+    request: Request,
+    options: GrpcCallOptions,
+  ): AsyncGenerator<Response, Response | void, undefined>;
+}
+
+/** A nice-grpc 2 client middleware, as `ModalClient`'s `grpcMiddleware` takes it. */
+export type GrpcMiddleware = <Request, Response>(
+  call: GrpcMiddlewareCall<Request, Response>,
+  options: GrpcCallOptions,
+) => AsyncGenerator<Response, Response | void, undefined>;
+
+/** A middleware that cancels every call of a client once `signal` aborts. */
+export function cancelOn(signal: AbortSignal): GrpcMiddleware {
+  return async function* cancel<Request, Response>(
+    call: GrpcMiddlewareCall<Request, Response>,
+    options: GrpcCallOptions,
+  ): AsyncGenerator<Response, Response | void, undefined> {
+    return yield* call.next(call.request, {
+      ...options,
+      signal: options.signal ? AbortSignal.any([options.signal, signal]) : signal,
+    });
   };
 }
 
@@ -384,7 +440,11 @@ export async function lookupSandbox(
         case "modal": {
           const { ModalClient } = await nativeModules.load("modal");
           const { ClientError, Status } = await nativeModules.load("nice-grpc");
-          const client = new ModalClient();
+          // The deadline cancels the request in flight and closes the client, so a stalled poll
+          // keeps no call or client open past it.
+          const client = new ModalClient({ grpcMiddleware: [cancelOn(signal)] });
+          const close = () => client.close();
+          signal.addEventListener("abort", close, { once: true });
 
           try {
             // fromId makes no request; poll is one exact read: null while it runs, else its exit.
@@ -399,6 +459,7 @@ export async function lookupSandbox(
               throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
             throw error;
           } finally {
+            signal.removeEventListener("abort", close);
             client.close();
           }
         }
