@@ -103,6 +103,10 @@ const docs = {
   superserveUsage: "https://api.superserve.ai/billing/usage-series",
   freestyle: "https://www.freestyle.sh/pricing",
   tenki: "https://tenki.cloud/pricing",
+  modal: "https://modal.com/pricing",
+  modalResources: "https://modal.com/docs/guide/sandbox-resources",
+  modalRegions: "https://modal.com/docs/guide/region-selection",
+  modalBilling: "https://modal.com/docs/guide/billing (workspace billing report, per App)",
 } as const;
 
 export const billingRules: readonly BillingRule[] = [
@@ -313,6 +317,39 @@ export const billingRules: readonly BillingRule[] = [
     settlementMs: null,
     confirmation: unconfirmed,
     notes: ["Overage rates; allowances and $0.02/GB transfer excluded."],
+  },
+  {
+    provider: "modal",
+    product: null,
+    pricingKey: "modal",
+    // max(request, usage) per second: a sized sandbox pins request = limit, so it pays for its
+    // allocation; the unsized default also pays for usage above its 0.125 CPU / 128 MiB request.
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.modalResources),
+    billingStarts: unknown("Not stated"),
+    billingStops: unknown(
+      "Not stated; destroy waits for Modal's confirmed stop, and the App charge includes any lag",
+    ),
+    incrementSeconds: known(1, `${docs.modal} (per second)`),
+    minimumSeconds: unknown("Not stated; minimum request is 0.125 CPU, not a minimum time"),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: unknown("Snapshot image storage not stated"),
+    countsFileCacheAsMemory: unknown(
+      "Memory is billed at max(request, usage); whether page cache counts as usage is not stated",
+    ),
+    storage: known("not-charged", `${docs.modal} (no disk rate for sandboxes)`),
+    settledChargeSource: known(
+      "Per-App metered cost per hour, before credits; one sandbox per App in the bench",
+      docs.modalBilling,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "Sandbox rates are three times Function rates (non-preemptible). A pinned narrow region such as us-east is 1.75x, a broad one such as us 1.15x.",
+      "One Modal CPU is a physical core per the docs; measured as about one thread of throughput per unit (MODAL.md).",
+      "Plan credits ($30 Starter, $100 Team per month) excluded.",
+    ],
   },
 ];
 

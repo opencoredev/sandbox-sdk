@@ -72,7 +72,15 @@ const defaultArtifactDirs = [
 
 const fx = { eurToUsd: 1.08, date: "2026-11-05" } as const;
 
-const heldOpenProviders = ["e2b", "daytona", "upstash", "upstash-ephemeral", "boat", "boxd"];
+export const heldOpenProviders = [
+  "e2b",
+  "daytona",
+  "upstash",
+  "upstash-ephemeral",
+  "boat",
+  "boxd",
+  "modal",
+];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
 const heldOpenSlots: SlotSpec[] = [

@@ -11,6 +11,7 @@ export const cloudProviders = [
   "freestyle",
   "tenki",
   "superserve",
+  "modal",
 ];
 
 export const mainTests = [

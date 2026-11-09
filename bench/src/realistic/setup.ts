@@ -190,6 +190,26 @@ export const providerSetups: readonly ProviderSetup[] = [
       default: { vcpu: 4, provisioned: size(4, 8, 50), tooSmall: {} },
     },
   },
+  {
+    // Same-machine: cpu 4 = cpuLimit 4 and 8 GiB pinned (about 4 threads of throughput, MODAL.md;
+    // Modal bills each CPU as a physical core). Default: Modal's 0.125 CPU / 128 MiB request, which
+    // bursts into the host; nproc shows 1 and there is no memory limit, so FIT.md's small-size
+    // failures do not apply. `provisioned` is the billed minimum there, a lower bound.
+    name: "modal",
+    adapter: "modal",
+    product: null,
+    lifetime: true,
+    pricingKey: "modal",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 0),
+        tooSmall: {},
+      },
+      default: { vcpu: 1, provisioned: size(0.125, 0.125, 0), tooSmall: {} },
+    },
+  },
 ];
 
 export function providerSetup(name: string): ProviderSetup {
