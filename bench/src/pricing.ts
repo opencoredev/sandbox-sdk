@@ -136,6 +136,16 @@ export const pricing: PriceTable = {
     notes:
       "Published overage rates, allowances/subscriptions excluded. $0.02/GB transfer excluded. Billing increment/minimum and creation fees unspecified; one-second estimate.",
   },
+  baseten: {
+    ...base,
+    cpuSecond: 0.0655 / 3600,
+    memoryGiBSecond: 0.0211 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-09",
+    source: "https://www.baseten.co/pricing/",
+    notes:
+      "Published Sandboxes runtime rates: $0.0655 per vCPU-hour and $0.0211 per GB RAM-hour, applied per GiB. CPU is one vCPU per 2048 MB of memory. The filesystem lives in memory, so there is no separate disk rate. Snapshot, volume and image storage excluded. Increment and minimum unspecified; one-second estimate.",
+  },
   tenki: {
     ...base,
     cpuSecond: 0.000014,
@@ -196,6 +206,7 @@ export const defaultCompute: ComputeTable = {
   boxd: { cpu: 2, memoryGiB: 8 },
   freestyle: { cpu: 4, memoryGiB: 8 },
   superserve: { cpu: 1, memoryGiB: 1 },
+  baseten: { cpu: 2, memoryGiB: 4 },
 };
 
 export function estimateCost(

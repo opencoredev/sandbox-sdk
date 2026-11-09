@@ -9,6 +9,7 @@ const templateKeys = new Map([
   ["freestyle", "snapshotId"],
   ["tenki", "image"],
   ["boxd", "image"],
+  ["baseten", "image"],
   ["local", "image"],
 ]);
 
@@ -57,12 +58,14 @@ const credentials = new Map([
   ["tenki", ["TENKI_API_KEY"]],
   ["boxd", ["BOXD_API_KEY"]],
   ["freestyle", ["FREESTYLE_API_KEY"]],
+  ["baseten", ["BASETEN_API_KEY"]],
 ]);
 
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
   ["daytona", "DAYTONA_TARGET"],
+  ["baseten", "BASETEN_SANDBOX_REGION"],
 ]);
 
 /** The members every adapter has. Methods are checked to be functions, not their signatures. */

@@ -117,7 +117,7 @@ const schema = z.object({
   product: productAssignments,
   providers: z
     .string()
-    .default("local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,superserve,railway,vercel")
+    .default("local,e2b,daytona,upstash,boat,boxd,freestyle,tenki,superserve,baseten,railway,vercel")
     .transform((v) => [...new Set(v.split(","))])
     .pipe(z.array(z.string().regex(/^[a-z][a-z0-9-]*$/))),
   runs: integer.default(2),
