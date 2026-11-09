@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { MergedSample, Suite } from "./merge.js";
+import type { MergedSample, MergeSource, Suite } from "./merge.js";
+import { attemptApp, type JournalApp } from "./modal-apps.js";
 
 export const cloudProviders = [
   "e2b",
@@ -71,6 +72,102 @@ export const attemptPolicySchema = z.object({
 });
 
 export type AttemptPolicy = z.infer<typeof attemptPolicySchema>;
+
+/** Each source's ownership-journal Apps by run ID; a source missing from the map has no journal. */
+export type SourceJournals = ReadonlyMap<string, readonly JournalApp[]>;
+
+const completion = z.object({
+  admissionStopped: z.array(z.unknown()).optional(),
+  cleanupReview: z.array(z.unknown()).optional(),
+});
+
+const sameTrack = (a: string | undefined, b: string | undefined) =>
+  (a ?? "default") === (b ?? "default");
+
+/**
+ * Why each superseded rule cannot be applied; empty when every rule is backed by evidence. A rule
+ * for a source outside the merge removes nothing and is not checked. Otherwise it
+ * stands only when the source's ownership journal shows each named iteration's App with no create
+ * journaled and no sandbox (beginAllocation journals every create before it is submitted, so none
+ * reached the provider), none of the iteration's samples names a sandbox, and each named rerun is
+ * merged, completed (no stopped admission, no unresolved cleanup) and ran at least as many
+ * iterations of the provider on the same track as it replaces.
+ */
+export function supersededRefusals({
+  policy,
+  sources,
+  journals,
+}: {
+  policy: AttemptPolicy;
+  sources: readonly MergeSource[];
+  journals: SourceJournals;
+}): string[] {
+  return (policy.superseded ?? []).flatMap((rule) => {
+    const origin = sources.find((s) => s.runId === rule.sourceRunId);
+
+    // A rule for a run outside this merge (another track's) removes nothing.
+    if (!origin) return [];
+    const label = `superseded ${rule.provider}@${rule.sourceRunId}`;
+    const refusals: string[] = [];
+    const apps = journals.get(rule.sourceRunId);
+
+    if (!apps) refusals.push(`${label}: source has no ownership journal`);
+
+    for (const iteration of rule.iterations) {
+      const name = attemptApp(rule.sourceRunId, iteration);
+      const app = apps?.find((a) => a.provider === rule.provider && a.name === name);
+
+      if (apps && !app) refusals.push(`${label}: iteration ${iteration} has no journaled App`);
+
+      if (app && (app.allocations.length > 0 || app.sandboxes.length > 0))
+        refusals.push(
+          `${label}: iteration ${iteration} journaled ${app.allocations.length} create(s) and ${app.sandboxes.length} sandbox(es)`,
+        );
+
+      for (const s of origin.samples)
+        if (
+          s.provider === rule.provider &&
+          s.iteration === iteration &&
+          sameTrack(s.track ?? origin.config.track, rule.track) &&
+          s.sandboxId !== null
+        )
+          refusals.push(`${label}: iteration ${iteration} recorded sandbox ${s.sandboxId}`);
+    }
+
+    for (const runId of rule.rerunSourceRunIds) {
+      const rerun = sources.find((s) => s.runId === runId);
+
+      if (!rerun || runId === rule.sourceRunId) {
+        refusals.push(`${label}: rerun ${runId} is not among the merged sources`);
+        continue;
+      }
+
+      const state = completion.parse(rerun);
+
+      if (state.admissionStopped?.length || state.cleanupReview?.length)
+        refusals.push(`${label}: rerun ${runId} did not complete`);
+
+      const ran = new Set(
+        rerun.samples
+          .filter(
+            (s) =>
+              s.provider === rule.provider &&
+              sameTrack(s.track ?? rerun.config.track, rule.track) &&
+              s.outcome.kind !== "skipped" &&
+              s.outcome.kind !== "blocked",
+          )
+          .map((s) => s.iteration),
+      ).size;
+
+      if (ran < rule.iterations.length)
+        refusals.push(
+          `${label}: rerun ${runId} ran ${ran} ${rule.provider} iterations, fewer than the ${rule.iterations.length} it replaces`,
+        );
+    }
+
+    return refusals;
+  });
+}
 
 export function attemptTarget(suite: Suite, scenario: string): number | null {
   if (suite === "cost") return scenario === "tool-replay" ? 10 : null;

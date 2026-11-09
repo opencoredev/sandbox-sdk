@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mergeSources, sampleSchema, type MergeSource } from "../src/merge.js";
 import { siteData } from "../src/site-data.js";
 import type { Sample } from "../src/v2-model.js";
+import { attemptApp, journalApp } from "../src/modal-apps.js";
 
 const at = "2026-11-09T12:00:00.000Z";
 
@@ -115,6 +116,7 @@ describe("site-data destroy timing", () => {
 describe("superseded iterations", () => {
   const failed: Sample = {
     ...sample("modal", "cold", 200, {}, 2),
+    sandboxId: null,
     outcome: {
       kind: "failure",
       note: "Modal request failed: the provider rejected the request as invalid.",
@@ -132,20 +134,28 @@ describe("superseded iterations", () => {
   const makeup = source([sample("modal", "cold", 400, {}, 0)], "makeup");
 
   it("drops a rerun's superseded iterations and counts them, keeping every other sample", () => {
-    const merged = mergeSources([main, makeup], [], 45, {
-      replacements: [],
-      notRun: [],
-      superseded: [
-        {
-          provider: "modal",
-          suite: "main",
-          sourceRunId: "main",
-          iterations: [2],
-          rerunSourceRunIds: ["makeup"],
-          reason: "Modal's 200-App limit stopped the App lookup; no create reached Modal",
-        },
-      ],
-    });
+    const merged = mergeSources(
+      [main, makeup],
+      [],
+      45,
+      {
+        replacements: [],
+        notRun: [],
+        superseded: [
+          {
+            provider: "modal",
+            suite: "main",
+            sourceRunId: "main",
+            iterations: [2],
+            rerunSourceRunIds: ["makeup"],
+            reason: "Modal's 200-App limit stopped the App lookup; no create reached Modal",
+          },
+        ],
+      },
+      {
+        journals: new Map([["main", [journalApp("modal", attemptApp("main", 2))]]]),
+      },
+    );
 
     const cold = merged.samples.filter((s) => s.provider === "modal" && s.scenario === "cold");
 
