@@ -14,7 +14,7 @@ npm install @opencoredev/sandbox-sdk
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Baseten, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
 
 Check it works with no account and no Docker:
 
@@ -40,6 +40,7 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 | boxd           | `@opencoredev/sandbox-sdk/boxd`       | `BOXD_API_KEY`; optional `BOXD_BASE_URL`                                                                      |
 | Freestyle      | `@opencoredev/sandbox-sdk/freestyle`  | `FREESTYLE_API_KEY`                                                                                           |
 | Superserve     | `@opencoredev/sandbox-sdk/superserve` | `SUPERSERVE_API_KEY`                                                                                          |
+| Baseten        | `@opencoredev/sandbox-sdk/baseten`    | `BASETEN_API_KEY`; optional `BASETEN_TEAM_ID`, `BASETEN_SANDBOX_REGION`                                       |
 | Boat           | `@opencoredev/sandbox-sdk/boat`       | `BOAT_API_KEY`; optional `BOAT_API_BASE`                                                                      |
 | Sandboxer      | `@opencoredev/sandbox-sdk/sandboxer`  | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) |
 | Local (Docker) | `@opencoredev/sandbox-sdk/local`      | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)                                       |

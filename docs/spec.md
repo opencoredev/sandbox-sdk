@@ -221,6 +221,7 @@ Provider-level capabilities gate root functions that need no sandbox:
 | `boxd(opts)`       | `/boxd`       | `@boxd-sh/sdk`.                                                                                                 |
 | `freestyle(opts)`  | `/freestyle`  | Direct HTTP to Freestyle's API; no peer.                                                                        |
 | `superserve(opts)` | `/superserve` | Direct HTTP to Superserve's API and sandbox data plane; no peer.                                                |
+| `baseten(opts)`    | `/baseten`    | Direct HTTP to Baseten's management API and each sandbox's own API; no peer.                                    |
 | `agentos(opts)`    | `/agentos`    | `@rivet-dev/agentos-core`. Embedded runtime with a native sidecar.                                              |
 
 Each adapter's key mode, capabilities, limits, and peer package range are listed once, in the docs' [capability matrix](../apps/docs/content/reference/capabilities.mdx). `apps/docs/scripts/check-capabilities.ts` checks that page against the adapters.

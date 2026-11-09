@@ -33,6 +33,7 @@ import {
   createAgentosProvider,
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
+import { baseten } from "../../../packages/sdk/src/providers/baseten/index.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
@@ -62,7 +63,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Superserve, Baseten, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -132,6 +133,10 @@ const subjects: readonly Subject[] = [
   {
     column: "Freestyle",
     build: () => freestyle({ apiKey: offlineKey }),
+  },
+  {
+    column: "Baseten",
+    build: () => baseten({ apiKey: offlineKey }),
   },
   { column: "Memory", build: () => memory() },
 ];
@@ -337,6 +342,7 @@ const rows: readonly Row[] = [
       "Token header": [],
       "Bearer header": [],
       "Cookie header": [],
+      "Token in URL": [],
       No: [],
     },
     unchecked: "every Preview URL cell except Fake needs a live provider",

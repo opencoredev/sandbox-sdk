@@ -28,6 +28,7 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                  |
 | <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                   |
 | <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots |
+| [Baseten](/providers/baseten)                                                         | `baseten()` from `/baseten`       | `BASETEN_API_KEY`                                              | Sizes by memory, previews that need no headers          |
 | <img src="/integrations/memory.svg" alt="" /> [Memory](/providers/memory)             | `memory()` from `/memory`         | None                                                           | Unit tests                                              |
 
 ## What each provider supports
@@ -77,6 +78,9 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="Freestyle" href="/providers/freestyle" icon="/integrations/freestyle.svg">
     Persistent VMs with default-deny networking and memory snapshots.
+  </Card>
+  <Card title="Baseten" href="/providers/baseten" icon="box">
+    Baseten Sandboxes with sizes, second-level lifetimes, and private previews that need no headers.
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.

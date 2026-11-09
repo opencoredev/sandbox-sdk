@@ -3,6 +3,7 @@ import { createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { Provider } from "../src/provider.js";
 import { agentosError } from "../src/providers/agentos/errors.js";
+import { basetenError } from "../src/providers/baseten/errors.js";
 import { errors as boatErrors } from "../src/providers/boat-api/errors.js";
 import { boxdError } from "../src/providers/boxd/errors.js";
 import { daytonaError } from "../src/providers/daytona/errors.js";
@@ -26,6 +27,7 @@ const mappers: [string, (cause: unknown) => SandboxError][] = [
   ["vercel", (error) => vercelError(error)],
   ["superserve", (error) => superserveError(error)],
   ["boxd", (error) => boxdError(error)],
+  ["baseten", (error) => basetenError(error)],
   ["agentos", (error) => agentosError(error)],
   ["daytona", (error) => daytonaError(error)],
   ["freestyle", (error) => freestyleError(error)],
