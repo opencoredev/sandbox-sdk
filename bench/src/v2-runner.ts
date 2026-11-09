@@ -57,6 +57,7 @@ import {
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
 import { failureOutcome } from "./failure.js";
+import { appLabel, attemptApp, preparesApps, type JournalApp } from "./modal-apps.js";
 
 /**
  * Providers whose snapshots keep files but not CPU and memory, so a restore must ask for the
@@ -152,7 +153,16 @@ async function host(): Promise<HostSample> {
   };
 }
 
-export function summarize(samples: Sample[], seed: number) {
+/**
+ * Per-group statistics. `regions` maps each provider to the region its run was configured with
+ * (`configuredRegion`), so every cost figure, including performance per dollar, carries the
+ * region multiplier the provider bills (Modal).
+ */
+export function summarize(
+  samples: Sample[],
+  seed: number,
+  regions: Readonly<Record<string, string | null>> = {},
+) {
   const groups = new Map<string, Sample[]>();
 
   for (const s of samples) {
@@ -184,12 +194,12 @@ export function summarize(samples: Sample[], seed: number) {
       cost = costs.every((c) => c !== null) ? costs.reduce((a, b) => a + b, 0) : null;
 
     const efficiency = successes.map((row) => {
-      // Samples carry no region, so this rate excludes a region multiplier.
       const rate = estimateCost(
         row.provider,
         1000,
         pricedResources(row.provider, row.fingerprint, row.requestedSize ?? null)?.resources ??
           null,
+        regions[row.provider] ?? null,
       );
 
       if (!rate || row.outcome.kind !== "sample" || row.outcome.value <= 0) return null;
@@ -348,10 +358,19 @@ export async function runV2(
     }
   >();
 
+  // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
+  // never removed, so recovery can list their sandboxes and billing can attribute their charges.
+  const apps = new Map<string, JournalApp>();
+
   let journal = Promise.resolve();
 
   function persist() {
-    const data = JSON.stringify({ runId: config.run, resources: [...owned.values()] }, null, 2);
+    const data = JSON.stringify(
+      { runId: config.run, resources: [...owned.values()], apps: [...apps.values()] },
+      null,
+      2,
+    );
+
     journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
 
     return journal;
@@ -624,6 +643,31 @@ export async function runV2(
     state.reserved += reserve;
     const createSize = allocation.requestedSize;
 
+    // This iteration's own App, for the cold create and its restores. Bursts share the default App.
+    const app =
+      !burst && config["app-per-attempt"].some((name) => name === p.name)
+        ? attemptApp(config.run, index)
+        : undefined;
+
+    /** Journal the App, then look it up or create it, before the create that allocates in it. */
+    const prepareApp = async (name: string) => {
+      const known = apps.get(`${p.name}/${name}`);
+
+      if (known?.appId) return known;
+      const entry = known ?? { provider: p.name, name, appId: null, sandboxes: [] };
+      apps.set(`${p.name}/${name}`, entry);
+      await persist();
+
+      if (!preparesApps(p.provider)) throw new Error(`${p.name} cannot prepare an App`);
+      const prepared = await p.provider.prepareApp(name);
+
+      if (!prepared) throw new Error(`App ${name} could not be created`);
+      entry.appId = prepared.appId;
+      await persist();
+
+      return entry;
+    };
+
     const tracked = new Proxy(p.provider, {
       get(target, key) {
         if (key === "create")
@@ -653,16 +697,26 @@ export async function runV2(
 
                 createEvidence = { settled: false, stage: "adapter-create" };
                 clockPhase = "adapter-create";
+                // Before allocation and outside create timing: the App is journaled and resolved.
+                const owner = app === undefined ? undefined : await prepareApp(app);
+
+                const request =
+                  owner === undefined
+                    ? input
+                    : { ...input, labels: { ...input.labels, [appLabel]: owner.name } };
+
                 createClock.begin();
                 adapterCreateRejected = false;
                 let info: SandboxInfo;
 
                 try {
-                  info = await target.create(input);
+                  info = await target.create(request);
                 } catch (error) {
                   adapterCreateRejected = true;
                   throw error;
                 }
+
+                owner?.sandboxes.push(info.id);
 
                 const returned = performance.now();
 
@@ -2284,7 +2338,11 @@ export async function runV2(
   }
 
   report.finishedAt = new Date().toISOString();
-  report.summaries = summarize(report.samples, config.seed);
+  report.summaries = summarize(
+    report.samples,
+    config.seed,
+    Object.fromEntries(report.providers.map((p) => [p.name, p.configuredRegion])),
+  );
   await persist();
   await save();
   await journalFiles.writeFile(

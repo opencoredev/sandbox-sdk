@@ -138,6 +138,13 @@ const schema = z.object({
   "provider-max-dollars": overrides,
   // Hard sandbox lifetime per provider, for factories that take one (Modal); see lifetime.ts.
   "lifetime-ms": overrides,
+  // Providers whose sandboxes go to one App per iteration, so a per-App billing report prices
+  // each iteration on its own (Modal; see modal-apps.ts). Each iteration creates one App.
+  "app-per-attempt": z
+    .string()
+    .default("")
+    .transform((v) => [...new Set(v.split(",").filter(Boolean))])
+    .pipe(z.array(z.enum(["modal"]))),
   "account-limits": overrides,
   "burst-cohorts": integer.max(100).default(3),
   bursts: z

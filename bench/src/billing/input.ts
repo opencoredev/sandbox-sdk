@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { z } from "zod";
 import { isMissingFile } from "../files.js";
+import { journalAppSchema } from "../modal-apps.js";
 
 const sampleSchema = z.object({
   provider: z.string(),
@@ -15,16 +16,28 @@ const sampleSchema = z.object({
 
 const resourceSchema = z.object({ provider: z.string(), id: z.string(), kind: z.string() });
 
+/** The journaled App a sandbox was created in (Modal per-attempt Apps), with its sandbox count. */
+export type OwnedApp = { name: string; appId: string | null; sandboxes: readonly string[] };
+
 export type OwnedSandbox = {
   provider: string;
   id: string;
   scenarios: Set<string>;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Null when the journal names no App: the sandbox is in the adapter's default App. */
+  app: OwnedApp | null;
 };
 
-/** Extract one object at a time from a named top-level JSON array. Memory is bounded by one row. */
-export async function* jsonObjects(path: string, key: string): AsyncGenerator<unknown> {
+/**
+ * Extract one object at a time from a named top-level JSON array. Memory is bounded by one row.
+ * With `optional`, a file without the array yields nothing; a truncated array still throws.
+ */
+export async function* jsonObjects(
+  path: string,
+  key: string,
+  { optional = false }: { optional?: boolean } = {},
+): AsyncGenerator<unknown> {
   let depth = 0,
     quoted = false,
     escaped = false,
@@ -94,6 +107,8 @@ export async function* jsonObjects(path: string, key: string): AsyncGenerator<un
     }
   }
 
+  if (optional && !found) return;
+
   if (!found || !done) throw new Error(`Missing or truncated ${key} array in ${path}`);
 }
 
@@ -119,7 +134,7 @@ export async function readRun(
     let value = owned.get(key);
 
     if (!value) {
-      value = { provider, id, scenarios: new Set(), startedAt: null, finishedAt: null };
+      value = { provider, id, scenarios: new Set(), startedAt: null, finishedAt: null, app: null };
       owned.set(key, value);
     }
 
@@ -160,13 +175,22 @@ export async function readRun(
 
   const journal = join(directory, "ownership.json");
 
-  if (await exists(journal))
+  if (await exists(journal)) {
     for await (const raw of jsonObjects(journal, "resources")) {
       const resource = resourceSchema.parse(raw);
 
       if (resource.kind === "sandbox" || resource.kind === "snapshot-source")
         add(resource.provider, resource.id);
     }
+
+    // Apps stay journaled after cleanup, so every sandbox created in one is attributed to it.
+    for await (const raw of jsonObjects(journal, "apps", { optional: true })) {
+      const app = journalAppSchema.parse(raw);
+      const owner: OwnedApp = { name: app.name, appId: app.appId, sandboxes: app.sandboxes };
+
+      for (const id of app.sandboxes) add(app.provider, id).app = owner;
+    }
+  }
 
   return [...owned.values()];
 }

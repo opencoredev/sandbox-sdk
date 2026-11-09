@@ -1,6 +1,7 @@
 import type { Sample } from "./v2-model.js";
 import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
+import { pricing } from "./pricing.js";
 import { isSizePreset, type Size } from "./v2-config.js";
 import { distribution } from "./v2-stats.js";
 
@@ -47,6 +48,24 @@ export function requestedSize(provider: string, size: Size): { cpu: number; memo
   return isSizePreset(size)
     ? (presets[provider] ?? standardPresets)[size]
     : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+}
+
+/**
+ * What a request-billed provider (Modal) bills for one sandbox: the requested size, exactly, or
+ * without a size the minimum request, a lower bound because usage above it is billed too. Null for
+ * every other provider. The guest's own view is never used.
+ */
+export function requestBilledCompute(
+  provider: string,
+  size: Size | null,
+): { compute: { cpu: number; memoryGiB: number }; bound: "exact" | "lower" } | null {
+  const billed = pricing[provider]?.requestBilled;
+
+  if (!billed) return null;
+
+  return size === null
+    ? { compute: { ...billed.minimum }, bound: "lower" }
+    : { compute: requestedSize(provider, size), bound: "exact" };
 }
 
 type AllocationRow = Pick<
@@ -114,12 +133,29 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const memoryGiB = distribution(observed.map((r) => r.memoryGiB)).p50;
   const measuredCompute = cpu === undefined || memoryGiB === null ? null : { cpu, memoryGiB };
 
-  const pricingAllocation =
-    mismatches.length || (requested.template && !requestedCompute)
+  const billed = requestBilledCompute(provider, size);
+
+  // Request-billed providers price the request whatever the guest shows (Modal's default guest
+  // shows the host's memory); every other provider prices the verified or measured allocation.
+  const pricingAllocation = mismatches.length
+    ? null
+    : billed
+      ? billed.compute
+      : requested.template && !requestedCompute
+        ? null
+        : requestedCompute && observed.length
+          ? requestedCompute
+          : measuredCompute;
+
+  /** How `pricingAllocation` relates to the bill: `lower` is a lower bound, never an estimate. */
+  const pricingBound: "exact" | "lower" | "observed" | null =
+    pricingAllocation === null
       ? null
-      : requestedCompute && observed.length
-        ? requestedCompute
-        : measuredCompute;
+      : billed
+        ? billed.bound
+        : requestedCompute && observed.length
+          ? "exact"
+          : "observed";
 
   return {
     requested,
@@ -129,6 +165,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
     verified: mismatches.length ? false : observed.length && requestedCompute ? true : null,
     mismatches,
     pricingAllocation,
+    pricingBound,
     equalSpec:
       !restoredMismatch &&
       observed.length > 0 &&

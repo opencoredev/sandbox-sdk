@@ -18,6 +18,7 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
+import { journalAppSchema, prepareJournaledApps, type JournalApp } from "./modal-apps.js";
 
 /** results.json is rewritten with updated cleanup fields; everything else is kept as read. */
 const resultsSchema = z.record(z.string(), z.json());
@@ -41,11 +42,21 @@ export async function reapRun(
   sanitize: (value: string) => string,
 ) {
   const path = join(config.out, "ownership.json");
-  let journal: { runId: string; resources: z.infer<typeof resource>[] } | null = null;
+
+  let journal: {
+    runId: string;
+    resources: z.infer<typeof resource>[];
+    apps: JournalApp[];
+  } | null = null;
 
   try {
     journal = z
-      .object({ runId: z.string(), resources: z.array(resource) })
+      .object({
+        runId: z.string(),
+        resources: z.array(resource),
+        // Older journals have no Apps: every sandbox is in the adapter's default App.
+        apps: z.array(journalAppSchema).default([]),
+      })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
     if (!isMissingFile(error)) {
@@ -147,6 +158,16 @@ export async function reapRun(
       ),
     );
 
+    // A fresh process lists only the Apps it knows: prepare every journaled one (Modal) before
+    // the listings that discover candidates and prove ownership. None is created here.
+    try {
+      await deadline(config["timeout-ms"], () =>
+        prepareJournaledApps(p.provider, journal?.apps ?? []),
+      );
+    } catch (error) {
+      errors.push(sanitize(error instanceof Error ? error.message : "App lookup failed"));
+    }
+
     try {
       for (const info of await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
@@ -171,7 +192,7 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [] };
+          journal ??= { runId: config.run, resources: [], apps: [] };
 
           if (
             !journal.resources.some(

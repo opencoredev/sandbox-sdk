@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { Json } from "../json.js";
 import type { OwnedSandbox } from "./input.js";
+import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
 
 const money = z.number().finite().nonnegative();
 
@@ -138,6 +139,15 @@ const sources = new Map<string, BillingSource>(
       delay: "unknown",
       key: "TENKI_API_KEY",
       notes: ["No billing API found; no fabricated cost."],
+    },
+    modal: {
+      source: modalBillingSource,
+      granularity: "App per hour; a sandbox alone in its App (per-attempt Apps) is priced",
+      delay: "minutes; full hours only; provisional until 30 minutes after the hour of the stop",
+      key: "MODAL_TOKEN_SECRET",
+      notes: [
+        "Modal's per-App charge before credits, reservations and the egress allowance (https://modal.com/docs/guide/billing). Sandbox tags are not in the report, so only a sandbox that is the one sandbox in its App gets a cost; others stay unavailable, never zero.",
+      ],
     },
     freestyle: {
       source: "No verified public billing endpoint",
@@ -633,6 +643,7 @@ export async function collectProvider(
   transport: Transport = http,
   offline = false,
   waitMs = 0,
+  extra: { modalReport?: ModalReport; now?: number } = {},
 ): Promise<ProviderCosts> {
   const spec = sources.get(provider) ?? {
     source: "No billing collector",
@@ -653,7 +664,10 @@ export async function collectProvider(
   };
 
   const key = env[spec.key]?.trim();
-  const supported = ["boat", "upstash", "e2b", "boxd", "superserve", "daytona"].includes(provider);
+
+  const supported = ["boat", "upstash", "e2b", "boxd", "superserve", "daytona", "modal"].includes(
+    provider,
+  );
 
   let blocked = offline
     ? "Offline mode: no billing calls made"
@@ -662,6 +676,14 @@ export async function collectProvider(
       : !key
         ? `Missing ${spec.key}; no billing call made`
         : null;
+
+  if (!blocked && provider === "modal") {
+    const charges = await collectModal(rows, { report: extra.modalReport, now: extra.now });
+    result.sandboxes.push(...charges.sandboxes);
+    result.account = charges.account;
+
+    return result;
+  }
 
   if (!blocked && provider === "daytona") {
     try {

@@ -2,10 +2,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { priceAtSize, pricing } from "./pricing.js";
+import { priceAtSize, pricing, regionMultiplier } from "./pricing.js";
 import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
-import { hourly } from "./publication-report.js";
+import { hourlyPrice } from "./publication-report.js";
 import {
   countedFailures,
   publicationTrack,
@@ -401,7 +401,9 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const rel = reliability(r.samples.filter((s) => s.provider === name));
     const price = pricing[name];
     const hw = hardware(r, name);
-    const hour = hourly(r, name);
+    const hourPrice = hourlyPrice(r, name);
+    const hour = hourPrice.usd;
+    const common = priceAtSize(name, { cpu: 4, memoryGiB: 8 });
     const allocation = allocationEvidence(r.samples, name);
 
     return {
@@ -417,7 +419,12 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       equalSpec: allocation.equalSpec,
       currency: price?.currency ?? null,
       hourly: hour,
-      commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
+      // Prices carry the source runs' region multiplier (Modal); `pricingBound` "lower" means the
+      // hourly price, and so the per-task estimate, is a lower bound, never an estimate.
+      pricingBound: hourPrice.bound,
+      pricingRegion: hourPrice.region,
+      regionMultiplier: hourPrice.multiplier,
+      commonHourly: common === null ? null : common * regionMultiplier(name, hourPrice.region),
       perVcpuHour:
         hour != null && allocation.pricingAllocation
           ? hour / allocation.pricingAllocation.cpu

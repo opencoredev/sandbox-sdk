@@ -1,5 +1,5 @@
 import { allocationEvidence } from "./allocation.js";
-import { computeHourly, pricing } from "./pricing.js";
+import { computeHourly, pricing, regionMultiplier } from "./pricing.js";
 import { distribution } from "./v2-stats.js";
 import {
   discardedRun,
@@ -65,13 +65,63 @@ function costs(r: PublicationReport) {
   return r.sources.flatMap((source) => source.lifetimeCosts);
 }
 
-export function hourly(r: PublicationReport, provider: string) {
+/**
+ * The region a provider's source runs were configured with, which its published prices carry.
+ * Source runs whose regions bill different multipliers cannot share one price, so that throws.
+ */
+export function publicationRegion(
+  r: Pick<PublicationReport, "sources">,
+  provider: string,
+): string | null {
+  const regions = [
+    ...new Set(
+      r.sources.flatMap((source) =>
+        source.providers.flatMap((p) => (p.name === provider ? [p.configuredRegion] : [])),
+      ),
+    ),
+  ];
+
+  const multipliers = new Set(regions.map((region) => regionMultiplier(provider, region)));
+
+  if (multipliers.size > 1)
+    throw new Error(
+      `${provider}: source runs were configured in regions billed at different multipliers (${regions.map((region) => region ?? "unspecified").join(", ")}); publish one region's runs`,
+    );
+
+  const named = regions.filter((region) => region !== null);
+
+  return named.length ? named.join(",") : null;
+}
+
+/**
+ * The published compute-only sandbox-hour price: the pricing allocation at list rates, times the
+ * provider's region multiplier for the source runs' region. `bound` says how it relates to the bill.
+ */
+export function hourlyPrice(r: PublicationReport, provider: string) {
   const price = pricing[provider];
+  const region = publicationRegion(r, provider);
+  const multiplier = regionMultiplier(provider, region);
+  const allocation = allocationEvidence(r.samples, provider);
+  const compute = price && allocation.pricingAllocation;
+  const base = compute ? computeHourly(price, compute) : null;
 
-  if (!price) return null;
-  const allocation = allocationEvidence(r.samples, provider).pricingAllocation;
+  return {
+    usd: base === null ? null : base * multiplier,
+    bound: base === null ? null : allocation.pricingBound,
+    region,
+    multiplier,
+  };
+}
 
-  return allocation ? computeHourly(price, allocation) : null;
+export function hourly(r: PublicationReport, provider: string) {
+  return hourlyPrice(r, provider).usd;
+}
+
+/** A price with its lower-bound label, which travels with every published figure. */
+function priced(price: ReturnType<typeof hourlyPrice>, currency: string) {
+  const amount = money(price.usd, currency);
+
+  return price.usd !== null && price.bound === "lower" ? `≥ ${amount} (lower bound)` : amount;
 }
 
 /** Summaries are looked up by provider, so one provider and track must carry one native product. */
@@ -126,7 +176,7 @@ export function headline(r: PublicationReport) {
       `${pct(rel.raw?.rate)} / ${pct(rel.excludingLimitsAndClient?.rate)}`,
       allocation.mismatches.length
         ? `Allocation mismatch: ${allocation.mismatches.join("; ")}`
-        : money(hourly(r, p), pricing[p]?.currency ?? "unknown"),
+        : priced(hourlyPrice(r, p), pricing[p]?.currency ?? "unknown"),
     ];
   });
 
@@ -248,15 +298,22 @@ function costTables(r: PublicationReport) {
     const selected = rows.filter((c) => c.provider === p);
     const currency = selected[0]?.currency ?? "unknown";
     const missing = sum(selected.map((c) => c.missing));
-    const hour = hourly(r, p);
+    const price = hourlyPrice(r, p);
+    const hour = price.usd;
     const command = summary(r, p, "command")?.stats.p50;
+    // A lower-bound price makes operations per currency unit an upper bound.
+    const efficiency = hour && command ? fmt(3600000 / command / hour, 0) : null;
 
     return [
       p,
       money(sum(selected.map((c) => c.known)), currency),
       String(missing),
-      money(hour, currency),
-      hour && command ? fmt(3600000 / command / hour, 0) : "not applicable",
+      priced(price, currency),
+      efficiency === null
+        ? "not applicable"
+        : price.bound === "lower"
+          ? `≤ ${efficiency} (upper bound)`
+          : efficiency,
       currency,
     ];
   });
@@ -425,7 +482,7 @@ export function disclosures(r: PublicationReport) {
     "Guest CPU is CPython fixed LCG iterations/s, single and all-core; all-core workers use ceil(min(nproc, quota)), capped at 64. Memory copy is 16 MiB. Disk is buffered 64 MiB sequential I/O plus 256 random 4 KiB queue-depth-1 operations; writes fsync, reads may be cached, no O_DIRECT. Runtime versions, shared CPU and cache state are confounders. MB/s is decimal; file payload is 10 MiB.",
     "Hardware tables show observed fingerprint ranges and CPU variants, including burst allocations. nproc can expose host CPUs; cgroup quota is shown separately. RAM and disk can describe a shared host filesystem or ceiling rather than dedicated allocation. Egress city/region/ASN is not a placement guarantee. All configured regions here are unspecified/provider default, unless a source table says otherwise.",
     "Host-load observations are retained per sample. High load means load1/logical CPUs >=1 or sampled host CPU busy >=90%. Overlapping samples share counters; traffic and CPU must not be summed as provider-attributable use. Collection is from the recorded client host and network only, with uncontrolled CDN and provider caches.",
-    "Sandbox-hour prices use published compute rates and provisioned template sizes, excluding disk. Tenki uses median measured CPU and usable RAM because its default allocation is undocumented. Upstash uses per-box size tiers, not a per-vCPU rate. Collection totals retain original source pricing and measured sandbox-lifetime estimates, which already include restored sandbox lifetime. Scenario allocations are not added again. Unknown billed lifetimes remain unknown; displayed subtotals cover known estimates only. Allocated CPU/RAM/disk estimates for Upstash and boxd are upper bounds. Modal default-track estimates are lower bounds: its 0.125 CPU / 128 MiB minimum request, while billed burst usage above it is not counted. Subscription minimums, credits, transfer, snapshot retention and some storage are excluded. Boat is USD 0.036/hour; boxd stays EUR, with no FX conversion or cross-currency ranking. These are estimates, not invoices.",
+    "Sandbox-hour prices use published compute rates and provisioned template sizes, excluding disk. Tenki uses median measured CPU and usable RAM because its default allocation is undocumented. Upstash uses per-box size tiers, not a per-vCPU rate. Collection totals retain original source pricing and measured sandbox-lifetime estimates, which already include restored sandbox lifetime. Scenario allocations are not added again. Unknown billed lifetimes remain unknown; displayed subtotals cover known estimates only. Allocated CPU/RAM/disk estimates for Upstash and boxd are upper bounds. Modal is priced on its requested allocation, never the guest's view, at the region multiplier of the source runs' configured region (1.15x broad, 1.75x narrow such as us-east). Modal default-track prices are lower bounds, marked ≥: its 0.125 CPU / 128 MiB minimum request, while billed burst usage above it is not counted, so its command operations per dollar are upper bounds, marked ≤. Subscription minimums, credits, transfer, snapshot retention and some storage are excluded. Boat is USD 0.036/hour; boxd stays EUR, with no FX conversion or cross-currency ranking. These are estimates, not invoices.",
     "Command operations per native currency = (3,600,000 / successful command p50 in ms) / estimated compute-only sandbox-hour price. It describes hypothetical continuous commands at that median latency, excludes setup/idle time and is not an overall score. Local's zero marginal provider charge makes this ratio undefined.",
     `${discardedRun.runId}: ${discardedRun.reason}`,
     `Sample conservation: ${r.samples.length} merged observations = ${r.inputSampleCount} included input observations across ${r.sources.length} runs. Every source results.json was compared with its samples.ndjson before merging. No cloud calls were made by the merge.`,
@@ -643,7 +700,7 @@ export function publicationHtml(r: PublicationReport) {
 <section id="scenarios"><h2>Scenario distributions</h2><p>Expand each scenario for every successful observation, the p50 and its 95% bootstrap interval. Shared axes within each chart; logarithmic scales are labelled. The network throughput metric is <strong>not comparable</strong> because of Cloudflare HTTP 429 responses and Daytona connection resets. It remains in raw data and the statistics appendix, without a chart or rank.</p><div class="columns">${charts(false)}</div></section>
 <section id="hardware"><h2>Observed hardware</h2><p>Ranges include source and burst fingerprints. Visible CPUs can exceed the cgroup quota. Disk may describe a shared filesystem. Egress location and ASN do not establish physical placement. Full kernels, runtime versions, tools and CPU flags are preserved in raw fingerprints.</p><div class="table-wrap">${table(hardwareHeaders, hardwareRows(r), "Guest fingerprints · observed variants and ranges")}</div></section>
 <section id="guest"><h2>Guest performance</h2><p>CPU iterations/s, memory copy and buffered disk throughput describe the supplied guest environment. Python versions and caches differ. All-core worker counts follow the harness quota policy; these results are not normalized per vCPU.</p><div class="columns">${charts(true)}</div></section>
-<section id="cost"><h2>Cost estimates and command efficiency</h2><p>These are marginal usage estimates, not invoices. Subtotals include known sandbox lifetimes only; unpriced lifetimes make the actual run total unknown. Restored lifetimes are already included. Estimates exclude subscription minimums, credits, transfer and retained snapshot storage. Upstash and boxd allocated-resource costs are upper bounds; Modal default-track costs are lower bounds.</p><div class="table-wrap">${table(costHeaders, cost.totals, "Per-provider estimated totals · no currency conversion")}</div><p>Command operations per native currency assumes continuous commands at the successful median latency: (3,600,000 / command p50 ms) / estimated compute-only sandbox-hour price. It excludes setup and idle time. Local has no defined ratio because its marginal provider price is zero.</p><details><summary>Estimated cost by source run</summary><div class="table-wrap">${table(perRunCostHeaders, cost.perRun, "Known lifetime subtotals and unpriced counts")}</div></details>${providers(
+<section id="cost"><h2>Cost estimates and command efficiency</h2><p>These are marginal usage estimates, not invoices. Subtotals include known sandbox lifetimes only; unpriced lifetimes make the actual run total unknown. Restored lifetimes are already included. Estimates exclude subscription minimums, credits, transfer and retained snapshot storage. Upstash and boxd allocated-resource costs are upper bounds; Modal default-track costs are lower bounds (≥) and its command operations per dollar upper bounds (≤). Prices include the configured region's multiplier.</p><div class="table-wrap">${table(costHeaders, cost.totals, "Per-provider estimated totals · no currency conversion")}</div><p>Command operations per native currency assumes continuous commands at the successful median latency: (3,600,000 / command p50 ms) / estimated compute-only sandbox-hour price. It excludes setup and idle time. Local has no defined ratio because its marginal provider price is zero.</p><details><summary>Estimated cost by source run</summary><div class="table-wrap">${table(perRunCostHeaders, cost.perRun, "Known lifetime subtotals and unpriced counts")}</div></details>${providers(
     r,
   )
     .map(
