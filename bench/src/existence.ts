@@ -347,10 +347,10 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: minted.status });
           const { token } = z.object({ token: z.string() }).parse(await minted.json());
 
-          const response = await fetch(
-            `${api}/v1/sandboxes/instances/${encodeURIComponent(id)}`,
-            { headers: { Authorization: `Bearer ${token}` }, signal },
-          );
+          const response = await fetch(`${api}/v1/sandboxes/instances/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal,
+          });
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });

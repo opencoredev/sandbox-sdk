@@ -64,9 +64,17 @@ export type BasetenProvider = Provider<BasetenNative, "size"> & {
 const sdkLabel = "sandbox-sdk";
 const keyLabel = "sandbox-sdk-key";
 const defaultImage = "baseten/ts-app:latest";
+
 /** A deleted sandbox keeps its record for a while in one of these states. */
 const gone = new Set(["DELETING", "TERMINATED"]);
 const readyPollMs = 250;
+
+/** Headers for one request: the credential, plus the team when one is set. */
+interface RequestHeaders {
+  [name: string]: string;
+  authorization: string;
+}
+
 /** Mint a new access token this long before the current one expires. */
 const tokenMarginMs = 5 * 60_000;
 
@@ -198,19 +206,21 @@ export function baseten(options: BasetenOptions = {}): BasetenProvider {
     if (token && Date.now() < token.expiresAt - tokenMarginMs) return token.value;
     minting ??= (async () => {
       const { apiKey, teamId } = config();
+      const mintHeaders: RequestHeaders = { authorization: `Bearer ${apiKey}` };
+
+      if (teamId) mintHeaders["x-team-id"] = teamId;
+
       const minted = await http.json({
         method: "POST",
         path: "/v1/token",
         auth: false,
         // Minting changes nothing a caller could double: a lost response is safe to repeat.
         readOnly: true,
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          ...(teamId ? { "x-team-id": teamId } : {}),
-        },
+        headers: mintHeaders,
         body: { scopes: ["sandboxes"] },
         signal,
       });
+
       const value = field(minted, "token"),
         expires = field(minted, "expires_at");
 
@@ -232,10 +242,13 @@ export function baseten(options: BasetenOptions = {}): BasetenProvider {
   const credentials = async (context: { signal: AbortSignal }) => {
     const { teamId } = config();
 
-    return {
-      Authorization: `Bearer ${await accessToken(context.signal)}`,
-      ...(teamId ? { "X-Team-Id": teamId } : {}),
+    const headers: RequestHeaders = {
+      authorization: `Bearer ${await accessToken(context.signal)}`,
     };
+
+    if (teamId) headers["x-team-id"] = teamId;
+
+    return headers;
   };
 
   // A 401 means the token expired or was revoked: drop it, and the retry mints a new one.
@@ -316,11 +329,13 @@ export function baseten(options: BasetenOptions = {}): BasetenProvider {
         path: "/v1/sandboxes/instances",
         query: { cursor, limit: 100 },
       });
+
       const items = field(raw, "items");
 
       if (!Array.isArray(items))
         throw failure("Baseten returned a sandbox list that is not an array");
       all.push(...items.map((item) => parseInfo(item)));
+
       const pagination = field(raw, "pagination"),
         next = field(pagination, "cursor");
 
@@ -591,6 +606,7 @@ export function baseten(options: BasetenOptions = {}): BasetenProvider {
           ...sandbox(id),
           body: { port, public: isPublic, create_if_not_exists: true },
         });
+
         const url = field(preview, "url"),
           previewName = field(preview, "name");
 
@@ -607,6 +623,7 @@ export function baseten(options: BasetenOptions = {}): BasetenProvider {
           sandboxId: id,
           body: { expires_at: new Date(expiresAt).toISOString() },
         });
+
         const value = field(minted, "token");
 
         if (!isString(value) || !value)
