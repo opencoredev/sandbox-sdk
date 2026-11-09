@@ -146,6 +146,23 @@ export const pricing: PriceTable = {
     notes:
       "Per-second, no minimum. Separate persistent storage $0.000000076/GiB-second excluded. Credits excluded.",
   },
+  vercel: {
+    ...base,
+    // https://vercel.com/docs/sandbox/pricing (updated 2026-09-10), Pro, iad1. Active CPU is CPU time
+    // summed over vCPUs, so pricing the whole allocation is an upper bound; memory is the allocation.
+    cpuSecond: 0.128 / 3600,
+    memoryGiBSecond: 0.0212 / 3600,
+    diskGiBSecond: 0,
+    perSandbox: 0.6 / 1_000_000,
+    // "Billed in 1 minute minimum increments" (memory): read as whole minutes, the dearer reading.
+    minimumSeconds: 60,
+    incrementSeconds: 60,
+    retrieved: "2026-11-09",
+    offeredSizes: [1, 2, 4, 6, 8].map((cpu) => ({ cpu, memoryGiB: cpu * 2 })),
+    source: "https://vercel.com/docs/sandbox/pricing",
+    notes:
+      "Pro, iad1: Active CPU $0.128 per vCPU-hour of CPU time (I/O wait not billed), provisioned memory $0.0212 per GB-hour of wall time in 1-minute minimum increments, $0.60 per million creations. Allocation-priced estimates bound CPU from above. $20 monthly Pro credit, data transfer (Flat Rate CDN on Pro) and snapshot storage ($0.08/GB-month) excluded.",
+  },
   local: {
     ...base,
     cpuSecond: 0,
@@ -196,6 +213,7 @@ export const defaultCompute: ComputeTable = {
   boxd: { cpu: 2, memoryGiB: 8 },
   freestyle: { cpu: 4, memoryGiB: 8 },
   superserve: { cpu: 1, memoryGiB: 1 },
+  vercel: { cpu: 2, memoryGiB: 4 },
 };
 
 export function estimateCost(

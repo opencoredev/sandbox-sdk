@@ -28,6 +28,12 @@ const presets: SizePresets = {
     medium: { cpu: 2, memoryGiB: 8 },
     large: { cpu: 4, memoryGiB: 16 },
   },
+  // The adapter's presets; Vercel gives 2 GB of memory per vCPU.
+  vercel: {
+    small: { cpu: 1, memoryGiB: 2 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
 };
 
 const standardPresets = {

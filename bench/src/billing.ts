@@ -93,6 +93,7 @@ export async function collectBilling(options: {
       options.transport,
       options.offline,
       options.waitMs,
+      join(options.report, "usage"),
     );
 
     const byId = new Map(collected.sandboxes.map((r) => [r.id, r.cost]));

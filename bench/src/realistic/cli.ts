@@ -18,7 +18,7 @@ import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { OwnedSandbox } from "../billing/input.js";
 import type { Json } from "../json.js";
-import { collectProvider } from "../billing/providers.js";
+import { collectProvider, vercelMeter } from "../billing/providers.js";
 import {
   attemptBillingSchema,
   costedAttempts,
@@ -72,7 +72,15 @@ const defaultArtifactDirs = [
 
 const fx = { eurToUsd: 1.08, date: "2026-11-05" } as const;
 
-const heldOpenProviders = ["e2b", "daytona", "upstash", "upstash-ephemeral", "boat", "boxd"];
+const heldOpenProviders = [
+  "e2b",
+  "daytona",
+  "upstash",
+  "upstash-ephemeral",
+  "boat",
+  "boxd",
+  "vercel",
+];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
 const heldOpenSlots: SlotSpec[] = [
@@ -184,9 +192,14 @@ async function spentUSD(path: string) {
   );
 }
 
-/** Boat reports a sandbox's usage only while it exists; the billing collector reads it then. */
+/**
+ * Boat reports a sandbox's usage only while it exists, and Vercel only between the end of a session
+ * and deletion; the billing collector reads it then. Vercel's sandbox is stopped first.
+ */
 function captureUsage(adapter: string, usageDir: string) {
   return async (id: string) => {
+    if (adapter === "vercel") await vercelMeter.stop(id);
+
     const collected = await collectProvider(
       adapter,
       [
@@ -267,7 +280,7 @@ async function loadSlotProvider(
     },
   };
 
-  if (setup.adapter === "boat" && usageDir)
+  if ((setup.adapter === "boat" || setup.adapter === "vercel") && usageDir)
     entry.beforeDestroy = captureUsage(setup.adapter, usageDir);
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.

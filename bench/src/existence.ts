@@ -10,6 +10,7 @@ import type { TenkiSandbox } from "@tenkicloud/sandbox";
 import type { Box } from "@upstash/box";
 import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
+import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -130,6 +131,10 @@ export interface NativeModules {
     ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
   };
   "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
+  "@vercel/sandbox": {
+    Sandbox: Pick<typeof VercelSandbox, "get">;
+    Snapshot: Pick<typeof VercelSnapshot, "get">;
+  };
 }
 
 /** The installed SDKs. Each must satisfy its `NativeModules` entry, which `sdk` checks. */
@@ -142,6 +147,7 @@ interface InstalledModules {
   freestyle: typeof import("freestyle");
   "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
   "@superserve/sdk": typeof import("@superserve/sdk");
+  "@vercel/sandbox": typeof import("@vercel/sandbox");
 }
 
 type NativePackage = keyof NativeModules;
@@ -327,6 +333,14 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
           return nativeInfo.parse(await response.json());
+        }
+
+        case "vercel": {
+          // Sandbox.get only reads: it resumes a stopped sandbox only when asked to.
+          const { Sandbox } = await nativeModules.load("@vercel/sandbox");
+          const box = await Sandbox.get({ name: id, resume: false, signal });
+
+          return nativeInfo.parse({ id: box.name, status: box.status });
         }
 
         case "local": {

@@ -49,6 +49,7 @@ import {
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
+import { captureVercelMeter } from "./billing/providers.js";
 import { failureOutcome } from "./failure.js";
 
 export const scenarioNames = [
@@ -889,9 +890,14 @@ export async function runV2(
       return sample;
     };
 
-    function measureDestroy(scenario: string, id: string) {
+    async function measureDestroy(scenario: string, id: string) {
       const clock = new PhaseClock();
       const phases: Record<string, number> = {};
+
+      // Vercel reports a sandbox's usage only once its session stops and not after deletion, so
+      // the cost suite stops it and saves the meter first. A failed read leaves its cost unknown.
+      if (costSuite && p.name === "vercel")
+        await captureVercelMeter(id, join(runDir, "usage")).catch(() => null);
 
       return measure(
         scenario,
