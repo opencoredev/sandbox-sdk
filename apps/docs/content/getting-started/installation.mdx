@@ -1,9 +1,9 @@
 ---
 title: Install
-description: Install Sandbox SDK, plus the provider SDK for Vercel, Upstash, Railway, Tenki, boxd, or agentOS if you use one. Requirements, optional packages, and where your keys must stay.
+description: Install Sandbox SDK, plus the provider SDK for Vercel, Modal, Upstash, Railway, Tenki, boxd, or agentOS if you use one. Requirements, optional packages, and where your keys must stay.
 ---
 
-Sandbox SDK is one npm package. The core has no runtime dependencies. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else, because their adapters call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS need that provider's official SDK installed next to it, and you only install the ones you use.
+Sandbox SDK is one npm package. The core has no runtime dependencies. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else, because their adapters call the provider's HTTP API directly. Vercel, Modal, Upstash Box, Railway, Tenki, boxd, and agentOS need that provider's official SDK installed next to it, and you only install the ones you use.
 
 ## 1. Install the package
 
@@ -95,6 +95,42 @@ bun add @vercel/sandbox
 Needs `@vercel/sandbox` 3.8 or later. Inside a Vercel deployment it authenticates with OIDC. Elsewhere, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`.
 
 </ProviderTab>
+<ProviderTab provider="modal">
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install modal
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add modal
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add modal
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add modal
+```
+
+  </Tab>
+</Tabs>
+
+Needs `modal` 0.11.1 or later, Modal's official JavaScript SDK. Set `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, or run `modal setup` to write `~/.modal.toml`.
+
+</ProviderTab>
 <ProviderTab provider="daytona">
 
 No package. `daytona()` calls Daytona's API over HTTP. Set `DAYTONA_API_KEY` on your server.
@@ -148,13 +184,13 @@ A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either fo
 
 ## What the package exports
 
-| Import                                                                                                                                                        | What it gives you                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `@opencoredev/sandbox-sdk`                                                                                                                                    | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
-| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each                                                                          |
-| `/ai`, `/mastra`, `/openai`                                                                                                                                   | `sandboxTools` for each agent framework                                                            |
-| `/tools`                                                                                                                                                      | The framework-neutral tool definitions and their Zod schemas                                       |
-| `/provider`                                                                                                                                                   | The adapter contract, for [writing a provider](/providers/custom)                                  |
-| `/testing`                                                                                                                                                    | `runConformance`, the suite every provider passes                                                  |
+| Import                                                                                                                                                                  | What it gives you                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `@opencoredev/sandbox-sdk`                                                                                                                                              | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
+| `/local`, `/agentos`, `/e2b`, `/vercel`, `/modal`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each                                                                          |
+| `/ai`, `/mastra`, `/openai`                                                                                                                                             | `sandboxTools` for each agent framework                                                            |
+| `/tools`                                                                                                                                                                | The framework-neutral tool definitions and their Zod schemas                                       |
+| `/provider`                                                                                                                                                             | The adapter contract, for [writing a provider](/providers/custom)                                  |
+| `/testing`                                                                                                                                                              | `runConformance`, the suite every provider passes                                                  |
 
 Next: the [Quickstart](/getting-started/quickstart).

@@ -9,6 +9,7 @@ const templateKeys = new Map([
   ["freestyle", "snapshotId"],
   ["tenki", "image"],
   ["boxd", "image"],
+  ["modal", "image"],
   ["local", "image"],
 ]);
 
@@ -57,12 +58,15 @@ const credentials = new Map([
   ["tenki", ["TENKI_API_KEY"]],
   ["boxd", ["BOXD_API_KEY"]],
   ["freestyle", ["FREESTYLE_API_KEY"]],
+  ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
 ]);
 
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
   ["daytona", "DAYTONA_TARGET"],
+  // The adapter reads it too, and pins sandboxes there at Modal's region price multiplier.
+  ["modal", "MODAL_SANDBOX_REGION"],
 ]);
 
 /** The members every adapter has. Methods are checked to be functions, not their signatures. */

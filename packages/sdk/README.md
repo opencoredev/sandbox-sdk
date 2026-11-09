@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk
 ```
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -98,6 +98,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [E2B](https://sandbox-sdk.app/docs/providers/e2b)              | `/e2b`        | `e2b()`                 | `E2B_API_KEY`                                                                   |
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)      | `/daytona`    | `daytona()`             | `DAYTONA_API_KEY` (optional `DAYTONA_API_URL`, `DAYTONA_TARGET`)                |
 | [Vercel](https://sandbox-sdk.app/docs/providers/vercel)        | `/vercel`     | `vercel()`              | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` |
+| [Modal](https://sandbox-sdk.app/docs/providers/modal)          | `/modal`      | `modal()`               | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (optional `MODAL_SANDBOX_REGION`)        |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           |
