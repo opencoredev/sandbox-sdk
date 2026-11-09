@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
-import { resources, type Fingerprint } from "../src/fingerprint.js";
+import { resources, verifyRestoredResources, type Fingerprint } from "../src/fingerprint.js";
 import { estimateCost, pricing } from "../src/pricing.js";
 import { pricedResources, reservationResources } from "../src/billed-resources.js";
 import { lifetimeOptions } from "../src/lifetime.js";
@@ -420,4 +420,18 @@ it("resolves Modal's region once, pins the adapter to it, and refuses conflictin
     process.argv = argv;
     vi.unstubAllEnvs();
   }
+});
+
+it("an unsized Modal restore on a host with other memory is not a mismatch, but a CPU change still is", () => {
+  const source = defaultTrackFingerprint(1024);
+  const restored = defaultTrackFingerprint(203);
+
+  expect(verifyRestoredResources(source, restored).mismatches).toEqual(["memoryGiB"]);
+  expect(verifyRestoredResources(source, restored, { compareMemory: false })).toMatchObject({
+    matches: true,
+    mismatches: [],
+  });
+  expect(
+    verifyRestoredResources(source, { ...restored, nproc: 2 }, { compareMemory: false }).mismatches,
+  ).toEqual(["cpu"]);
 });

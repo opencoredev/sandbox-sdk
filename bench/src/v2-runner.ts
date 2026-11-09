@@ -1517,6 +1517,8 @@ export async function runV2(
                       );
                       restoreDetails.verification = verifyRestoredResources(sourceFingerprint, fp, {
                         compareDisk: p.name !== "boat",
+                        // An unsized Modal sandbox reports its host's memory, which differs host to host.
+                        compareMemory: !(p.name === "modal" && allocation.requestedSize === null),
                       });
 
                       if (restoreDetails.verification.matches === false)
