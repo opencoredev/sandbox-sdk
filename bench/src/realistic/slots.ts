@@ -381,6 +381,15 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
           },
         };
 
+        // Modal: the attempt's App journals the create's outcome and the confirmed stop.
+        environment.onCreateFailed = async (_, cause) => {
+          await app?.failed(cause);
+        };
+
+        environment.afterDestroy = async (_, id) => {
+          await app?.destroyed(id);
+        };
+
         if (plan.outputDir) environment.outputDir = plan.outputDir;
         const capture = entry.beforeDestroy;
 

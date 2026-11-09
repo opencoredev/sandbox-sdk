@@ -81,6 +81,10 @@ export interface AttemptEnvironment {
    * sandbox exists (Boat). Returns the file it wrote, which the record lists in usageFiles.
    */
   beforeDestroy?(provider: string, id: string): Promise<string | null>;
+  /** Called when the create threw, so the caller can journal the failed allocation. */
+  onCreateFailed?(provider: string, cause: unknown): Promise<void>;
+  /** Called after each deletion returns, outside the destroy span (Modal's confirmed stop). */
+  afterDestroy?(provider: string, id: string): Promise<void>;
 }
 
 export class SlotTimeout extends Error {}
@@ -298,6 +302,9 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+
+      if (!box) await environment.onCreateFailed?.(plan.provider.name, error).catch(() => {});
+
       completion = {
         kind: "incomplete",
         reason: signal.aborted ? "slot-timeout" : box ? "error" : "create-failed",
@@ -335,6 +342,8 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
             return false;
           }
         });
+
+        await environment.afterDestroy?.(plan.provider.name, target.id).catch(() => {});
       }
     }
 

@@ -32,10 +32,18 @@ import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
 import { describeIneligibility, eligibility, type CostSourceAudit } from "../cost/eligibility.js";
 import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
-import { prepareJournaledApps, type JournalApp } from "../modal-apps.js";
+import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
 import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
 import { loadProvider, providerRegion } from "../providers.js";
-import { appJournalFile, prepareAttemptApp, readAppJournal } from "./apps.js";
+import {
+  appJournalFile,
+  ownedApps,
+  persistApp,
+  prepareAttemptApp,
+  readAppJournal,
+  readStops,
+  stopJournalFile,
+} from "./apps.js";
 import { shuffle } from "../v2-stats.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
 import { systemClock } from "./gaps.js";
@@ -219,6 +227,7 @@ function captureUsage(adapter: string, usageDir: string) {
           scenarios: new Set(["pre-destroy"]),
           startedAt: null,
           finishedAt: null,
+          confirmedStopAt: null,
           app: null,
         },
       ],
@@ -258,7 +267,8 @@ async function loadSlotProvider(
   track: TrackId,
   slotMs: number,
   usageDir?: string,
-  appJournal?: string,
+  /** The run's output directory, which holds the App journal and confirmed stops (Modal). */
+  journalDir?: string,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -302,9 +312,15 @@ async function loadSlotProvider(
 
   // Modal bills per App: each attempt gets its own App, journaled before allocation (apps.ts).
   if (setup.adapter === "modal") {
-    if (!appJournal) throw new Error("Modal attempts need an App journal");
+    if (!journalDir) throw new Error("Modal attempts need an App journal");
     const { provider } = loaded;
-    entry.beforeAttempt = (attemptId) => prepareAttemptApp(appJournal, provider, attemptId);
+
+    const paths = {
+      apps: join(journalDir, appJournalFile),
+      stops: join(journalDir, stopJournalFile),
+    };
+
+    entry.beforeAttempt = (attemptId) => prepareAttemptApp(paths, provider, attemptId);
   }
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
@@ -381,13 +397,7 @@ async function run(args: string[]) {
     for (const setup of setups) {
       const slotMs = (manifest.profiles["fix-and-test"]?.slotTimeoutMs ?? 0) + longest;
 
-      const result = await loadSlotProvider(
-        setup,
-        track,
-        slotMs,
-        join(out, "usage"),
-        join(out, appJournalFile),
-      );
+      const result = await loadSlotProvider(setup, track, slotMs, join(out, "usage"), out);
 
       if (result.kind === "skipped")
         await note({ kind: "provider-skipped", provider: setup.name, track, reason: result.note });
@@ -504,12 +514,7 @@ async function run(args: string[]) {
     }
   } finally {
     // Always, after a budget stop or an error too: nothing this run made is left running.
-    await sweepProviders(
-      values.run,
-      [...loaded.values()],
-      note,
-      await readAppJournal(join(out, appJournalFile)),
-    );
+    await sweepProviders(values.run, [...loaded.values()], note, out);
   }
 }
 
@@ -517,9 +522,12 @@ export async function sweepProviders(
   runId: string,
   providers: readonly SlotProvider[],
   note: (entry: RunNote) => Promise<void>,
-  apps: readonly JournalApp[],
+  journalDir: string,
 ) {
   const seen = new Set<Provider>();
+  const journal = join(journalDir, appJournalFile);
+  const apps = await readAppJournal(journal);
+  const changed = new Set<(typeof apps)[number]>();
 
   for (const entry of providers) {
     if (seen.has(entry.provider)) continue;
@@ -528,9 +536,18 @@ export async function sweepProviders(
     try {
       // Modal lists only the Apps this process knows: prepare every journaled one first.
       await prepareJournaledApps(entry.provider, apps);
-      const left = await entry.provider.list({ "sandbox-bench-run": runId });
 
-      for (const item of left) {
+      // Restores whose setup never finished stay tagged pending and out of list() (Modal).
+      const left = [
+        ...(await entry.provider.list({ "sandbox-bench-run": runId })),
+        ...(await pendingForRun(entry.provider, runId)),
+      ];
+
+      for (const item of new Map(left.map((found) => [found.id, found])).values()) {
+        // A sandbox whose create response was lost joins its App's journal entry.
+        for (const app of apps)
+          if (reconcileDiscovered([app], entry.provider.name, item)) changed.add(app);
+
         const removed = await entry.provider
           .destroy(item.id)
           .then(() => true)
@@ -539,7 +556,11 @@ export async function sweepProviders(
         await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
       }
 
-      await note({ kind: "swept", provider: entry.name, found: left.length });
+      await note({
+        kind: "swept",
+        provider: entry.name,
+        found: new Set(left.map((x) => x.id)).size,
+      });
     } catch (error) {
       await note({
         kind: "sweep-failed",
@@ -548,6 +569,8 @@ export async function sweepProviders(
       });
     }
   }
+
+  for (const app of changed) await persistApp(journal, app);
 }
 
 async function sweep(args: string[]) {
@@ -561,8 +584,8 @@ async function sweep(args: string[]) {
   });
 
   if (!values.out || !values.run?.length) throw new Error("realistic sweep needs --out and --run");
-  const notesPath = join(resolve(values.out), "notes.jsonl");
-  const apps = await readAppJournal(join(resolve(values.out), appJournalFile));
+  const out = resolve(values.out);
+  const notesPath = join(out, "notes.jsonl");
 
   const note = (entry: RunNote) =>
     appendFile(notesPath, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
@@ -577,18 +600,12 @@ async function sweep(args: string[]) {
       const providers: SlotProvider[] = [];
 
       for (const setup of setups) {
-        const loaded = await loadSlotProvider(
-          setup,
-          track,
-          0,
-          undefined,
-          join(resolve(values.out ?? "."), appJournalFile),
-        );
+        const loaded = await loadSlotProvider(setup, track, 0, undefined, out);
 
         if (loaded.kind === "ready") providers.push(loaded.entry);
       }
 
-      await sweepProviders(runId, providers, note, apps);
+      await sweepProviders(runId, providers, note, out);
     }
 
   process.stdout.write(`Swept; see ${notesPath}\n`);
@@ -607,14 +624,9 @@ async function billing(args: string[]) {
   const withSandbox = records.filter((r) => r.sandboxIds.length > 0);
 
   // Each journaled App's sandboxes, for the per-App collector (Modal).
-  const appOf = new Map(
-    (await readAppJournal(join(out, appJournalFile))).flatMap((app) =>
-      app.sandboxes.map((id) => [
-        `${app.provider}/${id}`,
-        { name: app.name, appId: app.appId, sandboxes: app.sandboxes },
-      ]),
-    ),
-  );
+  const appOf = ownedApps(await readAppJournal(join(out, appJournalFile)));
+  // A Modal charge settles only after its sandbox's confirmed stop.
+  const stops = await readStops(join(out, stopJournalFile));
 
   const byAdapter = new Map<string, AttemptRecord[]>();
 
@@ -653,6 +665,7 @@ async function billing(args: string[]) {
         startedAt: new Date(record.startedAt).toISOString(),
         finishedAt: new Date(record.endedAt).toISOString(),
         // Modal prices a sandbox from its App's charge, when it is the App's only sandbox.
+        confirmedStopAt: stops.get(`${adapter}/${id}`) ?? null,
         app: appOf.get(`${adapter}/${id}`) ?? null,
       })),
     );

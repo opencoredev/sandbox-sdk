@@ -1,12 +1,28 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { appLabel, realisticAttemptApp, type JournalApp } from "../../src/modal-apps.js";
+import {
+  allocationLabel,
+  appLabel,
+  journalApp,
+  realisticAttemptApp,
+  type JournalApp,
+} from "../../src/modal-apps.js";
 import { estimateCost } from "../../src/pricing.js";
-import { prepareAttemptApp, readAppJournal } from "../../src/realistic/apps.js";
+import { destroyTimings } from "../../src/providers.js";
+import {
+  appJournalFile,
+  ownedApps,
+  prepareAttemptApp,
+  readAppJournal,
+  readStops,
+  stopJournalFile,
+  type AttemptApp,
+} from "../../src/realistic/apps.js";
 import { attemptBudget, sweepProviders } from "../../src/realistic/cli.js";
 import { ProviderTrace, systemClock } from "../../src/realistic/gaps.js";
 import type { AttemptRecord } from "../../src/realistic/record.js";
@@ -19,21 +35,42 @@ import {
 } from "../../src/realistic/slots.js";
 import { buildFixture, type Fixture } from "./fixture.js";
 
-let dir: string;
+let root: string;
 let fixture: Fixture;
+let count = 0;
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "rw-modal-apps-"));
+  root = await mkdtemp(join(tmpdir(), "rw-modal-apps-"));
   fixture = await buildFixture();
 });
 
 afterAll(async () => {
   await fixture.cleanup();
-  await rm(dir, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
 });
 
-/** A memory provider named modal with Modal's `prepareApp`, recording every call in `log`. */
-function modalLike(log: string[], journal?: string, appId: string | null = "ap-1"): Provider {
+/** A fresh output directory's journal paths. */
+async function paths() {
+  const dir = await mkdtemp(join(root, `run-${count++}-`));
+
+  return { dir, apps: join(dir, appJournalFile), stops: join(dir, stopJournalFile) };
+}
+
+async function journalLines(path: string): Promise<JournalApp[]> {
+  return (await readFile(path, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+}
+
+interface Fake {
+  listed?: { id: string; labels: Record<string, string> }[];
+  pending?: { id: string; labels: Record<string, string> }[];
+  appId?: string | null;
+}
+
+/** A memory provider named modal with Modal's App helpers, recording every call in `log`. */
+function modalLike(log: string[], journal: string | null, fake: Fake = {}): Provider {
   const base = memory();
 
   return Object.assign(Object.create(base), {
@@ -42,73 +79,151 @@ function modalLike(log: string[], journal?: string, appId: string | null = "ap-1
       // The journal line must already exist when Modal is asked for the App.
       const lines = journal ? (await readFile(journal, "utf8")).trim().split("\n") : [];
       log.push(`prepare:${name}:${options?.createIfMissing ?? true}:journaled=${lines.length}`);
+      const appId = fake.appId === undefined ? "ap-1" : fake.appId;
 
       return appId === null ? null : { name, appId };
     },
     list: async (labels?: Record<string, string>) => {
       log.push(`list:${JSON.stringify(labels ?? {})}`);
 
-      return [];
+      return (fake.listed ?? []).map((item) => ({ ...item, status: "running" }));
+    },
+    listPending: async () => {
+      log.push("pending");
+
+      return fake.pending ?? [];
+    },
+    destroy: async (id: string) => {
+      log.push(`destroy:${id}`);
     },
   });
 }
 
+const slot = {
+  id: "fat-same",
+  profile: "fix-and-test",
+  track: "same-machine",
+  variant: "headline",
+} as const;
+
 describe("realistic per-attempt Modal Apps", () => {
-  it("journals the App before resolving it, then its ID, then each sandbox", async () => {
-    const journal = join(dir, "journal-order.jsonl");
+  it("journals the App, its ID and the submitted create before allocating, then the sandbox", async () => {
+    const at = await paths();
     const log: string[] = [];
+    const attemptId = "rw-1-b0-s0-fat-same-modal";
 
-    const app = await prepareAttemptApp(
-      journal,
-      modalLike(log, journal),
-      "rw-1-b0-s0-fat-same-modal",
-    );
+    const app = await prepareAttemptApp(at, modalLike(log, at.apps), attemptId);
 
-    const name = realisticAttemptApp("rw-1-b0-s0-fat-same-modal");
+    const name = realisticAttemptApp(attemptId);
+    const allocation = app.labels[allocationLabel] ?? "";
 
     expect(log).toEqual([`prepare:${name}:true:journaled=1`]);
-    expect(app.labels).toEqual({ [appLabel]: name });
-    await app.created("sb-1");
-
-    const lines = (await readFile(journal, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-
-    expect(lines).toEqual([
-      { provider: "modal", name, appId: null, sandboxes: [] },
-      { provider: "modal", name, appId: "ap-1", sandboxes: [] },
-      { provider: "modal", name, appId: "ap-1", sandboxes: ["sb-1"] },
-    ]);
-    expect(await readAppJournal(journal)).toEqual([
-      { provider: "modal", name, appId: "ap-1", sandboxes: ["sb-1"] },
-    ]);
-  });
-
-  it("fails before allocation when Modal returns no App, leaving the journaled name", async () => {
-    const journal = join(dir, "journal-null.jsonl");
-
-    await expect(
-      prepareAttemptApp(journal, modalLike([], journal, null), "rw-1-b0-s1-build-same-modal"),
-    ).rejects.toThrow(/could not be created/);
-    expect(await readAppJournal(journal)).toEqual([
+    expect(app.labels).toEqual({ [appLabel]: name, [allocationLabel]: allocation });
+    expect(await journalLines(at.apps)).toEqual([
+      { provider: "modal", name, appId: null, sandboxes: [], allocations: [] },
       {
         provider: "modal",
-        name: realisticAttemptApp("rw-1-b0-s1-build-same-modal"),
-        appId: null,
+        name,
+        appId: "ap-1",
         sandboxes: [],
+        allocations: [{ id: allocation, state: "submitted" }],
+      },
+    ]);
+
+    await app.created("sb-1");
+
+    expect(await readAppJournal(at.apps)).toEqual([
+      {
+        provider: "modal",
+        name,
+        appId: "ap-1",
+        sandboxes: ["sb-1"],
+        allocations: [{ id: allocation, state: "allocated", sandboxId: "sb-1" }],
       },
     ]);
   });
 
-  it("reads a missing journal as no Apps", async () => {
-    expect(await readAppJournal(join(dir, "absent.jsonl"))).toEqual([]);
+  it("fails before allocation when Modal returns no App, leaving the journaled name", async () => {
+    const at = await paths();
+    const attemptId = "rw-1-b0-s1-build-same-modal";
+
+    await expect(
+      prepareAttemptApp(at, modalLike([], at.apps, { appId: null }), attemptId),
+    ).rejects.toThrow(/could not be created/);
+    expect(await readAppJournal(at.apps)).toEqual([
+      journalApp("modal", realisticAttemptApp(attemptId)),
+    ]);
   });
 
-  it("prepares the App before the attempt starts, labels the create and journals the sandbox", async () => {
+  it("keeps a failed create ambiguous unless Modal definitively refused it", async () => {
+    const at = await paths();
+    const lost = await prepareAttemptApp(at, modalLike([], at.apps), "rw-2-b0-s0-lost-modal");
+    const refused = await prepareAttemptApp(at, modalLike([], at.apps), "rw-2-b0-s1-refused-modal");
+
+    await lost.failed(new Error("socket hang up"));
+    await refused.failed(new SandboxError("Quota exceeded", { code: "quota", provider: "modal" }));
+
+    const owned = await readAppJournal(at.apps);
+
+    expect(owned.map((app) => app.allocations.map((entry) => entry.state))).toEqual([
+      ["submitted"],
+      ["rejected"],
+    ]);
+
+    // The billing view: an ambiguous create keeps the App's charge unattributable.
+    const views = owned.map((app) =>
+      ownedApps([{ ...app, sandboxes: ["sb-x"] }]).get("modal/sb-x"),
+    );
+
+    expect(views.map((view) => view?.ambiguous)).toEqual([1, 0]);
+  });
+
+  it("journals the confirmed stop after destroy, and nothing when the stop was not confirmed", async () => {
+    const at = await paths();
+    const app = await prepareAttemptApp(at, modalLike([], at.apps), "rw-3-b0-s0-fat-same-modal");
+
+    destroyTimings.set("modal/sb-stopped", {
+      sandboxId: "sb-stopped",
+      requestMs: 120,
+      stoppedMs: 900,
+    });
+    destroyTimings.set("modal/sb-unconfirmed", {
+      sandboxId: "sb-unconfirmed",
+      requestMs: null,
+      stoppedMs: null,
+    });
+    await app.destroyed("sb-stopped");
+    await app.destroyed("sb-unconfirmed");
+    await app.destroyed("sb-never-destroyed");
+
+    const stops = await readStops(at.stops);
+
+    expect([...stops.keys()]).toEqual(["modal/sb-stopped"]);
+    expect(Number.isFinite(Date.parse(stops.get("modal/sb-stopped") ?? ""))).toBe(true);
+    expect(destroyTimings.has("modal/sb-stopped")).toBe(false);
+  });
+
+  it("reads a missing journal and missing stops as empty", async () => {
+    expect(await readAppJournal(join(root, "absent.jsonl"))).toEqual([]);
+    expect((await readStops(join(root, "absent-stops.jsonl"))).size).toBe(0);
+  });
+
+  it("prepares the App before the attempt starts, labels the create, journals outcome and stop", async () => {
     const log: string[] = [];
     const records: AttemptRecord[] = [];
-    const created: string[] = [];
+
+    const tracked: AttemptApp = {
+      labels: {},
+      created: async (id) => {
+        log.push(`created:${id}`);
+      },
+      failed: async () => {
+        log.push("failed");
+      },
+      destroyed: async (id) => {
+        log.push(`destroyed:${id}`);
+      },
+    };
 
     const entry: SlotProvider = {
       name: "modal",
@@ -119,24 +234,17 @@ describe("realistic per-attempt Modal Apps", () => {
       beforeAttempt: async (attemptId) => {
         log.push(`before:${attemptId}`);
 
-        return {
-          labels: { [appLabel]: realisticAttemptApp(attemptId) },
-          created: async (id) => {
-            created.push(id);
-          },
-        };
+        return { ...tracked, labels: { [appLabel]: realisticAttemptApp(attemptId) } };
       },
     };
 
-    const report = await runBatch({
+    await runBatch({
       runId: "rw-apps",
       batch: 0,
       seed: 20261105,
       manifest: fixture.manifest,
       manifestSha256: null,
-      slots: [
-        { id: "fat-same", profile: "fix-and-test", track: "same-machine", variant: "headline" },
-      ],
+      slots: [slot],
       providers: [entry],
       clock: systemClock,
       blobs: fixture.blobs,
@@ -147,6 +255,8 @@ describe("realistic per-attempt Modal Apps", () => {
       attempt: async (plan, environment) => {
         log.push(`attempt:${plan.attemptId}:${plan.labels?.[appLabel] ?? "no label"}`);
         await environment.onSandbox?.(plan.provider.name, "sb-9");
+        await environment.onCreateFailed?.(plan.provider.name, new Error("second create"));
+        await environment.afterDestroy?.(plan.provider.name, "sb-9");
 
         const record = emptyRecord(
           { ...plan, provider: plan.provider.name },
@@ -165,12 +275,13 @@ describe("realistic per-attempt Modal Apps", () => {
 
     const attemptId = records[0]?.attemptId ?? "";
 
-    expect(report).toBeDefined();
     expect(log).toEqual([
       `before:${attemptId}`,
       `attempt:${attemptId}:${realisticAttemptApp(attemptId)}`,
+      "created:sb-9",
+      "failed",
+      "destroyed:sb-9",
     ]);
-    expect(created).toEqual(["sb-9"]);
   });
 
   it("records an attempt whose App cannot be prepared as an error with no sandbox", async () => {
@@ -183,9 +294,7 @@ describe("realistic per-attempt Modal Apps", () => {
       seed: 20261105,
       manifest: fixture.manifest,
       manifestSha256: null,
-      slots: [
-        { id: "fat-same", profile: "fix-and-test", track: "same-machine", variant: "headline" },
-      ],
+      slots: [slot],
       providers: [
         {
           name: "modal",
@@ -217,18 +326,38 @@ describe("realistic per-attempt Modal Apps", () => {
     });
   });
 
-  it("prepares every journaled App, without creating any, before the sweep lists", async () => {
+  it("prepares journaled Apps, reconciles listed and pending sandboxes, removes them, persists", async () => {
+    const at = await paths();
     const log: string[] = [];
-    const provider = modalLike(log);
+    const run = "rw-sweep";
 
-    const apps: JournalApp[] = [
-      { provider: "modal", name: "sandbox-bench-rw-a", appId: "ap-a", sandboxes: ["sb-a"] },
-      { provider: "modal", name: "sandbox-bench-rw-b", appId: null, sandboxes: [] },
-      { provider: "e2b", name: "sandbox-bench-rw-c", appId: "ap-c", sandboxes: ["sb-c"] },
-    ];
+    const lost: JournalApp = {
+      ...journalApp("modal", "sandbox-bench-rw-a"),
+      appId: "ap-a",
+      allocations: [{ id: "alloc-a", state: "submitted" }],
+    };
+
+    const other: JournalApp = { ...journalApp("e2b", "sandbox-bench-rw-c"), appId: "ap-c" };
+
+    for (const app of [lost, journalApp("modal", "sandbox-bench-rw-b"), other])
+      await appendFile(at.apps, JSON.stringify(app) + "\n");
+
+    const provider = modalLike(log, null, {
+      listed: [
+        {
+          id: "sb-lost",
+          labels: { "sandbox-bench-run": run, [appLabel]: lost.name, [allocationLabel]: "alloc-a" },
+        },
+      ],
+      pending: [
+        { id: "sb-pending", labels: { "sandbox-bench-run": run, "sandbox-sdk": "pending" } },
+      ],
+    });
+
+    const notes: object[] = [];
 
     await sweepProviders(
-      "rw-sweep",
+      run,
       [
         {
           name: "modal",
@@ -238,15 +367,28 @@ describe("realistic per-attempt Modal Apps", () => {
           paddingMs: 0,
         },
       ],
-      async () => {},
-      apps,
+      async (entry) => {
+        notes.push(entry);
+      },
+      at.dir,
     );
 
     expect(log).toEqual([
       "prepare:sandbox-bench-rw-a:false:journaled=0",
       "prepare:sandbox-bench-rw-b:false:journaled=0",
-      'list:{"sandbox-bench-run":"rw-sweep"}',
+      `list:{"sandbox-bench-run":"${run}"}`,
+      "pending",
+      "destroy:sb-lost",
+      "destroy:sb-pending",
     ]);
+    expect(notes).toContainEqual({ kind: "swept", provider: "modal", found: 2 });
+
+    const reconciled = (await readAppJournal(at.apps)).find((app) => app.name === lost.name);
+
+    expect(reconciled).toMatchObject({
+      sandboxes: ["sb-lost"],
+      allocations: [{ id: "alloc-a", state: "allocated", sandboxId: "sb-lost" }],
+    });
   });
 });
 
@@ -254,8 +396,8 @@ describe("realistic Modal budget reserve", () => {
   const hour = 3_600_000;
 
   it("reserves the bursting default track at 8 CPU / 16 GiB, at the pinned region's rate", () => {
-    const previous = process.env.MODAL_SANDBOX_REGION;
-    process.env.MODAL_SANDBOX_REGION = "us-east";
+    const previous = process.env.BENCH_REGION_MODAL;
+    process.env.BENCH_REGION_MODAL = "us-east";
 
     try {
       const setup = providerSetup("modal");
@@ -270,8 +412,8 @@ describe("realistic Modal budget reserve", () => {
       expect(defaultTrack).toBeCloseTo((8 * 0.1419 + 16 * 0.024) * 1.75, 2);
       expect(sameMachine).toBeCloseTo((4 * 0.1419 + 8 * 0.024) * 1.75, 2);
     } finally {
-      if (previous === undefined) delete process.env.MODAL_SANDBOX_REGION;
-      else process.env.MODAL_SANDBOX_REGION = previous;
+      if (previous === undefined) delete process.env.BENCH_REGION_MODAL;
+      else process.env.BENCH_REGION_MODAL = previous;
     }
   });
 });
