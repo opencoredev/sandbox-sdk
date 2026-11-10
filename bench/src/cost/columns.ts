@@ -206,6 +206,7 @@ function wholeMachineParts(input: AttemptCostInput): {
   if (hourly === null) return null;
   const time = billedTime(input.attempt, input.rule);
   const assumptions = [...time.assumptions];
+
   // The pinned region scales compute and disk, as estimateCost does.
   const region =
     input.rule.pricingKey === null ? 1 : regionMultiplier(input.rule.pricingKey, input.region);

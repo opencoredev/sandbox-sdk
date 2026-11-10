@@ -97,18 +97,15 @@ describe("billed time", () => {
 
 describe("cost columns", () => {
   it("prices Modal's whole machine at the run's pinned region, like its costs", () => {
-    const sized = (region?: string | null) =>
-      wholeMachineListPrice({
-        ...input("modal", {
-          allocation: {
-            provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 0 },
-            measured: { cpuQuota: 4, memoryGiB: 8 },
-          },
-        }),
-        ...(region === undefined ? {} : { region }),
-      });
+    const unpinned = input("modal", {
+      allocation: {
+        provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 0 },
+        measured: { cpuQuota: 4, memoryGiB: 8 },
+      },
+    });
 
-    const base = sized();
+    const sized = (region: string | null) => wholeMachineListPrice({ ...unpinned, region });
+    const base = wholeMachineListPrice(unpinned);
     const pinned = sized("us-east");
 
     expect(base.kind).toBe("list-price");

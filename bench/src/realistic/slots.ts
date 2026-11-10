@@ -432,16 +432,18 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
           // Outside the attempt's spans, so its create timing excludes the App lookup, but bounded by
           // the slot deadline: a stalled lookup is our side and fails the attempt before any create.
           if (entry.beforeAttempt) {
-            const prepared = await within(
-              entry
-                .beforeAttempt(attemptPlan.attemptId, controller.signal)
-                // Aborted by the slot's timer at the deadline: the same our-side timeout.
-                .catch((error: unknown) => {
-                  if (controller.signal.aborted) return null;
-                  throw error;
-                }),
-              Math.max(0, deadline - clock.now()),
-            );
+            let prepared: AttemptApp | null;
+
+            try {
+              prepared = await within(
+                entry.beforeAttempt(attemptPlan.attemptId, controller.signal),
+                Math.max(0, deadline - clock.now()),
+              );
+            } catch (cause) {
+              // Aborted by the slot's timer at the deadline: the same our-side timeout.
+              if (!controller.signal.aborted) throw cause;
+              prepared = null;
+            }
 
             if (!prepared) {
               const detail = `Our side: the attempt's App was not ready by slot ${slot.id}'s deadline; no create was submitted`;
