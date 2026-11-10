@@ -12,6 +12,14 @@ import { attemptRecordSchema } from "../../src/realistic/record.js";
 import { attemptBillingSchema, costedAttempt } from "../../src/cost/attempt-input.js";
 import { fakeNativeModules } from "../native-fakes.js";
 import { buildFixture, type Fixture } from "./fixture.js";
+import { z } from "zod";
+
+/** The summary row fields these tests read. */
+const summaryRow = z.object({
+  wholeMachinePerCompletedUSD: z.number().nullable(),
+  wholeMachineBound: z.enum(["exact", "lower"]),
+  costPerCompletedUSD: z.number().nullable(),
+});
 
 let root: string;
 let fixture: Fixture;
@@ -244,7 +252,7 @@ describe("realistic billing for Modal", () => {
   });
 
   it("prices the summary's whole machine at the run's recorded region, with its bound", async () => {
-    const rows: Record<string, unknown>[] = [];
+    const rows: z.infer<typeof summaryRow>[] = [];
 
     for (const track of ["same-machine", "default"] as const) {
       const out = await attemptDir(`rw-region-${track}`, { stopped: true, track });
@@ -254,12 +262,16 @@ describe("realistic billing for Modal", () => {
       await mkdir(to, { recursive: true });
       await realisticCommand(["summary", "--out", out, "--to", to]);
 
-      const [row] = JSON.parse(await readFile(join(to, "summary.json"), "utf8")).rows;
+      const [row] = z
+        .object({ rows: z.array(summaryRow) })
+        .parse(JSON.parse(await readFile(join(to, "summary.json"), "utf8"))).rows;
+
       const [entry] = await readBilling(out);
       const attempt = costedAttempt(await record(out), entry);
       const rule = billingRule("modal", null);
 
-      if (!rule) throw new Error("No Modal rule");
+      if (!rule || !row) throw new Error("No Modal rule or summary row");
+
       const at = (region: string | null) => {
         const whole = wholeMachineListPrice({
           attempt,

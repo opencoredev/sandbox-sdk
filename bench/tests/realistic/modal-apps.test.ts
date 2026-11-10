@@ -398,6 +398,7 @@ describe("realistic per-attempt Modal Apps", () => {
     const at = await paths();
     const controller = new AbortController();
     const log: string[] = [];
+
     // Modal returns the App only after the attempt's deadline has passed.
     const provider = Object.assign(modalLike(log, at.apps), {
       prepareApp: async (name: string) => {
