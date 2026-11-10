@@ -119,7 +119,9 @@ export function attempt(spec: AttemptSpec = {}): CostedAttempt {
     outputError: null,
   });
 
-  if (spec.billing === false) return costedAttempt(record);
+  // Realistic billing writes no entry for an attempt that created nothing, unless a charge is given.
+  if (spec.billing === false || (record.sandboxIds.length === 0 && spec.charge === undefined))
+    return costedAttempt(record);
 
   const billing = attemptBillingSchema.parse({
     attemptId,

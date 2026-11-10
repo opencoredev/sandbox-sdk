@@ -336,6 +336,88 @@ describe("realistic per-attempt Modal Apps", () => {
     });
   });
 
+  it("bounds a stalled App lookup by the slot deadline and records it as our side, outside the attempt", async () => {
+    const records: AttemptRecord[] = [];
+    let attempted = false;
+    let lookupSignal: AbortSignal | undefined;
+    // The lookup stalls; the clock passes the slot deadline while it waits.
+    let offset = 0;
+    const clock = { ...systemClock, now: () => Date.now() + offset };
+
+    const started = Date.now();
+
+    await runBatch({
+      runId: "rw-apps-stall",
+      batch: 0,
+      seed: 20261105,
+      manifest: fixture.manifest,
+      manifestSha256: null,
+      slots: [slot],
+      providers: [
+        {
+          name: "modal",
+          provider: memory(),
+          attribution: attributionFor("modal").attribution,
+          settlementMs: null,
+          paddingMs: 0,
+          beforeAttempt: (_, signal) => {
+            lookupSignal = signal;
+            offset = 24 * 3600_000;
+
+            return new Promise<never>(() => {});
+          },
+        },
+      ],
+      clock,
+      blobs: fixture.blobs,
+      prepare: { cacheBaseUrl: fixture.cacheBaseUrl },
+      onRecord: async (record) => {
+        records.push(record);
+      },
+      attempt: async () => {
+        attempted = true;
+        throw new Error("unreachable");
+      },
+    });
+
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(attempted).toBe(false);
+    expect(lookupSignal?.aborted).toBe(true);
+    expect(records[0]).toMatchObject({
+      completion: {
+        kind: "incomplete",
+        reason: "error",
+        detail: expect.stringMatching(/^Our side/),
+      },
+      sandboxIds: [],
+      phases: [],
+    });
+  });
+
+  it("journals no create when the App lookup returns after its deadline", async () => {
+    const at = await paths();
+    const controller = new AbortController();
+    const log: string[] = [];
+    // Modal returns the App only after the attempt's deadline has passed.
+    const provider = Object.assign(modalLike(log, at.apps), {
+      prepareApp: async (name: string) => {
+        controller.abort(new Error("deadline"));
+
+        return { name, appId: "ap-late" };
+      },
+    });
+
+    await expect(
+      prepareAttemptApp(at, provider, "rw-late-b0-s0-fat-same-modal", {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/deadline/);
+
+    const [latest] = await readAppJournal(at.apps);
+
+    expect(latest?.allocations).toEqual([]);
+  });
+
   it("prepares journaled Apps, reconciles listed and pending sandboxes, removes them, persists", async () => {
     const at = await paths();
     const log: string[] = [];

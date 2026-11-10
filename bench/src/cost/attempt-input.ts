@@ -138,13 +138,13 @@ export function costedAttempt(record: AttemptRecord, billing?: AttemptBilling): 
   if (record.completion.kind === "completed" && record.sandboxIds.length === 0)
     throw new Error(`Attempt ${record.attemptId} completed without a sandbox`);
 
+  // A billing entry wins: an attempt without a recorded sandbox ID can still have one (a lost create
+  // response), and its entry says so, as unavailable or with the recovered sandbox's charge.
   const charge: Charge =
-    record.sandboxIds.length === 0
+    billing?.charge ??
+    (record.sandboxIds.length === 0
       ? { kind: "no-sandbox" }
-      : (billing?.charge ?? {
-          kind: "unavailable",
-          reason: "no billing collected for this attempt",
-        });
+      : { kind: "unavailable", reason: "no billing collected for this attempt" });
 
   return {
     record,

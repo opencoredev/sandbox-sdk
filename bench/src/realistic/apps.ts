@@ -74,6 +74,38 @@ export function ownedApps(apps: readonly JournalApp[]): Map<string, OwnedApp> {
   );
 }
 
+/**
+ * What one realistic attempt's App journal says about its creates, by attempt ID (each attempt has
+ * its own App, `realisticAttemptApp`). `sandboxIds` are the sandboxes journaled in the App, which
+ * include those a reconciliation recovered for a create whose response was lost. `unresolved`
+ * counts creates whose result is still unknown: a sandbox may exist that no ID names, so the
+ * attempt's cost stays unavailable.
+ */
+export type AttemptAllocation =
+  | { readonly kind: "no-create" }
+  | { readonly kind: "resolved"; readonly sandboxIds: readonly string[] }
+  | {
+      readonly kind: "unresolved";
+      readonly sandboxIds: readonly string[];
+      readonly unresolved: number;
+    };
+
+export function attemptAllocation(
+  apps: readonly JournalApp[],
+  { provider, attemptId }: { provider: string; attemptId: string },
+): AttemptAllocation {
+  const name = realisticAttemptApp(attemptId);
+  const app = apps.find((entry) => entry.provider === provider && entry.name === name);
+
+  if (!app || (app.allocations.length === 0 && app.sandboxes.length === 0))
+    return { kind: "no-create" };
+  const unresolved = ambiguousAllocations(app);
+
+  return unresolved > 0
+    ? { kind: "unresolved", sandboxIds: app.sandboxes, unresolved }
+    : { kind: "resolved", sandboxIds: app.sandboxes };
+}
+
 const stopSchema = z.object({
   provider: z.string(),
   sandboxId: z.string(),
@@ -110,19 +142,23 @@ export interface AttemptApp {
 /**
  * Journal the attempt's App, look it up or create it, then journal its one create before it is
  * submitted. Throws, failing the attempt before any sandbox exists, when the adapter cannot
- * prepare Apps or Modal does not return one.
+ * prepare Apps, Modal does not return one, or `signal` aborted (the slot deadline passed).
  */
 export async function prepareAttemptApp(
   paths: { apps: string; stops: string },
   provider: Provider,
   attemptId: string,
-  now: () => number = Date.now,
+  { now = Date.now, signal }: { now?: () => number; signal?: AbortSignal } = {},
 ): Promise<AttemptApp> {
+  signal?.throwIfAborted();
   const app = journalApp(provider.name, realisticAttemptApp(attemptId));
   await persistApp(paths.apps, app);
 
   if (!preparesApps(provider)) throw new Error(`${provider.name} cannot prepare an App`);
   const prepared = await provider.prepareApp(app.name);
+
+  // Past the slot deadline the attempt has already failed: journal no create it will never submit.
+  signal?.throwIfAborted();
 
   if (!prepared) throw new Error(`App ${app.name} could not be created`);
   app.appId = prepared.appId;

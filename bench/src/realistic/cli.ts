@@ -12,6 +12,8 @@
  * sweep    List every provider for sandboxes labelled with this run and delete any left.
  */
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { requestBilledCompute } from "../allocation.js";
+import { isMissingFile } from "../files.js";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
@@ -37,6 +39,7 @@ import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
 import { loadProvider, providerRegion } from "../providers.js";
 import {
   appJournalFile,
+  attemptAllocation,
   ownedApps,
   persistApp,
   prepareAttemptApp,
@@ -82,6 +85,45 @@ const defaultArtifactDirs = [
 ];
 
 const fx = { eurToUsd: 1.08, date: "2026-11-05" } as const;
+
+/**
+ * Each provider's pinned region for a run folder, as `providerRegion` resolved it when the run
+ * placed its sandboxes (null: unpinned). The summary prices list-price columns at it.
+ */
+export const regionsFile = "regions.json";
+
+const regionsSchema = z.record(z.string(), z.string().nullable());
+
+async function readRegions(dir: string): Promise<Record<string, string | null>> {
+  try {
+    return regionsSchema.parse(JSON.parse(await readFile(join(dir, regionsFile), "utf8")));
+  } catch (error) {
+    if (isMissingFile(error)) return {};
+    throw error;
+  }
+}
+
+/**
+ * The region an adapter's attempts in `dir` ran in: the run's recorded one, else (for folders from
+ * before it was recorded) the environment's, resolved as the run resolved it. A recorded region
+ * that the environment contradicts is refused rather than priced either way.
+ */
+function regionFor(
+  recorded: Record<string, string | null>,
+  { adapter, dir }: { adapter: string; dir: string },
+): string | null {
+  const resolved = providerRegion(adapter, process.env);
+
+  if (!(adapter in recorded)) return resolved;
+  const region = recorded[adapter] ?? null;
+
+  if (resolved !== null && resolved !== region)
+    throw new Error(
+      `${dir} ran ${adapter} in ${region ?? "no pinned region"}, but the environment resolves ${resolved}; unset it or set it to the run's region`,
+    );
+
+  return region;
+}
 
 export const heldOpenProviders = [
   "e2b",
@@ -320,7 +362,8 @@ async function loadSlotProvider(
       stops: join(journalDir, stopJournalFile),
     };
 
-    entry.beforeAttempt = (attemptId) => prepareAttemptApp(paths, provider, attemptId);
+    entry.beforeAttempt = (attemptId, signal) =>
+      prepareAttemptApp(paths, provider, attemptId, { signal });
   }
 
   // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
@@ -389,6 +432,21 @@ async function run(args: string[]) {
   const firstBatch = Number(values["first-batch"]);
   const batches = Number(values.batches);
   const setups = providerNames.map(providerSetup);
+
+  // Record each adapter's resolved region; a later run into the same folder must match it.
+  const regions = await readRegions(out);
+
+  for (const setup of setups) {
+    const region = providerRegion(setup.adapter, process.env);
+
+    if (setup.adapter in regions && regions[setup.adapter] !== region)
+      throw new Error(
+        `${out} already ran ${setup.adapter} in ${regions[setup.adapter] ?? "no pinned region"}, not ${region ?? "no pinned region"}`,
+      );
+    regions[setup.adapter] = region;
+  }
+
+  await writeFile(join(out, regionsFile), JSON.stringify(regions, null, 2) + "\n");
 
   const loaded = new Map<string, SlotProvider>();
   const longest = plan === "held-open" ? 60 * 60_000 : 0;
@@ -621,18 +679,40 @@ async function billing(args: string[]) {
   if (!values.out) throw new Error("realistic billing needs --out");
   const out = resolve(values.out);
   const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
-  const withSandbox = records.filter((r) => r.sandboxIds.length > 0);
+  const apps = await readAppJournal(join(out, appJournalFile));
+
+  // Each attempt's sandboxes: its record's, plus any its App journal names (a reconciliation can
+  // recover one whose create response was lost). An attempt whose App still has a create of unknown
+  // result is billed as unavailable even when no sandbox ID is known.
+  const billable = records.flatMap((record) => {
+    const creates = attemptAllocation(apps, {
+      provider: providerSetup(record.provider).adapter,
+      attemptId: record.attemptId,
+    });
+
+    const sandboxIds = [
+      ...new Set([
+        ...record.sandboxIds,
+        ...(creates.kind === "no-create" ? [] : creates.sandboxIds),
+      ]),
+    ];
+
+    return sandboxIds.length > 0 || creates.kind === "unresolved"
+      ? [{ record, sandboxIds, creates }]
+      : [];
+  });
 
   // Each journaled App's sandboxes, for the per-App collector (Modal).
-  const appOf = ownedApps(await readAppJournal(join(out, appJournalFile)));
+  const appOf = ownedApps(apps);
   // A Modal charge settles only after its sandbox's confirmed stop.
   const stops = await readStops(join(out, stopJournalFile));
 
-  const byAdapter = new Map<string, AttemptRecord[]>();
+  const byAdapter = new Map<string, (typeof billable)[number][]>();
 
   const captured = new Map<string, z.infer<typeof costSchema>>();
 
-  for (const record of withSandbox) {
+  for (const item of billable) {
+    const { record, sandboxIds } = item;
     const adapter = providerSetup(record.provider).adapter;
 
     // Usage captured before deletion (Boat) is the only evidence once the sandbox is gone.
@@ -643,8 +723,8 @@ async function billing(args: string[]) {
         captured.set(sandbox.id, sandbox.cost);
     }
 
-    if (record.sandboxIds.every((id) => captured.has(id))) continue;
-    byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), record]);
+    if (sandboxIds.every((id) => captured.has(id))) continue;
+    byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), item]);
   }
 
   const costs = new Map<
@@ -657,8 +737,8 @@ async function billing(args: string[]) {
   for (const [adapter, items] of byAdapter) {
     if (adapter === "tenki" || adapter === "freestyle") continue;
 
-    const rows: OwnedSandbox[] = items.flatMap((record) =>
-      record.sandboxIds.map((id) => ({
+    const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
+      sandboxIds.map((id) => ({
         provider: adapter,
         id,
         scenarios: new Set([`${record.profile}/${record.track}/${record.variant}`]),
@@ -683,7 +763,7 @@ async function billing(args: string[]) {
     raw.push({ ...collected, sandboxes: collected.sandboxes.length });
   }
 
-  const entries: AttemptBilling[] = withSandbox.map((record) => {
+  const entries: AttemptBilling[] = billable.map(({ record, sandboxIds, creates }) => {
     const setup = providerSetup(record.provider);
     const track = trackOf(record);
 
@@ -701,7 +781,15 @@ async function billing(args: string[]) {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },
       };
-    const found = record.sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
+    if (creates.kind === "unresolved")
+      return {
+        ...base,
+        charge: {
+          kind: "unavailable",
+          reason: `${creates.unresolved} create(s) for this attempt have an unknown result (lost response), so a sandbox may exist that no ID names`,
+        },
+      };
+    const found = sandboxIds.map((id) => captured.get(id) ?? costs.get(id));
     const unpriced = found.filter((cost) => cost === undefined || cost.kind === "unavailable");
 
     if (unpriced.length > 0 || found.length === 0) {
@@ -880,8 +968,24 @@ interface Row {
   costPerCompletedUSD: number | null;
   costNote: string | null;
   wholeMachinePerCompletedUSD: number | null;
+  /**
+   * "lower" when the whole-machine price is a floor: a request-billed provider's unsized track
+   * (Modal's default 0.125 CPU request) bursts above the request and that usage is billed too.
+   */
+  wholeMachineBound: "exact" | "lower";
   billingModel: string | null;
   eligibility: string;
+}
+
+/** Whether a group's whole-machine price is exact or a floor (request-billed, unsized track). */
+function wholeMachineBound(group: readonly CostedAttempt[]): "exact" | "lower" {
+  const first = group[0];
+
+  if (!first) return "exact";
+  const setup = providerSetup(first.record.provider);
+  const size = setup.tracks[trackOf(first.record)].size ?? null;
+
+  return requestBilledCompute(setup.pricingKey, size)?.bound ?? "exact";
 }
 
 async function summary(args: string[]) {
@@ -889,6 +993,8 @@ async function summary(args: string[]) {
     args,
     options: {
       out: { type: "string", multiple: true },
+      // Where summary.json and summary.md go; the first --out by default.
+      to: { type: "string" },
       // provider@runId[@track]: attempts superseded by a rerun, left out of the table and listed in it.
       drop: { type: "string", multiple: true },
     },
@@ -904,8 +1010,20 @@ async function summary(args: string[]) {
   const records: AttemptRecord[] = [];
   const bills: AttemptBilling[] = [];
 
+  // Each attempt's pinned region, from its run folder.
+  const regionOf = new Map<string, string | null>();
+
   for (const dir of values.out.map((d) => resolve(d))) {
-    records.push(...(await readJsonLines(join(dir, "attempts.jsonl"), attemptRecordSchema)));
+    const read = await readJsonLines(join(dir, "attempts.jsonl"), attemptRecordSchema);
+    const recorded = await readRegions(dir);
+
+    for (const record of read)
+      regionOf.set(
+        record.attemptId,
+        regionFor(recorded, { adapter: providerSetup(record.provider).adapter, dir }),
+      );
+
+    records.push(...read);
     bills.push(...(await readJsonLines(join(dir, "billing.jsonl"), attemptBillingSchema)));
   }
 
@@ -977,7 +1095,14 @@ async function summary(args: string[]) {
         costPerCompletedUSD =
           costs.reduce((sum, c) => sum + (c.kind === "unavailable" ? 0 : c.usd), 0) / done.length;
 
-      const whole = counted.map((attempt) => wholeMachineListPrice({ attempt, rule, fx }));
+      const whole = counted.map((attempt) =>
+        wholeMachineListPrice({
+          attempt,
+          rule,
+          fx,
+          region: regionOf.get(attempt.record.attemptId) ?? null,
+        }),
+      );
 
       if (done.length && whole.every((w) => w.kind === "list-price"))
         wholeMachinePerCompletedUSD =
@@ -1039,6 +1164,7 @@ async function summary(args: string[]) {
       costPerCompletedUSD,
       costNote,
       wholeMachinePerCompletedUSD,
+      wholeMachineBound: wholeMachineBound(group),
       billingModel: rule ? billingModelLabel(rule) : null,
       eligibility: eligible,
     });
@@ -1064,7 +1190,8 @@ async function summary(args: string[]) {
     };
   });
 
-  const outDir = resolve(values.out[0] ?? ".");
+  const outDir = resolve(values.to ?? values.out[0] ?? ".");
+  await mkdir(outDir, { recursive: true });
   const usd = (v: number | null) => (v === null ? "n/a" : `$${(v * 1000).toFixed(2)}`);
   const s = (v: number | null) => (v === null ? "n/a" : v.toFixed(0));
 
@@ -1073,7 +1200,7 @@ async function summary(args: string[]) {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map(
       (r) =>
-        `| ${r.variant} | ${r.profile} | ${r.track} | ${r.provider} | ${r.attempts} | ${r.completed} | ${r.notRun} | ${s(r.medianWallS)} | ${s(r.medianCpuS)} | ${usd(r.costPerCompletedUSD)} | ${r.costKind ?? "n/a"} | ${usd(r.wholeMachinePerCompletedUSD)} | ${[r.eligibility, r.costNote].filter((x) => x && x !== "n/a").join("; ")} |`,
+        `| ${r.variant} | ${r.profile} | ${r.track} | ${r.provider} | ${r.attempts} | ${r.completed} | ${r.notRun} | ${s(r.medianWallS)} | ${s(r.medianCpuS)} | ${usd(r.costPerCompletedUSD)} | ${r.costKind ?? "n/a"} | ${r.wholeMachineBound === "lower" && r.wholeMachinePerCompletedUSD !== null ? "≥ " : ""}${usd(r.wholeMachinePerCompletedUSD)} | ${[r.eligibility, r.costNote].filter((x) => x && x !== "n/a").join("; ")} |`,
     ),
   ].join("\n");
 

@@ -66,9 +66,10 @@ export interface SlotProvider {
   /**
    * Per-attempt setup before anything is timed: Modal journals and resolves the attempt's own App.
    * Its labels go on the attempt's creates, and `created` journals each sandbox. A failure fails
-   * the attempt before any sandbox exists.
+   * the attempt before any sandbox exists. It must finish by the slot deadline; past it, `signal`
+   * aborts and the attempt fails on our side without a create.
    */
-  beforeAttempt?(attemptId: string): Promise<AttemptApp>;
+  beforeAttempt?(attemptId: string, signal: AbortSignal): Promise<AttemptApp>;
   /**
    * A truly account-wide listing for window edges (a native call). Without it the adapter's `list({})`
    * is used, which most adapters scope to SDK-made sandboxes, so the window is void as unverified.
@@ -428,9 +429,27 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         const invokedAt = clock.now();
 
         try {
-          // Outside the attempt's spans, so its create timing excludes the App lookup.
+          // Outside the attempt's spans, so its create timing excludes the App lookup, but bounded by
+          // the slot deadline: a stalled lookup is our side and fails the attempt before any create.
           if (entry.beforeAttempt) {
-            app = await entry.beforeAttempt(attemptPlan.attemptId);
+            const prepared = await within(
+              entry
+                .beforeAttempt(attemptPlan.attemptId, controller.signal)
+                // Aborted by the slot's timer at the deadline: the same our-side timeout.
+                .catch((error: unknown) => {
+                  if (controller.signal.aborted) return null;
+                  throw error;
+                }),
+              Math.max(0, deadline - clock.now()),
+            );
+
+            if (!prepared) {
+              const detail = `Our side: the attempt's App was not ready by slot ${slot.id}'s deadline; no create was submitted`;
+              controller.abort(new SlotTimeout(detail));
+              throw new Error(detail);
+            }
+
+            app = prepared;
             attemptPlan.labels = app.labels;
           }
 

@@ -96,6 +96,37 @@ describe("billed time", () => {
 });
 
 describe("cost columns", () => {
+  it("prices Modal's whole machine at the run's pinned region, like its costs", () => {
+    const sized = (region?: string | null) =>
+      wholeMachineListPrice({
+        ...input("modal", {
+          allocation: {
+            provisioned: { cpu: 4, memoryGiB: 8, diskGiB: 0 },
+            measured: { cpuQuota: 4, memoryGiB: 8 },
+          },
+        }),
+        ...(region === undefined ? {} : { region }),
+      });
+
+    const base = sized();
+    const pinned = sized("us-east");
+
+    expect(base.kind).toBe("list-price");
+    expect(pinned.kind).toBe("list-price");
+
+    if (base.kind !== "list-price" || pinned.kind !== "list-price") return;
+    // 4 CPU and 8 GiB at Modal's sandbox rates for 300 s, then 1.75x for a narrow pinned region.
+    const modal = pricing.modal;
+
+    if (!modal) throw new Error("No Modal pricing");
+    expect(base.usd).toBeCloseTo((4 * modal.cpuSecond + 8 * modal.memoryGiBSecond) * 300, 10);
+    expect(pinned.usd).toBeCloseTo(base.usd * 1.75, 10);
+    expect(sized("us").kind === "list-price" && sized("us")).toMatchObject({
+      usd: expect.closeTo(base.usd * 1.15, 10),
+    });
+    expect(sized(null)).toEqual(base);
+  });
+
   it("prices boxd's whole machine as a counterfactual in USD at the frozen rate", () => {
     const whole = wholeMachineListPrice(
       input("boxd", {
