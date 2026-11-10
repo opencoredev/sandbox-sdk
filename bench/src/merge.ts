@@ -397,11 +397,13 @@ export function mergeSources(
 
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {} };
+    : { samples, removed: {}, removedByTrack: {} };
 
   return {
     attemptPolicy,
     selectionRemoved: selection.removed,
+    /** selectionRemoved split by track, so each track's export can disclose its own. */
+    selectionRemovedByTrack: selection.removedByTrack,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,
@@ -438,10 +440,9 @@ export type PublicationReport = ReturnType<typeof mergeSources>;
 
 export type PublicationSummary = PublicationReport["summaries"][number];
 
-export function publicationTrack(
-  input: PublicationReport,
-  track: "default" | "same-spec",
-): PublicationReport {
+export function publicationTrack<
+  R extends Pick<PublicationReport, "samples" | "summaries" | "sources">,
+>(input: R, track: "default" | "same-spec"): R {
   return {
     ...input,
     samples: input.samples.filter((s) => (s.track ?? "default") === track),

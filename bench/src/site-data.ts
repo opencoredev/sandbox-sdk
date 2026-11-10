@@ -392,8 +392,65 @@ export function destroyRequestTiming(
   };
 }
 
-export function siteData(input: PublicationReport, track: "default" | "same-spec" = "default") {
-  const r = publicationTrack(input, track);
+/** A merged report as read from disk: reports merged before per-track counts lack them. */
+export type SiteReport = Omit<PublicationReport, "selectionRemovedByTrack"> &
+  Partial<Pick<PublicationReport, "selectionRemovedByTrack">>;
+
+/**
+ * What the attempt policy left out of one track, for the site to show beside the numbers: the
+ * samples removed by reason (null for an older report that mixed tracks and kept only the merged
+ * counts), and the track's rules with their reasons, source iterations and replacement runs. A
+ * superseded rule for a run outside this report removed nothing and is not listed.
+ */
+export function exclusions(input: SiteReport, track: "default" | "same-spec") {
+  const onTrack = (rule: { track?: "default" | "same-spec" | undefined }) =>
+    (rule.track ?? "default") === track;
+
+  const runs = new Set(input.sources.map((s) => s.runId));
+  const tracks = new Set(input.sources.map((s) => s.config.track ?? "default"));
+  const policy = input.attemptPolicy;
+
+  const byTrack = input.selectionRemovedByTrack;
+
+  const removed = byTrack
+    ? (byTrack[track] ?? {})
+    : tracks.size === 1 && tracks.has(track)
+      ? input.selectionRemoved
+      : null;
+
+  return {
+    removed,
+    superseded: (policy?.superseded ?? [])
+      .filter((rule) => onTrack(rule) && runs.has(rule.sourceRunId))
+      .map(({ provider, suite, sourceRunId, iterations, rerunSourceRunIds, reason }) => ({
+        provider,
+        suite,
+        sourceRunId,
+        iterations,
+        rerunSourceRunIds,
+        reason,
+      })),
+    notRun: (policy?.notRun ?? [])
+      .filter(onTrack)
+      .map(({ provider, suite, scenario, reason }) => ({ provider, suite, scenario, reason })),
+    replacements: (policy?.replacements ?? [])
+      .filter(onTrack)
+      .map(({ provider, suite, scenario, sourceRunIds }) => ({
+        provider,
+        suite,
+        scenario,
+        sourceRunIds,
+      })),
+  };
+}
+
+export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
+  const disclosed = exclusions(input, track);
+  // Nothing below reads the per-track counts; exclusions above already has them.
+  const r = publicationTrack(
+    { ...input, selectionRemovedByTrack: input.selectionRemovedByTrack ?? {} },
+    track,
+  );
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
 
   for (const provider of names) {
@@ -558,6 +615,8 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     observations: r.samples.length,
     runs: r.sources.map((s) => ({ id: s.runId, suite: s.suite, samples: s.sampleCount })),
     excluded: r.excludedSources,
+    // Samples the attempt policy left out of this track, with each rule's reason (see exclusions).
+    exclusions: disclosed,
     providers,
     metrics,
     coldSamples,

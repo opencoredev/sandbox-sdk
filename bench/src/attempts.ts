@@ -199,9 +199,14 @@ function matches(s: z.infer<typeof identity>, rule: z.infer<typeof identity>) {
 export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   const counts = new Map<string, number>();
   const removed = new Map<string, number>();
+  const removedByTrack = new Map<string, Map<string, number>>();
 
-  const drop = (reason: string) => {
+  const drop = (reason: string, s: Pick<MergedSample, "track">) => {
     removed.set(reason, (removed.get(reason) ?? 0) + 1);
+    const track = s.track ?? "default";
+    const byReason = removedByTrack.get(track) ?? new Map<string, number>();
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+    removedByTrack.set(track, byReason);
 
     return false;
   };
@@ -217,9 +222,9 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
       if (!cloudProviders.includes(s.provider)) return true;
 
       if (policy.replacements.some((r) => matches(s, r) && !r.sourceRunIds.includes(s.sourceRunId)))
-        return drop("replaced-source");
+        return drop("replaced-source", s);
 
-      if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run");
+      if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run", s);
 
       if (
         (policy.superseded ?? []).some(
@@ -231,10 +236,10 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
             r.iterations.includes(s.sourceIteration),
         )
       )
-        return drop("superseded-by-rerun");
+        return drop("superseded-by-rerun", s);
 
       if (s.failureClass === "provider-account-limit" || s.failureClass === "client-third-party")
-        return drop(s.failureClass);
+        return drop(s.failureClass, s);
 
       if (s.suite === "cost") return true; // Keep whole tasks; never select replay rows independently of billing IDs.
       const target = attemptTarget(s.suite, s.scenario);
@@ -244,7 +249,7 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
       const count = (counts.get(key) ?? 0) + 1;
       counts.set(key, count);
 
-      return count <= target || drop("above-target");
+      return count <= target || drop("above-target", s);
     });
 
   const cohorts = new Set(
@@ -262,10 +267,16 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
     if (!burst || !cloudProviders.includes(s.provider)) return true;
     const identity = `${s.track ?? "default"}/${s.provider}/${s.sourceRunId}/burst-${burst[1]}/${Math.floor(s.sourceIteration / Number(burst[1]))}`;
 
-    return cohorts.has(identity) || drop("unselected-cohort-member");
+    return cohorts.has(identity) || drop("unselected-cohort-member", s);
   });
 
-  return { samples: complete, removed: Object.fromEntries(removed) };
+  return {
+    samples: complete,
+    removed: Object.fromEntries(removed),
+    removedByTrack: Object.fromEntries(
+      [...removedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
+    ),
+  };
 }
 
 export function checkAttempts(
