@@ -551,6 +551,7 @@ export async function mergeCommand(args: string[]) {
       journals,
     },
   );
+
   report.runId = basename(output);
 
   if (

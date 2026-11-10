@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mergeSources, sampleSchema, type MergeSource } from "../src/merge.js";
-import { attemptApp, journalApp, type JournalApp } from "../src/modal-apps.js";
+import { attemptApp, journalApp } from "../src/modal-apps.js";
 import type { AttemptPolicy } from "../src/attempts.js";
 import { siteData } from "../src/site-data.js";
 import type { Sample } from "../src/v2-model.js";
@@ -81,14 +81,6 @@ function source(
   };
 }
 
-/** One App per iteration, as `--app-per-attempt modal` journals it. */
-function apps(run: string, iterations: number, override: Record<number, Partial<JournalApp>> = {}) {
-  return Array.from({ length: iterations }, (_, i) => ({
-    ...journalApp("modal", attemptApp(run, i)),
-    ...(i in override ? override[i] : { appId: `ap-${i}`, sandboxes: [`sb-${i}`] }),
-  }));
-}
-
 const notRun = (track: "default" | "same-spec") => ({
   provider: "modal",
   track,
@@ -132,10 +124,12 @@ const sources = [
 const journals = new Map([
   [
     "main",
-    [0, 1, 2].map((i) => ({
-      ...journalApp("modal", attemptApp("main", i)),
-      ...(i === 2 ? {} : { appId: `ap-${i}`, sandboxes: [`sb-${i}`] }),
-    })),
+    [
+      { ...journalApp("modal", attemptApp("main", 0)), appId: "ap-0", sandboxes: ["sb-0"] },
+      { ...journalApp("modal", attemptApp("main", 1)), appId: "ap-1", sandboxes: ["sb-1"] },
+      // The App lookup was refused: no App ID and no create.
+      journalApp("modal", attemptApp("main", 2)),
+    ],
   ],
 ]);
 

@@ -446,11 +446,13 @@ export function exclusions(input: SiteReport, track: "default" | "same-spec") {
 
 export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
   const disclosed = exclusions(input, track);
+
   // Nothing below reads the per-track counts; exclusions above already has them.
   const r = publicationTrack(
     { ...input, selectionRemovedByTrack: input.selectionRemovedByTrack ?? {} },
     track,
   );
+
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
 
   for (const provider of names) {
