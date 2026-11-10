@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { MergedSample, MergeSource, Suite } from "./merge.js";
 import { attemptApp, type JournalApp } from "./modal-apps.js";
+import { sampleSuite, suiteFor } from "./suite.js";
 
 export const cloudProviders = [
   "e2b",
@@ -147,11 +148,15 @@ export function supersededRefusals({
       if (state.admissionStopped?.length || state.cleanupReview?.length)
         refusals.push(`${label}: rerun ${runId} did not complete`);
 
+      // Only the rule's own suite counts: a snapshot-only rerun can't stand in for main-suite iterations.
+      const rerunSuite = suiteFor(rerun);
+
       const ran = new Set(
         rerun.samples
           .filter(
             (s) =>
               s.provider === rule.provider &&
+              sampleSuite(s.scenario, rerunSuite) === rule.suite &&
               sameTrack(s.track ?? rerun.config.track, rule.track) &&
               s.outcome.kind !== "skipped" &&
               s.outcome.kind !== "blocked",
@@ -161,7 +166,7 @@ export function supersededRefusals({
 
       if (ran < rule.iterations.length)
         refusals.push(
-          `${label}: rerun ${runId} ran ${ran} ${rule.provider} iterations, fewer than the ${rule.iterations.length} it replaces`,
+          `${label}: rerun ${runId} ran ${ran} ${rule.provider} ${rule.suite} iterations, fewer than the ${rule.iterations.length} it replaces`,
         );
     }
 

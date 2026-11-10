@@ -197,12 +197,26 @@ describe("superseded iterations need journal evidence", () => {
     );
   });
 
+  // Review finding: a snapshot-only rerun on the same provider and track authorized removing a main-suite iteration.
+  it("refuses a rerun from another suite, such as a snapshot-only run", () => {
+    const journals = new Map([["main", apps("main", 3, refusedLookup)]]);
+
+    const snapshotOnly: MergeSource = {
+      ...source("makeup", [{ ...sample({ iteration: 0 }), scenario: "snapshot" }]),
+      config: { seed: 45, scenarios: ["snapshot"], bursts: [] },
+    };
+
+    expect(() => mergeSources([main, snapshotOnly], [], 45, policy, { journals })).toThrow(
+      /rerun makeup ran 0 modal main iterations/,
+    );
+  });
+
   it("refuses a rerun with fewer iterations than it replaces", () => {
     const journals = new Map([["main", apps("main", 3, refusedLookup)]]);
     const empty = source("makeup", []);
 
     expect(() => mergeSources([main, empty], [], 45, policy, { journals })).toThrow(
-      /rerun makeup ran 0 modal iterations/,
+      /rerun makeup ran 0 modal main iterations/,
     );
   });
 });

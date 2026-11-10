@@ -21,6 +21,7 @@ import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 import { costBillingSchema } from "./task-cost.js";
 import { failureOutcomeSchema } from "./failure.js";
 import { isMissingFile } from "./files.js";
+import { sampleSuite, suiteFor } from "./suite.js";
 
 const finite = z.number().finite();
 
@@ -164,17 +165,6 @@ export function classifyFailure(
     return "client-third-party";
 
   return "provider-operation";
-}
-
-function suiteFor(source: MergeSource): Suite {
-  if (source.config.scenarios.includes("cost")) return "cost";
-
-  if (source.config.scenarios.includes("burst")) return "burst";
-
-  if (source.config.scenarios.length === 1 && source.config.scenarios.includes("snapshot"))
-    return "snapshot";
-
-  return "main";
 }
 
 function namespace(sample: Sample) {
@@ -335,11 +325,7 @@ export function mergeSources(
         sourceSampleIndex,
         sourceIteration: s.iteration,
         iterationNamespace: domain,
-        suite: s.scenario.startsWith("burst-")
-          ? "burst"
-          : /^(snapshot(?:-|$)|create-from-snapshot$|restore-)/.test(s.scenario)
-            ? "snapshot"
-            : suite,
+        suite: sampleSuite(s.scenario, suite),
         failureClass: classifyFailure(s),
       });
     });
