@@ -160,15 +160,14 @@ export async function bufferedExecute(
     for (const line of lines) if (line) accept(line);
 
     if (summary[3] === "1") {
-      const remainingMs = deadline - Date.now();
-
-      if (remainingMs <= 0) abort();
+      if (Date.now() >= deadline) abort();
 
       if (!cancelled) {
         const drain = async () => {
+          // The run's deadline timer aborts this download. A second deadline of its own would
+          // race that timer and could report the run's timeout as a failed request.
           const stream = await box.fs.downloadStream(`${dir}/output`, {
             signal: transferController.signal,
-            timeoutMs: Math.max(1, remainingMs),
           });
 
           const reader = stream.getReader();
