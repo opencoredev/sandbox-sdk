@@ -733,6 +733,36 @@ test.each(["abort", "deadline"] as const)(
   },
 );
 
+test("a wall-clock step before the spill download still ends as the run's timeout", async () => {
+  const box = await createSandbox(bufferedFactory());
+  const stalled = new Readable({ read() {} });
+  vi.spyOn(guest(box.id).fs, "downloadFileStream").mockImplementationOnce(async () => stalled);
+  const native = guest(box.id).process.executeCommand;
+  const now = Date.now.bind(Date);
+
+  // Timers follow the monotonic clock and Date.now() the wall clock. Step the wall clock
+  // forward (as NTP may) once the command has finished and before its spill is downloaded.
+  vi.spyOn(guest(box.id).process, "executeCommand").mockImplementation(
+    async (command, cwd, env, timeout) => {
+      const result = await native(command, cwd, env, timeout);
+
+      if (command.includes("python3 -u"))
+        vi.spyOn(Date, "now").mockImplementation(() => now() + 300);
+
+      return result;
+    },
+  );
+
+  try {
+    expect(await box.run("python3 -c 'print(\"x\"*100000)'", { timeoutMs: 1000 })).toMatchObject({
+      timedOut: true,
+      exitCode: null,
+    });
+  } finally {
+    stalled.destroy();
+  }
+});
+
 test("activity survives shell exit until inherited pipes drain on both transports", async () => {
   const box = await createSandbox(factory());
 
