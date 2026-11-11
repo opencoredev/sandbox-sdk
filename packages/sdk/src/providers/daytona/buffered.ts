@@ -242,6 +242,8 @@ export async function bufferedExecute(
     throw error;
   } finally {
     clearTimeout(timer);
+    // A spill download that failed mid-body has no deadline of its own: close it with the run.
+    transferController.abort();
     input.signal?.removeEventListener("abort", abort);
     await cancellation;
 
