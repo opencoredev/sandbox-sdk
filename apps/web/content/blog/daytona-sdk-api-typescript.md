@@ -40,7 +40,7 @@ What to know about it, from the package's types (`@daytona/sdk` 0.231.1, checked
 - For a server or another long-running process, start a session with `process.createSession` and run the command in it with `runAsync: true`, or redirect its output and background it with `&`.
 - `sandbox.getPreviewLink(port)` returns a `url` and a `token`. Private sandboxes need that token in an `X-Daytona-Preview-Token` header, which a browser iframe can't send; `sandbox.setPublic(true)` drops the requirement.
 - `sandbox.delete()` deletes the sandbox. If your code never reaches it, the sandbox stops after its auto-stop interval, 15 idle minutes by default (sandbox classes that can pause auto-pause after 60 instead), and a stopped sandbox keeps its disk until Daytona archives it.
-- The `Sandbox` object also has `git`, `codeRun` for Python, TypeScript and JavaScript snippets, LSP servers, snapshots, `fork` and, in recent versions, `pause()`.
+- The `Sandbox` object also has `git`, `process.codeRun` for Python, TypeScript and JavaScript snippets, LSP servers, snapshots, `fork` and, in recent versions, `pause()`.
 
 The old `@daytonaio/sdk` name still gets releases, with a README that points to `@daytona/sdk`. Daytona says only the name changed, so switching is the install and the import.
 
@@ -153,7 +153,7 @@ console.log(result.ok, result.stdout); // true hello from Daytona
 
 ## Which one to use
 
-- **`@daytona/sdk`** if you only use Daytona and want everything it has, including `codeRun`, LSP servers, computer use, forks and pause.
+- **`@daytona/sdk`** if you only use Daytona and want everything it has, including `process.codeRun`, LSP servers, computer use, forks and pause.
 - **The REST API** to manage sandboxes from a language or tool without a Daytona SDK. Commands and files still go through the toolbox.
 - **Sandbox SDK's `daytona()`** if you want Daytona today and the option to move to E2B, Vercel Sandbox or Docker later, or to run the same code on several. The same package gives you `sandboxTools` for the AI SDK, Mastra and the OpenAI Agents SDK, and `memory()` for tests without a Daytona account.
 
