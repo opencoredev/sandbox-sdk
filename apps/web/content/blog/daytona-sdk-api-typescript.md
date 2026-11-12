@@ -79,7 +79,7 @@ console.log(result.ok, result.stdout);
 It reads the same `DAYTONA_API_KEY`. What's different from `@daytona/sdk`:
 
 - **Output comes back split.** `box.run` resolves with `exitCode`, `ok`, `stdout`, `stderr` and `output`, and you can iterate it to stream output while the command runs. It throws only when the sandbox or the provider fails, never for a non-zero exit. [Running commands](/docs/concepts/running-commands) covers timeouts and streaming.
-- **Long-running processes have their own call.** `box.start("npm run dev", { name: "web", ready: { port: 3000 } })` starts a process in the background and waits for its port, and `box.preview(3000)` returns the URL with the token header already filled in.
+- **Long-running processes have their own call.** `box.start("npm run dev", { name: "web", ready: { port: 3000 } })` starts a process in the background and waits for its port, and `box.preview(3000)` returns the URL plus a `headers` object holding the preview token, which you send with each request (or create the sandbox with `daytona({ public: true })` and skip it).
 - **Cleanup is part of the syntax.** `await using` deletes the sandbox when the block ends, including when your code throws. [Lifecycle and cleanup](/docs/concepts/lifecycle-and-cleanup) covers `close`, `destroy` and the reaper.
 - **Limits are options.** `timeoutMs` and `idleTimeoutMs` set a hard lifetime and an idle stop, both in whole minutes on Daytona. `size` takes presets or exact CPU, memory and disk, and `network` takes a host allow list.
 - **Relative paths resolve against `/workspace`**, the same on every provider.
@@ -103,8 +103,8 @@ const info = await box.native.request<{ state: string; cpu: number; memory: numb
 console.log(info.state, info.cpu, info.memory);
 
 const sandbox = await box.native.sdk(() => import("@daytona/sdk"));
-const status = await sandbox.git.status("/workspace");
-console.log(status.currentBranch);
+const files = await sandbox.fs.listFiles("/workspace");
+console.log(files.map((file) => file.name));
 ```
 
 ## Move the same code from E2B to Daytona
@@ -169,7 +169,7 @@ They mix: `box.native.sdk` gives you the official SDK's `Sandbox` whenever you n
 
 **Can I give an AI agent a Daytona sandbox as tools?** With Sandbox SDK, `sandboxTools(box)` from `@opencoredev/sandbox-sdk/ai`, `/mastra` or `/openai` turns a Daytona sandbox into tools for that framework. [Give your agent a sandbox](/docs/guides/give-your-agent-a-sandbox) walks through it.
 
-**Can I switch from E2B to Daytona without rewriting my code?** Yes, if the code uses Sandbox SDK: change `createSandbox(e2b())` to `createSandbox(daytona())`. Code that calls the `e2b` package directly needs one move to the portable API first, and features Daytona's adapter lacks, such as pause, fail with `unsupported`.
+**Can I switch from E2B to Daytona without rewriting my code?** Yes, if the code uses Sandbox SDK: change `createSandbox(e2b())` to `createSandbox(daytona())`. Code that calls the `e2b` package directly needs one move to the portable API first. Features Daytona's adapter lacks aren't there: an option it can't enforce fails with `unsupported`, and `pause` and `resume` don't exist on its sandbox type, so check `hasCapability(box, "pause")` first.
 
 ## Next steps
 
