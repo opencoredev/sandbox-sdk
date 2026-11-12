@@ -1,0 +1,26 @@
+---
+title: Community providers
+description: Sandbox SDK adapters that their authors publish and maintain in their own npm packages, with links to each package and its source.
+---
+
+These providers aren't part of `@opencoredev/sandbox-sdk`. Each one is an adapter that its author publishes on npm and keeps working, built on the same [`/provider` exports](/providers/custom#maintain-an-adapter-in-its-own-package) as the built-in adapters. You install it next to Sandbox SDK and pass its factory to `createSandbox` like any other provider.
+
+Their authors support them, so report a bug in one to its own repository. They aren't in the [capability matrix](/reference/capabilities), and each author ran the conformance suite when the adapter was listed. Check an adapter's README for what it supports and needs before you rely on it.
+
+## Listed adapters
+
+| Provider                                | Package                                                                                | Runs on                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [Raft](https://github.com/Microck/raft) | [`@microck/sandbox-sdk-raft`](https://www.npmjs.com/package/@microck/sandbox-sdk-raft) | Incus containers on your own Linux hosts |
+
+## List your adapter
+
+Open a pull request that adds a row to the table. The adapter needs:
+
+- an npm package with `@opencoredev/sandbox-sdk` as a peer dependency, in a range that includes the current release;
+- a passing `runConformance(() => yourProvider(), { live: true })` run against the real service, with each skipped check named under `unsupported`;
+- public source, and a README that says what it doesn't support.
+
+In the pull request, give the adapter and Sandbox SDK versions you tested, your `runConformance` options with the reason for each skip, and the passing output or a link to the CI run.
+
+[Write a provider](/providers/custom) covers the contract and the conformance suite.

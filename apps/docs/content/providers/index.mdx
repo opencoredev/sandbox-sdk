@@ -9,7 +9,7 @@ A provider is where sandboxes actually run. You pick one by importing its factor
 
 E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer call the provider's HTTP API directly, so they need no package besides Sandbox SDK. The others use the provider's own SDK, which you install next to Sandbox SDK; [Peer packages](/reference/capabilities#peer-packages) names the package and version range for each one. It loads on the provider's first operation, so unused providers cost nothing. Either way, calls use your credentials.
 
-Not sure where to start? [Choose a provider](/getting-started/choose-a-provider) maps common needs to a provider.
+Not sure where to start? [Choose a provider](/getting-started/choose-a-provider) maps common needs to a provider. Adapters that other people publish and maintain are on [Community providers](/providers/community).
 
 ## At a glance
 
@@ -80,6 +80,9 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
   </Card>
   <Card title="Memory" href="/providers/memory" icon="memory-stick">
     An in-process fake with files, scripted commands, and fake preview URLs.
+  </Card>
+  <Card title="Community providers" href="/providers/community" icon="users">
+    Adapters their authors publish on npm, such as Raft for Incus containers on your own hosts.
   </Card>
   <Card title="Write a provider" href="/providers/custom" icon="plug">
     Implement a small set of primitives and get the whole API on top.
