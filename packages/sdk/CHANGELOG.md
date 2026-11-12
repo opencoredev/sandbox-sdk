@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0
+
+### Minor Changes
+
+- aeae333: Add provider extensions (`box.ext`) for provider-specific features, and two provider-level capabilities with root functions: `deleteSnapshot(provider, id)` (`"snapshot-delete"`) and `buildTemplate(provider, spec)` (`"templates"`). E2B implements both, plus a PTY `box.terminal()`, native `files.watch` events through envd, and its metrics in `box.usage()` and `box.ext.e2b.metrics()`. `box.usage()` gains optional `cpuCount`, `cpuPercent`, `memoryBytes`, `memoryLimitBytes`, `diskBytes`, `diskLimitBytes` and `metricsAt` fields. Requests the SDK sends now carry `User-Agent: sandbox-sdk/<version>`. `/provider` now exports `SandboxError`, the error helpers and the Connect stream codec, so an adapter can live in its own package; the E2B adapter imports from nothing else. For adapter authors: `terminal()` receives `cwd` and `env`, and `Terminal` gains an optional `wait()`.
+
+### Patch Changes
+
+- c0be02d: Daytona: a buffered run whose large output is still downloading when its deadline passes now returns `timedOut: true` instead of sometimes rejecting with a `timeout` error from the download request, and a forward wall-clock step no longer cuts that download short.
+
 ## 1.0.3
 
 ### Patch Changes
