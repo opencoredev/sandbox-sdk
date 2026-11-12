@@ -3,7 +3,7 @@ title: Install
 description: Install Sandbox SDK, plus the provider SDK for Vercel, Upstash, Railway, Tenki, boxd, or agentOS if you use one. Requirements, optional packages, and where your keys must stay.
 ---
 
-Sandbox SDK is one npm package. The core has no runtime dependencies. E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need nothing else, because their adapters call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS need that provider's official SDK installed next to it, and you only install the ones you use.
+Sandbox SDK is one npm package. The core has no runtime dependencies. E2B, Daytona, Freestyle, Superserve, Baseten, Boat, and Sandboxer need nothing else, because their adapters call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS need that provider's official SDK installed next to it, and you only install the ones you use.
 
 ## 1. Install the package
 
@@ -46,7 +46,7 @@ That is enough for the [Memory](/providers/memory) provider, which runs in your 
 
 ## 2. Add a provider SDK, if needed
 
-E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer need no extra package. For the providers that wrap an SDK, install it next to Sandbox SDK. The adapter loads it the first time that provider does something, so a provider you never call costs nothing. [Peer packages](/reference/capabilities#peer-packages) lists the package and version range for each one.
+E2B, Daytona, Freestyle, Superserve, Baseten, Boat, and Sandboxer need no extra package. For the providers that wrap an SDK, install it next to Sandbox SDK. The adapter loads it the first time that provider does something, so a provider you never call costs nothing. [Peer packages](/reference/capabilities#peer-packages) lists the package and version range for each one.
 
 <ProviderTabs>
 <ProviderTab provider="local">
@@ -148,13 +148,13 @@ A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either fo
 
 ## What the package exports
 
-| Import                                                                                                                                                        | What it gives you                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `@opencoredev/sandbox-sdk`                                                                                                                                    | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
-| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/memory` | One provider factory each                                                                          |
-| `/ai`, `/mastra`, `/openai`                                                                                                                                   | `sandboxTools` for each agent framework                                                            |
-| `/tools`                                                                                                                                                      | The framework-neutral tool definitions and their Zod schemas                                       |
-| `/provider`                                                                                                                                                   | The adapter contract, for [writing a provider](/providers/custom)                                  |
-| `/testing`                                                                                                                                                    | `runConformance`, the suite every provider passes                                                  |
+| Import                                                                                                                                                                    | What it gives you                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `@opencoredev/sandbox-sdk`                                                                                                                                                | `createSandbox`, `connectSandbox`, `listSandboxes`, `reapSandboxes`, `SandboxError`, and the types |
+| `/local`, `/agentos`, `/e2b`, `/vercel`, `/daytona`, `/upstash`, `/railway`, `/boat`, `/sandboxer`, `/tenki`, `/superserve`, `/boxd`, `/freestyle`, `/baseten`, `/memory` | One provider factory each                                                                          |
+| `/ai`, `/mastra`, `/openai`                                                                                                                                               | `sandboxTools` for each agent framework                                                            |
+| `/tools`                                                                                                                                                                  | The framework-neutral tool definitions and their Zod schemas                                       |
+| `/provider`                                                                                                                                                               | The adapter contract, for [writing a provider](/providers/custom)                                  |
+| `/testing`                                                                                                                                                                | `runConformance`, the suite every provider passes                                                  |
 
 Next: the [Quickstart](/getting-started/quickstart).

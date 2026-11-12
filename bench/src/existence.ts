@@ -213,6 +213,7 @@ const lookupKeys = new Map([
   ["boat", "BOAT_API_KEY"],
   ["freestyle", "FREESTYLE_API_KEY"],
   ["superserve", "SUPERSERVE_API_KEY"],
+  ["baseten", "BASETEN_API_KEY"],
 ]);
 
 const nativeInfo = z.object({
@@ -327,6 +328,38 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
           return nativeInfo.parse(await response.json());
+        }
+
+        case "baseten": {
+          // The management API's sandbox record, read with a sandbox access token minted from the key.
+          const api = process.env.BASETEN_API_URL ?? "https://api.baseten.co";
+          const minted = await fetch(`${api}/v1/token`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.BASETEN_API_KEY ?? ""}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ scopes: ["sandboxes"] }),
+            signal,
+          });
+
+          if (!minted.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: minted.status });
+          const { token } = z.object({ token: z.string() }).parse(await minted.json());
+
+          const response = await fetch(`${api}/v1/sandboxes/instances/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal,
+          });
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          const record = z
+            .object({ name: z.string(), status: z.string() })
+            .parse(await response.json());
+
+          return { id: record.name, status: record.status };
         }
 
         case "local": {

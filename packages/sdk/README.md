@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk
 ```
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Baseten, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -104,6 +104,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       |
 | Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             |
 | Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            |
+| [Baseten](https://sandbox-sdk.app/docs/providers/baseten)      | `/baseten`    | `baseten()`             | `BASETEN_API_KEY` (optional `BASETEN_TEAM_ID`, `BASETEN_SANDBOX_REGION`)        |
 | Boat                                                           | `/boat`       | `boat()`                | `BOAT_API_KEY` (optional `BOAT_API_BASE`)                                       |
 | Sandboxer                                                      | `/sandboxer`  | `sandboxer({ region })` | `SANDBOXER_API_KEY` (optional `SANDBOXER_REGION`: `us-east`, `eu-central`)      |
 | [Local (Docker)](https://sandbox-sdk.app/docs/providers/local) | `/local`      | `local()`               | none; needs a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)   |

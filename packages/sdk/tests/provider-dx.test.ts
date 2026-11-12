@@ -7,6 +7,7 @@ import { daytona } from "../src/providers/daytona/index.js";
 import { boat } from "../src/providers/boat/index.js";
 import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
+import { baseten } from "../src/providers/baseten/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
 import { boxd as mockBoxd, MockBoxd } from "./cloud-guest-mock.js";
@@ -157,6 +158,7 @@ for (const [name, factory, env, label, next] of [
   ["boat", boat, "BOAT_API_KEY", "Boat", "BOAT_API_KEY"],
   ["tenki", tenki, "TENKI_API_KEY", "Tenki", "TENKI_API_KEY or TENKI_AUTH_TOKEN"],
   ["freestyle", freestyle, "FREESTYLE_API_KEY", "Freestyle", "FREESTYLE_API_KEY"],
+  ["baseten", baseten, "BASETEN_API_KEY", "Baseten", "BASETEN_API_KEY"],
   ["superserve", superserve, "SUPERSERVE_API_KEY", "Superserve", "SUPERSERVE_API_KEY"],
   ["upstash", upstash, "UPSTASH_BOX_API_KEY", "Upstash Box", "UPSTASH_BOX_API_KEY"],
 ] as const) {

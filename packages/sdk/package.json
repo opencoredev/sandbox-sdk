@@ -114,6 +114,10 @@
       "types": "./dist/providers/boxd/index.d.ts",
       "default": "./dist/providers/boxd/index.js"
     },
+    "./baseten": {
+      "types": "./dist/providers/baseten/index.d.ts",
+      "default": "./dist/providers/baseten/index.js"
+    },
     "./freestyle": {
       "types": "./dist/providers/freestyle/index.d.ts",
       "default": "./dist/providers/freestyle/index.js"

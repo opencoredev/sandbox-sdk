@@ -1,0 +1,202 @@
+---
+title: Baseten
+description: Run sandboxes on Baseten Sandboxes. Sizes from 1 vCPU, lifetimes and idle timeouts in seconds, and private previews with a token in the URL.
+---
+
+`baseten()` runs each sandbox on [Baseten Sandboxes](https://docs.baseten.co/sandboxes/overview). It calls Baseten's HTTP API directly, so it needs no package besides `@opencoredev/sandbox-sdk`.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Set `BASETEN_API_KEY` on your server, and keep it out of browser bundles. The adapter trades it for a short-lived sandbox access token and renews that token itself. `BASETEN_TEAM_ID` picks a team when the key can reach several. `BASETEN_SANDBOX_REGION` picks a region: `us-pdx-1`, `us-was-1`, `eu-fra-1` or `eu-lon-1`. Without it Baseten uses its default region.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten());
+const result = await box.run("uname -a");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                 |
+| ------------------------------ | ----------- | ----------------------------------------------------- |
+| Commands and streaming         | Yes         | Iterating streams the process log live                |
+| Files                          | Yes         | `mode` is applied with `chmod` after the write        |
+| Background processes           | Yes         |                                                       |
+| Preview URLs                   | Yes         | Private by default, with an expiring token in the URL |
+| Pause and resume               | No          |                                                       |
+| Snapshots                      | No          |                                                       |
+| Machine size                   | Yes         | Presets, or one vCPU per 2048 MB of memory            |
+| Network policy                 | No          |                                                       |
+| Hard lifetime (`timeoutMs`)    | Yes         | Deletes the sandbox; rounded up to whole seconds      |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Deletes the sandbox; rounded up to whole seconds      |
+| Keys                           | Best-effort | Stored as a label and found by listing                |
+| Terminal                       | No          |                                                       |
+
+The [capability matrix](/reference/capabilities) compares these with every other provider.
+
+## Images
+
+The default image is `baseten/ts-app:latest`: Debian with Node, npm and Git. Pass `image` to use another one. It applies to every sandbox the provider creates.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten({ image: "baseten/ts-app:latest" }));
+const dev = await box.start(
+  "node -e \"require('http').createServer((_, r) => r.end('ok')).listen(3000, () => console.log('listening'))\"",
+  { name: "web", ready: { log: /listening/ } },
+);
+console.log(dev.status);
+```
+
+## Size and lifetime
+
+Baseten gives one vCPU per 2048 MB of memory, so a size is its memory.
+
+| Preset   | vCPUs | Memory  |
+| -------- | ----- | ------- |
+| `small`  | 1     | 2048 MB |
+| `medium` | 2     | 4096 MB |
+| `large`  | 4     | 8192 MB |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten(), {
+  size: { cpu: 8, memoryMb: 16_384 },
+  timeoutMs: 30 * 60_000,
+  idleTimeoutMs: 5 * 60_000,
+});
+```
+
+An exact size works when `memoryMb` is 2048 times a whole `cpu` count, at most 262144, and `diskGb` is unset; anything else fails with `unsupported`. Without `size`, sandboxes get the factory's `memoryMb`, 4096 MB (2 vCPU) by default.
+
+`timeoutMs` becomes a maximum-age lifecycle policy and `idleTimeoutMs` an idle policy. Both round up to whole seconds, and both delete the sandbox when they fire.
+
+## Run commands
+
+Await `box.run` for the result in one request. Iterating, or a `timeoutMs` above 90 seconds, follows the process log as it streams.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("echo one; sleep 1; echo two")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+Each command is its own process group, and a timeout or abort kills the group. Stdin travels as a private file, never in the command line.
+
+## Previews
+
+No ports to declare. Bind your server to `0.0.0.0`. `box.preview(port)` publishes the port and, by default, mints a token that goes in the URL as a `preview_token` query parameter, so the URL works without headers until the token expires. `previewTokenTtlMs` sets that lifetime, one hour by default. `previewAccess: "public"` returns URLs with no token.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten());
+await box.start("python3 -m http.server 3000 --bind 0.0.0.0", {
+  name: "web",
+  ready: { port: 3000 },
+});
+const preview = await box.preview(3000);
+const response = await fetch(preview.url);
+console.log(response.status, preview.expiresAt);
+```
+
+Anyone with a private preview URL can open it until the token expires, so treat the URL as a secret.
+
+## Configuration
+
+| Option              | Type                    | Default                  | Env var                  |
+| ------------------- | ----------------------- | ------------------------ | ------------------------ |
+| `apiKey`            | `string`                |                          | `BASETEN_API_KEY`        |
+| `teamId`            | `string`                |                          | `BASETEN_TEAM_ID`        |
+| `region`            | `string`                | Baseten's default        | `BASETEN_SANDBOX_REGION` |
+| `image`             | `string`                | `baseten/ts-app:latest`  |                          |
+| `memoryMb`          | `number`                | `4096`                   |                          |
+| `baseUrl`           | `string`                | `https://api.baseten.co` | `BASETEN_API_URL`        |
+| `requestTimeoutMs`  | `number`                | `60_000`                 |                          |
+| `previewAccess`     | `"private" \| "public"` | `"private"`              |                          |
+| `previewTokenTtlMs` | `number`                | One hour                 |                          |
+
+`memoryMb` takes 1024 to 262144. A `size` passed to `createSandbox` wins over it. `network` other than `"all"` and `from` fail with `unsupported`.
+
+## Call the API directly
+
+`box.native` calls any endpoint in Baseten's sandbox API with the adapter's credentials, retries and error mapping. See [Native API](/reference/native) for every option.
+
+- The `"api"` plane, the default, is the management API: `/v1/sandboxes/instances/{sandboxName}`.
+- The `"sandbox"` plane is the sandbox's own execution API: `/process`, `/filesystem/{path}`.
+- `{sandboxName}` fills itself from the sandbox. Pass any other placeholder in `params`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten());
+const sandbox = await box.native.request<{ status: string }>(
+  "GET",
+  "/v1/sandboxes/instances/{sandboxName}",
+);
+const listing = await box.native.request<{ files: { path: string }[] }>(
+  "GET",
+  "/filesystem/{path}",
+  { plane: "sandbox", params: { path: "/workspace" } },
+);
+console.log(sandbox.status, listing.files.length);
+```
+
+`provider.api` reaches the management API with no sandbox bound, for example `provider.api.request("GET", "/v1/sandboxes/instances")`. `box.native.sdk` is not available for Baseten.
+
+## Limitations
+
+- Keys are best-effort.
+- No pause, snapshots, network policies or terminals.
+- Both lifetimes delete the sandbox; there is no stop that keeps the disk.

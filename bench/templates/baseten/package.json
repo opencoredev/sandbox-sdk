@@ -1,0 +1,11 @@
+{
+  "name": "sandbox-bench-baseten-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts"
+  },
+  "dependencies": {
+    "@basetenlabs/sandbox": "0.5.0"
+  }
+}

@@ -138,6 +138,7 @@ export default defineConfig({
               root: "/providers/freestyle",
               icon: "/integrations/freestyle.svg",
             },
+            { label: "Baseten", root: "/providers/baseten", icon: "box" },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
             { label: "Community providers", root: "/providers/community", icon: "users" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
