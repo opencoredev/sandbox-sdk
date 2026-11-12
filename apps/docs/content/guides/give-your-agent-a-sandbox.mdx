@@ -1,9 +1,11 @@
 ---
 title: Give your agent a sandbox
-description: Hand an AI SDK, Mastra, or OpenAI Agents SDK agent ready-made sandbox tools with sandboxTools, see what the model gets back, and limit what it can touch.
+seo:
+  title: Give an AI agent a sandbox to run shell commands
+description: Give an AI SDK, Mastra or OpenAI Agents SDK agent a sandbox to run shell commands and edit files on E2B, Daytona or Docker, with sandboxTools.
 ---
 
-You want a model to run commands, read and edit files, and start a dev server, without writing tool definitions by hand. `sandboxTools(box)` returns ready tools in your framework's own format.
+To give an AI agent a sandbox where it can run shell commands, create one with `createSandbox` from `@opencoredev/sandbox-sdk` and pass `sandboxTools(box)` to your agent. The model gets `run`, `read_file`, `edit_file` and four more tools that execute inside the sandbox instead of in your app's process, and the same agent code runs on E2B, Daytona, Vercel Sandbox or a Docker container through `local()`. You don't write tool definitions: `sandboxTools` returns them in your framework's own format.
 
 Each framework has its own subpath, so you only load the one you use:
 
@@ -135,3 +137,13 @@ The full option list, including per-tool limits, is in the [agent tools referenc
 ## Show full output in your UI
 
 The model gets a compact result, but people often want the whole log. Pass `onEvent` to receive every chunk of output as it happens and forward it to your UI. With the AI SDK, the tools also stream preliminary results, so a `useChat` UI shows output while the command is still running. The [AI app builder guide](/guides/build-an-ai-app-builder) wires this up end to end.
+
+## Common questions
+
+**Do the agent's commands run on my server?** No. Every tool call goes to the sandbox you created, a cloud microVM or container on E2B, Daytona, Vercel Sandbox and the other cloud providers. With `local()` it is a Docker container on the machine that runs your code, so read [Security](/reference/security) before you hand it untrusted prompts.
+
+**How is this different from the AI SDK's own bash tool?** The AI SDK ships `experimental_createBashTool` in `@ai-sdk/tool-bash`: one `bash` tool over a sandbox session from an adapter package, such as `@ai-sdk/sandbox-vercel` for Vercel Sandbox. `sandboxTools` gives the model separate tools for commands, files and background processes with compact results, works in Mastra and the OpenAI Agents SDK too, and runs on any Sandbox SDK provider. Mastra's `Workspace` and the OpenAI Agents SDK's `SandboxAgent` are the same kind of framework-owned option; the [Mastra](/integrations/mastra) and [OpenAI Agents](/integrations/openai-agents) pages compare them.
+
+**Does every tool work on every provider?** `run` and the file tools do. `start_process` needs background processes, which agentOS doesn't have, and on Vercel Sandbox and `local()` you list the dev server's port in `ports` when you create the sandbox. A tool the provider can't support fails with `unsupported`. The [capability matrix](/reference/capabilities) has the details.
+
+**Can I test the agent without a cloud account?** Yes. Create the sandbox from `memory()` and your handlers answer the commands, with no key and no network. See [Testing with memory()](/guides/testing-with-memory).

@@ -1,9 +1,11 @@
 ---
 title: Files and git
-description: Read, write, and edit files in a sandbox, move folders in and out, search, watch for changes, see what changed since creation, and use git with tokens kept out of logs.
+description: Upload files to a sandbox from TypeScript and run them. Read, write and edit files, move folders in and out, watch for changes, and use git safely.
 ---
 
 `box.files` works on the sandbox file system. `box.git` runs git with credentials that never touch the command line. Relative paths resolve against `/workspace`, the same default directory `run` uses.
+
+To upload files and run a Python script in a sandbox from TypeScript with `@opencoredev/sandbox-sdk`, write the script with `box.files.write("main.py", source)`, or copy a whole local folder with `box.files.upload("./job", "job")`, then run it with `box.run("python3 main.py")` and read `result.stdout`. The code is the same on E2B, Daytona, Docker through `local()` and every other provider whose image has Python. [Running commands](/concepts/running-commands) covers exit codes, timeouts and streaming.
 
 ## Read and write
 
