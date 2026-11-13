@@ -57,6 +57,8 @@ const row = {
   scenarios: new Set(["sandbox-lifetime"]),
   startedAt: "2026-10-19T20:34:00.000Z",
   finishedAt: "2026-10-19T20:35:00.000Z",
+  confirmedStopAt: null,
+  app: null,
 };
 
 const noNetwork: Transport = async () => {

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { localDocker, lookupError, nativeModules } from "./existence.js";
+import { localDocker, lookupError, nativeModules, type NativeModules } from "./existence.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
@@ -27,6 +27,23 @@ async function tenkiClient() {
   const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
 
   return new TenkiSandbox({ authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN });
+}
+
+/** Run `action` with a fresh Modal client, closed afterwards. Cleanup can outlive the adapter's client. */
+async function withModal<T>(
+  action: (
+    client: InstanceType<NativeModules["modal"]["ModalClient"]>,
+    modal: NativeModules["modal"],
+  ) => Promise<T>,
+): Promise<T> {
+  const modal = await nativeModules.load("modal");
+  const client = new modal.ModalClient();
+
+  try {
+    return await action(client, modal);
+  } finally {
+    client.close();
+  }
 }
 
 export async function snapshotCleaner(
@@ -96,6 +113,18 @@ export async function snapshotCleaner(
 
     return async (id) => {
       await tenki.deleteSnapshot(id);
+    };
+  }
+
+  if (name === "modal")
+    // A snapshot is a Modal Image. Its delete also succeeds for a missing image; inspect runs first.
+    return (id) => withModal((client) => client.images.delete(id));
+
+  if (name === "vercel") {
+    const { Snapshot } = await nativeModules.load("@vercel/sandbox");
+
+    return async (id) => {
+      await (await Snapshot.get({ snapshotId: id })).delete();
     };
   }
 
@@ -253,6 +282,34 @@ export async function inspectSnapshot(
         if (!listed) throw new Error("Snapshot metadata not visible; absence unproven");
         info = listed;
         break;
+      }
+
+      case "modal": {
+        // Modal Images record no source sandbox, so provenance rests on the ownership journal.
+        const found = await withModal(async (client, modal) => {
+          try {
+            if ((await client.images.fromId(id)).imageId !== id)
+              throw new Error("Snapshot metadata ID mismatch");
+
+            return true;
+          } catch (error) {
+            if (error instanceof modal.NotFoundError) return false;
+            throw error;
+          }
+        });
+
+        return { exists: found };
+      }
+
+      case "vercel": {
+        // Vercel keeps a deleted snapshot readable with status "deleted". Its source is a session
+        // ID, not the sandbox name the ownership proof records, so no parent is compared.
+        const { Snapshot } = await nativeModules.load("@vercel/sandbox");
+        const snapshot = await Snapshot.get({ snapshotId: id });
+
+        if (snapshot.snapshotId !== id) throw new Error("Snapshot metadata ID mismatch");
+
+        return { exists: snapshot.status !== "deleted" };
       }
 
       case "local": {

@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { MergedSample, Suite } from "./merge.js";
+import type { MergedSample, MergeSource, Suite } from "./merge.js";
+import { attemptApp, type JournalApp } from "./modal-apps.js";
+import { sampleSuite, suiteFor } from "./suite.js";
 
 export const cloudProviders = [
   "e2b",
@@ -11,6 +13,8 @@ export const cloudProviders = [
   "freestyle",
   "tenki",
   "superserve",
+  "modal",
+  "vercel",
 ];
 
 export const mainTests = [
@@ -48,12 +52,128 @@ const identity = z.object({
   track: z.enum(["default", "same-spec"]).optional(),
 });
 
+/**
+ * Iterations of one source run that a rerun replaces, with every sample they recorded, for failures
+ * on our side that never reached the provider (SBX-103: Modal's 200-App limit stopped the App lookup
+ * before any create). They are dropped as "superseded-by-rerun" and counted in selectionRemoved.
+ */
+const supersededIterations = z.object({
+  provider: z.enum(cloudProviders),
+  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  track: z.enum(["default", "same-spec"]).optional(),
+  sourceRunId: z.string().min(1),
+  iterations: z.array(z.number().int().nonnegative()).min(1),
+  rerunSourceRunIds: z.array(z.string().min(1)).min(1),
+  reason: z.string().min(1),
+});
+
 export const attemptPolicySchema = z.object({
   replacements: z.array(identity.extend({ sourceRunIds: z.array(z.string()).min(1) })),
   notRun: z.array(identity.extend({ reason: z.string().min(1) })),
+  superseded: z.array(supersededIterations).optional(),
 });
 
 export type AttemptPolicy = z.infer<typeof attemptPolicySchema>;
+
+/** Each source's ownership-journal Apps by run ID; a source missing from the map has no journal. */
+export type SourceJournals = ReadonlyMap<string, readonly JournalApp[]>;
+
+const completion = z.object({
+  admissionStopped: z.array(z.unknown()).optional(),
+  cleanupReview: z.array(z.unknown()).optional(),
+});
+
+const sameTrack = (a: string | undefined, b: string | undefined) =>
+  (a ?? "default") === (b ?? "default");
+
+/**
+ * Why each superseded rule cannot be applied; empty when every rule is backed by evidence. A rule
+ * for a source outside the merge removes nothing and is not checked. Otherwise it
+ * stands only when the source's ownership journal shows each named iteration's App with no create
+ * journaled and no sandbox (beginAllocation journals every create before it is submitted, so none
+ * reached the provider), none of the iteration's samples names a sandbox, and each named rerun is
+ * merged, completed (no stopped admission, no unresolved cleanup) and ran at least as many
+ * iterations of the provider on the same track as it replaces.
+ */
+export function supersededRefusals({
+  policy,
+  sources,
+  journals,
+}: {
+  policy: AttemptPolicy;
+  sources: readonly MergeSource[];
+  journals: SourceJournals;
+}): string[] {
+  return (policy.superseded ?? []).flatMap((rule) => {
+    const origin = sources.find((s) => s.runId === rule.sourceRunId);
+
+    // A rule for a run outside this merge (another track's) removes nothing.
+    if (!origin) return [];
+    const label = `superseded ${rule.provider}@${rule.sourceRunId}`;
+    const refusals: string[] = [];
+    const apps = journals.get(rule.sourceRunId);
+
+    if (!apps) refusals.push(`${label}: source has no ownership journal`);
+
+    for (const iteration of rule.iterations) {
+      const name = attemptApp(rule.sourceRunId, iteration);
+      const app = apps?.find((a) => a.provider === rule.provider && a.name === name);
+
+      if (apps && !app) refusals.push(`${label}: iteration ${iteration} has no journaled App`);
+
+      if (app && (app.allocations.length > 0 || app.sandboxes.length > 0))
+        refusals.push(
+          `${label}: iteration ${iteration} journaled ${app.allocations.length} create(s) and ${app.sandboxes.length} sandbox(es)`,
+        );
+
+      for (const s of origin.samples)
+        if (
+          s.provider === rule.provider &&
+          s.iteration === iteration &&
+          sameTrack(s.track ?? origin.config.track, rule.track) &&
+          s.sandboxId !== null
+        )
+          refusals.push(`${label}: iteration ${iteration} recorded sandbox ${s.sandboxId}`);
+    }
+
+    for (const runId of rule.rerunSourceRunIds) {
+      const rerun = sources.find((s) => s.runId === runId);
+
+      if (!rerun || runId === rule.sourceRunId) {
+        refusals.push(`${label}: rerun ${runId} is not among the merged sources`);
+        continue;
+      }
+
+      const state = completion.parse(rerun);
+
+      if (state.admissionStopped?.length || state.cleanupReview?.length)
+        refusals.push(`${label}: rerun ${runId} did not complete`);
+
+      // Only the rule's own suite counts: a snapshot-only rerun can't stand in for main-suite iterations.
+      const rerunSuite = suiteFor(rerun);
+
+      const ran = new Set(
+        rerun.samples
+          .filter(
+            (s) =>
+              s.provider === rule.provider &&
+              sampleSuite(s.scenario, rerunSuite) === rule.suite &&
+              sameTrack(s.track ?? rerun.config.track, rule.track) &&
+              s.outcome.kind !== "skipped" &&
+              s.outcome.kind !== "blocked",
+          )
+          .map((s) => s.iteration),
+      ).size;
+
+      if (ran < rule.iterations.length)
+        refusals.push(
+          `${label}: rerun ${runId} ran ${ran} ${rule.provider} ${rule.suite} iterations, fewer than the ${rule.iterations.length} it replaces`,
+        );
+    }
+
+    return refusals;
+  });
+}
 
 export function attemptTarget(suite: Suite, scenario: string): number | null {
   if (suite === "cost") return scenario === "tool-replay" ? 10 : null;
@@ -85,9 +205,14 @@ function matches(s: z.infer<typeof identity>, rule: z.infer<typeof identity>) {
 export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   const counts = new Map<string, number>();
   const removed = new Map<string, number>();
+  const removedByTrack = new Map<string, Map<string, number>>();
 
-  const drop = (reason: string) => {
+  const drop = (reason: string, s: Pick<MergedSample, "track">) => {
     removed.set(reason, (removed.get(reason) ?? 0) + 1);
+    const track = s.track ?? "default";
+    const byReason = removedByTrack.get(track) ?? new Map<string, number>();
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+    removedByTrack.set(track, byReason);
 
     return false;
   };
@@ -103,12 +228,24 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
       if (!cloudProviders.includes(s.provider)) return true;
 
       if (policy.replacements.some((r) => matches(s, r) && !r.sourceRunIds.includes(s.sourceRunId)))
-        return drop("replaced-source");
+        return drop("replaced-source", s);
 
-      if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run");
+      if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run", s);
+
+      if (
+        (policy.superseded ?? []).some(
+          (r) =>
+            r.provider === s.provider &&
+            r.suite === s.suite &&
+            (r.track ?? "default") === (s.track ?? "default") &&
+            r.sourceRunId === s.sourceRunId &&
+            r.iterations.includes(s.sourceIteration),
+        )
+      )
+        return drop("superseded-by-rerun", s);
 
       if (s.failureClass === "provider-account-limit" || s.failureClass === "client-third-party")
-        return drop(s.failureClass);
+        return drop(s.failureClass, s);
 
       if (s.suite === "cost") return true; // Keep whole tasks; never select replay rows independently of billing IDs.
       const target = attemptTarget(s.suite, s.scenario);
@@ -118,7 +255,7 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
       const count = (counts.get(key) ?? 0) + 1;
       counts.set(key, count);
 
-      return count <= target || drop("above-target");
+      return count <= target || drop("above-target", s);
     });
 
   const cohorts = new Set(
@@ -136,10 +273,16 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
     if (!burst || !cloudProviders.includes(s.provider)) return true;
     const identity = `${s.track ?? "default"}/${s.provider}/${s.sourceRunId}/burst-${burst[1]}/${Math.floor(s.sourceIteration / Number(burst[1]))}`;
 
-    return cohorts.has(identity) || drop("unselected-cohort-member");
+    return cohorts.has(identity) || drop("unselected-cohort-member", s);
   });
 
-  return { samples: complete, removed: Object.fromEntries(removed) };
+  return {
+    samples: complete,
+    removed: Object.fromEntries(removed),
+    removedByTrack: Object.fromEntries(
+      [...removedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
+    ),
+  };
 }
 
 export function checkAttempts(

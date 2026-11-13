@@ -1,7 +1,8 @@
 import type { Sample } from "./v2-model.js";
 import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
-import { isSizePreset } from "./v2-config.js";
+import { pricing } from "./pricing.js";
+import { isSizePreset, type Size } from "./v2-config.js";
 import { distribution } from "./v2-stats.js";
 
 /** Each provider's named size presets. */
@@ -28,6 +29,18 @@ const presets: SizePresets = {
     medium: { cpu: 2, memoryGiB: 8 },
     large: { cpu: 4, memoryGiB: 16 },
   },
+  // The Modal adapter's presets, each pinning request and limit.
+  modal: {
+    small: { cpu: 1, memoryGiB: 2 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
+  // The adapter's presets; Vercel gives 2 GB of memory per vCPU.
+  vercel: {
+    small: { cpu: 1, memoryGiB: 2 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
 };
 
 const standardPresets = {
@@ -35,6 +48,31 @@ const standardPresets = {
   medium: { cpu: 2, memoryGiB: 4 },
   large: { cpu: 4, memoryGiB: 8 },
 };
+
+/** The CPU and memory a `--size` request asks the provider for. */
+export function requestedSize(provider: string, size: Size): { cpu: number; memoryGiB: number } {
+  return isSizePreset(size)
+    ? (presets[provider] ?? standardPresets)[size]
+    : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+}
+
+/**
+ * What a request-billed provider (Modal) bills for one sandbox: the requested size, exactly, or
+ * without a size the minimum request, a lower bound because usage above it is billed too. Null for
+ * every other provider. The guest's own view is never used.
+ */
+export function requestBilledCompute(
+  provider: string,
+  size: Size | null,
+): { compute: { cpu: number; memoryGiB: number }; bound: "exact" | "lower" } | null {
+  const billed = pricing[provider]?.requestBilled;
+
+  if (!billed) return null;
+
+  return size === null
+    ? { compute: { ...billed.minimum }, bound: "lower" }
+    : { compute: requestedSize(provider, size), bound: "exact" };
+}
 
 type AllocationRow = Pick<
   Sample,
@@ -52,9 +90,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const requestedCompute =
     size === null
       ? provisioned && { cpu: provisioned.cpu, memoryGiB: provisioned.memoryGiB }
-      : isSizePreset(size)
-        ? (presets[provider] ?? standardPresets)[size]
-        : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+      : requestedSize(provider, size);
 
   const observed = rows
     .filter((s) => ["fingerprint", "restore-fingerprint"].includes(s.scenario))
@@ -76,10 +112,11 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
 
   if (restoredMismatch) mismatches.push("Restored allocation differs from source");
 
-  if (
-    new Set(rows.map((s) => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size > 1
-  )
-    mismatches.push("Multiple requested allocations");
+  const multipleRequests =
+    new Set(rows.map((s) => JSON.stringify([s.requestedSize ?? null, s.template ?? null]))).size >
+    1;
+
+  if (multipleRequests) mismatches.push("Multiple requested allocations");
 
   if (requestedCompute && observed.some((r) => r.cpu !== requestedCompute.cpu))
     mismatches.push("Measured vCPU differs from requested allocation");
@@ -103,12 +140,33 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
   const memoryGiB = distribution(observed.map((r) => r.memoryGiB)).p50;
   const measuredCompute = cpu === undefined || memoryGiB === null ? null : { cpu, memoryGiB };
 
-  const pricingAllocation =
-    mismatches.length || (requested.template && !requestedCompute)
+  const billed = requestBilledCompute(provider, size);
+
+  // Request-billed providers price the request whatever the guest shows: Modal's default guest
+  // shows the host's memory, which differs between a source and its restore. Guest mismatches stay
+  // as caveats; only a request that varies leaves no price. Every other provider prices the
+  // verified or measured allocation.
+  const pricingAllocation = billed
+    ? multipleRequests
       ? null
-      : requestedCompute && observed.length
-        ? requestedCompute
-        : measuredCompute;
+      : billed.compute
+    : mismatches.length
+      ? null
+      : requested.template && !requestedCompute
+        ? null
+        : requestedCompute && observed.length
+          ? requestedCompute
+          : measuredCompute;
+
+  /** How `pricingAllocation` relates to the bill: `lower` is a lower bound, never an estimate. */
+  const pricingBound: "exact" | "lower" | "observed" | null =
+    pricingAllocation === null
+      ? null
+      : billed
+        ? billed.bound
+        : requestedCompute && observed.length
+          ? "exact"
+          : "observed";
 
   return {
     requested,
@@ -118,6 +176,7 @@ export function allocationEvidence(samples: readonly AllocationRow[], provider: 
     verified: mismatches.length ? false : observed.length && requestedCompute ? true : null,
     mismatches,
     pricingAllocation,
+    pricingBound,
     equalSpec:
       !restoredMismatch &&
       observed.length > 0 &&

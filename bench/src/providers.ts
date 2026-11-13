@@ -1,6 +1,8 @@
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
+import { lifetimeOptions } from "./lifetime.js";
+import { createAppByLabel } from "./modal-apps.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
@@ -9,6 +11,7 @@ const templateKeys = new Map([
   ["freestyle", "snapshotId"],
   ["tenki", "image"],
   ["boxd", "image"],
+  ["modal", "image"],
   ["local", "image"],
 ]);
 
@@ -20,6 +23,19 @@ export function templateOptions(name: string, template: string | undefined) {
   if (!key) throw new Error(`${name} has no template/image factory option`);
 
   return { [key]: template };
+}
+
+/**
+ * Factory options a provider always gets. Vercel keeps a persistent sandbox's snapshots after
+ * deletion unless asked, and bills their storage until they expire (30 days by default); pause and
+ * the stop before the usage read both make one.
+ */
+const fixedOptions = new Map<string, Record<string, boolean>>([
+  ["vercel", { deleteOrphanSnapshots: true }],
+]);
+
+export function providerDefaults(name: string) {
+  return fixedOptions.get(name) ?? {};
 }
 
 /** Factory options selecting a native product; validated by parseV2. */
@@ -57,13 +73,20 @@ const credentials = new Map([
   ["tenki", ["TENKI_API_KEY"]],
   ["boxd", ["BOXD_API_KEY"]],
   ["freestyle", ["FREESTYLE_API_KEY"]],
+  ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
 ]);
 
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
   ["daytona", "DAYTONA_TARGET"],
+  // Pins sandboxes at Modal's region price multiplier; loadProvider passes it to the adapter.
+  ["modal", "MODAL_SANDBOX_REGION"],
 ]);
+
+// Providers whose region places the sandbox and sets its price, so the label and the placement
+// must be one value: loadProvider passes the resolved region to the adapter.
+const placedRegions: ReadonlySet<string> = new Set(["modal"]);
 
 /** The members every adapter has. Methods are checked to be functions, not their signatures. */
 const providerSchema = z
@@ -97,9 +120,85 @@ function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
 }
 
-const factoryOptions = z.record(z.string(), z.union([z.string(), z.boolean()]).optional());
+const factoryOptions = z.record(
+  z.string(),
+  z.union([z.string(), z.boolean(), z.number(), z.function()]).optional(),
+);
+
+/** One destroy as Modal's adapter reports it through `onDestroy` (`ModalDestroyEvent`). */
+export interface DestroyTiming {
+  sandboxId: string;
+  /** Until the provider accepted the terminate request; `null` when its response was lost. */
+  requestMs: number | null;
+  /** Until the provider reported the sandbox stopped; `null` when unconfirmed. */
+  stoppedMs: number | null;
+}
+
+/**
+ * Destroy timings from adapters whose destroy waits past the provider's accept (Modal's `onDestroy`),
+ * keyed `provider/sandboxId`. The runner moves them into the destroy row's phases.
+ */
+export const destroyTimings = new Map<string, DestroyTiming>();
+
+const destroyObservers: ReadonlySet<string> = new Set(["modal"]);
+
+function observerOptions(name: string): FactoryOptions {
+  if (!destroyObservers.has(name)) return {};
+
+  return {
+    onDestroy: (event: DestroyTiming) => {
+      destroyTimings.set(`${name}/${event.sandboxId}`, event);
+    },
+  };
+}
 
 export type FactoryOptions = z.infer<typeof factoryOptions>;
+
+/**
+ * Modal's `createApp`: a create labelled `sandbox-bench-app` goes to that App, so per-attempt Apps
+ * (`--app-per-attempt modal`) can be priced from Modal's per-App billing report. Unlabelled
+ * creates stay in the adapter's default App.
+ */
+function appOptions(name: string): FactoryOptions {
+  return name === "modal" ? { createApp: createAppByLabel } : {};
+}
+
+/** A comma-separated region list as one canonical string, or null when it names none. */
+function regionList(value: string | undefined): string | null {
+  const list = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return list.length ? list.join(",") : null;
+}
+
+/**
+ * The region a provider's runs are labelled with (and, for Modal, pinned to), or null: the run's
+ * `configuredRegion`, which every published price and efficiency figure multiplies by. For Modal
+ * it is resolved once from `BENCH_REGION_MODAL` or `MODAL_SANDBOX_REGION`, and the same value
+ * goes to the adapter; when both are set and differ, the run is refused.
+ */
+export function providerRegion(name: string, env: NodeJS.ProcessEnv): string | null {
+  const labelKey = `BENCH_REGION_${name.toUpperCase()}`;
+  const nativeKey = regionKeys.get(name) ?? "";
+
+  if (!placedRegions.has(name)) return env[labelKey] ?? env[nativeKey] ?? null;
+  const label = regionList(env[labelKey]);
+  const native = regionList(env[nativeKey]);
+
+  if (label !== null && native !== null && label !== native)
+    throw new Error(
+      `${labelKey} (${label}) and ${nativeKey} (${native}) conflict: the first labels and prices the run, the second places its sandboxes. Set one, or set both to the same region.`,
+    );
+
+  return label ?? native;
+}
+
+/** The adapter option that places sandboxes in the run's region, so placement matches the label. */
+function regionOptions(name: string, region: string | null): FactoryOptions {
+  return placedRegions.has(name) && region !== null ? { region } : {};
+}
 
 /** A provider entry point's factory. Its result is checked by `assertProvider`. */
 const providerFactory = z.function({ input: [factoryOptions] });
@@ -116,8 +215,12 @@ export async function loadProvider(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<object> = (specifier) => import(specifier),
-  config?: Pick<ConfigV2, "template" | "product">,
+  config?: Pick<ConfigV2, "template" | "product"> &
+    Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">>,
 ): Promise<LoadedProvider> {
+  // Before anything else: a conflicting region configuration refuses the run.
+  const region = providerRegion(name, env);
+
   if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
     return {
       kind: "skipped",
@@ -148,8 +251,13 @@ export async function loadProvider(
 
   // Factory failures are real configuration errors, not missing-provider skips.
   const provider = await factory.data({
+    ...providerDefaults(name),
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
+    ...lifetimeOptions(name, config ?? {}),
+    ...observerOptions(name),
+    ...appOptions(name),
+    ...regionOptions(name, region),
   });
 
   assertProvider(provider);
@@ -158,7 +266,7 @@ export async function loadProvider(
     kind: "ready",
     name,
     cloud: credentials.has(name),
-    region: env[`BENCH_REGION_${name.toUpperCase()}`] ?? env[regionKeys.get(name) ?? ""] ?? null,
+    region,
     provider,
   };
 }

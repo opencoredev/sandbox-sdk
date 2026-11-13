@@ -1,9 +1,12 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { Json } from "../json.js";
+import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
+import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
 
 const money = z.number().finite().nonnegative();
 
@@ -132,12 +135,32 @@ const sources = new Map<string, BillingSource>(
         "Authenticated Analytics API verified; API-key organization discovered via /api-keys/current. Prices cover the requested window; pending until 48 hours after its end. Credits/tax are separate.",
       ],
     },
+    vercel: {
+      source: "@vercel/sandbox Sandbox.get: totalActiveCpuDurationMs, totalDurationMs, memory",
+      granularity: "sandbox lifetime: active CPU ms and wall ms over all sessions",
+      delay: "reported once a session stops; gone (404) after deletion",
+      key: "VERCEL_OIDC_TOKEN",
+      notes: [
+        "Metered, not invoice: Vercel's own per-sandbox meters priced at the published Pro iad1 rates (https://vercel.com/docs/sandbox/pricing). Memory wall time is rounded up to whole minutes. Snapshot storage, data transfer, the $20 monthly Pro credit and tax are excluded.",
+      ],
+    },
     tenki: {
       source: "No verified public billing endpoint",
       granularity: "not available",
       delay: "unknown",
       key: "TENKI_API_KEY",
       notes: ["No billing API found; no fabricated cost."],
+    },
+    modal: {
+      source: modalBillingSource,
+      granularity: "App per hour; a sandbox alone in its App (per-attempt Apps) is priced",
+      delay:
+        "minutes; full hours only; provisional until a confirmed stop, 30 minutes after its hour (this bench's heuristic, not Modal's) and a row for every hour",
+      key: "MODAL_TOKEN_SECRET",
+      notes: [
+        "Modal's per-App charge before credits, reservations and the egress allowance (https://modal.com/docs/guide/billing). Sandbox tags are not in the report, so only a sandbox that is the one sandbox in its App, with no create of unknown outcome beside it, gets a cost; others stay unavailable, never zero.",
+        "A sandbox's cost is compute only (CPU and memory); egress and the App total are kept in account.apps.",
+      ],
     },
     freestyle: {
       source: "No verified public billing endpoint",
@@ -252,6 +275,126 @@ export function decodeBoxd(
     confidence: value.complete ? "medium" : "low",
     note: "Current account rates, not invoice; org activity recorded separately",
   };
+}
+
+const vercelMeterSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  totalActiveCpuDurationMs: money.optional(),
+  totalDurationMs: money.optional(),
+  memory: money.optional(),
+});
+
+export type VercelMeter = z.infer<typeof vercelMeterSchema>;
+
+/** Vercel's per-sandbox meter at its published rates. The meter is final only once stopped. */
+export function decodeVercel(meter: VercelMeter, id: string): Cost {
+  const rate = pricing.vercel;
+
+  if (meter.name !== id) throw new Error("Billing ID mismatch");
+
+  if (!rate) throw new Error("Vercel rates missing");
+
+  if (meter.status !== "stopped")
+    return unavailable(
+      `Vercel reports usage only after the session stops; the sandbox was ${meter.status}`,
+    );
+
+  const { totalActiveCpuDurationMs: cpuMs, totalDurationMs: wallMs, memory } = meter;
+
+  if (cpuMs === undefined || wallMs === undefined || memory === undefined)
+    return unavailable("Vercel meter fields missing");
+
+  const seconds = Math.max(
+    rate.minimumSeconds,
+    Math.ceil(wallMs / 1000 / rate.incrementSeconds) * rate.incrementSeconds,
+  );
+
+  return {
+    kind: "metered",
+    usd:
+      (cpuMs / 1000) * rate.cpuSecond +
+      (memory / 1024) * seconds * rate.memoryGiBSecond +
+      rate.perSandbox,
+    scope: "sandbox-lifetime",
+    complete: true,
+    confidence: "medium",
+    note: "Vercel's active-CPU and wall-time meters at published Pro iad1 rates; memory rounded up to whole minutes; not invoice",
+  };
+}
+
+type VercelModule = typeof import("@vercel/sandbox");
+
+async function vercelSdk(): Promise<VercelModule> {
+  const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
+
+  return import(pathToFileURL(require.resolve("@vercel/sandbox")).href);
+}
+
+/** Reads and stops through the native SDK, which resolves OIDC or token credentials itself. Tests replace it. */
+export const vercelMeter = {
+  async read(name: string): Promise<VercelMeter> {
+    const { Sandbox } = await vercelSdk();
+    const box = await Sandbox.get({ name, resume: false });
+
+    return vercelMeterSchema.parse({
+      name: box.name,
+      status: box.status,
+      totalActiveCpuDurationMs: box.totalActiveCpuDurationMs,
+      totalDurationMs: box.totalDurationMs,
+      memory: box.memory,
+    });
+  },
+  async stop(name: string): Promise<void> {
+    const { Sandbox } = await vercelSdk();
+    await (await Sandbox.get({ name, resume: false })).stop();
+  },
+};
+
+const vercelMissing = z.object({ response: z.object({ status: z.literal(404) }) });
+
+const savedMeterSchema = z.object({ capturedAt: z.string(), meter: vercelMeterSchema });
+
+const meterFile = (dir: string, id: string) => join(dir, `vercel-${encodeURIComponent(id)}.json`);
+
+/**
+ * Vercel reports a session's usage only once it stops, and forgets the sandbox when it is deleted.
+ * Stop it, save the final meter for `bench billing`, and return the file. The caller deletes it.
+ */
+export async function captureVercelMeter(id: string, dir: string): Promise<string> {
+  await vercelMeter.stop(id);
+  const meter = await vercelMeter.read(id);
+  await mkdir(dir, { recursive: true });
+  const file = meterFile(dir, id);
+  await writeFile(file, JSON.stringify({ capturedAt: new Date().toISOString(), meter }) + "\n");
+
+  return file;
+}
+
+async function savedMeter(dir: string | undefined, id: string): Promise<VercelMeter | undefined> {
+  if (dir === undefined) return undefined;
+
+  try {
+    return savedMeterSchema.parse(JSON.parse(await readFile(meterFile(dir, id), "utf8"))).meter;
+  } catch {
+    return undefined;
+  }
+}
+
+async function vercelCost(id: string, dir: string | undefined): Promise<Cost> {
+  const saved = await savedMeter(dir, id);
+
+  if (saved !== undefined) return decodeVercel(saved, id);
+
+  try {
+    return decodeVercel(await vercelMeter.read(id), id);
+  } catch (error) {
+    if (vercelMissing.safeParse(error).success)
+      return unavailable(
+        "Sandbox deleted before its meter was saved; Vercel reports usage only between stop and delete",
+      );
+    throw error;
+  }
 }
 
 export function decodeEvents(raw: Json): Cost {
@@ -633,6 +776,7 @@ export async function collectProvider(
   transport: Transport = http,
   offline = false,
   waitMs = 0,
+  extra: { modalReport?: ModalReport; now?: number; usageDir?: string } = {},
 ): Promise<ProviderCosts> {
   const spec = sources.get(provider) ?? {
     source: "No billing collector",
@@ -652,8 +796,21 @@ export async function collectProvider(
     account: null,
   };
 
-  const key = env[spec.key]?.trim();
-  const supported = ["boat", "upstash", "e2b", "boxd", "superserve", "daytona"].includes(provider);
+  // Vercel's SDK takes a project OIDC token or an access token.
+  const key = (
+    provider === "vercel" ? env.VERCEL_OIDC_TOKEN || env.VERCEL_TOKEN : env[spec.key]
+  )?.trim();
+
+  const supported = [
+    "boat",
+    "upstash",
+    "e2b",
+    "boxd",
+    "superserve",
+    "daytona",
+    "modal",
+    "vercel",
+  ].includes(provider);
 
   let blocked = offline
     ? "Offline mode: no billing calls made"
@@ -662,6 +819,14 @@ export async function collectProvider(
       : !key
         ? `Missing ${spec.key}; no billing call made`
         : null;
+
+  if (!blocked && provider === "modal") {
+    const charges = await collectModal(rows, { report: extra.modalReport, now: extra.now });
+    result.sandboxes.push(...charges.sandboxes);
+    result.account = charges.account;
+
+    return result;
+  }
 
   if (!blocked && provider === "daytona") {
     try {
@@ -888,7 +1053,8 @@ export async function collectProvider(
         cost = exhausted
           ? decodeEvents(events)
           : unavailable("Event pagination limit; history incomplete");
-      } else cost = unavailable("No supported per-sandbox billing source");
+      } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
+      else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });
     } catch (error) {
       const note = errorNote(error);

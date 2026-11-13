@@ -108,6 +108,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                         |
 | [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`              |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |
+| [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`      | `modal`                       |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
 | [Tenki](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |

@@ -10,6 +10,7 @@ import type { TenkiSandbox } from "@tenkicloud/sandbox";
 import type { Box } from "@upstash/box";
 import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
+import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -130,6 +131,108 @@ export interface NativeModules {
     ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
   };
   "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
+  /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
+  modal: {
+    ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
+      readonly images: {
+        fromId(imageId: string): Promise<{ readonly imageId: string }>;
+        delete(imageId: string): Promise<void>;
+      };
+      readonly sandboxes: {
+        /** Makes no request; `poll` is the exact read. */
+        fromId(sandboxId: string): Promise<ModalNativeSandbox>;
+        /** Running sandboxes: of one App with `appId`, else of the whole Environment. */
+        list(params?: {
+          appId?: string;
+          environment?: string;
+          tags?: Record<string, string>;
+        }): AsyncIterable<{ readonly sandboxId: string }>;
+      };
+      readonly environments: {
+        readonly objects: {
+          /** Every Environment in the workspace. */
+          list(): AsyncIterable<{
+            readonly name: string;
+            /** Live (not stopped or disabled) Apps. Listing creates none. */
+            readonly apps: {
+              list(): AsyncIterable<{ readonly appId: string; readonly name?: string }>;
+            };
+          }>;
+        };
+      };
+      /**
+       * Modal's control-plane client. `workspaceBillingReport` is the call behind the documented
+       * `modal billing report` (https://modal.com/docs/reference/cli/billing); Modal's JS SDK marks
+       * the client `@ignore`. It streams one item per App and interval.
+       */
+      readonly cpClient: {
+        workspaceBillingReport(request: {
+          startTimestamp: Date;
+          endTimestamp: Date;
+          resolution: string;
+          tagNames: string[];
+          environmentIds: string[];
+          appIds: string[];
+        }): AsyncIterable<object>;
+      };
+      close(): void;
+    };
+    NotFoundError: abstract new (...args: never[]) => Error;
+  };
+  /**
+   * The gRPC client library Modal's SDK uses, resolved from Modal's own install so `instanceof`
+   * matches the errors it throws. Modal answers a lookup of an unknown sandbox with NOT_FOUND.
+   */
+  "nice-grpc": {
+    ClientError: abstract new (...args: never[]) => Error & { readonly code: number };
+    Status: { readonly NOT_FOUND: number };
+  };
+  "@vercel/sandbox": {
+    Sandbox: Pick<typeof VercelSandbox, "get">;
+    Snapshot: Pick<typeof VercelSnapshot, "get">;
+  };
+}
+
+/** One Modal sandbox handle, from `fromId`. */
+export interface ModalNativeSandbox {
+  readonly sandboxId: string;
+  /** The exit code once the sandbox has finished, else null. */
+  poll(): Promise<number | null>;
+  getTags(): Promise<Record<string, string>>;
+  terminate(): Promise<void>;
+}
+
+/** The options of one gRPC call as nice-grpc 2 middleware sees them; other fields pass through. */
+export interface GrpcCallOptions {
+  signal?: AbortSignal;
+}
+
+/** One gRPC call in a nice-grpc 2 client middleware: its request, and the next layer. */
+export interface GrpcMiddlewareCall<Request, Response> {
+  readonly request: Request;
+  next(
+    request: Request,
+    options: GrpcCallOptions,
+  ): AsyncGenerator<Response, Response | void, undefined>;
+}
+
+/** A nice-grpc 2 client middleware, as `ModalClient`'s `grpcMiddleware` takes it. */
+export type GrpcMiddleware = <Request, Response>(
+  call: GrpcMiddlewareCall<Request, Response>,
+  options: GrpcCallOptions,
+) => AsyncGenerator<Response, Response | void, undefined>;
+
+/** A middleware that cancels every call of a client once `signal` aborts. */
+export function cancelOn(signal: AbortSignal): GrpcMiddleware {
+  return async function* cancel<Request, Response>(
+    call: GrpcMiddlewareCall<Request, Response>,
+    options: GrpcCallOptions,
+  ): AsyncGenerator<Response, Response | void, undefined> {
+    return yield* call.next(call.request, {
+      ...options,
+      signal: options.signal ? AbortSignal.any([options.signal, signal]) : signal,
+    });
+  };
 }
 
 /** The installed SDKs. Each must satisfy its `NativeModules` entry, which `sdk` checks. */
@@ -142,6 +245,12 @@ interface InstalledModules {
   freestyle: typeof import("freestyle");
   "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
   "@superserve/sdk": typeof import("@superserve/sdk");
+  // `modal` is an SDK dependency the bench cannot resolve types for; the slice above is hand-typed
+  // from modal 0.11.1 and checked by the live snapshot run.
+  modal: NativeModules["modal"];
+  // Modal's dependency, resolved next to it; hand-typed from nice-grpc 2.
+  "nice-grpc": NativeModules["nice-grpc"];
+  "@vercel/sandbox": typeof import("@vercel/sandbox");
 }
 
 type NativePackage = keyof NativeModules;
@@ -150,7 +259,11 @@ const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
 
 // Resolve from the SDK package so the bench shares the adapters' module instances.
 async function sdk<P extends NativePackage>(name: P): Promise<NativeModules[P]> {
-  const installed: InstalledModules[P] = await import(import.meta.resolve(name, sdkPackage.href));
+  // nice-grpc is Modal's dependency, not the SDK's: resolve it from Modal's install.
+  const parent =
+    name === "nice-grpc" ? import.meta.resolve("modal", sdkPackage.href) : sdkPackage.href;
+
+  const installed: InstalledModules[P] = await import(import.meta.resolve(name, parent));
 
   return installed;
 }
@@ -213,6 +326,7 @@ const lookupKeys = new Map([
   ["boat", "BOAT_API_KEY"],
   ["freestyle", "FREESTYLE_API_KEY"],
   ["superserve", "SUPERSERVE_API_KEY"],
+  ["modal", "MODAL_TOKEN_SECRET"],
 ]);
 
 const nativeInfo = z.object({
@@ -327,6 +441,41 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
           return nativeInfo.parse(await response.json());
+        }
+
+        case "modal": {
+          const { ModalClient } = await nativeModules.load("modal");
+          const { ClientError, Status } = await nativeModules.load("nice-grpc");
+          // The deadline cancels the request in flight and closes the client, so a stalled poll
+          // keeps no call or client open past it.
+          const client = new ModalClient({ grpcMiddleware: [cancelOn(signal)] });
+          const close = () => client.close();
+          signal.addEventListener("abort", close, { once: true });
+
+          try {
+            // fromId makes no request; poll is one exact read: null while it runs, else its exit.
+            const sandbox = await client.sandboxes.fromId(id);
+            const exit = await sandbox.poll();
+
+            return { id: sandbox.sandboxId, status: exit === null ? "running" : "terminated" };
+          } catch (error) {
+            // Only Modal's NOT_FOUND is absence. A malformed ID is INVALID_ARGUMENT, and any
+            // transport or auth failure stays unavailable.
+            if (error instanceof ClientError && error.code === Status.NOT_FOUND)
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+            throw error;
+          } finally {
+            signal.removeEventListener("abort", close);
+            client.close();
+          }
+        }
+
+        case "vercel": {
+          // Sandbox.get only reads: it resumes a stopped sandbox only when asked to.
+          const { Sandbox } = await nativeModules.load("@vercel/sandbox");
+          const box = await Sandbox.get({ name: id, resume: false, signal });
+
+          return nativeInfo.parse({ id: box.name, status: box.status });
         }
 
         case "local": {

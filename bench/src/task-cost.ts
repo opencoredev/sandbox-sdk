@@ -3,6 +3,7 @@ import type { PublicationReport } from "./merge.js";
 import { allocationEvidence } from "./allocation.js";
 import { isSizePreset } from "./v2-config.js";
 import { estimateCost, pricing } from "./pricing.js";
+import { pricedResources } from "./billed-resources.js";
 
 const cost = z.discriminatedUnion("kind", [
   z.object({
@@ -37,6 +38,11 @@ export interface TaskCost {
   confidence: "high" | "medium" | "low" | "none";
   n: number;
   settled: boolean;
+  /**
+   * For an estimate, how it relates to the bill: `lower` is a lower bound (Modal's default track
+   * bills burst usage above its request). Null for billed and metered amounts.
+   */
+  bound: "exact" | "lower" | "observed" | null;
 }
 
 const median = (values: number[]) => {
@@ -59,13 +65,18 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
 
   const empty: TaskCost = {
     usd: null,
-    kind: estimate ? "estimate" : ["daytona", "upstash"].includes(provider) ? "billed" : "metered",
+    kind: estimate
+      ? "estimate"
+      : ["daytona", "upstash", "modal"].includes(provider)
+        ? "billed"
+        : "metered",
     source: estimate
       ? (pricing[provider]?.source ?? "Published list price")
       : "billing.json: per-sandbox evidence required",
     confidence: "none",
     n: 0,
     settled: false,
+    bound: null,
   };
 
   const taskIds = new Set(rows.filter((s) => s.scenario === "cold").map((s) => s.sandboxId));
@@ -94,7 +105,8 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
 
   if (estimate) {
     const allocation = allocationEvidence(report.samples, provider);
-    const resources = allocation.mismatches.length === 0 ? allocation.pricingAllocation : null;
+    // Null on any mismatch, except a request-billed provider's guest caveat (allocation.ts).
+    const resources = allocation.pricingAllocation;
 
     if (!resources)
       return { ...empty, source: `${empty.source}; matching verified allocation required` };
@@ -118,9 +130,67 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
       confidence: "low",
       n: values.length,
       settled: true,
+      bound: allocation.pricingBound ?? "observed",
     };
   }
 
+  const billed = billedPerTask(report, provider, lifetimes, empty);
+
+  // Modal without per-App billing for every task: list price on the requested resources, at each
+  // source run's region multiplier, labelled an estimate (and a lower bound by default). Billing
+  // that has not settled is kept, with settled: false, as other providers' provisional bills are.
+  if (provider === "modal" && billed.usd === null) {
+    const fallback = modalEstimate(report, lifetimes);
+
+    if (fallback) return fallback;
+  }
+
+  return billed;
+}
+
+type Lifetime = PublicationReport["samples"][number];
+
+function modalEstimate(report: PublicationReport, lifetimes: readonly Lifetime[]): TaskCost | null {
+  const allocation = allocationEvidence(report.samples, "modal");
+
+  // Guest-view caveats (host memory on the default track) do not change the request Modal bills.
+  if (allocation.pricingAllocation === null) return null;
+  const priced = pricedResources("modal", null, allocation.requested.size);
+
+  if (!priced) return null;
+
+  const values = lifetimes.map((s) =>
+    estimateCost(
+      "modal",
+      s.durationMs,
+      priced.resources,
+      report.sources
+        .find((source) => source.runId === s.sourceRunId)
+        ?.providers.find((p) => p.name === "modal")?.configuredRegion ?? null,
+    ),
+  );
+
+  const known = values.filter((v) => v !== null);
+
+  if (known.length !== values.length) return null;
+
+  return {
+    usd: median(known),
+    kind: "estimate",
+    source: `${pricing.modal?.source ?? "Modal list price"}: requested resources × sandbox lifetime × source-run region multiplier${priced.bound === "lower" ? "; lower bound (default-track burst usage is billed but not counted)" : ""}`,
+    confidence: "low",
+    n: known.length,
+    settled: true,
+    bound: priced.bound,
+  };
+}
+
+function billedPerTask(
+  report: PublicationReport,
+  provider: string,
+  lifetimes: readonly Lifetime[],
+  empty: TaskCost,
+): TaskCost {
   const evidence = lifetimes.map((s) => {
     const source = report.sources.find((r) => r.runId === s.sourceRunId);
     const billed = source?.costBilling?.providers.find((p) => p.provider === provider);
@@ -167,5 +237,6 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
     confidence,
     n: entries.length,
     settled: entries.every((e) => e.cost.kind !== "unavailable" && e.cost.complete),
+    bound: null,
   };
 }

@@ -2,6 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { readRun, type OwnedSandbox } from "./billing/input.js";
 import { collectProvider, type Cost, type Transport } from "./billing/providers.js";
+import type { ModalReport } from "./billing/modal.js";
 
 function totals(costs: Cost[]) {
   const billed = costs.filter(
@@ -72,6 +73,9 @@ export async function collectBilling(options: {
   transport?: Transport;
   offline?: boolean;
   waitMs?: number;
+  /** Modal's billing report; tests pass a fake. */
+  modalReport?: ModalReport;
+  now?: number;
 }) {
   const unidentified: { provider: string; scenario: string }[] = [];
 
@@ -93,6 +97,11 @@ export async function collectBilling(options: {
       options.transport,
       options.offline,
       options.waitMs,
+      {
+        modalReport: options.modalReport,
+        now: options.now,
+        usageDir: join(options.report, "usage"),
+      },
     );
 
     const byId = new Map(collected.sandboxes.map((r) => [r.id, r.cost]));

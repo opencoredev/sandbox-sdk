@@ -26,6 +26,13 @@ export interface Price {
   fixedHour: number | null;
   tiers: MachineTier[] | null;
   offeredSizes: Pick<Resources, "cpu" | "memoryGiB">[] | null;
+  /**
+   * Billed on the requested allocation, so the guest's own view is never priced. `minimum` is the
+   * request of a sandbox created without a size: a lower bound when usage above it is also billed.
+   */
+  requestBilled: { minimum: Pick<Resources, "cpu" | "memoryGiB"> } | null;
+  /** Price multipliers for a pinned region: `broad` for one of `broadRegions`, `narrow` for any other. */
+  regionMultiplier: { broad: number; narrow: number; broadRegions: readonly string[] } | null;
 }
 
 const base = {
@@ -39,6 +46,8 @@ const base = {
   fixedHour: null,
   tiers: null,
   offeredSizes: null,
+  requestBilled: null,
+  regionMultiplier: null,
 } satisfies Partial<Price>;
 
 /** Published prices, keyed by provider name. */
@@ -146,6 +155,37 @@ export const pricing: PriceTable = {
     notes:
       "Per-second, no minimum. Separate persistent storage $0.000000076/GiB-second excluded. Credits excluded.",
   },
+  modal: {
+    ...base,
+    // Sandbox rates, three times the Function rates: sandboxes are billed as non-preemptible.
+    cpuSecond: 0.00003942,
+    memoryGiBSecond: 0.00000667,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-09",
+    source: "https://modal.com/pricing",
+    requestBilled: { minimum: { cpu: 0.125, memoryGiB: 0.125 } },
+    // https://modal.com/docs/guide/region-selection
+    regionMultiplier: { broad: 1.15, narrow: 1.75, broadRegions: ["us", "eu", "ap"] },
+    notes:
+      "Sandbox rates ($0.1419 per CPU-hour, $0.024 per GiB-hour; one Modal CPU is a physical core). Billed per second on max(request, usage), minimum request 0.125 CPU. Priced on the requested allocation, never on the guest's MemTotal, which shows the host's memory without a size. A sized sandbox pins request = limit, so its estimate is exact. The default track (0.125 CPU, 128 MiB request) bursts into spare host capacity and that usage is billed too, so its estimate is a lower bound. A pinned region adds 1.15x (broad, such as us) or 1.75x (narrow, such as us-east). No disk charge or creation fee listed; plan credits excluded.",
+  },
+  vercel: {
+    ...base,
+    // https://vercel.com/docs/sandbox/pricing (updated 2026-09-10), Pro, iad1. Active CPU is CPU time
+    // summed over vCPUs, so pricing the whole allocation is an upper bound; memory is the allocation.
+    cpuSecond: 0.128 / 3600,
+    memoryGiBSecond: 0.0212 / 3600,
+    diskGiBSecond: 0,
+    perSandbox: 0.6 / 1_000_000,
+    // "Billed in 1 minute minimum increments" (memory): read as whole minutes, the dearer reading.
+    minimumSeconds: 60,
+    incrementSeconds: 60,
+    retrieved: "2026-11-09",
+    offeredSizes: [1, 2, 4, 6, 8].map((cpu) => ({ cpu, memoryGiB: cpu * 2 })),
+    source: "https://vercel.com/docs/sandbox/pricing",
+    notes:
+      "Pro, iad1: active CPU $0.128 per vCPU-hour of CPU time (I/O wait not billed), memory $0.0212 per GB-hour of wall time in one-minute minimum increments, $0.60 per million creations. Vercel's docs leave rounding after the first minute open; we charge whole minutes, the dearer reading. Metered: the bench stops each sandbox to read Vercel's meter before deleting it, so the meter includes the stop's disk snapshot (about 3% in one probe; approximate, not corrected per task). Hourly assumes every vCPU busy. Pro's $20 credit, data transfer and snapshot storage excluded.",
+  },
   local: {
     ...base,
     cpuSecond: 0,
@@ -156,6 +196,23 @@ export const pricing: PriceTable = {
       "Reference baseline only: host hardware, power, network and administration cost excluded; zero marginal provider charge.",
   },
 };
+
+/** The price multiplier for a pinned region. Modal charges a list mixing broad and narrow regions at the smaller one. */
+export function regionMultiplier(provider: string, region: string | null | undefined): number {
+  const multiplier = pricing[provider]?.regionMultiplier;
+
+  if (!multiplier || !region?.trim()) return 1;
+
+  return Math.min(
+    ...region
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) =>
+        multiplier.broadRegions.includes(entry) ? multiplier.broad : multiplier.narrow,
+      ),
+  );
+}
 
 /** Compute only; measured RAM can be lower than a tier's provisioned RAM. */
 export function computeHourly(p: Price, r: Pick<Resources, "cpu" | "memoryGiB">): number | null {
@@ -196,12 +253,14 @@ export const defaultCompute: ComputeTable = {
   boxd: { cpu: 2, memoryGiB: 8 },
   freestyle: { cpu: 4, memoryGiB: 8 },
   superserve: { cpu: 1, memoryGiB: 1 },
+  vercel: { cpu: 2, memoryGiB: 4 },
 };
 
 export function estimateCost(
   provider: string,
   durationMs: number,
   resources: Resources | null,
+  region: string | null = null,
 ): number | null {
   const p = pricing[provider];
 
@@ -222,7 +281,9 @@ export function estimateCost(
   if (compute === null) return null;
 
   return (
-    seconds * (compute / 3600 + Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) +
+    seconds *
+      (compute / 3600 + Math.max(0, r.diskGiB - p.freeDiskGiB) * p.diskGiBSecond) *
+      regionMultiplier(provider, region) +
     p.perSandbox
   );
 }

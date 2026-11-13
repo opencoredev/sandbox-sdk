@@ -18,6 +18,15 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
+import { recordStop, stopJournalFile } from "./stops.js";
+import {
+  ambiguousAllocations,
+  journalAppSchema,
+  pendingForRun,
+  prepareJournaledApps,
+  reconcileDiscovered,
+  type JournalApp,
+} from "./modal-apps.js";
 
 /** results.json is rewritten with updated cleanup fields; everything else is kept as read. */
 const resultsSchema = z.record(z.string(), z.json());
@@ -41,11 +50,21 @@ export async function reapRun(
   sanitize: (value: string) => string,
 ) {
   const path = join(config.out, "ownership.json");
-  let journal: { runId: string; resources: z.infer<typeof resource>[] } | null = null;
+
+  let journal: {
+    runId: string;
+    resources: z.infer<typeof resource>[];
+    apps: JournalApp[];
+  } | null = null;
 
   try {
     journal = z
-      .object({ runId: z.string(), resources: z.array(resource) })
+      .object({
+        runId: z.string(),
+        resources: z.array(resource),
+        // Older journals have no Apps: every sandbox is in the adapter's default App.
+        apps: z.array(journalAppSchema).default([]),
+      })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
     if (!isMissingFile(error)) {
@@ -120,7 +139,11 @@ export async function reapRun(
       return true;
     };
 
+    // Restores still tagged pending: owned by the exact tag read that listed them (Modal).
+    const pendingOwned = new Set<string>();
+
     const owned = async (id: string) =>
+      pendingOwned.has(id) ||
       verifyRunOwnership(
         p.provider,
         id,
@@ -147,14 +170,57 @@ export async function reapRun(
       ),
     );
 
+    // A fresh process lists only the Apps it knows: prepare every journaled one (Modal) before
+    // the listings that discover candidates and prove ownership. None is created here.
+    try {
+      await deadline(config["timeout-ms"], () =>
+        prepareJournaledApps(p.provider, journal?.apps ?? []),
+      );
+    } catch (error) {
+      errors.push(sanitize(error instanceof Error ? error.message : "App lookup failed"));
+    }
+
+    const journaled = (journal?.apps ?? []).filter((app) => app.provider === p.name);
+    let reconciled = false;
+
     try {
       for (const info of await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
       ))
-        if (hasRunOwnership(info, config.run)) candidates.add(info.id);
+        if (hasRunOwnership(info, config.run)) {
+          candidates.add(info.id);
+          // A sandbox whose create response was lost joins its App's journal entry.
+          reconciled = reconcileDiscovered(journaled, p.name, info) || reconciled;
+        }
     } catch (error) {
       errors.push(sanitize(error instanceof Error ? error.message : "List failed"));
     }
+
+    // A restore allocated before its creator stopped stays tagged pending, so the listing above
+    // never shows it. Journal each one before deleting it, so a crash here leaves a record too.
+    try {
+      for (const item of await deadline(config["timeout-ms"], () =>
+        pendingForRun(p.provider, config.run),
+      )) {
+        pendingOwned.add(item.id);
+        candidates.add(item.id);
+        reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
+        journal ??= { runId: config.run, resources: [], apps: [] };
+
+        if (
+          !journal.resources.some(
+            (r) => r.provider === p.name && r.id === item.id && r.kind === "sandbox",
+          )
+        ) {
+          journal.resources.push({ provider: p.name, id: item.id, kind: "sandbox", parent: null });
+          reconciled = true;
+        }
+      }
+    } catch (error) {
+      errors.push(sanitize(error instanceof Error ? error.message : "Pending listing failed"));
+    }
+
+    if (journal && reconciled) await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
 
     const deleteCandidate = async (id: string) => {
       if (!(await owned(id))) {
@@ -171,7 +237,7 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [] };
+          journal ??= { runId: config.run, resources: [], apps: [] };
 
           if (
             !journal.resources.some(
@@ -186,6 +252,13 @@ export async function reapRun(
         await deadline(config["timeout-ms"], () =>
           deletions.start(p.name, id, () => p.provider.destroy(id)),
         );
+
+        // Billing settles a Modal App only after its sandbox's confirmed stop.
+        await recordStop({
+          path: join(config.out, stopJournalFile),
+          provider: p.name,
+          sandboxId: id,
+        }).catch(() => {});
 
         for (const entry of journal?.resources ?? [])
           if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id)
@@ -319,21 +392,21 @@ export async function reapRun(
         for (;;) {
           if (signal.aborted) return;
 
-          const left = await p.provider.list({
-            "sandbox-bench-run": config.run,
-            "sandbox-sdk": "1",
-          });
+          const [listed, pending] = await Promise.all([
+            p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
+            pendingForRun(p.provider, config.run),
+          ]);
 
-          count = left.filter((s) => hasRunOwnership(s, config.run)).length;
+          // A pending restore still running is a leftover like any other.
+          const left = [...listed.filter((s) => hasRunOwnership(s, config.run)), ...pending];
+          count = left.length;
 
           if (
             !count ||
-            left
-              .filter((s) => hasRunOwnership(s, config.run))
-              .every(
-                (s) =>
-                  sources.has(s.id) || reviews.some((r) => r.provider === p.name && r.id === s.id),
-              )
+            left.every(
+              (s) =>
+                sources.has(s.id) || reviews.some((r) => r.provider === p.name && r.id === s.id),
+            )
           )
             return;
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -344,6 +417,14 @@ export async function reapRun(
     }
 
     process.stdout.write(`${p.name}: ${count} leftovers for ${config.run}\n`);
+
+    // Creates whose outcome is still unknown stay journaled: no listing has tied a sandbox to
+    // them, so their App's charge is never attributed to one sandbox.
+    for (const app of journaled)
+      if (ambiguousAllocations(app))
+        process.stdout.write(
+          `unresolvedAllocation: ${JSON.stringify({ provider: p.name, app: app.name, creates: ambiguousAllocations(app) })}\n`,
+        );
     errors.push(...deletionErrors.values());
 
     if (count || errors.length) failed = true;
