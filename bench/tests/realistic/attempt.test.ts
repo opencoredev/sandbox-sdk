@@ -160,4 +160,16 @@ describe("fix-and-test attempt on the host provider", () => {
     expect(record.deletionConfirmed).toBe(true);
     expect(await host.list({ "rw-attempt": record.attemptId })).toEqual([]);
   }, 60_000);
+
+  it("deletes the sandbox when the usage capture before deletion never returns", async () => {
+    const { record } = await runAttempt(plan(), {
+      ...environment(),
+      beforeDestroy: () => new Promise<string | null>(() => {}),
+      captureTimeoutMs: 50,
+    });
+
+    expect(record.deletionConfirmed).toBe(true);
+    expect(record.costEvidence.usageFiles).toEqual([]);
+    expect(await host.list({ "rw-attempt": record.attemptId })).toEqual([]);
+  }, 60_000);
 });

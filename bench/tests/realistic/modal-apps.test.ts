@@ -435,7 +435,7 @@ describe("realistic per-attempt Modal Apps", () => {
     for (const app of [lost, journalApp("modal", "sandbox-bench-rw-b"), other])
       await appendFile(at.apps, JSON.stringify(app) + "\n");
 
-    const provider = modalLike(log, null, {
+    const fake = modalLike(log, null, {
       listed: [
         {
           id: "sb-lost",
@@ -445,6 +445,18 @@ describe("realistic per-attempt Modal Apps", () => {
       pending: [
         { id: "sb-pending", labels: { "sandbox-bench-run": run, "sandbox-sdk": "pending" } },
       ],
+    });
+
+    // As the adapter does: a destroy that saw Modal report the stop leaves its timing behind.
+    const destroy = fake.destroy;
+
+    const provider = Object.assign(fake, {
+      destroy: async (id: string) => {
+        await destroy(id);
+
+        if (id === "sb-lost")
+          destroyTimings.set(`modal/${id}`, { sandboxId: id, requestMs: 80, stoppedMs: 700 });
+      },
     });
 
     const notes: object[] = [];
@@ -482,6 +494,8 @@ describe("realistic per-attempt Modal Apps", () => {
       sandboxes: ["sb-lost"],
       allocations: [{ id: "alloc-a", state: "allocated", sandboxId: "sb-lost" }],
     });
+    // The sweep's deletion journals the confirmed stop, so billing can settle the App.
+    expect([...(await readStops(at.stops)).keys()]).toEqual(["modal/sb-lost"]);
   });
 });
 

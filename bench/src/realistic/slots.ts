@@ -167,6 +167,16 @@ export interface BatchReport {
   paused: { provider: string; afterSlot: string }[];
 }
 
+/** Each provider's run of unavailable slots, and the providers paused for the batch. */
+export interface BatchHealth {
+  readonly unavailableRun: Map<string, number>;
+  readonly paused: BatchReport["paused"];
+}
+
+export function batchHealth(): BatchHealth {
+  return { unavailableRun: new Map(), paused: [] };
+}
+
 export interface BatchPlan {
   runId: string;
   batch: number;
@@ -183,6 +193,11 @@ export interface BatchPlan {
   startWindowMs?: number;
   /** Consecutive unavailable slots that pause a provider for the batch. Default 3. */
   unavailableLimit?: number;
+  /**
+   * The batch's provider health, for a caller that runs one batch's slots through several calls:
+   * pass the same object to each so the unavailable count and pauses carry across them.
+   */
+  health?: BatchHealth;
   listTimeoutMs?: number;
   /** How long past the slot timeout an attempt that ignores the abort is waited for. Default 150 s. */
   timeoutGraceMs?: number;
@@ -263,8 +278,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
   const listTimeoutMs = plan.listTimeoutMs ?? 30_000;
   const graceMs = plan.timeoutGraceMs ?? 150_000;
   const attempt = plan.attempt ?? runAttempt;
-  const unavailableRun = new Map(plan.providers.map((entry) => [entry.name, 0]));
-  const paused: BatchReport["paused"] = [];
+  const { unavailableRun, paused } = plan.health ?? batchHealth();
   const reports: SlotReport[] = [];
 
   for (const [index, slot] of order.entries()) {

@@ -81,6 +81,8 @@ export interface AttemptEnvironment {
    * sandbox exists (Boat). Returns the file it wrote, which the record lists in usageFiles.
    */
   beforeDestroy?(provider: string, id: string): Promise<string | null>;
+  /** Deadline for `beforeDestroy`; past it the capture is abandoned and deletion goes ahead. */
+  captureTimeoutMs?: number;
   /** Called when the create threw, so the caller can journal the failed allocation. */
   onCreateFailed?(provider: string, cause: unknown): Promise<void>;
   /** Called after each deletion returns, outside the destroy span (Modal's confirmed stop). */
@@ -88,6 +90,22 @@ export interface AttemptEnvironment {
 }
 
 export class SlotTimeout extends Error {}
+
+/** `work`'s result, or a rejection once `ms` passes first. The timer never outlives the race. */
+async function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Deadline passed")), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function scaled(profile: Profile, scale: number): Profile {
   if (scale === 1) return profile;
@@ -317,9 +335,11 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
         lastRead = await readResources(target, AbortSignal.timeout(30_000));
 
         if (environment.beforeDestroy) {
-          const file = await environment
-            .beforeDestroy(plan.provider.name, target.id)
-            .catch(() => null);
+          // A stalled usage read must never hold up deletion: past the deadline it is abandoned.
+          const file = await withinDeadline(
+            environment.beforeDestroy(plan.provider.name, target.id),
+            environment.captureTimeoutMs ?? 120_000,
+          ).catch(() => null);
 
           if (file) usageFiles.push(file);
         }

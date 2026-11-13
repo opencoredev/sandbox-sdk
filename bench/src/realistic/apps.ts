@@ -127,6 +127,37 @@ export async function readStops(path: string): Promise<Map<string, string>> {
   return stops;
 }
 
+/**
+ * Journal a sandbox's confirmed stop once its destroy has returned, when the adapter reported one
+ * (Modal). Called from both the attempt's deletion and the recovery sweep's.
+ */
+export async function recordStop({
+  path,
+  provider,
+  sandboxId,
+  now = Date.now,
+}: {
+  path: string;
+  provider: string;
+  sandboxId: string;
+  now?: () => number;
+}): Promise<void> {
+  const timing = destroyTimings.get(`${provider}/${sandboxId}`);
+  destroyTimings.delete(`${provider}/${sandboxId}`);
+
+  if (!timing || timing.stoppedMs === null) return;
+
+  const stop: z.infer<typeof stopSchema> = {
+    provider,
+    sandboxId,
+    confirmedStopAt: new Date(now()).toISOString(),
+    requestMs: timing.requestMs,
+    stoppedMs: timing.stoppedMs,
+  };
+
+  await appendFile(path, JSON.stringify(stop) + "\n");
+}
+
 /** One attempt's App: journaled before allocation, resolved outside any timed phase. */
 export interface AttemptApp {
   /** Labels for the attempt's create: they route it to the App and tie it to its journal entry. */
@@ -175,21 +206,7 @@ export async function prepareAttemptApp(
       failedAllocation(app, allocation.id, provider.name, cause);
       await persistApp(paths.apps, app);
     },
-    destroyed: async (sandboxId) => {
-      const timing = destroyTimings.get(`${provider.name}/${sandboxId}`);
-      destroyTimings.delete(`${provider.name}/${sandboxId}`);
-
-      if (!timing || timing.stoppedMs === null) return;
-
-      const stop: z.infer<typeof stopSchema> = {
-        provider: provider.name,
-        sandboxId,
-        confirmedStopAt: new Date(now()).toISOString(),
-        requestMs: timing.requestMs,
-        stoppedMs: timing.stoppedMs,
-      };
-
-      await appendFile(paths.stops, JSON.stringify(stop) + "\n");
-    },
+    destroyed: (sandboxId) =>
+      recordStop({ path: paths.stops, provider: provider.name, sandboxId, now }),
   };
 }

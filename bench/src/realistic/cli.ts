@@ -45,6 +45,7 @@ import {
   prepareAttemptApp,
   readAppJournal,
   readStops,
+  recordStop,
   stopJournalFile,
 } from "./apps.js";
 import { shuffle } from "../v2-stats.js";
@@ -63,6 +64,7 @@ import {
 } from "./setup.js";
 import {
   attributionFor,
+  batchHealth,
   batchSeed,
   emptyRecord,
   runBatch,
@@ -483,6 +485,9 @@ async function run(args: string[]) {
 
   try {
     slots: for (let batch = firstBatch; batch < firstBatch + batches; batch++) {
+      // Each slot is its own runBatch call; the batch's provider health carries across them.
+      const health = batchHealth();
+
       for (const slot of shuffle(combos, batchSeed(seed, batch))) {
         const track = z.enum(tracks).parse(slot.track);
         const profile = manifest.profiles[slot.profile];
@@ -562,6 +567,7 @@ async function run(args: string[]) {
           manifestSha256,
           slots: [slot],
           providers: active,
+          health,
           clock: systemClock,
           blobs,
           prepare: { cacheBaseUrl: "sdk-upload", upload: { source } },
@@ -617,6 +623,15 @@ export async function sweepProviders(
           .destroy(item.id)
           .then(() => true)
           .catch(() => false);
+
+        // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
+        // leaves its cost provisional, the safe side, and never stops the sweep.
+        if (removed)
+          await recordStop({
+            path: join(journalDir, stopJournalFile),
+            provider: entry.provider.name,
+            sandboxId: item.id,
+          }).catch(() => {});
 
         await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
       }

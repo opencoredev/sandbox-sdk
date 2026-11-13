@@ -5,6 +5,7 @@ import { ProviderTrace, systemClock } from "../../src/realistic/gaps.js";
 import { attemptRecordSchema, type AttemptRecord } from "../../src/realistic/record.js";
 import {
   attributionFor,
+  batchHealth,
   batchSeed,
   edgeAtOrAfter,
   emptyRecord,
@@ -350,6 +351,35 @@ describe("slot execution", () => {
     expect(
       records.filter((r) => r.provider === "e2b").every((r) => r.completion.kind === "completed"),
     ).toBe(true);
+  });
+
+  it("carries the unavailable count across calls that share the batch's health", async () => {
+    const records: AttemptRecord[] = [];
+    let listings = 0;
+
+    const down = provider("superserve", {
+      listAccount: async () => {
+        listings++;
+        throw new Error("503");
+      },
+    });
+
+    // The CLI runs each slot through its own call, passing one health object per batch.
+    const health = batchHealth();
+
+    for (const slot of slots)
+      await runBatch(
+        batch(
+          { slots: [slot], providers: [down], health, attempt: scripted(() => ({}), []) },
+          records,
+        ),
+      );
+
+    expect(
+      records.map((r) => (r.completion.kind === "incomplete" ? r.completion.reason : "completed")),
+    ).toEqual(["unavailable", "unavailable", "unavailable", "provider-paused", "provider-paused"]);
+    expect(listings).toBe(3);
+    expect(health.paused).toEqual([{ provider: "superserve", afterSlot: slots[2]?.id }]);
   });
 
   it("resets the unavailable count when a health check passes", async () => {
