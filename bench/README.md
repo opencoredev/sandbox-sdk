@@ -276,7 +276,7 @@ Collection watchdogs should call the pure policy in `src/collection-watchdog.py`
 
 ## Realistic workloads harness
 
-`src/realistic/` runs the task profiles from the realistic-workloads plan (fix-and-test, build, recorded sessions) through the slot schedule. It has no CLI yet and makes no cloud calls in tests; the local tests drive it with a Docker-free host provider (`tests/realistic/host-provider.ts`).
+`src/realistic/` runs the task profiles from the realistic-workloads plan (fix-and-test, build, recorded sessions) through the slot schedule. `bun bench realistic <run|billing|summary|sweep>` drives it on real providers (`src/realistic/cli.ts` documents each subcommand). It makes no cloud calls in tests; the local tests drive it with a Docker-free host provider (`tests/realistic/host-provider.ts`).
 
 | Module        | What it does                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
