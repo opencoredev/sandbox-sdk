@@ -290,7 +290,10 @@ describe("frozen step checks", () => {
       exclude: [{ file: "timing.spec.ts", name: "t > slow", reason: "timing" }],
     });
 
-    const failures = evaluateCheck(check, observation({ exitCode: 1, testReport: report })).failures;
+    const failures = evaluateCheck(
+      check,
+      observation({ exitCode: 1, testReport: report }),
+    ).failures;
 
     // The exit is not excused, and the collection error fails the check on its own too.
     expect(failures).toContainEqual({ kind: "exit", expected: 0, actual: 1 });
