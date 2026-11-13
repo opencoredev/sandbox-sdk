@@ -1,9 +1,11 @@
 ---
 title: Capabilities
-description: The full capability matrix. Which options and methods each provider accepts, the exact limits, how TypeScript gates optional methods, and how to check at runtime.
+description: Which sandbox providers support pause and resume, snapshots, network policies, sizes, timeouts and previews from TypeScript, with exact limits.
 ---
 
 Sandbox SDK never drops an option it can't enforce. If you ask a provider for something it can't do, `createSandbox` throws `SandboxError` with code `unsupported` before anything runs. This page lists what each provider accepts. [Compare providers](/providers) lists each provider's factory, credentials, and what it is best for.
+
+For example, pause and resume from TypeScript (`box.pause()` and `box.resume()` in `@opencoredev/sandbox-sdk`) work on Local (Docker), E2B, Sandboxer, Tenki, Superserve, boxd and Freestyle. Vercel Sandbox and Upstash Box pause partly: they keep the disk but end running processes. agentOS, Daytona, Railway, Boat and Memory have no pause, so calling `box.pause()` on them is a type error. The [notes](#notes) say what each provider keeps.
 
 ## Matrix
 

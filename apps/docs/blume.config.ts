@@ -47,7 +47,7 @@ It is not a hosted service: it calls each provider's HTTP API or SDK with your k
 5. Check an option against the [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) before using it. An option a provider can't enforce fails with \`unsupported\` instead of being ignored.
 6. For agent tools, import \`sandboxTools\` from \`/ai\`, \`/mastra\`, or \`/openai\` ([agent tools](https://sandbox-sdk.app/docs/reference/agent-tools)).
 
-Guides: the [blog](https://sandbox-sdk.app/blog) ([RSS](https://sandbox-sdk.app/blog/rss.xml)) walks through whole tasks, such as [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents), [E2B self-hosted: E2B Embed, or Docker instead](https://sandbox-sdk.app/blog/e2b-self-hosted), and [E2B SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript).
+Guides: the [blog](https://sandbox-sdk.app/blog) ([RSS](https://sandbox-sdk.app/blog/rss.xml)) walks through whole tasks, such as [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents), [E2B self-hosted: E2B Embed, or Docker instead](https://sandbox-sdk.app/blog/e2b-self-hosted), [E2B SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript), and [Daytona SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/daytona-sdk-api-typescript).
 
 Source: [github.com/opencoredev/sandbox-sdk](https://github.com/opencoredev/sandbox-sdk). Package: [@opencoredev/sandbox-sdk on npm](https://www.npmjs.com/package/@opencoredev/sandbox-sdk).`;
 
@@ -140,6 +140,7 @@ export default defineConfig({
               icon: "/integrations/freestyle.svg",
             },
             { label: "Memory", root: "/providers/memory", icon: "memory-stick" },
+            { label: "Community providers", root: "/providers/community", icon: "users" },
             { label: "Write a provider", root: "/providers/custom", icon: "plug" },
           ],
         },

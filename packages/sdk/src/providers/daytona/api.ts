@@ -393,10 +393,10 @@ export interface Toolbox {
     upload(data: Uint8Array, path: string): Promise<void>;
     /** Reads the absolute `path`. A missing file is `file_not_found`. */
     download(path: string): Promise<Uint8Array>;
-    /** Streams the absolute `path`. The signal and deadline cover the whole body. */
+    /** Streams the absolute `path`. The signal, and `timeoutMs` when given, cover the whole body. */
     downloadStream(
       path: string,
-      options: { signal: AbortSignal; timeoutMs: number },
+      options: { signal: AbortSignal; timeoutMs?: number },
     ): Promise<ReadableStream<Uint8Array>>;
     deleteFile(path: string, recursive?: boolean): Promise<void>;
     createFolder(path: string, mode: string): Promise<void>;

@@ -2,6 +2,7 @@
 // toolbox proxy URL, including the faults a real network produces (cuts, truncation, splits, hangs).
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { OutputChunk } from "../src/provider.js";
+import { connectSandbox } from "../src/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { daytonaHttp } from "../src/providers/daytona/api.js";
 import { fakeServer, pieces, type FakeServer } from "./http-fake.js";
@@ -355,4 +356,41 @@ describe("session log stream", () => {
       stdout: "late but fine",
     });
   }, 15_000);
+});
+
+describe("buffered spill download", () => {
+  test("malformed spill output still closes the download by the run deadline", async () => {
+    api.on("GET /api/sandbox/sb-1", { json: dto() });
+    api.on("GET /api/sandbox/sb-1/toolbox-proxy-url", { json: { url: `${toolbox.url}/toolbox` } });
+    // The bridge reports a spill, whose file starts with a line that is not a frame.
+    toolbox.on("POST /toolbox/sb-1/process/execute", {
+      json: { exitCode: 0, result: "R:0:0:1\n" },
+    });
+    toolbox.on("DELETE /toolbox/sb-1/files", { status: 204 });
+    let closed = false;
+
+    toolbox.on("POST /toolbox/sb-1/files/bulk-download", (_request, response) => {
+      response.on("close", () => {
+        closed = true;
+      });
+      response.writeHead(200, multipart);
+      // Held open: only the client can end this response. The multipart reader holds back a
+      // boundary's length of bytes, so valid frames follow the bad line to release it.
+      response.write(
+        '--DAYTONA-FILE-BOUNDARY\r\nContent-Disposition: form-data; name="file"\r\n\r\nBROKEN\n' +
+          "O:cGFydGlhbA==\n".repeat(20),
+      );
+    });
+
+    const box = await connectSandbox(
+      daytona({ baseUrl: `${api.url}/api`, apiKey: "proto-key-123456", requestTimeoutMs: 1_000 }),
+      "sb-1",
+      { recoverSecrets: false },
+    );
+
+    await expect(box.run("ignored", { timeoutMs: 250 })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    await expect.poll(() => closed, { timeout: 800, interval: 20 }).toBe(true);
+  });
 });

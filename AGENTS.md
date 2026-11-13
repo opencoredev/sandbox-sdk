@@ -4,7 +4,6 @@
 
 Sandbox SDK 1.0 is being rewritten from scratch on `leoplayz317/sbx-23-rewrite-sandbox-sdk-10-from-scratch`, which branches from `v2`. The full design lives in `docs/spec.md`. Read it before changing anything, and treat it as the source of truth.
 
-- Track work in the Linear `SBX` team (marketing in `SBXM`), under the "Sandbox SDK 1.0 rewrite" project. The umbrella issue is SBX-23.
 - Layout:
   - `packages/sdk` is the library.
   - `apps/web` is the landing page.
