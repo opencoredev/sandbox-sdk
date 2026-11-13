@@ -10,7 +10,6 @@
  */
 import { appendFile, readFile } from "node:fs/promises";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { z } from "zod";
 import type { OwnedApp } from "../billing/input.js";
 import { isMissingFile } from "../files.js";
 import {
@@ -24,11 +23,11 @@ import {
   realisticAttemptApp,
   type JournalApp,
 } from "../modal-apps.js";
-import { destroyTimings } from "../providers.js";
+import { recordStop } from "../stops.js";
 
 export const appJournalFile = "apps.jsonl";
 
-export const stopJournalFile = "stops.jsonl";
+export { readStops, recordStop, stopJournalFile } from "../stops.js";
 
 const key = (app: Pick<JournalApp, "provider" | "name">) => `${app.provider}/${app.name}`;
 
@@ -104,58 +103,6 @@ export function attemptAllocation(
   return unresolved > 0
     ? { kind: "unresolved", sandboxIds: app.sandboxes, unresolved }
     : { kind: "resolved", sandboxIds: app.sandboxes };
-}
-
-const stopSchema = z.object({
-  provider: z.string(),
-  sandboxId: z.string(),
-  /** When destroy returned after Modal reported the stop: an upper bound on the stop. */
-  confirmedStopAt: z.iso.datetime(),
-  requestMs: z.number().nullable(),
-  stoppedMs: z.number(),
-});
-
-/** Each sandbox's confirmed stop, keyed `provider/sandboxId`; the latest wins. */
-export async function readStops(path: string): Promise<Map<string, string>> {
-  const stops = new Map<string, string>();
-
-  for (const line of await lines(path)) {
-    const stop = stopSchema.parse(JSON.parse(line));
-    stops.set(`${stop.provider}/${stop.sandboxId}`, stop.confirmedStopAt);
-  }
-
-  return stops;
-}
-
-/**
- * Journal a sandbox's confirmed stop once its destroy has returned, when the adapter reported one
- * (Modal). Called from both the attempt's deletion and the recovery sweep's.
- */
-export async function recordStop({
-  path,
-  provider,
-  sandboxId,
-  now = Date.now,
-}: {
-  path: string;
-  provider: string;
-  sandboxId: string;
-  now?: () => number;
-}): Promise<void> {
-  const timing = destroyTimings.get(`${provider}/${sandboxId}`);
-  destroyTimings.delete(`${provider}/${sandboxId}`);
-
-  if (!timing || timing.stoppedMs === null) return;
-
-  const stop: z.infer<typeof stopSchema> = {
-    provider,
-    sandboxId,
-    confirmedStopAt: new Date(now()).toISOString(),
-    requestMs: timing.requestMs,
-    stoppedMs: timing.stoppedMs,
-  };
-
-  await appendFile(path, JSON.stringify(stop) + "\n");
 }
 
 /** One attempt's App: journaled before allocation, resolved outside any timed phase. */

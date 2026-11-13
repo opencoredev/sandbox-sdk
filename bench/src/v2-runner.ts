@@ -57,6 +57,7 @@ import {
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
 import { captureVercelMeter } from "./billing/providers.js";
+import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
 import {
   allocated,
@@ -525,6 +526,15 @@ export async function runV2(
 
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
+
+        // A timed destroy row carries the confirmed stop in its phases; any other deletion
+        // journals it, so billing can still settle the sandbox's App (Modal).
+        if (!measurement)
+          await recordStop({
+            path: join(runDir, stopJournalFile),
+            provider: loaded.name,
+            sandboxId: id,
+          }).catch(() => {});
         const persistStart = performance.now();
 
         try {

@@ -18,6 +18,7 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
+import { recordStop, stopJournalFile } from "./stops.js";
 import {
   ambiguousAllocations,
   journalAppSchema,
@@ -251,6 +252,13 @@ export async function reapRun(
         await deadline(config["timeout-ms"], () =>
           deletions.start(p.name, id, () => p.provider.destroy(id)),
         );
+
+        // Billing settles a Modal App only after its sandbox's confirmed stop.
+        await recordStop({
+          path: join(config.out, stopJournalFile),
+          provider: p.name,
+          sandboxId: id,
+        }).catch(() => {});
 
         for (const entry of journal?.resources ?? [])
           if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id)

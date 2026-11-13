@@ -8,7 +8,7 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { CreateInput, Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { collectBilling } from "../src/billing.js";
 import { collectModal, modalSettledAt, type ModalReport } from "../src/billing/modal.js";
-import type { OwnedSandbox } from "../src/billing/input.js";
+import { readRun, type OwnedSandbox } from "../src/billing/input.js";
 import { lookupSandbox, type GrpcMiddleware, type GrpcMiddlewareCall } from "../src/existence.js";
 import {
   allocationLabel,
@@ -21,6 +21,7 @@ import {
   journalAppSchema,
   type PendingSandbox,
 } from "../src/modal-apps.js";
+import { destroyTimings } from "../src/providers.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
@@ -243,7 +244,13 @@ describe("per-attempt Modal Apps", () => {
       "modal",
     ]);
 
-    const fresh = cloud.process();
+    // As the adapter's onDestroy does once Modal reports the stop (or that the sandbox is gone).
+    const fresh = cloud.process({
+      destroy: async (id) => {
+        await cloud.backing.destroy(id);
+        destroyTimings.set(`modal/${id}`, { sandboxId: id, requestMs: null, stoppedMs: 40 });
+      },
+    });
 
     expect(
       await reapRun(
@@ -254,6 +261,9 @@ describe("per-attempt Modal Apps", () => {
     ).toBe(false);
     expect(await cloud.backing.list({ "sandbox-bench-run": run })).toEqual([]);
     expect(cloud.existing.has("sandbox-bench-never")).toBe(false);
+    // Recovery journals the confirmed stop, so billing can settle the App's charge.
+    const [owned] = await readRun(out);
+    expect(owned).toMatchObject({ id: box.id, confirmedStopAt: expect.any(String) });
   });
 
   it("names Apps within Modal's limits, stably, and leaves unlabelled runs in the default App", () => {

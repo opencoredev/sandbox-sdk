@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { z } from "zod";
 import { isMissingFile } from "../files.js";
+import { readStops, stopJournalFile } from "../stops.js";
 import { ambiguousAllocations, journalAppSchema } from "../modal-apps.js";
 
 const sampleSchema = z.object({
@@ -226,6 +227,15 @@ export async function readRun(
 
       for (const id of app.sandboxes) add(app.provider, id).app = owner;
     }
+  }
+
+  // Deletions outside a timed destroy row (cleanup, recovery) journal their confirmed stops.
+  const stops = await readStops(join(directory, stopJournalFile));
+
+  for (const value of owned.values()) {
+    const at = stops.get(`${value.provider}/${value.id}`);
+
+    if (at && (!value.confirmedStopAt || at > value.confirmedStopAt)) value.confirmedStopAt = at;
   }
 
   return [...owned.values()];
