@@ -97,7 +97,11 @@ export async function collectBilling(options: {
       options.transport,
       options.offline,
       options.waitMs,
-      { modalReport: options.modalReport, now: options.now },
+      {
+        modalReport: options.modalReport,
+        now: options.now,
+        usageDir: join(options.report, "usage"),
+      },
     );
 
     const byId = new Map(collected.sandboxes.map((r) => [r.id, r.cost]));

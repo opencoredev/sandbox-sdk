@@ -10,6 +10,7 @@ import type { TenkiSandbox } from "@tenkicloud/sandbox";
 import type { Box } from "@upstash/box";
 import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
+import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -186,6 +187,10 @@ export interface NativeModules {
     ClientError: abstract new (...args: never[]) => Error & { readonly code: number };
     Status: { readonly NOT_FOUND: number };
   };
+  "@vercel/sandbox": {
+    Sandbox: Pick<typeof VercelSandbox, "get">;
+    Snapshot: Pick<typeof VercelSnapshot, "get">;
+  };
 }
 
 /** One Modal sandbox handle, from `fromId`. */
@@ -245,6 +250,7 @@ interface InstalledModules {
   modal: NativeModules["modal"];
   // Modal's dependency, resolved next to it; hand-typed from nice-grpc 2.
   "nice-grpc": NativeModules["nice-grpc"];
+  "@vercel/sandbox": typeof import("@vercel/sandbox");
 }
 
 type NativePackage = keyof NativeModules;
@@ -462,6 +468,14 @@ export async function lookupSandbox(
             signal.removeEventListener("abort", close);
             client.close();
           }
+        }
+
+        case "vercel": {
+          // Sandbox.get only reads: it resumes a stopped sandbox only when asked to.
+          const { Sandbox } = await nativeModules.load("@vercel/sandbox");
+          const box = await Sandbox.get({ name: id, resume: false, signal });
+
+          return nativeInfo.parse({ id: box.name, status: box.status });
         }
 
         case "local": {

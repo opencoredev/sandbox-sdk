@@ -18,10 +18,11 @@ export type Fact<T> =
 /**
  * `per-unit` prices vCPU, memory and disk separately (rates in `src/pricing.ts`). `bundle` sells a
  * fixed size at one hourly price. `charges` says what the price is applied to: the whole
- * allocation while the sandbox exists, the resources actually in use, or a size per active hour.
+ * allocation while the sandbox exists, the resources actually in use, CPU time in use with the
+ * whole memory allocation (Vercel), or a size per active hour.
  */
 export type Tariff =
-  | { readonly kind: "per-unit"; readonly charges: "allocation" | "usage" }
+  | { readonly kind: "per-unit"; readonly charges: "allocation" | "usage" | "active-cpu" }
   | { readonly kind: "bundle"; readonly charges: "allocation" | "active-time" };
 
 /** Event that starts billing, matched to attempt timestamps by the cost module. */
@@ -107,6 +108,8 @@ const docs = {
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",
   modalBilling: "https://modal.com/docs/guide/billing (workspace billing report, per App)",
+  vercel: "https://vercel.com/docs/sandbox/pricing",
+  vercelSdk: "@vercel/sandbox Sandbox.get (totalActiveCpuDurationMs, totalDurationMs, memory)",
 } as const;
 
 export const billingRules: readonly BillingRule[] = [
@@ -299,6 +302,42 @@ export const billingRules: readonly BillingRule[] = [
     notes: ["5 GiB disk free. Credits excluded."],
   },
   {
+    provider: "vercel",
+    product: null,
+    pricingKey: "vercel",
+    tariff: known(
+      { kind: "per-unit", charges: "active-cpu" },
+      `${docs.vercel} (Active CPU excludes I/O wait; Provisioned Memory is allocation x run time)`,
+    ),
+    billingStarts: unknown("Not stated; the meter counts session wall time"),
+    billingStops: unknown("Not stated; a session's meter is final once it stops"),
+    incrementSeconds: unknown(
+      'Memory is "billed in 1 minute minimum increments"; whole minutes assumed (the dearer reading); CPU increment not stated',
+    ),
+    minimumSeconds: known(60, `${docs.vercel} (provisioned memory, 1-minute minimum)`),
+    perStartFeeUSD: known(0.6 / 1_000_000, `${docs.vercel} (Sandbox Creations $0.60 per million)`),
+    keepsCharging: known(
+      ["snapshots"],
+      `${docs.vercel} (snapshot storage $0.08/GB-month; snapshots expire 30 days after last use)`,
+    ),
+    countsFileCacheAsMemory: notApplicable(
+      "Memory is billed on the allocation, so memory use does not change the charge",
+    ),
+    storage: known("excluded", `${docs.vercelSdk} (meters CPU and wall time only)`),
+    settledChargeSource: unknown(
+      "Team usage and invoices need a Vercel account token with billing access; the project OIDC token the bench uses reads only sandboxes",
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "Pro, iad1 rates: Active CPU $0.128 per vCPU-hour, Provisioned Memory $0.0212 per GB-hour; rates vary by region.",
+      "The meter appears only after a session stops and is gone once the sandbox is deleted, so the bench stops each sandbox and reads it just before deletion.",
+      "Pro's $20 monthly credit, data transfer and tax are excluded.",
+    ],
+  },
+  {
     provider: "freestyle",
     product: null,
     pricingKey: "freestyle",
@@ -374,6 +413,8 @@ export function billingModelLabel(rule: BillingRule): string | null {
       return "bills the whole machine while it exists";
     case "usage":
       return "bills active CPU and memory in use";
+    case "active-cpu":
+      return "bills active CPU and the whole memory allocation";
     case "active-time":
       return "bills a fixed size per active hour";
     default: {

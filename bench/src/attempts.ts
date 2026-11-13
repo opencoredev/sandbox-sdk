@@ -14,6 +14,7 @@ export const cloudProviders = [
   "tenki",
   "superserve",
   "modal",
+  "vercel",
 ];
 
 export const mainTests = [

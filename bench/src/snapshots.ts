@@ -120,6 +120,14 @@ export async function snapshotCleaner(
     // A snapshot is a Modal Image. Its delete also succeeds for a missing image; inspect runs first.
     return (id) => withModal((client) => client.images.delete(id));
 
+  if (name === "vercel") {
+    const { Snapshot } = await nativeModules.load("@vercel/sandbox");
+
+    return async (id) => {
+      await (await Snapshot.get({ snapshotId: id })).delete();
+    };
+  }
+
   throw new Error("Snapshot cleanup not registered");
 }
 
@@ -291,6 +299,17 @@ export async function inspectSnapshot(
         });
 
         return { exists: found };
+      }
+
+      case "vercel": {
+        // Vercel keeps a deleted snapshot readable with status "deleted". Its source is a session
+        // ID, not the sandbox name the ownership proof records, so no parent is compared.
+        const { Snapshot } = await nativeModules.load("@vercel/sandbox");
+        const snapshot = await Snapshot.get({ snapshotId: id });
+
+        if (snapshot.snapshotId !== id) throw new Error("Snapshot metadata ID mismatch");
+
+        return { exists: snapshot.status !== "deleted" };
       }
 
       case "local": {

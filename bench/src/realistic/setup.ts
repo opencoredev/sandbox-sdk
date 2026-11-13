@@ -180,6 +180,19 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
+    // https://vercel.com/docs/sandbox/pricing: 2 vCPUs and 2 GB per vCPU by default, 64 GB NVMe;
+    // `large` is 4 vCPU / 8 GB (checked in the guest 2026-11-09: nproc 4, memory.max 8 GiB).
+    name: "vercel",
+    adapter: "vercel",
+    product: null,
+    lifetime: true,
+    pricingKey: "vercel",
+    tracks: {
+      "same-machine": { size: "large", vcpu: 4, provisioned: size(4, 8, 64), tooSmall: {} },
+      default: { vcpu: 2, provisioned: size(2, 4, 64), tooSmall: {} },
+    },
+  },
+  {
     name: "boat",
     adapter: "boat",
     product: null,

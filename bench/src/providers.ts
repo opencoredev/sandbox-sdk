@@ -25,6 +25,19 @@ export function templateOptions(name: string, template: string | undefined) {
   return { [key]: template };
 }
 
+/**
+ * Factory options a provider always gets. Vercel keeps a persistent sandbox's snapshots after
+ * deletion unless asked, and bills their storage until they expire (30 days by default); pause and
+ * the stop before the usage read both make one.
+ */
+const fixedOptions = new Map<string, Record<string, boolean>>([
+  ["vercel", { deleteOrphanSnapshots: true }],
+]);
+
+export function providerDefaults(name: string) {
+  return fixedOptions.get(name) ?? {};
+}
+
 /** Factory options selecting a native product; validated by parseV2. */
 export function productOptions(name: string, product: string | undefined) {
   if (product === undefined || product === "box") return {};
@@ -238,6 +251,7 @@ export async function loadProvider(
 
   // Factory failures are real configuration errors, not missing-provider skips.
   const provider = await factory.data({
+    ...providerDefaults(name),
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
     ...lifetimeOptions(name, config ?? {}),

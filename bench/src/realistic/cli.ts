@@ -20,7 +20,7 @@ import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { OwnedSandbox } from "../billing/input.js";
 import type { Json } from "../json.js";
-import { collectProvider } from "../billing/providers.js";
+import { collectProvider, vercelMeter } from "../billing/providers.js";
 import {
   attemptBillingSchema,
   costedAttempts,
@@ -49,6 +49,7 @@ import {
 } from "./apps.js";
 import { shuffle } from "../v2-stats.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
+import { heldStatus, type HeldStatus } from "./held-status.js";
 import { systemClock } from "./gaps.js";
 import type { HarnessManifest } from "./manifest.js";
 import { fileArtifacts } from "./prepare.js";
@@ -133,6 +134,7 @@ export const heldOpenProviders = [
   "boat",
   "boxd",
   "modal",
+  "vercel",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
@@ -257,9 +259,14 @@ async function spentUSD(path: string) {
   );
 }
 
-/** Boat reports a sandbox's usage only while it exists; the billing collector reads it then. */
+/**
+ * Boat reports a sandbox's usage only while it exists, and Vercel only between the end of a session
+ * and deletion; the billing collector reads it then. Vercel's sandbox is stopped first.
+ */
 function captureUsage(adapter: string, usageDir: string) {
   return async (id: string) => {
+    if (adapter === "vercel") await vercelMeter.stop(id);
+
     const collected = await collectProvider(
       adapter,
       [
@@ -349,7 +356,7 @@ async function loadSlotProvider(
     },
   };
 
-  if (setup.adapter === "boat" && usageDir)
+  if ((setup.adapter === "boat" || setup.adapter === "vercel") && usageDir)
     entry.beforeDestroy = captureUsage(setup.adapter, usageDir);
 
   // Modal bills per App: each attempt gets its own App, journaled before allocation (apps.ts).
@@ -865,8 +872,8 @@ interface HeldRow {
   /** Against the same provider's zero-wait twin, from the medians. */
   changeVsZeroWait: number | null;
   medianWakeMs: number | null;
-  /** "settled", "unsettled" (any charge not final) or "estimate". */
-  status: string | null;
+  /** Billed charges settle; metered costs stay unreconciled (see `heldStatus`). */
+  status: HeldStatus | null;
   /** Provider state before and after the idle wait, when the adapter reports one. */
   transitions: string[];
 }
@@ -914,13 +921,7 @@ function heldOpen(attempts: readonly CostedAttempt[]): HeldRow[] {
           idle !== "zero-wait" && medianCostUSD !== null && zeroWait !== null && zeroWait > 0
             ? medianCostUSD / zeroWait - 1
             : null,
-        status: costs.some((c) => (c.kind === "billed" || c.kind === "metered") && !c.settled)
-          ? "unsettled"
-          : costs.some((c) => c.kind === "estimate")
-            ? "estimate"
-            : costs.length
-              ? "settled"
-              : null,
+        status: heldStatus(costs),
         medianWakeMs: median(
           runs.flatMap((a) =>
             a.record.idle?.wakeLatencyMs == null ? [] : [a.record.idle.wakeLatencyMs],
