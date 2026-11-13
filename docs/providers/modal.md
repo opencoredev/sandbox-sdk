@@ -109,7 +109,9 @@ collides with its name waits up to a minute for Modal to free it. The provider
 instance that requested termination tracks it locally whether or not the tag
 landed. Another process sees it only through the tag, so if every tag write
 failed, that process's `find()` can return the sandbox until Modal stops it. `onDestroy`
-reports `requestMs` (terminate accepted) and `stoppedMs` (stop confirmed).
+reports `requestMs` (terminate accepted; `null` when the response was lost or
+Modal answered that the sandbox no longer exists) and `stoppedMs` (stop
+confirmed).
 
 There is no pause (Modal sandboxes cannot run again once stopped; memory
 snapshots restore into a new sandbox ID, so they are not a resume), and no

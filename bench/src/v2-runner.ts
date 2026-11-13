@@ -979,9 +979,12 @@ export async function runV2(
       const phases: Record<string, number> = {};
 
       // Vercel reports a sandbox's usage only once its session stops and not after deletion, so
-      // the cost suite stops it and saves the meter first. A failed read leaves its cost unknown.
+      // the cost suite stops it and saves the meter first. A failed or stalled read (bounded by the
+      // scenario timeout) leaves its cost unknown and never holds up the deletion.
       if (costSuite && p.name === "vercel")
-        await captureVercelMeter(id, join(runDir, "usage")).catch(() => null);
+        await deadline(timeout, () => captureVercelMeter(id, join(runDir, "usage"))).catch(
+          () => null,
+        );
 
       return measure(
         scenario,

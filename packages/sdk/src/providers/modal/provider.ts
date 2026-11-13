@@ -40,7 +40,10 @@ export type ModalResources = Pick<
 /** One destroy, timed from the terminate request. */
 export interface ModalDestroyEvent {
   sandboxId: string;
-  /** Until Modal accepted the terminate request; `null` when its response was lost in transport. */
+  /**
+   * Until Modal accepted the terminate request; `null` when its response was lost in transport, or
+   * when Modal answered that the sandbox no longer exists.
+   */
   requestMs: number | null;
   /** Until Modal reported the sandbox stopped; `null` when it did not within `destroyWaitMs`. */
   stoppedMs: number | null;
@@ -973,6 +976,17 @@ export function createModalProvider<N extends NativeSandbox>(
         } catch (error) {
           if (modalError(error).code === "not_found") {
             settled = true;
+
+            // Modal answered that the sandbox is gone: its stop is confirmed by now.
+            try {
+              options.onDestroy?.({
+                sandboxId: id,
+                requestMs: null,
+                stoppedMs: Date.now() - started,
+              });
+            } catch {
+              // An observer failure is not a destroy failure.
+            }
 
             return forget(id);
           }

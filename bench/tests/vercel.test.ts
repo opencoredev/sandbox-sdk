@@ -179,3 +179,34 @@ it("registers Vercel's sizes, prices, billing rule and setup", () => {
   expect(providerDefaults("vercel")).toEqual({ deleteOrphanSnapshots: true });
   expect(providerSetup("vercel").tracks["same-machine"]).toMatchObject({ size: "large", vcpu: 4 });
 });
+
+it("deletes a cost-suite sandbox when Vercel's meter capture never returns", async () => {
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { parseV2 } = await import("../src/v2-config.js");
+  const out = await mkdtemp(join(tmpdir(), "bench-vercel-stall-"));
+  const stop = vi.spyOn(vercelMeter, "stop").mockImplementation(() => new Promise(() => {}));
+  const provider = memory();
+
+  const report = await runV2(
+    [{ kind: "ready", name: "vercel", cloud: false, region: null, provider }],
+    parseV2([
+      "--providers",
+      "vercel",
+      "--scenarios",
+      "cost",
+      "--cost-runs",
+      "1",
+      "--bursts",
+      "",
+      "--timeout-ms",
+      "2000",
+      "--out",
+      out,
+    ]),
+    async () => {},
+  );
+
+  expect(stop).toHaveBeenCalled();
+  expect(await provider.list({})).toEqual([]);
+  expect(report.cleanup.every((entry) => entry.remaining.length === 0)).toBe(true);
+}, 30_000);

@@ -383,7 +383,13 @@ describe("Modal adapter", { timeout: 30_000 }, () => {
     await expect(box.run("true")).rejects.toMatchObject({ code: "not_found", provider: "modal" });
     await provider().destroy(id);
     await expect(provider().connect("sb-unknown")).rejects.toMatchObject({ code: "not_found" });
-    await expect(provider().destroy("sb-unknown")).resolves.toBeUndefined();
+    const events: { sandboxId: string; requestMs: number | null; stoppedMs: number | null }[] = [];
+    const observed = provider({ onDestroy: (event) => events.push(event) });
+    await expect(observed.destroy("sb-unknown")).resolves.toBeUndefined();
+    // A sandbox Modal reports gone is a confirmed stop, with no request latency to report.
+    expect(events).toEqual([
+      { sandboxId: "sb-unknown", requestMs: null, stoppedMs: expect.any(Number) },
+    ]);
   });
 
   test("destroy resolves only once Modal reports the sandbox stopped, and reports both latencies", async () => {

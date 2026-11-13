@@ -28,6 +28,7 @@ import {
   type Variant,
 } from "./record.js";
 import { failurePolicy, StepRunner, type BlobStore, type StepResult } from "./steps.js";
+import { deadline } from "../timing.js";
 
 export interface AttemptPlan {
   runId: string;
@@ -90,22 +91,6 @@ export interface AttemptEnvironment {
 }
 
 export class SlotTimeout extends Error {}
-
-/** `work`'s result, or a rejection once `ms` passes first. The timer never outlives the race. */
-async function withinDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Deadline passed")), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 function scaled(profile: Profile, scale: number): Profile {
   if (scale === 1) return profile;
@@ -336,9 +321,10 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
 
         if (environment.beforeDestroy) {
           // A stalled usage read must never hold up deletion: past the deadline it is abandoned.
-          const file = await withinDeadline(
-            environment.beforeDestroy(plan.provider.name, target.id),
-            environment.captureTimeoutMs ?? 120_000,
+          const capture = environment.beforeDestroy;
+
+          const file = await deadline(environment.captureTimeoutMs ?? 120_000, () =>
+            capture(plan.provider.name, target.id),
           ).catch(() => null);
 
           if (file) usageFiles.push(file);
