@@ -10,6 +10,7 @@
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
  */
 import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
+import type { FactoryOptions } from "../providers.js";
 
 export const tracks = ["same-machine", "default"] as const;
 
@@ -39,6 +40,8 @@ export interface ProviderSetup {
   readonly lifetime: boolean;
   /** Key into `pricing` for the budget guard. */
   readonly pricingKey: string;
+  /** Extra factory options for this provider's adapter, on both tracks. */
+  readonly factory?: FactoryOptions;
   readonly tracks: { readonly [K in TrackId]: TrackSetup };
 }
 
@@ -49,8 +52,6 @@ const fit = {
   heap1g: "FIT.md: 1 vCPU / 1 GiB, tsc aborts with JavaScript heap out of memory",
   install1g: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install",
   tenkiBuild: "FIT.md: 2 vCPU / 3.8 GiB is OOM-killed in the build",
-  basetenBuild:
-    "Measured 2026-11-13: 2 vCPU / 4 GiB keeps files in memory, with 3.1 GiB free; the build needs 4 GiB",
 } as const;
 
 export const providerSetups: readonly ProviderSetup[] = [
@@ -226,29 +227,33 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
-    // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Files live in
-    // memory, so no disk is provisioned. Default is Baseten's 4096 MiB (2 vCPU). Baseten's default
-    // image is Alpine (musl, BusyBox), which the frozen glibc toolchain cannot run, so both tracks
-    // use sandbox-bench-node22: node:22-bookworm built with Baseten's ImageBuilder, which adds its
-    // sandbox agent (bench/README.md). The main suite keeps Baseten's default image.
+    // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
+    // sandbox's files in its memory, so the workspace goes on an 8 GiB volume (the account's cap,
+    // 2026-11-16), as Baseten advised: without one, the build's node_modules sat in RAM and tsc was
+    // OOM-killed at 4 vCPU / 8 GiB (rw-baseten-head1). Default is Baseten's 4096 MiB (2 vCPU).
+    // Baseten's default image is Alpine (musl, BusyBox), which the frozen glibc toolchain cannot
+    // run, so both tracks use sandbox-bench-node22: node:22-bookworm built with Baseten's
+    // ImageBuilder, which adds its sandbox agent (bench/README.md). The main suite keeps Baseten's
+    // default image and no volume.
     name: "baseten",
     adapter: "baseten",
     product: null,
     lifetime: true,
     pricingKey: "baseten",
+    factory: { volume: { sizeGiB: 8, mountPath: "/workspace" } },
     tracks: {
       "same-machine": {
         template: "sandbox-bench-node22:latest",
         size: { cpu: 4, memoryMb: 8192 },
         vcpu: 4,
-        provisioned: size(4, 8, 0),
+        provisioned: size(4, 8, 8),
         tooSmall: {},
       },
       default: {
         template: "sandbox-bench-node22:latest",
         vcpu: 2,
-        provisioned: size(2, 4, 0),
-        tooSmall: { build: fit.basetenBuild },
+        provisioned: size(2, 4, 8),
+        tooSmall: {},
       },
     },
   },

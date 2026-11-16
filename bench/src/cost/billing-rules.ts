@@ -366,13 +366,18 @@ export const billingRules: readonly BillingRule[] = [
     perStartFeeUSD: unknown("Not stated"),
     keepsCharging: unknown("Not stated"),
     countsFileCacheAsMemory: allocationCache,
-    storage: unknown("Files are held in sandbox memory; no separate disk line"),
+    storage: unknown(
+      "Files are held in sandbox memory; a mounted volume is billed as volume storage ($0.16/GB-month), which the realistic runs' estimate includes",
+    ),
     settledChargeSource: unknown("No billing data we can read"),
     reportedKind: "estimate",
     attribution: "none",
     settlementMs: null,
     confirmation: unconfirmed,
-    notes: ["Published runtime rates; the free promotional period is excluded."],
+    notes: [
+      "Published runtime rates; the free promotional period is excluded.",
+      "A sandbox on standby (idle, no requests) is billed for storage only (docs.baseten.co/sandboxes/lifecycle); estimates price the whole lifetime at the runtime rates, an upper bound.",
+    ],
   },
   {
     provider: "freestyle",

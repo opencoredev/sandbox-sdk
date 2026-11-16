@@ -7,11 +7,13 @@ import type {
   SandboxCreateRequest,
   SandboxInfo as BasetenInfo,
   SandboxLifecycle,
+  VolumeInfo,
 } from "@basetenlabs/sandbox";
 import type { CreateInput, Labels, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isString } from "../../shared/narrow.js";
+import type { SandboxError } from "../../errors.js";
 import { basetenError, failure, nativeStatus as rejected } from "./errors.js";
 import { execute } from "./execute.js";
 
@@ -24,8 +26,21 @@ export interface BasetenOptions {
   image?: string;
   /** Region to run in. Unset lets Baseten pick the closest. */
   region?: string;
-  /** How long create waits for a sandbox to deploy. Default: 120 s. */
+  /** How long create waits for a sandbox (and its volume) to deploy. Default: 120 s. */
   readyTimeoutMs?: number;
+  /**
+   * A persistent volume made for each sandbox, mounted at `mountPath` and deleted with the
+   * sandbox. Baseten holds a sandbox's files in its memory, so a large workspace competes with
+   * processes for RAM; a volume puts those files on disk. Not available with `key`.
+   */
+  volume?: BasetenVolume;
+}
+
+export interface BasetenVolume {
+  /** Whole GiB. Baseten caps the size per account (8 GiB on the bench's account, 2026-11-16). */
+  sizeGiB: number;
+  /** Absolute path the volume is mounted at. */
+  mountPath: string;
 }
 
 export interface BasetenNative {
@@ -65,6 +80,11 @@ function memoryFor(size: CreateInput["size"]): number | undefined {
 
   return size.memoryMb;
 }
+
+/** The volume made for a sandbox: named after it, so any client can find and delete it. */
+const volumeOf = (sandbox: string) => `${sandbox}-v`;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A keyed sandbox's native name, so Baseten's unique names make the key exact. */
 function keyedName(key: string) {
@@ -129,6 +149,8 @@ export function createBasetenProvider(
   let client: Promise<SandboxClient> | undefined;
   let current: SandboxClient | undefined;
   const boxes = new Map<string, Sandbox>();
+  /** Sandboxes this client created with a volume, so destroy deletes it without a lookup. */
+  const madeWithVolume = new Set<string>();
 
   /** A sandbox's previews, through the control plane only, so a record without an execution URL works too. */
   async function previewsOf(c: SandboxClient, id: string) {
@@ -259,6 +281,62 @@ export function createBasetenProvider(
     return current;
   }
 
+  /** Waits for a volume to deploy; it must, before a sandbox can mount it. */
+  async function volumeReady(c: SandboxClient, info: VolumeInfo, signal?: AbortSignal) {
+    const deadline = Date.now() + (options.readyTimeoutMs ?? 120_000);
+    let current = info;
+
+    while (current.status !== "DEPLOYED") {
+      if (["FAILED", "DELETING"].includes(current.status))
+        throw failure(`Volume did not deploy (${current.status})`);
+
+      if (Date.now() > deadline) throw failure("Volume did not deploy in time", "timeout");
+
+      if (signal?.aborted) throw failure("Creation aborted", "aborted");
+      await sleep(250);
+      current = await c.volumes.getInfo({ name: info.name });
+    }
+
+    return current;
+  }
+
+  /**
+   * Deletes a volume, true once it is gone. Baseten refuses (409) while the sandbox that mounted
+   * it is still shutting down, a few seconds after its delete returns, so that is retried.
+   */
+  async function dropVolume(c: SandboxClient, name: string): Promise<boolean> {
+    const deadline = Date.now() + 120_000;
+
+    for (;;) {
+      try {
+        await c.volumes.delete({ name });
+
+        return true;
+      } catch (error) {
+        if (basetenError(error).code === "not_found") return true;
+
+        if (rejected(error) !== 409 || Date.now() > deadline) return false;
+      }
+
+      await sleep(1000);
+    }
+  }
+
+  /** Whether a sandbox has the volume this adapter makes, read before the sandbox is deleted. */
+  async function hasVolume(c: SandboxClient, id: string) {
+    if (madeWithVolume.has(id)) return true;
+
+    // This client made it without one, so it has none.
+    if (boxes.has(id)) return false;
+
+    try {
+      return (await c.getInfo({ name: id })).volumes.some((v) => v.name === volumeOf(id));
+    } catch (error) {
+      if (basetenError(error, id).code === "not_found") return false;
+      throw error;
+    }
+  }
+
   const provider: BasetenProvider = {
     name: "baseten",
     keyMode: "exact",
@@ -271,6 +349,10 @@ export function createBasetenProvider(
 
         if (input.network !== undefined && input.network !== "all")
           throw failure("Baseten adapter has no network policy", "unsupported");
+
+        // A keyed create can race another client for the name, and the volume would race too.
+        if (options.volume && input.key !== undefined)
+          throw failure("Baseten volumes cannot be combined with a key", "unsupported");
         const memory = memoryFor(input.size);
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
@@ -278,19 +360,64 @@ export function createBasetenProvider(
 
         const attempt = crypto.randomUUID();
 
+        const name =
+          input.key === undefined ? `${prefix}${crypto.randomUUID()}` : keyedName(input.key);
+
+        // The volume comes first: a sandbox mounts it at creation, in the volume's region.
+        let volume: VolumeInfo | undefined;
+
+        if (options.volume) {
+          const volumeName = volumeOf(name);
+
+          try {
+            volume = await volumeReady(
+              c,
+              await c.volumes.create({
+                name: volumeName,
+                size: `${options.volume.sizeGiB}Gi`,
+                region: options.region,
+                callOptions: { signal: input.signal },
+              }),
+              input.signal,
+            );
+          } catch (error) {
+            // A lost response may still have made it; the name is this attempt's alone.
+            if (!(await dropVolume(c, volumeName)))
+              throw failure(
+                `Volume ${volumeName} may exist and could not be deleted; delete it before retrying`,
+                "outcome_unknown",
+              );
+            throw basetenError(error);
+          }
+        }
+
+        /** Settles a failure once the sandbox is known gone: its volume goes too. */
+        const withoutVolume = async (error: SandboxError) => {
+          if (volume && !(await dropVolume(c, volume.name)))
+            return failure(
+              `Sandbox creation failed and volume ${volume.name} could not be deleted; delete it`,
+              "outcome_unknown",
+            );
+
+          return error;
+        };
+
         const request: SandboxCreateRequest = {
-          name: input.key === undefined ? `${prefix}${crypto.randomUUID()}` : keyedName(input.key),
+          name,
           image: options.image,
           memory,
-          region: options.region,
+          region: volume?.region ?? options.region,
           envs: Object.fromEntries(
-            Object.entries(input.env ?? {}).map(([name, value]) => [name, { value, secret: true }]),
+            Object.entries(input.env ?? {}).map(([key, value]) => [key, { value, secret: true }]),
           ),
           labels: { ...input.labels, [attemptLabel]: attempt },
           externalId: input.key,
           lifecycle: lifecycle(input),
           callOptions: { signal: input.signal },
         };
+
+        if (volume && options.volume)
+          request.volumes = [{ name: volume.name, mountPath: options.volume.mountPath }];
 
         let created;
 
@@ -305,8 +432,6 @@ export function createBasetenProvider(
           // when it carries this attempt's ID: absence, or another attempt's sandbox, settles
           // that this one made nothing.
           if (rejected(error) === undefined || ["unavailable", "timeout"].includes(mapped.code)) {
-            const name = request.name ?? "";
-
             // Only an explicit other marker proves another attempt made it: labels can be
             // replaced wholesale by update(), so a missing marker leaves the outcome unknown.
             const cleaned = await c.getInfo({ name }).then(
@@ -327,14 +452,15 @@ export function createBasetenProvider(
 
             if (!cleaned)
               throw failure(
-                `Sandbox creation outcome is unknown; delete ${request.name ?? "it"} if it exists before retrying`,
+                `Sandbox creation outcome is unknown; delete ${name}${volume ? ` and volume ${volume.name}` : ""} if they exist before retrying`,
                 "outcome_unknown",
               );
 
-            if (mapped.code === "aborted") throw failure("Creation aborted", "aborted");
+            if (mapped.code === "aborted")
+              throw await withoutVolume(failure("Creation aborted", "aborted"));
           }
 
-          throw mapped;
+          throw await withoutVolume(mapped);
         }
 
         try {
@@ -343,6 +469,8 @@ export function createBasetenProvider(
           const value = toInfo(info);
 
           if (!value) throw failure("Created sandbox is not usable", "provider", info.name);
+
+          if (volume) madeWithVolume.add(info.name);
 
           return value;
         } catch (error) {
@@ -356,11 +484,11 @@ export function createBasetenProvider(
 
           if (!cleaned)
             throw failure(
-              `Sandbox ${created.name} did not become usable and could not be deleted; delete it before retrying`,
+              `Sandbox ${created.name} did not become usable and could not be deleted; delete it${volume ? ` and volume ${volume.name}` : ""} before retrying`,
               "outcome_unknown",
               created.name,
             );
-          throw basetenError(error, created.name);
+          throw await withoutVolume(basetenError(error, created.name));
         }
       }),
     find: (key) => safe(undefined, () => lookup(keyedName(key))),
@@ -407,6 +535,8 @@ export function createBasetenProvider(
           if (basetenError(error, id).code !== "not_found") throw error;
         }
 
+        const volume = (await hasVolume(c, id)) ? volumeOf(id) : undefined;
+
         try {
           await c.delete({ name: id });
         } catch (error) {
@@ -414,6 +544,12 @@ export function createBasetenProvider(
         }
 
         boxes.delete(id);
+
+        if (volume) {
+          if (!(await dropVolume(c, volume)))
+            throw failure(`Volume ${volume} could not be deleted; delete it`, "provider", id);
+          madeWithVolume.delete(id);
+        }
       }),
     async close(id) {
       boxes.delete(id);

@@ -37,6 +37,14 @@ import { performanceScript } from "./perf-script.js";
 import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import {
+  autoStandby,
+  idle,
+  longestGapMs,
+  startTicker,
+  stopTicker,
+  tickerStarted,
+} from "./standby.js";
+import {
   recordAbsentResolution,
   recordVerifiedRelease,
   UnverifiedOwnershipError,
@@ -1708,7 +1716,12 @@ export async function runV2(
           if (prep.kind !== "success") dependencies.set("tool-replay", "tool-replay-prepare");
         }
 
-        const reconnectClock = group === "reconnect" ? new PhaseClock() : undefined;
+        const standby = group === "pause-resume" ? autoStandby.get(p.name) : undefined;
+
+        // Reconnect, and pause-resume by standby, time only part of the scenario.
+        const partClock =
+          group === "reconnect" || standby !== undefined ? new PhaseClock() : undefined;
+
         const lifecyclePhases: Record<string, number> = {};
         await measure(
           group,
@@ -1734,12 +1747,12 @@ export async function runV2(
               case "reconnect": {
                 const previous = active;
                 const start = performance.now();
-                reconnectClock?.begin();
+                partClock?.begin();
                 const connected = await connectSandbox(tracked, active.id);
                 const api = performance.now() - start;
                 await command(connected, "true", timeout, signal);
                 const firstCommandOKMs = performance.now() - start;
-                reconnectClock?.finish();
+                partClock?.finish();
                 reconnectedHandles.push(previous);
                 reconnectedTo = connected;
                 active = connected;
@@ -1749,6 +1762,35 @@ export async function runV2(
               }
 
               case "pause-resume": {
+                // No pause call: send nothing until the sandbox goes on standby by itself (proved by
+                // a gap in an in-sandbox ticker), then time the first command, which resumes it.
+                if (standby) {
+                  const ticker = tickerStarted(await command(active, startTicker, timeout, signal));
+                  await idle(standby.idleMs, signal);
+                  partClock?.begin();
+                  await command(active, "true", timeout, signal);
+                  partClock?.finish();
+                  const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
+
+                  const gapMs = longestGapMs(
+                    await command(active, stopTicker(ticker.pid), timeout, signal),
+                    ticker.startedAtS,
+                  );
+
+                  if (gapMs < standby.minGapMs)
+                    throw new Error(
+                      `No standby seen: the longest pause in the ticks was ${gapMs} ms after ${standby.idleMs} ms idle`,
+                    );
+                  // Pausing is not a call, so it takes no time; resume is the first request.
+                  lifecyclePhases.pauseMs = 0;
+                  lifecyclePhases.resumeReturnedMs = 0;
+                  lifecyclePhases.resumeReadyMs = resumeReadyMs;
+                  lifecyclePhases.standbyIdleMs = standby.idleMs;
+                  lifecyclePhases.standbyGapMs = gapMs;
+
+                  return { ...lifecyclePhases };
+                }
+
                 if (
                   !p.provider.capabilities.has("pause") ||
                   !p.provider.pause ||
@@ -1792,7 +1834,7 @@ export async function runV2(
             }
           },
           lifecyclePhases,
-          reconnectClock,
+          partClock,
         );
       }
     } finally {

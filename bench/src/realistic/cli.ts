@@ -286,6 +286,7 @@ async function loadSlotProvider(
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms": lifetime,
+    factory: setup.factory,
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };

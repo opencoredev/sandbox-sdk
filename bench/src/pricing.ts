@@ -148,7 +148,8 @@ export const pricing: PriceTable = {
   baseten: {
     ...base,
     // Memory sets CPU: 2 GiB per vCPU up to 4 vCPUs (16 GiB gives 6, not 8). Files count against
-    // memory; there is no disk line.
+    // memory, so the main suite has no disk; the realistic runs' workspace volume is priced as disk
+    // at volume storage, $0.16 per GB-month over a 30-day month.
     offeredSizes: [
       { cpu: 1, memoryGiB: 2 },
       { cpu: 2, memoryGiB: 4 },
@@ -156,10 +157,10 @@ export const pricing: PriceTable = {
     ],
     cpuSecond: 0.0655 / 3600,
     memoryGiBSecond: 0.0211 / 3600,
-    diskGiBSecond: 0,
+    diskGiBSecond: 0.16 / (30 * 24 * 3600),
     source: "https://www.baseten.co/pricing/",
     notes:
-      "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Snapshots, volumes and images not used.",
+      "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Realistic runs mount an 8 GiB volume, priced at $0.16/GB-month for the sandbox's lifetime. Snapshots and stored images not used.",
   },
   tenki: {
     ...base,
