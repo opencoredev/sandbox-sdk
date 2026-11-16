@@ -251,6 +251,17 @@ describe("export receipts", () => {
       expect.stringContaining("not 2026-11-16T08:00:00.000Z"),
     ]);
     expect(check({ url: receipt.url.replace(teamId, "team_2") })).toHaveLength(1);
+
+    // Another origin, a parameter given twice (which one counts is up to the server), or an extra one.
+    for (const url of [
+      `https://example.invalid${receipt.url}`,
+      `${receipt.url}&teamId=team_2`,
+      `${receipt.url}&from=2026-11-15T08:00:00.000Z`,
+      `${receipt.url}&limit=100`,
+    ])
+      expect(check({ url })).toEqual([expect.stringContaining("was read from")]);
+
+    expect(check({ url: `https://vercel.com${receipt.url}` })).toEqual([]);
     expect(check({ fetchedAt: "2026-11-17T09:00:00.000Z" })).toEqual([
       expect.stringContaining("less than 2 hours"),
     ]);

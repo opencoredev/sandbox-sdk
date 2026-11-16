@@ -77,6 +77,9 @@ export const exportReceiptSchema = z.object({
 
 export type ExportReceipt = z.infer<typeof exportReceiptSchema>;
 
+/** The dashboard origin the browser reads the export from (the receipt's URL is relative to it). */
+const VERCEL_ORIGIN = "https://vercel.com";
+
 /** Hours after a charge day closes before its export is read, so late usage has landed. */
 export const SETTLE_HOURS = 2;
 
@@ -90,13 +93,16 @@ export function receiptProblems(input: {
 }): string[] {
   const { receipt, body, period, label } = input;
   const problems: string[] = [];
-  const url = new URL(receipt.url, "https://vercel.com");
+  const url = new URL(receipt.url, VERCEL_ORIGIN);
+  const names = [...url.searchParams.keys()].sort();
   const at = (name: string) => Date.parse(url.searchParams.get(name) ?? "");
 
   if (receipt.status !== 200) problems.push(`${label} was read with HTTP ${receipt.status}`);
 
   if (
+    url.origin !== VERCEL_ORIGIN ||
     url.pathname !== "/api/v1/billing/charges" ||
+    names.join(",") !== "from,teamId,to" ||
     url.searchParams.get("teamId") !== input.teamId ||
     at("from") !== Date.parse(period.start) ||
     at("to") !== Date.parse(period.end)
