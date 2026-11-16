@@ -1,15 +1,17 @@
 name: CI
 
-# Other branches get CI through their pull request. A new push cancels the
-# branch's run in progress, except on main, where every commit is checked.
+# Other branches get CI through their pull request. A new push to a pull
+# request cancels its run in progress. Each main run gets its own group,
+# because a shared group would cancel a pending main run when the next
+# commit lands.
 on:
   push:
     branches: [main]
   pull_request:
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: true
 
 jobs:
   # Package changes ship through the version PR, so they need a changeset.
