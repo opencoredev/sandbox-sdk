@@ -541,7 +541,39 @@ async function run(args: string[]) {
     }
   } finally {
     // Always, after a budget stop or an error too: nothing this run made is left running.
-    await sweepProviders(values.run, [...loaded.values()], note, out);
+    reportSweep(await sweepProviders(values.run, [...loaded.values()], note, out), notesPath);
+  }
+}
+
+/** What a sweep could not clear. Any nonzero count means sandboxes may still be running. */
+export interface SweepResult {
+  /** Sleeping machines (boxd) out of list() that could not be checked without waking them. */
+  readonly unchecked: number;
+  /** Providers whose listing or sweep threw. */
+  readonly failed: number;
+  /** Leftover sandboxes whose destroy() rejected: they may still be running and charging. */
+  readonly undeleted: number;
+}
+
+/** Prints what a sweep left and fails the process when it left anything. */
+function reportSweep({ unchecked, failed, undeleted }: SweepResult, notesPath: string) {
+  if (unchecked > 0) {
+    process.stderr.write(
+      `${unchecked} sleeping machines could not be checked without waking them; see leftover-unchecked in ${notesPath}\n`,
+    );
+    process.exitCode = 1;
+  }
+
+  if (failed > 0) {
+    process.stderr.write(`${failed} provider sweeps failed; see sweep-failed in ${notesPath}\n`);
+    process.exitCode = 1;
+  }
+
+  if (undeleted > 0) {
+    process.stderr.write(
+      `${undeleted} leftover sandboxes could not be deleted; see leftover with removed: false in ${notesPath}\n`,
+    );
+    process.exitCode = 1;
   }
 }
 
@@ -550,10 +582,11 @@ export async function sweepProviders(
   providers: readonly SlotProvider[],
   note: (entry: RunNote) => Promise<void>,
   journalDir: string,
-) {
+): Promise<SweepResult> {
   const seen = new Set<Provider>();
   let unchecked = 0;
   let failed = 0;
+  let undeleted = 0;
   const journal = join(journalDir, appJournalFile);
   const apps = await readAppJournal(journal);
   const changed = new Set<(typeof apps)[number]>();
@@ -584,7 +617,8 @@ export async function sweepProviders(
 
         // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
         // leaves its cost provisional, the safe side, and never stops the sweep.
-        if (removed)
+        if (!removed) undeleted++;
+        else
           await recordStop({
             path: join(journalDir, stopJournalFile),
             provider: entry.provider.name,
@@ -619,7 +653,7 @@ export async function sweepProviders(
 
   for (const app of changed) await persistApp(journal, app);
 
-  return { unchecked, failed };
+  return { unchecked, failed, undeleted };
 }
 
 async function sweep(args: string[]) {
@@ -646,6 +680,7 @@ async function sweep(args: string[]) {
 
   let unchecked = 0;
   let failed = 0;
+  let undeleted = 0;
 
   for (const track of tracks)
     for (const runId of values.run) {
@@ -661,21 +696,11 @@ async function sweep(args: string[]) {
 
       unchecked += result.unchecked;
       failed += result.failed;
+      undeleted += result.undeleted;
     }
 
   process.stdout.write(`Swept; see ${notesPath}\n`);
-
-  if (unchecked > 0) {
-    process.stderr.write(
-      `${unchecked} sleeping machines could not be checked without waking them; see leftover-unchecked in ${notesPath}\n`,
-    );
-    process.exitCode = 1;
-  }
-
-  if (failed > 0) {
-    process.stderr.write(`${failed} provider sweeps failed; see sweep-failed in ${notesPath}\n`);
-    process.exitCode = 1;
-  }
+  reportSweep({ unchecked, failed, undeleted }, notesPath);
 }
 
 const billingSourcesSchema = z.object({

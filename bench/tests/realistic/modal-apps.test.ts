@@ -580,10 +580,53 @@ describe("sweep and sleeping machines", () => {
       dir,
     );
 
-    expect(broken).toEqual({ unchecked: 0, failed: 1 });
+    expect(broken).toEqual({ unchecked: 0, failed: 1, undeleted: 0 });
     expect(notes).toEqual([
       { kind: "leftover-unchecked", provider: "boxd", id: "sleeping-machine", reason: "sleeping" },
       { kind: "swept", provider: "boxd", found: 0, sleepingUnchecked: 1 },
     ]);
+  });
+
+  it("counts a leftover whose deletion fails, so the sweep can't report a clean account", async () => {
+    const dir = await mkdtemp(join(root, "sweep-undeleted-"));
+    const notes: Parameters<Parameters<typeof sweepProviders>[2]>[0][] = [];
+
+    const provider = Object.assign(memory(), {
+      list: async () => [{ id: "stuck" }, { id: "gone" }],
+      destroy: async (id: string) => {
+        if (id === "stuck") throw new Error("delete refused");
+      },
+    });
+
+    const result = await sweepProviders(
+      "sweep-undeleted",
+      [
+        {
+          name: "memory",
+          provider,
+          attribution: attributionFor("boxd").attribution,
+          settlementMs: null,
+          paddingMs: 0,
+        },
+      ],
+      async (entry) => {
+        notes.push(entry);
+      },
+      dir,
+    );
+
+    expect(result).toEqual({ unchecked: 0, failed: 0, undeleted: 1 });
+    expect(notes).toContainEqual({
+      kind: "leftover",
+      provider: "memory",
+      id: "stuck",
+      removed: false,
+    });
+    expect(notes).toContainEqual({
+      kind: "leftover",
+      provider: "memory",
+      id: "gone",
+      removed: true,
+    });
   });
 });

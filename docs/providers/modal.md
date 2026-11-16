@@ -96,10 +96,11 @@ sandbox stopped, because Modal sometimes takes about 30 seconds (2 of 18 in a
 2026-11-09 probe) and bills until then. One deadline, `destroyWaitMs` (default
 60 s), covers the terminate request and every poll, so a stalled request cannot
 hold destroy past it. A terminate Modal refuses (INVALID_ARGUMENT,
-PERMISSION_DENIED, RESOURCE_EXHAUSTED, FAILED_PRECONDITION, UNIMPLEMENTED,
-UNAUTHENTICATED) rejects and clears the tag: the sandbox is an ordinary running
-one again. Any other failure, such as a lost response (UNAVAILABLE), may follow
-an accepted terminate, so the sandbox stays tracked as terminating and destroy
+PERMISSION_DENIED, RESOURCE_EXHAUSTED, UNIMPLEMENTED, UNAUTHENTICATED) rejects
+and clears the tag: the sandbox is an ordinary running one again. Any other
+failure, such as a lost response (UNAVAILABLE) or FAILED_PRECONDITION (which can
+mean the sandbox is already stopping), may follow an accepted terminate, so the
+sandbox stays tracked as terminating and destroy
 polls for the stop within the deadline: a confirmed stop resolves (`requestMs`
 is then `null`), otherwise the original error rejects, retryable. An
 unconfirmed stop, or a terminate request that did not return in time, rejects
