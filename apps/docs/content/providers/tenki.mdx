@@ -1,9 +1,11 @@
 ---
-title: Tenki
-description: Run coding agents on full Tenki Linux VMs. Memory pause, disk and memory snapshots, exact sizes, network allow lists, and a hard lifetime.
+title: Luxor
+description: Run coding agents on full Luxor Linux VMs. Memory pause, disk and memory snapshots, exact sizes, network allow lists, and a hard lifetime.
 ---
 
-`tenki()` runs each sandbox as a full Linux VM on [Tenki](https://tenki.cloud/products/sandbox) through the official `@tenkicloud/sandbox` SDK.
+`tenki()` runs each sandbox as a full Linux VM on [Luxor](https://luxor.ai/products/sandbox) through the official `@tenkicloud/sandbox` SDK.
+
+Luxor Agent Cloud was called Tenki. The adapter keeps its Tenki names: the `tenki()` factory, the `/tenki` import path, the `@tenkicloud/sandbox` peer package and the `TENKI_*` environment variables, all of which Luxor still supports.
 
 ## Install
 
@@ -60,13 +62,13 @@ console.log(result.stdout);
 | Commands and streaming         | Yes         | Output streams in bounded pages                          |
 | Files                          | Yes         |                                                          |
 | Background processes           | Yes         |                                                          |
-| Preview URLs                   | Yes         | Public `https://`, with an expiry when Tenki reports one |
+| Preview URLs                   | Yes         | Public `https://`, with an expiry when Luxor reports one |
 | Pause and resume               | Yes         | Disk and memory survive                                  |
 | Snapshots                      | Yes         | Disk and memory, with optional expiry                    |
 | Machine size                   | Yes         | Presets or exact CPU, memory, and disk                   |
 | Network policy                 | Yes         | `"none"` or a host allow list, `*.` wildcards allowed    |
 | Hard lifetime (`timeoutMs`)    | Yes         |                                                          |
-| Idle timeout (`idleTimeoutMs`) | No          | Tenki removed idle auto-pause                            |
+| Idle timeout (`idleTimeoutMs`) | No          | Luxor removed idle auto-pause                            |
 | Keys                           | Best-effort | Stored in session metadata                               |
 | Terminal                       | No          |                                                          |
 
@@ -106,7 +108,7 @@ console.log(await box.files.list("notes"));
 await box.files.write("secrets/token", "abc123", { mode: 0o600 });
 ```
 
-`{ mode }` is set when the file is written, by Tenki's streaming file API under `/home/tenki` (where `/workspace` lives) and by the guest helper elsewhere, so the file never has a looser mode.
+`{ mode }` is set when the file is written, by Luxor's streaming file API under `/home/tenki` (where `/workspace` lives) and by the guest helper elsewhere, so the file never has a looser mode.
 
 ## Background processes and previews
 
@@ -140,17 +142,17 @@ const { id } = await box.snapshot();
 await using copy = await createSandbox(tenki(), { from: id });
 ```
 
-Pause closes active TCP, preview, and SSH connections; reconnect clients after resume. Snapshots stay in Tenki after the VM is gone, unless you give them an expiry:
+Pause closes active TCP, preview, and SSH connections; reconnect clients after resume. Snapshots stay in Luxor after the VM is gone, unless you give them an expiry:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { tenki } from "@opencoredev/sandbox-sdk/tenki";
 
 await using box = await createSandbox(tenki());
-const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Tenki deletes it in 7 days
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Luxor deletes it in 7 days
 ```
 
-`expiresInMs: 0` or no option keeps the snapshot until you delete it. A paused sandbox is kept for Tenki's pause retention; set `pauseRetentionMs` to change it.
+`expiresInMs: 0` or no option keeps the snapshot until you delete it. A paused sandbox is kept for Luxor's pause retention; set `pauseRetentionMs` to change it.
 
 ## Size, network, and lifetime
 
@@ -174,7 +176,7 @@ await using box = await createSandbox(tenki(), {
 - Exact sizes take 1 to 128 CPUs, an even `memoryMb` from 128 to 524288, and 5 to 100 GiB of disk. Workspace quotas can be lower.
 - Without `size`, the base image gets 2 CPUs, 4096 MB, and 5 GiB.
 - An empty allow list blocks outbound traffic. The adapter checks the returned policy and fails if it doesn't match.
-- `timeoutMs` sets Tenki's `maxDurationMs`. `idleTimeoutMs` fails with `unsupported`.
+- `timeoutMs` sets Luxor's `maxDurationMs`. `idleTimeoutMs` fails with `unsupported`.
 
 ## Configuration
 
@@ -182,16 +184,16 @@ await using box = await createSandbox(tenki(), {
 | ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------ |
 | `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`   |
 | `baseUrl`          | `string`                               | `https://api.tenki.cloud`      | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
-| `image`            | `string`                               | Tenki's default image          |                                            |
+| `image`            | `string`                               | Luxor's default image          |                                            |
 | `requestTimeoutMs` | `number`                               | `30_000`                       |                                            |
 | `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                            |
 | `resumeTimeoutMs`  | `number`                               | `180_000`, at most `900_000`   |                                            |
-| `pauseRetentionMs` | `number`                               | Tenki's retention              |                                            |
-| `previewTtlMs`     | `number`                               | Tenki's preview TTL            |                                            |
+| `pauseRetentionMs` | `number`                               | Luxor's retention              |                                            |
+| `previewTtlMs`     | `number`                               | Luxor's preview TTL            |                                            |
 | `volumes`          | `{ volumeId, mountPath, readOnly? }[]` |                                |                                            |
 | `workspaceId`      | `string`                               | Inferred from the API key      |                                            |
 
-`authToken` is a deprecated alias for `apiKey`. `volumes` mounts [Tenki volumes](https://tenki.cloud/docs/sandbox/volumes) you created with the native SDK. `workspaceId` is only needed for service credentials that span workspaces; it scopes both creation and listing. A custom image needs Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`, and must allow privileged execution. `box.native` is a typed Tenki `Session`; its `close()` terminates the VM, so use `box.close()` to detach.
+`authToken` is a deprecated alias for `apiKey`. `volumes` mounts [Luxor volumes](https://luxor.ai/docs/sandbox/volumes) you created with the native SDK. `workspaceId` is only needed for service credentials that span workspaces; it scopes both creation and listing. A custom image needs Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`, and must allow privileged execution. `box.native` is a typed Luxor `Session`; its `close()` terminates the VM, so use `box.close()` to detach.
 
 ## Limitations
 
@@ -202,9 +204,9 @@ await using box = await createSandbox(tenki(), {
 
 ## How it works
 
-- Tenki clears `/tmp` on pause. The adapter keeps SDK state under `/home/tenki/.sandbox-sdk` and relinks `/tmp/.sandbox-sdk` on resume and connect.
+- Luxor clears `/tmp` on pause. The adapter keeps SDK state under `/home/tenki/.sandbox-sdk` and relinks `/tmp/.sandbox-sdk` on resume and connect.
 - Sticky mode is off, so it can't override `timeoutMs`.
-- Tenki 1.4.1 can't cancel control-plane calls. A timed-out create may still finish; the adapter tries to close a late VM, but keep your process alive for that and check your sessions if it fails.
+- `@tenkicloud/sandbox` 1.4.1 can't cancel control-plane calls. A timed-out create may still finish; the adapter tries to close a late VM, but keep your process alive for that and check your sessions if it fails.
 - Command output spools to a file in the VM, which uses guest disk until the run finishes.
 
 ## Next steps

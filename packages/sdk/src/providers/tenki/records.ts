@@ -1,6 +1,6 @@
 import { isBoolean, isNumber, isObject, isString } from "../../shared/narrow.js";
 
-/** One encoded output chunk from a Tenki supervisor: base64 when paged, hex when streamed. */
+/** One encoded output chunk from a Luxor supervisor: base64 when paged, hex when streamed. */
 export type Chunk = readonly [stream: "stdout" | "stderr", data: string];
 
 /** A supervisor's exit record. The paged supervisor writes the workspace root as text;

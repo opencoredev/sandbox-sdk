@@ -260,7 +260,7 @@ try {
 
   for (const [name, why] of Object.entries(skipped)) console.log(`SKIP ${name}: ${why}`);
 
-  // Minifiers rename every class, and esbuild renames colliding ones (Tenki's FileNotFoundError)
+  // Minifiers rename every class, and esbuild renames colliding ones (the Luxor SDK's FileNotFoundError)
   // even without --minify. The mappers must still recognize the real native errors.
   const mapping = `
 const { FileNotFoundError: TenkiFileNotFoundError } = require("@tenkicloud/sandbox");

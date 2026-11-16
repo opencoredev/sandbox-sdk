@@ -100,7 +100,7 @@ function Providers() {
         </h2>
         <p className={styles.lede}>
           Develop on your machine with Docker, test in memory, ship to E2B, Daytona, Vercel,
-          Upstash, Railway, Tenki and more. The API stays the same.{" "}
+          Upstash, Railway, Luxor and more. The API stays the same.{" "}
           <a href="https://aisandboxbench.com/providers/">See how they benchmark</a>.
         </p>
       </div>

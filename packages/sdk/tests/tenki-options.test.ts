@@ -10,7 +10,7 @@ afterEach(cleanupTenki);
 const key = { apiKey: "offline-test-key" };
 
 const modeOf = async (box: { native: unknown }, path: string) => {
-  if (!(box.native instanceof MockSession)) throw new Error("Expected the Tenki mock");
+  if (!(box.native instanceof MockSession)) throw new Error("Expected the Luxor mock");
 
   return (await stat(`${box.native.root}${path}`)).mode & 0o7777;
 };

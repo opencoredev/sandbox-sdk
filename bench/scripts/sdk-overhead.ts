@@ -14,7 +14,7 @@ type Sdk = typeof Core;
 
 type Sandbox = Awaited<ReturnType<Sdk["createSandbox"]>>;
 
-// write is absent when the native SDK cannot reach /workspace (Tenki confines writeFile to its workdir).
+// write is absent when the native SDK cannot reach /workspace (Luxor confines writeFile to its workdir).
 interface Floor {
   exec(command?: string): Promise<void>;
   write?(path: string, data: Uint8Array): Promise<void>;
@@ -1113,7 +1113,7 @@ function markdown(reports: ProviderReport[]) {
   const lines = [
     `SDK overhead, ${runId}, sdk ${sdkCommit() ?? "unknown"}, N=${n} ops, ${sandboxCount} cold/init samples. Times in ms, median [min–max]. Δ = SDK median − baseline median.`,
     "",
-    "Native-phase SDK timings and complete paired samples are in JSON. Native read/list/edit use cat/ls/sed through native exec; Tenki write uses native exec + base64. These are shell floors, not equivalent file API semantics. Tenki SDK/native phase follows native() cache invalidation. Create clocks exclude explicit init measurement but include lazy first-use imports/clients (first sample). Upstash is durable; raw create omits adapter initCommand. Raw readiness uses native waits; boxd waitUntilReady may probe true; Tenki native wait may differ from adapter stream fallback.",
+    "Native-phase SDK timings and complete paired samples are in JSON. Native read/list/edit use cat/ls/sed through native exec; Luxor write uses native exec + base64. These are shell floors, not equivalent file API semantics. Luxor SDK/native phase follows native() cache invalidation. Create clocks exclude explicit init measurement but include lazy first-use imports/clients (first sample). Upstash is durable; raw create omits adapter initCommand. Raw readiness uses native waits; boxd waitUntilReady may probe true; Luxor native wait may differ from adapter stream fallback.",
     "",
     "| Provider | Op | SDK (adapter phase) | Adapter | Δ adapter | SDK (native phase) | Provider SDK | Δ provider SDK |",
     "|---|---|---|---|---|---|---|---|",

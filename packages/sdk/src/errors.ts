@@ -294,7 +294,7 @@ export interface NativeEvidence {
   source?: string;
   nativeName?: string;
   native?: string;
-  /** Tenki create: the session this call created, and how far it got. */
+  /** Luxor create: the session this call created, and how far it got. */
   admittedByThisCall?: true;
   stage?: string;
   sandboxId?: string;

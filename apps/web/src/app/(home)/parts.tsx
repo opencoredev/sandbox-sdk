@@ -179,7 +179,7 @@ export function Footer() {
           </Link>
           <p>
             A TypeScript SDK for sandboxes on Docker, agentOS, E2B, Vercel, Daytona, Upstash,
-            Railway, Boat, Tenki, boxd, and Freestyle. MIT licensed, built by OpenCore.
+            Railway, Boat, Luxor, boxd, and Freestyle. MIT licensed, built by OpenCore.
           </p>
         </div>
         <div className={styles.footerCol}>
