@@ -149,8 +149,12 @@ export function createBasetenProvider(
   let client: Promise<SandboxClient> | undefined;
   let current: SandboxClient | undefined;
   const boxes = new Map<string, Sandbox>();
-  /** Sandboxes this client created with a volume, so destroy deletes it without a lookup. */
-  const madeWithVolume = new Set<string>();
+  /**
+   * Sandboxes this client created without a volume. Destroy deletes `<id>-v` for every other
+   * sandbox, including connected ones and retries after the sandbox is gone; a missing volume is
+   * not an error, so only these skip that request.
+   */
+  const madeWithoutVolume = new Set<string>();
 
   /** A sandbox's previews, through the control plane only, so a record without an execution URL works too. */
   async function previewsOf(c: SandboxClient, id: string) {
@@ -322,21 +326,6 @@ export function createBasetenProvider(
     }
   }
 
-  /** Whether a sandbox has the volume this adapter makes, read before the sandbox is deleted. */
-  async function hasVolume(c: SandboxClient, id: string) {
-    if (madeWithVolume.has(id)) return true;
-
-    // This client made it without one, so it has none.
-    if (boxes.has(id)) return false;
-
-    try {
-      return (await c.getInfo({ name: id })).volumes.some((v) => v.name === volumeOf(id));
-    } catch (error) {
-      if (basetenError(error, id).code === "not_found") return false;
-      throw error;
-    }
-  }
-
   const provider: BasetenProvider = {
     name: "baseten",
     keyMode: "exact",
@@ -470,7 +459,7 @@ export function createBasetenProvider(
 
           if (!value) throw failure("Created sandbox is not usable", "provider", info.name);
 
-          if (volume) madeWithVolume.add(info.name);
+          if (!volume) madeWithoutVolume.add(info.name);
 
           return value;
         } catch (error) {
@@ -535,8 +524,6 @@ export function createBasetenProvider(
           if (basetenError(error, id).code !== "not_found") throw error;
         }
 
-        const volume = (await hasVolume(c, id)) ? volumeOf(id) : undefined;
-
         try {
           await c.delete({ name: id });
         } catch (error) {
@@ -545,11 +532,11 @@ export function createBasetenProvider(
 
         boxes.delete(id);
 
-        if (volume) {
-          if (!(await dropVolume(c, volume)))
-            throw failure(`Volume ${volume} could not be deleted; delete it`, "provider", id);
-          madeWithVolume.delete(id);
-        }
+        // After the sandbox, which must be gone first. A retry after a failed volume delete finds
+        // the sandbox gone and comes back here.
+        if (!madeWithoutVolume.has(id) && !(await dropVolume(c, volumeOf(id))))
+          throw failure(`Volume ${volumeOf(id)} could not be deleted; delete it`, "provider", id);
+        madeWithoutVolume.delete(id);
       }),
     async close(id) {
       boxes.delete(id);

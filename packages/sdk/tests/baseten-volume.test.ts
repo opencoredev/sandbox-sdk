@@ -13,6 +13,8 @@ interface FakeState {
   calls: string[];
   /** Volume deletes refused with 409 before one succeeds, as while a sandbox shuts down. */
   busyDeletes: number;
+  /** Volume deletes failing with HTTP 500 before the 409s and the success. */
+  failedDeletes?: number;
   rejectCreate?: number;
 }
 
@@ -59,6 +61,11 @@ function fakeClient(state: FakeState): SandboxClient {
         state.calls.push(`volume.delete ${name}`);
 
         if (!state.volumes.has(name)) throw httpError(404);
+
+        if (state.failedDeletes) {
+          state.failedDeletes--;
+          throw httpError(500);
+        }
 
         if (state.busyDeletes > 0) {
           state.busyDeletes--;
@@ -175,13 +182,36 @@ describe("Baseten volume", () => {
     expect(state.volumes.size).toBe(0);
   });
 
-  test("a client without the option leaves volumes alone and makes no extra lookup", async () => {
+  test("a client without the option deletes no volume for its own sandboxes", async () => {
     const { provider, state } = setup({ volume: undefined });
     const box = await provider.create({ labels: {} });
 
-    expect(state.calls.some((c) => c.startsWith("volume."))).toBe(false);
     await provider.destroy(box.id);
-    expect(state.calls.filter((c) => c.startsWith("getInfo"))).toEqual([]);
+    expect(state.calls.filter((c) => c.startsWith("volume."))).toEqual([]);
+  });
+
+  test("a client that connected to the sandbox deletes its volume", async () => {
+    const { provider, state } = setup();
+    const box = await provider.create({ labels: {} });
+    const other = setup({ volume: undefined });
+    Object.assign(other.state, { volumes: state.volumes, sandboxes: state.sandboxes });
+
+    await other.provider.connect(box.id);
+    await other.provider.destroy(box.id);
+    expect(state.sandboxes.size).toBe(0);
+    expect(state.volumes.size).toBe(0);
+  });
+
+  test("a destroy retried after a failed volume delete still deletes the volume", async () => {
+    const { provider, state } = setup();
+    const box = await provider.create({ labels: {} });
+
+    state.failedDeletes = 1;
+    await expect(provider.destroy(box.id)).rejects.toMatchObject({ code: "provider" });
+    expect(state.volumes.size).toBe(1);
+
+    await provider.destroy(box.id);
+    expect(state.volumes.size).toBe(0);
   });
 
   test("a key with a volume is unsupported", async () => {

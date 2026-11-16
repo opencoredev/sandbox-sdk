@@ -68,6 +68,7 @@ import {
   tracks,
   type ProviderSetup,
   type TrackId,
+  provisionedFor,
 } from "./setup.js";
 import {
   attributionFor,
@@ -223,8 +224,13 @@ async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[])
 }
 
 /** Budget estimate for one attempt at list price for its provisioned size (EUR counted at 2x). */
-export function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number): number {
-  const size = setup.tracks[track].provisioned;
+export function attemptBudget(
+  setup: ProviderSetup,
+  track: TrackId,
+  durationMs: number,
+  profile = "fix-and-test",
+): number {
+  const size = provisionedFor(setup, track, profile);
 
   // Upstash charges its tier price per CPU-hour used (observed, SBX-100), so a busy box can cost
   // that price times its vCPUs per wall-hour: bound it by every vCPU busy.
@@ -263,7 +269,8 @@ async function spentUSD(path: string) {
     (sum, r) =>
       r.sandboxIds.length === 0
         ? sum
-        : sum + attemptBudget(providerSetup(r.provider), trackOf(r), r.endedAt - r.startedAt),
+        : sum +
+          attemptBudget(providerSetup(r.provider), trackOf(r), r.endedAt - r.startedAt, r.profile),
     0,
   );
 }
@@ -275,6 +282,8 @@ async function loadSlotProvider(
   usageDir?: string,
   /** The run's output directory, which holds the App journal and confirmed stops (Modal). */
   journalDir?: string,
+  /** A profile with its own factory options (`profileFactory`); unset loads the plain adapter. */
+  profile?: string,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -286,7 +295,7 @@ async function loadSlotProvider(
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms": lifetime,
-    factory: setup.factory,
+    factory: profile === undefined ? undefined : setup.profileFactory?.[profile],
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };
@@ -422,6 +431,7 @@ async function run(args: string[]) {
   await writeFile(join(out, regionsFile), JSON.stringify(regions, null, 2) + "\n");
 
   const loaded = new Map<string, SlotProvider>();
+  const profileLoaded = new Map<string, SlotProvider>();
   const longest = plan === "held-open" ? 60 * 60_000 : 0;
 
   for (const track of trackIds)
@@ -433,6 +443,14 @@ async function run(args: string[]) {
       if (result.kind === "skipped")
         await note({ kind: "provider-skipped", provider: setup.name, track, reason: result.note });
       else loaded.set(`${setup.name}/${track}`, result.entry);
+
+      // A profile with its own factory options gets its own adapter. The sweep uses the plain one,
+      // whose destroy also deletes a volume another instance made.
+      for (const profile of Object.keys(setup.profileFactory ?? {})) {
+        const own = await loadSlotProvider(setup, track, slotMs, join(out, "usage"), out, profile);
+
+        if (own.kind === "ready") profileLoaded.set(`${setup.name}/${track}/${profile}`, own.entry);
+      }
     }
 
   const combos: SlotSpec[] =
@@ -490,7 +508,9 @@ async function run(args: string[]) {
             continue;
           }
 
-          const entry = loaded.get(`${setup.name}/${track}`);
+          const entry =
+            profileLoaded.get(`${setup.name}/${track}/${slot.profile}`) ??
+            loaded.get(`${setup.name}/${track}`);
 
           if (entry) active.push(entry);
         }
@@ -499,7 +519,8 @@ async function run(args: string[]) {
         const spent = await spentUSD(attemptsPath);
 
         const reserve = active.reduce(
-          (sum, entry) => sum + attemptBudget(providerSetup(entry.name), track, slotMs),
+          (sum, entry) =>
+            sum + attemptBudget(providerSetup(entry.name), track, slotMs, slot.profile),
           0,
         );
 
@@ -876,7 +897,7 @@ async function billing(args: string[]) {
       memoryGiB: record.resources?.memoryGiB ?? null,
     };
 
-    const allocation = { provisioned: setup.tracks[track].provisioned, measured };
+    const allocation = { provisioned: provisionedFor(setup, track, record.profile), measured };
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 

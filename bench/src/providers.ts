@@ -128,6 +128,8 @@ const volumeOption = z.object({
   mountPath: z.string().startsWith("/"),
 });
 
+export type VolumeOption = z.infer<typeof volumeOption>;
+
 const factoryOptions = z.record(
   z.string(),
   z.union([z.string(), z.boolean(), z.number(), z.function(), volumeOption]).optional(),

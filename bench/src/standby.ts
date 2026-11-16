@@ -32,9 +32,12 @@ export const startTicker =
   `rm -f ${tickFile}; nohup sh -c 'while :; do date +%s >> ${tickFile}; sleep 0.2; done' ` +
   `>/dev/null 2>&1 & echo $!; date +%s`;
 
-/** Stops the ticker and prints its ticks. */
+/**
+ * Lets the resumed ticker write at least one tick, then prints the guest's clock, stops the
+ * ticker and prints its ticks.
+ */
 export const stopTicker = (pid: number) =>
-  `kill ${pid} 2>/dev/null; cat ${tickFile}; rm -f ${tickFile}`;
+  `sleep 0.5; date +%s; kill ${pid} 2>/dev/null; cat ${tickFile}; rm -f ${tickFile}`;
 
 /** Waits `ms` without touching the sandbox; rejects when `signal` aborts. */
 export function idle(ms: number, signal: AbortSignal): Promise<void> {
@@ -75,20 +78,51 @@ export function tickerStarted(output: string): Ticker {
   return { pid, startedAtS };
 }
 
-/** The longest gap, in ms, between consecutive ticks at or after `fromS`; 0 with fewer than two. */
-export function longestGapMs(ticks: string, fromS: number): number {
-  const times = ticks
-    .split("\n")
-    .map(Number)
-    .filter((t) => Number.isFinite(t) && t >= fromS);
+/**
+ * The standby gap, in ms, from `stopTicker`'s output, or why the ticks do not prove standby.
+ *
+ * Proof needs all of: the guest clock advanced as much as the host's (within 2 s), so a clock
+ * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; and
+ * it ends at the resume (within 2 s of the clock read just after it), so a stall early in the idle
+ * wait, with ticks continuing until the timed request, does not count. Ticks are whole seconds.
+ */
+export function standbyGap(
+  output: string,
+  ticker: Ticker,
+  hostElapsedMs: number,
+  minGapMs: number,
+): { gapMs: number } | { refused: string } {
+  const [first, ...rest] = output.trim().split("\n");
+  const afterS = Number(first);
 
-  let longest = 0;
+  if (first === undefined || first === "" || !Number.isFinite(afterS))
+    return { refused: "the ticker's output has no clock reading" };
+
+  const guestElapsedMs = (afterS - ticker.startedAtS) * 1000;
+
+  if (Math.abs(guestElapsedMs - hostElapsedMs) > 2000)
+    return {
+      refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(hostElapsedMs)} ms passed`,
+    };
+
+  const times = rest.map(Number).filter((t) => Number.isFinite(t) && t >= ticker.startedAtS);
+
+  let gapMs = 0;
+  let endS = Number.NaN;
 
   for (const [i, time] of times.entries()) {
     const previous = times[i - 1];
 
-    if (previous !== undefined) longest = Math.max(longest, time - previous);
+    if (previous !== undefined && (time - previous) * 1000 > gapMs) {
+      gapMs = (time - previous) * 1000;
+      endS = time;
+    }
   }
 
-  return longest * 1000;
+  if (gapMs < minGapMs) return { refused: `the longest pause in the ticks was ${gapMs} ms` };
+
+  if (afterS - endS > 2)
+    return { refused: `the ${gapMs} ms pause in the ticks ended before the resume` };
+
+  return { gapMs };
 }

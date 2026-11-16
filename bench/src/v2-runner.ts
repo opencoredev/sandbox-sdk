@@ -39,7 +39,7 @@ import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from 
 import {
   autoStandby,
   idle,
-  longestGapMs,
+  standbyGap,
   startTicker,
   stopTicker,
   tickerStarted,
@@ -1766,27 +1766,31 @@ export async function runV2(
                 // a gap in an in-sandbox ticker), then time the first command, which resumes it.
                 if (standby) {
                   const ticker = tickerStarted(await command(active, startTicker, timeout, signal));
+                  const tickerStartedAt = performance.now();
                   await idle(standby.idleMs, signal);
                   partClock?.begin();
                   await command(active, "true", timeout, signal);
                   partClock?.finish();
                   const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
+                  const ticks = await command(active, stopTicker(ticker.pid), timeout, signal);
 
-                  const gapMs = longestGapMs(
-                    await command(active, stopTicker(ticker.pid), timeout, signal),
-                    ticker.startedAtS,
+                  const evidence = standbyGap(
+                    ticks,
+                    ticker,
+                    performance.now() - tickerStartedAt,
+                    standby.minGapMs,
                   );
 
-                  if (gapMs < standby.minGapMs)
+                  if ("refused" in evidence)
                     throw new Error(
-                      `No standby seen: the longest pause in the ticks was ${gapMs} ms after ${standby.idleMs} ms idle`,
+                      `No standby proven after ${standby.idleMs} ms idle: ${evidence.refused}`,
                     );
-                  // Pausing is not a call, so it takes no time; resume is the first request.
-                  lifecyclePhases.pauseMs = 0;
-                  lifecyclePhases.resumeReturnedMs = 0;
+
+                  // No pause or resume call exists, so pauseMs and resumeReturnedMs stay unset;
+                  // the standby phases mark the sample as a pause by idling (attempts.ts).
                   lifecyclePhases.resumeReadyMs = resumeReadyMs;
                   lifecyclePhases.standbyIdleMs = standby.idleMs;
-                  lifecyclePhases.standbyGapMs = gapMs;
+                  lifecyclePhases.standbyGapMs = evidence.gapMs;
 
                   return { ...lifecyclePhases };
                 }

@@ -10,7 +10,10 @@
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
  */
 import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
-import type { FactoryOptions } from "../providers.js";
+import type { VolumeOption } from "../providers.js";
+
+/** Factory options a profile may add to its adapter (`ProviderSetup.profileFactory`). */
+export type ProfileFactory = { readonly volume?: VolumeOption };
 
 export const tracks = ["same-machine", "default"] as const;
 
@@ -40,8 +43,11 @@ export interface ProviderSetup {
   readonly lifetime: boolean;
   /** Key into `pricing` for the budget guard. */
   readonly pricingKey: string;
-  /** Extra factory options for this provider's adapter, on both tracks. */
-  readonly factory?: FactoryOptions;
+  /**
+   * Extra factory options for one profile's attempts, on both tracks: that profile gets its own
+   * adapter instance. A volume's size is added to the provisioned disk for those attempts.
+   */
+  readonly profileFactory?: { readonly [profile: string]: ProfileFactory };
   readonly tracks: { readonly [K in TrackId]: TrackSetup };
 }
 
@@ -228,9 +234,11 @@ export const providerSetups: readonly ProviderSetup[] = [
   },
   {
     // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
-    // sandbox's files in its memory, so the workspace goes on an 8 GiB volume (the account's cap,
-    // 2026-11-16), as Baseten advised: without one, the build's node_modules sat in RAM and tsc was
-    // OOM-killed at 4 vCPU / 8 GiB (rw-baseten-head1). Default is Baseten's 4096 MiB (2 vCPU).
+    // sandbox's files in its memory, so the build's workspace goes on an 8 GiB volume (the
+    // account's cap, 2026-11-16), as Baseten advised: without one, its node_modules sat in RAM and
+    // tsc was OOM-killed at 4 vCPU / 8 GiB (rw-baseten-head1). Fix-and-test completed without one
+    // and runs as before: the volume is network storage (virtiofs) and slowed its install from
+    // about 140 s to 246 s in a smoke run. Default is Baseten's 4096 MiB (2 vCPU).
     // Baseten's default image is Alpine (musl, BusyBox), which the frozen glibc toolchain cannot
     // run, so both tracks use sandbox-bench-node22: node:22-bookworm built with Baseten's
     // ImageBuilder, which adds its sandbox agent (bench/README.md). The main suite keeps Baseten's
@@ -240,24 +248,32 @@ export const providerSetups: readonly ProviderSetup[] = [
     product: null,
     lifetime: true,
     pricingKey: "baseten",
-    factory: { volume: { sizeGiB: 8, mountPath: "/workspace" } },
+    profileFactory: { build: { volume: { sizeGiB: 8, mountPath: "/workspace" } } },
     tracks: {
       "same-machine": {
         template: "sandbox-bench-node22:latest",
         size: { cpu: 4, memoryMb: 8192 },
         vcpu: 4,
-        provisioned: size(4, 8, 8),
+        provisioned: size(4, 8, 0),
         tooSmall: {},
       },
       default: {
         template: "sandbox-bench-node22:latest",
         vcpu: 2,
-        provisioned: size(2, 4, 8),
+        provisioned: size(2, 4, 0),
         tooSmall: {},
       },
     },
   },
 ];
+
+/** The size an attempt of `profile` provisions: its track's, plus a profile volume's disk. */
+export function provisionedFor(setup: ProviderSetup, track: TrackId, profile: string) {
+  const base = setup.tracks[track].provisioned;
+  const volume = setup.profileFactory?.[profile]?.volume;
+
+  return volume ? { ...base, diskGiB: base.diskGiB + volume.sizeGiB } : base;
+}
 
 export function providerSetup(name: string): ProviderSetup {
   const setup = providerSetups.find((s) => s.name === name);
