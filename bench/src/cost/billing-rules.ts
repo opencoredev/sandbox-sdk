@@ -97,7 +97,8 @@ const docs = {
   daytonaAnalytics: "https://analytics.app.daytona.io/organization/{org}/usage/sandbox",
   upstash: "https://upstash.com/pricing/box",
   upstashBox: "https://us-east-1.box.upstash.com/v2/box/{id}",
-  upstashBilling: "https://us-east-1.box.upstash.com/v2/box/billing (the account's monthly Box billing, one line per box)",
+  upstashBilling:
+    "https://us-east-1.box.upstash.com/v2/box/billing (the account's monthly Box billing, one line per box)",
   boat: "https://docs.boat.dev/machines",
   boxd: "https://boxd.sh/pricing",
   boxdActivity: "boxd orgs.billingActivityPage (org-wide 15-minute charges)",
