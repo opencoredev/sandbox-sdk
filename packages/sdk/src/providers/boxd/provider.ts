@@ -361,9 +361,10 @@ export function createBoxdProvider<C extends BoxdClient>(
    * machine. A v2 name carries all of its metadata, so a v2 machine is never read, in any state,
    * and a machine that falls asleep mid-listing can't be woken by it. Any other machine is read
    * from its guest, which wakes it if it sleeps: callers that must not wake one check `wakes` first,
-   * though one that falls asleep between boxd's listing and the read is still woken.
+   * though one that falls asleep between boxd's listing and the read is still woken. Only `attach`
+   * (connecting to use it) queues the guest preparation, so listing keeps no per-machine state.
    */
-  async function info(m: Machine): Promise<SandboxInfo> {
+  async function info(m: Machine, { attach }: { attach: boolean }): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
     const named = () => nameMetadata(m) ?? missing(m.id);
     let text: string;
@@ -392,7 +393,7 @@ export function createBoxdProvider<C extends BoxdClient>(
 
     if (value.key === undefined) invalid("metadata");
 
-    if (deferred && !pending.has(m.id)) pending.set(m.id, preparation(text));
+    if (attach && deferred && !pending.has(m.id)) pending.set(m.id, preparation(text));
 
     return {
       id: m.id,
@@ -406,7 +407,7 @@ export function createBoxdProvider<C extends BoxdClient>(
   /** A machine's info, or null when it isn't a readable SDK machine (corrupt or vanished marker). */
   async function readable(m: Machine) {
     try {
-      return await info(m);
+      return await info(m, { attach: false });
     } catch (error) {
       if (boxdError(error).code !== "not_found") throw error;
 
@@ -605,7 +606,7 @@ export function createBoxdProvider<C extends BoxdClient>(
         try {
           const m = await (await api()).machines.get(id);
           // Connecting is for use, so a paused machine may be woken to read its metadata.
-          const value = await info(m);
+          const value = await info(m, { attach: true });
           boxes.set(id, m);
 
           return value;

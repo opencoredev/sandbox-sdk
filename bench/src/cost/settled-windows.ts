@@ -81,11 +81,13 @@ const BOXD_POST_UNTIL_MS = 20 * 60_000;
 /** The 2 micro-USD readBoxdCharges allows; of 53 buckets read on 2026-11-16 none was charged more than 1 below its usage. */
 const BOXD_SHORTFALL_MICRO = 2;
 
-/** The 15-minute buckets the run's machines were metered in, until the bucket after the last delete lands. */
+/**
+ * The 15-minute buckets the run's machines were metered in, until the bucket after the last delete
+ * lands. Attempts that created nothing count too: the audit needs every attempt inside the period.
+ */
 export function boxdPeriod(attempts: readonly RunAttempt[]) {
-  const used = attempts.filter((a) => a.sandboxIds.length > 0);
-  const first = Math.min(...used.map((a) => a.startedAt));
-  const last = Math.max(...used.map((a) => a.endedAt));
+  const first = Math.min(...attempts.map((a) => a.startedAt));
+  const last = Math.max(...attempts.map((a) => a.endedAt));
   const start = Math.floor(first / BOXD_BUCKET_MS) * BOXD_BUCKET_MS;
   // Machines are metered until deletion lands, so a delete in a bucket's last minute reaches the next.
   const end = (Math.floor((last + 60_000) / BOXD_BUCKET_MS) + 1) * BOXD_BUCKET_MS;
@@ -380,9 +382,9 @@ export function e2bWindow(input: {
 
   const ours = new Set(input.attempts.flatMap((a) => a.sandboxIds));
   const own = input.events.filter((e) => ours.has(e.sandboxId));
-  const used = input.attempts.filter((a) => a.sandboxIds.length > 0);
-  const first = Math.min(...used.map((a) => a.startedAt), ...own.map((e) => e.timestamp));
-  const last = Math.max(...used.map((a) => a.endedAt), ...own.map((e) => e.timestamp));
+  // Attempts that created nothing count too: the audit needs every attempt inside the period.
+  const first = Math.min(...input.attempts.map((a) => a.startedAt), ...own.map((e) => e.timestamp));
+  const last = Math.max(...input.attempts.map((a) => a.endedAt), ...own.map((e) => e.timestamp));
   const start = Math.floor(first / HOUR_MS) * HOUR_MS;
   const end = (Math.floor(last / HOUR_MS) + 1) * HOUR_MS;
   const before = start - HOUR_MS;

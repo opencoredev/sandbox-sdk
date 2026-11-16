@@ -15,6 +15,7 @@
  *          one, every meter stays not reconciled.
  * sweep    List every provider for sandboxes labelled with this run and delete any left.
  */
+import { sleepingUnchecked } from "../sleeping.js";
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { requestBilledCompute } from "../allocation.js";
 import { isMissingFile } from "../files.js";
@@ -551,6 +552,7 @@ export async function sweepProviders(
   journalDir: string,
 ) {
   const seen = new Set<Provider>();
+  let unchecked = 0;
   const journal = join(journalDir, appJournalFile);
   const apps = await readAppJournal(journal);
   const changed = new Set<(typeof apps)[number]>();
@@ -591,10 +593,18 @@ export async function sweepProviders(
         await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
       }
 
+      // A sleeping machine (boxd) is out of list() and can't be checked without waking it.
+      const asleep = await sleepingUnchecked(entry.provider);
+
+      for (const id of asleep)
+        await note({ kind: "leftover-unchecked", provider: entry.name, id, reason: "sleeping" });
+      unchecked += asleep.length;
+
       await note({
         kind: "swept",
         provider: entry.name,
         found: new Set(left.map((x) => x.id)).size,
+        sleepingUnchecked: asleep.length,
       });
     } catch (error) {
       await note({
@@ -606,6 +616,8 @@ export async function sweepProviders(
   }
 
   for (const app of changed) await persistApp(journal, app);
+
+  return { unchecked };
 }
 
 async function sweep(args: string[]) {
@@ -630,6 +642,8 @@ async function sweep(args: string[]) {
     providerSetups.map((s) => s.name),
   ).map(providerSetup);
 
+  let unchecked = 0;
+
   for (const track of tracks)
     for (const runId of values.run) {
       const providers: SlotProvider[] = [];
@@ -640,10 +654,17 @@ async function sweep(args: string[]) {
         if (loaded.kind === "ready") providers.push(loaded.entry);
       }
 
-      await sweepProviders(runId, providers, note, out);
+      unchecked += (await sweepProviders(runId, providers, note, out)).unchecked;
     }
 
   process.stdout.write(`Swept; see ${notesPath}\n`);
+
+  if (unchecked > 0) {
+    process.stderr.write(
+      `${unchecked} sleeping machines could not be checked without waking them; see leftover-unchecked in ${notesPath}\n`,
+    );
+    process.exitCode = 1;
+  }
 }
 
 const billingSourcesSchema = z.object({

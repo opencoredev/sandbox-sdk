@@ -486,7 +486,12 @@ describe("realistic per-attempt Modal Apps", () => {
       "destroy:sb-lost",
       "destroy:sb-pending",
     ]);
-    expect(notes).toContainEqual({ kind: "swept", provider: "modal", found: 2 });
+    expect(notes).toContainEqual({
+      kind: "swept",
+      provider: "modal",
+      found: 2,
+      sleepingUnchecked: 0,
+    });
 
     const reconciled = (await readAppJournal(at.apps)).find((app) => app.name === lost.name);
 
@@ -522,5 +527,39 @@ describe("realistic Modal budget reserve", () => {
       if (previous === undefined) delete process.env.BENCH_REGION_MODAL;
       else process.env.BENCH_REGION_MODAL = previous;
     }
+  });
+});
+
+describe("sweep and sleeping machines", () => {
+  it("notes each sleeping machine it can't check instead of reporting the account clean", async () => {
+    const dir = await mkdtemp(join(root, "sweep-sleeping-"));
+    const notes: Parameters<Parameters<typeof sweepProviders>[2]>[0][] = [];
+
+    const provider = Object.assign(memory(), {
+      listSleeping: async () => [{ id: "sleeping-machine" }],
+    });
+
+    const { unchecked } = await sweepProviders(
+      "sweep-sleeping",
+      [
+        {
+          name: "boxd",
+          provider,
+          attribution: attributionFor("boxd").attribution,
+          settlementMs: null,
+          paddingMs: 0,
+        },
+      ],
+      async (entry) => {
+        notes.push(entry);
+      },
+      dir,
+    );
+
+    expect(unchecked).toBe(1);
+    expect(notes).toEqual([
+      { kind: "leftover-unchecked", provider: "boxd", id: "sleeping-machine", reason: "sleeping" },
+      { kind: "swept", provider: "boxd", found: 0, sleepingUnchecked: 1 },
+    ]);
   });
 });

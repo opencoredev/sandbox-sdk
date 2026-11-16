@@ -60,6 +60,13 @@ describe("boxdWindow", () => {
       start: at("2026-11-16T17:00:00Z"),
       end: at("2026-11-16T17:30:00Z"),
     });
+    // An attempt that created nothing still has to sit inside the period.
+    expect(
+      boxdPeriod([
+        ...attempts,
+        attempt("late", null, "2026-11-16T17:31:00Z", "2026-11-16T17:31:00Z"),
+      ]).end,
+    ).toBe(at("2026-11-16T17:45:00Z"));
     // A delete in a bucket's last minute is still metered in the next one.
     expect(
       boxdPeriod([attempt("x", "m", "2026-11-16T17:01:00Z", "2026-11-16T17:29:30Z")]).end,

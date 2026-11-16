@@ -816,6 +816,27 @@ test.each(["missing", "unsupported", "restricted"])(
   },
 );
 
+test("listing keeps no per-machine state; connecting queues the guest preparation", async () => {
+  const box = await createSandbox(factory());
+  const guest = boxdState.boxes.get(box.id)?.guest;
+
+  if (!guest) throw new Error("Missing guest");
+  const lister = factory();
+
+  try {
+    expect((await lister.list({})).some((v) => v.id === box.id)).toBe(true);
+    const before = guest.commands.length;
+
+    await lister.exec(box.id, { command: "true" });
+    expect(guest.commands.slice(before).join("\n")).not.toContain("metadata.json");
+    await lister.connect(box.id);
+    await lister.exec(box.id, { command: "true" });
+    expect(guest.commands.slice(before).join("\n")).toContain("metadata.json");
+  } finally {
+    await box.destroy();
+  }
+});
+
 test("plain create has no guest call and first list prepares in one request", async () => {
   const provider = factory();
   const box = await createSandbox(provider);
