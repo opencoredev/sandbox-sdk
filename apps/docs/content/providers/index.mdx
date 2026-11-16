@@ -2,7 +2,7 @@
 title: Compare providers
 sidebar:
   label: Compare providers
-description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Modal, Daytona, Upstash Box, Railway, Boat, Sandboxer, Tenki, Superserve, boxd, Freestyle, and Memory side by side. Factories, credentials, and what each one is best for.
+description: Compare Local with Docker or agentOS, E2B, Vercel Sandbox, Modal, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, and Memory side by side. Factories, credentials, and what each one is best for.
 ---
 
 A provider is where sandboxes actually run. You pick one by importing its factory from a subpath and passing it to `createSandbox`. The rest of your code stays the same when you switch.
@@ -25,7 +25,7 @@ Not sure where to start? [Choose a provider](/getting-started/choose-a-provider)
 | <img src="/integrations/railway.svg" alt="" /> [Railway](/providers/railway)          | `railway()` from `/railway`       | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                  | Ephemeral VMs, filesystem checkpoints                         |
 | <img src="/integrations/sandboxer.svg" alt="" /> [Sandboxer](/providers/sandboxer)    | `sandboxer()` from `/sandboxer`   | `SANDBOXER_API_KEY`                                            | Ubuntu microVMs, memory pause, named disk snapshots           |
 | <img src="/integrations/boat.svg" alt="" /> [Boat](/providers/boat)                   | `boat()` from `/boat`             | `BOAT_API_KEY`                                                 | Persistent VMs for long-running agents                        |
-| <img src="/integrations/tenki.svg" alt="" /> [Tenki](/providers/tenki)                | `tenki()` from `/tenki`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                           |
+| <img src="/integrations/tenki.svg" alt="" /> [Luxor](/providers/tenki)                | `tenki()` from `/tenki`           | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                          | Full VMs, disk and memory snapshots                           |
 | <img src="/integrations/superserve.svg" alt="" /> [Superserve](/providers/superserve) | `superserve()` from `/superserve` | `SUPERSERVE_API_KEY`                                           | Firecracker microVMs, pause, snapshots                        |
 | <img src="/integrations/boxd.svg" alt="" /> [boxd](/providers/boxd)                   | `boxd()` from `/boxd`             | `BOXD_API_KEY`                                                 | Persistent isolated VMs, memory pause                         |
 | <img src="/integrations/freestyle.svg" alt="" /> [Freestyle](/providers/freestyle)    | `freestyle()` from `/freestyle`   | `FREESTYLE_API_KEY`                                            | Persistent VMs, default-deny firewall, memory snapshots       |
@@ -70,7 +70,7 @@ Exact providers guarantee that concurrent `createSandbox` calls with the same `k
     Ubuntu microVMs in two regions with memory pause, named snapshots, and cookie-authenticated
     previews.
   </Card>
-  <Card title="Tenki" href="/providers/tenki" icon="/integrations/tenki.svg">
+  <Card title="Luxor" href="/providers/tenki" icon="/integrations/tenki.svg">
     Full Linux VMs with disk and memory snapshots, pause, and exact machine sizes.
   </Card>
   <Card title="Superserve" href="/providers/superserve" icon="/integrations/superserve.svg">

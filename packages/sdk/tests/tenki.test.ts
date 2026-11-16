@@ -47,7 +47,7 @@ test.each([false, true])(
   },
 );
 
-describe("Tenki mappings", () => {
+describe("Luxor mappings", () => {
   test("native stat and list match the guest transport, falling back on other errors", async () => {
     const box = await createSandbox(factory());
     await box.files.write("/home/tenki/meta/real.txt", "abc");
@@ -506,7 +506,7 @@ test("transition budgets reject unbounded values before allocation", async () =>
   }
 });
 
-test("Tenki listing skips SDK entries with missing creation metadata", async () => {
+test("Luxor listing skips SDK entries with missing creation metadata", async () => {
   const box = await createSandbox(factory());
   const native = tenkiState.boxes.get(box.id);
 
@@ -1324,7 +1324,7 @@ test("/workspace stats as a directory on a fresh sandbox and stays that way, so 
   }
 });
 
-test("labels hide SDK bookkeeping and Tenki's own metadata", async () => {
+test("labels hide SDK bookkeeping and Luxor's own metadata", async () => {
   const provider = factory();
   const box = await createSandbox(provider, { key: "labels-key", labels: { app: "tenki-labels" } });
 

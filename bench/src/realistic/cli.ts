@@ -331,7 +331,7 @@ async function loadSlotProvider(
       prepareAttemptApp(paths, provider, attemptId, { signal });
   }
 
-  // Measured 2026-11-05: Tenki answers a write started while three others run with gRPC 13.
+  // Measured 2026-11-05: Luxor answers a write started while three others run with gRPC 13.
   if (setup.adapter === "tenki") entry.uploadConcurrency = 1;
 
   return { kind: "ready", entry };

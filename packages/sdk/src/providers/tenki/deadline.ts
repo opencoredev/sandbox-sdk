@@ -1,7 +1,7 @@
 import { deadline as race } from "../../shared/deadline.js";
 import { failure } from "./errors.js";
 
-/** The shared deadline, with Tenki's errors. The native client takes the signal as an argument. */
+/** The shared deadline, with Luxor's errors. The native client takes the signal as an argument. */
 export function deadline<T>(
   action: (signal: AbortSignal) => PromiseLike<T>,
   timeoutMs: number,

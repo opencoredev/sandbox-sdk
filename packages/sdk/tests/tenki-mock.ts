@@ -1,4 +1,4 @@
-/** Only the Tenki control plane/transport is mocked; commands and files run on Linux. */
+/** Only the Luxor control plane/transport is mocked; commands and files run on Linux. */
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { execFile, spawn } from "node:child_process";
@@ -503,7 +503,7 @@ export async function cleanupTenki() {
   };
 }
 
-/** The Tenki adapter with this fixture in place of the SDK's client. */
+/** The Luxor adapter with this fixture in place of the SDK's client. */
 export function tenki(options: TenkiOptions = {}) {
   return createTenkiProvider(options, async () => ({ TenkiSandbox: MockTenki }));
 }

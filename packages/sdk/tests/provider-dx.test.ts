@@ -126,7 +126,7 @@ test("boat endpoint alias works and baseUrl wins", async () => {
   ]);
 });
 
-test("Tenki authToken alias works and apiKey wins", async () => {
+test("Luxor authToken alias works and apiKey wins", async () => {
   await mockTenki({ authToken: "old" }).list({});
   await mockTenki({ apiKey: "new", authToken: "old" }).list({});
   expect(tenkiState.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
@@ -155,7 +155,7 @@ for (const [name, factory, env, label, next] of [
   ["boxd", boxd, "BOXD_API_KEY", "boxd", "BOXD_API_KEY"],
   ["daytona", daytona, "DAYTONA_API_KEY", "Daytona", "DAYTONA_API_KEY"],
   ["boat", boat, "BOAT_API_KEY", "Boat", "BOAT_API_KEY"],
-  ["tenki", tenki, "TENKI_API_KEY", "Tenki", "TENKI_API_KEY or TENKI_AUTH_TOKEN"],
+  ["tenki", tenki, "TENKI_API_KEY", "Luxor", "TENKI_API_KEY or TENKI_AUTH_TOKEN"],
   ["freestyle", freestyle, "FREESTYLE_API_KEY", "Freestyle", "FREESTYLE_API_KEY"],
   ["superserve", superserve, "SUPERSERVE_API_KEY", "Superserve", "SUPERSERVE_API_KEY"],
   ["upstash", upstash, "UPSTASH_BOX_API_KEY", "Upstash Box", "UPSTASH_BOX_API_KEY"],

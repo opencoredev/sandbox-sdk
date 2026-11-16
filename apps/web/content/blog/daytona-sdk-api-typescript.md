@@ -2,6 +2,7 @@
 title: Daytona SDK and API in TypeScript, with examples
 description: How Daytona's TypeScript SDK, REST API and toolbox API fit together, one upload-and-run-Python task in TypeScript, and how to move it from E2B or to Docker.
 published: 2026-11-12
+updated: 2026-11-16
 ---
 
 Daytona gives you three ways in. The TypeScript SDK is [`@daytona/sdk`](https://www.npmjs.com/package/@daytona/sdk), the package that used to be called `@daytonaio/sdk`. The REST API at `https://app.daytona.io/api` manages sandboxes, snapshots, volumes and preview links. Commands and files go through a third API, the toolbox, which every sandbox serves behind Daytona's toolbox proxy. The SDK talks to the REST API and the toolbox for you.
@@ -124,7 +125,7 @@ console.log(result.ok, result.stdout);
 
 Swap `e2b` for `daytona` in both places and the task above runs on Daytona. `local()` runs it in a Docker container on your own machine the same way. If your code calls the `e2b` package directly, the [E2B SDK and API guide](/blog/e2b-sdk-api-typescript) shows the same task in both shapes, which is the rewrite you'd do once.
 
-What doesn't carry over is anything a provider can't do through this API. Sandbox SDK's `daytona()` has no pause or resume and no terminal, keys are found by label search instead of exactly, and previews need the token header unless you create the sandbox with `daytona({ public: true })`. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one. For speed and price comparisons between Daytona and E2B, see [AI Sandbox Bench](https://aisandboxbench.com).
+What doesn't carry over is anything a provider can't do through this API. Sandbox SDK's `daytona()` has no pause or resume and no terminal, keys are found by label search instead of exactly, and previews need the token header unless you create the sandbox with `daytona({ public: true })`. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one. For speed and price comparisons between Daytona and E2B, see [E2B vs Daytona](https://aisandboxbench.com/compare/e2b-vs-daytona/) on AI Sandbox Bench.
 
 ## Test without Daytona
 
@@ -175,5 +176,6 @@ They mix: `box.native.sdk` gives you the official SDK's `Sandbox` whenever you n
 
 - [Quickstart](/docs/getting-started/quickstart): your first sandbox in memory, then in Docker, then in the cloud.
 - [Daytona provider reference](/docs/providers/daytona): every option, capability and limit.
+- [Daytona benchmark](https://aisandboxbench.com/providers/daytona/): Daytona's measured cold start, agent tasks and cost on AI Sandbox Bench.
 - [E2B SDK and API in TypeScript](/blog/e2b-sdk-api-typescript): the same task on E2B, and how E2B's REST API differs.
 - [Processes and previews](/docs/concepts/processes-and-previews): dev servers and preview URLs on every provider.

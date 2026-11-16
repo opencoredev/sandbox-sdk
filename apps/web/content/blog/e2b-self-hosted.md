@@ -2,6 +2,7 @@
 title: E2B self-hosted: E2B Embed, or Docker instead
 description: Self-host E2B with E2B Embed on one Linux machine with KVM, point your TypeScript code at it, or run the same sandbox code in a local Docker container instead.
 published: 2026-11-02
+updated: 2026-11-16
 ---
 
 Yes, you can self-host E2B. Its runtime is open source under Apache-2.0, and [E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) packages the whole stack, Firecracker microVMs included, to run on one Linux machine with KVM. You start it with Docker Compose, Terraform on GCP, AWS or Azure, or a Kubernetes manifest. Your code then talks to it through the same SDK and API as E2B Cloud.
@@ -123,7 +124,7 @@ const provider = process.env.SANDBOX === "docker" ? local() : e2b();
 await using box = await createSandbox(provider);
 ```
 
-Options that a provider can't enforce fail with an `unsupported` error instead of being ignored, so the same code never quietly gets a looser sandbox. Check the [capability matrix](/docs/reference/capabilities) for what each provider accepts, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For speed and price comparisons between hosted providers, see [AI Sandbox Bench](https://aisandboxbench.com).
+Options that a provider can't enforce fail with an `unsupported` error instead of being ignored, so the same code never quietly gets a looser sandbox. Check the [capability matrix](/docs/reference/capabilities) for what each provider accepts, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. If you'd rather stay hosted, [E2B alternatives](https://aisandboxbench.com/alternatives/e2b/) on AI Sandbox Bench compares other providers with E2B on speed and price.
 
 ## Test without either
 

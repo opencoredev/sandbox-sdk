@@ -151,7 +151,7 @@ export const pricing: PriceTable = {
     memoryGiBSecond: 0.0000045,
     diskGiBSecond: 0.00000003,
     freeDiskGiB: 5,
-    source: "https://tenki.cloud/pricing",
+    source: "https://luxor.ai/pricing",
     notes:
       "Per-second, no minimum. Separate persistent storage $0.000000076/GiB-second excluded. Credits excluded.",
   },
@@ -240,7 +240,7 @@ export function priceAtSize(
 }
 
 // Provisioned sizes of the templates actually benchmarked, not kernel-usable
-// RAM. Tenki does not document its default, so it stays measured.
+// RAM. Luxor does not document its default, so it stays measured.
 interface ComputeTable {
   readonly [provider: string]: Pick<Resources, "cpu" | "memoryGiB">;
 }

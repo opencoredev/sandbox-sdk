@@ -59,7 +59,7 @@ export interface SlotProvider {
   vcpuFor?(track: string): number | undefined;
   /** Label sandboxes with the run only (labels share a short name budget on Boat). */
   runLabelOnly?: boolean;
-  /** Chunks in flight during an upload (Tenki fails concurrent writes with gRPC INTERNAL). */
+  /** Chunks in flight during an upload (Luxor fails concurrent writes with gRPC INTERNAL). */
   uploadConcurrency?: number;
   /** Capture usage the provider reports only while the sandbox exists; returns the file written. */
   beforeDestroy?(id: string): Promise<string | null>;

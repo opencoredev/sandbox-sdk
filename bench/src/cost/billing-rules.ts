@@ -105,7 +105,7 @@ const docs = {
   superserve: "https://www.superserve.ai/pricing",
   superserveUsage: "https://api.superserve.ai/billing/usage-series",
   freestyle: "https://www.freestyle.sh/pricing",
-  tenki: "https://tenki.cloud/pricing",
+  tenki: "https://luxor.ai/pricing",
   modal: "https://modal.com/pricing",
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",

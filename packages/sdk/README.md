@@ -1,6 +1,6 @@
 # Sandbox SDK
 
-One TypeScript API for running code in a sandbox. The same `createSandbox`, `run`, `files`, `start`, and `preview` calls work on E2B, Daytona, Vercel, Upstash Box, Railway, Tenki, boxd, Freestyle, Superserve, Boat, Sandboxer, Docker on your machine, and an in-process fake for tests. Changing provider means changing one import.
+One TypeScript API for running code in a sandbox. The same `createSandbox`, `run`, `files`, `start`, and `preview` calls work on E2B, Daytona, Vercel, Upstash Box, Railway, Luxor, boxd, Freestyle, Superserve, Boat, Sandboxer, Docker on your machine, and an in-process fake for tests. Changing provider means changing one import.
 
 > **Coming from 0.2?** 1.0 changes the API. [Upgrade from 0.2](https://sandbox-sdk.app/docs/upgrade-from-0-2) walks through each change.
 
@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk
 ```
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Upstash Box, Railway, Tenki, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Upstash Box, Railway, Luxor, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -101,7 +101,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [Modal](https://sandbox-sdk.app/docs/providers/modal)          | `/modal`      | `modal()`               | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (optional `MODAL_SANDBOX_REGION`)        |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           |
+| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           |
 | boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       |
 | Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             |
 | Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            |
@@ -113,7 +113,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 
 Capability meanings: `pause` adds `box.pause()` and `box.resume()`, `snapshot` adds `box.snapshot()` and `createSandbox(provider, { from })`, `size` allows the `size` option, and `network-policy` allows `network: "none"` or `{ allow: [...] }`. `terminal` adds `box.terminal()`, an interactive PTY (E2B). Two capabilities gate root functions that need no sandbox: `snapshot-delete` for `deleteSnapshot(provider, id)` and `templates` for `buildTemplate(provider, spec)`. Features only one provider has live on `box.ext`, such as `box.ext.e2b.metrics()`.
 
-Every factory also accepts its credential as an option, such as `e2b({ apiKey })` or `railway({ token, environmentId })`. Endpoints use `baseUrl` (boxd, Daytona, Tenki, Upstash, Boat), and Boat's default machine size uses `machine`:
+Every factory also accepts its credential as an option, such as `e2b({ apiKey })` or `railway({ token, environmentId })`. Endpoints use `baseUrl` (boxd, Daytona, Luxor, Upstash, Boat), and Boat's default machine size uses `machine`:
 
 ```ts
 import { boat } from "@opencoredev/sandbox-sdk/boat";
@@ -362,7 +362,7 @@ Time the SDK adds on top of each provider's own SDK, as median milliseconds. "Co
 | Daytona     |     ±0 |                            ±0 |        +38 |
 | Upstash Box |    +27 |                           +69 |        +15 |
 | Freestyle   |     ±0 |                           +51 |        +23 |
-| Tenki       |     ±0 |                          +119 |        +15 |
+| Luxor       |     ±0 |                          +119 |        +15 |
 | Superserve  |     ±0 |                           +73 |         +9 |
 | boxd        |   +272 |                          +370 |        +52 |
 

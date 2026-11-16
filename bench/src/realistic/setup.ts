@@ -3,7 +3,7 @@
  *
  * - Same-machine sizes and templates are the bench's existing same-spec flags (collection-plan.sh):
  *   E2B and Superserve 4 vCPU / 8 GiB templates, Daytona's daytona-large, Upstash medium, boxd
- *   4 vCPU / 16 GiB (its 4 vCPU shape; non-compliant by the eligibility code), Tenki 4:8192, and
+ *   4 vCPU / 16 GiB (its 4 vCPU shape; non-compliant by the eligibility code), Luxor 4:8192, and
  *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle.
  * - Default sizes and "default size too small" come from FIT.md (SBX-95, fetched 2026-11-05).
  * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve and Boat refuse it).

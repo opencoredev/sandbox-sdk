@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://sandbox-sdk.app">
-    <img alt="Sandbox SDK. Sandboxes for your agents and your users. Run commands, edit files and serve previews with one TypeScript API on E2B, Vercel, Daytona, Upstash, Railway, Tenki, Docker, Freestyle, Superserve, boxd, Boat, Sandboxer, agentOS or your own provider." src="./.github/banner.png" width="100%" />
+    <img alt="Sandbox SDK. Sandboxes for your agents and your users. Run commands, edit files and serve previews with one TypeScript API on E2B, Vercel, Daytona, Upstash, Railway, Luxor, Docker, Freestyle, Superserve, boxd, Boat, Sandboxer, agentOS or your own provider." src="./.github/banner.png" width="100%" />
   </a>
 </p>
 
@@ -111,7 +111,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`      | `modal`                       |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
-| [Tenki](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
+| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
 | boxd                                                                   | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
 | Freestyle                                                              | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`                   |
 | Superserve                                                             | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`             |

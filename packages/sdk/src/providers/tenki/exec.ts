@@ -8,11 +8,11 @@ import { workspaceSetup } from "./ready.js";
 import { isChunk, isExitRecord } from "./records.js";
 import { isNumber, isObject } from "../../shared/narrow.js";
 
-/** Python is included in Tenki's base image. Privileged run is necessary because
+/** Python is included in Luxor's base image. Privileged run is necessary because
  * the guest file API rejects paths outside /home/tenki, including /workspace.
  * A guest supervisor owns the timeout and process group, even if I/O disconnects.
  */
-// Never send user output through native run(): Tenki 1.4.1 retains every chunk.
+// Never send user output through native run(): `@tenkicloud/sandbox` 1.4.1 retains every chunk.
 // One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
 const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
 ${guestProcess}

@@ -60,7 +60,7 @@ export interface AttemptPlan {
   runLabelOnly?: boolean;
   /** Extra create labels, such as the label that routes a Modal create to the attempt's App. */
   labels?: Readonly<Record<string, string>>;
-  /** Chunks in flight during an upload, for providers that refuse concurrent writes (Tenki). */
+  /** Chunks in flight during an upload, for providers that refuse concurrent writes (Luxor). */
   uploadConcurrency?: number;
 }
 

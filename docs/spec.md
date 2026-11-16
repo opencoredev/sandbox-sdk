@@ -201,7 +201,7 @@ Provider-level capabilities gate root functions that need no sandbox:
     - Placeholders: only the provider's sandbox placeholder (documented per provider, such as `{sandboxId}`) fills itself on `box.native`. Every other `{name}` must be in `params`, and a missing or unused one is `invalid_argument` before any request. Explicit `params` win.
     - Non-2xx responses throw `SandboxError`; native errors keep the provider's error message, scrubbed of credentials and URLs.
     - The factory's return type also carries `api: NativeApi<Plane>` with no sandbox bound, for account-level calls (`daytona().api.request("GET", "/snapshots")`). `api` is not on the shared `Provider` interface.
-  - **SDK-backed providers** (Vercel, Modal, Upstash, Railway, Tenki, boxd, and agentOS) give the SDK's own client or sandbox object, fully typed through the optional peer.
+  - **SDK-backed providers** (Vercel, Modal, Upstash, Railway, Luxor, boxd, and agentOS) give the SDK's own client or sandbox object, fully typed through the optional peer.
     Switching a provider from the second kind to the first is a breaking change for `box.native` users; the changelog and the provider page show the migration (`(await box.native.sdk(() => import("pkg"))).method()`).
 
 ## 8. Providers

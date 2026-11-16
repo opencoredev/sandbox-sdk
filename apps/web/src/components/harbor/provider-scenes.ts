@@ -8,7 +8,7 @@
  *   Upstash  a box: the lid opens, data rises, a snapshot copy slides out
  *   Boat     boats: a lighthouse sweeping a dashed-line sea, sailboats and barrels
  *   Railway  a train crossing under Railway's purple night sky
- *   Tenki    their isometric cube, built from sandboxes that snap in fast and lift away
+ *   Luxor    their pyramid mark, stacked from gold sandboxes that snap in fast and lift away
  *   boxd     a rack of machines; one at a time pauses to an outline holding its memory
  *   Freestyle default-deny networking: a shield turns packets away, lets allowed ones in
  *   Superserve their sunburst, microVMs riding out along the spokes and back
@@ -671,31 +671,31 @@ const railway = scene((ctx, t) => {
   ctx.fillRect(-60, 199, W + 120, 2);
 });
 
-/* Tenki: their isometric cube, built out of sandboxes. Small cubes snap in fast, the whole one pulses, then they lift away and it rebuilds. */
+/* Luxor: their pyramid mark, stacked out of sandboxes in Luxor gold. Small cubes snap in fast, the whole one glows, then they lift away and it rebuilds. */
 const tenki = scene((ctx, t) => {
   fill(
     ctx,
     [
-      [0, "#020a1c"],
-      [1, "#061634"],
+      [0, "#000000"],
+      [1, "#0f0b03"],
     ],
     -60,
     460,
   );
-  glow(ctx, 240, 150, 240, "rgba(47,107,255,1)", 0.3);
+  glow(ctx, 240, 150, 240, "rgba(255,197,71,1)", 0.22);
   const a = 24;
   const kx = 0.87 * a;
   const ky = a / 2;
   const cx = 240;
   const cy = 150;
 
-  // the floor: an isometric grid under the cube
+  // the floor: an isometric grid under the pyramid
   const floor = (i: number, j: number): [number, number] => [
     cx + (i - j) * kx,
     cy + a + (i + j) * ky,
   ];
 
-  ctx.strokeStyle = "rgba(90,140,255,0.45)";
+  ctx.strokeStyle = "rgba(255,197,71,0.3)";
   ctx.lineWidth = 1.5;
 
   for (let n = -2; n <= 5; n++) {
@@ -706,22 +706,27 @@ const tenki = scene((ctx, t) => {
   const c = t % 7;
   const voxels: { i: number; j: number; k: number; n: number }[] = [];
 
-  for (let k = 0; k < 3; k++)
-    for (let s = 0; s <= 4; s++)
-      for (let i = 0; i < 3; i++) {
+  // a stepped pyramid: 3 by 3, then 2 by 2 centred on it, then one on top; back to front in each layer
+  for (let k = 0; k < 3; k++) {
+    const size = 3 - k;
+
+    for (let s = 0; s <= 2 * (size - 1); s++)
+      for (let i = 0; i < size; i++) {
         const j = s - i;
 
-        if (j >= 0 && j < 3) voxels.push({ i, j, k, n: voxels.length });
+        if (j >= 0 && j < size) voxels.push({ i: i + k / 2, j: j + k / 2, k, n: voxels.length });
       }
+  }
 
+  const last = voxels.length - 1;
   const whole = smooth((c - 2.3) / 0.3) * (1 - smooth((c - 4.2) / 0.3));
 
-  if (whole > 0) glow(ctx, cx, cy, 170, "rgba(120,170,255,1)", whole * 0.5);
+  if (whole > 0) glow(ctx, cx, cy, 170, "rgba(255,214,120,1)", whole * 0.45);
 
   for (const v of voxels) {
     // arrive one after another, bottom layer first; leave top layer first
-    const arrive = clamp01((c - v.n * 0.075) / 0.35);
-    const leave = clamp01((c - 4.4 - (26 - v.n) * 0.06) / 0.6);
+    const arrive = clamp01((c - v.n * 0.12) / 0.35);
+    const leave = clamp01((c - 4.4 - (last - v.n) * 0.1) / 0.6);
 
     if (arrive <= 0 || leave >= 1) continue;
     const land = 1 - (1 - arrive) ** 3;
@@ -729,17 +734,17 @@ const tenki = scene((ctx, t) => {
     const rise = leave * leave * 220;
     const x = cx + (v.i - v.j) * kx;
     const y = cy + (v.i + v.j) * ky - v.k * a - drop - rise;
-    const fresh = 1 - clamp01((c - v.n * 0.075 - 0.35) / 0.3);
-    const top = fresh > 0 || whole > 0.5 ? "#e2ecff" : "#9cc0ff";
+    const fresh = 1 - clamp01((c - v.n * 0.12 - 0.35) / 0.3);
+    const top = fresh > 0 || whole > 0.5 ? "#fff1cc" : "#ffd889";
     // dark seams on every face, so each sandbox reads on its own
     isoCube(
       ctx,
       x,
       y,
       a,
-      [top, "#2f6bff", "#1b45b8"],
+      [top, "#ffc547", "#b8841a"],
       (1 - leave) * Math.min(1, arrive * 3),
-      "#020a1c",
+      "#000000",
     );
   }
 });

@@ -211,7 +211,7 @@ describe("cost columns", () => {
     expect(disk?.usd).toBeCloseTo((10 * 0.1 * 300) / (30 * 86400), 12);
   });
 
-  it("prices Tenki estimates from the billing rules, every part estimated", () => {
+  it("prices Luxor estimates from the billing rules, every part estimated", () => {
     const reported = reportedCost(
       input("tenki", { charge: { kind: "estimate", source: "rules" } }),
     );

@@ -1,8 +1,8 @@
 /** Official API sources (checked against @tenkicloud/sandbox 1.4.1 types):
- * https://tenki.cloud/docs/sandbox/sdk.md
- * https://tenki.cloud/docs/sandbox/sessions.md
- * https://tenki.cloud/docs/sandbox/snapshots.md
- * https://tenki.cloud/docs/sandbox/base-image.md
+ * https://luxor.ai/docs/sandbox/sdk.md
+ * https://luxor.ai/docs/sandbox/sessions.md
+ * https://luxor.ai/docs/sandbox/snapshots.md
+ * https://luxor.ai/docs/sandbox/base-image.md
  * https://www.npmjs.com/package/@tenkicloud/sandbox
  */
 import type {
@@ -37,7 +37,7 @@ export interface TenkiOptions {
   authToken?: string;
   /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
   baseUrl?: string;
-  /** Base image; default: the Tenki service default image. */
+  /** Base image; default: the Luxor service default image. */
   image?: string;
   /** Control-plane deadline. Default: 30 s. */
   requestTimeoutMs?: number;
@@ -45,13 +45,13 @@ export interface TenkiOptions {
   waitTimeoutMs?: number;
   /** Resume RPC deadline, separate from readiness. Default: 180 seconds; maximum: 15 minutes. */
   resumeTimeoutMs?: number;
-  /** How long Tenki keeps a paused sandbox before deleting it. Default: Tenki's retention. */
+  /** How long Luxor keeps a paused sandbox before deleting it. Default: Luxor's retention. */
   pauseRetentionMs?: number;
-  /** Tenki volumes to mount, such as `[{ volumeId: "vol_123", mountPath: "/data" }]`. */
+  /** Luxor volumes to mount, such as `[{ volumeId: "vol_123", mountPath: "/data" }]`. */
   volumes?: CreateOptions["volumes"];
   /** Workspace for service credentials that span workspaces. Workspace API keys infer it. */
   workspaceId?: string;
-  /** Lifetime of each preview URL. Default: Tenki's preview TTL. */
+  /** Lifetime of each preview URL. Default: Luxor's preview TTL. */
   previewTtlMs?: number;
 }
 
@@ -109,7 +109,7 @@ export interface TenkiDataPlane {
   ): AsyncIterable<TenkiRunResponse>;
 }
 
-/** The parts of a Tenki session the adapter uses. The data-plane entry points are
+/** The parts of a Luxor session the adapter uses. The data-plane entry points are
  * optional: without them, commands fall back to buffered `run()` pages.
  */
 export type TenkiSession = Pick<
@@ -149,7 +149,7 @@ export type StreamingSession = TenkiSession & Required<Pick<TenkiSession, "requi
 
 type Session = TenkiSession;
 
-/** The parts of a Tenki client the adapter uses. */
+/** The parts of a Luxor client the adapter uses. */
 export interface TenkiClient<S extends TenkiSession> {
   create(options: CreateOptions): Promise<S>;
   get(id: string): Promise<S>;
@@ -162,7 +162,7 @@ export interface TenkiClient<S extends TenkiSession> {
   ): Promise<Pick<Snapshot, "id">>;
 }
 
-/** The parts of the Tenki SDK the adapter uses: the real `@tenkicloud/sandbox` module, or a test fixture. */
+/** The parts of the Luxor SDK the adapter uses: the real `@tenkicloud/sandbox` module, or a test fixture. */
 export interface TenkiModule<S extends TenkiSession> {
   TenkiSandbox: new (options: ClientOptions) => TenkiClient<S>;
 }
@@ -170,7 +170,7 @@ export interface TenkiModule<S extends TenkiSession> {
 const keyTag = "sandbox-sdk-key";
 const createdTag = "sandbox-sdk-created-at";
 
-/** SDK bookkeeping and Tenki's own metadata. Labels show only the caller's labels and `sandbox-sdk`. */
+/** SDK bookkeeping and Luxor's own metadata. Labels show only the caller's labels and `sandbox-sdk`. */
 const internal = new Set([keyTag, createdTag, "enable_opencode"]);
 
 const presets = {
@@ -227,7 +227,7 @@ function info(value: Session): SandboxInfo {
   };
 }
 
-// Tenki clears /tmp on pause. The canonical SDK path is a link into durable disk;
+// Luxor clears /tmp on pause. The canonical SDK path is a link into durable disk;
 // recreate it before process reattachment, including after snapshot restoration.
 const prepare = [
   "sh",
@@ -235,7 +235,7 @@ const prepare = [
   "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; exec 9>/home/tenki/.sandbox-sdk/setup.lock; flock -x 9; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; flock -u 9; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null; readlink -f /workspace",
 ];
 
-/** @internal The adapter behind `tenki()`. `load` imports the Tenki SDK; tests pass a fixture. */
+/** @internal The adapter behind `tenki()`. `load` imports the Luxor SDK; tests pass a fixture. */
 export function createTenkiProvider<S extends TenkiSession>(
   options: TenkiOptions,
   load: () => Promise<TenkiModule<S>>,
@@ -325,7 +325,7 @@ export function createTenkiProvider<S extends TenkiSession>(
 
       if (!authToken)
         throw failure(
-          "Tenki API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
+          "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
           "auth",
         );
 
@@ -372,7 +372,7 @@ export function createTenkiProvider<S extends TenkiSession>(
       safe("create", undefined, async () => {
         if (input.idleTimeoutMs !== undefined)
           throw failure(
-            "Tenki no longer auto-pauses on idle; idleTimeoutMs is unavailable",
+            "Luxor no longer auto-pauses on idle; idleTimeoutMs is unavailable",
             "unsupported",
           );
 
@@ -434,7 +434,7 @@ export function createTenkiProvider<S extends TenkiSession>(
 
         // Admit without waiting so every subsequent failure has an ID to clean up.
         const client = await api();
-        // create() has no AbortSignal in Tenki 1.4.1. Keep observing its result
+        // create() has no AbortSignal in `@tenkicloud/sandbox` 1.4.1. Keep observing its result
         // after the caller's deadline so a late allocation can still be closed.
         const pending = client.create(params);
         let value: S;
@@ -463,7 +463,7 @@ export function createTenkiProvider<S extends TenkiSession>(
               value.memoryMb !== allocation.memoryMb ||
               value.diskSizeGb !== allocation.diskSizeGb)
           )
-            throw failure("Tenki returned different resources than requested", "unsupported");
+            throw failure("Luxor returned different resources than requested", "unsupported");
 
           if (
             value.outboundEnabled !== params.allowOutbound ||
@@ -472,7 +472,7 @@ export function createTenkiProvider<S extends TenkiSession>(
                 value.egress.allowDomains.some((domain) => !domains.includes(domain)) ||
                 value.egress.allowCidrs.length))
           )
-            throw failure("Tenki did not confirm the requested network policy", "unsupported");
+            throw failure("Luxor did not confirm the requested network policy", "unsupported");
 
           return info(value);
         } catch (error) {
@@ -641,7 +641,7 @@ export function createTenkiProvider<S extends TenkiSession>(
           throw failure("expiresInMs must be a non-negative integer", "invalid_argument");
         const client = await api();
 
-        // 0 keeps the snapshot: Tenki applies no expiry when expiresAt is absent.
+        // 0 keeps the snapshot: Luxor applies no expiry when expiresAt is absent.
         const snapshot = await request(() =>
           client.createSnapshot(
             id,

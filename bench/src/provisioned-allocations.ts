@@ -2,7 +2,7 @@
  * E2B template builds and e2b.dev/pricing; Daytona snapshot metadata and
  * daytona.io/docs/en/sandboxes; Superserve template builds; provider defaults
  * documented in apps/bench-site/src/lib/sizes.ts. Unknown templates fail closed.
- * Tenki does not document default CPU/RAM, so it intentionally has no entry.
+ * Luxor does not document default CPU/RAM, so it intentionally has no entry.
  */
 interface ProvisionedAllocation {
   cpu: number;
