@@ -13,7 +13,10 @@ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 
 const code = "print(sum(range(10)))"; // what the model wrote
 
-await using box = await createSandbox(e2b(), { network: "none", timeoutMs: 5 * 60_000 });
+await using box = await createSandbox(e2b(), {
+  network: "none",
+  timeoutMs: 5 * 60_000,
+});
 await box.files.write("main.py", code);
 const result = await box.run("python3 main.py", { timeoutMs: 30_000 });
 console.log(result.ok ? result.stdout : result.output);
