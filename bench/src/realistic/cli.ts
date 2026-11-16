@@ -7,8 +7,12 @@
  *          fit check rules out (FIT.md) get a "default-size-too-small" record without a paid run.
  *          A budget guard stops before a slot whose reservation would cross the cap.
  * billing  Collect each attempt's charge with bench/src/billing and write billing.jsonl.
+ *          `--providers a,b` recollects only those providers and keeps every other entry, for a
+ *          later pass after settlement without losing evidence past a source's retention limit.
  * summary  Completion, median wall and CPU, cost per completed task with kind and status, through
  *          the cost model's eligibility and picks (descriptive: no statistical gate is claimed).
+ *          `--audit FILE` supplies settled-charge reconciliations (cost/audit-file.ts); without
+ *          one, every meter stays not reconciled.
  * sweep    List every provider for sandboxes labelled with this run and delete any left.
  */
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
@@ -31,7 +35,8 @@ import {
 import { pairedBatches } from "../cost/batch-stats.js";
 import { billingModelLabel, billingRule } from "../cost/billing-rules.js";
 import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
-import { describeIneligibility, eligibility, type CostSourceAudit } from "../cost/eligibility.js";
+import { auditFileSchema, auditFor, noAuditFile, type AuditUsed } from "../cost/audit-file.js";
+import { describeIneligibility, eligibility } from "../cost/eligibility.js";
 import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
 import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
@@ -691,16 +696,72 @@ async function sweep(args: string[]) {
   process.stdout.write(`Swept; see ${notesPath}\n`);
 }
 
+const billingSourcesSchema = z.object({
+  collectedAt: z.string(),
+  recollected: z.array(z.object({ at: z.string(), adapters: z.array(z.string()) })).optional(),
+  // Each collector's raw report, kept as written; only its adapter name is read.
+  providers: z.array(z.looseObject({ provider: z.string() })),
+});
+
+async function readBillingSources(out: string) {
+  return billingSourcesSchema.parse(
+    JSON.parse(await readFile(join(out, "billing-sources.json"), "utf8")),
+  );
+}
+
 /** Collect each attempt's charge and write billing.jsonl. */
 async function billing(args: string[]) {
   const { values } = parseArgs({
     args,
-    options: { out: { type: "string" }, "wait-ms": { type: "string", default: "0" } },
+    options: {
+      out: { type: "string" },
+      "wait-ms": { type: "string", default: "0" },
+      // Recollect only these providers (record names, comma-separated); every other provider's
+      // billing.jsonl entries and billing-sources.json rows are kept as they are. A provider whose
+      // source has a retention limit (E2B's 7-day events) would otherwise lose its evidence.
+      providers: { type: "string" },
+    },
   });
 
   if (!values.out) throw new Error("realistic billing needs --out");
   const out = resolve(values.out);
-  const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
+  const allRecords = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
+  const only = values.providers === undefined ? null : new Set(values.providers.split(","));
+
+  if (only !== null) {
+    const known = new Set(allRecords.map((r) => r.provider));
+    const unknown = [...only].filter((p) => !known.has(p));
+
+    if (only.size === 0 || unknown.length > 0)
+      throw new Error(
+        `--providers names no attempts in ${out}: ${unknown.join(", ") || "(empty)"}`,
+      );
+
+    // billing-sources.json keeps one row per adapter, so a recollection takes whole adapters.
+    const adapters = new Set([...only].map((p) => providerSetup(p).adapter));
+
+    const sharing = [...known].filter(
+      (p) => !only.has(p) && adapters.has(providerSetup(p).adapter),
+    );
+
+    if (sharing.length > 0)
+      throw new Error(`--providers must also name ${sharing.join(", ")}, which share an adapter`);
+  }
+
+  const records = only === null ? allRecords : allRecords.filter((r) => only.has(r.provider));
+
+  // Kept entries: other providers' billing from the previous collection, unchanged.
+  const kept =
+    only === null
+      ? []
+      : (await readJsonLines(join(out, "billing.jsonl"), attemptBillingSchema)).filter((e) => {
+          const record = allRecords.find((r) => r.attemptId === e.attemptId);
+
+          if (!record) throw new Error(`billing.jsonl names an unknown attempt, ${e.attemptId}`);
+
+          return !only.has(record.provider);
+        });
+
   const apps = await readAppJournal(join(out, appJournalFile));
 
   // Each attempt's sandboxes: its record's, plus any its App journal names (a reconciliation can
@@ -838,16 +899,39 @@ async function billing(args: string[]) {
     };
   });
 
+  // Record order, kept and recollected entries alike.
+  const byAttempt = new Map([...kept, ...entries].map((e) => [e.attemptId, e]));
+
+  const written = allRecords.flatMap((r) => {
+    const entry = byAttempt.get(r.attemptId);
+
+    return entry ? [entry] : [];
+  });
+
   await writeFile(
     join(out, "billing.jsonl"),
-    entries.map((e) => JSON.stringify(attemptBillingSchema.parse(e))).join("\n") + "\n",
-  );
-  await writeFile(
-    join(out, "billing-sources.json"),
-    JSON.stringify({ collectedAt: new Date().toISOString(), providers: raw }, null, 2) + "\n",
+    written.map((e) => JSON.stringify(attemptBillingSchema.parse(e))).join("\n") + "\n",
   );
 
-  const counts = entries.reduce<Record<string, number>>((acc, e) => {
+  // Each recollected adapter replaces its own row; other adapters' rows and times are kept.
+  const recollected = new Set(records.map((r) => providerSetup(r.provider).adapter));
+  const previous = only === null ? null : await readBillingSources(out);
+
+  const sourcesFile =
+    previous === null
+      ? { collectedAt: new Date().toISOString(), providers: raw }
+      : {
+          collectedAt: previous.collectedAt,
+          recollected: [
+            ...(previous.recollected ?? []),
+            { at: new Date().toISOString(), adapters: [...recollected].sort() },
+          ],
+          providers: [...previous.providers.filter((p) => !recollected.has(p.provider)), ...raw],
+        };
+
+  await writeFile(join(out, "billing-sources.json"), JSON.stringify(sourcesFile, null, 2) + "\n");
+
+  const counts = written.reduce<Record<string, number>>((acc, e) => {
     const key =
       e.charge.kind === "billed" || e.charge.kind === "metered"
         ? `${e.charge.kind}${e.charge.settled ? "" : " (pending)"}`
@@ -859,7 +943,7 @@ async function billing(args: string[]) {
   }, {});
 
   process.stdout.write(
-    `Billing: ${entries.length} attempts with sandboxes; ${JSON.stringify(counts)}\n`,
+    `Billing: ${written.length} attempts with sandboxes; ${JSON.stringify(counts)}\n`,
   );
 }
 
@@ -960,15 +1044,6 @@ function heldOpen(attempts: readonly CostedAttempt[]): HeldRow[] {
   return rows;
 }
 
-const pilotAudit: CostSourceAudit = {
-  reconciliation: {
-    kind: "not-reconciled",
-    reason: "pilot: no settled-charge reconciliation was run",
-  },
-  resolutionUSDPerAttempt: 0,
-  provisional: null,
-};
-
 interface Row {
   provider: string;
   profile: string;
@@ -1014,8 +1089,14 @@ async function summary(args: string[]) {
       to: { type: "string" },
       // provider@runId[@track]: attempts superseded by a rerun, left out of the table and listed in it.
       drop: { type: "string", multiple: true },
+      // Settled-charge audits (cost/audit-file.ts). Without one, every meter stays not reconciled.
+      audit: { type: "string" },
     },
   });
+
+  const auditFile = values.audit
+    ? auditFileSchema.parse(JSON.parse(await readFile(resolve(values.audit), "utf8")))
+    : noAuditFile;
 
   const drops = (values.drop ?? []).map((item) => {
     const [provider = "", runId = "", track] = item.split("@");
@@ -1077,6 +1158,9 @@ async function summary(args: string[]) {
   const rows: Row[] = [];
   const candidates = new Map<string, Candidate[]>();
 
+  // The audit each headline group was judged with, for summary.json.
+  const audits: { provider: string; profile: string; track: string; audit: AuditUsed }[] = [];
+
   for (const [key, group] of [...groups].sort(([x], [y]) => x.localeCompare(y))) {
     const [variant = "", profile = "", track = "", provider = ""] = key.split("|");
     const rule = billingRule(provider, null);
@@ -1126,11 +1210,20 @@ async function summary(args: string[]) {
           whole.reduce((sum, w) => sum + (w.kind === "list-price" ? w.usd : 0), 0) / done.length;
 
       if (variant === "headline") {
+        const { audit, used } = auditFor({
+          file: auditFile,
+          group: { provider, profile, track },
+          attempts: group,
+          providerAttempts: attempts.filter((a) => a.record.provider === provider),
+        });
+
+        audits.push({ provider, profile, track, audit: used });
+
         const verdict = eligibility({
           rule,
           comparison: track === "same-machine" ? "same-machine" : "tested-size",
           attempts: group,
-          audit: pilotAudit,
+          audit,
         });
 
         // Kind, settlement and provisional status all travel in the eligibility reasons.
@@ -1154,7 +1247,7 @@ async function summary(args: string[]) {
             provider,
             batches: batchesRow?.batches ?? [],
             eligibility: verdict,
-            audit: pilotAudit,
+            audit,
           });
           candidates.set(`${profile}|${track}`, list);
         }
@@ -1258,6 +1351,7 @@ async function summary(args: string[]) {
         rows,
         picks,
         heldOpen: held,
+        audits,
         // Attempts kept on disk but left out of this table, each with its run and outcome.
         dropped: dropped.map((r) => ({
           attemptId: r.attemptId,
@@ -1290,7 +1384,7 @@ export async function realisticCommand(args: string[]) {
     default:
       process.stdout.write(
         "bun bench realistic run --out DIR --run ID [--plan headline|held-open] [--providers a,b] [--profiles fix-and-test,build] [--tracks same-machine,default] [--batches N] [--first-batch K] [--budget-usd 75]\n" +
-          "bun bench realistic billing --out DIR\nbun bench realistic summary --out DIR [--out DIR2]\nbun bench realistic sweep --out DIR --run ID\n",
+          "bun bench realistic billing --out DIR [--providers a,b]\nbun bench realistic summary --out DIR [--out DIR2] [--to DIR] [--drop provider@run[@track]] [--audit FILE]\nbun bench realistic sweep --out DIR --run ID\n",
       );
   }
 }

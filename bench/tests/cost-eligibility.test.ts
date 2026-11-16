@@ -59,7 +59,7 @@ describe("eligibility table", () => {
     });
   });
 
-  it("rejects unsettled bills (Daytona today)", () => {
+  it("rejects unsettled bills (Daytona inside its 48-hour guard)", () => {
     const result = check({
       provider: "daytona",
       attempts: ten({
@@ -68,9 +68,35 @@ describe("eligibility table", () => {
       }),
     });
 
-    // Daytona's analytics price may or may not include disk, so it is also provisional.
-    expect(kinds(result)).toEqual(["unsettled", "provisional"]);
+    expect(kinds(result)).toEqual(["unsettled"]);
     expect(result.status.settled).toBe(false);
+  });
+
+  it("accepts Daytona's settled bill: its analytics price itemizes disk", () => {
+    expect(rule("daytona").storage).toEqual(
+      expect.objectContaining({ kind: "known", value: "included" }),
+    );
+
+    const result = check({
+      provider: "daytona",
+      attempts: ten({
+        provider: "daytona",
+        charge: { kind: "billed", usd: 0.02, settled: true, source: "x" },
+      }),
+    });
+
+    expect(result).toEqual({
+      kind: "eligible",
+      status: { costKind: "billed", settled: true, provisional: null },
+    });
+  });
+
+  it("keeps a bill whose storage coverage is unknown provisional (Upstash Ephemeral)", () => {
+    const result = check({
+      provider: "upstash-ephemeral",
+      attempts: ten({ provider: "upstash-ephemeral" }),
+    });
+
     expect(result.status.provisional).toBe("storage coverage of the billing source unknown");
   });
 

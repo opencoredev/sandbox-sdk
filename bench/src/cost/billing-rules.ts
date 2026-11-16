@@ -148,7 +148,10 @@ export const billingRules: readonly BillingRule[] = [
     perStartFeeUSD: unknown("Not stated"),
     keepsCharging: unknown("Stopped-sandbox disk and snapshot storage not confirmed"),
     countsFileCacheAsMemory: allocationCache,
-    storage: unknown("Not known whether the analytics price includes disk"),
+    storage: known(
+      "included",
+      "https://analytics.app.daytona.io/organization/{org}/usage/aggregated (totalPrice is totalCPUPrice + totalRAMPrice + totalDiskPrice; /usage/sandbox totalPrice sums to it; read 2026-11-16 for 2026-11-06 01:00-03:00 UTC) and https://www.daytona.io/docs/analytics-openapi.json (UsageChartPoint.diskPrice)",
+    ),
     settledChargeSource: known(
       "Per-sandbox price in a fixed window, final 48 hours after the window ends",
       docs.daytonaAnalytics,
