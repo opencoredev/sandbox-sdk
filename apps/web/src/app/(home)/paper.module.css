@@ -38,6 +38,15 @@
   line-height: 1.6;
   text-wrap: pretty;
 }
+.lede a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 3px;
+}
+.lede a:hover {
+  text-decoration-color: currentColor;
+}
 .eyebrow {
   color: var(--faint);
   font-family: var(--mono);
