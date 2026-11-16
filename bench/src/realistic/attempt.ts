@@ -54,6 +54,8 @@ export interface AttemptPlan {
   statePreservation?: StatePreservation;
   /** Working directory for this provider when the manifest's is not writable there. */
   workdir?: string;
+  /** GiB of the volume the provider mounts for this attempt, recorded for pricing. */
+  volumeGiB?: number;
   /** Worker count for this provider when its size differs from the track's (the default track). */
   vcpu?: number;
   /** Only the run label, for providers whose labels share a short name budget (Boat). */
@@ -416,6 +418,8 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
     outputDir,
     outputError,
   };
+
+  if (plan.volumeGiB !== undefined) record.volumeGiB = plan.volumeGiB;
 
   return { record, trace };
 }

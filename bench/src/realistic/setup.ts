@@ -275,6 +275,25 @@ export function provisionedFor(setup: ProviderSetup, track: TrackId, profile: st
   return volume ? { ...base, diskGiB: base.diskGiB + volume.sizeGiB } : base;
 }
 
+/**
+ * The size a recorded attempt provisioned: its track's, plus the volume the record says it
+ * mounted. A record without `volumeGiB` from a provider whose setup mounts volumes predates the
+ * field, so whether it had one is unknown: null, which prices nothing rather than guessing.
+ */
+export function provisionedOf(
+  setup: ProviderSetup,
+  track: TrackId,
+  record: { readonly volumeGiB?: number | undefined },
+) {
+  const base = setup.tracks[track].provisioned;
+
+  if (record.volumeGiB !== undefined) return { ...base, diskGiB: base.diskGiB + record.volumeGiB };
+
+  const mountsVolumes = Object.values(setup.profileFactory ?? {}).some((f) => f.volume);
+
+  return mountsVolumes ? null : base;
+}
+
 export function providerSetup(name: string): ProviderSetup {
   const setup = providerSetups.find((s) => s.name === name);
 

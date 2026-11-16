@@ -55,6 +55,8 @@ export interface SlotProvider {
   create?(track: string): Omit<CreateOptions, "labels" | "signal" | "key">;
   /** Working directory when the manifest's is not writable on this provider. */
   workdir?: string;
+  /** GiB of the volume this entry's adapter mounts on every sandbox, recorded on each attempt. */
+  volumeGiB?: number;
   /** Worker count on a track whose size differs per provider (the default track). */
   vcpuFor?(track: string): number | undefined;
   /** Label sandboxes with the run only (labels share a short name budget on Boat). */
@@ -419,6 +421,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         if (entry.create) attemptPlan.create = entry.create(slot.track);
 
         if (entry.workdir) attemptPlan.workdir = entry.workdir;
+
+        if (entry.volumeGiB !== undefined) attemptPlan.volumeGiB = entry.volumeGiB;
 
         if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
 

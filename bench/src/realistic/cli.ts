@@ -69,6 +69,7 @@ import {
   type ProviderSetup,
   type TrackId,
   provisionedFor,
+  provisionedOf,
 } from "./setup.js";
 import {
   attributionFor,
@@ -309,6 +310,7 @@ async function loadSlotProvider(
     settlementMs: null,
     paddingMs: 0,
     runLabelOnly: setup.adapter === "boat",
+    volumeGiB: profile === undefined ? undefined : setup.profileFactory?.[profile]?.volume?.sizeGiB,
     workdir: "/workspace/rw",
     vcpuFor: () => config.vcpu,
     create: () => {
@@ -897,7 +899,7 @@ async function billing(args: string[]) {
       memoryGiB: record.resources?.memoryGiB ?? null,
     };
 
-    const allocation = { provisioned: provisionedFor(setup, track, record.profile), measured };
+    const allocation = { provisioned: provisionedOf(setup, track, record), measured };
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 

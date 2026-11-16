@@ -12,36 +12,55 @@ const ticking = (fromS: number, toS: number) =>
   Array.from({ length: (toS - fromS) * 5 + 1 }, (_, i) => fromS + Math.floor(i / 5));
 
 describe("standby evidence", () => {
-  test("a gap from the standby to the resume proves standby", () => {
-    const ticks = [...ticking(100, 115), ...ticking(131, 131)];
+  /** A reading taken 31.2 s after the ticker started, 0.8 s after the timed request began. */
+  const reading = (afterS: number, ticks: number[], sinceRequestMs = 800) => ({
+    output: output(afterS, ticks),
+    ticker,
+    hostElapsedMs: 31_200,
+    sinceRequestMs,
+    minGapMs: 5_000,
+  });
 
-    expect(standbyGap(output(131, ticks), ticker, 31_200, 5_000)).toEqual({ gapMs: 16_000 });
+  test("a gap from the standby to the resume proves standby", () => {
+    // Ticking resumed with the request: about four ticks in the 0.8 s since.
+    const ticks = [...ticking(100, 115), 130, 130, 131, 131];
+
+    expect(standbyGap(reading(131, ticks))).toEqual({ gapMs: 15_000 });
+  });
+
+  test("ticking that resumed before the timed request is refused", () => {
+    // The review's case: ticks resume at 129, the request starts at 130.5.
+    const ticks = [...ticking(100, 115), ...ticking(129, 131)];
+
+    expect(standbyGap(reading(131, ticks))).toMatchObject({
+      refused: expect.stringContaining("ticking resumed before the timed request"),
+    });
   });
 
   test("a stall early in the idle wait, ticking on until the resume, proves nothing", () => {
     const ticks = [...ticking(100, 102), ...ticking(108, 131)];
 
-    expect(standbyGap(output(131, ticks), ticker, 31_200, 5_000)).toMatchObject({
-      refused: expect.stringContaining("ended before the resume"),
+    expect(standbyGap(reading(131, ticks))).toMatchObject({
+      refused: expect.stringContaining("ticking resumed before the timed request"),
     });
   });
 
   test("a guest clock step is refused, whatever the ticks show", () => {
-    const ticks = [...ticking(100, 115), ...ticking(160, 160)];
+    const ticks = [...ticking(100, 115), 160, 160];
 
-    expect(standbyGap(output(160, ticks), ticker, 31_200, 5_000)).toMatchObject({
+    expect(standbyGap(reading(160, ticks))).toMatchObject({
       refused: expect.stringContaining("guest clock moved"),
     });
   });
 
   test("no tick after the resume leaves the gap unproven", () => {
-    expect(standbyGap(output(131, ticking(100, 115)), ticker, 31_200, 5_000)).toMatchObject({
+    expect(standbyGap(reading(131, ticking(100, 115)))).toMatchObject({
       refused: expect.stringContaining("longest pause"),
     });
   });
 
   test("output without a clock reading is refused", () => {
-    expect(standbyGap("", ticker, 31_200, 5_000)).toMatchObject({
+    expect(standbyGap({ ...reading(131, []), output: "" })).toMatchObject({
       refused: expect.stringContaining("no clock reading"),
     });
   });

@@ -1768,18 +1768,20 @@ export async function runV2(
                   const ticker = tickerStarted(await command(active, startTicker, timeout, signal));
                   const tickerStartedAt = performance.now();
                   await idle(standby.idleMs, signal);
+                  const requestStartedAt = performance.now();
                   partClock?.begin();
                   await command(active, "true", timeout, signal);
                   partClock?.finish();
                   const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
-                  const ticks = await command(active, stopTicker(ticker.pid), timeout, signal);
+                  const output = await command(active, stopTicker(ticker.pid), timeout, signal);
 
-                  const evidence = standbyGap(
-                    ticks,
+                  const evidence = standbyGap({
+                    output,
                     ticker,
-                    performance.now() - tickerStartedAt,
-                    standby.minGapMs,
-                  );
+                    hostElapsedMs: performance.now() - tickerStartedAt,
+                    sinceRequestMs: performance.now() - requestStartedAt,
+                    minGapMs: standby.minGapMs,
+                  });
 
                   if ("refused" in evidence)
                     throw new Error(

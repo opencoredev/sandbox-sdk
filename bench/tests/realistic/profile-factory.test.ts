@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { attemptBudget } from "../../src/realistic/cli.js";
-import { providerSetup, provisionedFor } from "../../src/realistic/setup.js";
+import { providerSetup, provisionedFor, provisionedOf } from "../../src/realistic/setup.js";
 
 describe("profile factory options", () => {
   const baseten = providerSetup("baseten");
@@ -26,11 +26,22 @@ describe("profile factory options", () => {
     );
   });
 
+  test("a recorded attempt is priced with the volume its record names, not today's setup", () => {
+    expect(provisionedOf(baseten, "default", { volumeGiB: 8 })).toEqual({
+      cpu: 2,
+      memoryGiB: 4,
+      diskGiB: 8,
+    });
+    // A Baseten record without the field predates it: whether it mounted a volume is unknown.
+    expect(provisionedOf(baseten, "default", {})).toBeNull();
+  });
+
   test("a provider without profile options provisions its track's size for every profile", () => {
     const e2b = providerSetup("e2b");
 
     expect(provisionedFor(e2b, "same-machine", "build")).toEqual(
       e2b.tracks["same-machine"].provisioned,
     );
+    expect(provisionedOf(e2b, "same-machine", {})).toEqual(e2b.tracks["same-machine"].provisioned);
   });
 });

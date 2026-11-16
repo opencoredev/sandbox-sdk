@@ -78,21 +78,33 @@ export function tickerStarted(output: string): Ticker {
   return { pid, startedAtS };
 }
 
+/** What `standbyGap` checks: `stopTicker`'s output and the host's clock around it. */
+export interface StandbyReading {
+  readonly output: string;
+  readonly ticker: Ticker;
+  /** Host time from the ticker's start until `stopTicker` returned. */
+  readonly hostElapsedMs: number;
+  /** Host time from the start of the timed request until `stopTicker` returned. */
+  readonly sinceRequestMs: number;
+  readonly minGapMs: number;
+}
+
+/** The ticker's period: it can write at most one tick per this many ms. */
+const tickMs = 200;
+
 /**
- * The standby gap, in ms, from `stopTicker`'s output, or why the ticks do not prove standby.
+ * The standby gap, in ms, or why the ticks do not prove standby.
  *
  * Proof needs all of: the guest clock advanced as much as the host's (within 2 s), so a clock
  * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; and
- * it ends at the resume (within 2 s of the clock read just after it), so a stall early in the idle
- * wait, with ticks continuing until the timed request, does not count. Ticks are whole seconds.
+ * ticking resumed only with the timed request. The clock is whole seconds, too coarse for that
+ * last check, so it counts ticks instead: from the gap's end the ticker can have written at most
+ * one tick per 200 ms since the request started (plus two for rounding). Ticking that resumed
+ * before the request, so the request ran warm, leaves more.
  */
-export function standbyGap(
-  output: string,
-  ticker: Ticker,
-  hostElapsedMs: number,
-  minGapMs: number,
-): { gapMs: number } | { refused: string } {
-  const [first, ...rest] = output.trim().split("\n");
+export function standbyGap(reading: StandbyReading): { gapMs: number } | { refused: string } {
+  const { ticker } = reading;
+  const [first, ...rest] = reading.output.trim().split("\n");
   const afterS = Number(first);
 
   if (first === undefined || first === "" || !Number.isFinite(afterS))
@@ -100,29 +112,35 @@ export function standbyGap(
 
   const guestElapsedMs = (afterS - ticker.startedAtS) * 1000;
 
-  if (Math.abs(guestElapsedMs - hostElapsedMs) > 2000)
+  if (Math.abs(guestElapsedMs - reading.hostElapsedMs) > 2000)
     return {
-      refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(hostElapsedMs)} ms passed`,
+      refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(reading.hostElapsedMs)} ms passed`,
     };
 
   const times = rest.map(Number).filter((t) => Number.isFinite(t) && t >= ticker.startedAtS);
 
   let gapMs = 0;
-  let endS = Number.NaN;
+  let end = -1;
 
   for (const [i, time] of times.entries()) {
     const previous = times[i - 1];
 
     if (previous !== undefined && (time - previous) * 1000 > gapMs) {
       gapMs = (time - previous) * 1000;
-      endS = time;
+      end = i;
     }
   }
 
-  if (gapMs < minGapMs) return { refused: `the longest pause in the ticks was ${gapMs} ms` };
+  if (gapMs < reading.minGapMs)
+    return { refused: `the longest pause in the ticks was ${gapMs} ms` };
 
-  if (afterS - endS > 2)
-    return { refused: `the ${gapMs} ms pause in the ticks ended before the resume` };
+  const after = times.length - end;
+  const allowed = Math.floor(reading.sinceRequestMs / tickMs) + 2;
+
+  if (after > allowed)
+    return {
+      refused: `ticking resumed before the timed request: ${after} ticks after the ${gapMs} ms pause, at most ${allowed} possible since the request`,
+    };
 
   return { gapMs };
 }
