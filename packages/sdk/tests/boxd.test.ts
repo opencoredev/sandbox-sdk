@@ -537,6 +537,49 @@ test("boxd listing skips corrupt or vanished per-machine metadata and preserves 
   }
 });
 
+test("listing never reads a paused machine's guest, which would wake it; find still reaches one by key", async () => {
+  const provider = factory();
+  const key = `asleep-${crypto.randomUUID()}`;
+  const plain = await createSandbox(provider);
+  const keyed = await provider.create({ key, labels: { team: "a" } });
+
+  const entryOf = (id: string) => {
+    const entry = boxdState.boxes.get(id);
+
+    if (!entry) throw new Error("Missing mock machine");
+
+    return entry;
+  };
+
+  const entries = [entryOf(plain.id), entryOf(keyed.id)];
+
+  try {
+    // The plain machine's name carries its metadata; the keyed one's lives only in the guest.
+    expect(entries.map((e) => e.machine.name.startsWith("sbxsdk-v2-"))).toEqual([true, false]);
+
+    for (const e of entries) e.machine.status = "hibernated";
+    const reads = entries.map((e) => vi.spyOn(e.guest, "read"));
+    const listed = await factory().list({});
+
+    expect(listed.find((v) => v.id === plain.id)).toMatchObject({
+      state: "paused",
+      labels: { "sandbox-sdk": "1" },
+    });
+    expect(listed.some((v) => v.id === keyed.id)).toBe(false);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+
+    // Finding by key has to read the guest, and does so only for the paused machines.
+    expect(await factory().find(key)).toMatchObject({ id: keyed.id, key, state: "paused" });
+    expect(reads.map((r) => r.mock.calls.length > 0)).toEqual([false, true]);
+  } finally {
+    vi.restoreAllMocks();
+
+    for (const e of entries) e.machine.status = "running";
+    await plain.destroy();
+    await provider.destroy(keyed.id);
+  }
+});
+
 test("sizes select boxd's coupled CPU and memory classes before allocation", async () => {
   const provider = factory();
   expect(provider.capabilities.has("size")).toBe(true);

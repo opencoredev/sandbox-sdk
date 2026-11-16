@@ -106,6 +106,38 @@ export type OpenTransfers = (options: BoxdClientOptions, signal?: AbortSignal) =
 
 const marker = "/var/lib/sandbox-sdk/metadata.json";
 
+/** Keyless machines with only the SDK's own label are named `sbxsdk-v2-<0|1>-<createdAt base 36>-<uuid>`. */
+function isNameOwned(name: string): boolean {
+  const parts = name.split("-");
+
+  return parts[1] === "v2" && ["0", "1"].includes(parts[2] ?? "");
+}
+
+/** The marker a v2 name stands for, or null for an older name, whose metadata is only in the guest. */
+function nameMetadata(m: Pick<Machine, "id" | "name">): string | null {
+  if (!isNameOwned(m.name)) return null;
+  const parts = m.name.split("-");
+  const createdAt = Number.parseInt(parts[3] ?? "", 36);
+
+  if (!Number.isFinite(createdAt) || createdAt <= 0)
+    throw failure("Invalid SDK metadata", "not_found", m.id);
+
+  return JSON.stringify({
+    key: null,
+    labels: parts[2] === "1" ? { "sandbox-sdk": "1" } : {},
+    createdAt,
+  });
+}
+
+/** Whether reading the machine's metadata would wake it from suspension or hibernation. */
+function wakes(m: Pick<Machine, "name" | "status">): boolean {
+  return m.status !== "running" && !isNameOwned(m.name);
+}
+
+function missing(id: string): never {
+  throw failure("SDK metadata is missing", "not_found", id);
+}
+
 // Each class has fixed 100 GB disk and 4 GiB memory per vCPU.
 function vcpuFor(size: CreateInput["size"]): number | undefined {
   if (size === undefined) return undefined;
@@ -300,29 +332,28 @@ export function createBoxdProvider<C extends BoxdClient>(
     };
   }
 
+  /**
+   * Reading the guest marker of a machine that isn't running wakes it, and boxd bills the woken
+   * machine, so a non-running v2 machine is read from its name. Any other machine is read from its
+   * guest, which wakes it if it is paused: callers that must not wake one check `wakes` first.
+   */
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
+    const named = () => nameMetadata(m) ?? missing(m.id);
     let text: string;
     let deferred = false;
 
-    try {
-      text = new TextDecoder().decode(await (await fileApi()).download(m.id, marker));
-    } catch (error) {
-      if (!["not_found", "file_not_found"].includes(boxdError(error).code)) throw error;
-      const parts = m.name.split("-");
-
-      if (parts[1] !== "v2" || !["0", "1"].includes(parts[2] ?? ""))
-        throw failure("SDK metadata is missing", "not_found", m.id);
-      const createdAt = Number.parseInt(parts[3] ?? "", 36);
-
-      if (!Number.isFinite(createdAt) || createdAt <= 0)
-        throw failure("Invalid SDK metadata", "not_found", m.id);
-      text = JSON.stringify({
-        key: null,
-        labels: parts[2] === "1" ? { "sandbox-sdk": "1" } : {},
-        createdAt,
-      });
+    if (m.status !== "running" && isNameOwned(m.name)) {
+      text = named();
       deferred = true;
+    } else {
+      try {
+        text = new TextDecoder().decode(await (await fileApi()).download(m.id, marker));
+      } catch (error) {
+        if (!["not_found", "file_not_found"].includes(boxdError(error).code)) throw error;
+        text = named();
+        deferred = true;
+      }
     }
 
     const invalid: (part: MetadataPart) => never = (part) => {
@@ -349,6 +380,43 @@ export function createBoxdProvider<C extends BoxdClient>(
             ? "paused"
             : "stopped",
     };
+  }
+
+  /** A machine's info, or null when it isn't a readable SDK machine (corrupt or vanished marker). */
+  async function readable(m: Machine) {
+    try {
+      return await info(m);
+    } catch (error) {
+      if (boxdError(error).code !== "not_found") throw error;
+
+      return null;
+    }
+  }
+
+  /** Every SDK machine read without waking any, and apart, those that can't be. */
+  async function scan(): Promise<{ known: SandboxInfo[]; asleep: Machine[] }> {
+    try {
+      const known: SandboxInfo[] = [];
+      const asleep: Machine[] = [];
+
+      for (const m of await (await api()).machines.list()) {
+        if (!m.name.startsWith("sbxsdk-") || m.status === "destroyed") continue;
+
+        if (wakes(m)) {
+          asleep.push(m);
+          continue;
+        }
+
+        const v = await readable(m);
+
+        if (v !== null) known.push(v);
+      }
+
+      return { known, asleep };
+    } finally {
+      // A listing-only adapter has no handle that will later call close().
+      if (!boxes.size) await webClient?.releaseIdle();
+    }
   }
 
   const provider: Provider<{ machine: Machine; client: C }, BoxdCapability> = {
@@ -483,38 +551,39 @@ export function createBoxdProvider<C extends BoxdClient>(
           throw error;
         }
       }),
+    // Listing never wakes a machine: a suspended or hibernated one whose labels live only in its
+    // guest (keyed, custom-labelled or restored) is left out until it runs again.
     list: (labels) =>
+      safe(undefined, async () =>
+        (await scan()).known.filter((v) =>
+          Object.entries(labels).every(([k, vv]) => v.labels[k] === vv),
+        ),
+      ),
+    // A key lives only in the guest, so a paused machine is read (and woken) only when no machine
+    // that can be read without waking has the key, and the search stops at the first match.
+    find: (key) =>
       safe(undefined, async () => {
+        const { known, asleep } = await scan();
+        let found = known.find((v) => v.key === key);
+
         try {
-          const result: SandboxInfo[] = [];
+          for (const m of asleep) {
+            if (found) break;
+            const v = await readable(m);
 
-          for (const m of await (await api()).machines.list()) {
-            if (!m.name.startsWith("sbxsdk-") || m.status === "destroyed") continue;
-
-            try {
-              const v = await info(m);
-
-              if (Object.entries(labels).every(([k, vv]) => v.labels[k] === vv)) result.push(v);
-            } catch (error) {
-              if (boxdError(error).code !== "not_found") throw error;
-            }
+            if (v?.key === key) found = v;
           }
-
-          return result;
         } finally {
-          // A listing-only adapter has no handle that will later call close().
           if (!boxes.size) await webClient?.releaseIdle();
         }
-      }),
-    async find(key) {
-      const v = (await provider.list({})).find((v) => v.key === key);
 
-      return v ? provider.connect(v.id) : undefined;
-    },
+        return found ? provider.connect(found.id) : undefined;
+      }),
     connect: (id) =>
       safe(id, async () => {
         try {
           const m = await (await api()).machines.get(id);
+          // Connecting is for use, so a paused machine may be woken to read its metadata.
           const value = await info(m);
           boxes.set(id, m);
 

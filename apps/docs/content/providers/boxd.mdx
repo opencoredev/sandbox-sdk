@@ -213,7 +213,7 @@ await box.run("echo kept > /data/state");
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - No `network: "none"` and no terminals.
 - One preview route per machine.
-- Listing reads guest metadata, which can wake sleeping machines.
+- Listing never wakes a suspended or hibernated machine, so it leaves out a sleeping machine created with a key, custom labels or `from`, whose labels are only in its guest. A keyless machine without custom labels is listed while asleep. `find(key)` still reaches a sleeping keyed machine, waking only the sleeping machines it has to read, and only when no running machine has the key.
 
 ## How it works
 
