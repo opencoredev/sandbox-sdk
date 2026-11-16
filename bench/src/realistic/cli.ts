@@ -1149,8 +1149,11 @@ async function summary(args: string[]) {
   );
 
   // A reconciliation's period is checked against every loaded attempt, dropped ones included: a
-  // superseded run still ran, and its charges sit in the provider's settled total.
-  const everyAttempt = costedAttempts(records, bills);
+  // superseded run still ran, and its charges sit in the provider's settled total. Only a
+  // reconciled entry reads them, so a summary without one joins only the kept attempts, as before.
+  const everyAttempt = auditFile.entries.some((e) => e.kind === "reconciled")
+    ? costedAttempts(records, bills)
+    : attempts;
 
   const groups = new Map<string, CostedAttempt[]>();
 

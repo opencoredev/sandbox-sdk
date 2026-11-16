@@ -346,6 +346,30 @@ describe("realistic summary --audit with --drop", () => {
 
     expect(rows.map((r) => [r.profile, r.eligibility])).toEqual([["fix-and-test", "eligible"]]);
   });
+
+  it("joins dropped runs only for a reconciled entry, so other summaries read as before", async () => {
+    const out = await runDir("orphan", boxdGroup());
+
+    const orphan = {
+      attemptId: "gone",
+      product: null,
+      allocation: boxdGroup()[0]?.allocation,
+      usage: null,
+      charge: meter(1),
+    };
+
+    await writeFile(
+      join(out, "billing.jsonl"),
+      (await readFile(join(out, "billing.jsonl"), "utf8")) + JSON.stringify(orphan) + "\n",
+    );
+
+    expect((await summarize(out)).rows.map((r) => r.provider)).toEqual(["boxd"]);
+
+    // A reconciliation cannot vouch for a period whose billing names an attempt nobody recorded.
+    await expect(
+      summarize(out, { schema: AUDIT_SCHEMA, entries: [reconciled()] }),
+    ).rejects.toThrow();
+  });
 });
 
 describe("realistic billing --providers", () => {
