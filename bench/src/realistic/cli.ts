@@ -357,6 +357,14 @@ async function run(args: string[]) {
   });
 
   if (!values.out || !values.run) throw new Error("realistic run needs --out and --run");
+  const cap = Number(values["budget-usd"]);
+
+  // NaN would make every spend check false and silently drop the budget guard. Checked before
+  // anything is written.
+  if (!Number.isFinite(cap) || cap <= 0)
+    throw new Error(
+      `--budget-usd must be a positive number of dollars, got ${values["budget-usd"]}`,
+    );
   const out = resolve(values.out);
   await mkdir(join(out, "outputs"), { recursive: true });
   const attemptsPath = join(out, "attempts.jsonl");
@@ -392,13 +400,6 @@ async function run(args: string[]) {
     z.enum(tracks).parse(t),
   );
 
-  const cap = Number(values["budget-usd"]);
-
-  // NaN would make every spend check false and silently drop the budget guard.
-  if (!Number.isFinite(cap) || cap <= 0)
-    throw new Error(
-      `--budget-usd must be a positive number of dollars, got ${values["budget-usd"]}`,
-    );
   const seed = Number(values.seed);
   const firstBatch = Number(values["first-batch"]);
   const batches = Number(values.batches);
