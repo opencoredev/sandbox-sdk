@@ -28,7 +28,11 @@ const stopped = {
   totalActiveCpuDurationMs: 6476,
   totalDurationMs: 8964,
   memory: 4096,
+  totalIngressBytes: 150_000_000,
+  totalEgressBytes: 2_000_000,
 };
+
+const compute = (6.476 * 0.128) / 3600 + (4 * 60 * 0.0212) / 3600 + 0.6 / 1e6;
 
 const row = (id: string) => ({
   provider: "vercel",
@@ -46,20 +50,32 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("prices Vercel's meter: active CPU, memory rounded up to whole minutes, one creation", () => {
+it("prices Vercel's meter: active CPU, memory rounded up to whole minutes, one creation, data transfer", () => {
   const cost = decodeVercel(stopped, "sbx-1");
 
-  // 6.476 CPU-s at $0.128/h, 4 GB for 60 s (one-minute minimum) at $0.0212/GB-h, $0.60 per million.
-  const expected = (6.476 * 0.128) / 3600 + (4 * 60 * 0.0212) / 3600 + 0.6 / 1e6;
+  // 6.476 CPU-s at $0.128/h, 4 GB for 60 s (one-minute minimum) at $0.0212/GB-h, $0.60 per million,
+  // and 0.152 GB of ingress plus egress at $0.15/GB, as the team's settled charges bill it.
+  const transfer = (152_000_000 / 1e9) * 0.15;
   expect(cost).toMatchObject({ kind: "metered", scope: "sandbox-lifetime", complete: true });
-  expect(cost.kind === "metered" && cost.usd).toBeCloseTo(expected, 12);
+  expect(cost.kind === "metered" && cost.usd).toBeCloseTo(compute + transfer, 12);
 
   // 61 s of wall time bills two minutes of memory.
   const longer = decodeVercel({ ...stopped, totalDurationMs: 61_000 }, "sbx-1");
   expect(longer.kind === "metered" && longer.usd).toBeCloseTo(
-    (6.476 * 0.128) / 3600 + (4 * 120 * 0.0212) / 3600 + 0.6 / 1e6,
+    (6.476 * 0.128) / 3600 + (4 * 120 * 0.0212) / 3600 + 0.6 / 1e6 + transfer,
     12,
   );
+});
+
+it("never calls a Vercel meter without byte counters final: it leaves out billed data transfer", () => {
+  for (const missing of ["totalIngressBytes", "totalEgressBytes"] as const) {
+    const { [missing]: _dropped, ...meter } = stopped;
+    const cost = decodeVercel(meter, "sbx-1");
+
+    expect(cost).toMatchObject({ kind: "metered", complete: false });
+    expect(cost.kind === "metered" && cost.usd).toBeCloseTo(compute, 12);
+    expect(cost.kind === "metered" && cost.note).toContain("data transfer not metered");
+  }
 });
 
 it("refuses a meter that is not final, incomplete or for another sandbox", () => {

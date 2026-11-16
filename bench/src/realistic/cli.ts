@@ -274,6 +274,9 @@ function captureUsage(adapter: string, usageDir: string) {
   return async (id: string) => {
     if (adapter === "vercel") await vercelMeter.stop(id);
 
+    // Vercel's raw meter, byte counters included, is kept as evidence for the settled-charge audit.
+    const meter = adapter === "vercel" ? await vercelMeter.read(id) : null;
+
     const collected = await collectProvider(
       adapter,
       [
@@ -294,7 +297,11 @@ function captureUsage(adapter: string, usageDir: string) {
     const file = join(usageDir, `${adapter}-${id}.json`);
     await writeFile(
       file,
-      JSON.stringify({ capturedAt: new Date().toISOString(), ...collected }) + "\n",
+      JSON.stringify({
+        capturedAt: new Date().toISOString(),
+        ...collected,
+        ...(meter && { meter }),
+      }) + "\n",
     );
 
     return file;

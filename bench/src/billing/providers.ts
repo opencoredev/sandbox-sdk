@@ -136,12 +136,13 @@ const sources = new Map<string, BillingSource>(
       ],
     },
     vercel: {
-      source: "@vercel/sandbox Sandbox.get: totalActiveCpuDurationMs, totalDurationMs, memory",
+      source:
+        "@vercel/sandbox Sandbox.get: totalActiveCpuDurationMs, totalDurationMs, memory, totalIngressBytes, totalEgressBytes",
       granularity: "sandbox lifetime: active CPU ms and wall ms over all sessions",
       delay: "reported once a session stops; gone (404) after deletion",
       key: "VERCEL_OIDC_TOKEN",
       notes: [
-        "Metered, not invoice: Vercel's own per-sandbox meters priced at the published Pro iad1 rates (https://vercel.com/docs/sandbox/pricing). Memory wall time is rounded up to whole minutes. Snapshot storage, data transfer, the $20 monthly Pro credit and tax are excluded.",
+        "Metered, not invoice: Vercel's own per-sandbox meters priced at the published Pro iad1 rates (https://vercel.com/docs/sandbox/pricing). Memory wall time is rounded up to whole minutes. Data transfer (ingress plus egress bytes) is priced at $0.15/GB, as the team's charges bill it; a meter without byte counters is understated and never final. Snapshot storage, the $20 monthly Pro credit and tax are excluded.",
       ],
     },
     tenki: {
@@ -283,9 +284,21 @@ const vercelMeterSchema = z.object({
   totalActiveCpuDurationMs: money.optional(),
   totalDurationMs: money.optional(),
   memory: money.optional(),
+  /** Cumulative bytes over all sessions; absent in meters saved before 2026-11-16. */
+  totalIngressBytes: money.optional(),
+  totalEgressBytes: money.optional(),
 });
 
 export type VercelMeter = z.infer<typeof vercelMeterSchema>;
+
+/**
+ * Sandbox Data Transfer, iad1, per GB (10^9 bytes). Vercel's pricing page lists it as "Included in
+ * Flat Rate CDN" on Pro, but the team's FOCUS charges bill it: 2026-11-09 charged $1.7020669674
+ * for 11.347113116 GB, exactly $0.15 per GB. The page says downloads are free, yet that day's
+ * realistic sandboxes alone took 8.4 GB of SDK uploads, so ingress and egress are both priced (the
+ * dearer reading, as for memory rounding); the settled charges decide.
+ */
+export const VERCEL_TRANSFER_USD_PER_GB = 0.15;
 
 /** Vercel's per-sandbox meter at its published rates. The meter is final only once stopped. */
 export function decodeVercel(meter: VercelMeter, id: string): Cost {
@@ -310,16 +323,31 @@ export function decodeVercel(meter: VercelMeter, id: string): Cost {
     Math.ceil(wallMs / 1000 / rate.incrementSeconds) * rate.incrementSeconds,
   );
 
+  const compute =
+    (cpuMs / 1000) * rate.cpuSecond +
+    (memory / 1024) * seconds * rate.memoryGiBSecond +
+    rate.perSandbox;
+
+  const { totalIngressBytes: ingress, totalEgressBytes: egress } = meter;
+
+  // Without the byte counters the total leaves out a charge Vercel bills, so it is never final.
+  if (ingress === undefined || egress === undefined)
+    return {
+      kind: "metered",
+      usd: compute,
+      scope: "sandbox-lifetime",
+      complete: false,
+      confidence: "low",
+      note: "Vercel's active-CPU and wall-time meters at published Pro iad1 rates; memory rounded up to whole minutes; data transfer not metered (no byte counters saved), so understated; not invoice",
+    };
+
   return {
     kind: "metered",
-    usd:
-      (cpuMs / 1000) * rate.cpuSecond +
-      (memory / 1024) * seconds * rate.memoryGiBSecond +
-      rate.perSandbox,
+    usd: compute + ((ingress + egress) / 1e9) * VERCEL_TRANSFER_USD_PER_GB,
     scope: "sandbox-lifetime",
     complete: true,
     confidence: "medium",
-    note: "Vercel's active-CPU and wall-time meters at published Pro iad1 rates; memory rounded up to whole minutes; not invoice",
+    note: "Vercel's active-CPU, wall-time and network byte meters at Pro iad1 rates; memory rounded up to whole minutes; ingress and egress at $0.15/GB; not invoice",
   };
 }
 
@@ -343,6 +371,8 @@ export const vercelMeter = {
       totalActiveCpuDurationMs: box.totalActiveCpuDurationMs,
       totalDurationMs: box.totalDurationMs,
       memory: box.memory,
+      totalIngressBytes: box.totalIngressBytes,
+      totalEgressBytes: box.totalEgressBytes,
     });
   },
   async stop(name: string): Promise<void> {

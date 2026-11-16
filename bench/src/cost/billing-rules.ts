@@ -109,7 +109,8 @@ const docs = {
   modalRegions: "https://modal.com/docs/guide/region-selection",
   modalBilling: "https://modal.com/docs/guide/billing (workspace billing report, per App)",
   vercel: "https://vercel.com/docs/sandbox/pricing",
-  vercelSdk: "@vercel/sandbox Sandbox.get (totalActiveCpuDurationMs, totalDurationMs, memory)",
+  vercelSdk:
+    "@vercel/sandbox Sandbox.get (totalActiveCpuDurationMs, totalDurationMs, memory, totalIngressBytes, totalEgressBytes)",
 } as const;
 
 export const billingRules: readonly BillingRule[] = [
@@ -326,7 +327,10 @@ export const billingRules: readonly BillingRule[] = [
     countsFileCacheAsMemory: notApplicable(
       "Memory is billed on the allocation, so memory use does not change the charge",
     ),
-    storage: known("excluded", `${docs.vercelSdk} (meters CPU and wall time only)`),
+    storage: known(
+      "excluded",
+      `${docs.vercelSdk} (meters CPU, wall time and network bytes; disk is not billed separately)`,
+    ),
     settledChargeSource: unknown(
       "Team usage and invoices need a Vercel account token with billing access; the project OIDC token the bench uses reads only sandboxes",
     ),
@@ -337,7 +341,8 @@ export const billingRules: readonly BillingRule[] = [
     notes: [
       "Pro, iad1 rates: Active CPU $0.128 per vCPU-hour, Provisioned Memory $0.0212 per GB-hour; rates vary by region.",
       "The meter appears only after a session stops and is gone once the sandbox is deleted, so the bench stops each sandbox and reads it just before deletion.",
-      "Pro's $20 monthly credit, data transfer and tax are excluded.",
+      "Data transfer is billed on Pro despite the pricing page's \"Included in Flat Rate CDN\": the team's charges show $0.15/GB (2026-11-09). The bench prices ingress plus egress bytes at that rate; meters saved before 2026-11-16 have no byte counters, so those costs are understated and never final.",
+      "Pro's $20 monthly credit, snapshot storage and tax are excluded.",
     ],
   },
   {
