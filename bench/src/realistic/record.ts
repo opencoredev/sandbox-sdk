@@ -187,9 +187,9 @@ export const attemptRecordSchema = z.object({
   sandboxIds: z.array(z.string()),
   /**
    * GiB of the volume this attempt's sandbox mounted (`ProviderSetup.profileFactory`), priced as
-   * disk. Absent: none, or a record from before volume sizes were recorded (provisionedOf).
+   * disk; 0 when it mounted none. Absent only on records from before the field (provisionedOf).
    */
-  volumeGiB: z.number().positive().optional(),
+  volumeGiB: z.number().nonnegative().optional(),
   startedAt: z.number(),
   endedAt: z.number(),
   /** Create request time minus the slot's start: the published start offset. */

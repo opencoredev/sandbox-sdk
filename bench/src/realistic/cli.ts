@@ -68,8 +68,10 @@ import {
   tracks,
   type ProviderSetup,
   type TrackId,
+  provisionedAtMost,
   provisionedFor,
   provisionedOf,
+  type ProvisionedSize,
 } from "./setup.js";
 import {
   attributionFor,
@@ -229,10 +231,8 @@ export function attemptBudget(
   setup: ProviderSetup,
   track: TrackId,
   durationMs: number,
-  profile = "fix-and-test",
+  size: ProvisionedSize = setup.tracks[track].provisioned,
 ): number {
-  const size = provisionedFor(setup, track, profile);
-
   // Upstash charges its tier price per CPU-hour used (observed, SBX-100), so a busy box can cost
   // that price times its vCPUs per wall-hour: bound it by every vCPU busy.
   const upstash = setup.pricingKey === "upstash" ? pricing.upstash : undefined;
@@ -263,17 +263,26 @@ function trackOf(record: AttemptRecord): TrackId {
   return record.track === "default" ? "default" : "same-machine";
 }
 
+/**
+ * A finished attempt's spend at list price for the size it recorded. A record from before
+ * attempts recorded their volume counts the largest size its setup can provision.
+ */
+function recordedBudget(record: AttemptRecord) {
+  const setup = providerSetup(record.provider);
+  const track = trackOf(record);
+
+  return attemptBudget(
+    setup,
+    track,
+    record.endedAt - record.startedAt,
+    provisionedOf(setup, track, record) ?? provisionedAtMost(setup, track),
+  );
+}
+
 async function spentUSD(path: string) {
   const records = await readJsonLines(path, attemptRecordSchema);
 
-  return records.reduce(
-    (sum, r) =>
-      r.sandboxIds.length === 0
-        ? sum
-        : sum +
-          attemptBudget(providerSetup(r.provider), trackOf(r), r.endedAt - r.startedAt, r.profile),
-    0,
-  );
+  return records.reduce((sum, r) => (r.sandboxIds.length === 0 ? sum : sum + recordedBudget(r)), 0);
 }
 
 async function loadSlotProvider(
@@ -310,7 +319,7 @@ async function loadSlotProvider(
     settlementMs: null,
     paddingMs: 0,
     runLabelOnly: setup.adapter === "boat",
-    volumeGiB: profile === undefined ? undefined : setup.profileFactory?.[profile]?.volume?.sizeGiB,
+    volumeGiB: profile === undefined ? 0 : (setup.profileFactory?.[profile]?.volume?.sizeGiB ?? 0),
     workdir: "/workspace/rw",
     vcpuFor: () => config.vcpu,
     create: () => {
@@ -510,9 +519,10 @@ async function run(args: string[]) {
             continue;
           }
 
-          const entry =
-            profileLoaded.get(`${setup.name}/${track}/${slot.profile}`) ??
-            loaded.get(`${setup.name}/${track}`);
+          // A profile with its own options runs only on its own adapter, never the plain one.
+          const entry = setup.profileFactory?.[slot.profile]
+            ? profileLoaded.get(`${setup.name}/${track}/${slot.profile}`)
+            : loaded.get(`${setup.name}/${track}`);
 
           if (entry) active.push(entry);
         }
@@ -522,7 +532,13 @@ async function run(args: string[]) {
 
         const reserve = active.reduce(
           (sum, entry) =>
-            sum + attemptBudget(providerSetup(entry.name), track, slotMs, slot.profile),
+            sum +
+            attemptBudget(
+              providerSetup(entry.name),
+              track,
+              slotMs,
+              provisionedFor(providerSetup(entry.name), track, slot.profile),
+            ),
           0,
         );
 

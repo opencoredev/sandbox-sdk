@@ -19,16 +19,18 @@ export const tracks = ["same-machine", "default"] as const;
 
 export type TrackId = (typeof tracks)[number];
 
+export interface ProvisionedSize {
+  readonly cpu: number;
+  readonly memoryGiB: number;
+  readonly diskGiB: number;
+}
+
 export interface TrackSetup {
   readonly template?: string;
   readonly size?: CreateInput["size"];
   /** Worker count for the frozen commands: the size's vCPUs. */
   readonly vcpu: number;
-  readonly provisioned: {
-    readonly cpu: number;
-    readonly memoryGiB: number;
-    readonly diskGiB: number;
-  };
+  readonly provisioned: ProvisionedSize;
   /** Profiles the fit check found this size cannot complete, with FIT.md's reason. */
   readonly tooSmall: { readonly [profile: string]: string };
 }
@@ -273,6 +275,15 @@ export function provisionedFor(setup: ProviderSetup, track: TrackId, profile: st
   const volume = setup.profileFactory?.[profile]?.volume;
 
   return volume ? { ...base, diskGiB: base.diskGiB + volume.sizeGiB } : base;
+}
+
+/** The largest size any profile provisions on this track: for spend that is not recorded. */
+export function provisionedAtMost(setup: ProviderSetup, track: TrackId): ProvisionedSize {
+  const base = setup.tracks[track].provisioned;
+
+  const volumes = Object.values(setup.profileFactory ?? {}).map((f) => f.volume?.sizeGiB ?? 0);
+
+  return { ...base, diskGiB: base.diskGiB + Math.max(0, ...volumes) };
 }
 
 /**

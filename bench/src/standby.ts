@@ -33,7 +33,14 @@ export const startTicker =
   `>/dev/null 2>&1 & echo $!; date +%s`;
 
 /**
- * Lets the resumed ticker write at least one tick, then prints the guest's clock, stops the
+ * The timed resume request: counts the ticks written so far. It is the first request after the
+ * idle wait, so it is what wakes the sandbox, and its own output shows whether the ticker had
+ * already resumed before it ran. `wc` on a few hundred short lines costs about what `true` does.
+ */
+export const countTicks = `wc -l < ${tickFile}`;
+
+/**
+ * Lets the resumed ticker write at least one more tick, then prints the guest's clock, stops the
  * ticker and prints its ticks.
  */
 export const stopTicker = (pid: number) =>
@@ -78,29 +85,33 @@ export function tickerStarted(output: string): Ticker {
   return { pid, startedAtS };
 }
 
-/** What `standbyGap` checks: `stopTicker`'s output and the host's clock around it. */
+/** What `standbyGap` checks. */
 export interface StandbyReading {
+  /** `stopTicker`'s output. */
   readonly output: string;
   readonly ticker: Ticker;
   /** Host time from the ticker's start until `stopTicker` returned. */
   readonly hostElapsedMs: number;
-  /** Host time from the start of the timed request until `stopTicker` returned. */
-  readonly sinceRequestMs: number;
+  /** `countTicks`'s output: the ticks written when the timed request ran. */
+  readonly ticksAtRequest: string;
   readonly minGapMs: number;
 }
 
-/** The ticker's period: it can write at most one tick per this many ms. */
-const tickMs = 200;
+/**
+ * Ticks that may follow the gap when the timed request runs on a sandbox it woke: the ticker's
+ * overdue `sleep` ends as the sandbox resumes, so it can write one tick before the request runs,
+ * and one more if the request is slow to start. A third means it had been awake at least 0.4 s.
+ */
+const maxTicksBeforeRequest = 2;
 
 /**
  * The standby gap, in ms, or why the ticks do not prove standby.
  *
  * Proof needs all of: the guest clock advanced as much as the host's (within 2 s), so a clock
  * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; and
- * ticking resumed only with the timed request. The clock is whole seconds, too coarse for that
- * last check, so it counts ticks instead: from the gap's end the ticker can have written at most
- * one tick per 200 ms since the request started (plus two for rounding). Ticking that resumed
- * before the request, so the request ran warm, leaves more.
+ * when the timed request ran, at most two ticks followed that gap, so the request found the
+ * sandbox asleep and woke it. The last check uses tick counts, not clocks, so the guest clock's
+ * whole-second resolution and the host-guest offset do not matter.
  */
 export function standbyGap(reading: StandbyReading): { gapMs: number } | { refused: string } {
   const { ticker } = reading;
@@ -117,7 +128,17 @@ export function standbyGap(reading: StandbyReading): { gapMs: number } | { refus
       refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(reading.hostElapsedMs)} ms passed`,
     };
 
-  const times = rest.map(Number).filter((t) => Number.isFinite(t) && t >= ticker.startedAtS);
+  const counted = reading.ticksAtRequest.trim();
+  const atRequest = Number(counted);
+
+  if (counted === "" || !Number.isInteger(atRequest))
+    return { refused: "the timed request did not count the ticks" };
+
+  // Every line, in file order, so indexes match the count the request took.
+  const times = rest.map(Number);
+
+  if (times.some((t) => !Number.isFinite(t) || t < ticker.startedAtS))
+    return { refused: "the ticks are not all readings from this ticker" };
 
   let gapMs = 0;
   let end = -1;
@@ -134,13 +155,14 @@ export function standbyGap(reading: StandbyReading): { gapMs: number } | { refus
   if (gapMs < reading.minGapMs)
     return { refused: `the longest pause in the ticks was ${gapMs} ms` };
 
-  const after = times.length - end;
-  const allowed = Math.floor(reading.sinceRequestMs / tickMs) + 2;
+  const before = atRequest - end;
 
-  if (after > allowed)
+  if (before > maxTicksBeforeRequest)
     return {
-      refused: `ticking resumed before the timed request: ${after} ticks after the ${gapMs} ms pause, at most ${allowed} possible since the request`,
+      refused: `the ticker had resumed before the timed request: ${before} ticks after the ${gapMs} ms pause when it ran`,
     };
+
+  if (atRequest > times.length) return { refused: "the ticks were cut short after the request" };
 
   return { gapMs };
 }

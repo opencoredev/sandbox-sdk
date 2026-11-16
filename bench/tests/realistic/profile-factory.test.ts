@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { attemptBudget } from "../../src/realistic/cli.js";
-import { providerSetup, provisionedFor, provisionedOf } from "../../src/realistic/setup.js";
+import {
+  providerSetup,
+  provisionedAtMost,
+  provisionedFor,
+  provisionedOf,
+} from "../../src/realistic/setup.js";
 
 describe("profile factory options", () => {
   const baseten = providerSetup("baseten");
@@ -21,9 +26,14 @@ describe("profile factory options", () => {
 
     const hour = 3_600_000;
 
-    expect(attemptBudget(baseten, "same-machine", hour, "build")).toBeGreaterThan(
-      attemptBudget(baseten, "same-machine", hour, "fix-and-test"),
-    );
+    expect(
+      attemptBudget(
+        baseten,
+        "same-machine",
+        hour,
+        provisionedFor(baseten, "same-machine", "build"),
+      ),
+    ).toBeGreaterThan(attemptBudget(baseten, "same-machine", hour));
   });
 
   test("a recorded attempt is priced with the volume its record names, not today's setup", () => {
@@ -32,8 +42,16 @@ describe("profile factory options", () => {
       memoryGiB: 4,
       diskGiB: 8,
     });
+    // A record that mounted none says 0, and keeps its price.
+    expect(provisionedOf(baseten, "default", { volumeGiB: 0 })).toEqual({
+      cpu: 2,
+      memoryGiB: 4,
+      diskGiB: 0,
+    });
     // A Baseten record without the field predates it: whether it mounted a volume is unknown.
     expect(provisionedOf(baseten, "default", {})).toBeNull();
+    // Unrecorded spend is budgeted at the largest size the setup provisions.
+    expect(provisionedAtMost(baseten, "default").diskGiB).toBe(8);
   });
 
   test("a provider without profile options provisions its track's size for every profile", () => {
