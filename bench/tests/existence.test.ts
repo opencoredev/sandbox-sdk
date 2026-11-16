@@ -33,7 +33,7 @@ it.each([401, 403, 408, 429, 500, 503])("never interprets native HTTP %d as abse
   ).toBe("unavailable");
 });
 
-it("accepts exact HTTP404 and Tenki gRPC5, rejecting contradictory and transient evidence", () => {
+it("accepts exact HTTP404 and Luxor gRPC5, rejecting contradictory and transient evidence", () => {
   expect(
     lookupError(Object.assign(new Error("opaque"), { statusCode: 404 }), "upstash", "get"),
   ).toMatchObject({ result: "not-found", httpStatus: 404 });
@@ -82,7 +82,7 @@ it("retains only allowlisted lookup evidence and redacts known secrets", () => {
 });
 
 it.each(["TERMINATED", "deleted", "destroyed", "PAUSED", "TERMINATING", "FAILED"])(
-  "reads exact Tenki native %s state without guest attachment",
+  "reads exact Luxor native %s state without guest attachment",
   async (state) => {
     vi.stubEnv("TENKI_API_KEY", "offline");
     native.get.mockResolvedValue({ id: "target", state });

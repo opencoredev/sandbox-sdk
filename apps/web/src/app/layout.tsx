@@ -92,7 +92,7 @@ export const metadata: Metadata = {
     "Upstash Box",
     "Railway",
     "Boat",
-    "Tenki",
+    "Luxor",
     "agentOS",
   ],
   alternates: { canonical: "/" },

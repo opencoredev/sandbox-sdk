@@ -73,7 +73,7 @@ export async function waitReady(
 
   // The create boundary sanitizes this native error before exposing it. Keep
   // it until then so polling transport failures do not disappear as timeouts.
-  throw new SandboxError("Tenki session did not become ready within its readiness budget.", {
+  throw new SandboxError("Luxor session did not become ready within its readiness budget.", {
     code: "timeout",
     provider: "tenki",
     sandboxId: value.id,

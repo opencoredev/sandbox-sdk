@@ -120,7 +120,7 @@ const subjects: readonly Subject[] = [
   },
   { column: "Boat", build: () => boat({ apiKey: offlineKey }) },
   { column: "Sandboxer", build: () => sandboxer({ apiKey: offlineKey }) },
-  { column: "Tenki", build: () => createTenkiProvider({ apiKey: offlineKey }, stubTransport) },
+  { column: "Luxor", build: () => createTenkiProvider({ apiKey: offlineKey }, stubTransport) },
   {
     column: "Superserve",
     build: () => superserve({ apiKey: offlineKey }),

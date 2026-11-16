@@ -1,4 +1,4 @@
-# Tenki provider
+# Luxor provider
 
 Install `@tenkicloud/sandbox` and import `tenki` from `@opencoredev/sandbox-sdk/tenki`. Pass `apiKey`, or set `TENKI_AUTH_TOKEN` or `TENKI_API_KEY` (in that fallback order). The SDK loads on first use.
 

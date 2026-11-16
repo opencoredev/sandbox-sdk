@@ -19,6 +19,6 @@ function liveProvider(options: Parameters<typeof tenki>[0] = {}) {
   return provider;
 }
 
-describe.skipIf(!process.env.TENKI_AUTH_TOKEN && !process.env.TENKI_API_KEY)("Tenki live", () => {
+describe.skipIf(!process.env.TENKI_AUTH_TOKEN && !process.env.TENKI_API_KEY)("Luxor live", () => {
   runConformance(() => liveProvider(), { live: true });
 });

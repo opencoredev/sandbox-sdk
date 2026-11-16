@@ -51,7 +51,7 @@ const codes = new Map<string, ErrorCode>([
 /** Bounded diagnostic scalars copied from a native error chain. */
 type ChainEvidence = Pick<NativeEvidence, "status" | "providerCode" | "requestId" | "nativeName">;
 
-/** Tenki failures that name no ErrorCode of their own but are still recognized. */
+/** Luxor failures that name no ErrorCode of their own but are still recognized. */
 const recognized = new Set([
   "ResumeFailedError",
   "PauseFailedError",
@@ -100,7 +100,7 @@ function nativeEvidence(cause: unknown, denied: string[]): ChainEvidence {
   return evidence;
 }
 
-// An unrecognized failure with no status or RPC code never got a Tenki response (an SDK
+// An unrecognized failure with no status or RPC code never got a Luxor response (an SDK
 // bug, a network error), so its scrubbed message is kept. A response's text never is.
 function localDetail(
   cause: unknown,
@@ -110,7 +110,7 @@ function localDetail(
 ): { native?: string } {
   const status = evidence.status ?? evidence.providerCode;
 
-  // An allowlisted native name is a recognized Tenki failure, whose text can carry the server response.
+  // An allowlisted native name is a recognized Luxor failure, whose text can carry the server response.
   const { detail } = describeNative(cause, {
     code,
     known: evidence.nativeName === undefined ? undefined : true,
@@ -146,7 +146,7 @@ export function tenkiError(
   };
 
   return new SandboxError(
-    `Tenki request failed: ${reason(code, evidence.native)}. Check credentials, quotas, and session state.`,
+    `Luxor request failed: ${reason(code, evidence.native)}. Check credentials, quotas, and session state.`,
     {
       code,
       provider: "tenki",
@@ -210,7 +210,7 @@ export function failure(message: string, code: ErrorCode = "provider"): SandboxE
   return new SandboxError(
     code === "auth"
       ? message
-      : `${message}. Tenki could not honor the request. Check the provider options.`,
+      : `${message}. Luxor could not honor the request. Check the provider options.`,
     { code, provider: "tenki" },
   );
 }

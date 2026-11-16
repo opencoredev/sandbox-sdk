@@ -996,7 +996,7 @@ it.each(["tenki", "freestyle"])(
   },
 );
 
-it("prices undocumented Tenki defaults from the matching observed fingerprint", async () => {
+it("prices undocumented Luxor defaults from the matching observed fingerprint", async () => {
   const { costPerTask } = await import("../src/task-cost.js");
   const cost = costSource("tenki");
   const { fingerprintSchema } = await import("../src/fingerprint.js");
