@@ -21,7 +21,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   activitySchema,
   boxdBucketSchema,
@@ -139,8 +139,13 @@ await writeFile(
   ) + "\n",
 );
 
+// The shared schema plus each machine's state, which says when boxd has deleted it.
+const bucketSchema = boxdBucketSchema.extend({
+  machines: z.array(boxdBucketSchema.shape.machines.element.extend({ status: z.string() })),
+});
+
 const buckets = usageRaw.map(({ start: s, response }) => {
-  const usage = boxdBucketSchema.parse(response);
+  const usage = bucketSchema.parse(response);
 
   if (usage.currency.toLowerCase() !== "usd") problems.push(`bucket ${s} is not in USD`);
 
@@ -150,6 +155,7 @@ const buckets = usageRaw.map(({ start: s, response }) => {
     // A machine's share of the bucket's charge: its amounts rounded up together (readBoxdCharges).
     machines: usage.machines.map((m) => ({
       machineId: m.machineId,
+      status: m.status,
       micro: Math.ceil(
         m.vcpuHours * usage.rates.vcpuHourMicro +
           m.ramGibHours * usage.rates.ramGibHourMicro +

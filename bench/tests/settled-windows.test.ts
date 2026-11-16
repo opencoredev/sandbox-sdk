@@ -39,11 +39,13 @@ describe("boxdWindow", () => {
   const buckets = [
     bucket("2026-11-16T16:45:00Z", []),
     bucket("2026-11-16T17:00:00Z", [
-      { machineId: "m-a", micro: 4000 },
-      { machineId: "m-b", micro: 1000 },
+      { machineId: "m-a", micro: 4000, status: "deleted" },
+      { machineId: "m-b", micro: 1000, status: "deleted" },
     ]),
-    bucket("2026-11-16T17:15:00Z", [{ machineId: "m-b", micro: 2000 }]),
-    bucket("2026-11-16T17:30:00Z", [{ machineId: "deleted-long-ago", micro: 0 }]),
+    bucket("2026-11-16T17:15:00Z", [{ machineId: "m-b", micro: 2000, status: "deleted" }]),
+    bucket("2026-11-16T17:30:00Z", [
+      { machineId: "deleted-long-ago", micro: 0, status: "deleted" },
+    ]),
   ];
 
   const ledger = [
@@ -77,7 +79,12 @@ describe("boxdWindow", () => {
 
   it("refuses a window another machine was metered in, as cb2627ec was on 2026-11-16", () => {
     const woken = buckets.map((b, i) =>
-      i === 1 ? { ...b, machines: [...b.machines, { machineId: "cb2627ec", micro: 905 }] } : b,
+      i === 1
+        ? {
+            ...b,
+            machines: [...b.machines, { machineId: "cb2627ec", micro: 905, status: "deleted" }],
+          }
+        : b,
     );
 
     const window = boxdWindow({ attempts, buckets: woken, ledger, readAt });
@@ -92,7 +99,7 @@ describe("boxdWindow", () => {
 
   it("refuses usage or a charge in the buckets on either side, an unread or open bucket, and an early read", () => {
     const busyBefore = buckets.map((b, i) =>
-      i === 0 ? { ...b, machines: [{ machineId: "m-a", micro: 1 }] } : b,
+      i === 0 ? { ...b, machines: [{ machineId: "m-a", micro: 1, status: "deleted" }] } : b,
     );
 
     const cases = [
@@ -114,15 +121,25 @@ describe("boxdWindow", () => {
         readAt,
       }),
       boxdWindow({ attempts, buckets, ledger, readAt: at("2026-11-16T17:59:00Z") }),
+      // The harness couldn't confirm b's deletion, and boxd doesn't report it deleted either.
       boxdWindow({
         attempts: attempts.map((a) => ({ ...a, deletionConfirmed: a.attemptId !== "b" })),
-        buckets,
+        buckets: buckets.map((b) => ({
+          ...b,
+          machines: b.machines.map((m) => ({ ...m, status: "running" })),
+        })),
         ledger,
         readAt,
       }),
     ];
 
     expect(cases.map((c) => c.kind)).toEqual(Array(cases.length).fill("not-isolated"));
+  });
+
+  it("takes boxd's own deleted status as the deletion a failed delete call didn't confirm", () => {
+    const unconfirmed = attempts.map((a) => ({ ...a, deletionConfirmed: a.attemptId !== "b" }));
+
+    expect(boxdWindow({ attempts: unconfirmed, buckets, ledger, readAt }).kind).toBe("isolated");
   });
 
   it("refuses a metered bucket whose charge hasn't posted, or posted twice", () => {
@@ -168,7 +185,10 @@ describe("boxdWindow", () => {
   it("ignores buckets far from the run but reports any non-usage ledger entry near it", () => {
     const window = boxdWindow({
       attempts,
-      buckets: [...buckets, bucket("2026-11-16T19:00:00Z", [{ machineId: "later", micro: 50 }])],
+      buckets: [
+        ...buckets,
+        bucket("2026-11-16T19:00:00Z", [{ machineId: "later", micro: 50, status: "deleted" }]),
+      ],
       ledger: [
         ...ledger,
         { kind: "credit_grant", amountMicro: 1_000_000, createdAt: at("2026-11-16T17:30:00Z") },

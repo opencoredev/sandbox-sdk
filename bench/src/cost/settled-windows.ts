@@ -60,7 +60,12 @@ export const BOXD_BUCKET_MS = 15 * 60_000;
 export interface BoxdBucket {
   readonly start: number;
   readonly complete: boolean;
-  readonly machines: readonly { readonly machineId: string; readonly micro: number }[];
+  readonly machines: readonly {
+    readonly machineId: string;
+    readonly micro: number;
+    /** boxd's own state for the machine as of the reading, such as "running" or "deleted". */
+    readonly status: string;
+  }[];
 }
 
 export interface BoxdLedgerEntry {
@@ -100,7 +105,24 @@ export function boxdWindow(input: {
   readonly readAt: number;
 }): SettledWindow {
   if (!input.attempts.some((a) => a.sandboxIds.length > 0)) return noSandbox;
-  const reasons = deletionProblems(input.attempts);
+
+  // boxd's usage reports each machine's state: "deleted" is the provider confirming the deletion
+  // the harness records, so an attempt whose delete call didn't return can still have it.
+  const deleted = new Set(
+    input.buckets.flatMap((b) =>
+      b.machines.filter((m) => m.status === "deleted").map((m) => m.machineId),
+    ),
+  );
+
+  const reasons = deletionProblems(
+    input.attempts.map((a) =>
+      a.deletionConfirmed ||
+      a.sandboxIds.length === 0 ||
+      !a.sandboxIds.every((id) => deleted.has(id))
+        ? a
+        : { ...a, deletionConfirmed: true },
+    ),
+  );
 
   const { start, end } = boxdPeriod(input.attempts);
   const ours = new Set(input.attempts.flatMap((a) => a.sandboxIds));
