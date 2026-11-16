@@ -213,7 +213,7 @@ await box.run("echo kept > /data/state");
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - No `network: "none"` and no terminals.
 - One preview route per machine.
-- Listing never wakes a suspended or hibernated machine, so it leaves out a sleeping machine created with a key, custom labels or `from`, whose labels are only in its guest. A keyless machine without custom labels is listed while asleep. `find(key)` still reaches a sleeping keyed machine, waking only the sleeping machines it has to read, and only when no running machine has the key.
+- Listing doesn't wake a suspended or hibernated machine. A keyless machine without custom labels carries its metadata in its name and is listed in any state without a guest read. A sleeping machine created with a key, custom labels or `from` is left out, because its labels are only in its guest; `listSleeping()` returns those machines without reading them, and `connect(id)` reads one, which wakes it. A keyed or labelled machine that falls asleep between boxd's listing and the read is still woken. `find(key)` reaches a sleeping keyed machine, reading sleeping machines only when no running machine has the key. `reapSandboxes({ idleOnly: true })` runs an activity check in every listed sandbox, which wakes a sleeping one.
 
 ## How it works
 

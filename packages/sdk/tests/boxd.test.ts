@@ -514,7 +514,8 @@ test("whole-file transfers use the web client and preserve authentication errors
 });
 
 test("boxd listing skips corrupt or vanished per-machine metadata and preserves auth failures", async () => {
-  const box = await createSandbox(factory());
+  // A keyed machine's metadata is only in its guest; a v2 name carries its own.
+  const box = await createSandbox(factory(), { key: `corrupt-${crypto.randomUUID()}` });
 
   try {
     const entry = boxdState.boxes.get(box.id);
@@ -527,8 +528,9 @@ test("boxd listing skips corrupt or vanished per-machine metadata and preserves 
       expect(await factory().list({})).toEqual([]);
     }
 
+    // Without its marker a keyed machine can't be identified, so it is left out.
     read.mockRejectedValue(Object.assign(new Error("gone"), { grpcCode: 5 }));
-    expect((await factory().list({})).map((value) => value.id)).toEqual([box.id]);
+    expect((await factory().list({})).map((value) => value.id)).not.toContain(box.id);
     read.mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 16 }));
     await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
     read.mockRestore();
@@ -567,6 +569,22 @@ test("listing never reads a paused machine's guest, which would wake it; find st
     });
     expect(listed.some((v) => v.id === keyed.id)).toBe(false);
     expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+
+    // The machines left out are reported, still without reading a guest.
+    expect((await factory().listSleeping()).filter((m) => m.id === keyed.id)).toEqual([
+      expect.objectContaining({ id: keyed.id, state: "paused" }),
+    ]);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+
+    // A v2 machine boxd lists as running is not read either, so one that falls asleep between
+    // boxd's listing and the read can't be woken.
+    const machine = entries[0]?.machine;
+
+    if (!machine) throw new Error("Missing mock machine");
+    machine.status = "running";
+    expect((await factory().list({})).some((v) => v.id === plain.id)).toBe(true);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+    machine.status = "hibernated";
 
     // Finding by key has to read the guest, and does so only for the paused machines.
     expect(await factory().find(key)).toMatchObject({ id: keyed.id, key, state: "paused" });

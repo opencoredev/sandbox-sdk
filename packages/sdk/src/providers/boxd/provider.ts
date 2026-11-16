@@ -58,7 +58,23 @@ export interface BoxdNative {
 
 type BoxdCapability = "pause" | "size" | "snapshot" | "network-policy";
 
-export type BoxdProvider = Provider<BoxdNative, BoxdCapability>;
+/** A suspended or hibernated SDK machine whose labels are only in its guest, so `list()` leaves it out. */
+export interface BoxdSleepingMachine {
+  id: string;
+  name: string;
+  state: "paused" | "stopped";
+  createdAt: number | null;
+}
+
+export interface BoxdExtras {
+  /**
+   * The sleeping SDK machines `list()` leaves out, read from boxd's machine list only, so none is
+   * woken. `connect(id)` reads one's labels and key, which wakes it.
+   */
+  listSleeping(): Promise<BoxdSleepingMachine[]>;
+}
+
+export type BoxdProvider = Provider<BoxdNative, BoxdCapability> & BoxdExtras;
 
 /** The parts of a boxd client the adapter uses. */
 export interface BoxdClient {
@@ -129,9 +145,17 @@ function nameMetadata(m: Pick<Machine, "id" | "name">): string | null {
   });
 }
 
-/** Whether reading the machine's metadata would wake it from suspension or hibernation. */
+/** Whether reading the machine's metadata would wake it: it sleeps, and its name doesn't carry it. */
 function wakes(m: Pick<Machine, "name" | "status">): boolean {
   return m.status !== "running" && !isNameOwned(m.name);
+}
+
+function sleepState(status: Machine["status"]): BoxdSleepingMachine["state"] {
+  return ["suspended", "hibernated"].includes(status) ? "paused" : "stopped";
+}
+
+function machineState(status: Machine["status"]): SandboxInfo["state"] {
+  return status === "running" ? "running" : sleepState(status);
 }
 
 function missing(id: string): never {
@@ -199,7 +223,7 @@ export function createBoxdProvider<C extends BoxdClient>(
   options: BoxdOptions,
   load: () => Promise<BoxdModule<C>>,
   openTransfers: OpenTransfers,
-): Provider<{ machine: Machine; client: C }, BoxdCapability> {
+): Provider<{ machine: Machine; client: C }, BoxdCapability> & BoxdExtras {
   let client: Promise<C> | undefined;
   let current: C | undefined;
   let webClient: BoxdTransfers | undefined;
@@ -334,8 +358,10 @@ export function createBoxdProvider<C extends BoxdClient>(
 
   /**
    * Reading the guest marker of a machine that isn't running wakes it, and boxd bills the woken
-   * machine, so a non-running v2 machine is read from its name. Any other machine is read from its
-   * guest, which wakes it if it is paused: callers that must not wake one check `wakes` first.
+   * machine. A v2 name carries all of its metadata, so a v2 machine is never read, in any state,
+   * and a machine that falls asleep mid-listing can't be woken by it. Any other machine is read
+   * from its guest, which wakes it if it sleeps: callers that must not wake one check `wakes` first,
+   * though one that falls asleep between boxd's listing and the read is still woken.
    */
   async function info(m: Machine): Promise<SandboxInfo> {
     if (!m.name.startsWith("sbxsdk-")) throw failure("Not an SDK machine", "not_found", m.id);
@@ -343,7 +369,7 @@ export function createBoxdProvider<C extends BoxdClient>(
     let text: string;
     let deferred = false;
 
-    if (m.status !== "running" && isNameOwned(m.name)) {
+    if (isNameOwned(m.name)) {
       text = named();
       deferred = true;
     } else {
@@ -373,12 +399,7 @@ export function createBoxdProvider<C extends BoxdClient>(
       key: value.key ?? undefined,
       labels: value.labels,
       createdAt: m.createdAt?.getTime() ?? createdAt,
-      state:
-        m.status === "running"
-          ? "running"
-          : ["suspended", "hibernated"].includes(m.status)
-            ? "paused"
-            : "stopped",
+      state: machineState(m.status),
     };
   }
 
@@ -702,5 +723,15 @@ export function createBoxdProvider<C extends BoxdClient>(
     return current;
   }
 
-  return provider;
+  const listSleeping = () =>
+    safe(undefined, async () =>
+      (await scan()).asleep.map((m) => ({
+        id: m.id,
+        name: m.name,
+        state: sleepState(m.status),
+        createdAt: m.createdAt?.getTime() ?? null,
+      })),
+    );
+
+  return Object.assign(provider, { listSleeping });
 }

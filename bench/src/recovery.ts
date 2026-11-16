@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { LoadedProvider } from "./providers.js";
 import {
   recordAbsentResolution,
@@ -27,6 +28,15 @@ import {
   reconcileDiscovered,
   type JournalApp,
 } from "./modal-apps.js";
+
+/** An adapter that can name the sleeping machines `list()` leaves out without waking them (boxd). */
+interface ListsSleeping {
+  listSleeping(): Promise<{ id: string }[]>;
+}
+
+function listsSleeping(provider: Provider): provider is Provider & ListsSleeping {
+  return "listSleeping" in provider && typeof provider.listSleeping === "function";
+}
 
 /** results.json is rewritten with updated cleanup fields; everything else is kept as read. */
 const resultsSchema = z.record(z.string(), z.json());
@@ -416,7 +426,28 @@ export async function reapRun(
       errors.push(sanitize(error instanceof Error ? error.message : "Final list failed"));
     }
 
-    process.stdout.write(`${p.name}: ${count} leftovers for ${config.run}\n`);
+    // A sleeping machine whose labels are only in its guest is invisible to list(), and reading
+    // it would wake it, billed, whoever owns it. It may be this run's, so it is never counted as
+    // no leftover: name it and fail, and a person decides.
+    let asleep: { id: string }[] = [];
+
+    try {
+      const { provider } = p;
+
+      if (listsSleeping(provider))
+        asleep = await deadline(config["timeout-ms"], () => provider.listSleeping());
+    } catch (error) {
+      errors.push(sanitize(error instanceof Error ? error.message : "Sleeping listing failed"));
+    }
+
+    if (asleep.length)
+      errors.push(
+        `${asleep.length} sleeping machines could not be checked for ${config.run} without waking them: ${asleep.map((m) => m.id).join(", ")}`,
+      );
+
+    process.stdout.write(
+      `${p.name}: ${count} leftovers for ${config.run}${asleep.length ? `, ${asleep.length} sleeping machines unchecked` : ""}\n`,
+    );
 
     // Creates whose outcome is still unknown stay journaled: no listing has tied a sandbox to
     // them, so their App's charge is never attributed to one sandbox.
