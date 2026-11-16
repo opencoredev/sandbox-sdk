@@ -49,6 +49,8 @@ const fit = {
   heap1g: "FIT.md: 1 vCPU / 1 GiB, tsc aborts with JavaScript heap out of memory",
   install1g: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install",
   tenkiBuild: "FIT.md: 2 vCPU / 3.8 GiB is OOM-killed in the build",
+  basetenBuild:
+    "Measured 2026-11-13: 2 vCPU / 4 GiB keeps files in memory, with 3.1 GiB free; the build needs 4 GiB",
 } as const;
 
 export const providerSetups: readonly ProviderSetup[] = [
@@ -221,6 +223,33 @@ export const providerSetups: readonly ProviderSetup[] = [
         tooSmall: {},
       },
       default: { vcpu: 1, provisioned: size(0.125, 0.125, 0), tooSmall: {} },
+    },
+  },
+  {
+    // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Files live in
+    // memory, so no disk is provisioned. Default is Baseten's 4096 MiB (2 vCPU). Baseten's default
+    // image is Alpine (musl, BusyBox), which the frozen glibc toolchain cannot run, so both tracks
+    // use sandbox-bench-node22: node:22-bookworm built with Baseten's ImageBuilder, which adds its
+    // sandbox agent (bench/README.md). The main suite keeps Baseten's default image.
+    name: "baseten",
+    adapter: "baseten",
+    product: null,
+    lifetime: true,
+    pricingKey: "baseten",
+    tracks: {
+      "same-machine": {
+        template: "sandbox-bench-node22:latest",
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 0),
+        tooSmall: {},
+      },
+      default: {
+        template: "sandbox-bench-node22:latest",
+        vcpu: 2,
+        provisioned: size(2, 4, 0),
+        tooSmall: { build: fit.basetenBuild },
+      },
     },
   },
 ];

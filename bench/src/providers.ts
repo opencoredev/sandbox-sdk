@@ -12,6 +12,7 @@ const templateKeys = new Map([
   ["tenki", "image"],
   ["boxd", "image"],
   ["modal", "image"],
+  ["baseten", "image"],
   ["local", "image"],
 ]);
 
@@ -74,6 +75,7 @@ const credentials = new Map([
   ["boxd", ["BOXD_API_KEY"]],
   ["freestyle", ["FREESTYLE_API_KEY"]],
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
+  ["baseten", ["BASETEN_API_KEY"]],
 ]);
 
 const regionKeys = new Map([

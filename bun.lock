@@ -97,6 +97,7 @@
         "zod": "^4.4.3",
       },
       "devDependencies": {
+        "@basetenlabs/sandbox": "0.5.0",
         "@boatdev/sdk": "1.9.9",
         "@boxd-sh/sdk": "0.2.17",
         "@daytonaio/sdk": "^0.225.0",
@@ -170,6 +171,7 @@
       "name": "@opencoredev/sandbox-sdk",
       "version": "1.0.3",
       "devDependencies": {
+        "@basetenlabs/sandbox": "0.5.0",
         "@boatdev/sdk": "1.9.9",
         "@boxd-sh/sdk": "0.2.17",
         "@daytonaio/sdk": "^0.225.0",
@@ -190,6 +192,7 @@
         "zod": "^4.6.7",
       },
       "peerDependencies": {
+        "@basetenlabs/sandbox": "^0.5.0",
         "@boxd-sh/sdk": "^0.2.17",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
@@ -204,6 +207,7 @@
         "zod": "^4.6.7",
       },
       "optionalPeers": [
+        "@basetenlabs/sandbox",
         "@boxd-sh/sdk",
         "@mastra/core",
         "@openai/agents",
@@ -421,6 +425,10 @@
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
     "@bare-ts/lib": ["@bare-ts/lib@0.4.1", "", {}, "sha512-G9RnojF6PJjAF6ULnlOc2C10gnCk0jgywZXxVhxDH2Kw4pCNdf0jGk+bYm1kIE9VbzJ9m5iG53mT92jXTCzPzA=="],
+
+    "@basetenlabs/client": ["@basetenlabs/client@0.5.0", "", {}, "sha512-5Ubj1fWD8GxCXfymSjF50tBQ9sZj/G+0r2JVpMZk148+oW+hlnWGHPnaRAIWVvvBh4vhFaNQeYOMpmuUT3xQmw=="],
+
+    "@basetenlabs/sandbox": ["@basetenlabs/sandbox@0.5.0", "", { "dependencies": { "@basetenlabs/client": "0.5.0" } }, "sha512-GOtEBCcj/a3dEOd8GKN6cPebvLB5N2UTjTUYnWjKToz6qPcaMLvgva1o2d2jNZX8yZlsRkd1aRUWBVI52gtUTg=="],
 
     "@boatdev/sdk": ["@boatdev/sdk@1.9.9", "", {}, "sha512-VsemzYh6sfLA+XFH5To22rGfwL+rXVy6TlXZ0Zi2bAheh6Iw8c1vdNWdmQxOHV/lSd5eVia3iDx+Cve4Lmlf6Q=="],
 

@@ -6,6 +6,8 @@
  */
 export const externalPackages: readonly string[] = [
   // Provider SDKs.
+  "@basetenlabs/sandbox",
+  "@basetenlabs/client",
   "@boatdev/sdk",
   "@boxd-sh/sdk",
   "@daytonaio/sdk",

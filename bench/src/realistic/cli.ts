@@ -838,7 +838,7 @@ async function billing(args: string[]) {
   const raw: object[] = [];
 
   for (const [adapter, items] of byAdapter) {
-    if (adapter === "tenki" || adapter === "freestyle") continue;
+    if (adapter === "tenki" || adapter === "freestyle" || adapter === "baseten") continue;
 
     const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
       sandboxIds.map((id) => ({
@@ -879,7 +879,7 @@ async function billing(args: string[]) {
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 
-    if (setup.adapter === "tenki" || setup.adapter === "freestyle")
+    if (setup.adapter === "tenki" || setup.adapter === "freestyle" || setup.adapter === "baseten")
       return {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },

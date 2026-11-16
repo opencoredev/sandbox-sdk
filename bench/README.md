@@ -290,6 +290,20 @@ Collection watchdogs should call the pure policy in `src/collection-watchdog.py`
 | `slots.ts`    | Batch slot order from the published seed, shared by every provider; windows padded to settlement edges; account listing at each provider's own edges (the open one is the health check; an SDK-scoped listing voids the window as unverified); unavailable and 3-in-a-row pause; slot timeout; reserved-gap cleanup.                                                                                    |
 | `record.ts`   | The per-attempt record (`rw-attempt/1`), one JSON line per attempt. It is the join point with the cost, eligibility and statistics code: IDs, slot, phases, step results, downloads, idle, and cost-evidence pointers (sandbox IDs, billing window, listings). The harness never computes cost.                                                                                                         |
 
+### Baseten image
+
+Baseten's default image (`baseten/base-image`) is Alpine, with musl and BusyBox, and the frozen toolchain needs glibc and GNU coreutils. Baseten runs only images in its library or pushed to the account, and a pushed image needs Baseten's sandbox agent as its entrypoint, so a plain registry import starts sandboxes that never answer. The realistic runs use `sandbox-bench-node22`, built once per account:
+
+```ts
+import { ImageBuilder, SandboxClient } from "@basetenlabs/sandbox";
+
+const client = new SandboxClient({ apiKey: process.env.BASETEN_API_KEY ?? "" });
+const builder = ImageBuilder.fromRegistry("docker.io/library/node:22-bookworm");
+await client.images.push({ name: "sandbox-bench-node22", builder, memory: 8192, volume: 16384 });
+```
+
+The builder appends the agent copy and entrypoint. The main suite keeps Baseten's default image.
+
 ## Measure SDK overhead
 
 `scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.

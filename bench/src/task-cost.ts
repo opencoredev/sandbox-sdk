@@ -61,7 +61,7 @@ const median = (values: number[]) => {
 export function costPerTask(report: PublicationReport, provider: string): TaskCost {
   const rows = report.samples.filter((s) => s.provider === provider && s.suite === "cost");
   const lifetimes = rows.filter((s) => s.scenario === "sandbox-lifetime");
-  const estimate = provider === "tenki" || provider === "freestyle";
+  const estimate = provider === "tenki" || provider === "freestyle" || provider === "baseten";
 
   const empty: TaskCost = {
     usd: null,
