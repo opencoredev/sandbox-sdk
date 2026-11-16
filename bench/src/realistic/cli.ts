@@ -393,6 +393,12 @@ async function run(args: string[]) {
   );
 
   const cap = Number(values["budget-usd"]);
+
+  // NaN would make every spend check false and silently drop the budget guard.
+  if (!Number.isFinite(cap) || cap <= 0)
+    throw new Error(
+      `--budget-usd must be a positive number of dollars, got ${values["budget-usd"]}`,
+    );
   const seed = Number(values.seed);
   const firstBatch = Number(values["first-batch"]);
   const batches = Number(values.batches);

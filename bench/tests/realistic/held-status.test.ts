@@ -30,3 +30,10 @@ it("settles only billed charges; a complete meter stays unreconciled", () => {
   expect(heldStatus([estimate])).toBe("estimate");
   expect(heldStatus([])).toBeNull();
 });
+
+it("gives a row with a missing charge no status, alone or beside settled bills", () => {
+  const missing: ReportedCost = { kind: "unavailable", reason: "no billing collected" };
+
+  expect(heldStatus([missing])).toBeNull();
+  expect(heldStatus([charge("billed", true), missing])).toBeNull();
+});
