@@ -750,17 +750,23 @@ async function billing(args: string[]) {
 
   const records = only === null ? allRecords : allRecords.filter((r) => only.has(r.provider));
 
-  // Kept entries: other providers' billing from the previous collection, unchanged.
-  const kept =
-    only === null
-      ? []
-      : (await readJsonLines(join(out, "billing.jsonl"), attemptBillingSchema)).filter((e) => {
-          const record = allRecords.find((r) => r.attemptId === e.attemptId);
+  // Kept entries: other providers' lines from the previous collection, validated and written back
+  // as the exact text they were, so a recollection cannot reformat or strip their evidence.
+  const kept = new Map<string, string>();
 
-          if (!record) throw new Error(`billing.jsonl names an unknown attempt, ${e.attemptId}`);
+  if (only !== null)
+    for (const line of (await readFile(join(out, "billing.jsonl"), "utf8")).split("\n")) {
+      if (line.trim() === "") continue;
+      const entry = attemptBillingSchema.parse(JSON.parse(line));
+      const record = allRecords.find((r) => r.attemptId === entry.attemptId);
 
-          return !only.has(record.provider);
-        });
+      if (!record) throw new Error(`billing.jsonl names an unknown attempt, ${entry.attemptId}`);
+
+      if (!only.has(record.provider)) kept.set(entry.attemptId, line);
+    }
+
+  // Read before anything is collected or written, so a bad file leaves both files as they were.
+  const previous = only === null ? null : await readBillingSources(out);
 
   const apps = await readAppJournal(join(out, appJournalFile));
 
@@ -900,22 +906,20 @@ async function billing(args: string[]) {
   });
 
   // Record order, kept and recollected entries alike.
-  const byAttempt = new Map([...kept, ...entries].map((e) => [e.attemptId, e]));
+  const fresh = new Map(
+    entries.map((e) => [e.attemptId, JSON.stringify(attemptBillingSchema.parse(e))]),
+  );
 
   const written = allRecords.flatMap((r) => {
-    const entry = byAttempt.get(r.attemptId);
+    const line = fresh.get(r.attemptId) ?? kept.get(r.attemptId);
 
-    return entry ? [entry] : [];
+    return line === undefined ? [] : [line];
   });
 
-  await writeFile(
-    join(out, "billing.jsonl"),
-    written.map((e) => JSON.stringify(attemptBillingSchema.parse(e))).join("\n") + "\n",
-  );
+  await writeFile(join(out, "billing.jsonl"), written.join("\n") + "\n");
 
   // Each recollected adapter replaces its own row; other adapters' rows and times are kept.
   const recollected = new Set(records.map((r) => providerSetup(r.provider).adapter));
-  const previous = only === null ? null : await readBillingSources(out);
 
   const sourcesFile =
     previous === null
@@ -931,16 +935,18 @@ async function billing(args: string[]) {
 
   await writeFile(join(out, "billing-sources.json"), JSON.stringify(sourcesFile, null, 2) + "\n");
 
-  const counts = written.reduce<Record<string, number>>((acc, e) => {
-    const key =
-      e.charge.kind === "billed" || e.charge.kind === "metered"
-        ? `${e.charge.kind}${e.charge.settled ? "" : " (pending)"}`
-        : e.charge.kind;
+  const counts = written
+    .map((line) => attemptBillingSchema.parse(JSON.parse(line)))
+    .reduce<Record<string, number>>((acc, e) => {
+      const key =
+        e.charge.kind === "billed" || e.charge.kind === "metered"
+          ? `${e.charge.kind}${e.charge.settled ? "" : " (pending)"}`
+          : e.charge.kind;
 
-    acc[key] = (acc[key] ?? 0) + 1;
+      acc[key] = (acc[key] ?? 0) + 1;
 
-    return acc;
-  }, {});
+      return acc;
+    }, {});
 
   process.stdout.write(
     `Billing: ${written.length} attempts with sandboxes; ${JSON.stringify(counts)}\n`,
@@ -1142,6 +1148,10 @@ async function summary(args: string[]) {
     bills.filter((b) => keptIds.has(b.attemptId)),
   );
 
+  // A reconciliation's period is checked against every loaded attempt, dropped ones included: a
+  // superseded run still ran, and its charges sit in the provider's settled total.
+  const everyAttempt = costedAttempts(records, bills);
+
   const groups = new Map<string, CostedAttempt[]>();
 
   for (const a of attempts) {
@@ -1214,7 +1224,7 @@ async function summary(args: string[]) {
           file: auditFile,
           group: { provider, profile, track },
           attempts: group,
-          providerAttempts: attempts.filter((a) => a.record.provider === provider),
+          providerAttempts: everyAttempt.filter((a) => a.record.provider === provider),
         });
 
         audits.push({ provider, profile, track, audit: used });

@@ -33,7 +33,7 @@ const meter = (usd: number): AttemptBilling["charge"] => ({
 function boxdGroup(patch: AttemptSpec = {}) {
   return Array.from({ length: 5 }, (_, batch) =>
     attempt({
-      attemptId: `boxd-${patch.variant ?? "headline"}-${batch}`,
+      attemptId: `boxd-${patch.profile ?? "fix-and-test"}-${patch.variant ?? "headline"}-${batch}`,
       provider: "boxd",
       track: "default",
       attribution: "per-machine",
@@ -216,12 +216,19 @@ const summaryJson = z.object({
 });
 
 /** A run folder with the group's records and billing, as `realistic run` and `billing` write them. */
-async function runDir(name: string, attempts: ReturnType<typeof boxdGroup>) {
+async function runDir(
+  name: string,
+  attempts: ReturnType<typeof boxdGroup>,
+  /** Attempts written under another run ID, such as a run superseded by a rerun. */
+  runIdOf: (attemptId: string) => string = () => "fixture",
+) {
   const out = join(root, name);
   await mkdir(out, { recursive: true });
   await writeFile(
     join(out, "attempts.jsonl"),
-    attempts.map((a) => JSON.stringify(a.record)).join("\n") + "\n",
+    attempts
+      .map((a) => JSON.stringify({ ...a.record, runId: runIdOf(a.record.attemptId) }))
+      .join("\n") + "\n",
   );
   await writeFile(
     join(out, "billing.jsonl"),
@@ -241,8 +248,8 @@ async function runDir(name: string, attempts: ReturnType<typeof boxdGroup>) {
   return out;
 }
 
-async function summarize(out: string, audit?: AuditInput) {
-  const args = ["summary", "--out", out, "--to", out];
+async function summarize(out: string, audit?: AuditInput, extra: string[] = []) {
+  const args = ["summary", "--out", out, "--to", out, ...extra];
 
   if (audit !== undefined) {
     await writeFile(join(out, "audit.json"), JSON.stringify(audit));
@@ -316,6 +323,31 @@ describe("realistic summary --audit", () => {
   });
 });
 
+describe("realistic summary --audit with --drop", () => {
+  it("checks a reconciliation's period against dropped runs too", async () => {
+    // A superseded build run ($0.10 of meters) shares the period with the kept fix-and-test one.
+    const superseded = boxdGroup({ profile: "build", charge: meter(0.02) });
+
+    const out = await runDir("dropped", [...boxdGroup(), ...superseded], (id) =>
+      superseded.some((a) => a.record.attemptId === id) ? "old" : "fixture",
+    );
+
+    const audit = (reportedUSD: number, settledUSD: number): AuditInput => ({
+      schema: AUDIT_SCHEMA,
+      entries: [reconciled({ window: "mixed-profiles", reportedUSD, settledUSD })],
+    });
+
+    // Leaving the dropped run out of our side would hide $0.10 of the period's settled charge.
+    await expect(summarize(out, audit(0.05, 0.05), ["--drop", "boxd@old"])).rejects.toThrow(
+      /not our metered total for the period, 0\.15/,
+    );
+
+    const { rows } = await summarize(out, audit(0.15, 0.15), ["--drop", "boxd@old"]);
+
+    expect(rows.map((r) => [r.profile, r.eligibility])).toEqual([["fix-and-test", "eligible"]]);
+  });
+});
+
 describe("realistic billing --providers", () => {
   const e2bEntry = {
     attemptId: "keep-e2b",
@@ -332,6 +364,11 @@ describe("realistic billing --providers", () => {
       source: "events read before retention ended",
     },
   };
+
+  // Spaced, with a trailing zero and a field the schema does not know: kept as this exact text.
+  const keptLine = JSON.stringify({ ...e2bEntry, provenance: "collected 2026-11-06" }, null, 1)
+    .replace(/\n/g, "")
+    .replace("0.123", "0.1230");
 
   async function mixedDir(name: string, extra: AttemptSpec[] = []) {
     const out = join(root, name);
@@ -350,11 +387,13 @@ describe("realistic billing --providers", () => {
     await writeFile(
       join(out, "billing.jsonl"),
       [
-        e2bEntry,
-        { ...e2bEntry, attemptId: "redo-tenki", charge: { kind: "unavailable", reason: "stale" } },
-      ]
-        .map((e) => JSON.stringify(e))
-        .join("\n") + "\n",
+        keptLine,
+        JSON.stringify({
+          ...e2bEntry,
+          attemptId: "redo-tenki",
+          charge: { kind: "unavailable", reason: "stale" },
+        }),
+      ].join("\n") + "\n",
     );
     await writeFile(
       join(out, "billing-sources.json"),
@@ -381,7 +420,7 @@ describe("realistic billing --providers", () => {
 
     expect(fetch).not.toHaveBeenCalled();
     expect(lines.map((l) => l.attemptId)).toEqual(["keep-e2b", "redo-tenki"]);
-    expect(lines[0]).toEqual(e2bEntry);
+    expect((await readFile(join(out, "billing.jsonl"), "utf8")).split("\n")[0]).toBe(keptLine);
     expect(lines[1].charge.kind).toBe("estimate");
 
     const sources = JSON.parse(await readFile(join(out, "billing-sources.json"), "utf8"));
@@ -389,6 +428,18 @@ describe("realistic billing --providers", () => {
     expect(sources.collectedAt).toBe("2026-11-06T04:41:58.738Z");
     expect(sources.providers).toEqual([{ provider: "e2b", sandboxes: 1 }]);
     expect(sources.recollected).toEqual([expect.objectContaining({ adapters: ["tenki"] })]);
+  });
+
+  it("changes nothing when the previous billing sources cannot be read", async () => {
+    const out = await mixedDir("bad-sources");
+    await writeFile(join(out, "billing-sources.json"), "{ not json");
+    const before = await readFile(join(out, "billing.jsonl"), "utf8");
+
+    await expect(
+      realisticCommand(["billing", "--out", out, "--providers", "tenki"]),
+    ).rejects.toThrow();
+    expect(await readFile(join(out, "billing.jsonl"), "utf8")).toBe(before);
+    expect(await readFile(join(out, "billing-sources.json"), "utf8")).toBe("{ not json");
   });
 
   it("refuses a provider with no attempts and half of a shared adapter", async () => {
