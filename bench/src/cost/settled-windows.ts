@@ -73,6 +73,9 @@ export interface BoxdLedgerEntry {
 const BOXD_POST_FROM_MS = 5 * 60_000;
 const BOXD_POST_UNTIL_MS = 20 * 60_000;
 
+/** The 2 micro-USD readBoxdCharges allows; of 53 buckets read on 2026-11-16 none was charged more than 1 below its usage. */
+const BOXD_SHORTFALL_MICRO = 2;
+
 /** The 15-minute buckets the run's machines were metered in, until the bucket after the last delete lands. */
 export function boxdPeriod(attempts: readonly RunAttempt[]) {
   const used = attempts.filter((a) => a.sandboxIds.length > 0);
@@ -149,6 +152,13 @@ export function boxdWindow(input: {
     if (metered === 0 && posted.length > 0)
       reasons.push(`bucket ${label} metered nothing but has ${posted.length} usage charges`);
 
+    // A charge below the bucket's metered amount means part of it isn't charged. Buckets where
+    // machines start and stop are charged up to 50 micro-USD more, so only a shortfall is refused.
+    const charged = posted.reduce((sum, e) => sum - e.amountMicro, 0);
+
+    if (metered > 0 && posted.length === 1 && charged < metered - BOXD_SHORTFALL_MICRO)
+      reasons.push(`bucket ${label} metered ${metered} micro-USD but was charged ${charged}`);
+
     if (at !== before && at !== after)
       for (const e of posted) {
         settledMicro -= e.amountMicro;
@@ -219,16 +229,18 @@ const closes = new Set(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"])
 /**
  * When a sandbox may have been executing, from its lifecycle events, read conservatively. Until a
  * created event says it began, its state before the list's first event is unknown and counts as
- * executing. Created or resumed opens an execution, paused or killed closes it, and a close's own
- * segment start (execution.started_at) moves the opening earlier if it is. An execution still open,
- * or a state still unknown, at the end runs to Infinity.
+ * executing. Created or resumed opens an execution, paused or killed closes it. A close that finds
+ * the sandbox already closed (its resume is missing) counts as executing since the previous close.
+ * A close's metered segment (start, or end minus duration) moves the opening earlier if it is. An
+ * execution still open, or a state still unknown, at the end runs to Infinity.
  */
 export function executions(events: readonly E2bEvent[]): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
 
-  let state: { kind: "unknown" } | { kind: "open"; since: number } | { kind: "closed" } = {
-    kind: "unknown",
-  };
+  let state:
+    | { kind: "unknown" }
+    | { kind: "open"; since: number }
+    | { kind: "closed"; at: number } = { kind: "unknown" };
 
   for (const e of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
     if (e.type === "sandbox.lifecycle.created") state = { kind: "open", since: e.timestamp };
@@ -236,12 +248,15 @@ export function executions(events: readonly E2bEvent[]): { start: number; end: n
       state = { kind: "open", since: e.timestamp };
     else if (closes.has(e.type)) {
       const since =
-        state.kind === "open" ? state.since : state.kind === "unknown" ? -Infinity : e.timestamp;
+        state.kind === "open" ? state.since : state.kind === "unknown" ? -Infinity : state.at;
 
-      const started = e.execution?.startedAt ?? since;
+      const metered = Math.min(
+        e.execution?.startedAt ?? Infinity,
+        e.timestamp - (e.execution?.executionMs ?? 0),
+      );
 
-      out.push({ start: Math.min(since, started), end: e.timestamp });
-      state = { kind: "closed" };
+      out.push({ start: Math.min(since, metered), end: e.timestamp });
+      state = { kind: "closed", at: e.timestamp };
     }
   }
 
@@ -252,7 +267,60 @@ export function executions(events: readonly E2bEvent[]): { start: number; end: n
   return out;
 }
 
-/** Hourly quantities may differ from the events' segments by rounding: under a second of 4 vCPU. */
+/** How far a segment's meter may sit from its own events: observed under 30 ms in 99% of 4,082. */
+const E2B_SEGMENT_TOLERANCE_MS = 2_000;
+
+/**
+ * Why one of the run's sandboxes has a lifecycle that doesn't account for all of its execution:
+ * it must be created, then alternate closes and resumes and end killed, and each close's metered
+ * segment must start and last as its own open and close events say, so no segment is missing.
+ */
+function lifecycleProblems(id: string, events: readonly E2bEvent[]): string[] {
+  const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
+  const problems: string[] = [];
+  let open: number | null = null;
+  let killed = false;
+
+  for (const [index, e] of sorted.entries()) {
+    if (index === 0 && e.type !== "sandbox.lifecycle.created")
+      problems.push(`sandbox ${id}'s history doesn't start with its creation`);
+
+    if (killed) problems.push(`sandbox ${id} has a ${e.type} after it was killed`);
+
+    if (e.type === "sandbox.lifecycle.created" || e.type === "sandbox.lifecycle.resumed") {
+      if (open !== null)
+        problems.push(`sandbox ${id} opens at ${iso(e.timestamp)} while already open`);
+      open = e.timestamp;
+    } else if (closes.has(e.type)) {
+      const x = e.execution;
+
+      if (open === null)
+        problems.push(`sandbox ${id} closes at ${iso(e.timestamp)} while not open`);
+      else if (x === null)
+        problems.push(`sandbox ${id}'s close at ${iso(e.timestamp)} has no meter`);
+      else if (
+        Math.abs(e.timestamp - open - x.executionMs) > E2B_SEGMENT_TOLERANCE_MS ||
+        (x.startedAt !== null && Math.abs(x.startedAt - open) > E2B_SEGMENT_TOLERANCE_MS)
+      )
+        problems.push(
+          `sandbox ${id}'s segment closing at ${iso(e.timestamp)} is metered for ${x.executionMs} ms, but its events span ${e.timestamp - open} ms`,
+        );
+
+      open = null;
+      killed = e.type === "sandbox.lifecycle.killed";
+    }
+  }
+
+  if (!killed) problems.push(`sandbox ${id} has no killed event`);
+
+  return problems;
+}
+
+/**
+ * Hourly quantities may differ from the events' segments by rounding: under 0.00005 hours in the
+ * 2026-11-05 hours that held only the run's sandboxes. Never more than half the hour's smallest
+ * segment, so a whole segment can't be missing within it.
+ */
 const E2B_QUANTITY_TOLERANCE_HOURS = 0.001;
 
 /**
@@ -294,8 +362,12 @@ export function e2bWindow(input: {
         );
 
   for (const id of ours)
-    if (!own.some((e) => e.sandboxId === id && e.type === "sandbox.lifecycle.killed"))
-      reasons.push(`sandbox ${id} has no killed event`);
+    reasons.push(
+      ...lifecycleProblems(
+        id,
+        own.filter((e) => e.sandboxId === id),
+      ),
+    );
 
   const bySandbox = new Map<string, E2bEvent[]>();
 
@@ -370,9 +442,24 @@ export function e2bWindow(input: {
         `the console counts ${shown?.sandboxCount ?? 0} sandboxes in ${iso(at)}; the run ended segments of ${ended}`,
       );
 
+    const quantities = segments.map((e) => ({
+      cpu: ((e.execution?.executionMs ?? 0) / HOUR_MS) * (e.execution?.vcpu ?? 0),
+      ram: ((e.execution?.executionMs ?? 0) / HOUR_MS) * ((e.execution?.memoryMb ?? 0) / 1024),
+    }));
+
+    const cpuTolerance = Math.min(
+      E2B_QUANTITY_TOLERANCE_HOURS,
+      ...quantities.map((q) => q.cpu / 2),
+    );
+
+    const ramTolerance = Math.min(
+      E2B_QUANTITY_TOLERANCE_HOURS,
+      ...quantities.map((q) => q.ram / 2),
+    );
+
     if (
-      Math.abs(cpuHours - (shown?.cpuHours ?? 0)) > E2B_QUANTITY_TOLERANCE_HOURS ||
-      Math.abs(ramGibHours - (shown?.ramGibHours ?? 0)) > E2B_QUANTITY_TOLERANCE_HOURS
+      Math.abs(cpuHours - (shown?.cpuHours ?? 0)) > cpuTolerance ||
+      Math.abs(ramGibHours - (shown?.ramGibHours ?? 0)) > ramTolerance
     )
       reasons.push(
         `the console has ${shown?.cpuHours ?? 0} vCPU and ${shown?.ramGibHours ?? 0} GiB hours in ${iso(at)}; the run's segments ending then had ${cpuHours} and ${ramGibHours}`,

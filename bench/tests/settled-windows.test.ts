@@ -144,6 +144,18 @@ describe("boxdWindow", () => {
     expect(twice.kind).toBe("not-isolated");
   });
 
+  it("refuses a bucket charged less than it metered", () => {
+    const short = [
+      { kind: "usage_charge", amountMicro: -4950, createdAt: at("2026-11-16T17:27:00Z") },
+      ...ledger.slice(1),
+    ];
+
+    expect(boxdWindow({ attempts, buckets, ledger: short, readAt })).toEqual({
+      kind: "not-isolated",
+      reasons: ["bucket 2026-11-16T17:00:00.000Z metered 5000 micro-USD but was charged 4950"],
+    });
+  });
+
   it("refuses a machine of the run that usage doesn't show", () => {
     const missing = buckets.map((b) => ({
       ...b,
@@ -396,6 +408,59 @@ describe("e2bWindow", () => {
 
     expect(reasonsOf(e2bWindow({ ...base, events: updatedThenKilled }))).toHaveLength(1);
     expect(reasonsOf(e2bWindow({ ...base, events: updatedOnly }))).toHaveLength(1);
+  });
+
+  it("refuses a run sandbox whose events don't account for all its execution", () => {
+    // Created 17:05:01, a pause and resume missing, killed 17:20 with only the last 860 s metered,
+    // and the console showing exactly that.
+    const gappy = [
+      ...events.filter((e) => e.sandboxId !== "s-a"),
+      event("s-a", "created", "2026-11-16T17:05:01Z"),
+      event("s-a", "killed", "2026-11-16T17:20:00Z", 860_000),
+    ];
+
+    const short = [hour("2026-11-16T17:00:00Z", 1, 0.02, 860_000), ...hours.slice(1)];
+
+    const window = e2bWindow({
+      ...base,
+      events: gappy,
+      reading: reading("2026-11-16T20:05:00Z", short),
+      recheck: reading("2026-11-16T20:40:00Z", short),
+    });
+
+    expect(reasonsOf(window).some((r) => r.includes("is metered for 860000 ms"))).toBe(true);
+  });
+
+  it("refuses a whole unposted segment smaller than the rounding allowance", () => {
+    const tiny = [
+      ...events.filter((e) => e.sandboxId !== "s-a"),
+      event("s-a", "created", "2026-11-16T17:05:00Z"),
+      event("s-a", "paused", "2026-11-16T17:10:00Z", 300_000),
+      event("s-a", "resumed", "2026-11-16T17:11:00Z"),
+      event("s-a", "killed", "2026-11-16T17:11:00.400Z", 400),
+    ];
+
+    const posted = [hour("2026-11-16T17:00:00Z", 1, 0.02, 300_000), ...hours.slice(1)];
+
+    const window = e2bWindow({
+      ...base,
+      events: tiny,
+      reading: reading("2026-11-16T20:05:00Z", posted),
+      recheck: reading("2026-11-16T20:40:00Z", posted),
+    });
+
+    expect(reasonsOf(window).some((r) => r.startsWith("the console has"))).toBe(true);
+  });
+
+  it("counts a foreign close with no resume before it as executing since the previous close", () => {
+    const hidden = [
+      ...events,
+      event("f", "created", "2026-11-16T14:00:00Z"),
+      event("f", "paused", "2026-11-16T15:00:00Z", 3_600_000),
+      event("f", "killed", "2026-11-16T21:30:00Z", 10_800_000),
+    ];
+
+    expect(reasonsOf(e2bWindow({ ...base, events: hidden }))).toHaveLength(1);
   });
 
   it("splits a sandbox's events into executions", () => {
