@@ -69,7 +69,10 @@ export interface ChargeDayInput {
   readonly period: { readonly start: string; readonly end: string };
   /** Distinct sandboxes the run created. */
   readonly sandboxes: number;
-  /** The same export for the charge day just before `period`. */
+  /**
+   * The same export for the charge day just before `period`, read after that day settled (the
+   * caller checks when it was read).
+   */
   readonly previousDay: readonly ChargeLine[];
 }
 
@@ -155,8 +158,28 @@ export function sandboxChargeDay(input: ChargeDayInput): ChargeDay {
     (line) => line.ServiceCategory === "Sandbox" || known.has(line.ServiceName),
   );
 
-  if (before.length === 0)
-    reasons.push(`the export for the day before (${previousStart}) has no Sandbox lines at all`);
+  // A quiet day still lists every Sandbox service in every region, with zeros. An export of the day
+  // before that misses a service or region the day itself lists may be truncated, and a missing
+  // line could hide a stored snapshot or drive, so it proves nothing.
+  const key = (line: ChargeLine) => `${line.ServiceName} (${line.RegionId ?? "no region"})`;
+  const listedBefore = new Set(before.map(key));
+
+  for (const service of SANDBOX_SERVICES) {
+    if (!sandbox.some((line) => line.ServiceName === service))
+      reasons.push(`the day's export does not list ${service}, so it may be incomplete`);
+
+    if (!before.some((line) => line.ServiceName === service))
+      reasons.push(
+        `the export for the day before does not list ${service}, so it may be incomplete`,
+      );
+  }
+
+  const unlisted = [...new Set(sandbox.map(key))].filter((k) => !listedBefore.has(k));
+
+  if (unlisted.length > 0)
+    reasons.push(
+      `the export for the day before does not list ${unlisted.join(", ")}, so it may be incomplete`,
+    );
 
   for (const line of before) {
     const label = `${line.ServiceName} (${line.RegionId ?? "no region"}) on the day before`;

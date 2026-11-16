@@ -61,12 +61,16 @@ export function savedCosts(adapter: string, file: UsageFile): { id: string; cost
   });
 }
 
+const METER_READS = 3;
+const METER_RETRY_MS = 1000;
+
 /**
  * Save one sandbox's usage just before deletion and return the file. Vercel reports usage only
  * between the end of a session and deletion, so its sandbox is stopped and its meter read once:
  * the cost is priced from that same reading (the collector reads the file it was just given), so
- * a second, failing read can never leave a valid meter beside an unavailable cost. If the one read
- * fails, the collector tries a live read and records why the cost is unavailable, as before.
+ * a second, failing read can never leave a valid meter beside an unavailable cost. A failed read is
+ * tried again here (a reading taken anywhere else would lose its raw counters); if every try
+ * fails, the file records why the cost is unavailable.
  */
 export async function captureUsage(input: {
   readonly adapter: string;
@@ -82,11 +86,35 @@ export async function captureUsage(input: {
 
   if (adapter === "vercel") {
     await vercelMeter.stop(id);
-    meter = await vercelMeter.read(id).catch(() => null);
+    let failure = "";
+
+    for (let read = 0; read < METER_READS && meter === null; read++) {
+      if (read > 0) await new Promise((resolve) => setTimeout(resolve, METER_RETRY_MS));
+
+      try {
+        meter = await vercelMeter.read(id);
+      } catch (error) {
+        failure = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    // Every reading failed: say so, rather than let the collector read again and keep only a total.
+    if (meter === null) {
+      const note = `Vercel's meter could not be read before deletion (${METER_READS} tries): ${failure}`;
+      await writeFile(
+        file,
+        JSON.stringify({
+          capturedAt: new Date().toISOString(),
+          provider: adapter,
+          sandboxes: [{ id, cost: { kind: "unavailable", confidence: "none", note } }],
+        }) + "\n",
+      );
+
+      return file;
+    }
 
     // The collector's saved-meter format; it prices from this file instead of reading again.
-    if (meter !== null)
-      await writeFile(file, JSON.stringify({ capturedAt: new Date().toISOString(), meter }) + "\n");
+    await writeFile(file, JSON.stringify({ capturedAt: new Date().toISOString(), meter }) + "\n");
   }
 
   const collected = await collectProvider(

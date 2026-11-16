@@ -97,5 +97,32 @@ it("still saves why a Vercel cost is unavailable when the one meter reading fail
   const saved = usageFileSchema.parse(JSON.parse(await readFile(file, "utf8")));
 
   expect(saved.meter).toBeUndefined();
-  expect(saved.sandboxes[0]?.cost).toMatchObject({ kind: "unavailable" });
+  expect(saved.sandboxes[0]?.cost).toMatchObject({
+    kind: "unavailable",
+    note: expect.stringContaining("3 tries"),
+  });
+});
+
+it("keeps the raw meter when a Vercel reading succeeds only on a retry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "usage-"));
+  vi.spyOn(vercelMeter, "stop").mockResolvedValue();
+
+  const read = vi
+    .spyOn(vercelMeter, "read")
+    .mockRejectedValueOnce(new Error("Status code 503 is not ok"))
+    .mockResolvedValueOnce(meter)
+    .mockRejectedValue(new Error("no third reading expected"));
+
+  const file = await captureUsage({
+    adapter: "vercel",
+    id: "sbx-1",
+    usageDir: dir,
+    env: { VERCEL_OIDC_TOKEN: "token" },
+  });
+
+  const saved = usageFileSchema.parse(JSON.parse(await readFile(file, "utf8")));
+
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(saved.meter).toEqual(meter);
+  expect(savedCosts("vercel", saved)[0]?.cost).toMatchObject({ kind: "metered", complete: true });
 });

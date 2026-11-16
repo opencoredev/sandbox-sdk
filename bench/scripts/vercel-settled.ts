@@ -4,6 +4,7 @@
  * (`bun bench realistic summary --audit FILE`, src/cost/audit-file.ts).
  *
  *   bun scripts/vercel-settled.ts --charges <day.jsonl> --previous-charges <day-before.jsonl> \
+ *     --previous-fetched-at <ISO time the day-before export was read> \
  *     --run-dir <run --out> \
  *     --period-start 2026-11-16T08:00:00.000Z --fetched-at <ISO time the export was read> \
  *     --team <teamId> --project-id <prj_…> --project-name sandbox-bench-runner \
@@ -11,7 +12,8 @@
  *
  * `--charges` is the raw FOCUS export for exactly that day (src/cost/vercel-charges.ts). The day
  * must have closed at least two hours before `--fetched-at`, so late usage has landed.
- * `--previous-charges` is the export for the day before, which must show no Sandbox activity.
+ * `--previous-charges` is the export for the day before, read at least two hours after it closed
+ * (`--previous-fetched-at`); it must list every Sandbox service and region and show no activity.
  *
  * Writes one entry per profile and track the run has. When the day holds only the run's sandboxes,
  * each is "reconciled" with window "mixed-profiles" (the day mixes all four groups; eligibility
@@ -40,6 +42,7 @@ const { values } = parseArgs({
   options: {
     charges: { type: "string" },
     "previous-charges": { type: "string" },
+    "previous-fetched-at": { type: "string" },
     "run-dir": { type: "string" },
     "period-start": { type: "string" },
     "fetched-at": { type: "string" },
@@ -57,6 +60,7 @@ const args = z
   .object({
     charges: text,
     "previous-charges": text,
+    "previous-fetched-at": z.iso.datetime(),
     "run-dir": text,
     "period-start": z.iso.datetime(),
     "fetched-at": z.iso.datetime(),
@@ -80,6 +84,11 @@ const reportPath = resolve(args.report);
 
 if (Date.parse(fetchedAt) < Date.parse(end) + SETTLE_MS)
   throw new Error(`the export was read at ${fetchedAt}, before ${end} plus two hours`);
+
+if (Date.parse(args["previous-fetched-at"]) < Date.parse(start) + SETTLE_MS)
+  throw new Error(
+    `the day-before export was read at ${args["previous-fetched-at"]}, before ${start} plus two hours`,
+  );
 
 const lines = async <T>(path: string, schema: z.ZodType<T>) =>
   (await readFile(path, "utf8"))

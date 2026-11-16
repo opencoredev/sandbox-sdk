@@ -1,10 +1,12 @@
 /**
  * Changing the shared settled-charge audit file (audit-file.ts) without losing another writer's
  * change. Several agents add entries to one file, so an update holds a lock directory beside it
- * (`<file>.lock`) while it reads, merges and renames, and before the rename it reads the file
- * again: if the bytes changed (a writer that did not take the lock, such as a hand edit), the
- * merge starts over from the new contents. The rename itself is atomic, so a reader never sees
- * half a file.
+ * (`<file>.lock`) while it reads, merges and renames. Every automated writer must go through this
+ * function: only writers that take the lock are safe from each other. Before the rename it reads
+ * the file again and merges over if the bytes changed, which catches most writes that ignored the
+ * lock (a hand edit), but one landing between that read and the rename is still lost. The rename
+ * is atomic, so a reader never sees half a file. A crashed writer leaves the lock behind; later
+ * callers fail after 30 s, and the lock may be removed only once its writer is known to be gone.
  */
 import { mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";

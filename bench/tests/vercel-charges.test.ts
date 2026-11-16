@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { parseChargeLines, sandboxChargeDay, type ChargeLine } from "../src/cost/vercel-charges.js";
+import {
+  parseChargeLines,
+  SANDBOX_SERVICES,
+  sandboxChargeDay,
+  type ChargeLine,
+  type SandboxService,
+} from "../src/cost/vercel-charges.js";
 
 const period = { start: "2026-11-16T08:00:00.000Z", end: "2026-11-17T08:00:00.000Z" };
 const teamId = "team_1";
@@ -22,9 +28,37 @@ const line = (over: Partial<ChargeLine>): ChargeLine => ({
   ...over,
 });
 
+const units: Record<SandboxService, string> = {
+  "Sandbox Active CPU": "hour",
+  "Sandbox Provisioned Memory": "gigabyte-hour",
+  "Sandbox Creations": "Creations",
+  "Sandbox Data Transfer": "gigabyte",
+  "Snapshot Storage": "gigabyte",
+  "Drive Storage": "gigabyte",
+  "Drive Reads": "gigabyte",
+  "Drive Writes": "gigabyte",
+};
+
+const global = new Set<SandboxService>(["Sandbox Creations", "Snapshot Storage"]);
+
+// What Vercel lists when nothing ran or was stored: every service, regional ones in each region.
+const zeros = (from: string, to: string) =>
+  SANDBOX_SERVICES.flatMap((service) =>
+    (global.has(service) ? [null] : ["iad1", "arn1"]).map((RegionId) =>
+      line({
+        ServiceName: service,
+        ConsumedUnit: units[service],
+        RegionId,
+        ChargePeriodStart: from,
+        ChargePeriodEnd: to,
+      }),
+    ),
+  );
+
 // One day of our sandboxes: CPU, memory, transfer and 20 creations, plus zero lines for other
 // regions (Vercel lists every region) and a non-sandbox service, which are ignored.
 const day = [
+  ...zeros(period.start, period.end),
   line({ BilledCost: 0.4, EffectiveCost: 0.4, ConsumedQuantity: 3.1, Tags: ours }),
   line({ RegionId: "arn1" }),
   line({
@@ -61,17 +95,7 @@ const day = [
 
 const previous = { start: "2026-11-15T08:00:00.000Z", end: period.start };
 
-// The day before: Vercel lists every service and region with zeros when nothing ran or was stored.
-const quietDay = [
-  line({ ChargePeriodStart: previous.start, ChargePeriodEnd: previous.end }),
-  line({
-    ServiceName: "Snapshot Storage",
-    ConsumedUnit: "gigabyte",
-    RegionId: null,
-    ChargePeriodStart: previous.start,
-    ChargePeriodEnd: previous.end,
-  }),
-];
+const quietDay = zeros(previous.start, previous.end);
 
 const input = { lines: day, teamId, project, period, sandboxes: 20, previousDay: quietDay };
 
@@ -173,4 +197,25 @@ it("refuses a day with the right creation count when older resources were still 
 it("refuses a missing or wrong export for the day before", () => {
   expect(sandboxChargeDay({ ...input, previousDay: [] }).kind).toBe("not-isolated");
   expect(sandboxChargeDay({ ...input, previousDay: day }).kind).toBe("not-isolated");
+});
+
+it("refuses an export of the day before that misses a service or region the day lists", () => {
+  // A truncated export: the Snapshot Storage line, which could carry an older snapshot, is missing.
+  const truncated = quietDay.filter((l) => l.ServiceName !== "Snapshot Storage");
+  const noArn1 = quietDay.filter((l) => l.RegionId !== "arn1");
+
+  for (const previousDay of [truncated, noArn1])
+    expect(sandboxChargeDay({ ...input, previousDay })).toMatchObject({
+      kind: "not-isolated",
+      reasons: expect.arrayContaining([expect.stringContaining("may be incomplete")]),
+    });
+});
+
+it("refuses a day whose own export misses a Sandbox service", () => {
+  const lines = day.filter((l) => l.ServiceName !== "Drive Storage");
+
+  expect(sandboxChargeDay({ ...input, lines })).toMatchObject({
+    kind: "not-isolated",
+    reasons: [expect.stringContaining("does not list Drive Storage")],
+  });
 });
