@@ -705,11 +705,14 @@ export type BoxdCharges =
 
 /**
  * boxd charges the whole org once per 15-minute usage bucket, about 10 minutes after the
- * bucket closes. That charge equals each machine's vCPU, RAM and disk micro-amounts rounded to
- * the micro-unit and summed over every machine in the bucket (machine costMicro rounds each part
- * up instead). When each bucket the run touched has exactly one posted charge equal to that sum,
- * within BOXD_TOLERANCE_MICRO,
- * the charge splits exactly into per-machine amounts, so other machines in the org do not matter.
+ * bucket closes. That charge equals each machine's vCPU, RAM and disk micro-amounts summed and
+ * rounded up to the micro-unit, summed over every machine in the bucket (machine costMicro rounds
+ * each part up instead). Of 53 buckets read on 2026-11-16 (from 2026-11-05 and 2026-11-16), that
+ * rule matched the posted charge exactly in 40, each with 1 to 3 machines, where rounding each
+ * part to the nearest micro-unit was short by 1 to 2 in most. One was 1 under; the other 12 had 3
+ * to 9 machines and were charged 11 to 50 more, which no rounding explains. When each bucket the run touched has
+ * exactly one posted charge equal to that sum, within BOXD_TOLERANCE_MICRO, the charge splits
+ * exactly into per-machine amounts, so other machines in the org do not matter.
  */
 export async function readBoxdCharges(
   rows: OwnedSandbox[],
@@ -755,10 +758,11 @@ export async function readBoxdCharges(
 
     const parts = usage.machines.map((m) => ({
       id: m.machineId,
-      micro:
-        Math.round(m.vcpuHours * rates.vcpuHourMicro) +
-        Math.round(m.ramGibHours * rates.ramGibHourMicro) +
-        Math.round(m.diskGibHours * rates.diskGibHourMicro),
+      micro: Math.ceil(
+        m.vcpuHours * rates.vcpuHourMicro +
+          m.ramGibHours * rates.ramGibHourMicro +
+          m.diskGibHours * rates.diskGibHourMicro,
+      ),
     }));
 
     const posted = charges.entries.filter(
@@ -953,7 +957,7 @@ export async function collectProvider(
               scope: "sandbox-lifetime",
               complete: true,
               confidence: "high",
-              note: "Machine's share of boxd's posted 15-minute org charges: its rounded vCPU, RAM and disk parts, which with the other machines' parts sum exactly to each charge",
+              note: "Machine's share of boxd's posted 15-minute org charges: its vCPU, RAM and disk amounts rounded up together, which with the other machines' shares sum exactly to each charge",
             },
           });
 

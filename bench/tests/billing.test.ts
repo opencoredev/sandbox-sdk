@@ -435,7 +435,7 @@ describe("billing collector", () => {
 
     expect(leaked.sandboxes.every((s) => s.cost.kind === "unavailable")).toBe(true);
   });
-  it("bills boxd machines only when their rounded parts sum to the posted 15-minute charge", async () => {
+  it("bills boxd machines only when their rounded-up amounts sum to the posted 15-minute charge", async () => {
     const rows = [{ ...row, provider: "boxd", id: "m-1" }];
 
     const machines = [
@@ -443,7 +443,8 @@ describe("billing collector", () => {
       { machineId: "other", vcpuHours: 0.01, ramGibHours: 0, diskGibHours: 0 },
     ];
 
-    // m-1 rounds to 1958 + 149 + 14 = 2121 micro-USD (costMicro rounds each part up: 2124); other is 470.
+    // m-1's parts, 1958.33 + 149.22 + 14.39, round up together to 2122 micro-USD (costMicro rounds
+    // each part up: 2124); other is 470.
     const query = (charged: number) => async (method: string, params: { since: Date }) =>
       method === "billingActivityPage"
         ? {
@@ -468,8 +469,64 @@ describe("billing collector", () => {
     const exact = await readBoxdCharges(rows, {}, query(2591));
     expect(exact.kind).toBe("charged");
 
-    if (exact.kind === "charged") expect(exact.microById.get("m-1")).toBe(2121);
-    expect((await readBoxdCharges(rows, {}, query(2594 + 3))).kind).toBe("unreconciled");
+    if (exact.kind === "charged") expect(exact.microById.get("m-1")).toBe(2122);
+    expect((await readBoxdCharges(rows, {}, query(2592 + 3))).kind).toBe("unreconciled");
+  });
+  it("splits a posted boxd charge into each machine's amount rounded up, as boxd charged on 2026-11-06", async () => {
+    // The 00:30 UTC bucket of 2026-11-06 (sbx-verify2/evidence/boxd-buckets-20261105.json): three
+    // machines' vCPU, RAM and disk micro-USD, and the 13078 micro-USD boxd posted at 00:58:51.
+    const rates = { vcpuHourMicro: 47000, ramGibHourMicro: 14000, diskGibHourMicro: 96 };
+
+    const parts = {
+      a: [2950.5555555555557, 3990.626553429497, 7.26527862548828],
+      b: [1135.8333333333333, 4812.594261169434, 9.497530619303385],
+      c: [0, 0, 170.19039916992188],
+    };
+
+    const machines = Object.entries(parts).map(([machineId, [vcpu = 0, ram = 0, disk = 0]]) => ({
+      machineId,
+      vcpuHours: vcpu / rates.vcpuHourMicro,
+      ramGibHours: ram / rates.ramGibHourMicro,
+      diskGibHours: disk / rates.diskGibHourMicro,
+    }));
+
+    const query = async (method: string, params: { since: Date }) =>
+      method === "billingActivityPage"
+        ? {
+            currency: "usd",
+            nextPageToken: null,
+            entries: [
+              {
+                id: "c",
+                kind: "usage_charge",
+                amountMicro: -13078,
+                createdAt: new Date("2026-11-06T00:58:51Z"),
+              },
+            ],
+          }
+        : {
+            currency: "usd",
+            complete: true,
+            rates,
+            machines: params.since.getTime() === Date.parse("2026-11-06T00:30:00Z") ? machines : [],
+          };
+
+    const rows = ["a", "b", "c"].map((id) => ({
+      ...row,
+      provider: "boxd",
+      id,
+      startedAt: "2026-11-06T00:31:00.000Z",
+      finishedAt: "2026-11-06T00:40:00.000Z",
+    }));
+
+    const split = await readBoxdCharges(rows, {}, query);
+
+    expect(split.kind).toBe("charged");
+
+    if (split.kind !== "charged") return;
+    // Rounding each part to the nearest micro-USD gives 6949 + 5958 + 170 = 13077, one short.
+    expect(Object.fromEntries(split.microById)).toEqual({ a: 6949, b: 5958, c: 171 });
+    expect([...split.microById.values()].reduce((sum, v) => sum + v, 0)).toBe(13078);
   });
   it("uses Daytona's API-key org without persisting its secret value and marks delayed charges pending", async () => {
     const transport = vi.fn<Transport>(async (url) =>
