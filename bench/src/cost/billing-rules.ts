@@ -97,6 +97,7 @@ const docs = {
   daytonaAnalytics: "https://analytics.app.daytona.io/organization/{org}/usage/sandbox",
   upstash: "https://upstash.com/pricing/box",
   upstashBox: "https://us-east-1.box.upstash.com/v2/box/{id}",
+  upstashBilling: "https://us-east-1.box.upstash.com/v2/box/billing (the account's monthly Box billing, one line per box)",
   boat: "https://docs.boat.dev/machines",
   boxd: "https://boxd.sh/pricing",
   boxdActivity: "boxd orgs.billingActivityPage (org-wide 15-minute charges)",
@@ -195,7 +196,8 @@ export const billingRules: readonly BillingRule[] = [
     // The harness runs Upstash's ephemeral product as its own provider name.
     provider: "upstash-ephemeral",
     product: null,
-    pricingKey: null,
+    // Its billing lines price compute and storage at the Box rates (notes).
+    pricingKey: "upstash",
     tariff: unknown("Ephemeral pricing not recorded"),
     billingStarts: unknown("Not stated"),
     billingStops: unknown("Not stated"),
@@ -204,9 +206,13 @@ export const billingRules: readonly BillingRule[] = [
     perStartFeeUSD: unknown("Not stated"),
     keepsCharging: unknown("Not stated"),
     countsFileCacheAsMemory: unknown("Not stated"),
-    storage: unknown("Not stated"),
-    settledChargeSource: unknown(
-      "The collector reads the Box API for this product too; not confirmed for Ephemeral",
+    storage: known(
+      "excluded",
+      `${docs.upstashBilling}: ephemeral box artistic-bird-65151 (2026-11-16, 6 GiB written and held 45 minutes) has storage_bytes 6442459136, storage_gb_hours 6.442 and storage_cost_usd 0.000894786 on its line, apart from compute_cost_usd 0.000746683, which equals the box's total_compute_cost_usd`,
+    ),
+    settledChargeSource: known(
+      "Per-box cumulative compute charge, final after deletion; equals the box's compute_cost_usd billing line",
+      `${docs.upstashBox}; ${docs.upstashBilling} (all 58 Upstash boxes of SBX-100 and the 2026-11-16 boxes match to 1e-9 USD)`,
     ),
     reportedKind: "billed",
     attribution: "per-sandbox",
@@ -214,6 +220,7 @@ export const billingRules: readonly BillingRule[] = [
     confirmation: unconfirmed,
     notes: [
       "Plan section 6 lists Upstash Ephemeral as per-sandbox; its tariff is not yet recorded.",
+      "Billing lines observed 2026-11-16: compute is the medium tier price ($0.20) times CPU-seconds / 3600, as on Box, and storage is $0.10 per GB-month of bytes written (0.000894786 / 6.442 GB-hours), Box's disk rate. Storage posted as one hour of the bytes held at a single reading 25 minutes after creation. Unconfirmed by Upstash.",
     ],
   },
   {

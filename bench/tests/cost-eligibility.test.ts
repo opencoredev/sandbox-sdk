@@ -91,13 +91,33 @@ describe("eligibility table", () => {
     });
   });
 
-  it("keeps a bill whose storage coverage is unknown provisional (Upstash Ephemeral)", () => {
+  it("keeps a bill whose storage coverage is unknown provisional", () => {
     const result = check({
-      provider: "upstash-ephemeral",
-      attempts: ten({ provider: "upstash-ephemeral" }),
+      rule: { ...rule("upstash"), storage: { kind: "unknown", note: "not stated" } },
     });
 
     expect(result.status.provisional).toBe("storage coverage of the billing source unknown");
+  });
+
+  it("accepts Upstash Ephemeral's settled compute bill: its billing lines itemize storage apart", () => {
+    expect(rule("upstash-ephemeral").storage).toEqual(
+      expect.objectContaining({ kind: "known", value: "excluded" }),
+    );
+
+    expect(
+      check({ provider: "upstash-ephemeral", attempts: ten({ provider: "upstash-ephemeral" }) }),
+    ).toEqual({
+      kind: "eligible",
+      status: { costKind: "billed", settled: true, provisional: null },
+    });
+  });
+
+  it("holds a bill that leaves storage out as provisional when no disk price is known", () => {
+    const result = check({ rule: { ...rule("upstash"), pricingKey: null } });
+
+    expect(result.status.provisional).toBe(
+      "billing source leaves storage out and no disk price is known",
+    );
   });
 
   it("holds a compute-only bill as provisional when the disk to add is unknown", () => {

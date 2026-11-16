@@ -200,6 +200,17 @@ describe("cost columns", () => {
     expect(reported.usd).toBeCloseTo(0.02 + (disk?.usd ?? 0), 12);
   });
 
+  it("adds list-price disk to Upstash Ephemeral's compute-only bill, at Upstash's disk rate", () => {
+    const reported = reportedCost(input("upstash-ephemeral"));
+    expect(reported.kind).toBe("billed");
+
+    if (reported.kind !== "billed") return;
+    expect(reported.storage).toBe("added-at-list-price");
+    const disk = reported.parts.find((p) => p.label === "disk at list price");
+    expect(disk?.estimated).toBe(true);
+    expect(disk?.usd).toBeCloseTo((10 * 0.1 * 300) / (30 * 86400), 12);
+  });
+
   it("prices Tenki estimates from the billing rules, every part estimated", () => {
     const reported = reportedCost(
       input("tenki", { charge: { kind: "estimate", source: "rules" } }),

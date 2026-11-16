@@ -226,6 +226,10 @@ function storageGap(input: EligibilityInput): string | null {
   )
     return "billing source leaves storage out and the disk size is unknown";
 
+  // Without a disk price nothing can be added for the storage the bill leaves out.
+  if (storage.value === "excluded" && input.rule.pricingKey === null)
+    return "billing source leaves storage out and no disk price is known";
+
   return null;
 }
 
