@@ -184,6 +184,8 @@ export const HOUR_MS = 3_600_000;
 export interface E2bHour {
   readonly start: number;
   readonly sandboxCount: number;
+  readonly cpuHours: number;
+  readonly ramGibHours: number;
   readonly usd: number;
 }
 
@@ -193,6 +195,13 @@ export interface E2bEvent {
   readonly teamId: string;
   readonly type: string;
   readonly timestamp: number;
+  /** The segment a paused or killed event closes, as E2B metered it. */
+  readonly execution: {
+    readonly startedAt: number | null;
+    readonly executionMs: number;
+    readonly vcpu: number;
+    readonly memoryMb: number;
+  } | null;
 }
 
 /** One reading of the console's hourly usage, and the interval it asked for. */
@@ -205,33 +214,46 @@ export interface E2bReading {
   readonly hours: readonly E2bHour[];
 }
 
-const opens = new Set(["sandbox.lifecycle.created", "sandbox.lifecycle.resumed"]);
 const closes = new Set(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]);
 
 /**
- * When a sandbox was executing, from its lifecycle events: each created or resumed event opens an
- * execution and the next paused or killed one closes it. One still open runs to Infinity. A close
- * with no open before it (history before the list began) runs from -Infinity.
+ * When a sandbox may have been executing, from its lifecycle events, read conservatively. Until a
+ * created event says it began, its state before the list's first event is unknown and counts as
+ * executing. Created or resumed opens an execution, paused or killed closes it, and a close's own
+ * segment start (execution.started_at) moves the opening earlier if it is. An execution still open,
+ * or a state still unknown, at the end runs to Infinity.
  */
 export function executions(events: readonly E2bEvent[]): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
-  let open: number | null = null;
-  let seenAny = false;
+
+  let state: { kind: "unknown" } | { kind: "open"; since: number } | { kind: "closed" } = {
+    kind: "unknown",
+  };
 
   for (const e of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
-    if (opens.has(e.type)) open ??= e.timestamp;
+    if (e.type === "sandbox.lifecycle.created") state = { kind: "open", since: e.timestamp };
+    else if (e.type === "sandbox.lifecycle.resumed" && state.kind === "closed")
+      state = { kind: "open", since: e.timestamp };
     else if (closes.has(e.type)) {
-      out.push({ start: open ?? (seenAny ? e.timestamp : -Infinity), end: e.timestamp });
-      open = null;
-    }
+      const since =
+        state.kind === "open" ? state.since : state.kind === "unknown" ? -Infinity : e.timestamp;
 
-    seenAny = true;
+      const started = e.execution?.startedAt ?? since;
+
+      out.push({ start: Math.min(since, started), end: e.timestamp });
+      state = { kind: "closed" };
+    }
   }
 
-  if (open !== null) out.push({ start: open, end: Infinity });
+  if (state.kind === "open") out.push({ start: state.since, end: Infinity });
+
+  if (state.kind === "unknown") out.push({ start: -Infinity, end: Infinity });
 
   return out;
 }
+
+/** Hourly quantities may differ from the events' segments by rounding: under a second of 4 vCPU. */
+const E2B_QUANTITY_TOLERANCE_HOURS = 0.001;
 
 /**
  * The team's console charge for the whole UTC hours the run's sandboxes ended segments in, when no
@@ -316,25 +338,50 @@ export function e2bWindow(input: {
     reasons.push("the console's hourly usage for the period changed between the two readings");
 
   // A segment is booked in the hour it ended, and only the run's sandboxes executed, so every hour
-  // the run ended segments in must be there with exactly that many sandboxes, and no other hour.
+  // the run ended segments in must be there with those sandboxes and those segments' quantities,
+  // and no other hour: a segment whose charge hasn't posted shows as missing vCPU and RAM hours.
   for (let at = start; at < end; at += HOUR_MS) {
-    const ended = new Set(
-      own
-        .filter((e) => closes.has(e.type) && e.timestamp >= at && e.timestamp < at + HOUR_MS)
-        .map((e) => e.sandboxId),
-    ).size;
+    const segments = own.filter(
+      (e) => closes.has(e.type) && e.timestamp >= at && e.timestamp < at + HOUR_MS,
+    );
 
-    const shown = now.find((h) => h.start === at)?.sandboxCount ?? 0;
+    for (const e of segments)
+      if (e.execution === null)
+        reasons.push(
+          `sandbox ${e.sandboxId}'s ${e.type} at ${iso(e.timestamp)} has no execution meter`,
+        );
 
-    if (ended !== shown)
+    const cpuHours = segments.reduce(
+      (sum, e) => sum + ((e.execution?.executionMs ?? 0) / HOUR_MS) * (e.execution?.vcpu ?? 0),
+      0,
+    );
+
+    const ramGibHours = segments.reduce(
+      (sum, e) =>
+        sum + ((e.execution?.executionMs ?? 0) / HOUR_MS) * ((e.execution?.memoryMb ?? 0) / 1024),
+      0,
+    );
+
+    const ended = new Set(segments.map((e) => e.sandboxId)).size;
+    const shown = now.find((h) => h.start === at);
+
+    if (ended !== (shown?.sandboxCount ?? 0))
       reasons.push(
-        `the console counts ${shown} sandboxes in ${iso(at)}; the run ended segments of ${ended}`,
+        `the console counts ${shown?.sandboxCount ?? 0} sandboxes in ${iso(at)}; the run ended segments of ${ended}`,
+      );
+
+    if (
+      Math.abs(cpuHours - (shown?.cpuHours ?? 0)) > E2B_QUANTITY_TOLERANCE_HOURS ||
+      Math.abs(ramGibHours - (shown?.ramGibHours ?? 0)) > E2B_QUANTITY_TOLERANCE_HOURS
+    )
+      reasons.push(
+        `the console has ${shown?.cpuHours ?? 0} vCPU and ${shown?.ramGibHours ?? 0} GiB hours in ${iso(at)}; the run's segments ending then had ${cpuHours} and ${ramGibHours}`,
       );
   }
 
   return verdict(reasons, () => ({
     period: { start: iso(start), end: iso(end) },
     settledUSD: now.reduce((sum, h) => sum + h.usd, 0),
-    isolation: `E2B's team-wide lifecycle events show no sandbox but the run's ${ours.size} executing from ${iso(before)} to ${iso(after)}; two console readings of the key's team, ${Math.round((input.recheck.fetchedAt - input.reading.fetchedAt) / 60_000)} minutes apart, show nothing in ${iso(before)} or ${iso(end)}, the same figures for the period, and for each hour of it the run's sandboxes that ended a segment then`,
+    isolation: `E2B's team-wide lifecycle events show no sandbox but the run's ${ours.size} executing from ${iso(before)} to ${iso(after)}; two console readings of the key's team, ${Math.round((input.recheck.fetchedAt - input.reading.fetchedAt) / 60_000)} minutes apart, show nothing in ${iso(before)} or ${iso(end)}, the same figures for the period, and for each hour of it the run's sandboxes that ended a segment then and those segments' vCPU and RAM hours`,
   }));
 }

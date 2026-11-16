@@ -179,29 +179,39 @@ describe("e2bWindow", () => {
 
   const team = "team-1";
 
-  const event = (sandboxId: string, type: string, time: string, teamId = team): E2bEvent => ({
+  // A paused or killed event carries the segment it closes: `ms` of 4 vCPU and 8 GiB.
+  const event = (sandboxId: string, type: string, time: string, ms = 0): E2bEvent => ({
     sandboxId,
-    teamId,
+    teamId: team,
     type: `sandbox.lifecycle.${type}`,
     timestamp: at(time),
+    execution:
+      type === "paused" || type === "killed"
+        ? { startedAt: null, executionMs: ms, vcpu: 4, memoryMb: 8192 }
+        : null,
   });
 
   const events = [
     event("s-a", "created", "2026-11-16T17:05:01Z"),
-    event("s-a", "killed", "2026-11-16T17:20:00Z"),
+    event("s-a", "killed", "2026-11-16T17:20:00Z", 899_000),
     event("s-b", "created", "2026-11-16T17:50:01Z"),
-    event("s-b", "killed", "2026-11-16T18:10:00Z"),
+    event("s-b", "killed", "2026-11-16T18:10:00Z", 1_199_000),
     event("old", "created", "2026-11-10T19:11:00Z"),
-    event("old", "killed", "2026-11-10T19:11:40Z"),
+    event("old", "killed", "2026-11-10T19:11:40Z", 40_000),
   ];
 
-  const hour = (start: string, sandboxCount: number, usd: number): E2bHour => ({
+  const hour = (start: string, sandboxCount: number, usd: number, ms = 0): E2bHour => ({
     start: at(start),
     sandboxCount,
+    cpuHours: (ms / 3_600_000) * 4,
+    ramGibHours: (ms / 3_600_000) * 8,
     usd,
   });
 
-  const hours = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 1, 0.03)];
+  const hours = [
+    hour("2026-11-16T17:00:00Z", 1, 0.02, 899_000),
+    hour("2026-11-16T18:00:00Z", 1, 0.03, 1_199_000),
+  ];
 
   const reading = (fetched: string, h: readonly E2bHour[] = hours): E2bReading => ({
     projectId: team,
@@ -268,7 +278,7 @@ describe("e2bWindow", () => {
   });
 
   it("refuses an hour the run ended a segment in that the console leaves out", () => {
-    const short = [hours[0] ?? hour("2026-11-16T17:00:00Z", 1, 0.02)];
+    const short = [hours[0] ?? hour("2026-11-16T17:00:00Z", 1, 0.02, 899_000)];
 
     const window = e2bWindow({
       ...base,
@@ -292,7 +302,11 @@ describe("e2bWindow", () => {
   });
 
   it("refuses usage on either side in either reading, a moving figure, short coverage, early or close readings, and a partial event list", () => {
-    const moved = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 1, 0.031)];
+    const moved = [
+      hour("2026-11-16T17:00:00Z", 1, 0.02, 899_000),
+      hour("2026-11-16T18:00:00Z", 1, 0.031, 1_199_000),
+    ];
+
     const sideHour = [...hours, hour("2026-11-16T19:00:00Z", 1, 0.001)];
 
     const cases = [
@@ -328,12 +342,15 @@ describe("e2bWindow", () => {
     const paused = [
       ...events.filter((e) => e.sandboxId !== "s-a"),
       event("s-a", "created", "2026-11-16T17:05:01Z"),
-      event("s-a", "paused", "2026-11-16T17:10:00Z"),
+      event("s-a", "paused", "2026-11-16T17:10:00Z", 299_000),
       event("s-a", "resumed", "2026-11-16T17:15:00Z"),
-      event("s-a", "killed", "2026-11-16T18:05:00Z"),
+      event("s-a", "killed", "2026-11-16T18:05:00Z", 3_000_000),
     ];
 
-    const both = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 2, 0.03)];
+    const both = [
+      hour("2026-11-16T17:00:00Z", 1, 0.02, 299_000),
+      hour("2026-11-16T18:00:00Z", 2, 0.03, 4_199_000),
+    ];
 
     const window = e2bWindow({
       ...base,
@@ -343,6 +360,42 @@ describe("e2bWindow", () => {
     });
 
     expect(window.kind).toBe("isolated");
+  });
+
+  it("refuses an hour whose console quantities miss a segment the run ended then", () => {
+    // Paused and killed in one hour: the console counts the sandbox once either way, so only the
+    // quantities show that the second segment's charge hasn't posted.
+    const twice = [
+      ...events.filter((e) => e.sandboxId !== "s-a"),
+      event("s-a", "created", "2026-11-16T17:05:01Z"),
+      event("s-a", "paused", "2026-11-16T17:10:00Z", 299_000),
+      event("s-a", "resumed", "2026-11-16T17:12:00Z"),
+      event("s-a", "killed", "2026-11-16T17:20:00Z", 480_000),
+    ];
+
+    const partial = [hour("2026-11-16T17:00:00Z", 1, 0.02, 299_000), ...hours.slice(1)];
+
+    const window = e2bWindow({
+      ...base,
+      events: twice,
+      reading: reading("2026-11-16T20:05:00Z", partial),
+      recheck: reading("2026-11-16T20:40:00Z", partial),
+    });
+
+    expect(reasonsOf(window).some((r) => r.startsWith("the console has"))).toBe(true);
+  });
+
+  it("refuses another sandbox whose history doesn't show when it began", () => {
+    const updatedThenKilled = [
+      ...events,
+      event("late", "updated", "2026-11-16T17:10:00Z"),
+      event("late", "killed", "2026-11-16T20:00:00Z", 1000),
+    ];
+
+    const updatedOnly = [...events, event("quiet", "updated", "2026-11-14T10:00:00Z")];
+
+    expect(reasonsOf(e2bWindow({ ...base, events: updatedThenKilled }))).toHaveLength(1);
+    expect(reasonsOf(e2bWindow({ ...base, events: updatedOnly }))).toHaveLength(1);
   });
 
   it("splits a sandbox's events into executions", () => {

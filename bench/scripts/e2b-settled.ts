@@ -105,6 +105,8 @@ const usageSchema = z.tuple([
             z.object({
               timestamp: z.number(),
               sandbox_count: z.number(),
+              cpu_hours: z.number().finite(),
+              ram_gib_hours: z.number().finite(),
               price_for_cpu: z.number().finite(),
               price_for_ram: z.number().finite(),
             }),
@@ -159,6 +161,8 @@ async function reading(path: string) {
     hours: points.map((p) => ({
       start: p.timestamp,
       sandboxCount: p.sandbox_count,
+      cpuHours: p.cpu_hours,
+      ramGibHours: p.ram_gib_hours,
       usd: p.price_for_cpu + p.price_for_ram,
     })),
   };
@@ -199,6 +203,18 @@ const eventSchema = z.object({
   sandboxId: z.string(),
   sandboxTeamId: z.string(),
   type: z.string(),
+  eventData: z
+    .object({
+      execution: z
+        .object({
+          execution_time: z.number().finite(),
+          vcpu_count: z.number().finite(),
+          memory_mb: z.number().finite(),
+          started_at: z.iso.datetime({ offset: true }).optional(),
+        })
+        .optional(),
+    })
+    .nullish(),
   timestamp: z.iso.datetime({ offset: true }),
 });
 
@@ -210,6 +226,16 @@ const parsedEvents = events.map((e) => {
     teamId: v.sandboxTeamId,
     type: v.type,
     timestamp: Date.parse(v.timestamp),
+    execution: v.eventData?.execution
+      ? {
+          startedAt: v.eventData.execution.started_at
+            ? Date.parse(v.eventData.execution.started_at)
+            : null,
+          executionMs: v.eventData.execution.execution_time,
+          vcpu: v.eventData.execution.vcpu_count,
+          memoryMb: v.eventData.execution.memory_mb,
+        }
+      : null,
   };
 });
 
