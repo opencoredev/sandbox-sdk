@@ -2,6 +2,7 @@
 title: E2B SDK and API in TypeScript, with examples
 description: How the e2b npm package and E2B's REST API fit together, one upload-and-run-Python task in TypeScript, and how to keep it portable to Daytona or Docker.
 published: 2026-11-03
+updated: 2026-11-16
 ---
 
 E2B gives you two ways in. The [`e2b`](https://www.npmjs.com/package/e2b) npm package is the TypeScript SDK: it creates sandboxes, runs commands and reads and writes files. The [REST API](https://e2b.dev/docs/api-reference) at `https://api.e2b.app` manages sandboxes and templates: create, list, pause, set a timeout, delete. Commands and files don't go through the REST API at all. They go to envd, a daemon inside each sandbox, which the SDK talks to for you.

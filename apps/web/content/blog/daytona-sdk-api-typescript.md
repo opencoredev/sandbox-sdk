@@ -2,6 +2,7 @@
 title: Daytona SDK and API in TypeScript, with examples
 description: How Daytona's TypeScript SDK, REST API and toolbox API fit together, one upload-and-run-Python task in TypeScript, and how to move it from E2B or to Docker.
 published: 2026-11-12
+updated: 2026-11-16
 ---
 
 Daytona gives you three ways in. The TypeScript SDK is [`@daytona/sdk`](https://www.npmjs.com/package/@daytona/sdk), the package that used to be called `@daytonaio/sdk`. The REST API at `https://app.daytona.io/api` manages sandboxes, snapshots, volumes and preview links. Commands and files go through a third API, the toolbox, which every sandbox serves behind Daytona's toolbox proxy. The SDK talks to the REST API and the toolbox for you.
