@@ -135,6 +135,9 @@ export function createVercelProvider<N extends NativeSandbox>(
 ): Provider<N, VercelCapability> {
   const boxes = new Map<string, N>();
   const prepared = new Set<string>();
+  // Vercel snapshots carry no size, and a restore without `resources` gets the 2 vCPU default.
+  // Restores of snapshots this provider took keep the source's vCPUs unless a size is given.
+  const snapshotVcpus = new Map<string, number>();
   const persistent = options.persistent ?? true;
   const keep = options.keepLastSnapshots;
 
@@ -285,6 +288,12 @@ export function createVercelProvider<N extends NativeSandbox>(
     unsupported(
       "Custom sizes need a whole number of vCPUs, memoryMb equal to 2048 per vCPU, and no diskGb; Vercel derives memory from vCPUs and has no disk setting",
     );
+  }
+
+  function restoredResources(snapshotId: string) {
+    const vcpus = snapshotVcpus.get(snapshotId);
+
+    return vcpus === undefined ? undefined : { vcpus };
   }
 
   const fileInfo = async (id: string, path: string): Promise<FileInfo> => {
@@ -468,7 +477,9 @@ export function createVercelProvider<N extends NativeSandbox>(
           env: input.env,
           tags,
           ports: input.ports,
-          resources: resources(input.size),
+          resources:
+            resources(input.size) ??
+            (input.from === undefined ? undefined : restoredResources(input.from)),
           networkPolicy,
           networkId: options.networkId,
           region: options.region,
@@ -763,14 +774,15 @@ export function createVercelProvider<N extends NativeSandbox>(
     snapshot: (id, settings = {}) =>
       safe(id, async () => {
         const expiresInMs = expiration(settings.expiresInMs, "expiresInMs");
+        const box = await get(id);
 
-        return {
-          id: (
-            await (
-              await get(id)
-            ).snapshot(expiresInMs === undefined ? undefined : { expiration: expiresInMs })
-          ).snapshotId,
-        };
+        const { snapshotId } = await box.snapshot(
+          expiresInMs === undefined ? undefined : { expiration: expiresInMs },
+        );
+
+        if (box.vcpus !== undefined) snapshotVcpus.set(snapshotId, box.vcpus);
+
+        return { id: snapshotId };
       }),
   };
 

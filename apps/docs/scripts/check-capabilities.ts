@@ -39,6 +39,7 @@ import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
 import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
 import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
+import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
 import { superserve } from "../../../packages/sdk/src/providers/superserve/index.ts";
@@ -105,6 +106,7 @@ const subjects: readonly Subject[] = [
         projectId: offlineKey,
       }),
   },
+  { column: "Modal", build: () => createModalProvider(stubTransport) },
   {
     column: "Daytona",
     build: () => daytona({ apiKey: offlineKey }),
@@ -312,6 +314,11 @@ const rows: readonly Row[] = [
     cells: {
       Yes: [accepts({ labels: labels(5) }), accepts({ labels: { app: noise(4000) } })],
       "Up to 4": [accepts({ labels: labels(4) }), rejects({ labels: labels(5) })],
+      "Up to 7": [
+        accepts({ labels: labels(7) }),
+        rejects({ labels: labels(8) }),
+        rejects({ labels: { app: noise(1100) } }),
+      ],
       "120 chars": [accepts({ labels: labels(1) }), rejects({ labels: { app: noise(400) } })],
       "About 2.9 KB": [
         accepts({ labels: { app: noise(2000) } }),

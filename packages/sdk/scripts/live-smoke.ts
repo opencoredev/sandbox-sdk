@@ -41,6 +41,11 @@ const registry = {
     load: async () => (await import("../src/providers/vercel/index.js")).vercel(),
     ports: [3000],
   },
+  modal: {
+    env: [["MODAL_TOKEN_ID"], ["MODAL_TOKEN_SECRET"]],
+    load: async () => (await import("../src/providers/modal/index.js")).modal(),
+    ports: [3000],
+  },
   upstash: {
     env: [["UPSTASH_BOX_API_KEY"]],
     load: async () => (await import("../src/providers/upstash/index.js")).upstash(),

@@ -2,10 +2,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { priceAtSize, pricing } from "./pricing.js";
+import { priceAtSize, pricing, regionMultiplier } from "./pricing.js";
 import { costPerTask } from "./task-cost.js";
 import { allocationEvidence } from "./allocation.js";
-import { hourly } from "./publication-report.js";
+import { hourlyPrice } from "./publication-report.js";
 import {
   countedFailures,
   publicationTrack,
@@ -15,6 +15,7 @@ import {
   type Suite,
 } from "./merge.js";
 import { statistics } from "./stats.js";
+import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
@@ -338,8 +339,120 @@ export function pauseSplit(samples: readonly PauseInput[], provider: string) {
     : { pause: pause.p50, resume: resume.p50, n: pause.count };
 }
 
-export function siteData(input: PublicationReport, track: "default" | "same-spec" = "default") {
-  const r = publicationTrack(input, track);
+/**
+ * Providers whose destroy waits for the provider's confirmed stop (Modal's `destroy` waits up to 60 s
+ * after the terminate request). Their published destroy row times the terminate request
+ * (`terminateRequestMs`), like the other adapters' delete call; the confirmed stop is published
+ * beside it. A destroy whose request response was lost (no `terminateRequestMs`) has no request
+ * time: it is counted in `requestUnknown` and left out of the request distribution, never imputed.
+ */
+const requestTimedDestroy: ReadonlySet<string> = new Set(["modal"]);
+
+/** Seconds, from millisecond phase values. */
+const secondsOf = (values: readonly number[]) => values.map((v) => v / 1000);
+
+export function destroyRequestTiming(
+  samples: PublicationReport["samples"],
+  provider: string,
+  seed: number,
+) {
+  const rows = samples.filter(
+    (s) =>
+      s.suite === "main" &&
+      s.provider === provider &&
+      s.scenario === "destroy" &&
+      s.outcome.kind === "sample",
+  );
+
+  const request = rows.flatMap((s) => {
+    const ms = s.phases?.terminateRequestMs;
+
+    return ms === undefined || !Number.isFinite(ms) ? [] : [ms];
+  });
+
+  const stops = rows.flatMap((s) => {
+    const ms = s.phases?.confirmedStopMs;
+
+    return ms === undefined || !Number.isFinite(ms) ? [] : [ms];
+  });
+
+  const requestStats = distribution(secondsOf(request), seed);
+  const stopStats = statistics(secondsOf(stops));
+
+  return {
+    request: requestStats,
+    requestUnknown: rows.length - request.length,
+    confirmedStop: {
+      n: stopStats.count,
+      p50: stopStats.p50,
+      p95: stopStats.p95,
+      max: stopStats.max,
+      unconfirmed: rows.length - stops.length,
+    },
+  };
+}
+
+/** A merged report as read from disk: reports merged before per-track counts lack them. */
+export type SiteReport = Omit<PublicationReport, "selectionRemovedByTrack"> &
+  Partial<Pick<PublicationReport, "selectionRemovedByTrack">>;
+
+/**
+ * What the attempt policy left out of one track, for the site to show beside the numbers: the
+ * samples removed by reason (null for an older report that mixed tracks and kept only the merged
+ * counts), and the track's rules with their reasons, source iterations and replacement runs. A
+ * superseded rule for a run outside this report removed nothing and is not listed.
+ */
+export function exclusions(input: SiteReport, track: "default" | "same-spec") {
+  const onTrack = (rule: { track?: "default" | "same-spec" | undefined }) =>
+    (rule.track ?? "default") === track;
+
+  const runs = new Set(input.sources.map((s) => s.runId));
+  const tracks = new Set(input.sources.map((s) => s.config.track ?? "default"));
+  const policy = input.attemptPolicy;
+
+  const byTrack = input.selectionRemovedByTrack;
+
+  const removed = byTrack
+    ? (byTrack[track] ?? {})
+    : tracks.size === 1 && tracks.has(track)
+      ? input.selectionRemoved
+      : null;
+
+  return {
+    removed,
+    superseded: (policy?.superseded ?? [])
+      .filter((rule) => onTrack(rule) && runs.has(rule.sourceRunId))
+      .map(({ provider, suite, sourceRunId, iterations, rerunSourceRunIds, reason }) => ({
+        provider,
+        suite,
+        sourceRunId,
+        iterations,
+        rerunSourceRunIds,
+        reason,
+      })),
+    notRun: (policy?.notRun ?? [])
+      .filter(onTrack)
+      .map(({ provider, suite, scenario, reason }) => ({ provider, suite, scenario, reason })),
+    replacements: (policy?.replacements ?? [])
+      .filter(onTrack)
+      .map(({ provider, suite, scenario, sourceRunIds }) => ({
+        provider,
+        suite,
+        scenario,
+        sourceRunIds,
+      })),
+  };
+}
+
+export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
+  const disclosed = exclusions(input, track);
+
+  // Nothing below reads the per-track counts; exclusions above already has them.
+  const r = publicationTrack(
+    { ...input, selectionRemovedByTrack: input.selectionRemovedByTrack ?? {} },
+    track,
+  );
+
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
 
   for (const provider of names) {
@@ -379,19 +492,37 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
           ourFailure(x),
       ).length;
 
+      const row = {
+        provider,
+        n: s.stats.count,
+        p50: scaled(s.stats.p50),
+        p95: scaled(s.stats.p95),
+        min: scaled(s.stats.min),
+        ciLow: scaled(s.stats.p50CI?.low),
+        ciHigh: scaled(s.stats.p50CI?.high),
+        successes: s.reliability.successes,
+        failures: s.reliability.failures - ours,
+        ourFailures: ours,
+        limitFailures: s.reliability.classes["provider-account-limit"],
+      };
+
+      if (def.id !== "destroy" || !requestTimedDestroy.has(provider)) return [row];
+
+      // Already in seconds: the request distribution replaces the confirmed-stop one.
+      const timing = destroyRequestTiming(r.samples, provider, r.bootstrapSeed);
+
       return [
         {
-          provider,
-          n: s.stats.count,
-          p50: scaled(s.stats.p50),
-          p95: scaled(s.stats.p95),
-          min: scaled(s.stats.min),
-          ciLow: scaled(s.stats.p50CI?.low),
-          ciHigh: scaled(s.stats.p50CI?.high),
-          successes: s.reliability.successes,
-          failures: s.reliability.failures - ours,
-          ourFailures: ours,
-          limitFailures: s.reliability.classes["provider-account-limit"],
+          ...row,
+          n: timing.request.count,
+          p50: timing.request.p50,
+          p95: timing.request.p95,
+          min: timing.request.min,
+          ciLow: timing.request.p50CI?.low ?? null,
+          ciHigh: timing.request.p50CI?.high ?? null,
+          timed: "terminate-request" as const,
+          requestUnknown: timing.requestUnknown,
+          confirmedStop: timing.confirmedStop,
         },
       ];
     }),
@@ -401,7 +532,9 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     const rel = reliability(r.samples.filter((s) => s.provider === name));
     const price = pricing[name];
     const hw = hardware(r, name);
-    const hour = hourly(r, name);
+    const hourPrice = hourlyPrice(r, name);
+    const hour = hourPrice.usd;
+    const common = priceAtSize(name, { cpu: 4, memoryGiB: 8 });
     const allocation = allocationEvidence(r.samples, name);
 
     return {
@@ -417,7 +550,12 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
       equalSpec: allocation.equalSpec,
       currency: price?.currency ?? null,
       hourly: hour,
-      commonHourly: priceAtSize(name, { cpu: 4, memoryGiB: 8 }),
+      // Prices carry the source runs' region multiplier (Modal); `pricingBound` "lower" means the
+      // hourly price, and so the per-task estimate, is a lower bound, never an estimate.
+      pricingBound: hourPrice.bound,
+      pricingRegion: hourPrice.region,
+      regionMultiplier: hourPrice.multiplier,
+      commonHourly: common === null ? null : common * regionMultiplier(name, hourPrice.region),
       perVcpuHour:
         hour != null && allocation.pricingAllocation
           ? hour / allocation.pricingAllocation.cpu
@@ -479,6 +617,8 @@ export function siteData(input: PublicationReport, track: "default" | "same-spec
     observations: r.samples.length,
     runs: r.sources.map((s) => ({ id: s.runId, suite: s.suite, samples: s.sampleCount })),
     excluded: r.excludedSources,
+    // Samples the attempt policy left out of this track, with each rule's reason (see exclusions).
+    exclusions: disclosed,
     providers,
     metrics,
     coldSamples,

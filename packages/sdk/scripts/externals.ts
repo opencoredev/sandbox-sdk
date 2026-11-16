@@ -19,6 +19,7 @@ export const externalPackages: readonly string[] = [
   "@vercel/oidc",
   "e2b",
   "freestyle",
+  "modal",
   "railway",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",

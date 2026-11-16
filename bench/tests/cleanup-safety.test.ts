@@ -558,3 +558,43 @@ it("recovery rejects foreign bare journal IDs and snapshot parents, but deletes 
     await rm(out, { recursive: true, force: true });
   }
 });
+
+it("recovery fails, naming them, when sleeping machines it can't read without waking may be the run's", async () => {
+  const out = await mkdtemp(join(tmpdir(), "bench-recovery-sleeping-"));
+  const backing = memory();
+  const run = "recovery-sleeping";
+  const listSleeping = vi.fn(async () => [{ id: "sleeping-keyed-machine" }]);
+
+  const config = parseV2([
+    "--providers",
+    "memory",
+    "--run",
+    run,
+    "--out",
+    out,
+    "--timeout-ms",
+    "100",
+  ]);
+
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+  try {
+    const ready = (provider: typeof backing) =>
+      reapRun(
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        config,
+        (s) => s,
+      );
+
+    // Without the listing nothing is left and recovery succeeds.
+    expect(await ready(backing)).toBe(false);
+    expect(await ready(Object.assign({ ...backing }, { listSleeping }))).toBe(true);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("sleeping-keyed-machine"));
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining("1 sleeping machines unchecked"));
+  } finally {
+    stderr.mockRestore();
+    stdout.mockRestore();
+    await rm(out, { recursive: true, force: true });
+  }
+});

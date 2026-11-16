@@ -1,9 +1,9 @@
 import type { ReportV2 } from "./v2-model.js";
-import { resources } from "./fingerprint.js";
+import { pricedResources } from "./billed-resources.js";
 import { estimateCost, pricing } from "./pricing.js";
 
 /** Planning estimate only: extrapolates pilot durations, including failures, with no rate-limit prediction. */
-export function projectCosts(report: ReportV2) {
+export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "samples">) {
   const base = [
     "cold",
     "fingerprint",
@@ -37,7 +37,17 @@ export function projectCosts(report: ReportV2) {
     .map((p) => {
       const rows = report.samples.filter((s) => s.provider === p.name);
       const fp = rows.find((s) => s.fingerprint)?.fingerprint ?? null;
-      const allocation = fp ? resources(fp) : (pricing[p.name]?.fixed ?? null);
+
+      // Request-billed providers (Modal) are priced on the request, never on the guest's view,
+      // at the run's configured region multiplier.
+      const priced = pricedResources(
+        p.name,
+        fp,
+        p.requestedSize ?? report.config.size[p.name] ?? null,
+      );
+
+      const allocation = priced?.resources ?? null;
+      const region = p.configuredRegion;
 
       const measuredDuration = (name: string) => {
         const values = rows
@@ -87,7 +97,7 @@ export function projectCosts(report: ReportV2) {
             return null;
           }
 
-          const cost = estimateCost(p.name, ms, allocation);
+          const cost = estimateCost(p.name, ms, allocation, region);
 
           if (cost === null) return null;
           total += cost * runs;
@@ -105,7 +115,7 @@ export function projectCosts(report: ReportV2) {
         (meanDuration("restore-fingerprint") ?? 0) +
         (meanDuration("restore-destroy") ?? 0);
 
-      const overlap = estimateCost(p.name, overlapMs * 100, allocation);
+      const overlap = estimateCost(p.name, overlapMs * 100, allocation, region);
       const burstLife = meanDuration("burst-3/sandbox-lifetime");
 
       const burst10 =
@@ -115,6 +125,7 @@ export function projectCosts(report: ReportV2) {
               p.name,
               burstLife * 10 * (report.config["burst-cohorts"] ?? 1),
               allocation,
+              region,
             );
 
       const burst25 =
@@ -124,11 +135,15 @@ export function projectCosts(report: ReportV2) {
               p.name,
               burstLife * 25 * (report.config["burst-cohorts"] ?? 1),
               allocation,
+              region,
             );
 
       return {
         provider: p.name,
         currency: pricing[p.name]?.currency ?? "USD",
+        region,
+        /** `lower`: a lower bound (Modal's default track), not an estimate of the bill. */
+        bound: priced?.bound ?? null,
         normal100: lifecycle === null || overlap === null ? null : lifecycle + overlap,
         eachWorkload30: workload,
         burst10,

@@ -63,7 +63,7 @@ describe("provider skip policy", () => {
       throw new Error("Should not import");
     };
 
-    for (const name of ["e2b", "vercel", "daytona"])
+    for (const name of ["e2b", "vercel", "daytona", "modal"])
       expect(await loadProvider(name, {}, importer)).toMatchObject({
         kind: "skipped",
         note: expect.stringContaining("Missing credentials"),
@@ -76,6 +76,22 @@ describe("provider skip policy", () => {
       name: "vercel",
       note: "Missing credentials: VERCEL_TEAM_ID, VERCEL_PROJECT_ID",
     });
+  });
+  it("requires both Modal token fields and reports the region key", async () => {
+    expect(await loadProvider("modal", { MODAL_TOKEN_ID: "ak-test" })).toEqual({
+      kind: "skipped",
+      name: "modal",
+      note: "Missing credentials: MODAL_TOKEN_SECRET",
+    });
+
+    // The factory loads the modal peer only on first use, so this makes no request.
+    const ready = await loadProvider("modal", {
+      MODAL_TOKEN_ID: "ak-test",
+      MODAL_TOKEN_SECRET: "as-test",
+      MODAL_SANDBOX_REGION: "us-east",
+    });
+
+    expect(ready).toMatchObject({ kind: "ready", name: "modal", cloud: true, region: "us-east" });
   });
   it("skips absent packages/exports, but surfaces broken factories", async () => {
     expect(

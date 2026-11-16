@@ -8,6 +8,7 @@ import { boxdError } from "../src/providers/boxd/errors.js";
 import { daytonaError } from "../src/providers/daytona/errors.js";
 import { e2bError } from "../src/providers/e2b/errors.js";
 import { freestyleError } from "../src/providers/freestyle/errors.js";
+import { modalError } from "../src/providers/modal/errors.js";
 import { railwayError } from "../src/providers/railway/errors.js";
 import { superserveError } from "../src/providers/superserve/errors.js";
 import { tenkiError } from "../src/providers/tenki/errors.js";
@@ -24,6 +25,7 @@ const mappers: [string, (cause: unknown) => SandboxError][] = [
   ["e2b", (error) => e2bError(error)],
   ["railway", (error) => railwayError(error)],
   ["vercel", (error) => vercelError(error)],
+  ["modal", (error) => modalError(error)],
   ["superserve", (error) => superserveError(error)],
   ["boxd", (error) => boxdError(error)],
   ["agentos", (error) => agentosError(error)],

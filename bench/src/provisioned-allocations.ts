@@ -55,6 +55,8 @@ const defaults: DefaultAllocations = {
   boxd: { cpu: 2, memoryGiB: 8, diskGiB: 100 },
   freestyle: { cpu: 4, memoryGiB: 8, diskGiB: 32 },
   superserve: { cpu: 1, memoryGiB: 1, diskGiB: 4 },
+  // https://vercel.com/docs/sandbox/pricing: 2 vCPUs by default, 2 GB per vCPU, 64 GB NVMe.
+  vercel: { cpu: 2, memoryGiB: 4, diskGiB: 64 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

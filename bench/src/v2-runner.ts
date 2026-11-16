@@ -13,7 +13,12 @@ import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
-import { providerMember, type LoadedProvider, type ReadyProvider } from "./providers.js";
+import {
+  destroyTimings,
+  providerMember,
+  type LoadedProvider,
+  type ReadyProvider,
+} from "./providers.js";
 import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
@@ -23,7 +28,9 @@ import {
   parseFingerprint,
   type Fingerprint,
 } from "./fingerprint.js";
-import { estimateCost, budgetUSD, pricing, settledBudgetUSD } from "./pricing.js";
+import { estimateCost, budgetUSD, settledBudgetUSD } from "./pricing.js";
+import { pricedResources, reservationResources } from "./billed-resources.js";
+import { iterationBoundMs, scenarioNames } from "./scenarios.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
@@ -49,25 +56,29 @@ import {
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
+import { captureVercelMeter } from "./billing/providers.js";
+import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
+import {
+  allocated,
+  attemptApp,
+  beginAllocation,
+  failedAllocation,
+  journalApp,
+  pendingForRun,
+  preparesApps,
+  reconcileDiscovered,
+  type JournalApp,
+} from "./modal-apps.js";
 
-export const scenarioNames = [
-  "command",
-  "files-1kb",
-  "files-10mb",
-  "reconnect",
-  "pause-resume",
-  "snapshot",
-  "fingerprint",
-  "perf",
-  "git-clone",
-  "npm-install",
-  "dev-server",
-  "preview-first-byte",
-  "edit-loop",
-  "tool-replay",
-  "pip-install",
-];
+/**
+ * Providers whose snapshots keep files but not CPU and memory, so a restore must ask for the
+ * source's size again. Other providers' snapshots or templates own their resources, and their
+ * restores stay as published.
+ */
+const restoreNeedsSize: ReadonlySet<string> = new Set(["modal"]);
+
+export { scenarioNames } from "./scenarios.js";
 
 const workloadNames = new Set([
   "git-clone",
@@ -154,7 +165,16 @@ async function host(): Promise<HostSample> {
   };
 }
 
-export function summarize(samples: Sample[], seed: number) {
+/**
+ * Per-group statistics. `regions` maps each provider to the region its run was configured with
+ * (`configuredRegion`), so every cost figure, including performance per dollar, carries the
+ * region multiplier the provider bills (Modal).
+ */
+export function summarize(
+  samples: Sample[],
+  seed: number,
+  regions: Readonly<Record<string, string | null>> = {},
+) {
   const groups = new Map<string, Sample[]>();
 
   for (const s of samples) {
@@ -189,7 +209,9 @@ export function summarize(samples: Sample[], seed: number) {
       const rate = estimateCost(
         row.provider,
         1000,
-        row.fingerprint ? resources(row.fingerprint) : (pricing[row.provider]?.fixed ?? null),
+        pricedResources(row.provider, row.fingerprint, row.requestedSize ?? null)?.resources ??
+          null,
+        regions[row.provider] ?? null,
       );
 
       if (!rate || row.outcome.kind !== "sample" || row.outcome.value <= 0) return null;
@@ -286,7 +308,7 @@ export async function runV2(
       "Fingerprint includes public ipinfo.io lookup (optional); region and org are observed egress, not a promise about placement. Host counters are cumulative: difference before/after to derive CPU and network load.",
       "CPython fixed LCG iterations/s; all-core uses ceil of min(nproc, cgroup quota), capped at 64 with worker count recorded. Python version and CPU flags retained: runtime differences remain a confounder. 16 MiB memory copy; 64 MiB buffered sequential I/O; fsync writes and 256 random 4 KiB operations at queue depth 1. Reads may be cached; no O_DIRECT. Decimal MB/s.",
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
-      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
+      "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Modal is priced on its requested allocation, never the guest view: exact when sized (request = limit), a lower bound on the default track (0.125 CPU / 128 MiB minimum request; billed burst usage above it is not counted), with Modal's region multiplier for a pinned region. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
     ],
   };
@@ -348,10 +370,21 @@ export async function runV2(
     }
   >();
 
+  // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
+  // never removed, so recovery can list their sandboxes and billing can attribute their charges.
+  const apps = new Map<string, JournalApp>();
+  // Restores still tagged pending, owned by the exact tag read that listed them (Modal).
+  const pendingOwned = new Set<string>();
+
   let journal = Promise.resolve();
 
   function persist() {
-    const data = JSON.stringify({ runId: config.run, resources: [...owned.values()] }, null, 2);
+    const data = JSON.stringify(
+      { runId: config.run, resources: [...owned.values()], apps: [...apps.values()] },
+      null,
+      2,
+    );
+
     journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
 
     return journal;
@@ -420,13 +453,15 @@ export async function runV2(
       let verified: boolean;
 
       try {
-        verified = await verifyRunOwnership(
-          loaded.provider,
-          id,
-          config.run,
-          config["timeout-ms"],
-          config["ownership-visibility-ms"],
-        );
+        verified =
+          pendingOwned.has(`${loaded.name}/${id}`) ||
+          (await verifyRunOwnership(
+            loaded.provider,
+            id,
+            config.run,
+            config["timeout-ms"],
+            config["ownership-visibility-ms"],
+          ));
       } finally {
         if (measurement)
           measurement.phases.ownershipVerifyMs =
@@ -491,6 +526,15 @@ export async function runV2(
 
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
+
+        // A timed destroy row carries the confirmed stop in its phases; any other deletion
+        // journals it, so billing can still settle the sandbox's App (Modal).
+        if (!measurement)
+          await recordStop({
+            path: join(runDir, stopJournalFile),
+            provider: loaded.name,
+            sandboxId: id,
+          }).catch(() => {});
         const persistStart = performance.now();
 
         try {
@@ -570,14 +614,19 @@ export async function runV2(
       product: config.product[p.name] ?? null,
     };
 
+    // Request-billed providers (Modal) are priced on the request, never on the guest's view.
+    const priced = (fingerprint: Fingerprint | null) =>
+      pricedResources(p.name, fingerprint, allocation.requestedSize)?.resources ?? null;
+
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
     reserve = budgetUSD(
       p.name,
       estimateCost(
         p.name,
-        timeout * (costSuite ? 4 : burst ? 2 : scenarioNames.length + 4),
-        state.fp ? resources(state.fp) : { cpu: 8, memoryGiB: 16, diskGiB: 100 },
+        costSuite ? timeout * 4 : burst ? timeout * 2 : iterationBoundMs(timeout),
+        reservationResources(p.name, state.fp, allocation.requestedSize),
+        p.region,
       ) ?? dollarsMax,
     );
 
@@ -619,11 +668,38 @@ export async function runV2(
     state.reserved += reserve;
     const createSize = allocation.requestedSize;
 
+    // This iteration's own App, for the cold create and its restores. Bursts share the default App.
+    const app =
+      !burst && config["app-per-attempt"].some((name) => name === p.name)
+        ? attemptApp(config.run, index)
+        : undefined;
+
+    /** Journal the App, then look it up or create it, before the create that allocates in it. */
+    const prepareApp = async (name: string) => {
+      const known = apps.get(`${p.name}/${name}`);
+
+      if (known?.appId) return known;
+      const entry = known ?? journalApp(p.name, name);
+      apps.set(`${p.name}/${name}`, entry);
+      await persist();
+
+      if (!preparesApps(p.provider)) throw new Error(`${p.name} cannot prepare an App`);
+      const prepared = await p.provider.prepareApp(name);
+
+      if (!prepared) throw new Error(`App ${name} could not be created`);
+      entry.appId = prepared.appId;
+      await persist();
+
+      return entry;
+    };
+
     const tracked = new Proxy(p.provider, {
       get(target, key) {
         if (key === "create")
           return (input: CreateInput) => {
             let restore: RestoreAttempt | undefined;
+            // This create, journaled in its App before submission (per-attempt Apps).
+            let allocation: { app: JournalApp; id: string } | undefined;
 
             return pending.track(
               (async () => {
@@ -648,16 +724,35 @@ export async function runV2(
 
                 createEvidence = { settled: false, stage: "adapter-create" };
                 clockPhase = "adapter-create";
+                // Before allocation and outside create timing: the App is journaled and resolved,
+                // and so is this create, so a lost response still leaves a record in the App.
+                const owner = app === undefined ? undefined : await prepareApp(app);
+                const attempt = owner && beginAllocation(owner);
+
+                if (owner && attempt) {
+                  allocation = { app: owner, id: attempt.id };
+                  await persist();
+                }
+
+                const request =
+                  attempt === undefined
+                    ? input
+                    : { ...input, labels: { ...input.labels, ...attempt.labels } };
+
                 createClock.begin();
                 adapterCreateRejected = false;
                 let info: SandboxInfo;
 
                 try {
-                  info = await target.create(input);
+                  info = await target.create(request);
                 } catch (error) {
                   adapterCreateRejected = true;
+
+                  if (allocation) failedAllocation(allocation.app, allocation.id, p.name, error);
                   throw error;
                 }
+
+                if (allocation) allocated(allocation.app, allocation.id, info.id);
 
                 const returned = performance.now();
 
@@ -747,6 +842,8 @@ export async function runV2(
                 return info;
               })()
                 .catch(async (cause: unknown) => {
+                  // The create's journal entry: refused, or still unknown (a lost response).
+                  if (allocation) await persist();
                   const failure = failureOutcome(cause, sanitize);
                   createEvidence.code = failure.code;
                   createEvidence.cause = failure.cause;
@@ -789,6 +886,8 @@ export async function runV2(
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
                     ids.add(nativeId);
+
+                    if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
                     if (input.from) restoredId = nativeId;
                     owned.set(`${p.name}/${nativeId}`, {
@@ -872,11 +971,7 @@ export async function runV2(
         hostAfter,
         headroom: headroom(before, hostAfter),
         fingerprint: fp,
-        estimatedCost: estimateCost(
-          p.name,
-          durationMs,
-          fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
-        ),
+        estimatedCost: estimateCost(p.name, durationMs, priced(fp), p.region),
         details,
       };
 
@@ -889,14 +984,35 @@ export async function runV2(
       return sample;
     };
 
-    function measureDestroy(scenario: string, id: string) {
+    async function measureDestroy(scenario: string, id: string) {
       const clock = new PhaseClock();
       const phases: Record<string, number> = {};
+
+      // Vercel reports a sandbox's usage only once its session stops and not after deletion, so
+      // the cost suite stops it and saves the meter first. A failed or stalled read (bounded by the
+      // scenario timeout) leaves its cost unknown and never holds up the deletion.
+      if (costSuite && p.name === "vercel")
+        await deadline(timeout, () => captureVercelMeter(id, join(runDir, "usage"))).catch(
+          () => null,
+        );
 
       return measure(
         scenario,
         async () => {
-          await remove(p, id, { clock, phases });
+          try {
+            await remove(p, id, { clock, phases });
+          } finally {
+            // Modal: the row times a confirmed stop; these split it into the request and the stop.
+            const timing = destroyTimings.get(`${p.name}/${id}`);
+            destroyTimings.delete(`${p.name}/${id}`);
+
+            if (timing) {
+              if (timing.requestMs !== null) phases.terminateRequestMs = timing.requestMs;
+
+              if (timing.stoppedMs !== null) phases.confirmedStopMs = timing.stoppedMs;
+            }
+          }
+
           ids.delete(id);
 
           if (clock.start === null)
@@ -1070,7 +1186,7 @@ export async function runV2(
         for (const sample of report.samples)
           if (sample.provider === p.name && sample.iteration === index && !sample.fingerprint) {
             sample.fingerprint = fp;
-            sample.estimatedCost = estimateCost(p.name, sample.durationMs, resources(fp));
+            sample.estimatedCost = estimateCost(p.name, sample.durationMs, priced(fp), p.region);
           }
 
         return fp;
@@ -1371,12 +1487,17 @@ export async function runV2(
                 await measure(
                   "create-from-snapshot",
                   async (signal) => {
-                    restored = await createSandbox(tracked, {
+                    const restoreOptions: CreateOptions = {
                       from: id,
                       labels: { "sandbox-bench-run": config.run },
                       ports: [3000],
                       signal,
-                    });
+                    };
+
+                    // Only where the snapshot keeps files but not resources; elsewhere it stays unchanged.
+                    if (createSize !== null && restoreNeedsSize.has(p.name))
+                      restoreOptions.size = createSize;
+                    restored = await createSandbox(tracked, restoreOptions);
                     createPhases.sdkReadyMs = performance.now() - (createClock.start ?? lifeStart);
 
                     return { ...createPhases };
@@ -1415,6 +1536,8 @@ export async function runV2(
                       );
                       restoreDetails.verification = verifyRestoredResources(sourceFingerprint, fp, {
                         compareDisk: p.name !== "boat",
+                        // An unsized Modal sandbox reports its host's memory, which differs host to host.
+                        compareMemory: !(p.name === "modal" && allocation.requestedSize === null),
                       });
 
                       if (restoreDetails.verification.matches === false)
@@ -1439,9 +1562,8 @@ export async function runV2(
                 const cost = estimateCost(
                   p.name,
                   restoredMs,
-                  restoredFingerprint
-                    ? resources(restoredFingerprint)
-                    : (pricing[p.name]?.fixed ?? null),
+                  priced(restoredFingerprint),
+                  p.region,
                 );
 
                 restoredCost = restoredCost === null || cost === null ? null : restoredCost + cost;
@@ -1487,9 +1609,8 @@ export async function runV2(
                     sample.estimatedCost = estimateCost(
                       p.name,
                       sample.durationMs,
-                      restoredFingerprint
-                        ? resources(restoredFingerprint)
-                        : (pricing[p.name]?.fixed ?? null),
+                      priced(restoredFingerprint),
+                      p.region,
                     );
                   }
                 }
@@ -1802,16 +1923,25 @@ export async function runV2(
         });
       const duration = performance.now() - lifeStart;
 
-      const sourceCost = estimateCost(
-        p.name,
-        duration,
-        fp ? resources(fp) : (pricing[p.name]?.fixed ?? null),
-      );
+      const sourceCost = estimateCost(p.name, duration, priced(fp), p.region);
 
       const cost = sourceCost === null || restoredCost === null ? null : sourceCost + restoredCost;
       state.reserved -= reserve;
 
-      if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
+      // A lower-bound estimate would under-charge the guard, so it charges the reservation's resources.
+      const lowerBound = pricedResources(p.name, fp, allocation.requestedSize)?.bound === "lower";
+
+      if (cost !== null && lowerBound)
+        state.estimatedUSD += budgetUSD(
+          p.name,
+          estimateCost(
+            p.name,
+            duration + restoredDurationMs,
+            reservationResources(p.name, fp, allocation.requestedSize),
+            p.region,
+          ) ?? reserve,
+        );
+      else if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
       else if (p.cloud) {
         // An unpriced iteration (usually a failed create) is charged for its measured
         // duration at conservative resources; it must not end the provider's run.
@@ -2006,15 +2136,43 @@ export async function runV2(
       ),
     );
 
+    const journaled = [...apps.values()].filter((app) => app.provider === p.name);
+
     try {
       const listed = await deadline(config["timeout-ms"], () =>
         p.provider.list({ "sandbox-bench-run": config.run }),
       );
 
-      for (const item of listed) if (hasRunOwnership(item, config.run)) ids.add(item.id);
+      for (const item of listed)
+        if (hasRunOwnership(item, config.run)) {
+          ids.add(item.id);
+          // A sandbox whose create response was lost joins its App's journal entry.
+          reconcileDiscovered(journaled, p.name, item);
+        }
     } catch (e) {
       errors.push(errorNote(e));
     }
+
+    // Restores whose setup never finished stay tagged pending and out of list() (Modal).
+    try {
+      for (const item of await deadline(config["timeout-ms"], () =>
+        pendingForRun(p.provider, config.run),
+      )) {
+        pendingOwned.add(`${p.name}/${item.id}`);
+        ids.add(item.id);
+        reconcileDiscovered(journaled, p.name, item);
+        owned.set(`${p.name}/${item.id}`, {
+          provider: p.name,
+          id: item.id,
+          kind: "sandbox",
+          parent: null,
+        });
+      }
+    } catch (e) {
+      errors.push(errorNote(e));
+    }
+
+    await persist();
 
     const sourceIds = new Set(
       [...owned.values()]
@@ -2159,13 +2317,18 @@ export async function runV2(
 
         if (budget <= 0) break;
 
-        const after = await deadline(budget, () =>
-          p.provider.list({ "sandbox-bench-run": config.run }),
+        const [after, pending] = await deadline(budget, () =>
+          Promise.all([
+            p.provider.list({ "sandbox-bench-run": config.run }),
+            pendingForRun(p.provider, config.run),
+          ]),
         );
 
         remaining.clear();
 
         for (const item of after) if (hasRunOwnership(item, config.run)) remaining.add(item.id);
+
+        for (const item of pending) remaining.add(item.id);
 
         if (
           !remaining.size ||
@@ -2258,7 +2421,11 @@ export async function runV2(
   }
 
   report.finishedAt = new Date().toISOString();
-  report.summaries = summarize(report.samples, config.seed);
+  report.summaries = summarize(
+    report.samples,
+    config.seed,
+    Object.fromEntries(report.providers.map((p) => [p.name, p.configuredRegion])),
+  );
   await persist();
   await save();
   await journalFiles.writeFile(

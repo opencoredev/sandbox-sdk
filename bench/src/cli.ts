@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseV2 } from "./v2-config.js";
-import { loadProvider } from "./providers.js";
+import { loadProvider, providerRegion } from "./providers.js";
 import { runV2, sanitize } from "./v2-runner.js";
 import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
@@ -16,8 +16,26 @@ export async function main(load: typeof loadProvider = loadProvider) {
     return;
   }
 
+  if (args[0] === "modal-sweep") {
+    await (await import("./modal-sweep.js")).modalSweepCommand(args.slice(1));
+
+    return;
+  }
+
   if (args[0] === "attempts") {
     await (await import("./attempts.js")).attemptsCommand(args.slice(1));
+
+    return;
+  }
+
+  if (args[0] === "realistic") {
+    await (await import("./realistic/cli.js")).realisticCommand(args.slice(1));
+
+    return;
+  }
+
+  if (args[0] === "coverage") {
+    await (await import("./cost/coverage-cli.js")).coverageCommand(args.slice(1));
 
     return;
   }
@@ -46,7 +64,7 @@ export async function main(load: typeof loadProvider = loadProvider) {
 
   if (args.includes("--help")) {
     process.stdout.write(
-      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] [--policy path.json] (offline)\nbun bench attempts results/publication-final-v2 (offline)\nbun bench site-data [--report results/publication-final] [--out ../apps/bench-site/src/data/benchmark.json] [--public ../apps/bench-site/public] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--omit-network-download true --burst-cohorts 3 --workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --ownership-visibility-ms 120000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
+      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] [--policy path.json] (offline)\nbun bench attempts results/publication-final-v2 (offline)\nbun bench modal-sweep [--terminate] [--stop-wait-ms 90000] (every Modal Environment; reports bench/SDK-owned running sandboxes, stops them with --terminate)\nbun bench site-data [--report results/publication-final] [--out ../apps/bench-site/src/data/benchmark.json] [--public ../apps/bench-site/public] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--omit-network-download true --burst-cohorts 3 --workload-runs N --scenarios all (or comma names) --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --ownership-visibility-ms 120000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5 --lifetime-ms modal=7200000 --app-per-attempt modal\n--run RUN_ID --out results/v2 | --v1 for legacy harness\n",
     );
 
     return;
@@ -56,6 +74,9 @@ export async function main(load: typeof loadProvider = loadProvider) {
 
   if (reap && !args.includes("--run")) throw new Error("reap requires explicit --run");
   const config = parseV2(reap ? args.slice(1) : args);
+
+  // A conflicting region configuration refuses the whole run, not just that provider.
+  for (const name of config.providers) providerRegion(name, process.env);
   const providers = [];
 
   for (const name of config.providers) {

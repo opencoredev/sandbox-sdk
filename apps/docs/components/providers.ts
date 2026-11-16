@@ -5,6 +5,7 @@ export const PROVIDERS = {
   local: { name: "Local", logo: "/integrations/docker.svg" },
   e2b: { name: "E2B", logo: "/integrations/e2b.svg" },
   vercel: { name: "Vercel Sandbox", logo: "/integrations/vercel.svg" },
+  modal: { name: "Modal", logo: "/integrations/modal.svg" },
   daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
   upstash: { name: "Upstash Box", logo: "/integrations/upstash.svg" },
   railway: { name: "Railway", logo: "/integrations/railway.svg" },

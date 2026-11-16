@@ -214,6 +214,7 @@ await box.run("ls", { cwd: "/vercel/sandbox" });
 - `source` clones a git repository (with `depth`, `revision`, and `username`/`password` for private repos) or unpacks a tarball into `/vercel/sandbox`, not `/workspace`. Run commands there with `cwd`, or clone into `/workspace` yourself.
 - `networkPolicy` takes Vercel's full policy: domain rules, header injection, proxying, and subnet allow and deny lists. Injected headers reach the destination without the sandbox seeing them. Use it or `network`, not both, or creation fails with `invalid_argument`.
 - `image`, `runtime`, and `source` apply to fresh sandboxes only. With `from`, the snapshot supplies the file system.
+- Vercel snapshots carry no size. Restoring a snapshot this provider instance took keeps the source's vCPUs; otherwise pass `size`, or Vercel starts the default 2 vCPUs.
 
 ## Configuration
 

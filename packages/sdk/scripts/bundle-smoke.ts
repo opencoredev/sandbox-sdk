@@ -37,6 +37,7 @@ const fakes = {
   sandboxer: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   e2b: `{ apiKey: "smoke-key" }`,
   vercel: `{ token: "smoke-token", teamId: "team_smoke", projectId: "prj_smoke" }`,
+  modal: `{ tokenId: "ak-smoke", tokenSecret: "as-smoke", client: { maxRetries: 0, timeoutMs: 5000 } }`,
   daytona: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   upstash: `{ apiKey: "smoke-key" }`,
   railway: `{ token: "smoke-token", environmentId: "smoke-env" }`,
@@ -133,7 +134,7 @@ const requireBanner = {
 
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
-const needsRequire = ["vercel", "tenki", "boxd", "boxd files"];
+const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files"];
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {

@@ -55,6 +55,7 @@ export async function vercelMock() {
     status: Sandbox["status"] = "running";
     readonly createdAt = new Date();
     readonly persistent: boolean;
+    readonly vcpus: number;
     tags: Sandbox["tags"];
     readonly routes: Sandbox["routes"] = [];
     readonly children = new Set<ReturnType<typeof spawn>>();
@@ -68,6 +69,7 @@ export async function vercelMock() {
     ) {
       this.tags = params.tags;
       this.persistent = params.persistent ?? true;
+      this.vcpus = params.resources?.vcpus ?? 2;
     }
     async initialize() {
       await fs.mkdir(this.map("/vercel/sandbox"), { recursive: true });

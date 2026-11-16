@@ -514,7 +514,8 @@ test("whole-file transfers use the web client and preserve authentication errors
 });
 
 test("boxd listing skips corrupt or vanished per-machine metadata and preserves auth failures", async () => {
-  const box = await createSandbox(factory());
+  // A keyed machine's metadata is only in its guest; a v2 name carries its own.
+  const box = await createSandbox(factory(), { key: `corrupt-${crypto.randomUUID()}` });
 
   try {
     const entry = boxdState.boxes.get(box.id);
@@ -527,13 +528,82 @@ test("boxd listing skips corrupt or vanished per-machine metadata and preserves 
       expect(await factory().list({})).toEqual([]);
     }
 
+    // Without its marker a keyed machine can't be identified, so it is left out.
     read.mockRejectedValue(Object.assign(new Error("gone"), { grpcCode: 5 }));
-    expect((await factory().list({})).map((value) => value.id)).toEqual([box.id]);
+    expect((await factory().list({})).map((value) => value.id)).not.toContain(box.id);
     read.mockRejectedValue(Object.assign(new Error("denied"), { grpcCode: 16 }));
     await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
     read.mockRestore();
   } finally {
     await box.destroy();
+  }
+});
+
+test("listing never reads a paused machine's guest, which would wake it; find still reaches one by key", async () => {
+  const provider = factory();
+  const key = `asleep-${crypto.randomUUID()}`;
+  const plain = await createSandbox(provider);
+  const keyed = await provider.create({ key, labels: { team: "a" } });
+
+  const entryOf = (id: string) => {
+    const entry = boxdState.boxes.get(id);
+
+    if (!entry) throw new Error("Missing mock machine");
+
+    return entry;
+  };
+
+  const entries = [entryOf(plain.id), entryOf(keyed.id)];
+
+  try {
+    // The plain machine's name carries its metadata; the keyed one's lives only in the guest.
+    expect(entries.map((e) => e.machine.name.startsWith("sbxsdk-v2-"))).toEqual([true, false]);
+
+    for (const e of entries) e.machine.status = "hibernated";
+    const reads = entries.map((e) => vi.spyOn(e.guest, "read"));
+    const listed = await factory().list({});
+
+    expect(listed.find((v) => v.id === plain.id)).toMatchObject({
+      state: "paused",
+      labels: { "sandbox-sdk": "1" },
+    });
+    expect(listed.some((v) => v.id === keyed.id)).toBe(false);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+
+    // The machines left out are reported, still without reading a guest.
+    expect((await factory().listSleeping()).filter((m) => m.id === keyed.id)).toEqual([
+      expect.objectContaining({ id: keyed.id, state: "paused" }),
+    ]);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+
+    // It reads no guest even of a running keyed machine, which could fall asleep before the read.
+    const keyedMachine = entries[1]?.machine;
+
+    if (!keyedMachine) throw new Error("Missing mock machine");
+    keyedMachine.status = "running";
+    expect((await factory().listSleeping()).some((m) => m.id === keyed.id)).toBe(false);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+    keyedMachine.status = "hibernated";
+
+    // A v2 machine boxd lists as running is not read either, so one that falls asleep between
+    // boxd's listing and the read can't be woken.
+    const machine = entries[0]?.machine;
+
+    if (!machine) throw new Error("Missing mock machine");
+    machine.status = "running";
+    expect((await factory().list({})).some((v) => v.id === plain.id)).toBe(true);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+    machine.status = "hibernated";
+
+    // Finding by key has to read the guest, and does so only for the paused machines.
+    expect(await factory().find(key)).toMatchObject({ id: keyed.id, key, state: "paused" });
+    expect(reads.map((r) => r.mock.calls.length > 0)).toEqual([false, true]);
+  } finally {
+    vi.restoreAllMocks();
+
+    for (const e of entries) e.machine.status = "running";
+    await plain.destroy();
+    await provider.destroy(keyed.id);
   }
 });
 
@@ -745,6 +815,28 @@ test.each(["missing", "unsupported", "restricted"])(
     }
   },
 );
+
+test("listing keeps no per-machine state; connecting queues the guest preparation", async () => {
+  const box = await createSandbox(factory());
+  const guest = boxdState.boxes.get(box.id)?.guest;
+
+  if (!guest) throw new Error("Missing guest");
+  const lister = factory();
+  const run = { command: "true", cwd: "/", env: {}, timeoutMs: 30_000, onChunk: () => {} };
+
+  try {
+    expect((await lister.list({})).some((v) => v.id === box.id)).toBe(true);
+    const before = guest.commands.length;
+
+    await lister.exec(box.id, run);
+    expect(guest.commands.slice(before).join("\n")).not.toContain("metadata.json");
+    await lister.connect(box.id);
+    await lister.exec(box.id, run);
+    expect(guest.commands.slice(before).join("\n")).toContain("metadata.json");
+  } finally {
+    await box.destroy();
+  }
+});
 
 test("plain create has no guest call and first list prepares in one request", async () => {
   const provider = factory();

@@ -1,9 +1,12 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { Json } from "../json.js";
+import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
+import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
 
 const money = z.number().finite().nonnegative();
 
@@ -132,12 +135,33 @@ const sources = new Map<string, BillingSource>(
         "Authenticated Analytics API verified; API-key organization discovered via /api-keys/current. Prices cover the requested window; pending until 48 hours after its end. Credits/tax are separate.",
       ],
     },
+    vercel: {
+      source:
+        "@vercel/sandbox Sandbox.get: totalActiveCpuDurationMs, totalDurationMs, memory, totalIngressBytes, totalEgressBytes",
+      granularity: "sandbox lifetime: active CPU ms and wall ms over all sessions",
+      delay: "reported once a session stops; gone (404) after deletion",
+      key: "VERCEL_OIDC_TOKEN",
+      notes: [
+        "Metered, not invoice: Vercel's own per-sandbox meters priced at the published Pro iad1 rates (https://vercel.com/docs/sandbox/pricing). Memory wall time is rounded up to whole minutes. Data transfer (ingress plus egress bytes) is priced at $0.15/GB, as the team's charges bill it; a meter without byte counters is understated and never final. Snapshot storage, the $20 monthly Pro credit and tax are excluded.",
+      ],
+    },
     tenki: {
       source: "No verified public billing endpoint",
       granularity: "not available",
       delay: "unknown",
       key: "TENKI_API_KEY",
       notes: ["No billing API found; no fabricated cost."],
+    },
+    modal: {
+      source: modalBillingSource,
+      granularity: "App per hour; a sandbox alone in its App (per-attempt Apps) is priced",
+      delay:
+        "minutes; full hours only; provisional until a confirmed stop, 30 minutes after its hour (this bench's heuristic, not Modal's) and a row for every hour",
+      key: "MODAL_TOKEN_SECRET",
+      notes: [
+        "Modal's per-App charge before credits, reservations and the egress allowance (https://modal.com/docs/guide/billing). Sandbox tags are not in the report, so only a sandbox that is the one sandbox in its App, with no create of unknown outcome beside it, gets a cost; others stay unavailable, never zero.",
+        "A sandbox's cost is compute only (CPU and memory); egress and the App total are kept in account.apps.",
+      ],
     },
     freestyle: {
       source: "No verified public billing endpoint",
@@ -189,7 +213,7 @@ const usageSchema = z.object({
   machines: z.array(machineSchema),
 });
 
-const activitySchema = z.object({
+export const activitySchema = z.object({
   currency: z.string(),
   entries: z.array(
     z.object({
@@ -254,6 +278,155 @@ export function decodeBoxd(
   };
 }
 
+export const vercelMeterSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  totalActiveCpuDurationMs: money.optional(),
+  totalDurationMs: money.optional(),
+  memory: money.optional(),
+  /** Cumulative bytes over all sessions; absent in meters saved before 2026-11-16. */
+  totalIngressBytes: money.optional(),
+  totalEgressBytes: money.optional(),
+});
+
+export type VercelMeter = z.infer<typeof vercelMeterSchema>;
+
+/**
+ * Sandbox Data Transfer, iad1, per GB (10^9 bytes). Vercel's pricing page lists it as "Included in
+ * Flat Rate CDN" on Pro, but the team's FOCUS charges bill it: 2026-11-09 charged $1.7020669674
+ * for 11.347113116 GB, exactly $0.15 per GB. The page says downloads are free, yet that day's
+ * realistic sandboxes alone took 8.4 GB of SDK uploads, so ingress and egress are both priced (the
+ * dearer reading, as for memory rounding); the settled charges decide.
+ */
+export const VERCEL_TRANSFER_USD_PER_GB = 0.15;
+
+/** Vercel's per-sandbox meter at its published rates. The meter is final only once stopped. */
+export function decodeVercel(meter: VercelMeter, id: string): Cost {
+  const rate = pricing.vercel;
+
+  if (meter.name !== id) throw new Error("Billing ID mismatch");
+
+  if (!rate) throw new Error("Vercel rates missing");
+
+  if (meter.status !== "stopped")
+    return unavailable(
+      `Vercel reports usage only after the session stops; the sandbox was ${meter.status}`,
+    );
+
+  const { totalActiveCpuDurationMs: cpuMs, totalDurationMs: wallMs, memory } = meter;
+
+  if (cpuMs === undefined || wallMs === undefined || memory === undefined)
+    return unavailable("Vercel meter fields missing");
+
+  const seconds = Math.max(
+    rate.minimumSeconds,
+    Math.ceil(wallMs / 1000 / rate.incrementSeconds) * rate.incrementSeconds,
+  );
+
+  const compute =
+    (cpuMs / 1000) * rate.cpuSecond +
+    (memory / 1024) * seconds * rate.memoryGiBSecond +
+    rate.perSandbox;
+
+  const { totalIngressBytes: ingress, totalEgressBytes: egress } = meter;
+
+  // Without the byte counters the total leaves out a charge Vercel bills, so it is never final.
+  if (ingress === undefined || egress === undefined)
+    return {
+      kind: "metered",
+      usd: compute,
+      scope: "sandbox-lifetime",
+      complete: false,
+      confidence: "low",
+      note: "Vercel's active-CPU and wall-time meters at published Pro iad1 rates; memory rounded up to whole minutes; data transfer not metered (no byte counters saved), so understated; not invoice",
+    };
+
+  return {
+    kind: "metered",
+    usd: compute + ((ingress + egress) / 1e9) * VERCEL_TRANSFER_USD_PER_GB,
+    scope: "sandbox-lifetime",
+    complete: true,
+    confidence: "medium",
+    note: "Vercel's active-CPU, wall-time and network byte meters at Pro iad1 rates; memory rounded up to whole minutes; ingress and egress at $0.15/GB; not invoice",
+  };
+}
+
+type VercelModule = typeof import("@vercel/sandbox");
+
+async function vercelSdk(): Promise<VercelModule> {
+  const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
+
+  return import(pathToFileURL(require.resolve("@vercel/sandbox")).href);
+}
+
+/** Reads and stops through the native SDK, which resolves OIDC or token credentials itself. Tests replace it. */
+export const vercelMeter = {
+  async read(name: string): Promise<VercelMeter> {
+    const { Sandbox } = await vercelSdk();
+    const box = await Sandbox.get({ name, resume: false });
+
+    return vercelMeterSchema.parse({
+      name: box.name,
+      status: box.status,
+      totalActiveCpuDurationMs: box.totalActiveCpuDurationMs,
+      totalDurationMs: box.totalDurationMs,
+      memory: box.memory,
+      totalIngressBytes: box.totalIngressBytes,
+      totalEgressBytes: box.totalEgressBytes,
+    });
+  },
+  async stop(name: string): Promise<void> {
+    const { Sandbox } = await vercelSdk();
+    await (await Sandbox.get({ name, resume: false })).stop();
+  },
+};
+
+const vercelMissing = z.object({ response: z.object({ status: z.literal(404) }) });
+
+const savedMeterSchema = z.object({ capturedAt: z.string(), meter: vercelMeterSchema });
+
+const meterFile = (dir: string, id: string) => join(dir, `vercel-${encodeURIComponent(id)}.json`);
+
+/**
+ * Vercel reports a session's usage only once it stops, and forgets the sandbox when it is deleted.
+ * Stop it, save the final meter for `bench billing`, and return the file. The caller deletes it.
+ */
+export async function captureVercelMeter(id: string, dir: string): Promise<string> {
+  await vercelMeter.stop(id);
+  const meter = await vercelMeter.read(id);
+  await mkdir(dir, { recursive: true });
+  const file = meterFile(dir, id);
+  await writeFile(file, JSON.stringify({ capturedAt: new Date().toISOString(), meter }) + "\n");
+
+  return file;
+}
+
+async function savedMeter(dir: string | undefined, id: string): Promise<VercelMeter | undefined> {
+  if (dir === undefined) return undefined;
+
+  try {
+    return savedMeterSchema.parse(JSON.parse(await readFile(meterFile(dir, id), "utf8"))).meter;
+  } catch {
+    return undefined;
+  }
+}
+
+async function vercelCost(id: string, dir: string | undefined): Promise<Cost> {
+  const saved = await savedMeter(dir, id);
+
+  if (saved !== undefined) return decodeVercel(saved, id);
+
+  try {
+    return decodeVercel(await vercelMeter.read(id), id);
+  } catch (error) {
+    if (vercelMissing.safeParse(error).success)
+      return unavailable(
+        "Sandbox deleted before its meter was saved; Vercel reports usage only between stop and delete",
+      );
+    throw error;
+  }
+}
+
 export function decodeEvents(raw: Json): Cost {
   const events = z.array(eventSchema).parse(raw);
 
@@ -312,12 +485,12 @@ function windowFor(rows: OwnedSandbox[]) {
   };
 }
 
-type BoxdQuery = (
+export type BoxdQuery = (
   method: "usage" | "billingActivityPage",
   params: { org?: string; since: Date; until: Date; pageSize?: number; pageToken?: string },
 ) => Promise<object>;
 
-async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
+export async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
   const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
 
   const { Boxd }: typeof import("@boxd-sh/sdk") = await import(
@@ -513,7 +686,7 @@ const BOXD_BUCKET_MS = 15 * 60_000;
  */
 const BOXD_TOLERANCE_MICRO = 2;
 
-const boxdBucketSchema = z.object({
+export const boxdBucketSchema = z.object({
   currency: z.string(),
   complete: z.boolean(),
   rates: z.object({
@@ -532,11 +705,14 @@ export type BoxdCharges =
 
 /**
  * boxd charges the whole org once per 15-minute usage bucket, about 10 minutes after the
- * bucket closes. That charge equals each machine's vCPU, RAM and disk micro-amounts rounded to
- * the micro-unit and summed over every machine in the bucket (machine costMicro rounds each part
- * up instead). When each bucket the run touched has exactly one posted charge equal to that sum,
- * within BOXD_TOLERANCE_MICRO,
- * the charge splits exactly into per-machine amounts, so other machines in the org do not matter.
+ * bucket closes. That charge equals each machine's vCPU, RAM and disk micro-amounts summed and
+ * rounded up to the micro-unit, summed over every machine in the bucket (machine costMicro rounds
+ * each part up instead). Of 53 buckets read on 2026-11-16 (from 2026-11-05 and 2026-11-16), that
+ * rule matched the posted charge exactly in 40, each with 1 to 3 machines, where rounding each
+ * part to the nearest micro-unit was short by 1 to 2 in most. One was 1 under; the other 12 had 3
+ * to 9 machines and were charged 11 to 50 more, which no rounding explains. When each bucket the run touched has
+ * exactly one posted charge equal to that sum, within BOXD_TOLERANCE_MICRO, the charge splits
+ * exactly into per-machine amounts, so other machines in the org do not matter.
  */
 export async function readBoxdCharges(
   rows: OwnedSandbox[],
@@ -582,10 +758,11 @@ export async function readBoxdCharges(
 
     const parts = usage.machines.map((m) => ({
       id: m.machineId,
-      micro:
-        Math.round(m.vcpuHours * rates.vcpuHourMicro) +
-        Math.round(m.ramGibHours * rates.ramGibHourMicro) +
-        Math.round(m.diskGibHours * rates.diskGibHourMicro),
+      micro: Math.ceil(
+        m.vcpuHours * rates.vcpuHourMicro +
+          m.ramGibHours * rates.ramGibHourMicro +
+          m.diskGibHours * rates.diskGibHourMicro,
+      ),
     }));
 
     const posted = charges.entries.filter(
@@ -633,6 +810,7 @@ export async function collectProvider(
   transport: Transport = http,
   offline = false,
   waitMs = 0,
+  extra: { modalReport?: ModalReport; now?: number; usageDir?: string } = {},
 ): Promise<ProviderCosts> {
   const spec = sources.get(provider) ?? {
     source: "No billing collector",
@@ -652,8 +830,21 @@ export async function collectProvider(
     account: null,
   };
 
-  const key = env[spec.key]?.trim();
-  const supported = ["boat", "upstash", "e2b", "boxd", "superserve", "daytona"].includes(provider);
+  // Vercel's SDK takes a project OIDC token or an access token.
+  const key = (
+    provider === "vercel" ? env.VERCEL_OIDC_TOKEN || env.VERCEL_TOKEN : env[spec.key]
+  )?.trim();
+
+  const supported = [
+    "boat",
+    "upstash",
+    "e2b",
+    "boxd",
+    "superserve",
+    "daytona",
+    "modal",
+    "vercel",
+  ].includes(provider);
 
   let blocked = offline
     ? "Offline mode: no billing calls made"
@@ -662,6 +853,14 @@ export async function collectProvider(
       : !key
         ? `Missing ${spec.key}; no billing call made`
         : null;
+
+  if (!blocked && provider === "modal") {
+    const charges = await collectModal(rows, { report: extra.modalReport, now: extra.now });
+    result.sandboxes.push(...charges.sandboxes);
+    result.account = charges.account;
+
+    return result;
+  }
 
   if (!blocked && provider === "daytona") {
     try {
@@ -758,7 +957,7 @@ export async function collectProvider(
               scope: "sandbox-lifetime",
               complete: true,
               confidence: "high",
-              note: "Machine's share of boxd's posted 15-minute org charges: its rounded vCPU, RAM and disk parts, which with the other machines' parts sum exactly to each charge",
+              note: "Machine's share of boxd's posted 15-minute org charges: its vCPU, RAM and disk amounts rounded up together, which with the other machines' shares sum exactly to each charge",
             },
           });
 
@@ -888,7 +1087,8 @@ export async function collectProvider(
         cost = exhausted
           ? decodeEvents(events)
           : unavailable("Event pagination limit; history incomplete");
-      } else cost = unavailable("No supported per-sandbox billing source");
+      } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
+      else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });
     } catch (error) {
       const note = errorNote(error);

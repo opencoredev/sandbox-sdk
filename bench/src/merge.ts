@@ -4,7 +4,15 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { fingerprintSchema } from "./fingerprint.js";
 import type { HostSample, Sample } from "./v2-model.js";
-import { attemptPolicySchema, selectAttempts, type AttemptPolicy } from "./attempts.js";
+import {
+  attemptPolicySchema,
+  selectAttempts,
+  supersededRefusals,
+  type AttemptPolicy,
+  type SourceJournals,
+} from "./attempts.js";
+import { jsonObjects } from "./billing/input.js";
+import { journalAppSchema, type JournalApp } from "./modal-apps.js";
 import { sizeSchema, trackSchema } from "./v2-config.js";
 import { pricing } from "./pricing.js";
 import { distribution, wilson } from "./v2-stats.js";
@@ -13,6 +21,7 @@ import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 import { costBillingSchema } from "./task-cost.js";
 import { failureOutcomeSchema } from "./failure.js";
 import { isMissingFile } from "./files.js";
+import { sampleSuite, suiteFor } from "./suite.js";
 
 const finite = z.number().finite();
 
@@ -158,17 +167,6 @@ export function classifyFailure(
   return "provider-operation";
 }
 
-function suiteFor(source: MergeSource): Suite {
-  if (source.config.scenarios.includes("cost")) return "cost";
-
-  if (source.config.scenarios.includes("burst")) return "burst";
-
-  if (source.config.scenarios.length === 1 && source.config.scenarios.includes("snapshot"))
-    return "snapshot";
-
-  return "main";
-}
-
 function namespace(sample: Sample) {
   const burst = /^(burst-\d+)\/(.+)$/.exec(sample.scenario);
 
@@ -274,6 +272,7 @@ export function mergeSources(
   excluded = [discardedRun],
   seed = 45,
   attemptPolicy?: AttemptPolicy,
+  { journals = new Map() }: { journals?: SourceJournals } = {},
 ) {
   const seen = new Set<string>();
   const sources = inputs.filter((s) => !excluded.some((e) => e.runId === s.runId));
@@ -326,11 +325,7 @@ export function mergeSources(
         sourceSampleIndex,
         sourceIteration: s.iteration,
         iterationNamespace: domain,
-        suite: s.scenario.startsWith("burst-")
-          ? "burst"
-          : /^(snapshot(?:-|$)|create-from-snapshot$|restore-)/.test(s.scenario)
-            ? "snapshot"
-            : suite,
+        suite: sampleSuite(s.scenario, suite),
         failureClass: classifyFailure(s),
       });
     });
@@ -380,13 +375,21 @@ export function mergeSources(
       sample.failureClass = "provider-account-limit";
   }
 
+  const refusals = attemptPolicy
+    ? supersededRefusals({ policy: attemptPolicy, sources, journals })
+    : [];
+
+  if (refusals.length) throw new Error(`Attempt policy refused:\n${refusals.join("\n")}`);
+
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {} };
+    : { samples, removed: {}, removedByTrack: {} };
 
   return {
     attemptPolicy,
     selectionRemoved: selection.removed,
+    /** selectionRemoved split by track, so each track's export can disclose its own. */
+    selectionRemovedByTrack: selection.removedByTrack,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,
@@ -423,10 +426,9 @@ export type PublicationReport = ReturnType<typeof mergeSources>;
 
 export type PublicationSummary = PublicationReport["summaries"][number];
 
-export function publicationTrack(
-  input: PublicationReport,
-  track: "default" | "same-spec",
-): PublicationReport {
+export function publicationTrack<
+  R extends Pick<PublicationReport, "samples" | "summaries" | "sources">,
+>(input: R, track: "default" | "same-spec"): R {
   return {
     ...input,
     samples: input.samples.filter((s) => (s.track ?? "default") === track),
@@ -468,6 +470,23 @@ export async function readSource(directory: string) {
   return source;
 }
 
+/** The Apps in a run's ownership journal, or null when the run has no journal. */
+export async function readJournalApps(directory: string): Promise<JournalApp[] | null> {
+  const apps: JournalApp[] = [];
+
+  try {
+    for await (const raw of jsonObjects(join(directory, "ownership.json"), "apps", {
+      optional: true,
+    }))
+      apps.push(journalAppSchema.parse(raw));
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw error;
+  }
+
+  return apps;
+}
+
 export async function mergeCommand(args: string[]) {
   const { values, positionals } = parseArgs({
     args,
@@ -492,10 +511,15 @@ export async function mergeCommand(args: string[]) {
   ];
 
   const inputs: MergeSource[] = [];
+  const journals = new Map<string, JournalApp[]>();
 
   for (const path of paths) {
     if (excluded.some((e) => e.runId === basename(path))) continue;
-    inputs.push(await readSource(path));
+    const source = await readSource(path);
+    inputs.push(source);
+    const apps = await readJournalApps(path);
+
+    if (apps) journals.set(source.runId, apps);
   }
 
   if (!inputs.length) throw new Error("No included result directories");
@@ -504,7 +528,16 @@ export async function mergeCommand(args: string[]) {
     ? attemptPolicySchema.parse(JSON.parse(await readFile(values.policy, "utf8")))
     : undefined;
 
-  const report = mergeSources(inputs, excluded, z.coerce.number().int().parse(values.seed), policy);
+  const report = mergeSources(
+    inputs,
+    excluded,
+    z.coerce.number().int().parse(values.seed),
+    policy,
+    {
+      journals,
+    },
+  );
+
   report.runId = basename(output);
 
   if (

@@ -1,0 +1,233 @@
+---
+title: Modal
+seo:
+  title: Modal Sandboxes SDK in TypeScript
+description: Use Modal Sandboxes from TypeScript through the official modal SDK and one portable API. Exact keys, CPU and memory sizing, regions, snapshots, image templates, network policies and previews.
+---
+
+`modal()` runs each sandbox as a [Modal Sandbox](https://modal.com/docs/guide/sandbox) through Modal's official JavaScript SDK, the `modal` npm package.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(modal())` and then `box.run`, `box.files` and `box.preview`, and the same code runs on E2B or Vercel when you swap the factory. Modal has no pause and no terminal through this API; the [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) is the `modal` `Sandbox` object when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk modal
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk modal
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk modal
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk modal
+```
+
+  </Tab>
+</Tabs>
+
+The adapter needs `modal` 0.11.1 or later. Create a token in the Modal dashboard and set `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, or run `modal setup` to write `~/.modal.toml`. Modal's API is gRPC, so this adapter loads the SDK instead of calling an HTTP API itself.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { modal } from "@opencoredev/sandbox-sdk/modal";
+
+await using box = await createSandbox(modal(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("node --version");
+console.log(result.stdout);
+```
+
+`await using` terminates the sandbox when the block ends. Pass `timeoutMs`: without it, Modal stops a sandbox after 5 minutes.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                           |
+| ------------------------------ | ------- | --------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Live output                                                     |
+| Files                          | Yes     | Modal's filesystem API                                          |
+| Background processes           | Yes     |                                                                 |
+| Preview URLs                   | Yes     | Public `https://` tunnels; declare ports at creation            |
+| Pause and resume               | No      | Modal sandboxes can't stop and run again                        |
+| Snapshots                      | Partial | File system only, as an image; with `expiresInMs`               |
+| Snapshot deletion              | Yes     | `deleteSnapshot()`                                              |
+| Templates                      | Yes     | `buildTemplate()` builds a Modal image                          |
+| Machine size                   | Partial | Presets or exact CPU and memory; no disk setting                |
+| Network policy                 | Yes     | `"none"`, or an allow list of domains, wildcards, IPs and CIDRs |
+| Hard lifetime (`timeoutMs`)    | Yes     | Whole seconds, up to 24 hours                                   |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Whole seconds                                                   |
+| Keys                           | Exact   | Sandbox name is a hash of the key                               |
+| Terminal                       | No      |                                                                 |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { modal } from "@opencoredev/sandbox-sdk/modal";
+
+await using box = await createSandbox(modal());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+## Background processes and previews
+
+Modal tunnels only ports declared at creation. Previewing another port fails with `invalid_argument`. Preview URLs are public `https://` addresses on `modal.host`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { modal } from "@opencoredev/sandbox-sdk/modal";
+
+await using box = await createSandbox(modal(), { ports: [5173], timeoutMs: 30 * 60_000 });
+await box.start("npx vite --port 5173 --host", { name: "vite", ready: { port: 5173 } });
+const preview = await box.preview(5173);
+console.log(preview.url);
+```
+
+## Snapshots and templates
+
+`snapshot()` saves the sandbox's file system as a Modal image and returns its ID. Running processes are not kept: a sandbox created `from` the snapshot marks restored process records failed with exit code 137. Restart them by name. Modal keeps a snapshot for 30 days by default; `expiresInMs: 0` keeps it until you delete it.
+
+```ts
+import { buildTemplate, createSandbox, deleteSnapshot } from "@opencoredev/sandbox-sdk";
+import { modal } from "@opencoredev/sandbox-sdk/modal";
+
+const provider = modal();
+await using box = await createSandbox(provider);
+await box.run("npm init -y && npm install zod");
+const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 });
+await using copy = await createSandbox(provider, { from: id });
+await deleteSnapshot(provider, id);
+
+const template = await buildTemplate(provider, {
+  name: "python-tools",
+  image: "python:3.13-slim",
+  run: ["pip install --no-cache-dir requests"],
+});
+await using fromTemplate = await createSandbox(provider, { from: template.id });
+```
+
+`buildTemplate()` turns `run` steps into Dockerfile `RUN` layers on `image` (default: the factory's `image`) and waits for Modal to build them. `env` applies to the build steps only. Modal caches built layers, so building the same steps again takes seconds. A template has no size; pass `size` to `createSandbox` instead, or `buildTemplate()` fails with `unsupported`. `timeoutMs` and `signal` stop the wait, though Modal may finish the image anyway, and Modal's JavaScript SDK reports no build logs, so `onLog` is never called. Snapshots and templates are both images, so `deleteSnapshot()` deletes either.
+
+## Size, network, region, and lifetime
+
+| Preset   | Modal `cpu` | Memory   |
+| -------- | ----------- | -------- |
+| `small`  | 1           | 2048 MiB |
+| `medium` | 2           | 4096 MiB |
+| `large`  | 4           | 8192 MiB |
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { modal } from "@opencoredev/sandbox-sdk/modal";
+
+await using box = await createSandbox(modal({ region: "us-east" }), {
+  size: { cpu: 4, memoryMb: 8192 },
+  network: { allow: ["registry.npmjs.org", "*.github.com"] },
+  timeoutMs: 60 * 60_000,
+  idleTimeoutMs: 10 * 60_000,
+});
+```
+
+A `size` sets both Modal's request and its limit, so the sandbox gets exactly that CPU and memory and cannot burst. `cpu` is Modal's CPU count, from 0.125 up, and may be fractional. Modal has no disk setting, so `diskGb` fails with `unsupported`.
+
+What a Modal `cpu` is depends on whose words you use. Modal's docs call one `cpu` a physical core, billed as "2 vCPU equivalent". Inside the sandbox, `cpu: N` shows N processors and runs N threads at full speed, not 2N. On November 9, 2026 we ran a fixed CPU job (SHA-256 over an in-memory buffer, 1, 2, 4 and 8 copies at once, three repeats each) on Modal and on an E2B 4 vCPU / 8 GiB sandbox:
+
+| Sandbox                    | `nproc` | One copy (s) | Effective threads at 4 / 8 copies | Throughput at 8 copies vs E2B |
+| -------------------------- | ------- | ------------ | --------------------------------- | ----------------------------- |
+| Modal `cpu: 2`, 8 GiB      | 2       | 1.27         | 2.2 / 2.0                         | 0.53×                         |
+| Modal `cpu: 4`, 8 GiB      | 4       | 1.27         | 4.0 / 4.1                         | 1.10×                         |
+| E2B 4 vCPU, 8 GiB template | 4       | 1.02         | 3.0 / 3.0                         | 1.00×                         |
+
+Effective threads is copies × one-copy time ÷ wall time. So 4 vCPU and 8 GiB on Modal is `{ cpu: 4, memoryMb: 8192 }`: it matches E2B's four CPUs and 8 GiB as the guest sees them, and its parallel throughput is about 10% higher. `cpu: 2` delivers half. You pay for four Modal cores, which Modal itself would call 8 vCPU equivalent. That is one sandbox per setting on one day, so treat the percentages as rough.
+
+Without `size`, Modal's default applies: a request of 0.125 CPU and 128 MiB that bursts into spare host capacity, about 16 more CPUs and the host's free memory. Billing follows the higher of the request and what the sandbox uses. Set `resources` on the factory for Modal's own request and limit fields, such as a request with a higher burst limit.
+
+`network: "none"` sends empty outbound allow lists, which block every outbound connection, hostnames and raw IPs alike. An allow list sends domains (with `*.` wildcards) and IPv4 or IPv6 addresses and CIDRs to the same lists. Previews are inbound, so neither blocks them. The adapter doesn't use Modal's `blockNetwork`, which also cuts the tunnels previews go through.
+
+`region` pins sandboxes to Modal regions, such as `"us-east"` (Virginia) or the broader `"us"`. It defaults to `MODAL_SANDBOX_REGION`, a comma-separated list. Without it Modal places each sandbox where it has capacity, anywhere in its fleet. Pinning costs more; see [Pricing](#pricing-and-billing).
+
+`timeoutMs` is the hard lifetime, rounded up to whole seconds and capped at 24 hours. Without it, Modal stops a sandbox after 5 minutes; set the factory's `timeoutMs` to change that default for every sandbox. `idleTimeoutMs` stops a sandbox with no running command, no stdin and no open tunnel connection for that long.
+
+## Pricing and billing
+
+Modal bills sandboxes per second for CPU and memory, at three times its Function list price because sandboxes run on non-preemptible capacity. Rates checked November 9, 2026:
+
+| Resource | Per second                  | Per hour |
+| -------- | --------------------------- | -------- |
+| CPU      | $0.00003942 per Modal `cpu` | $0.1419  |
+| Memory   | $0.00000667 per GiB         | $0.0240  |
+
+- Modal charges the higher of the request and actual use, with a minimum request of 0.125 CPU. A sized sandbox pays for its full size for its whole life.
+- `{ cpu: 4, memoryMb: 8192 }` costs about $0.76 an hour.
+- Pinning a region multiplies the price: 1.15× for a broad region such as `us`, 1.75× for a narrow one such as `us-east`.
+- Plans include monthly credits ($30 on Starter, $100 on Team).
+
+Sources: [pricing](https://modal.com/pricing), [sandbox resources](https://modal.com/docs/guide/sandbox-resources), [region selection](https://modal.com/docs/guide/region-selection).
+
+To see what you were charged, use Modal's [billing reports](https://modal.com/docs/guide/billing): `Workspace.billing.report()` in the Python SDK or `modal billing report` on the CLI. They report cost per App and tag by hour or day, before credits, and are available on the Team and Enterprise plans. Modal's JavaScript SDK has no billing method, and `box.usage()` reports only the SDK's own counters.
+
+## Configuration
+
+| Option          | Type                                                  | Default                 | Env var                |
+| --------------- | ----------------------------------------------------- | ----------------------- | ---------------------- |
+| `tokenId`       | `string`                                              | Profile                 | `MODAL_TOKEN_ID`       |
+| `tokenSecret`   | `string`                                              | Profile                 | `MODAL_TOKEN_SECRET`   |
+| `environment`   | `string`                                              | Profile's               | `MODAL_ENVIRONMENT`    |
+| `app`           | `string`                                              | `"sandbox-sdk"`         |                        |
+| `image`         | `string`, a registry tag such as `"python:3.13-slim"` | `"node:22-bookworm"`    |                        |
+| `region`        | `string` or `string[]`, such as `"us-east"`           | Modal's choice          | `MODAL_SANDBOX_REGION` |
+| `runtime`       | `"gvisor"` or `"vm"`                                  | Modal's choice (gVisor) |                        |
+| `resources`     | `{ cpu?, cpuLimit?, memoryMiB?, memoryLimitMiB? }`    | Modal's default         |                        |
+| `timeoutMs`     | `number`, at most 24 hours                            | Modal's 5 minutes       |                        |
+| `createApp`     | `({ labels }) => string \| undefined`                 | always `app`            |                        |
+| `destroyWaitMs` | `number`                                              | 60 seconds              |                        |
+| `onDestroy`     | `({ sandboxId, requestMs, stoppedMs }) => void`       |                         |                        |
+| `client`        | Other `ModalClient` settings, such as `timeoutMs`     |                         |                        |
+
+`app` is created on first use and holds every sandbox this provider makes; keyed names are unique within it. `createApp` picks a different App for one unkeyed create, for example one per job, so Modal's per-App billing report prices each job on its own; keyed creates stay in `app`. `list()` covers `app` and every App the provider has created sandboxes in or prepared; in a new process, call `await provider.prepareApp(name)` for each App you want listed. `prepareApp` also takes the App lookup out of the first create that uses it, and resolves `{ name, appId }`. Pass `{ createIfMissing: false }` when recovering, so an App that was never created resolves `null` instead of being created. `list()` never creates the default App. `listPending(labels)` finds restores still tagged `sandbox-sdk=pending` because their creator stopped between Modal's allocation and setup; `destroy(id)` stops one. `image` applies to fresh sandboxes only. With `from`, the snapshot or template supplies the file system. The first sandbox from a new image waits while Modal builds it, about a minute for `node:22-bookworm`; later creates take a fraction of a second. Pass `size` to `createSandbox` or `resources` to `modal()`, not both, or creation fails with `invalid_argument`.
+
+## Limitations
+
+- No pause and resume, and no terminal.
+- Snapshots keep files, not running processes.
+- Preview ports must be declared at creation.
+- At most seven labels, or six with a `key`, within 1024 bytes of tags in total.
+- No disk size.
+- A sandbox lives at most 24 hours.
+
+## How it works
+
+- Modal allows one running sandbox per name in an App, so concurrent calls with the same key share one sandbox.
+- Your `labels` become Modal tags. Modal allows ten; the SDK uses `sandbox-sdk` and `sandbox-sdk-created`, `sandbox-sdk-key` for a keyed sandbox, and keeps room for `sandbox-sdk-destroying`.
+- `destroy()` asks Modal to terminate the sandbox, tags it `sandbox-sdk-destroying` alongside, and returns once Modal reports it stopped, which sometimes takes about 30 seconds. A failed tag write never stops the terminate request. If Modal refuses the request (for example `PERMISSION_DENIED`), `destroy()` rejects and the sandbox stays an ordinary running sandbox. If the request fails in transport, Modal may have accepted it, so the sandbox stays tracked as terminating and `destroy()` polls for the stop: it resolves once Modal confirms it, and otherwise rejects with the original, retryable error. `destroyWaitMs` is one deadline for the terminate request and the confirmed stop, and nothing waits for the tag, so a stalled tag write or request can't hold `destroy()` past it. If Modal hasn't confirmed the stop by then, `destroy()` rejects with a retryable `timeout`; until the stop, `list()` and `connect()` still return the sandbox with state `"stopped"` so cleanup can find it and call `destroy()` again, while `find()` no longer hands it out for its key. The provider that asked for termination tracks it locally even if every tag write failed; another process relies on the tag, so in that case its `find()` can return the sandbox until Modal stops it. `onDestroy` receives the terminate request's latency (`null` when its response was lost, or when Modal answered that the sandbox no longer exists) and the confirmed stop's.
+- A stdin write or close that Modal refuses because the command already exited (gRPC `FAILED_PRECONDITION`, "Exec has already completed") is ignored. Another `FAILED_PRECONDITION` is not. Any other stdin failure, such as a dropped connection, a stream reset or an error the adapter does not recognize, rejects the call and kills the command, which would otherwise run on half its input.
+- Commands run in a new session under GNU `timeout`, so a timeout or abort kills the whole process tree, even if this client disconnects. The default image has the needed `setsid` and `timeout`; a custom image needs them too.
+
+## Next steps
+
+- [Build an AI app builder](/guides/build-an-ai-app-builder)
+- [Machine size and network](/guides/machine-size-and-network)
