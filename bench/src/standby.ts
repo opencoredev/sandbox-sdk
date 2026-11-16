@@ -4,17 +4,19 @@
  *
  * Baseten (https://docs.baseten.co/sandboxes/lifecycle): a sandbox on standby keeps its memory,
  * files and processes, and still reports DEPLOYED, so standby cannot be read from the API. A
- * background ticker inside the sandbox proves it instead: while the sandbox is suspended the
- * ticker stops, leaving a gap in its timestamps. Measured 2026-11-16: the ticks stop 14-15 s after
- * the last request, and the first command after standby takes 112-131 ms against 83-86 ms warm.
+ * background ticker inside the sandbox proves it instead. Each tick records two clocks: the wall
+ * clock (whole seconds; BusyBox `date` has no sub-second format) and `/proc/uptime` (10 ms). On
+ * standby the VM is suspended: the ticker stops, and uptime stops with it, while the wall clock
+ * jumps ahead on wake. Measured 2026-11-16: ticks stop 14-15 s after the last request, and across
+ * a 15 s wall-clock gap uptime advanced 0.2 s, one tick's worth.
  *
  * "Pause" is then waiting without requests, which takes no call and is not timed. "Resume" is the
- * first command after standby, timed like the other providers' resume-to-first-command.
+ * first request after standby, timed like the other providers' resume-to-first-command.
  */
 export interface AutoStandby {
   /** How long the scenario sends no requests: about twice the observed delay before standby. */
   readonly idleMs: number;
-  /** The smallest gap in the ticks that counts as proof of standby. */
+  /** The smallest wall-clock gap in the ticks that counts as standby. */
   readonly minGapMs: number;
 }
 
@@ -24,24 +26,28 @@ export const autoStandby: ReadonlyMap<string, AutoStandby> = new Map([
 
 const tickFile = "/tmp/.bench-standby-ticks";
 
+/** Uptime may advance this much across a standby gap: a tick's sleep and its own work. */
+const suspendedUptimeMs = 1_000;
+
 /**
- * Starts the ticker and prints its PID, then the guest's clock in seconds. Wall-clock seconds,
- * since a suspended VM's uptime may not advance; BusyBox `date` has no sub-second format.
+ * Starts the ticker and prints its PID, then the guest's wall clock in seconds. Each tick is a
+ * line `<wall-clock seconds> <uptime seconds>`.
  */
 export const startTicker =
-  `rm -f ${tickFile}; nohup sh -c 'while :; do date +%s >> ${tickFile}; sleep 0.2; done' ` +
-  `>/dev/null 2>&1 & echo $!; date +%s`;
+  `rm -f ${tickFile}; nohup sh -c 'while :; do read u r < /proc/uptime; ` +
+  `echo "$(date +%s) $u" >> ${tickFile}; sleep 0.2; done' >/dev/null 2>&1 & echo $!; date +%s`;
 
 /**
- * The timed resume request: counts the ticks written so far. It is the first request after the
- * idle wait, so it is what wakes the sandbox, and its own output shows whether the ticker had
- * already resumed before it ran. `wc` on a few hundred short lines costs about what `true` does.
+ * The timed resume request: prints how many ticks were written and the guest's uptime when it
+ * ran. It is the first request after the idle wait, so it is what wakes the sandbox, and its
+ * output shows how long the sandbox had been awake when it ran. `wc` and `read` on a few hundred
+ * short lines cost about what `true` does.
  */
-export const countTicks = `wc -l < ${tickFile}`;
+export const countTicks = `wc -l < ${tickFile}; read u r < /proc/uptime; echo $u`;
 
 /**
- * Lets the resumed ticker write at least one more tick, then prints the guest's clock, stops the
- * ticker and prints its ticks.
+ * Lets the resumed ticker write at least one more tick, then prints the guest's wall clock, stops
+ * the ticker and prints its ticks.
  */
 export const stopTicker = (pid: number) =>
   `sleep 0.5; date +%s; kill ${pid} 2>/dev/null; cat ${tickFile}; rm -f ${tickFile}`;
@@ -68,7 +74,7 @@ export function idle(ms: number, signal: AbortSignal): Promise<void> {
 /** The ticker `startTicker` started. */
 export interface Ticker {
   readonly pid: number;
-  /** The guest's clock when it started, in seconds. */
+  /** The guest's wall clock when it started, in seconds. */
   readonly startedAtS: number;
 }
 
@@ -92,31 +98,53 @@ export interface StandbyReading {
   readonly ticker: Ticker;
   /** Host time from the ticker's start until `stopTicker` returned. */
   readonly hostElapsedMs: number;
-  /** `countTicks`'s output: the ticks written when the timed request ran. */
-  readonly ticksAtRequest: string;
+  /** `countTicks`'s output: the ticks written, and the guest's uptime, when the request ran. */
+  readonly atRequest: string;
   /** Host time from sending the timed request to its result. */
   readonly requestMs: number;
   readonly minGapMs: number;
 }
 
-/** The ticker's period: consecutive ticks are at least this far apart (`sleep 0.2`). */
-const tickMs = 200;
+/** What proved standby, kept on the sample so a later rule can be checked against it. */
+export interface StandbyEvidence {
+  /** The wall-clock gap the request ended. */
+  readonly gapMs: number;
+  /** Uptime across that gap: near zero for a suspended VM. */
+  readonly gapUptimeMs: number;
+  /** Guest uptime from the first tick after the gap to the request's own reading. */
+  readonly awakeBeforeRequestMs: number;
+}
+
+/** One tick: wall-clock seconds and uptime seconds. */
+interface Tick {
+  readonly wallS: number;
+  readonly uptimeS: number;
+}
+
+function parseTick(line: string): Tick | undefined {
+  const [wall, uptime, extra] = line.trim().split(/\s+/);
+  const wallS = Number(wall);
+  const uptimeS = Number(uptime);
+
+  return extra === undefined && Number.isFinite(wallS) && Number.isFinite(uptimeS)
+    ? { wallS, uptimeS }
+    : undefined;
+}
 
 /**
- * The standby gap, in ms, or why the ticks do not prove standby.
+ * The standby the timed request woke, or why the ticks do not prove it.
  *
- * Proof needs all of: the guest clock advanced as much as the host's (within 2 s), so a clock
- * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; it
- * ended no earlier than the timed request's count, so it is not a later gap; and the sandbox woke
- * no earlier than the timed request was sent. For the last: the frozen ticker writes again only
- * once the sandbox wakes, then at most one tick per 200 ms, so k ticks after the gap when the
- * request counted them took at least (k - 1) x 200 ms awake. The request woke it only if that fits
- * within the request's own duration; a sandbox woken earlier ticks for longer. Tick counts and the
- * host's request time decide it, not the guest clock's whole seconds or its offset from the host.
+ * Proof needs all of:
+ * - The guest wall clock advanced as much as the host's (within 2 s): no clock step.
+ * - The gap the request ended is at least `minGapMs` of wall clock. That gap is the longest
+ *   among those that ended by the request's count (the first tick after the count may close it),
+ *   so a later standby, before the stop command, is never mistaken for it.
+ * - Uptime advanced at most 1 s across it: the VM was suspended, not just slow to schedule.
+ * - The sandbox was awake, by uptime, no longer before the request's own reading than the
+ *   request took from the host's send to its result. A sandbox woken by anything earlier than
+ *   this request was awake longer. Uptime is precise to 10 ms and needs no host offset.
  */
-export function standbyGap(
-  reading: StandbyReading,
-): { gapMs: number; ticksAfterGap: number } | { refused: string } {
+export function standbyGap(reading: StandbyReading): StandbyEvidence | { refused: string } {
   const { ticker } = reading;
   const [first, ...rest] = reading.output.trim().split("\n");
   const afterS = Number(first);
@@ -131,47 +159,71 @@ export function standbyGap(
       refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(reading.hostElapsedMs)} ms passed`,
     };
 
-  const counted = reading.ticksAtRequest.trim();
-  const atRequest = Number(counted);
+  const [countLine, uptimeLine, extra] = reading.atRequest.trim().split("\n");
+  const count = Number(countLine);
+  const requestUptimeS = Number(uptimeLine);
 
-  if (counted === "" || !Number.isInteger(atRequest))
-    return { refused: "the timed request did not count the ticks" };
+  if (
+    extra !== undefined ||
+    countLine === undefined ||
+    !Number.isInteger(count) ||
+    uptimeLine === undefined ||
+    !Number.isFinite(requestUptimeS)
+  )
+    return { refused: "the timed request did not report its count and uptime" };
 
-  // Every line, in file order, so indexes match the count the request took.
-  const times = rest.map(Number);
+  const ticks = rest.map(parseTick);
 
-  if (times.some((t) => !Number.isFinite(t) || t < ticker.startedAtS))
+  if (ticks.some((t) => t === undefined || t.wallS < ticker.startedAtS))
     return { refused: "the ticks are not all readings from this ticker" };
 
-  let gapMs = 0;
-  let end = -1;
+  const times = ticks.filter((t): t is Tick => t !== undefined);
 
-  for (const [i, time] of times.entries()) {
+  if (count > times.length) return { refused: "the ticks were cut short after the request" };
+
+  // Gaps ending at or before index `count`: the request ran after the ticks before `count`, so
+  // the tick at `count` (if any) is the first it could have woken.
+  let end = -1;
+  let gapMs = 0;
+
+  for (const [i, tick] of times.entries()) {
     const previous = times[i - 1];
 
-    if (previous !== undefined && (time - previous) * 1000 > gapMs) {
-      gapMs = (time - previous) * 1000;
+    if (i > count) break;
+
+    if (previous !== undefined && (tick.wallS - previous.wallS) * 1000 > gapMs) {
+      gapMs = (tick.wallS - previous.wallS) * 1000;
       end = i;
     }
   }
 
-  if (gapMs < reading.minGapMs)
-    return { refused: `the longest pause in the ticks was ${gapMs} ms` };
+  const closing = times[end];
+  const opening = times[end - 1];
 
-  // Ticks after the gap when the request counted them; negative means the gap came later.
-  const after = atRequest - end;
-
-  if (after < 0)
-    return { refused: `the ${gapMs} ms pause in the ticks began after the timed request` };
-
-  const awakeAtLeastMs = Math.max(0, after - 1) * tickMs;
-
-  if (awakeAtLeastMs > reading.requestMs)
+  if (gapMs < reading.minGapMs || closing === undefined || opening === undefined)
     return {
-      refused: `the sandbox woke before the timed request: ${after} ticks after the ${gapMs} ms pause need ${awakeAtLeastMs} ms awake, the request took ${Math.round(reading.requestMs)} ms`,
+      refused: `no pause of ${reading.minGapMs} ms ended at the timed request (longest ${gapMs} ms)`,
     };
 
-  if (atRequest > times.length) return { refused: "the ticks were cut short after the request" };
+  const gapUptimeMs = Math.round((closing.uptimeS - opening.uptimeS) * 1000);
 
-  return { gapMs, ticksAfterGap: after };
+  if (gapUptimeMs > suspendedUptimeMs)
+    return {
+      refused: `uptime advanced ${gapUptimeMs} ms across the ${gapMs} ms pause: a stall, not a suspension`,
+    };
+
+  // No tick after the gap before the count: the request ran before the first one, so it found
+  // the sandbox asleep.
+  const awakeBeforeRequestMs =
+    end === count ? 0 : Math.round((requestUptimeS - closing.uptimeS) * 1000);
+
+  if (awakeBeforeRequestMs < 0)
+    return { refused: "the request's uptime is earlier than the tick it followed" };
+
+  if (awakeBeforeRequestMs > reading.requestMs)
+    return {
+      refused: `the sandbox woke before the timed request: awake ${awakeBeforeRequestMs} ms when it ran, which took ${Math.round(reading.requestMs)} ms`,
+    };
+
+  return { gapMs, gapUptimeMs, awakeBeforeRequestMs };
 }

@@ -1770,7 +1770,7 @@ export async function runV2(
                   const tickerStartedAt = performance.now();
                   await idle(standby.idleMs, signal);
                   partClock?.begin();
-                  const ticksAtRequest = await command(active, countTicks, timeout, signal);
+                  const atRequest = await command(active, countTicks, timeout, signal);
                   partClock?.finish();
                   const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
                   const output = await command(active, stopTicker(ticker.pid), timeout, signal);
@@ -1779,7 +1779,7 @@ export async function runV2(
                     output,
                     ticker,
                     hostElapsedMs: performance.now() - tickerStartedAt,
-                    ticksAtRequest,
+                    atRequest,
                     requestMs: resumeReadyMs,
                     minGapMs: standby.minGapMs,
                   });
@@ -1793,9 +1793,10 @@ export async function runV2(
                   // the standby phases mark the sample as a pause by idling (attempts.ts).
                   lifecyclePhases.resumeReadyMs = resumeReadyMs;
                   lifecyclePhases.standbyIdleMs = standby.idleMs;
-                  lifecyclePhases.standbyGapMs = evidence.gapMs;
                   // The evidence itself, so a later rule can be checked against these samples.
-                  lifecyclePhases.standbyTicksAfterGap = evidence.ticksAfterGap;
+                  lifecyclePhases.standbyGapMs = evidence.gapMs;
+                  lifecyclePhases.standbyGapUptimeMs = evidence.gapUptimeMs;
+                  lifecyclePhases.standbyAwakeBeforeRequestMs = evidence.awakeBeforeRequestMs;
 
                   return { ...lifecyclePhases };
                 }

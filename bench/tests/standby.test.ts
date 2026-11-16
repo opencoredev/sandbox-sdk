@@ -4,96 +4,129 @@ import { pauseSplit, standbyResume } from "../src/site-data.js";
 
 const ticker = { pid: 7, startedAtS: 100 };
 
-/** `stopTicker` output: the clock read after the resume, then the ticks. */
-const output = (afterS: number, ticks: number[]) => [afterS, ...ticks].join("\n");
+type Tick = [wallS: number, uptimeS: number];
 
-/** Ticks five times a second, whole seconds as BusyBox `date +%s` prints them. */
-const ticking = (fromS: number, toS: number) =>
-  Array.from({ length: (toS - fromS) * 5 + 1 }, (_, i) => fromS + Math.floor(i / 5));
+/** `stopTicker` output: the wall clock read after the resume, then the ticks. */
+const output = (afterS: number, ticks: Tick[]) =>
+  [afterS, ...ticks.map(([w, u]) => `${w} ${u.toFixed(2)}`)].join("\n");
+
+/**
+ * Five ticks a second from `fromUptime`, wall clock in whole seconds as BusyBox prints it, with
+ * the wall clock `offsetS` ahead of uptime.
+ */
+const ticking = (fromUptime: number, toUptime: number, offsetS: number): Tick[] =>
+  Array.from({ length: Math.round((toUptime - fromUptime) * 5) + 1 }, (_, i) => {
+    const uptime = fromUptime + i * 0.2;
+
+    return [Math.floor(uptime + offsetS), uptime];
+  });
 
 describe("standby evidence", () => {
   /**
-   * A reading taken 31.2 s after the ticker started. `atRequest` is how many ticks the timed
-   * request counted when it ran; `requestMs` how long the request took, as the host saw it.
+   * A reading taken 31.2 s after the ticker started at wall clock 100 (uptime 10). The request
+   * counted `count` ticks at `uptimeAtRequest` and took `requestMs` as the host saw it.
    */
-  const reading = (afterS: number, ticks: number[], atRequest: number, requestMs = 220) => ({
+  const reading = (
+    afterS: number,
+    ticks: Tick[],
+    count: number,
+    uptimeAtRequest: number,
+    requestMs = 220,
+  ) => ({
     output: output(afterS, ticks),
     ticker,
     hostElapsedMs: 31_200,
-    ticksAtRequest: `${atRequest}\n`,
+    atRequest: `${count}\n${uptimeAtRequest.toFixed(2)}\n`,
     requestMs,
     minGapMs: 5_000,
   });
 
-  const asleep = ticking(100, 115);
+  // Ticking from wall 100 / uptime 10 until suspended at uptime 25 (wall 115). On wake the wall
+  // clock is 15 s further ahead (offset 105 instead of 90) and uptime goes on from 25.2.
+  const asleep = ticking(10, 25, 90);
+  const woken = (to: number) => ticking(25.2, to, 105);
 
-  test("a request that found the ticker frozen proves standby", () => {
-    // The overdue tick as the sandbox woke, then the request counted.
-    const ticks = [...asleep, 130, 130, 130, 131, 131];
+  test("a request that woke a suspended sandbox proves standby", () => {
+    const ticks = [...asleep, ...woken(26)];
 
-    expect(standbyGap(reading(131, ticks, asleep.length + 1))).toMatchObject({ gapMs: 15_000 });
     // The count ran before the first tick after the wake.
-    expect(standbyGap(reading(131, ticks, asleep.length))).toMatchObject({ gapMs: 15_000 });
+    expect(standbyGap(reading(131, ticks, asleep.length, 25.21))).toEqual({
+      gapMs: 15_000,
+      gapUptimeMs: 200,
+      awakeBeforeRequestMs: 0,
+    });
+    // Or just after it: awake 40 ms when the 220 ms request ran.
+    expect(standbyGap(reading(131, ticks, asleep.length + 1, 25.24))).toMatchObject({
+      awakeBeforeRequestMs: 40,
+    });
   });
 
   test("a slow command start after a real wake still proves standby", () => {
-    // The review's case: the request wakes the sandbox at 130 and its command runs at 130.45,
-    // after ticks at 130, 130.2 and 130.4. Three ticks need 400 ms awake, within 520 ms.
-    const ticks = [...asleep, 130, 130, 130, 131];
+    // Woken at 25.2; three ticks before the command ran at 25.65, within its 520 ms.
+    const ticks = [...asleep, ...woken(26)];
 
-    expect(standbyGap(reading(131, ticks, asleep.length + 3, 520))).toMatchObject({
-      gapMs: 15_000,
+    expect(standbyGap(reading(131, ticks, asleep.length + 3, 25.65, 520))).toMatchObject({
+      awakeBeforeRequestMs: 450,
     });
   });
 
-  test("a request that found the ticker running again is refused", () => {
-    // Ticks resumed at 129 and the 220 ms request ran at 130.5: five ticks need 800 ms awake.
-    const ticks = [...asleep, 129, 129, 130, 130, 131];
+  test("a sandbox woken before the timed request was sent is refused", () => {
+    // The review's case: woken 300 ms before a 220 ms request, two ticks before its count.
+    const ticks = [...asleep, ...woken(26)];
 
-    expect(standbyGap(reading(131, ticks, asleep.length + 5))).toMatchObject({
+    expect(standbyGap(reading(131, ticks, asleep.length + 2, 25.54))).toMatchObject({
       refused: expect.stringContaining("woke before the timed request"),
     });
+  });
+
+  test("a later standby before the stop command does not hide the one the request ended", () => {
+    // The review's case: the request ends the 115-130 gap, then the sandbox sleeps again and the
+    // stop command wakes it 20 s later.
+    const ticks = [...asleep, ...woken(40), ...ticking(40.2, 41, 125)];
+
+    expect(
+      standbyGap({ ...reading(166, ticks, asleep.length + 1, 25.24), hostElapsedMs: 66_200 }),
+    ).toMatchObject({ gapMs: 15_000, awakeBeforeRequestMs: 40 });
   });
 
   test("a gap that began after the timed request is refused", () => {
-    // The review's case: a warm count at 130, ticks on to 145, the stop request wakes it at 160.
-    const ticks = [...ticking(100, 145), 160, 160];
-    const output = reading(160, ticks, ticking(100, 130).length);
+    // A warm count at uptime 20, ticking on to 35, then a stop request wakes it 15 s later.
+    const ticks = [...ticking(10, 35, 90), ...ticking(35.2, 36, 105)];
 
-    expect(standbyGap({ ...output, hostElapsedMs: 60_200 })).toMatchObject({
-      refused: expect.stringContaining("began after the timed request"),
+    expect(standbyGap({ ...reading(141, ticks, 51, 20.05), hostElapsedMs: 41_200 })).toMatchObject({
+      refused: expect.stringContaining("no pause of 5000 ms ended"),
     });
   });
 
-  test("a stall early in the idle wait, ticking on until the resume, proves nothing", () => {
-    const ticks = [...ticking(100, 102), ...ticking(108, 131)];
+  test("a stall, where uptime runs on through the gap, is not a suspension", () => {
+    const ticks = [...asleep, ...ticking(40, 41, 90)];
 
-    expect(standbyGap(reading(131, ticks, ticks.length - 1))).toMatchObject({
-      refused: expect.stringContaining("woke before the timed request"),
+    expect(standbyGap(reading(131, ticks, asleep.length, 40.01))).toMatchObject({
+      refused: expect.stringContaining("a stall, not a suspension"),
     });
   });
 
   test("a guest clock step is refused, whatever the ticks show", () => {
-    const ticks = [...asleep, 160, 160];
+    const ticks = [...asleep, ...ticking(25.2, 26, 135)];
 
-    expect(standbyGap(reading(160, ticks, asleep.length + 1))).toMatchObject({
+    expect(standbyGap(reading(161, ticks, asleep.length, 25.21))).toMatchObject({
       refused: expect.stringContaining("guest clock moved"),
     });
   });
 
   test("no tick after the resume leaves the gap unproven", () => {
-    expect(standbyGap(reading(131, asleep, asleep.length))).toMatchObject({
-      refused: expect.stringContaining("longest pause"),
+    expect(standbyGap(reading(131, asleep, asleep.length, 25.21))).toMatchObject({
+      refused: expect.stringContaining("no pause of 5000 ms ended"),
     });
   });
 
   test("a missing count or clock reading is refused", () => {
-    const ticks = [...asleep, 130, 131];
+    const ticks = [...asleep, ...woken(26)];
 
-    expect(standbyGap({ ...reading(131, ticks, 0), ticksAtRequest: "" })).toMatchObject({
-      refused: expect.stringContaining("did not count the ticks"),
+    expect(standbyGap({ ...reading(131, ticks, 0, 0), atRequest: "76" })).toMatchObject({
+      refused: expect.stringContaining("did not report its count and uptime"),
     });
-    expect(standbyGap({ ...reading(131, ticks, 0), output: "" })).toMatchObject({
+    expect(standbyGap({ ...reading(131, ticks, 0, 0), output: "" })).toMatchObject({
       refused: expect.stringContaining("no clock reading"),
     });
   });
