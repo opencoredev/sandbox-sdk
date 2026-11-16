@@ -115,7 +115,7 @@ const result = await box.run("python3 main.py");
 console.log(result.ok, result.stdout);
 ```
 
-`local()` runs it in a Docker container on your machine the same way. What doesn't carry over is anything a provider can't do. Daytona has no pause or resume, and its previews need a token header unless you create the sandbox with `daytona({ public: true })`. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For speed and price comparisons between providers, see [AI Sandbox Bench](https://aisandboxbench.com).
+`local()` runs it in a Docker container on your machine the same way. What doesn't carry over is anything a provider can't do. Daytona has no pause or resume, and its previews need a token header unless you create the sandbox with `daytona({ public: true })`. E2B has no idle timeout or exact machine size. An option a provider can't enforce fails with an `unsupported` error instead of being ignored, so check the [capability matrix](/docs/reference/capabilities) before you rely on one, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For cold start, agent-task and cost numbers on both, see [E2B vs Daytona](https://aisandboxbench.com/compare/e2b-vs-daytona/) on AI Sandbox Bench.
 
 ## Test without E2B
 
@@ -166,4 +166,5 @@ They mix, too: `box.native.sdk` gives you the `e2b` package's `Sandbox` whenever
 - [Quickstart](/docs/getting-started/quickstart): your first sandbox in memory, then in Docker, then in the cloud.
 - [E2B provider reference](/docs/providers/e2b): every option, capability and limit.
 - [Daytona provider reference](/docs/providers/daytona): what changes when you switch.
+- [E2B benchmark](https://aisandboxbench.com/providers/e2b/): E2B's measured cold start, agent tasks and cost on AI Sandbox Bench.
 - [Write a provider](/docs/providers/custom): wrap any other sandbox backend in the same API.

@@ -123,7 +123,7 @@ const provider = process.env.SANDBOX === "docker" ? local() : e2b();
 await using box = await createSandbox(provider);
 ```
 
-Options that a provider can't enforce fail with an `unsupported` error instead of being ignored, so the same code never quietly gets a looser sandbox. Check the [capability matrix](/docs/reference/capabilities) for what each provider accepts, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. For speed and price comparisons between hosted providers, see [AI Sandbox Bench](https://aisandboxbench.com).
+Options that a provider can't enforce fail with an `unsupported` error instead of being ignored, so the same code never quietly gets a looser sandbox. Check the [capability matrix](/docs/reference/capabilities) for what each provider accepts, and [Choose a provider](/docs/getting-started/choose-a-provider) if you are still deciding. If you'd rather stay hosted, [E2B alternatives](https://aisandboxbench.com/alternatives/e2b/) on AI Sandbox Bench compares other providers with E2B on speed and price.
 
 ## Test without either
 
