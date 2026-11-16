@@ -3,17 +3,17 @@
  * in, and writes the result into the settled-charge audit file the realistic summary reads
  * (`bun bench realistic summary --audit FILE`, src/cost/audit-file.ts).
  *
- *   bun scripts/vercel-settled.ts --charges <day.jsonl> --previous-charges <day-before.jsonl> \
- *     --previous-fetched-at <ISO time the day-before export was read> \
+ *   bun scripts/vercel-settled.ts --charges <day.jsonl> --receipt <day.receipt.json> \
+ *     --previous-charges <day-before.jsonl> --previous-receipt <day-before.receipt.json> \
  *     --run-dir <run --out> \
- *     --period-start 2026-11-16T08:00:00.000Z --fetched-at <ISO time the export was read> \
+ *     --period-start 2026-11-16T08:00:00.000Z \
  *     --team <teamId> --project-id <prj_…> --project-name sandbox-bench-runner \
  *     --audit <audit.json> --report <reconciliation.json>
  *
- * `--charges` is the raw FOCUS export for exactly that day (src/cost/vercel-charges.ts). The day
- * must have closed at least two hours before `--fetched-at`, so late usage has landed.
- * `--previous-charges` is the export for the day before, read at least two hours after it closed
- * (`--previous-fetched-at`); it must list every Sandbox service and region and show no activity.
+ * `--charges` is the raw FOCUS export for exactly that day (src/cost/vercel-charges.ts), and
+ * `--receipt` what the browser recorded when it read it (exportReceiptSchema): the file must hash
+ * to the received body, and be read at least two hours after the day closed. `--previous-charges`
+ * and `--previous-receipt` are the same for the day before, which must show no Sandbox activity.
  *
  * Writes one entry per profile and track the run has. When the day holds only the run's sandboxes,
  * each is "reconciled" with window "mixed-profiles" (the day mixes all four groups; eligibility
@@ -23,6 +23,7 @@
  * reasons. Only this provider's entries for these groups are replaced, under the audit file's lock
  * and with a re-read before the rename (src/cost/audit-update.ts); every other entry is kept.
  */
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -31,21 +32,25 @@ import { vercelMeterSchema, VERCEL_TRANSFER_USD_PER_GB } from "../src/billing/pr
 import { attemptBillingSchema } from "../src/cost/attempt-input.js";
 import type { AuditEntry } from "../src/cost/audit-file.js";
 import { updateAuditFile } from "../src/cost/audit-update.js";
-import { parseChargeLines, sandboxChargeDay } from "../src/cost/vercel-charges.js";
+import {
+  exportReceiptSchema,
+  parseChargeLines,
+  receiptProblems,
+  sandboxChargeDay,
+} from "../src/cost/vercel-charges.js";
 import { pricing } from "../src/pricing.js";
 import { attemptRecordSchema } from "../src/realistic/record.js";
 
 const DAY_MS = 24 * 3600 * 1000;
-const SETTLE_MS = 2 * 3600 * 1000;
 
 const { values } = parseArgs({
   options: {
     charges: { type: "string" },
     "previous-charges": { type: "string" },
-    "previous-fetched-at": { type: "string" },
+    "previous-receipt": { type: "string" },
     "run-dir": { type: "string" },
     "period-start": { type: "string" },
-    "fetched-at": { type: "string" },
+    receipt: { type: "string" },
     team: { type: "string" },
     "project-id": { type: "string" },
     "project-name": { type: "string" },
@@ -60,10 +65,10 @@ const args = z
   .object({
     charges: text,
     "previous-charges": text,
-    "previous-fetched-at": z.iso.datetime(),
+    "previous-receipt": text,
     "run-dir": text,
     "period-start": z.iso.datetime(),
-    "fetched-at": z.iso.datetime(),
+    receipt: text,
     team: text,
     "project-id": text,
     "project-name": text,
@@ -76,19 +81,38 @@ const chargesPath = resolve(args.charges);
 const runDir = resolve(args["run-dir"]);
 const start = args["period-start"];
 const end = new Date(Date.parse(start) + DAY_MS).toISOString();
-const fetchedAt = args["fetched-at"];
+
+const readExport = async (file: string, receiptFile: string) => {
+  const raw = await readFile(resolve(file));
+
+  return {
+    text: raw.toString("utf8"),
+    body: { bytes: raw.length, sha256: createHash("sha256").update(raw).digest("hex") },
+    receipt: exportReceiptSchema.parse(JSON.parse(await readFile(resolve(receiptFile), "utf8"))),
+  };
+};
+
+const dayExport = await readExport(args.charges, args.receipt);
+const previousExport = await readExport(args["previous-charges"], args["previous-receipt"]);
+const previousPeriod = { start: new Date(Date.parse(start) - DAY_MS).toISOString(), end: start };
+const fetchedAt = dayExport.receipt.fetchedAt;
 const teamId = args.team;
 const project = { id: args["project-id"], name: args["project-name"] };
 const auditPath = resolve(args.audit);
 const reportPath = resolve(args.report);
 
-if (Date.parse(fetchedAt) < Date.parse(end) + SETTLE_MS)
-  throw new Error(`the export was read at ${fetchedAt}, before ${end} plus two hours`);
+// An export that is not exactly what Vercel sent for a settled day proves nothing: stop here.
+const receiptIssues = [
+  ...receiptProblems({ ...dayExport, teamId, period: { start, end }, label: "the day's export" }),
+  ...receiptProblems({
+    ...previousExport,
+    teamId,
+    period: previousPeriod,
+    label: "the day-before export",
+  }),
+];
 
-if (Date.parse(args["previous-fetched-at"]) < Date.parse(start) + SETTLE_MS)
-  throw new Error(
-    `the day-before export was read at ${args["previous-fetched-at"]}, before ${start} plus two hours`,
-  );
+if (receiptIssues.length > 0) throw new Error(receiptIssues.join("; "));
 
 const lines = async <T>(path: string, schema: z.ZodType<T>) =>
   (await readFile(path, "utf8"))
@@ -133,12 +157,12 @@ for (const record of records) {
 }
 
 const day = sandboxChargeDay({
-  lines: parseChargeLines(await readFile(chargesPath, "utf8")),
+  lines: parseChargeLines(dayExport.text),
   teamId,
   project,
   period: { start, end },
   sandboxes: sandboxIds.length,
-  previousDay: parseChargeLines(await readFile(resolve(args["previous-charges"]), "utf8")),
+  previousDay: parseChargeLines(previousExport.text),
 });
 
 // Our side per service, from the raw meters the run kept, so a miss can be traced to its part.

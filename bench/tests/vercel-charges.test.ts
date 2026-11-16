@@ -1,6 +1,7 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   parseChargeLines,
+  receiptProblems,
   SANDBOX_SERVICES,
   sandboxChargeDay,
   type ChargeLine,
@@ -217,5 +218,41 @@ it("refuses a day whose own export misses a Sandbox service", () => {
   expect(sandboxChargeDay({ ...input, lines })).toMatchObject({
     kind: "not-isolated",
     reasons: [expect.stringContaining("does not list Drive Storage")],
+  });
+});
+
+describe("export receipts", () => {
+  const receipt = {
+    url: `/api/v1/billing/charges?teamId=${teamId}&from=${period.start}&to=${period.end}`,
+    status: 200,
+    bytes: 1234,
+    sha256: "a".repeat(64),
+    fetchedAt: "2026-11-17T10:00:00.000Z",
+  };
+
+  const check = (over: Partial<typeof receipt>, body = { bytes: 1234, sha256: "a".repeat(64) }) =>
+    receiptProblems({ receipt: { ...receipt, ...over }, body, teamId, period, label: "export" });
+
+  it("accepts the body the browser received for the settled day", () => {
+    expect(check({})).toEqual([]);
+  });
+
+  it("refuses a saved file that lost a row on the way, even one zero-valued look-alike row", () => {
+    // Dropping a charged Snapshot Storage row and keeping its zero twin leaves every key in place,
+    // so only the body's length and hash can tell.
+    expect(check({}, { bytes: 1100, sha256: "b".repeat(64) })).toEqual([
+      expect.stringContaining("not the body the browser received"),
+    ]);
+  });
+
+  it("refuses an error response, another day or team, and an export read too early", () => {
+    expect(check({ status: 403 })).toEqual([expect.stringContaining("HTTP 403")]);
+    expect(check({ url: receipt.url.replace("2026-11-16T08", "2026-11-15T08") })).toEqual([
+      expect.stringContaining("not 2026-11-16T08:00:00.000Z"),
+    ]);
+    expect(check({ url: receipt.url.replace(teamId, "team_2") })).toHaveLength(1);
+    expect(check({ fetchedAt: "2026-11-17T09:00:00.000Z" })).toEqual([
+      expect.stringContaining("less than 2 hours"),
+    ]);
   });
 });

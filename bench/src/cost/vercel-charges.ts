@@ -61,6 +61,61 @@ export function parseChargeLines(jsonl: string): ChargeLine[] {
     });
 }
 
+/**
+ * What the browser recorded when it read an export: the request, the HTTP status, and the length
+ * and SHA-256 of the body exactly as received. The saved file must hash to the same value, so a
+ * row lost between Vercel and the file (a truncated download, a bad copy) is caught; which rows
+ * Vercel itself includes is Vercel's to answer, not this check's.
+ */
+export const exportReceiptSchema = z.object({
+  url: z.string().min(1),
+  status: z.number().int(),
+  bytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  fetchedAt: z.iso.datetime(),
+});
+
+export type ExportReceipt = z.infer<typeof exportReceiptSchema>;
+
+/** Hours after a charge day closes before its export is read, so late usage has landed. */
+export const SETTLE_HOURS = 2;
+
+/** Why a saved export is not the complete, settled export of `period` for `teamId`, if it is not. */
+export function receiptProblems(input: {
+  readonly receipt: ExportReceipt;
+  readonly body: { readonly bytes: number; readonly sha256: string };
+  readonly teamId: string;
+  readonly period: { readonly start: string; readonly end: string };
+  readonly label: string;
+}): string[] {
+  const { receipt, body, period, label } = input;
+  const problems: string[] = [];
+  const url = new URL(receipt.url, "https://vercel.com");
+  const at = (name: string) => Date.parse(url.searchParams.get(name) ?? "");
+
+  if (receipt.status !== 200) problems.push(`${label} was read with HTTP ${receipt.status}`);
+
+  if (
+    url.pathname !== "/api/v1/billing/charges" ||
+    url.searchParams.get("teamId") !== input.teamId ||
+    at("from") !== Date.parse(period.start) ||
+    at("to") !== Date.parse(period.end)
+  )
+    problems.push(`${label} was read from ${receipt.url}, not ${period.start} to ${period.end}`);
+
+  if (body.bytes !== receipt.bytes || body.sha256 !== receipt.sha256)
+    problems.push(
+      `${label} on disk is not the body the browser received (length or SHA-256 differs)`,
+    );
+
+  if (Date.parse(receipt.fetchedAt) < Date.parse(period.end) + SETTLE_HOURS * 3600 * 1000)
+    problems.push(
+      `${label} was read at ${receipt.fetchedAt}, less than ${SETTLE_HOURS} hours after ${period.end}`,
+    );
+
+  return problems;
+}
+
 export interface ChargeDayInput {
   readonly lines: readonly ChargeLine[];
   readonly teamId: string;
