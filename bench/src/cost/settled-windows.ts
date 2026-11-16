@@ -205,6 +205,8 @@ export interface E2bEvent {
   readonly teamId: string;
   readonly type: string;
   readonly timestamp: number;
+  /** E2B's sandboxExecutionId: an opener and the close that ends its segment share it. */
+  readonly executionId: string | null;
   /** The segment a paused or killed event closes, as E2B metered it. */
   readonly execution: {
     readonly startedAt: number | null;
@@ -279,6 +281,8 @@ function lifecycleProblems(id: string, events: readonly E2bEvent[]): string[] {
   const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp);
   const problems: string[] = [];
   let open: number | null = null;
+  let openId: string | null = null;
+  const openers = new Set<string>();
   let killed = false;
 
   for (const [index, e] of sorted.entries()) {
@@ -290,12 +294,23 @@ function lifecycleProblems(id: string, events: readonly E2bEvent[]): string[] {
     if (e.type === "sandbox.lifecycle.created" || e.type === "sandbox.lifecycle.resumed") {
       if (open !== null)
         problems.push(`sandbox ${id} opens at ${iso(e.timestamp)} while already open`);
+
+      // Each segment has its own execution ID, so a close carrying another one means a pause and
+      // resume between them are missing, however short.
+      if (e.executionId === null || openers.has(e.executionId))
+        problems.push(`sandbox ${id}'s opening at ${iso(e.timestamp)} has no new execution ID`);
+      else openers.add(e.executionId);
       open = e.timestamp;
+      openId = e.executionId;
     } else if (closes.has(e.type)) {
       const x = e.execution;
 
       if (open === null)
         problems.push(`sandbox ${id} closes at ${iso(e.timestamp)} while not open`);
+      else if (e.executionId === null || e.executionId !== openId)
+        problems.push(
+          `sandbox ${id}'s close at ${iso(e.timestamp)} is of execution ${e.executionId}, not the one opened, ${openId}`,
+        );
       else if (x === null)
         problems.push(`sandbox ${id}'s close at ${iso(e.timestamp)} has no meter`);
       else if (

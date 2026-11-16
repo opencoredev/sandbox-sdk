@@ -192,9 +192,11 @@ describe("e2bWindow", () => {
   const team = "team-1";
 
   // A paused or killed event carries the segment it closes: `ms` of 4 vCPU and 8 GiB.
-  const event = (sandboxId: string, type: string, time: string, ms = 0): E2bEvent => ({
+  // `exec` names the segment: an opener and the close that ends it share an execution ID.
+  const event = (sandboxId: string, type: string, time: string, ms = 0, exec = "1"): E2bEvent => ({
     sandboxId,
     teamId: team,
+    executionId: `${sandboxId}-${exec}`,
     type: `sandbox.lifecycle.${type}`,
     timestamp: at(time),
     execution:
@@ -355,8 +357,8 @@ describe("e2bWindow", () => {
       ...events.filter((e) => e.sandboxId !== "s-a"),
       event("s-a", "created", "2026-11-16T17:05:01Z"),
       event("s-a", "paused", "2026-11-16T17:10:00Z", 299_000),
-      event("s-a", "resumed", "2026-11-16T17:15:00Z"),
-      event("s-a", "killed", "2026-11-16T18:05:00Z", 3_000_000),
+      event("s-a", "resumed", "2026-11-16T17:15:00Z", 0, "2"),
+      event("s-a", "killed", "2026-11-16T18:05:00Z", 3_000_000, "2"),
     ];
 
     const both = [
@@ -381,8 +383,8 @@ describe("e2bWindow", () => {
       ...events.filter((e) => e.sandboxId !== "s-a"),
       event("s-a", "created", "2026-11-16T17:05:01Z"),
       event("s-a", "paused", "2026-11-16T17:10:00Z", 299_000),
-      event("s-a", "resumed", "2026-11-16T17:12:00Z"),
-      event("s-a", "killed", "2026-11-16T17:20:00Z", 480_000),
+      event("s-a", "resumed", "2026-11-16T17:12:00Z", 0, "2"),
+      event("s-a", "killed", "2026-11-16T17:20:00Z", 480_000, "2"),
     ];
 
     const partial = [hour("2026-11-16T17:00:00Z", 1, 0.02, 299_000), ...hours.slice(1)];
@@ -431,13 +433,36 @@ describe("e2bWindow", () => {
     expect(reasonsOf(window).some((r) => r.includes("is metered for 860000 ms"))).toBe(true);
   });
 
+  it("refuses a close of another execution than the one opened, however short the gap", () => {
+    // Created at 0, a pause at 1.5 s and resume at 1.6 s missing, killed at 1.8 s with only the
+    // final 200 ms: timing alone can't see it, the execution IDs can.
+    const short = [
+      ...events.filter((e) => e.sandboxId !== "s-a"),
+      event("s-a", "created", "2026-11-16T17:05:00Z"),
+      event("s-a", "killed", "2026-11-16T17:05:01.800Z", 200, "2"),
+    ];
+
+    const posted = [hour("2026-11-16T17:00:00Z", 1, 0.02, 200), ...hours.slice(1)];
+
+    const window = e2bWindow({
+      ...base,
+      events: short,
+      reading: reading("2026-11-16T20:05:00Z", posted),
+      recheck: reading("2026-11-16T20:40:00Z", posted),
+    });
+
+    expect(
+      reasonsOf(window).some((r) => r.includes("is of execution s-a-2, not the one opened")),
+    ).toBe(true);
+  });
+
   it("refuses a whole unposted segment smaller than the rounding allowance", () => {
     const tiny = [
       ...events.filter((e) => e.sandboxId !== "s-a"),
       event("s-a", "created", "2026-11-16T17:05:00Z"),
       event("s-a", "paused", "2026-11-16T17:10:00Z", 300_000),
-      event("s-a", "resumed", "2026-11-16T17:11:00Z"),
-      event("s-a", "killed", "2026-11-16T17:11:00.400Z", 400),
+      event("s-a", "resumed", "2026-11-16T17:11:00Z", 0, "2"),
+      event("s-a", "killed", "2026-11-16T17:11:00.400Z", 400, "2"),
     ];
 
     const posted = [hour("2026-11-16T17:00:00Z", 1, 0.02, 300_000), ...hours.slice(1)];

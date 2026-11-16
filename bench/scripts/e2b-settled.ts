@@ -202,6 +202,7 @@ await writeFile(
 const eventSchema = z.object({
   sandboxId: z.string(),
   sandboxTeamId: z.string(),
+  sandboxExecutionId: z.string().nullish(),
   type: z.string(),
   eventData: z
     .object({
@@ -224,6 +225,7 @@ const parsedEvents = events.map((e) => {
   return {
     sandboxId: v.sandboxId,
     teamId: v.sandboxTeamId,
+    executionId: v.sandboxExecutionId ?? null,
     type: v.type,
     timestamp: Date.parse(v.timestamp),
     execution: v.eventData?.execution
