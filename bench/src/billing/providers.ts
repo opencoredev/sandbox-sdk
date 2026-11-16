@@ -278,7 +278,7 @@ export function decodeBoxd(
   };
 }
 
-const vercelMeterSchema = z.object({
+export const vercelMeterSchema = z.object({
   name: z.string(),
   status: z.string(),
   totalActiveCpuDurationMs: money.optional(),

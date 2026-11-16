@@ -24,7 +24,7 @@ import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { OwnedSandbox } from "../billing/input.js";
 import type { Json } from "../json.js";
-import { collectProvider, vercelMeter } from "../billing/providers.js";
+import { collectProvider, vercelMeter, type Cost } from "../billing/providers.js";
 import {
   attemptBillingSchema,
   costedAttempts,
@@ -37,6 +37,7 @@ import { billingModelLabel, billingRule } from "../cost/billing-rules.js";
 import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
 import { auditFileSchema, auditFor, noAuditFile, type AuditUsed } from "../cost/audit-file.js";
 import { describeIneligibility, eligibility } from "../cost/eligibility.js";
+import { savedCosts, usageFileSchema } from "./usage-file.js";
 import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
 import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
@@ -307,23 +308,6 @@ function captureUsage(adapter: string, usageDir: string) {
     return file;
   };
 }
-
-/** The billing collector's per-sandbox cost, as saved in a usage file. */
-const costSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.enum(["billed", "metered"]),
-    usd: z.number().finite().nonnegative(),
-    scope: z.enum(["sandbox-lifetime", "window"]),
-    complete: z.boolean(),
-    confidence: z.enum(["high", "medium", "low"]),
-    note: z.string(),
-  }),
-  z.object({ kind: z.literal("unavailable"), confidence: z.literal("none"), note: z.string() }),
-]);
-
-const usageFileSchema = z.object({
-  sandboxes: z.array(z.object({ id: z.string(), cost: costSchema })),
-});
 
 async function loadSlotProvider(
   setup: ProviderSetup,
@@ -805,17 +789,17 @@ async function billing(args: string[]) {
 
   const byAdapter = new Map<string, (typeof billable)[number][]>();
 
-  const captured = new Map<string, z.infer<typeof costSchema>>();
+  const captured = new Map<string, Cost>();
 
   for (const item of billable) {
     const { record, sandboxIds } = item;
     const adapter = providerSetup(record.provider).adapter;
 
-    // Usage captured before deletion (Boat) is the only evidence once the sandbox is gone.
+    // Usage captured before deletion (Boat, Vercel) is the only evidence once the sandbox is gone.
     for (const file of record.costEvidence.usageFiles) {
       const saved = usageFileSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
 
-      for (const sandbox of saved.success ? saved.data.sandboxes : [])
+      for (const sandbox of saved.success ? savedCosts(adapter, saved.data) : [])
         captured.set(sandbox.id, sandbox.cost);
     }
 
