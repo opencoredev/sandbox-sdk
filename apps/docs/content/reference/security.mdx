@@ -1,9 +1,25 @@
 ---
 title: Security
-description: What Sandbox SDK protects and what it leaves to the provider. Trust boundaries, keys, secret redaction, network policy, agent tool limits, previews, and reporting a vulnerability.
+description: Run untrusted LLM code safely from Node.js. Why vm is not a boundary, what the provider isolates, and what Sandbox SDK adds for keys, secrets and network.
 ---
 
 Sandbox SDK is a library over each provider's API. It does not add an isolation layer of its own. The provider you choose supplies the security boundary, its authentication, its network controls, and how it hardens the machine. Read this page before you run code from users or models.
+
+To run untrusted code from an LLM safely in Node.js, keep it out of your own process. Node's `vm` module [is not a security mechanism](https://nodejs.org/api/vm.html), and a child process shares your server's files, network and credentials. Run the code in a sandbox on another machine instead, such as an E2B or Vercel Sandbox microVM, and drive it from your server with `@opencoredev/sandbox-sdk`. Turn the network off unless the code needs it, and set time limits:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+
+const code = "print(sum(range(10)))"; // what the model wrote
+
+await using box = await createSandbox(e2b(), { network: "none", timeoutMs: 5 * 60_000 });
+await box.files.write("main.py", code);
+const result = await box.run("python3 main.py", { timeoutMs: 30_000 });
+console.log(result.ok ? result.stdout : result.output);
+```
+
+`await using` destroys the sandbox when the block ends, even if the code throws. A provider that can't enforce `network: "none"` throws `unsupported` instead of creating an open sandbox; the [capability matrix](/reference/capabilities#matrix) lists which can.
 
 ## Trust boundaries
 
