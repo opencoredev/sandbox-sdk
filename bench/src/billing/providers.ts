@@ -213,7 +213,7 @@ const usageSchema = z.object({
   machines: z.array(machineSchema),
 });
 
-const activitySchema = z.object({
+export const activitySchema = z.object({
   currency: z.string(),
   entries: z.array(
     z.object({
@@ -485,12 +485,12 @@ function windowFor(rows: OwnedSandbox[]) {
   };
 }
 
-type BoxdQuery = (
+export type BoxdQuery = (
   method: "usage" | "billingActivityPage",
   params: { org?: string; since: Date; until: Date; pageSize?: number; pageToken?: string },
 ) => Promise<object>;
 
-async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
+export async function boxdClient(env: NodeJS.ProcessEnv): Promise<BoxdQuery> {
   const require = createRequire(resolve(import.meta.dirname, "../../../packages/sdk/package.json"));
 
   const { Boxd }: typeof import("@boxd-sh/sdk") = await import(
@@ -686,7 +686,7 @@ const BOXD_BUCKET_MS = 15 * 60_000;
  */
 const BOXD_TOLERANCE_MICRO = 2;
 
-const boxdBucketSchema = z.object({
+export const boxdBucketSchema = z.object({
   currency: z.string(),
   complete: z.boolean(),
   rates: z.object({
