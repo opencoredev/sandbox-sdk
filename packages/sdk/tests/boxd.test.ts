@@ -822,15 +822,16 @@ test("listing keeps no per-machine state; connecting queues the guest preparatio
 
   if (!guest) throw new Error("Missing guest");
   const lister = factory();
+  const run = { command: "true", cwd: "/", env: {}, timeoutMs: 30_000, onChunk: () => {} };
 
   try {
     expect((await lister.list({})).some((v) => v.id === box.id)).toBe(true);
     const before = guest.commands.length;
 
-    await lister.exec(box.id, { command: "true" });
+    await lister.exec(box.id, run);
     expect(guest.commands.slice(before).join("\n")).not.toContain("metadata.json");
     await lister.connect(box.id);
-    await lister.exec(box.id, { command: "true" });
+    await lister.exec(box.id, run);
     expect(guest.commands.slice(before).join("\n")).toContain("metadata.json");
   } finally {
     await box.destroy();
