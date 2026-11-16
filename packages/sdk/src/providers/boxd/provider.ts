@@ -723,14 +723,17 @@ export function createBoxdProvider<C extends BoxdClient>(
     return current;
   }
 
+  // boxd's machine list only, never a guest, so no machine is woken even if it falls asleep now.
   const listSleeping = () =>
     safe(undefined, async () =>
-      (await scan()).asleep.map((m) => ({
-        id: m.id,
-        name: m.name,
-        state: sleepState(m.status),
-        createdAt: m.createdAt?.getTime() ?? null,
-      })),
+      (await (await api()).machines.list())
+        .filter((m) => m.name.startsWith("sbxsdk-") && m.status !== "destroyed" && wakes(m))
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          state: sleepState(m.status),
+          createdAt: m.createdAt?.getTime() ?? null,
+        })),
     );
 
   return Object.assign(provider, { listSleeping });

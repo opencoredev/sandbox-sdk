@@ -576,6 +576,15 @@ test("listing never reads a paused machine's guest, which would wake it; find st
     ]);
     expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
 
+    // It reads no guest even of a running keyed machine, which could fall asleep before the read.
+    const keyedMachine = entries[1]?.machine;
+
+    if (!keyedMachine) throw new Error("Missing mock machine");
+    keyedMachine.status = "running";
+    expect((await factory().listSleeping()).some((m) => m.id === keyed.id)).toBe(false);
+    expect(reads.map((r) => r.mock.calls.length)).toEqual([0, 0]);
+    keyedMachine.status = "hibernated";
+
     // A v2 machine boxd lists as running is not read either, so one that falls asleep between
     // boxd's listing and the read can't be woken.
     const machine = entries[0]?.machine;

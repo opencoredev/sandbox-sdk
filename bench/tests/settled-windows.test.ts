@@ -3,10 +3,13 @@ import {
   boxdPeriod,
   boxdWindow,
   e2bWindow,
+  executions,
   type BoxdBucket,
   type E2bEvent,
   type E2bHour,
+  type E2bReading,
   type RunAttempt,
+  type SettledWindow,
 } from "../src/cost/settled-windows.js";
 
 const at = (s: string) => Date.parse(s);
@@ -122,6 +125,25 @@ describe("boxdWindow", () => {
     expect(cases.map((c) => c.kind)).toEqual(Array(cases.length).fill("not-isolated"));
   });
 
+  it("refuses a metered bucket whose charge hasn't posted, or posted twice", () => {
+    const missing = boxdWindow({ attempts, buckets, ledger: ledger.slice(0, 1), readAt });
+
+    const twice = boxdWindow({
+      attempts,
+      buckets,
+      ledger: [
+        ...ledger,
+        { kind: "usage_charge", amountMicro: -1, createdAt: at("2026-11-16T17:44:00Z") },
+      ],
+      readAt,
+    });
+
+    expect(missing.kind === "not-isolated" ? missing.reasons : []).toEqual([
+      "bucket 2026-11-16T17:15:00.000Z was metered but has 0 usage charges, not 1",
+    ]);
+    expect(twice.kind).toBe("not-isolated");
+  });
+
   it("refuses a machine of the run that usage doesn't show", () => {
     const missing = buckets.map((b) => ({
       ...b,
@@ -155,8 +177,11 @@ describe("e2bWindow", () => {
     attempt("b", "s-b", "2026-11-16T17:50:00Z", "2026-11-16T18:10:00Z"),
   ];
 
-  const event = (sandboxId: string, type: string, time: string): E2bEvent => ({
+  const team = "team-1";
+
+  const event = (sandboxId: string, type: string, time: string, teamId = team): E2bEvent => ({
     sandboxId,
+    teamId,
     type: `sandbox.lifecycle.${type}`,
     timestamp: at(time),
   });
@@ -166,6 +191,7 @@ describe("e2bWindow", () => {
     event("s-a", "killed", "2026-11-16T17:20:00Z"),
     event("s-b", "created", "2026-11-16T17:50:01Z"),
     event("s-b", "killed", "2026-11-16T18:10:00Z"),
+    event("old", "created", "2026-11-10T19:11:00Z"),
     event("old", "killed", "2026-11-10T19:11:40Z"),
   ];
 
@@ -177,16 +203,25 @@ describe("e2bWindow", () => {
 
   const hours = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 1, 0.03)];
 
+  const reading = (fetched: string, h: readonly E2bHour[] = hours): E2bReading => ({
+    projectId: team,
+    from: at("2026-11-16T16:00:00Z"),
+    to: at(fetched),
+    fetchedAt: at(fetched),
+    hours: h,
+  });
+
   const base = {
     attempts,
-    hours,
-    hoursRecheck: hours,
-    recheckGapMs: 45 * 60_000,
     events,
     eventsComplete: true,
+    reading: reading("2026-11-16T20:05:00Z"),
+    recheck: reading("2026-11-16T20:40:00Z"),
   };
 
-  it("sums the console's hours when the team's events name only the run's sandboxes", () => {
+  const reasonsOf = (w: SettledWindow) => (w.kind === "not-isolated" ? w.reasons : []);
+
+  it("sums the console's hours when only the run's sandboxes executed", () => {
     const window = e2bWindow(base);
 
     expect(window).toMatchObject({
@@ -200,29 +235,83 @@ describe("e2bWindow", () => {
   it("refuses a window holding another sandbox, as rw-held1's did at 22:03 on 2026-11-05", () => {
     const window = e2bWindow({
       ...base,
-      events: [...events, event("io4d8", "killed", "2026-11-16T17:03:31Z")],
-      hours: [
-        hour("2026-11-16T17:00:00Z", 2, 0.0213),
-        hours[1] ?? hour("2026-11-16T18:00:00Z", 1, 0.03),
+      events: [
+        ...events,
+        event("io4d8", "created", "2026-11-16T17:03:17Z"),
+        event("io4d8", "killed", "2026-11-16T17:03:31Z"),
       ],
     });
 
-    expect(window.kind).toBe("not-isolated");
-
-    if (window.kind === "not-isolated") {
-      expect(window.reasons.some((r) => r.startsWith("sandbox io4d8, not the run's"))).toBe(true);
-      expect(window.reasons.some((r) => r.startsWith("the console counts 2 sandboxes"))).toBe(true);
-    }
+    expect(reasonsOf(window).some((r) => r.startsWith("sandbox io4d8, not the run's"))).toBe(true);
   });
 
-  it("refuses usage in the hour on either side, a moving figure, an early recheck and a partial event list", () => {
+  it("refuses another sandbox executing across the whole window, with no event inside it", () => {
+    const spanning = [
+      ...events,
+      event("long", "created", "2026-11-16T15:00:00Z"),
+      event("long", "killed", "2026-11-16T21:00:00Z"),
+    ];
+
+    const open = [...events, event("open", "resumed", "2026-11-15T10:00:00Z")];
+
+    expect(reasonsOf(e2bWindow({ ...base, events: spanning }))).toHaveLength(1);
+    expect(reasonsOf(e2bWindow({ ...base, events: open }))).toHaveLength(1);
+
+    // A sandbox paused before the window and never resumed was not executing in it.
+    const paused = [
+      ...events,
+      event("parked", "created", "2026-10-29T20:20:21Z"),
+      event("parked", "paused", "2026-10-29T20:20:36Z"),
+    ];
+
+    expect(e2bWindow({ ...base, events: paused }).kind).toBe("isolated");
+  });
+
+  it("refuses an hour the run ended a segment in that the console leaves out", () => {
+    const short = [hours[0] ?? hour("2026-11-16T17:00:00Z", 1, 0.02)];
+
+    const window = e2bWindow({
+      ...base,
+      reading: reading("2026-11-16T20:05:00Z", short),
+      recheck: reading("2026-11-16T20:40:00Z", short),
+    });
+
+    expect(reasonsOf(window)).toContain(
+      "the console counts 0 sandboxes in 2026-11-16T18:00:00.000Z; the run ended segments of 1",
+    );
+  });
+
+  it("refuses console readings of another team", () => {
+    const window = e2bWindow({
+      ...base,
+      reading: { ...base.reading, projectId: "team-2" },
+      recheck: { ...base.recheck, projectId: "team-2" },
+    });
+
+    expect(reasonsOf(window).filter((r) => r.includes("team-2"))).toHaveLength(2);
+  });
+
+  it("refuses usage on either side in either reading, a moving figure, short coverage, early or close readings, and a partial event list", () => {
     const moved = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 1, 0.031)];
+    const sideHour = [...hours, hour("2026-11-16T19:00:00Z", 1, 0.001)];
 
     const cases = [
-      e2bWindow({ ...base, hours: [hour("2026-11-16T16:00:00Z", 1, 0.001), ...hours] }),
-      e2bWindow({ ...base, hours: [...hours, hour("2026-11-16T19:00:00Z", 1, 0.001)] }),
-      e2bWindow({ ...base, hoursRecheck: moved }),
-      e2bWindow({ ...base, recheckGapMs: 10 * 60_000 }),
+      e2bWindow({
+        ...base,
+        reading: reading("2026-11-16T20:05:00Z", [
+          hour("2026-11-16T16:00:00Z", 1, 0.001),
+          ...hours,
+        ]),
+      }),
+      e2bWindow({ ...base, recheck: reading("2026-11-16T20:40:00Z", sideHour) }),
+      e2bWindow({ ...base, recheck: reading("2026-11-16T20:40:00Z", moved) }),
+      e2bWindow({ ...base, reading: { ...base.reading, from: at("2026-11-16T17:00:00Z") } }),
+      e2bWindow({
+        ...base,
+        reading: reading("2026-11-16T19:30:00Z"),
+        recheck: reading("2026-11-16T20:10:00Z"),
+      }),
+      e2bWindow({ ...base, recheck: reading("2026-11-16T20:20:00Z") }),
       e2bWindow({ ...base, eventsComplete: false }),
       e2bWindow({
         ...base,
@@ -236,15 +325,38 @@ describe("e2bWindow", () => {
   });
 
   it("books a paused segment in the hour it ended", () => {
-    const paused = [...events, event("s-a", "paused", "2026-11-16T18:05:00Z")];
+    const paused = [
+      ...events.filter((e) => e.sandboxId !== "s-a"),
+      event("s-a", "created", "2026-11-16T17:05:01Z"),
+      event("s-a", "paused", "2026-11-16T17:10:00Z"),
+      event("s-a", "resumed", "2026-11-16T17:15:00Z"),
+      event("s-a", "killed", "2026-11-16T18:05:00Z"),
+    ];
+
+    const both = [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 2, 0.03)];
 
     const window = e2bWindow({
       ...base,
       events: paused,
-      hours: [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 2, 0.03)],
-      hoursRecheck: [hour("2026-11-16T17:00:00Z", 1, 0.02), hour("2026-11-16T18:00:00Z", 2, 0.03)],
+      reading: reading("2026-11-16T20:05:00Z", both),
+      recheck: reading("2026-11-16T20:40:00Z", both),
     });
 
     expect(window.kind).toBe("isolated");
+  });
+
+  it("splits a sandbox's events into executions", () => {
+    expect(
+      executions([
+        event("x", "paused", "2026-11-16T10:00:00Z"),
+        event("x", "resumed", "2026-11-16T11:00:00Z"),
+        event("x", "paused", "2026-11-16T12:00:00Z"),
+        event("x", "resumed", "2026-11-16T13:00:00Z"),
+      ]),
+    ).toEqual([
+      { start: -Infinity, end: at("2026-11-16T10:00:00Z") },
+      { start: at("2026-11-16T11:00:00Z"), end: at("2026-11-16T12:00:00Z") },
+      { start: at("2026-11-16T13:00:00Z"), end: Infinity },
+    ]);
   });
 });

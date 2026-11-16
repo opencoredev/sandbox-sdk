@@ -28,7 +28,7 @@ import { z } from "zod";
 import { attemptBillingSchema } from "../src/cost/attempt-input.js";
 import type { AuditEntry } from "../src/cost/audit-file.js";
 import { updateAuditFile } from "../src/cost/audit-update.js";
-import { e2bWindow, type E2bHour } from "../src/cost/settled-windows.js";
+import { e2bWindow, type E2bReading } from "../src/cost/settled-windows.js";
 import { attemptRecordSchema } from "../src/realistic/record.js";
 
 const { values } = parseArgs({
@@ -125,7 +125,8 @@ async function reading(path: string) {
       "0": z.object({
         json: z.object({
           projectId: z.string(),
-          periodStart: z.string(),
+          periodStart: z.iso.datetime(),
+          periodEnd: z.iso.datetime().optional(),
           grain: z.literal("hour"),
         }),
       }),
@@ -146,25 +147,27 @@ async function reading(path: string) {
   if (storage.length > 0)
     problems.push(`${basename(path)} reports storage usage, which this script does not price`);
 
-  const hours: E2bHour[] = points.map((p) => ({
-    start: p.timestamp,
-    sandboxCount: p.sandbox_count,
-    usd: p.price_for_cpu + p.price_for_ram,
-  }));
+  const { projectId, periodStart, periodEnd } = input["0"].json;
+  const fetchedAt = Date.parse(receipt.fetchedAt);
 
-  return {
-    receipt,
-    projectId: input["0"].json.projectId,
-    periodStart: input["0"].json.periodStart,
-    hours,
+  // No periodEnd asks for usage up to the moment of the reading.
+  const value: E2bReading = {
+    projectId,
+    from: Date.parse(periodStart),
+    to: periodEnd === undefined ? fetchedAt : Math.min(Date.parse(periodEnd), fetchedAt),
+    fetchedAt,
+    hours: points.map((p) => ({
+      start: p.timestamp,
+      sandboxCount: p.sandbox_count,
+      usd: p.price_for_cpu + p.price_for_ram,
+    })),
   };
+
+  return { receipt, value };
 }
 
 const first = await reading(need("usage"));
 const later = await reading(need("usage-recheck"));
-
-if (first.projectId !== later.projectId)
-  problems.push("the two readings are of different projects");
 
 const events: unknown[] = [];
 let complete = false;
@@ -194,6 +197,7 @@ await writeFile(
 
 const eventSchema = z.object({
   sandboxId: z.string(),
+  sandboxTeamId: z.string(),
   type: z.string(),
   timestamp: z.iso.datetime({ offset: true }),
 });
@@ -201,7 +205,12 @@ const eventSchema = z.object({
 const parsedEvents = events.map((e) => {
   const v = eventSchema.parse(e);
 
-  return { sandboxId: v.sandboxId, type: v.type, timestamp: Date.parse(v.timestamp) };
+  return {
+    sandboxId: v.sandboxId,
+    teamId: v.sandboxTeamId,
+    type: v.type,
+    timestamp: Date.parse(v.timestamp),
+  };
 });
 
 const window = e2bWindow({
@@ -212,25 +221,18 @@ const window = e2bWindow({
     endedAt: r.endedAt,
     deletionConfirmed: r.deletionConfirmed,
   })),
-  hours: first.hours,
-  hoursRecheck: later.hours,
-  recheckGapMs: Date.parse(later.receipt.fetchedAt) - Date.parse(first.receipt.fetchedAt),
   events: parsedEvents,
   eventsComplete: complete,
+  reading: first.value,
+  recheck: later.value,
 });
 
-if (window.kind === "isolated") {
-  const hourAfterEnds = Date.parse(window.period.end) + 3_600_000;
-
-  if (Date.parse(first.periodStart) > Date.parse(window.period.start) - 3_600_000)
-    problems.push("the console readings start after the hour before the run");
-
-  if (
-    Date.parse(first.receipt.fetchedAt) < hourAfterEnds ||
-    Date.parse(eventsReadAt) < hourAfterEnds
-  )
-    problems.push("the console or the event list was read before the hour after the run ended");
-}
+// The event list must also be read after the hour after the run, like the console readings.
+if (
+  window.kind === "isolated" &&
+  Date.parse(eventsReadAt) < Date.parse(window.period.end) + 3_600_000
+)
+  problems.push("the event list was read before the hour after the run ended");
 
 const groups = [
   ...new Map(
@@ -241,7 +243,7 @@ const groups = [
 ];
 
 const checkedAt = later.receipt.fetchedAt.slice(0, 10);
-const source = `E2B console usage, GET https://console.e2b.dev/api/trpc/projects.getUsage (project ${first.projectId}, grain hour), read ${first.receipt.fetchedAt} and again ${later.receipt.fetchedAt}; team events GET https://api.e2b.app/events/sandboxes read ${eventsReadAt}, saved ${eventsPath}`;
+const source = `E2B console usage, GET https://console.e2b.dev/api/trpc/projects.getUsage (project ${first.value.projectId}, grain hour), read ${first.receipt.fetchedAt} and again ${later.receipt.fetchedAt}; team events GET https://api.e2b.app/events/sandboxes read ${eventsReadAt}, saved ${eventsPath}`;
 const reasons = [...problems, ...(window.kind === "not-isolated" ? window.reasons : [])];
 
 const entries: AuditEntry[] = groups.map(({ profile, track }) =>
@@ -290,7 +292,7 @@ const settled = window.kind === "isolated" ? window.settledUSD : null;
 const report = {
   runDir,
   readings: [first.receipt.fetchedAt, later.receipt.fetchedAt],
-  projectId: first.projectId,
+  projectId: first.value.projectId,
   attempts: records.length,
   sandboxes: new Set(records.flatMap((r) => r.sandboxIds)).size,
   reportedUSD,
