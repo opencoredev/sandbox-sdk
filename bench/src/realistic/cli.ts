@@ -24,7 +24,7 @@ import type { CreateInput, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { OwnedSandbox } from "../billing/input.js";
 import type { Json } from "../json.js";
-import { collectProvider, vercelMeter, type Cost } from "../billing/providers.js";
+import { collectProvider, type Cost } from "../billing/providers.js";
 import {
   attemptBillingSchema,
   costedAttempts,
@@ -37,7 +37,7 @@ import { billingModelLabel, billingRule } from "../cost/billing-rules.js";
 import { reportedCost, wholeMachineListPrice } from "../cost/columns.js";
 import { auditFileSchema, auditFor, noAuditFile, type AuditUsed } from "../cost/audit-file.js";
 import { describeIneligibility, eligibility } from "../cost/eligibility.js";
-import { savedCosts, usageFileSchema } from "./usage-file.js";
+import { captureUsage, savedCosts, usageFileSchema } from "./usage-file.js";
 import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
 import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
@@ -267,48 +267,6 @@ async function spentUSD(path: string) {
   );
 }
 
-/**
- * Boat reports a sandbox's usage only while it exists, and Vercel only between the end of a session
- * and deletion; the billing collector reads it then. Vercel's sandbox is stopped first.
- */
-function captureUsage(adapter: string, usageDir: string) {
-  return async (id: string) => {
-    if (adapter === "vercel") await vercelMeter.stop(id);
-
-    // Vercel's raw meter, byte counters included, is kept as evidence for the settled-charge audit.
-    const meter = adapter === "vercel" ? await vercelMeter.read(id) : null;
-
-    const collected = await collectProvider(
-      adapter,
-      [
-        {
-          provider: adapter,
-          id,
-          scenarios: new Set(["pre-destroy"]),
-          startedAt: null,
-          finishedAt: null,
-          confirmedStopAt: null,
-          app: null,
-        },
-      ],
-      process.env,
-    );
-
-    await mkdir(usageDir, { recursive: true });
-    const file = join(usageDir, `${adapter}-${id}.json`);
-    await writeFile(
-      file,
-      JSON.stringify({
-        capturedAt: new Date().toISOString(),
-        ...collected,
-        ...(meter && { meter }),
-      }) + "\n",
-    );
-
-    return file;
-  };
-}
-
 async function loadSlotProvider(
   setup: ProviderSetup,
   track: TrackId,
@@ -355,7 +313,8 @@ async function loadSlotProvider(
   };
 
   if ((setup.adapter === "boat" || setup.adapter === "vercel") && usageDir)
-    entry.beforeDestroy = captureUsage(setup.adapter, usageDir);
+    entry.beforeDestroy = (id) =>
+      captureUsage({ adapter: setup.adapter, id, usageDir, env: process.env });
 
   // Modal bills per App: each attempt gets its own App, journaled before allocation (apps.ts).
   if (setup.adapter === "modal") {

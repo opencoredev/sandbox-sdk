@@ -3,8 +3,17 @@
  * report usage only while the sandbox exists (Boat) or between stop and delete (Vercel). Once the
  * sandbox is gone the file is the only evidence, so `bun bench realistic billing` reads it back.
  */
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
-import { decodeVercel, vercelMeterSchema, type Cost } from "../billing/providers.js";
+import {
+  collectProvider,
+  decodeVercel,
+  vercelMeter,
+  vercelMeterSchema,
+  type Cost,
+  type VercelMeter,
+} from "../billing/providers.js";
 
 /** The billing collector's per-sandbox cost, as saved in a usage file. */
 const costSchema = z.discriminatedUnion("kind", [
@@ -50,4 +59,64 @@ export function savedCosts(adapter: string, file: UsageFile): { id: string; cost
       cost: { ...cost, complete: false, confidence: "low", note: `${cost.note}; ${noTransfer}` },
     };
   });
+}
+
+/**
+ * Save one sandbox's usage just before deletion and return the file. Vercel reports usage only
+ * between the end of a session and deletion, so its sandbox is stopped and its meter read once:
+ * the cost is priced from that same reading (the collector reads the file it was just given), so
+ * a second, failing read can never leave a valid meter beside an unavailable cost. If the one read
+ * fails, the collector tries a live read and records why the cost is unavailable, as before.
+ */
+export async function captureUsage(input: {
+  readonly adapter: string;
+  readonly id: string;
+  readonly usageDir: string;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<string> {
+  const { adapter, id, usageDir, env } = input;
+  const file = join(usageDir, `${adapter}-${id}.json`);
+  let meter: VercelMeter | null = null;
+
+  await mkdir(usageDir, { recursive: true });
+
+  if (adapter === "vercel") {
+    await vercelMeter.stop(id);
+    meter = await vercelMeter.read(id).catch(() => null);
+
+    // The collector's saved-meter format; it prices from this file instead of reading again.
+    if (meter !== null)
+      await writeFile(file, JSON.stringify({ capturedAt: new Date().toISOString(), meter }) + "\n");
+  }
+
+  const collected = await collectProvider(
+    adapter,
+    [
+      {
+        provider: adapter,
+        id,
+        scenarios: new Set(["pre-destroy"]),
+        startedAt: null,
+        finishedAt: null,
+        confirmedStopAt: null,
+        app: null,
+      },
+    ],
+    env,
+    undefined,
+    false,
+    0,
+    meter === null ? {} : { usageDir },
+  );
+
+  await writeFile(
+    file,
+    JSON.stringify({
+      capturedAt: new Date().toISOString(),
+      ...collected,
+      ...(meter && { meter }),
+    }) + "\n",
+  );
+
+  return file;
 }
