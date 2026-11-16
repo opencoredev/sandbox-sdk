@@ -557,6 +557,30 @@ describe("sweep and sleeping machines", () => {
     );
 
     expect(unchecked).toBe(1);
+
+    // A sleeping listing that fails is a failed sweep, never a clean one.
+    const failing = Object.assign(memory(), {
+      listSleeping: async (): Promise<{ id: string }[]> => {
+        throw new Error("listing failed");
+      },
+    });
+
+    const broken = await sweepProviders(
+      "sweep-sleeping",
+      [
+        {
+          name: "boxd",
+          provider: failing,
+          attribution: attributionFor("boxd").attribution,
+          settlementMs: null,
+          paddingMs: 0,
+        },
+      ],
+      async () => {},
+      dir,
+    );
+
+    expect(broken).toEqual({ unchecked: 0, failed: 1 });
     expect(notes).toEqual([
       { kind: "leftover-unchecked", provider: "boxd", id: "sleeping-machine", reason: "sleeping" },
       { kind: "swept", provider: "boxd", found: 0, sleepingUnchecked: 1 },

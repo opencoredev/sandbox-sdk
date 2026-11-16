@@ -553,6 +553,7 @@ export async function sweepProviders(
 ) {
   const seen = new Set<Provider>();
   let unchecked = 0;
+  let failed = 0;
   const journal = join(journalDir, appJournalFile);
   const apps = await readAppJournal(journal);
   const changed = new Set<(typeof apps)[number]>();
@@ -607,6 +608,7 @@ export async function sweepProviders(
         sleepingUnchecked: asleep.length,
       });
     } catch (error) {
+      failed++;
       await note({
         kind: "sweep-failed",
         provider: entry.name,
@@ -617,7 +619,7 @@ export async function sweepProviders(
 
   for (const app of changed) await persistApp(journal, app);
 
-  return { unchecked };
+  return { unchecked, failed };
 }
 
 async function sweep(args: string[]) {
@@ -643,6 +645,7 @@ async function sweep(args: string[]) {
   ).map(providerSetup);
 
   let unchecked = 0;
+  let failed = 0;
 
   for (const track of tracks)
     for (const runId of values.run) {
@@ -654,7 +657,10 @@ async function sweep(args: string[]) {
         if (loaded.kind === "ready") providers.push(loaded.entry);
       }
 
-      unchecked += (await sweepProviders(runId, providers, note, out)).unchecked;
+      const result = await sweepProviders(runId, providers, note, out);
+
+      unchecked += result.unchecked;
+      failed += result.failed;
     }
 
   process.stdout.write(`Swept; see ${notesPath}\n`);
@@ -663,6 +669,11 @@ async function sweep(args: string[]) {
     process.stderr.write(
       `${unchecked} sleeping machines could not be checked without waking them; see leftover-unchecked in ${notesPath}\n`,
     );
+    process.exitCode = 1;
+  }
+
+  if (failed > 0) {
+    process.stderr.write(`${failed} provider sweeps failed; see sweep-failed in ${notesPath}\n`);
     process.exitCode = 1;
   }
 }
