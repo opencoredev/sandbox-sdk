@@ -5,7 +5,10 @@
  *
  * The day is isolated only when every line that charges or consumes anything in the Sandbox
  * category is for exactly that day, is tagged with our project, and the day's Sandbox Creations
- * equal the run's sandbox count. Any other sandbox activity on the team, a line for another period
+ * equal the run's sandbox count. A matching count does not rule out resources that already
+ * existed (an older snapshot or drive still stored, a sandbox still running), which bill without a
+ * creation, so the charge day before must have no Sandbox charge or consumption at all: then
+ * everything billed in the day was created in it, and every creation is ours. Any other sandbox activity on the team, a line for another period
  * or a Sandbox service this file does not know makes the day unusable, never a partial total.
  */
 import { z } from "zod";
@@ -66,6 +69,8 @@ export interface ChargeDayInput {
   readonly period: { readonly start: string; readonly end: string };
   /** Distinct sandboxes the run created. */
   readonly sandboxes: number;
+  /** The same export for the charge day just before `period`. */
+  readonly previousDay: readonly ChargeLine[];
 }
 
 export interface ServiceTotal {
@@ -144,6 +149,31 @@ export function sandboxChargeDay(input: ChargeDayInput): ChargeDay {
     };
   });
 
+  const previousStart = new Date(Date.parse(start) - 24 * 3600 * 1000).toISOString();
+
+  const before = input.previousDay.filter(
+    (line) => line.ServiceCategory === "Sandbox" || known.has(line.ServiceName),
+  );
+
+  if (before.length === 0)
+    reasons.push(`the export for the day before (${previousStart}) has no Sandbox lines at all`);
+
+  for (const line of before) {
+    const label = `${line.ServiceName} (${line.RegionId ?? "no region"}) on the day before`;
+
+    if (
+      !sameInstant(line.ChargePeriodStart, previousStart) ||
+      !sameInstant(line.ChargePeriodEnd, start)
+    )
+      reasons.push(`${label} is for ${line.ChargePeriodStart} to ${line.ChargePeriodEnd}`);
+    else if (line.SubAccountId !== input.teamId)
+      reasons.push(`${label} is for team ${line.SubAccountId}`);
+    else if (isActive(line) || line.ConsumedQuantity === null)
+      reasons.push(
+        `${label} charged ${line.BilledCost} USD for ${line.ConsumedQuantity ?? "?"} ${line.ConsumedUnit ?? ""}, so something may have carried into the day`,
+      );
+  }
+
   const creations = services.find((s) => s.service === "Sandbox Creations")?.quantity ?? 0;
 
   if (creations !== input.sandboxes)
@@ -160,6 +190,6 @@ export function sandboxChargeDay(input: ChargeDayInput): ChargeDay {
     settledUSD: sandbox.reduce((sum, line) => sum + line.BilledCost, 0),
     services,
     creations,
-    isolation: `Every Sandbox-category line of team ${input.teamId} that charges or consumes anything in ${start} to ${end} is tagged project ${input.project.name} (${input.project.id}), and the day's Sandbox Creations (${creations}) equal the run's ${input.sandboxes} sandboxes`,
+    isolation: `Every Sandbox-category line of team ${input.teamId} that charges or consumes anything in ${start} to ${end} is tagged project ${input.project.name} (${input.project.id}), the day's Sandbox Creations (${creations}) equal the run's ${input.sandboxes} sandboxes, and the day before (${previousStart}) has no Sandbox charge or consumption, so nothing billed in the day existed before it`,
   };
 }

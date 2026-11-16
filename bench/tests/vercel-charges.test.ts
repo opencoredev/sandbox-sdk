@@ -59,7 +59,21 @@ const day = [
   }),
 ];
 
-const input = { lines: day, teamId, project, period, sandboxes: 20 };
+const previous = { start: "2026-11-15T08:00:00.000Z", end: period.start };
+
+// The day before: Vercel lists every service and region with zeros when nothing ran or was stored.
+const quietDay = [
+  line({ ChargePeriodStart: previous.start, ChargePeriodEnd: previous.end }),
+  line({
+    ServiceName: "Snapshot Storage",
+    ConsumedUnit: "gigabyte",
+    RegionId: null,
+    ChargePeriodStart: previous.start,
+    ChargePeriodEnd: previous.end,
+  }),
+];
+
+const input = { lines: day, teamId, project, period, sandboxes: 20, previousDay: quietDay };
 
 it("totals a day that holds only our sandboxes, every Sandbox service included", () => {
   const result = sandboxChargeDay(input);
@@ -123,4 +137,40 @@ it("parses Vercel's JSONL and names the line that does not parse", () => {
   expect(() => parseChargeLines(`${jsonl}{"BilledCost":"x"}\n`)).toThrow(
     `charges line ${day.length + 1}`,
   );
+});
+
+it("refuses a day with the right creation count when older resources were still billing before it", () => {
+  // An older snapshot, still stored the day before, bills storage into our day without a creation.
+  const stored = line({
+    ServiceName: "Snapshot Storage",
+    ConsumedUnit: "gigabyte",
+    RegionId: null,
+    ChargePeriodStart: previous.start,
+    ChargePeriodEnd: previous.end,
+    BilledCost: 0.0001,
+    EffectiveCost: 0.0001,
+    ConsumedQuantity: 0.05,
+    Tags: ours,
+  });
+
+  // A sandbox from an earlier run still running at the day's start.
+  const running = line({
+    ChargePeriodStart: previous.start,
+    ChargePeriodEnd: previous.end,
+    BilledCost: 0.02,
+    EffectiveCost: 0.02,
+    ConsumedQuantity: 0.15,
+    Tags: ours,
+  });
+
+  for (const extra of [stored, running])
+    expect(sandboxChargeDay({ ...input, previousDay: [...quietDay, extra] })).toMatchObject({
+      kind: "not-isolated",
+      reasons: [expect.stringContaining("on the day before charged")],
+    });
+});
+
+it("refuses a missing or wrong export for the day before", () => {
+  expect(sandboxChargeDay({ ...input, previousDay: [] }).kind).toBe("not-isolated");
+  expect(sandboxChargeDay({ ...input, previousDay: day }).kind).toBe("not-isolated");
 });
