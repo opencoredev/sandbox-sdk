@@ -94,26 +94,29 @@ export interface StandbyReading {
   readonly hostElapsedMs: number;
   /** `countTicks`'s output: the ticks written when the timed request ran. */
   readonly ticksAtRequest: string;
+  /** Host time from sending the timed request to its result. */
+  readonly requestMs: number;
   readonly minGapMs: number;
 }
 
-/**
- * Ticks that may follow the gap when the timed request runs on a sandbox it woke: the ticker's
- * overdue `sleep` ends as the sandbox resumes, so it can write one tick before the request runs,
- * and one more if the request is slow to start. A third means it had been awake at least 0.4 s.
- */
-const maxTicksBeforeRequest = 2;
+/** The ticker's period: consecutive ticks are at least this far apart (`sleep 0.2`). */
+const tickMs = 200;
 
 /**
  * The standby gap, in ms, or why the ticks do not prove standby.
  *
  * Proof needs all of: the guest clock advanced as much as the host's (within 2 s), so a clock
- * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; and
- * when the timed request ran, at most two ticks followed that gap, so the request found the
- * sandbox asleep and woke it. The last check uses tick counts, not clocks, so the guest clock's
- * whole-second resolution and the host-guest offset do not matter.
+ * step cannot pose as a gap; the longest gap since the ticker started is at least `minGapMs`; it
+ * ended no earlier than the timed request's count, so it is not a later gap; and the sandbox woke
+ * no earlier than the timed request was sent. For the last: the frozen ticker writes again only
+ * once the sandbox wakes, then at most one tick per 200 ms, so k ticks after the gap when the
+ * request counted them took at least (k - 1) x 200 ms awake. The request woke it only if that fits
+ * within the request's own duration; a sandbox woken earlier ticks for longer. Tick counts and the
+ * host's request time decide it, not the guest clock's whole seconds or its offset from the host.
  */
-export function standbyGap(reading: StandbyReading): { gapMs: number } | { refused: string } {
+export function standbyGap(
+  reading: StandbyReading,
+): { gapMs: number; ticksAfterGap: number } | { refused: string } {
   const { ticker } = reading;
   const [first, ...rest] = reading.output.trim().split("\n");
   const afterS = Number(first);
@@ -155,14 +158,20 @@ export function standbyGap(reading: StandbyReading): { gapMs: number } | { refus
   if (gapMs < reading.minGapMs)
     return { refused: `the longest pause in the ticks was ${gapMs} ms` };
 
-  const before = atRequest - end;
+  // Ticks after the gap when the request counted them; negative means the gap came later.
+  const after = atRequest - end;
 
-  if (before > maxTicksBeforeRequest)
+  if (after < 0)
+    return { refused: `the ${gapMs} ms pause in the ticks began after the timed request` };
+
+  const awakeAtLeastMs = Math.max(0, after - 1) * tickMs;
+
+  if (awakeAtLeastMs > reading.requestMs)
     return {
-      refused: `the ticker had resumed before the timed request: ${before} ticks after the ${gapMs} ms pause when it ran`,
+      refused: `the sandbox woke before the timed request: ${after} ticks after the ${gapMs} ms pause need ${awakeAtLeastMs} ms awake, the request took ${Math.round(reading.requestMs)} ms`,
     };
 
   if (atRequest > times.length) return { refused: "the ticks were cut short after the request" };
 
-  return { gapMs };
+  return { gapMs, ticksAfterGap: after };
 }

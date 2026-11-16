@@ -14,48 +14,62 @@ const ticking = (fromS: number, toS: number) =>
 describe("standby evidence", () => {
   /**
    * A reading taken 31.2 s after the ticker started. `atRequest` is how many ticks the timed
-   * request counted when it ran.
+   * request counted when it ran; `requestMs` how long the request took, as the host saw it.
    */
-  const reading = (afterS: number, ticks: number[], atRequest: number) => ({
+  const reading = (afterS: number, ticks: number[], atRequest: number, requestMs = 220) => ({
     output: output(afterS, ticks),
     ticker,
     hostElapsedMs: 31_200,
     ticksAtRequest: `${atRequest}\n`,
+    requestMs,
     minGapMs: 5_000,
   });
 
   const asleep = ticking(100, 115);
 
   test("a request that found the ticker frozen proves standby", () => {
-    // 76 ticks before the gap, then the overdue tick as the sandbox woke, then the request.
+    // The overdue tick as the sandbox woke, then the request counted.
     const ticks = [...asleep, 130, 130, 130, 131, 131];
 
-    expect(standbyGap(reading(131, ticks, asleep.length + 1))).toEqual({ gapMs: 15_000 });
+    expect(standbyGap(reading(131, ticks, asleep.length + 1))).toMatchObject({ gapMs: 15_000 });
+    // The count ran before the first tick after the wake.
+    expect(standbyGap(reading(131, ticks, asleep.length))).toMatchObject({ gapMs: 15_000 });
+  });
+
+  test("a slow command start after a real wake still proves standby", () => {
+    // The review's case: the request wakes the sandbox at 130 and its command runs at 130.45,
+    // after ticks at 130, 130.2 and 130.4. Three ticks need 400 ms awake, within 520 ms.
+    const ticks = [...asleep, 130, 130, 130, 131];
+
+    expect(standbyGap(reading(131, ticks, asleep.length + 3, 520))).toMatchObject({
+      gapMs: 15_000,
+    });
   });
 
   test("a request that found the ticker running again is refused", () => {
-    // The review's cases: ticks resumed at 129 and the request ran at 130.5.
+    // Ticks resumed at 129 and the 220 ms request ran at 130.5: five ticks need 800 ms awake.
     const ticks = [...asleep, 129, 129, 130, 130, 131];
 
-    expect(standbyGap(reading(131, ticks, asleep.length + 4))).toMatchObject({
-      refused: expect.stringContaining("had resumed before the timed request"),
+    expect(standbyGap(reading(131, ticks, asleep.length + 5))).toMatchObject({
+      refused: expect.stringContaining("woke before the timed request"),
     });
   });
 
-  test("however slow the stop command, the count the request took decides", () => {
-    const ticks = [...asleep, ...ticking(129, 133)];
+  test("a gap that began after the timed request is refused", () => {
+    // The review's case: a warm count at 130, ticks on to 145, the stop request wakes it at 160.
+    const ticks = [...ticking(100, 145), 160, 160];
+    const output = reading(160, ticks, ticking(100, 130).length);
 
-    expect(standbyGap(reading(133, ticks, asleep.length + 6))).toMatchObject({
-      refused: expect.stringContaining("had resumed before the timed request"),
+    expect(standbyGap({ ...output, hostElapsedMs: 60_200 })).toMatchObject({
+      refused: expect.stringContaining("began after the timed request"),
     });
-    expect(standbyGap(reading(133, ticks, asleep.length + 1))).toEqual({ gapMs: 14_000 });
   });
 
   test("a stall early in the idle wait, ticking on until the resume, proves nothing", () => {
     const ticks = [...ticking(100, 102), ...ticking(108, 131)];
 
     expect(standbyGap(reading(131, ticks, ticks.length - 1))).toMatchObject({
-      refused: expect.stringContaining("had resumed before the timed request"),
+      refused: expect.stringContaining("woke before the timed request"),
     });
   });
 

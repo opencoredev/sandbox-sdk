@@ -1780,6 +1780,7 @@ export async function runV2(
                     ticker,
                     hostElapsedMs: performance.now() - tickerStartedAt,
                     ticksAtRequest,
+                    requestMs: resumeReadyMs,
                     minGapMs: standby.minGapMs,
                   });
 
@@ -1793,6 +1794,8 @@ export async function runV2(
                   lifecyclePhases.resumeReadyMs = resumeReadyMs;
                   lifecyclePhases.standbyIdleMs = standby.idleMs;
                   lifecyclePhases.standbyGapMs = evidence.gapMs;
+                  // The evidence itself, so a later rule can be checked against these samples.
+                  lifecyclePhases.standbyTicksAfterGap = evidence.ticksAfterGap;
 
                   return { ...lifecyclePhases };
                 }
