@@ -33,6 +33,7 @@ import {
   createAgentosProvider,
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
+import { createBasetenProvider } from "../../../packages/sdk/src/providers/baseten/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
@@ -107,6 +108,10 @@ const subjects: readonly Subject[] = [
       }),
   },
   { column: "Modal", build: () => createModalProvider(stubTransport) },
+  {
+    column: "Baseten",
+    build: () => createBasetenProvider({ apiKey: offlineKey }, stubTransport),
+  },
   {
     column: "Daytona",
     build: () => daytona({ apiKey: offlineKey }),
