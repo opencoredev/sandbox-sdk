@@ -996,6 +996,41 @@ it.each(["tenki", "freestyle"])(
   },
 );
 
+it("marks a pause by idling as wake only in the report, with a note saying why", async () => {
+  const { publicationMarkdown } = await import("../src/publication-report.js");
+
+  const standby = (iteration: number, provider: string, phases: Record<string, number>) => ({
+    ...sample(iteration, "pause-resume", { kind: "sample", value: 250 }),
+    provider,
+    phases,
+  });
+
+  const both = (runId: string, samples: Sample[]) => ({
+    ...source(runId, samples),
+    providers: ["daytona", "baseten"].map((name) => ({
+      name,
+      configuredRegion: null,
+      note: "default",
+    })),
+  });
+
+  const report = mergeSources([
+    both("main-pause", [
+      standby(0, "baseten", { resumeReadyMs: 250, standbyIdleMs: 30_000, standbyGapMs: 15_000 }),
+      standby(1, "daytona", { pauseMs: 900, resumeReturnedMs: 400, resumeReadyMs: 500 }),
+    ]),
+  ]);
+
+  const markdown = publicationMarkdown(report);
+
+  const rowOf = (provider: string) =>
+    markdown.split("\n").find((line) => line.startsWith(`| ${provider} |`)) ?? "";
+
+  expect(rowOf("baseten")).toContain("(wake only)");
+  expect(rowOf("daytona")).not.toContain("wake only");
+  expect(markdown).toContain("baseten: no pause call");
+});
+
 it("prices a sized Baseten task without disk: files live in memory and no volume is mounted", async () => {
   const { costPerTask } = await import("../src/task-cost.js");
   const { estimateCost } = await import("../src/pricing.js");

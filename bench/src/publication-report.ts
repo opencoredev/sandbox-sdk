@@ -167,7 +167,9 @@ export function headline(r: PublicationReport) {
       latency(summary(r, p, "cold"), true),
       latency(summary(r, p, "command")),
       latency(summary(r, p, "files-10mb")),
-      latency(summary(r, p, "pause-resume")),
+      pausesByIdling(r, p)
+        ? `${latency(summary(r, p, "pause-resume"))} (wake only)`
+        : latency(summary(r, p, "pause-resume")),
       `${latency(summary(r, p, "snapshot", "snapshot"))} / ${latency(summary(r, p, "create-from-snapshot", "snapshot"))}`,
       latency(summary(r, p, "preview-first-byte")),
       latency(summary(r, p, "npm-install")),
@@ -455,8 +457,29 @@ const hostHeaders = [
   "Mean sampled host CPU busy",
 ];
 
+/**
+ * Whether a provider's pause-resume samples pause by idling (standby.ts): no pause or resume call,
+ * so the value is the wake alone, not a pause-plus-resume total.
+ */
+function pausesByIdling(r: PublicationReport, provider: string) {
+  return r.samples.some(
+    (s) =>
+      s.provider === provider &&
+      s.scenario === "pause-resume" &&
+      s.outcome.kind === "sample" &&
+      Number.isFinite(s.phases?.standbyIdleMs),
+  );
+}
+
 export function disclosures(r: PublicationReport) {
+  const idling = providers(r).filter((p) => pausesByIdling(r, p));
+
   const notes = [
+    ...(idling.length
+      ? [
+          `${idling.join(", ")}: no pause call; the sandbox goes on standby by itself once requests stop. Its Pause/resume value, marked "wake only", is the first request after a proven standby (resumeReadyMs), not a pause-plus-resume total, so it is not comparable with the other rows' totals.`,
+        ]
+      : []),
     ...(r.attemptPolicy
       ? [
           "Attempt selection: exclude provider-account-limit and client-third-party failures, retain provider-operation failures. Keep the first N attempted rows per (provider, suite, test) in startedAt order, with sourceRunId and sourceSampleIndex as stable tie-breakers. N=100 main, 30 workloads/snapshots, 3 burst cohorts. Skipped/blocked rows are not attempts. Local Docker is unchanged.",

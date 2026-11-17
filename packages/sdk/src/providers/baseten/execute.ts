@@ -87,6 +87,9 @@ with stdin_file() as i:
    with open(a,'w') as h: h.write('1')
   try: p=Process(v,{**os.environ,**v['env']},i,True)
   except OSError as e:
+   if a:
+    try: os.unlink(a)
+    except FileNotFoundError: pass
    emit('stderr',(str(e)+'\\n').encode()); out.write(b'X127.'); out.flush(); sys.exit(0)
   with open(m,'w') as h: h.write(str(p.pid))
  try:
@@ -328,8 +331,15 @@ export async function execute({
       if (!cancelled) streamFailed = true;
     }
 
+    // The launcher deletes an uploaded input once it reads it; if it may never have started,
+    // delete it here, after the command is known stopped. Already gone is fine.
+    const dropSpec = async () => {
+      if (specFile !== undefined) await removeSpec(specFile).catch(() => {});
+    };
+
     if (cancelled || streamFailed) {
       if (!(await terminate())) throw unconfirmed();
+      await dropSpec();
 
       if (streamFailed)
         throw failure(
@@ -351,6 +361,7 @@ export async function execute({
 
     if (exitCode === undefined || launcherError || !reader.empty) {
       if (!(await terminate())) throw unconfirmed();
+      await dropSpec();
       throw failure(
         "Baseten command launcher failed; the sandbox needs python3",
         "provider",

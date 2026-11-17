@@ -118,6 +118,24 @@ describe("Baseten exec", () => {
     expect(removed).toEqual(["/tmp/.sandbox-sdk/spec.json"]);
   });
 
+  test("an uploaded input is removed when the stream breaks before the launcher reads it", async () => {
+    const { processes } = fakeProcesses([], { failAfter: true });
+    const removed: string[] = [];
+
+    await expect(
+      execute({
+        processes,
+        sandboxId: "box",
+        input: input({ stdin: "x".repeat(inlineSpecLimit) }),
+        uploadSpec: async () => "/tmp/.sandbox-sdk/spec.json",
+        removeSpec: async (path) => {
+          removed.push(path);
+        },
+      }),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(removed).toEqual(["/tmp/.sandbox-sdk/spec.json"]);
+  });
+
   test("the inline limit counts UTF-8 bytes, not characters", async () => {
     const { processes, calls } = fakeProcesses([
       { type: "output", stream: "stdout", text: "X0." },

@@ -86,6 +86,17 @@ describe.skipIf(process.platform !== "linux")("Baseten launcher, run locally", (
     expect((await run("cat", { stdin: "piped" })).chunks).toEqual(["stdout:piped"]);
   });
 
+  test("a launch that fails leaves no activity marker", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bt-launcher-"));
+    const activityPath = join(dir, "activity", "exec-x");
+
+    // No `sh` on the command's PATH: starting the process itself fails (OSError).
+    const failed = await run("true", { env: { PATH: join(dir, "empty") }, activityPath });
+
+    expect(failed).toMatchObject({ exitCode: 127 });
+    expect(existsSync(activityPath)).toBe(false);
+  });
+
   test("the deadline kills the whole group before its side effect", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bt-launcher-"));
 
