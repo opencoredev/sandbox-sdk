@@ -38,12 +38,11 @@ export const startTicker =
   `echo "$(date +%s) $u" >> ${tickFile}; sleep 0.2; done' >/dev/null 2>&1 & echo $!; date +%s`;
 
 /**
- * The timed resume request: prints how many ticks were written and the guest's uptime when it
- * ran. It is the first request after the idle wait, so it is what wakes the sandbox, and its
- * output shows how long the sandbox had been awake when it ran. `wc` and `read` on a few hundred
- * short lines cost about what `true` does.
+ * The timed resume request: prints the guest's uptime when it ran. It is the first request after
+ * the idle wait, so it is what wakes the sandbox, and its reading shows how long the sandbox had
+ * been awake when it ran. A shell `read` and `echo` cost about what `true` does.
  */
-export const countTicks = `wc -l < ${tickFile}; read u r < /proc/uptime; echo $u`;
+export const readUptime = "read u r < /proc/uptime; echo $u";
 
 /**
  * Lets the resumed ticker write at least one more tick, then prints the guest's wall clock, stops
@@ -98,7 +97,7 @@ export interface StandbyReading {
   readonly ticker: Ticker;
   /** Host time from the ticker's start until `stopTicker` returned. */
   readonly hostElapsedMs: number;
-  /** `countTicks`'s output: the ticks written, and the guest's uptime, when the request ran. */
+  /** `readUptime`'s output: the guest's uptime when the timed request ran. */
   readonly atRequest: string;
   /** Host time from sending the timed request to its result. */
   readonly requestMs: number;
@@ -136,13 +135,19 @@ function parseTick(line: string): Tick | undefined {
  *
  * Proof needs all of:
  * - The guest wall clock advanced as much as the host's (within 2 s): no clock step.
- * - The gap the request ended is at least `minGapMs` of wall clock. That gap is the longest
- *   among those that ended by the request's count (the first tick after the count may close it),
- *   so a later standby, before the stop command, is never mistaken for it.
+ * - The gap the request ended is at least `minGapMs` of wall clock. Uptime orders the ticks (it
+ *   only moves forward, and one process writes them), so that gap is the longest among those
+ *   closed at or before the first tick sampled after the request's uptime reading. A later
+ *   standby, before the stop command, is never chosen, and a tick sampled before the suspension
+ *   but appended after the wake does not shift anything.
  * - Uptime advanced at most 1 s across it: the VM was suspended, not just slow to schedule.
  * - The sandbox was awake, by uptime, no longer before the request's own reading than the
- *   request took from the host's send to its result. A sandbox woken by anything earlier than
- *   this request was awake longer. Uptime is precise to 10 ms and needs no host offset.
+ *   request took from the host's send to its result.
+ *
+ * The last check assumes nothing but this scenario sends the sandbox requests during the idle
+ * wait, which holds in the bench: something else waking it shortly before the request (up to the
+ * request's duration, plus the ticker's lag after a wake) would pass. Each sample keeps the
+ * evidence (standbyAwakeBeforeRequestMs and the gap's two clocks) so it can be checked.
  */
 export function standbyGap(reading: StandbyReading): StandbyEvidence | { refused: string } {
   const { ticker } = reading;
@@ -159,18 +164,11 @@ export function standbyGap(reading: StandbyReading): StandbyEvidence | { refused
       refused: `the guest clock moved ${guestElapsedMs} ms while ${Math.round(reading.hostElapsedMs)} ms passed`,
     };
 
-  const [countLine, uptimeLine, extra] = reading.atRequest.trim().split("\n");
-  const count = Number(countLine);
+  const uptimeLine = reading.atRequest.trim();
   const requestUptimeS = Number(uptimeLine);
 
-  if (
-    extra !== undefined ||
-    countLine === undefined ||
-    !Number.isInteger(count) ||
-    uptimeLine === undefined ||
-    !Number.isFinite(requestUptimeS)
-  )
-    return { refused: "the timed request did not report its count and uptime" };
+  if (uptimeLine === "" || !Number.isFinite(requestUptimeS))
+    return { refused: "the timed request did not report its uptime" };
 
   const ticks = rest.map(parseTick);
 
@@ -179,17 +177,18 @@ export function standbyGap(reading: StandbyReading): StandbyEvidence | { refused
 
   const times = ticks.filter((t): t is Tick => t !== undefined);
 
-  if (count > times.length) return { refused: "the ticks were cut short after the request" };
+  // The first tick sampled after the request read uptime: the last that can close its gap.
+  const firstAfter = times.findIndex((t) => t.uptimeS > requestUptimeS);
 
-  // Gaps ending at or before index `count`: the request ran after the ticks before `count`, so
-  // the tick at `count` (if any) is the first it could have woken.
+  if (firstAfter === -1) return { refused: "no tick was sampled after the timed request" };
+
   let end = -1;
   let gapMs = 0;
 
   for (const [i, tick] of times.entries()) {
     const previous = times[i - 1];
 
-    if (i > count) break;
+    if (i > firstAfter) break;
 
     if (previous !== undefined && (tick.wallS - previous.wallS) * 1000 > gapMs) {
       gapMs = (tick.wallS - previous.wallS) * 1000;
@@ -212,13 +211,9 @@ export function standbyGap(reading: StandbyReading): StandbyEvidence | { refused
       refused: `uptime advanced ${gapUptimeMs} ms across the ${gapMs} ms pause: a stall, not a suspension`,
     };
 
-  // No tick after the gap before the count: the request ran before the first one, so it found
-  // the sandbox asleep.
-  const awakeBeforeRequestMs =
-    end === count ? 0 : Math.round((requestUptimeS - closing.uptimeS) * 1000);
-
-  if (awakeBeforeRequestMs < 0)
-    return { refused: "the request's uptime is earlier than the tick it followed" };
+  // A gap closed by a tick sampled after the request: the request ran before any tick after the
+  // wake, so it found the sandbox asleep.
+  const awakeBeforeRequestMs = Math.max(0, Math.round((requestUptimeS - closing.uptimeS) * 1000));
 
   if (awakeBeforeRequestMs > reading.requestMs)
     return {

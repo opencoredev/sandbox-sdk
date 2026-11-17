@@ -38,8 +38,8 @@ import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js"
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import {
   autoStandby,
-  countTicks,
   idle,
+  readUptime,
   standbyGap,
   startTicker,
   stopTicker,
@@ -1770,7 +1770,7 @@ export async function runV2(
                   const tickerStartedAt = performance.now();
                   await idle(standby.idleMs, signal);
                   partClock?.begin();
-                  const atRequest = await command(active, countTicks, timeout, signal);
+                  const atRequest = await command(active, readUptime, timeout, signal);
                   partClock?.finish();
                   const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
                   const output = await command(active, stopTicker(ticker.pid), timeout, signal);

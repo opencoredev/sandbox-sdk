@@ -24,19 +24,20 @@ const ticking = (fromUptime: number, toUptime: number, offsetS: number): Tick[] 
 describe("standby evidence", () => {
   /**
    * A reading taken 31.2 s after the ticker started at wall clock 100 (uptime 10). The request
-   * counted `count` ticks at `uptimeAtRequest` and took `requestMs` as the host saw it.
+   * read `uptimeAtRequest` and took `requestMs` as the host saw it. (`_count`, the ticks written
+   * when it ran, documents each case; the rule orders ticks by uptime instead.)
    */
   const reading = (
     afterS: number,
     ticks: Tick[],
-    count: number,
+    _count: number,
     uptimeAtRequest: number,
     requestMs = 220,
   ) => ({
     output: output(afterS, ticks),
     ticker,
     hostElapsedMs: 31_200,
-    atRequest: `${count}\n${uptimeAtRequest.toFixed(2)}\n`,
+    atRequest: `${uptimeAtRequest.toFixed(2)}\n`,
     requestMs,
     minGapMs: 5_000,
   });
@@ -50,7 +51,7 @@ describe("standby evidence", () => {
     const ticks = [...asleep, ...woken(26)];
 
     // The count ran before the first tick after the wake.
-    expect(standbyGap(reading(131, ticks, asleep.length, 25.21))).toEqual({
+    expect(standbyGap(reading(131, ticks, asleep.length, 25.2))).toEqual({
       gapMs: 15_000,
       gapUptimeMs: 200,
       awakeBeforeRequestMs: 0,
@@ -89,6 +90,18 @@ describe("standby evidence", () => {
     ).toMatchObject({ gapMs: 15_000, awakeBeforeRequestMs: 40 });
   });
 
+  test("a tick sampled before the suspension but appended after the wake changes nothing", () => {
+    // The review's case: the ticker reads 115 / 25.20, the VM suspends before the append, and the
+    // stale line lands after the wake, next to the fresh 130 / 25.42.
+    const stale: Tick = [115, 25.2];
+    const ticks = [...asleep, stale, ...ticking(25.4, 26, 105)];
+
+    expect(standbyGap(reading(131, ticks, asleep.length, 25.21))).toMatchObject({
+      gapMs: 15_000,
+      awakeBeforeRequestMs: 0,
+    });
+  });
+
   test("a gap that began after the timed request is refused", () => {
     // A warm count at uptime 20, ticking on to 35, then a stop request wakes it 15 s later.
     const ticks = [...ticking(10, 35, 90), ...ticking(35.2, 36, 105)];
@@ -116,15 +129,15 @@ describe("standby evidence", () => {
 
   test("no tick after the resume leaves the gap unproven", () => {
     expect(standbyGap(reading(131, asleep, asleep.length, 25.21))).toMatchObject({
-      refused: expect.stringContaining("no pause of 5000 ms ended"),
+      refused: expect.stringContaining("no tick was sampled after the timed request"),
     });
   });
 
   test("a missing count or clock reading is refused", () => {
     const ticks = [...asleep, ...woken(26)];
 
-    expect(standbyGap({ ...reading(131, ticks, 0, 0), atRequest: "76" })).toMatchObject({
-      refused: expect.stringContaining("did not report its count and uptime"),
+    expect(standbyGap({ ...reading(131, ticks, 0, 0), atRequest: "" })).toMatchObject({
+      refused: expect.stringContaining("did not report its uptime"),
     });
     expect(standbyGap({ ...reading(131, ticks, 0, 0), output: "" })).toMatchObject({
       refused: expect.stringContaining("no clock reading"),
