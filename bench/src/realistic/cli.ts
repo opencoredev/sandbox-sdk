@@ -697,7 +697,15 @@ export async function sweepProviders(
             .then(() => true)
             .catch(() => false);
 
+          // As for a listed leftover: billing settles a Modal sandbox only after its confirmed stop.
           if (!removed) undeleted++;
+          else
+            await recordStop({
+              path: join(journalDir, stopJournalFile),
+              provider: entry.provider.name,
+              sandboxId: id,
+            }).catch(() => {});
+
           await note({ kind: "leftover", provider: entry.name, id, removed });
         }
 

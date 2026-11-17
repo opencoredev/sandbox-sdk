@@ -1,9 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { sweepProviders } from "../../src/realistic/cli.js";
+import { destroyTimings } from "../../src/providers.js";
+import { stopJournalFile } from "../../src/stops.js";
 import { attributionFor, emptyRecord } from "../../src/realistic/slots.js";
 
 const dirs: string[] = [];
@@ -60,6 +62,8 @@ describe("realistic sweep", () => {
 
     provider.destroy = async (id) => {
       destroyed.push(id);
+      // A provider that confirms its stops (Modal) reports one through its destroy observer.
+      destroyTimings.set(`baseten/${id}`, { sandboxId: id, requestMs: 50, stoppedMs: 400 });
     };
 
     const notes: object[] = [];
@@ -89,5 +93,7 @@ describe("realistic sweep", () => {
       removed: true,
     });
     expect(result.undeleted).toBe(0);
+    // The confirmed stop is journaled, as for a listed leftover.
+    expect(await readFile(join(dir, stopJournalFile), "utf8")).toContain("gone-1");
   });
 });
