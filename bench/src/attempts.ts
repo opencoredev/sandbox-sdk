@@ -15,6 +15,7 @@ export const cloudProviders = [
   "superserve",
   "modal",
   "vercel",
+  "baseten",
 ];
 
 export const mainTests = [
@@ -74,6 +75,15 @@ export const attemptPolicySchema = z.object({
 });
 
 export type AttemptPolicy = z.infer<typeof attemptPolicySchema>;
+
+/**
+ * The phases a pause-resume sample must record: a pause call and a resume call, or, for a provider
+ * that pauses by itself when idle (standby.ts), the idle wait, its proof and the resume.
+ */
+const pausePhases = [
+  ["pauseMs", "resumeReturnedMs", "resumeReadyMs"],
+  ["standbyIdleMs", "standbyGapMs", "resumeReadyMs"],
+] as const;
 
 /** Each source's ownership-journal Apps by run ID; a source missing from the map has no journal. */
 export type SourceJournals = ReadonlyMap<string, readonly JournalApp[]>;
@@ -332,9 +342,7 @@ export function checkAttempts(
           rows.every(
             (s) =>
               s.outcome.kind !== "sample" ||
-              ["pauseMs", "resumeReturnedMs", "resumeReadyMs"].every((k) =>
-                Number.isFinite(s.phases[k]),
-              ),
+              pausePhases.some((keys) => keys.every((k) => Number.isFinite(s.phases[k]))),
           );
 
         return {

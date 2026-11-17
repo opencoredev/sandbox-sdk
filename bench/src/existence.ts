@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createRequire } from "node:module";
+import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { BoatApi, Configuration } from "@boatdev/sdk";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { Daytona, Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
@@ -131,6 +132,11 @@ export interface NativeModules {
     ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
   };
   "@superserve/sdk": { Snapshot: Pick<typeof Snapshot, "get" | "list" | "deleteById"> };
+  "@basetenlabs/sandbox": {
+    SandboxClient: new (
+      ...args: ConstructorParameters<typeof BasetenClient>
+    ) => Pick<BasetenClient, "getInfo">;
+  };
   /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
   modal: {
     ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
@@ -245,6 +251,7 @@ interface InstalledModules {
   freestyle: typeof import("freestyle");
   "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
   "@superserve/sdk": typeof import("@superserve/sdk");
+  "@basetenlabs/sandbox": typeof import("@basetenlabs/sandbox");
   // `modal` is an SDK dependency the bench cannot resolve types for; the slice above is hand-typed
   // from modal 0.11.1 and checked by the live snapshot run.
   modal: NativeModules["modal"];
@@ -327,6 +334,7 @@ const lookupKeys = new Map([
   ["freestyle", "FREESTYLE_API_KEY"],
   ["superserve", "SUPERSERVE_API_KEY"],
   ["modal", "MODAL_TOKEN_SECRET"],
+  ["baseten", "BASETEN_API_KEY"],
 ]);
 
 const nativeInfo = z.object({
@@ -400,6 +408,15 @@ export async function lookupSandbox(
           const response = z.object({ data: nativeInfo }).parse(await sandboxApi.getSandbox(id));
 
           return response.data;
+        }
+
+        case "baseten": {
+          const { SandboxClient } = await nativeModules.load("@basetenlabs/sandbox");
+          const client = new SandboxClient({ apiKey: process.env.BASETEN_API_KEY ?? "" });
+          // A deleted sandbox reads TERMINATED until its record expires, then 404.
+          const info = await client.getInfo({ name: id, callOptions: { signal } });
+
+          return { id: info.name, status: info.status };
         }
 
         case "boxd": {

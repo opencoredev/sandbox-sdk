@@ -317,26 +317,43 @@ export function ourFailures(samples: readonly FailureInput[], provider: string) 
   return [...groups.values()].map((g) => ({ reason: g.reason, count: g.count, runs: g.runs.size }));
 }
 
-/** Median pause and median resume, in seconds, when the samples record them separately. */
 type PauseInput = Pick<MergedSample, "provider" | "scenario" | "outcome" | "phases">;
 
+/** A provider's successful pause-resume samples' values of one phase, in seconds. */
+function pausePhase(samples: readonly PauseInput[], provider: string, key: string) {
+  return samples.flatMap((s) => {
+    const v =
+      s.provider === provider && s.scenario === "pause-resume" && s.outcome.kind === "sample"
+        ? s.phases?.[key]
+        : undefined;
+
+    return v === undefined ? [] : [v / 1000];
+  });
+}
+
+/** Median pause and median resume, in seconds, when the samples record them separately. */
 export function pauseSplit(samples: readonly PauseInput[], provider: string) {
-  const phase = (key: string) =>
-    samples.flatMap((s) => {
-      const v =
-        s.provider === provider && s.scenario === "pause-resume" && s.outcome.kind === "sample"
-          ? s.phases?.[key]
-          : undefined;
-
-      return v === undefined ? [] : [v / 1000];
-    });
-
-  const pause = statistics(phase("pauseMs"));
-  const resume = statistics(phase("resumeReadyMs"));
+  const pause = statistics(pausePhase(samples, provider, "pauseMs"));
+  const resume = statistics(pausePhase(samples, provider, "resumeReadyMs"));
 
   return pause.p50 === null || resume.p50 === null
     ? null
     : { pause: pause.p50, resume: resume.p50, n: pause.count };
+}
+
+/**
+ * For a provider with no pause call that goes on standby by itself when idle (standby.ts): the
+ * median resume (first request after standby) and how long the samples idled, in seconds. Its
+ * pause-resume metric is then resume alone, so the site must not present it as pause + resume.
+ */
+export function standbyResume(samples: readonly PauseInput[], provider: string) {
+  const resume = statistics(pausePhase(samples, provider, "resumeReadyMs"));
+  const idleS = statistics(pausePhase(samples, provider, "standbyIdleMs"));
+  const gap = statistics(pausePhase(samples, provider, "standbyGapMs"));
+
+  return idleS.p50 === null || resume.p50 === null || gap.p50 === null
+    ? null
+    : { resume: resume.p50, idleS: idleS.p50, medianGapS: gap.p50, n: idleS.count };
 }
 
 /**
@@ -588,6 +605,7 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
       failureReasons: failureReasons(r.samples, name),
       ourFailures: ourFailures(r.samples, name),
       pauseSplit: pauseSplit(r.samples, name),
+      standbyResume: standbyResume(r.samples, name),
     };
   });
 

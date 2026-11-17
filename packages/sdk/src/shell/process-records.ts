@@ -211,7 +211,8 @@ function streamReader(input: { marker: "O" | "E"; fifo: string; sedPath: string 
     `rest=\${rest%.}`,
     `chunk="$chunk$rest"`,
     `fi`,
-    `chunk=$(printf '%s\\n' "$chunk" | sed -u -f ${quote(input.sedPath)}; printf .)`,
+    // One chunk in, then end of input: no -u needed, and BusyBox sed (Alpine) has none.
+    `chunk=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
     `chunk=\${chunk%.}`,
     `chunk=\${chunk%"$nl"}`,
     `while [ -n "$chunk" ]`,

@@ -55,6 +55,8 @@ export interface SlotProvider {
   create?(track: string): Omit<CreateOptions, "labels" | "signal" | "key">;
   /** Working directory when the manifest's is not writable on this provider. */
   workdir?: string;
+  /** GiB of the volume this entry's adapter mounts on every sandbox (0: none), recorded on each attempt. */
+  volumeGiB?: number;
   /** Worker count on a track whose size differs per provider (the default track). */
   vcpuFor?(track: string): number | undefined;
   /** Label sandboxes with the run only (labels share a short name budget on Boat). */
@@ -309,14 +311,21 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
     const attemptId = (provider: string) =>
       `${plan.runId}-b${plan.batch}-s${index}-${slot.id}-${provider}`;
 
-    const record = (entry: SlotProvider, reason: IncompleteReason, detail: string) =>
-      emptyRecord(
+    // Every fallback record (unavailable, abandoned, failed) keeps the entry's volume, so an
+    // attempt that made a sandbox and then failed is still priced at the size it ran.
+    const record = (entry: SlotProvider, reason: IncompleteReason, detail: string) => {
+      const empty = emptyRecord(
         { ...base(startAt), provider: entry.name, attemptId: attemptId(entry.name) },
         reason,
         detail,
         clock.now(),
         entry.attribution,
       );
+
+      if (entry.volumeGiB !== undefined) empty.volumeGiB = entry.volumeGiB;
+
+      return empty;
+    };
 
     const base = (slotStartedAt: number) => ({
       runId: plan.runId,
@@ -419,6 +428,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         if (entry.create) attemptPlan.create = entry.create(slot.track);
 
         if (entry.workdir) attemptPlan.workdir = entry.workdir;
+
+        if (entry.volumeGiB !== undefined) attemptPlan.volumeGiB = entry.volumeGiB;
 
         if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
 

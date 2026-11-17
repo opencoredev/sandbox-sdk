@@ -37,6 +37,15 @@ import { performanceScript } from "./perf-script.js";
 import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import {
+  autoStandby,
+  idle,
+  readUptime,
+  standbyGap,
+  startTicker,
+  stopTicker,
+  tickerStarted,
+} from "./standby.js";
+import {
   recordAbsentResolution,
   recordVerifiedRelease,
   UnverifiedOwnershipError,
@@ -1708,7 +1717,12 @@ export async function runV2(
           if (prep.kind !== "success") dependencies.set("tool-replay", "tool-replay-prepare");
         }
 
-        const reconnectClock = group === "reconnect" ? new PhaseClock() : undefined;
+        const standby = group === "pause-resume" ? autoStandby.get(p.name) : undefined;
+
+        // Reconnect, and pause-resume by standby, time only part of the scenario.
+        const partClock =
+          group === "reconnect" || standby !== undefined ? new PhaseClock() : undefined;
+
         const lifecyclePhases: Record<string, number> = {};
         await measure(
           group,
@@ -1734,12 +1748,12 @@ export async function runV2(
               case "reconnect": {
                 const previous = active;
                 const start = performance.now();
-                reconnectClock?.begin();
+                partClock?.begin();
                 const connected = await connectSandbox(tracked, active.id);
                 const api = performance.now() - start;
                 await command(connected, "true", timeout, signal);
                 const firstCommandOKMs = performance.now() - start;
-                reconnectClock?.finish();
+                partClock?.finish();
                 reconnectedHandles.push(previous);
                 reconnectedTo = connected;
                 active = connected;
@@ -1749,6 +1763,44 @@ export async function runV2(
               }
 
               case "pause-resume": {
+                // No pause call: send nothing until the sandbox goes on standby by itself (proved by
+                // a gap in an in-sandbox ticker), then time the first command, which resumes it.
+                if (standby) {
+                  const ticker = tickerStarted(await command(active, startTicker, timeout, signal));
+                  const tickerStartedAt = performance.now();
+                  await idle(standby.idleMs, signal);
+                  partClock?.begin();
+                  const atRequest = await command(active, readUptime, timeout, signal);
+                  partClock?.finish();
+                  const resumeReadyMs = partClock?.elapsed() ?? Number.NaN;
+                  const output = await command(active, stopTicker(ticker.pid), timeout, signal);
+
+                  const evidence = standbyGap({
+                    output,
+                    ticker,
+                    hostElapsedMs: performance.now() - tickerStartedAt,
+                    atRequest,
+                    requestMs: resumeReadyMs,
+                    minGapMs: standby.minGapMs,
+                  });
+
+                  if ("refused" in evidence)
+                    throw new Error(
+                      `No standby proven after ${standby.idleMs} ms idle: ${evidence.refused}`,
+                    );
+
+                  // No pause or resume call exists, so pauseMs and resumeReturnedMs stay unset;
+                  // the standby phases mark the sample as a pause by idling (attempts.ts).
+                  lifecyclePhases.resumeReadyMs = resumeReadyMs;
+                  lifecyclePhases.standbyIdleMs = standby.idleMs;
+                  // The evidence itself, so a later rule can be checked against these samples.
+                  lifecyclePhases.standbyGapMs = evidence.gapMs;
+                  lifecyclePhases.standbyGapUptimeMs = evidence.gapUptimeMs;
+                  lifecyclePhases.standbyAwakeBeforeRequestMs = evidence.awakeBeforeRequestMs;
+
+                  return { ...lifecyclePhases };
+                }
+
                 if (
                   !p.provider.capabilities.has("pause") ||
                   !p.provider.pause ||
@@ -1792,7 +1844,7 @@ export async function runV2(
             }
           },
           lifecyclePhases,
-          reconnectClock,
+          partClock,
         );
       }
     } finally {
@@ -2029,7 +2081,7 @@ export async function runV2(
 
         const configured =
           config["account-limits"][p.name] ??
-          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5 }[p.name] ??
+          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10 }[p.name] ??
           10;
 
         const account = Math.min(configured, p.name === "boxd" ? 50 : configured);

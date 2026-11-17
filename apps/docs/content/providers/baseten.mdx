@@ -1,0 +1,220 @@
+---
+title: Baseten
+seo:
+  title: Baseten Sandboxes SDK in TypeScript
+description: Use Baseten Sandboxes from TypeScript through the official @basetenlabs/sandbox SDK and one portable API. Exact keys, sizes set by memory, automatic standby, per-sandbox volumes, regions, and public previews.
+---
+
+`baseten()` runs each sandbox as a Baseten Sandbox through Baseten's official JavaScript SDK, the `@basetenlabs/sandbox` npm package.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(baseten())` and then `box.run`, `box.files` and `box.preview`, and the same code runs on E2B or Modal when you swap the factory. Baseten has no pause call, no snapshots, no network policy and no terminal through this API; idle sandboxes go on [standby](#standby-instead-of-pause) by themselves instead. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you the `@basetenlabs/sandbox` `Sandbox` and `SandboxClient` when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk @basetenlabs/sandbox
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk @basetenlabs/sandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk @basetenlabs/sandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk @basetenlabs/sandbox
+```
+
+  </Tab>
+</Tabs>
+
+The adapter is written against `@basetenlabs/sandbox` 0.5.0 and accepts `^0.5.0`. Create an API key in Baseten and set `BASETEN_API_KEY`, or pass `baseten({ apiKey })`. A key that belongs to more than one team also needs `teamId`.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `timeoutMs` becomes a Baseten lifecycle policy that deletes the sandbox 30 minutes after creation, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                            |
+| ------------------------------ | ------- | ---------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Live output; needs `python3` in the image                        |
+| Files                          | Yes     | Held in the sandbox's memory unless you add a [volume](#volumes) |
+| Background processes           | Yes     |                                                                  |
+| Preview URLs                   | Yes     | Public `https://` URLs; no ports to declare                      |
+| Pause and resume               | No      | No pause call; idle sandboxes go on standby by themselves        |
+| Snapshots                      | No      | Baseten's API has none yet                                       |
+| Templates                      | No      | Use `image` with an image pushed to your Baseten account         |
+| Machine size                   | Partial | 1, 2, or 4 vCPUs at 2 GiB each; no disk setting                  |
+| Network policy                 | No      | Outbound access is always on, and IPv6-only                      |
+| Hard lifetime (`timeoutMs`)    | Yes     | Baseten `TTL_MAX_AGE` policy                                     |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Baseten `TTL_IDLE` policy                                        |
+| Keys                           | Exact   | Sandbox name is a hash of the key                                |
+| Terminal                       | No      |                                                                  |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten());
+const result = await box.run("ls -la", { cwd: "/tmp", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default image, `baseten/base-image:latest`, is Alpine Linux with musl and BusyBox. Commands run under BusyBox `sh`, and tools such as `date`, `sed` and `grep` are the BusyBox versions, which lack some GNU options (`date +%N`, for example). Binaries built for glibc don't run on musl. Alpine installs packages with `apk add`. For a Debian or Ubuntu userland, pass an image you pushed to Baseten; see [Images](#images).
+
+## Background processes and previews
+
+`box.preview(port)` asks Baseten for a public preview of that port and returns its `https://` URL. Nothing needs to be declared at creation. Asking again for the same port returns the same preview.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000);
+console.log(preview.url);
+```
+
+Anyone with the URL can open it. Baseten keeps a preview, and its slot in your account's preview quota, after the sandbox is deleted, so `destroy()` deletes every preview of the sandbox first, including ones another client made.
+
+## Standby instead of pause
+
+Baseten has no pause call, so `box.pause()` is a type error. You don't need one: a sandbox goes on standby by itself about 15 seconds after its last request. On standby it keeps its memory, files and running processes, Baseten bills only its storage, and the next request resumes it ([Baseten's lifecycle docs](https://docs.baseten.co/sandboxes/lifecycle)). A background process stops while the sandbox is on standby and continues where it was when the sandbox wakes.
+
+Baseten's API still reports a sandbox on standby as deployed, so `listSandboxes()` shows it as `"running"`. Nothing needs calling before a quiet period or after it.
+
+## Files and volumes
+
+Baseten holds a sandbox's file system in its memory, and by default files may use up to 50% of it. Files and processes share that memory, so a workspace that grows large leaves less for the processes, and writes fail once the file system reaches its cap.
+
+### Volumes
+
+`volume` gives each sandbox its own persistent volume. The adapter creates the volume, waits for it to deploy, mounts it at `mountPath`, and deletes it after the sandbox when you call `destroy()`. Files under `mountPath` live on the volume instead of in memory.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+const provider = baseten({ volume: { sizeGiB: 8, mountPath: "/workspace" } });
+await using box = await createSandbox(provider, { size: "large" });
+await box.run("df -h /workspace");
+```
+
+Use a volume for a large workspace, such as a repository with its `node_modules`, or when a build ran out of memory without one. Skip it for small workspaces. A volume is network storage, so work that touches many small files is slower on it: in one of our runs, a dependency install took about 246 seconds on a volume and 140 seconds in memory. Creating the volume also adds to create time.
+
+- `sizeGiB` is whole GiB. Baseten caps the size per account.
+- The sandbox runs in the volume's region.
+- `volume` can't be combined with a `key`, because two clients racing for one key would also race for its volume. That fails with `unsupported`.
+- The volume is named after its sandbox (`<sandbox id>-v`), so `destroy()` from any client finds and deletes it. Baseten refuses to delete a volume while its sandbox is still shutting down, so `destroy()` retries for up to two minutes.
+
+## Size, region, and lifetime
+
+Baseten sets CPU from memory: 2 GiB of memory per vCPU. The adapter sends only memory, and accepts the sizes whose CPU count it has checked.
+
+| Preset   | vCPUs | Memory   |
+| -------- | ----- | -------- |
+| `small`  | 1     | 2048 MiB |
+| `medium` | 2     | 4096 MiB |
+| `large`  | 4     | 8192 MiB |
+
+An exact `size` must be one of those three pairs, such as `{ cpu: 4, memoryMb: 8192 }`. Any other pair fails with `unsupported`, including `{ cpu: 8, memoryMb: 16384 }`: 16 GiB gives 6 vCPUs, not 8. There is no disk setting, so `diskGb` fails with `unsupported`. Without `size`, Baseten's default is 4096 MiB, which is 2 vCPUs.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { baseten } from "@opencoredev/sandbox-sdk/baseten";
+
+await using box = await createSandbox(baseten(), {
+  size: { cpu: 4, memoryMb: 8192 },
+  timeoutMs: 60 * 60_000,
+  idleTimeoutMs: 10 * 60_000,
+});
+```
+
+`baseten({ region })` pins sandboxes to a Baseten region. Without it, Baseten picks the closest one.
+
+`timeoutMs` and `idleTimeoutMs` become Baseten lifecycle policies (`TTL_MAX_AGE` and `TTL_IDLE`) that delete the sandbox when they fire. Without them the adapter sends no lifecycle policy.
+
+`network` accepts only `"all"`, the default. `"none"` and allow lists fail with `unsupported`. Outbound traffic from a Baseten sandbox is IPv6-only: hostnames resolve and connect, but a raw IPv4 address such as `1.1.1.1` doesn't.
+
+## Images
+
+`image` takes an image reference with its tag. Baseten runs only images from its library or images pushed to your account, and a pushed image needs Baseten's sandbox agent as its entrypoint, so a plain registry tag won't start. `ImageBuilder` in `@basetenlabs/sandbox` adds the agent for you:
+
+```ts
+import { ImageBuilder, SandboxClient } from "@basetenlabs/sandbox";
+
+const client = new SandboxClient({ apiKey: process.env.BASETEN_API_KEY ?? "" });
+const builder = ImageBuilder.fromRegistry("docker.io/library/node:22-bookworm");
+await client.images.push({ name: "node22", builder, memory: 8192, volume: 16384 });
+```
+
+Then pass `baseten({ image: "node22:latest" })`, the pushed name with its tag. The adapter runs commands through a small Python launcher, so any image needs `python3`. The default image has it.
+
+## Configuration
+
+| Option           | Type                                     | Default                     | Env var           |
+| ---------------- | ---------------------------------------- | --------------------------- | ----------------- |
+| `apiKey`         | `string`                                 |                             | `BASETEN_API_KEY` |
+| `teamId`         | `string`                                 | The key's only team         |                   |
+| `image`          | `string`, a reference with its tag       | `baseten/base-image:latest` |                   |
+| `region`         | `string`                                 | The closest region          |                   |
+| `readyTimeoutMs` | `number`                                 | 120 seconds                 |                   |
+| `volume`         | `{ sizeGiB: number; mountPath: string }` | None                        |                   |
+
+`readyTimeoutMs` is how long create waits for the sandbox, and its volume if any, to deploy. A sandbox that doesn't deploy in time is deleted and create fails with `timeout`.
+
+## Limitations
+
+- No pause call; idle sandboxes go on standby by themselves.
+- No snapshots or templates.
+- No network policy, and outbound traffic is IPv6-only.
+- Sizes are limited to 1, 2, or 4 vCPUs at 2 GiB each, with no disk size.
+- Files count against memory unless they are on a volume, and a volume can't be combined with a key.
+- No terminal.
+
+## How it works
+
+- Every SDK sandbox is named `sbxsdk-` plus a UUID. A keyed sandbox is named `sbxsdk-k` plus 40 hex characters of the key's SHA-256, and Baseten's unique names make the key exact: concurrent creates with one key share one sandbox. The key is also stored as Baseten's `externalId`.
+- Your `labels` become Baseten labels. The adapter adds one more for each create attempt and never shows it, so cleanup after a lost create response deletes only a sandbox that attempt made.
+- `env` values are sent to Baseten as secret environment variables.
+- `box.native` returns `{ sandbox, client }`, the `@basetenlabs/sandbox` `Sandbox` and the `SandboxClient` that loaded it. Connect to the sandbox first.
+- Commands run in their own session through a Python launcher, which frames output so it arrives intact even when Baseten replays a finished command's output. A timeout or abort kills the whole process group. Command input over 96 KiB is uploaded as a file before the command starts.
+- Errors keep only the Baseten error's name and HTTP status, never its message, which can echo paths or request data.
+
+## Next steps
+
+- [Build an AI app builder](/guides/build-an-ai-app-builder)
+- [Machine size and network](/guides/machine-size-and-network)

@@ -8,6 +8,7 @@ import { z } from "zod";
 import type * as Core from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
+import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
 
 type Sdk = typeof Core;
@@ -66,6 +67,7 @@ const nativePackages = {
   freestyle: "freestyle",
   tenki: "@tenkicloud/sandbox",
   superserve: "@superserve/sdk",
+  baseten: "@basetenlabs/sandbox",
 } as const;
 
 /** A provider this script can measure. */
@@ -284,6 +286,32 @@ const providers = {
       },
     };
   },
+  async baseten() {
+    const m: typeof import("@opencoredev/sandbox-sdk/baseten") = await import(
+      moduleUrl("providers/baseten/index.js")
+    );
+
+    const provider = m.baseten();
+
+    // The floor is the official SDK's sandbox handle the adapter already holds.
+    return {
+      provider,
+      floor: (id) => {
+        const { sandbox } = provider.native(id);
+
+        return {
+          exec: async (command = "true") => {
+            const r = await sandbox.process.exec({ command, waitForCompletion: true, timeoutMs });
+
+            if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`);
+          },
+          write: async (path, data) => {
+            await sandbox.fs.writeBytes({ path, content: data });
+          },
+        };
+      },
+    };
+  },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
@@ -295,6 +323,7 @@ interface NativeBox {
 
 /** Native clients reused across raw creates, as the adapters reuse theirs. */
 interface NativeClients {
+  baseten?: BasetenClient;
   boxd?: Boxd;
   tenki?: TenkiSandbox;
 }
@@ -505,6 +534,59 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       destroy: () => box.kill(),
       exists: async () => (await box.getInfo()).status !== "deleted",
     };
+  }
+
+  if (name === "baseten") {
+    const m: typeof import("@basetenlabs/sandbox") = await import(
+      nativeUrl("@basetenlabs/sandbox")
+    );
+
+    const client = (nativeClients.baseten ??= new m.SandboxClient({
+      apiKey: process.env.BASETEN_API_KEY ?? "",
+    }));
+
+    const created = await client.create({
+      labels: label,
+      lifecycle: { expirationPolicies: [{ type: "TTL_MAX_AGE", afterMs: 600_000 }] },
+    });
+
+    const name = created.name;
+
+    const raw = {
+      id: name,
+      exec: async () => {
+        const r = await box.process.exec({ command: "true", waitForCompletion: true, timeoutMs });
+
+        if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`);
+      },
+      destroy: async () => {
+        await client.delete({ name });
+      },
+      exists: async () => {
+        try {
+          return !["DELETING", "TERMINATED"].includes((await client.getInfo({ name })).status);
+        } catch (error) {
+          if (error instanceof m.SandboxApiError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
+
+    // Keep the name before readiness, so a readiness failure can still be cleaned up. Only a
+    // DEPLOYED sandbox with a URL runs commands; the adapter waits for the same, every 250 ms.
+    admit(raw);
+    let info = created.info;
+    const deadline = Date.now() + 120_000;
+
+    while (info.status !== "DEPLOYED" || !info.url) {
+      if (Date.now() > deadline) throw new Error(`Baseten sandbox did not deploy (${info.status})`);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      info = await client.getInfo({ name });
+    }
+
+    const box = info === created.info ? created : await client.get({ info });
+
+    return raw;
   }
 
   throw new Error(`Unknown provider ${name}`);

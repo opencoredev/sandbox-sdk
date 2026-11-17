@@ -167,7 +167,9 @@ export function headline(r: PublicationReport) {
       latency(summary(r, p, "cold"), true),
       latency(summary(r, p, "command")),
       latency(summary(r, p, "files-10mb")),
-      latency(summary(r, p, "pause-resume")),
+      pausesByIdling(r, p)
+        ? `${latency(summary(r, p, "pause-resume"))} (wake only)`
+        : latency(summary(r, p, "pause-resume")),
       `${latency(summary(r, p, "snapshot", "snapshot"))} / ${latency(summary(r, p, "create-from-snapshot", "snapshot"))}`,
       latency(summary(r, p, "preview-first-byte")),
       latency(summary(r, p, "npm-install")),
@@ -455,7 +457,30 @@ const hostHeaders = [
   "Mean sampled host CPU busy",
 ];
 
+/**
+ * Whether a provider's pause-resume samples pause by idling (standby.ts): no pause or resume call,
+ * so the value is the wake alone, not a pause-plus-resume total.
+ */
+function pausesByIdling(r: PublicationReport, provider: string) {
+  return r.samples.some(
+    (s) =>
+      s.provider === provider &&
+      s.scenario === "pause-resume" &&
+      s.outcome.kind === "sample" &&
+      Number.isFinite(s.phases?.standbyIdleMs),
+  );
+}
+
 export function disclosures(r: PublicationReport) {
+  const idling = providers(r).filter((p) => pausesByIdling(r, p));
+
+  // Added after the positional filter below, so the indexes it relies on stay as they were.
+  const idlingNotes = idling.length
+    ? [
+        `${idling.join(", ")}: no pause call; the sandbox goes on standby by itself once requests stop. Its Pause/resume value, marked "wake only", is the first request after a proven standby (resumeReadyMs), not a pause-plus-resume total, so it is not comparable with the other rows' totals.`,
+      ]
+    : [];
+
   const notes = [
     ...(r.attemptPolicy
       ? [
@@ -492,7 +517,7 @@ export function disclosures(r: PublicationReport) {
     r.sources.some((source) => source.runId === id),
   );
 
-  return notes.filter((_, i) => isFullPublication || i < 1 || i > 6);
+  return [...notes.filter((_, i) => isFullPublication || i < 1 || i > 6), ...idlingNotes];
 }
 
 function metricRows(r: PublicationReport) {

@@ -63,6 +63,10 @@ const registry = {
     env: [["TENKI_API_KEY", "TENKI_AUTH_TOKEN"]],
     load: async () => (await import("../src/providers/tenki/index.js")).tenki(),
   },
+  baseten: {
+    env: [["BASETEN_API_KEY"]],
+    load: async () => (await import("../src/providers/baseten/index.js")).baseten(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

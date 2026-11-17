@@ -57,6 +57,8 @@ const defaults: DefaultAllocations = {
   superserve: { cpu: 1, memoryGiB: 1, diskGiB: 4 },
   // https://vercel.com/docs/sandbox/pricing: 2 vCPUs by default, 2 GB per vCPU, 64 GB NVMe.
   vercel: { cpu: 2, memoryGiB: 4, diskGiB: 64 },
+  // Files live in memory (half of it by default), so no disk is provisioned.
+  baseten: { cpu: 2, memoryGiB: 4, diskGiB: 0 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

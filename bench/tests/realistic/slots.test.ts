@@ -227,6 +227,33 @@ describe("slot execution", () => {
     });
   });
 
+  it("keeps the entry's volume on a failed attempt's record, so it is still priced", async () => {
+    const records: AttemptRecord[] = [];
+
+    const failing: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "made-1");
+
+      throw new Error("failed after create");
+    };
+
+    await runBatch(
+      batch(
+        {
+          slots: slots.slice(0, 1),
+          providers: [provider("e2b", { volumeGiB: 8 })],
+          attempt: failing,
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]).toMatchObject({
+      sandboxIds: ["made-1"],
+      volumeGiB: 8,
+      completion: { kind: "incomplete", reason: "error" },
+    });
+  });
+
   it("voids a window whose listing is only SDK-scoped", async () => {
     const records: AttemptRecord[] = [];
     await runBatch(

@@ -12,6 +12,7 @@ const templateKeys = new Map([
   ["tenki", "image"],
   ["boxd", "image"],
   ["modal", "image"],
+  ["baseten", "image"],
   ["local", "image"],
 ]);
 
@@ -74,6 +75,7 @@ const credentials = new Map([
   ["boxd", ["BOXD_API_KEY"]],
   ["freestyle", ["FREESTYLE_API_KEY"]],
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
+  ["baseten", ["BASETEN_API_KEY"]],
 ]);
 
 const regionKeys = new Map([
@@ -120,9 +122,17 @@ function assertProvider(value: unknown): asserts value is Provider {
   providerSchema.parse(value);
 }
 
+/** Baseten's per-sandbox workspace volume (realistic/setup.ts). */
+const volumeOption = z.object({
+  sizeGiB: z.number().int().positive(),
+  mountPath: z.string().startsWith("/"),
+});
+
+export type VolumeOption = z.infer<typeof volumeOption>;
+
 const factoryOptions = z.record(
   z.string(),
-  z.union([z.string(), z.boolean(), z.number(), z.function()]).optional(),
+  z.union([z.string(), z.boolean(), z.number(), z.function(), volumeOption]).optional(),
 );
 
 /** One destroy as Modal's adapter reports it through `onDestroy` (`ModalDestroyEvent`). */
@@ -216,7 +226,10 @@ export async function loadProvider(
   env: NodeJS.ProcessEnv = process.env,
   importer: (specifier: string) => Promise<object> = (specifier) => import(specifier),
   config?: Pick<ConfigV2, "template" | "product"> &
-    Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">>,
+    Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">> & {
+      /** Factory options the realistic setup table adds (bench/src/realistic/setup.ts). */
+      factory?: FactoryOptions;
+    },
 ): Promise<LoadedProvider> {
   // Before anything else: a conflicting region configuration refuses the run.
   const region = providerRegion(name, env);
@@ -258,6 +271,7 @@ export async function loadProvider(
     ...observerOptions(name),
     ...appOptions(name),
     ...regionOptions(name, region),
+    ...config?.factory,
   });
 
   assertProvider(provider);

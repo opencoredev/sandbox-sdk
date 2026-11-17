@@ -163,6 +163,13 @@ const sources = new Map<string, BillingSource>(
         "A sandbox's cost is compute only (CPU and memory); egress and the App total are kept in account.apps.",
       ],
     },
+    baseten: {
+      source: "No verified public billing endpoint",
+      granularity: "not available",
+      delay: "unknown",
+      key: "BASETEN_API_KEY",
+      notes: ["No billing API found; no fabricated cost."],
+    },
     freestyle: {
       source: "No verified public billing endpoint",
       granularity: "not available",

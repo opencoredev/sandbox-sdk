@@ -145,6 +145,23 @@ export const pricing: PriceTable = {
     notes:
       "Published overage rates, allowances/subscriptions excluded. $0.02/GB transfer excluded. Billing increment/minimum and creation fees unspecified; one-second estimate.",
   },
+  baseten: {
+    ...base,
+    // Memory sets CPU: 2 GiB per vCPU up to 4 vCPUs (16 GiB gives 6, not 8). Files count against
+    // memory, so the main suite has no disk; the realistic runs' workspace volume is priced as disk
+    // at volume storage, $0.16 per GB-month over a 30-day month.
+    offeredSizes: [
+      { cpu: 1, memoryGiB: 2 },
+      { cpu: 2, memoryGiB: 4 },
+      { cpu: 4, memoryGiB: 8 },
+    ],
+    cpuSecond: 0.0655 / 3600,
+    memoryGiBSecond: 0.0211 / 3600,
+    diskGiBSecond: 0.16 / (30 * 24 * 3600),
+    source: "https://www.baseten.co/pricing/",
+    notes:
+      "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Realistic build runs mount an 8 GiB volume (fix-and-test mounts none), priced at $0.16/GB-month for the sandbox's lifetime. Snapshots and stored images not used.",
+  },
   tenki: {
     ...base,
     cpuSecond: 0.000014,
@@ -254,6 +271,7 @@ export const defaultCompute: ComputeTable = {
   freestyle: { cpu: 4, memoryGiB: 8 },
   superserve: { cpu: 1, memoryGiB: 1 },
   vercel: { cpu: 2, memoryGiB: 4 },
+  baseten: { cpu: 2, memoryGiB: 4 },
 };
 
 export function estimateCost(

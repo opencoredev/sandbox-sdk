@@ -996,6 +996,99 @@ it.each(["tenki", "freestyle"])(
   },
 );
 
+it("marks a pause by idling as wake only in the report, with a note saying why", async () => {
+  const { publicationMarkdown } = await import("../src/publication-report.js");
+
+  const standby = (iteration: number, provider: string, phases: Record<string, number>) => ({
+    ...sample(iteration, "pause-resume", { kind: "sample", value: 250 }),
+    provider,
+    phases,
+  });
+
+  const both = (runId: string, samples: Sample[]) => ({
+    ...source(runId, samples),
+    providers: ["daytona", "baseten"].map((name) => ({
+      name,
+      configuredRegion: null,
+      note: "default",
+    })),
+  });
+
+  const report = mergeSources([
+    both("main-pause", [
+      standby(0, "baseten", { resumeReadyMs: 250, standbyIdleMs: 30_000, standbyGapMs: 15_000 }),
+      standby(1, "daytona", { pauseMs: 900, resumeReturnedMs: 400, resumeReadyMs: 500 }),
+    ]),
+  ]);
+
+  const markdown = publicationMarkdown(report);
+
+  const rowOf = (provider: string) =>
+    markdown.split("\n").find((line) => line.startsWith(`| ${provider} |`)) ?? "";
+
+  expect(rowOf("baseten")).toContain("(wake only)");
+  expect(rowOf("daytona")).not.toContain("wake only");
+  expect(markdown).toContain("baseten: no pause call");
+
+  // The note comes after disclosures()' positional filter, so it can't shift which notes a
+  // report trimmed by an attempt policy keeps.
+  const { disclosures } = await import("../src/publication-report.js");
+
+  expect(disclosures(report).at(-1)).toMatch(/^baseten: no pause call/);
+});
+
+it("prices a sized Baseten task without disk: files live in memory and no volume is mounted", async () => {
+  const { costPerTask } = await import("../src/task-cost.js");
+  const { estimateCost } = await import("../src/pricing.js");
+  const cost = costSource("baseten");
+  const size = { cpu: 4, memoryMb: 8192 };
+
+  for (const s of cost.samples) s.requestedSize = size;
+
+  const main = source("main-baseten", [
+    {
+      ...sample(0, "fingerprint"),
+      provider: "baseten",
+      requestedSize: size,
+      fingerprint: {
+        cpuModel: "test",
+        flags: [],
+        nproc: 4,
+        quotaCpus: 4,
+        cpuMax: "400000 100000",
+        memoryMax: "8589934592",
+        memTotalBytes: 8 * 1024 ** 3,
+        memoryBytes: 7.9 * 1024 ** 3,
+        diskBytes: 4 * 1024 ** 3,
+        df: "",
+        lsblk: "",
+        virtualization: "",
+        hypervisor: false,
+        dmi: "",
+        kernel: "test",
+        distro: "test",
+        user: "test",
+        uid: 1000,
+        sudo: false,
+        stealPercent: 0,
+        egress: null,
+        tools: {},
+        runtime: "test",
+      },
+    },
+  ]);
+
+  const priced = costPerTask(mergeSources([main, cost]), "baseten");
+  const lifetimes = cost.samples.filter((s) => s.scenario === "sandbox-lifetime");
+
+  const at = (diskGiB: number) =>
+    lifetimes.map((s) => estimateCost("baseten", s.durationMs, { cpu: 4, memoryGiB: 8, diskGiB }));
+
+  expect(priced).toMatchObject({ kind: "estimate", n: 2 });
+  expect(at(0)).toContain(priced.usd);
+  expect(at(32)).not.toContain(priced.usd);
+});
+
 it("prices undocumented Luxor defaults from the matching observed fingerprint", async () => {
   const { costPerTask } = await import("../src/task-cost.js");
   const cost = costSource("tenki");

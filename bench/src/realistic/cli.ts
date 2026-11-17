@@ -68,6 +68,10 @@ import {
   tracks,
   type ProviderSetup,
   type TrackId,
+  provisionedAtMost,
+  provisionedFor,
+  provisionedOf,
+  type ProvisionedSize,
 } from "./setup.js";
 import {
   attributionFor,
@@ -223,9 +227,12 @@ async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[])
 }
 
 /** Budget estimate for one attempt at list price for its provisioned size (EUR counted at 2x). */
-export function attemptBudget(setup: ProviderSetup, track: TrackId, durationMs: number): number {
-  const size = setup.tracks[track].provisioned;
-
+export function attemptBudget(
+  setup: ProviderSetup,
+  track: TrackId,
+  durationMs: number,
+  size: ProvisionedSize = setup.tracks[track].provisioned,
+): number {
   // Upstash charges its tier price per CPU-hour used (observed, SBX-100), so a busy box can cost
   // that price times its vCPUs per wall-hour: bound it by every vCPU busy.
   const upstash = setup.pricingKey === "upstash" ? pricing.upstash : undefined;
@@ -256,16 +263,26 @@ function trackOf(record: AttemptRecord): TrackId {
   return record.track === "default" ? "default" : "same-machine";
 }
 
+/**
+ * A finished attempt's spend at list price for the size it recorded. A record from before
+ * attempts recorded their volume counts the largest size its setup can provision.
+ */
+function recordedBudget(record: AttemptRecord) {
+  const setup = providerSetup(record.provider);
+  const track = trackOf(record);
+
+  return attemptBudget(
+    setup,
+    track,
+    record.endedAt - record.startedAt,
+    provisionedOf(setup, track, record) ?? provisionedAtMost(setup, track),
+  );
+}
+
 async function spentUSD(path: string) {
   const records = await readJsonLines(path, attemptRecordSchema);
 
-  return records.reduce(
-    (sum, r) =>
-      r.sandboxIds.length === 0
-        ? sum
-        : sum + attemptBudget(providerSetup(r.provider), trackOf(r), r.endedAt - r.startedAt),
-    0,
-  );
+  return records.reduce((sum, r) => (r.sandboxIds.length === 0 ? sum : sum + recordedBudget(r)), 0);
 }
 
 async function loadSlotProvider(
@@ -275,6 +292,8 @@ async function loadSlotProvider(
   usageDir?: string,
   /** The run's output directory, which holds the App journal and confirmed stops (Modal). */
   journalDir?: string,
+  /** A profile with its own factory options (`profileFactory`); unset loads the plain adapter. */
+  profile?: string,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -286,6 +305,7 @@ async function loadSlotProvider(
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms": lifetime,
+    factory: profile === undefined ? undefined : setup.profileFactory?.[profile],
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };
@@ -299,6 +319,7 @@ async function loadSlotProvider(
     settlementMs: null,
     paddingMs: 0,
     runLabelOnly: setup.adapter === "boat",
+    volumeGiB: profile === undefined ? 0 : (setup.profileFactory?.[profile]?.volume?.sizeGiB ?? 0),
     workdir: "/workspace/rw",
     vcpuFor: () => config.vcpu,
     create: () => {
@@ -421,6 +442,7 @@ async function run(args: string[]) {
   await writeFile(join(out, regionsFile), JSON.stringify(regions, null, 2) + "\n");
 
   const loaded = new Map<string, SlotProvider>();
+  const profileLoaded = new Map<string, SlotProvider>();
   const longest = plan === "held-open" ? 60 * 60_000 : 0;
 
   for (const track of trackIds)
@@ -432,6 +454,14 @@ async function run(args: string[]) {
       if (result.kind === "skipped")
         await note({ kind: "provider-skipped", provider: setup.name, track, reason: result.note });
       else loaded.set(`${setup.name}/${track}`, result.entry);
+
+      // A profile with its own factory options gets its own adapter. The sweep uses the plain one,
+      // whose destroy also deletes a volume another instance made.
+      for (const profile of Object.keys(setup.profileFactory ?? {})) {
+        const own = await loadSlotProvider(setup, track, slotMs, join(out, "usage"), out, profile);
+
+        if (own.kind === "ready") profileLoaded.set(`${setup.name}/${track}/${profile}`, own.entry);
+      }
     }
 
   const combos: SlotSpec[] =
@@ -489,7 +519,10 @@ async function run(args: string[]) {
             continue;
           }
 
-          const entry = loaded.get(`${setup.name}/${track}`);
+          // A profile with its own options runs only on its own adapter, never the plain one.
+          const entry = setup.profileFactory?.[slot.profile]
+            ? profileLoaded.get(`${setup.name}/${track}/${slot.profile}`)
+            : loaded.get(`${setup.name}/${track}`);
 
           if (entry) active.push(entry);
         }
@@ -498,7 +531,14 @@ async function run(args: string[]) {
         const spent = await spentUSD(attemptsPath);
 
         const reserve = active.reduce(
-          (sum, entry) => sum + attemptBudget(providerSetup(entry.name), track, slotMs),
+          (sum, entry) =>
+            sum +
+            attemptBudget(
+              providerSetup(entry.name),
+              track,
+              slotMs,
+              provisionedFor(providerSetup(entry.name), track, slot.profile),
+            ),
           0,
         );
 
@@ -584,6 +624,16 @@ function reportSweep({ unchecked, failed, undeleted }: SweepResult, notesPath: s
   }
 }
 
+/** Sandbox IDs from this run's attempts whose deletion was never confirmed. */
+async function unconfirmed(out: string, runId: string, provider: string) {
+  // A run with no attempts file yet reads as none.
+  const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
+
+  return records.flatMap((r) =>
+    r.runId === runId && r.provider === provider && !r.deletionConfirmed ? r.sandboxIds : [],
+  );
+}
+
 export async function sweepProviders(
   runId: string,
   providers: readonly SlotProvider[],
@@ -634,6 +684,30 @@ export async function sweepProviders(
 
         await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
       }
+
+      // An attempt whose deletion was never confirmed may have left something list() no longer
+      // shows: Baseten lists no deleted sandbox, but a volume that failed to delete outlives it.
+      // Destroy those IDs again; destroy treats an absent sandbox as done and retries the rest.
+      const listed = new Set(left.map((x) => x.id));
+
+      for (const id of await unconfirmed(journalDir, runId, entry.name))
+        if (!listed.has(id)) {
+          const removed = await entry.provider
+            .destroy(id)
+            .then(() => true)
+            .catch(() => false);
+
+          // As for a listed leftover: billing settles a Modal sandbox only after its confirmed stop.
+          if (!removed) undeleted++;
+          else
+            await recordStop({
+              path: join(journalDir, stopJournalFile),
+              provider: entry.provider.name,
+              sandboxId: id,
+            }).catch(() => {});
+
+          await note({ kind: "leftover", provider: entry.name, id, removed });
+        }
 
       // A sleeping machine (boxd) is out of list() and can't be checked without waking it.
       const asleep = await sleepingUnchecked(entry.provider);
@@ -838,7 +912,7 @@ async function billing(args: string[]) {
   const raw: object[] = [];
 
   for (const [adapter, items] of byAdapter) {
-    if (adapter === "tenki" || adapter === "freestyle") continue;
+    if (adapter === "tenki" || adapter === "freestyle" || adapter === "baseten") continue;
 
     const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
       sandboxIds.map((id) => ({
@@ -875,11 +949,11 @@ async function billing(args: string[]) {
       memoryGiB: record.resources?.memoryGiB ?? null,
     };
 
-    const allocation = { provisioned: setup.tracks[track].provisioned, measured };
+    const allocation = { provisioned: provisionedOf(setup, track, record), measured };
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 
-    if (setup.adapter === "tenki" || setup.adapter === "freestyle")
+    if (setup.adapter === "tenki" || setup.adapter === "freestyle" || setup.adapter === "baseten")
       return {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },

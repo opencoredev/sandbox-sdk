@@ -16,6 +16,17 @@ const cost = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unavailable") }),
 ]);
 
+/**
+ * Disk an estimate assumes when the run's size gives none: Luxor's 5 GiB, none for Baseten (files
+ * live in memory, and the cost suite mounts no volume, which is all its disk rate prices), and
+ * 32 GiB otherwise.
+ */
+function unsizedDiskGiB(provider: string) {
+  if (provider === "tenki") return 5;
+
+  return provider === "baseten" ? 0 : 32;
+}
+
 export const costBillingSchema = z.object({
   collectedAt: z.iso.datetime(),
   providers: z.array(
@@ -61,7 +72,7 @@ const median = (values: number[]) => {
 export function costPerTask(report: PublicationReport, provider: string): TaskCost {
   const rows = report.samples.filter((s) => s.provider === provider && s.suite === "cost");
   const lifetimes = rows.filter((s) => s.scenario === "sandbox-lifetime");
-  const estimate = provider === "tenki" || provider === "freestyle";
+  const estimate = provider === "tenki" || provider === "freestyle" || provider === "baseten";
 
   const empty: TaskCost = {
     usd: null,
@@ -116,7 +127,7 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
     const diskGiB =
       size !== null && !isSizePreset(size) && size.diskGb !== undefined
         ? size.diskGb
-        : (allocation.provisioned?.diskGiB ?? (provider === "tenki" ? 5 : 32));
+        : (allocation.provisioned?.diskGiB ?? unsizedDiskGiB(provider));
 
     const values = lifetimes.map((s) =>
       estimateCost(provider, s.durationMs, { ...resources, diskGiB }),
