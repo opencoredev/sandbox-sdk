@@ -197,7 +197,15 @@ export function createBasetenProvider(
         );
       const { SandboxClient } = await loadPeer("@basetenlabs/sandbox", "baseten", load);
 
-      return (current = new SandboxClient({ apiKey, teamId: options.teamId }));
+      const clientOptions: SandboxClientOptions = { apiKey, teamId: options.teamId };
+
+      // @basetenlabs/sandbox 0.5.0 loads its optional undici through
+      // createRequire(import.meta.url). A CommonJS bundle empties import.meta, so that throws on
+      // the first request and every later one. The bundle empties this module's import.meta too:
+      // when it is empty, send requests with the global fetch instead.
+      if (!isString(import.meta.url)) clientOptions.nodeUndici = false;
+
+      return (current = new SandboxClient(clientOptions));
     })());
   }
 
