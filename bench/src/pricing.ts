@@ -160,7 +160,7 @@ export const pricing: PriceTable = {
     diskGiBSecond: 0.16 / (30 * 24 * 3600),
     source: "https://www.baseten.co/pricing/",
     notes:
-      "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Realistic runs mount an 8 GiB volume, priced at $0.16/GB-month for the sandbox's lifetime. Snapshots and stored images not used.",
+      "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Realistic build runs mount an 8 GiB volume (fix-and-test mounts none), priced at $0.16/GB-month for the sandbox's lifetime. Snapshots and stored images not used.",
   },
   tenki: {
     ...base,
