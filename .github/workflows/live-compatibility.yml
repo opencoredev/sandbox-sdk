@@ -1,9 +1,8 @@
 name: Live provider compatibility
 
 on:
+  # Manual-only until the provider secrets exist as repository Actions secrets.
   workflow_dispatch:
-  schedule:
-    - cron: "17 6 * * 2"
 
 jobs:
   live:
