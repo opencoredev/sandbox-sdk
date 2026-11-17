@@ -1029,6 +1029,12 @@ it("marks a pause by idling as wake only in the report, with a note saying why",
   expect(rowOf("baseten")).toContain("(wake only)");
   expect(rowOf("daytona")).not.toContain("wake only");
   expect(markdown).toContain("baseten: no pause call");
+
+  // The note comes after disclosures()' positional filter, so it can't shift which notes a
+  // report trimmed by an attempt policy keeps.
+  const { disclosures } = await import("../src/publication-report.js");
+
+  expect(disclosures(report).at(-1)).toMatch(/^baseten: no pause call/);
 });
 
 it("prices a sized Baseten task without disk: files live in memory and no volume is mounted", async () => {

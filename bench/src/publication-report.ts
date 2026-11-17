@@ -474,12 +474,14 @@ function pausesByIdling(r: PublicationReport, provider: string) {
 export function disclosures(r: PublicationReport) {
   const idling = providers(r).filter((p) => pausesByIdling(r, p));
 
+  // Added after the positional filter below, so the indexes it relies on stay as they were.
+  const idlingNotes = idling.length
+    ? [
+        `${idling.join(", ")}: no pause call; the sandbox goes on standby by itself once requests stop. Its Pause/resume value, marked "wake only", is the first request after a proven standby (resumeReadyMs), not a pause-plus-resume total, so it is not comparable with the other rows' totals.`,
+      ]
+    : [];
+
   const notes = [
-    ...(idling.length
-      ? [
-          `${idling.join(", ")}: no pause call; the sandbox goes on standby by itself once requests stop. Its Pause/resume value, marked "wake only", is the first request after a proven standby (resumeReadyMs), not a pause-plus-resume total, so it is not comparable with the other rows' totals.`,
-        ]
-      : []),
     ...(r.attemptPolicy
       ? [
           "Attempt selection: exclude provider-account-limit and client-third-party failures, retain provider-operation failures. Keep the first N attempted rows per (provider, suite, test) in startedAt order, with sourceRunId and sourceSampleIndex as stable tie-breakers. N=100 main, 30 workloads/snapshots, 3 burst cohorts. Skipped/blocked rows are not attempts. Local Docker is unchanged.",
@@ -515,7 +517,7 @@ export function disclosures(r: PublicationReport) {
     r.sources.some((source) => source.runId === id),
   );
 
-  return notes.filter((_, i) => isFullPublication || i < 1 || i > 6);
+  return [...notes.filter((_, i) => isFullPublication || i < 1 || i > 6), ...idlingNotes];
 }
 
 function metricRows(r: PublicationReport) {
