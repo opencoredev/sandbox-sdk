@@ -9,13 +9,29 @@ function httpError(status: number) {
 
 interface FakeState {
   volumes: Map<string, { region: string; attachedTo?: string }>;
-  sandboxes: Map<string, { volumes: { name: string; mountPath: string }[]; region?: string }>;
+  sandboxes: Map<
+    string,
+    {
+      volumes: { name: string; mountPath: string }[];
+      region?: string;
+      labels: Record<string, string>;
+      /** getInfo calls that still report DEPLOYING with no URL. */
+      pendingPolls: number;
+    }
+  >;
+  /** Previews by sandbox name; they outlive the sandbox record, as on Baseten. */
+  previews: Map<string, string[]>;
   calls: string[];
   /** Volume deletes refused with 409 before one succeeds, as while a sandbox shuts down. */
   busyDeletes: number;
-  /** Volume deletes failing with HTTP 500 before the 409s and the success. */
+  /** Volume deletes failing with `failedStatus` (500 by default) before the 409s and the success. */
   failedDeletes?: number;
+  failedStatus?: number;
   rejectCreate?: number;
+  /** Create makes the sandbox, then throws as the SDK does on a response with no URL. */
+  createThrowsAfterAccept?: boolean;
+  /** getInfo calls a new sandbox answers DEPLOYING with no URL. */
+  newPendingPolls?: number;
 }
 
 function fakeClient(state: FakeState): SandboxClient {
@@ -23,13 +39,16 @@ function fakeClient(state: FakeState): SandboxClient {
     const box = state.sandboxes.get(name);
 
     if (!box) throw httpError(404);
+    const pending = box.pendingPolls > 0;
+
+    if (pending) box.pendingPolls--;
 
     return {
       name,
-      url: `https://${name}.example`,
-      status: "DEPLOYED",
+      url: pending ? undefined : `https://${name}.example`,
+      status: pending ? "DEPLOYING" : "DEPLOYED",
       envs: {},
-      labels: {},
+      labels: box.labels,
       ports: [],
       volumes: box.volumes,
       createdAt: new Date(0),
@@ -38,9 +57,22 @@ function fakeClient(state: FakeState): SandboxClient {
 
   const sandbox = (name: string) => ({
     name,
+    fs: {
+      async writeBytes({ path }: { path: string }) {
+        state.calls.push(`write ${name} ${path}`);
+      },
+    },
     previews: {
-      async *list() {},
-      async delete() {},
+      async *list() {
+        for (const preview of state.previews.get(name) ?? []) yield { name: preview };
+      },
+      async delete({ name: preview }: { name: string }) {
+        state.calls.push(`preview.delete ${preview}`);
+        state.previews.set(
+          name,
+          (state.previews.get(name) ?? []).filter((p) => p !== preview),
+        );
+      },
     },
   });
 
@@ -64,7 +96,7 @@ function fakeClient(state: FakeState): SandboxClient {
 
         if (state.failedDeletes) {
           state.failedDeletes--;
-          throw httpError(500);
+          throw httpError(state.failedStatus ?? 500);
         }
 
         if (state.busyDeletes > 0) {
@@ -78,6 +110,7 @@ function fakeClient(state: FakeState): SandboxClient {
     async create(request: {
       name: string;
       region?: string;
+      labels?: Record<string, string>;
       volumes?: { name: string; mountPath: string }[];
     }) {
       state.calls.push(
@@ -85,7 +118,14 @@ function fakeClient(state: FakeState): SandboxClient {
       );
 
       if (state.rejectCreate) throw httpError(state.rejectCreate);
-      state.sandboxes.set(request.name, { volumes: request.volumes ?? [], region: request.region });
+      state.sandboxes.set(request.name, {
+        volumes: request.volumes ?? [],
+        region: request.region,
+        labels: request.labels ?? {},
+        pendingPolls: state.newPendingPolls ?? 0,
+      });
+
+      if (state.createThrowsAfterAccept) throw new Error("Sandbox has no URL yet");
 
       return Object.assign(sandbox(request.name), { info: info(request.name) });
     },
@@ -94,7 +134,10 @@ function fakeClient(state: FakeState): SandboxClient {
 
       return info(name);
     },
-    async get({ info: found }: { info: { name: string } }) {
+    async get({ info: found }: { info: { name: string; url?: string } }) {
+      // As @basetenlabs/sandbox 0.5.0: a handle needs the execution URL.
+      if (found.url === undefined) throw new Error("Sandbox has no URL yet");
+
       return sandbox(found.name);
     },
     async delete({ name }: { name: string }) {
@@ -114,6 +157,7 @@ function setup(options: Partial<BasetenOptions> = {}, extra: Partial<FakeState> 
     sandboxes: new Map(),
     calls: [],
     busyDeletes: 0,
+    previews: new Map(),
     ...extra,
   };
 
@@ -206,7 +250,9 @@ describe("Baseten volume", () => {
     const { provider, state } = setup();
     const box = await provider.create({ labels: {} });
 
+    // A non-retryable failure; a 5xx is retried within the same destroy.
     state.failedDeletes = 1;
+    state.failedStatus = 400;
     await expect(provider.destroy(box.id)).rejects.toMatchObject({ code: "provider" });
     expect(state.volumes.size).toBe(1);
 
@@ -222,4 +268,67 @@ describe("Baseten volume", () => {
     });
     expect(state.calls).toEqual([]);
   });
+});
+
+describe("Baseten adapter lifecycle", () => {
+  test("a create the SDK fails on, with no URL yet, waits for this attempt's sandbox", async () => {
+    const { provider, state } = setup(
+      { volume: undefined },
+      { createThrowsAfterAccept: true, newPendingPolls: 2 },
+    );
+
+    const box = await provider.create({ labels: {} });
+
+    expect(state.sandboxes.has(box.id)).toBe(true);
+    expect(state.calls.some((c) => c.startsWith("delete"))).toBe(false);
+  }, 10_000);
+
+  test("an aborted create that Baseten accepted deletes this attempt's sandbox", async () => {
+    const { provider, state } = setup({ volume: undefined }, { createThrowsAfterAccept: true });
+    const abort = new AbortController();
+
+    abort.abort();
+    await expect(provider.create({ labels: {}, signal: abort.signal })).rejects.toMatchObject({
+      code: "aborted",
+    });
+    expect(state.sandboxes.size).toBe(0);
+  });
+
+  test("another client attaching to a sandbox still deploying waits for it", async () => {
+    const { provider, state } = setup({ volume: undefined });
+    const box = await provider.create({ labels: {} });
+    const entry = state.sandboxes.get(box.id);
+
+    if (!entry) throw new Error("Expected the sandbox");
+    entry.pendingPolls = 2;
+
+    const other = setup({ volume: undefined });
+    Object.assign(other.state, { sandboxes: state.sandboxes, volumes: state.volumes });
+
+    // lookup returns it without a URL; the first operation waits for the deployment.
+    await other.provider.connect(box.id);
+    await other.provider.files.write(box.id, "/tmp/x", new Uint8Array([1]));
+    expect(other.state.calls).toContain(`write ${box.id} /tmp/x`);
+    expect(state.sandboxes.has(box.id)).toBe(true);
+  }, 10_000);
+
+  test("destroy deletes previews that outlived the sandbox record", async () => {
+    const { provider, state } = setup({ volume: undefined });
+    const other = setup({ volume: undefined });
+
+    Object.assign(other.state, { previews: state.previews });
+    state.previews.set("sbxsdk-gone", ["port-3000"]);
+
+    await other.provider.destroy("sbxsdk-gone");
+    expect(state.previews.get("sbxsdk-gone")).toEqual([]);
+    expect(provider).toBeDefined();
+  });
+
+  test("a 5xx from a volume delete is retried within the same destroy", async () => {
+    const { provider, state } = setup({}, { failedDeletes: 1 });
+    const box = await provider.create({ labels: {} });
+
+    await provider.destroy(box.id);
+    expect(state.volumes.size).toBe(0);
+  }, 10_000);
 });

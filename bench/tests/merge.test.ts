@@ -996,6 +996,58 @@ it.each(["tenki", "freestyle"])(
   },
 );
 
+it("prices a sized Baseten task without disk: files live in memory and no volume is mounted", async () => {
+  const { costPerTask } = await import("../src/task-cost.js");
+  const { estimateCost } = await import("../src/pricing.js");
+  const cost = costSource("baseten");
+  const size = { cpu: 4, memoryMb: 8192 };
+
+  for (const s of cost.samples) s.requestedSize = size;
+
+  const main = source("main-baseten", [
+    {
+      ...sample(0, "fingerprint"),
+      provider: "baseten",
+      requestedSize: size,
+      fingerprint: {
+        cpuModel: "test",
+        flags: [],
+        nproc: 4,
+        quotaCpus: 4,
+        cpuMax: "400000 100000",
+        memoryMax: "8589934592",
+        memTotalBytes: 8 * 1024 ** 3,
+        memoryBytes: 7.9 * 1024 ** 3,
+        diskBytes: 4 * 1024 ** 3,
+        df: "",
+        lsblk: "",
+        virtualization: "",
+        hypervisor: false,
+        dmi: "",
+        kernel: "test",
+        distro: "test",
+        user: "test",
+        uid: 1000,
+        sudo: false,
+        stealPercent: 0,
+        egress: null,
+        tools: {},
+        runtime: "test",
+      },
+    },
+  ]);
+
+  const priced = costPerTask(mergeSources([main, cost]), "baseten");
+  const lifetimes = cost.samples.filter((s) => s.scenario === "sandbox-lifetime");
+
+  const at = (diskGiB: number) =>
+    lifetimes.map((s) => estimateCost("baseten", s.durationMs, { cpu: 4, memoryGiB: 8, diskGiB }));
+
+  expect(priced).toMatchObject({ kind: "estimate", n: 2 });
+  expect(at(0)).toContain(priced.usd);
+  expect(at(32)).not.toContain(priced.usd);
+});
+
 it("prices undocumented Luxor defaults from the matching observed fingerprint", async () => {
   const { costPerTask } = await import("../src/task-cost.js");
   const cost = costSource("tenki");

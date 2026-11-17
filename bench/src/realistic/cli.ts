@@ -624,6 +624,16 @@ function reportSweep({ unchecked, failed, undeleted }: SweepResult, notesPath: s
   }
 }
 
+/** Sandbox IDs from this run's attempts whose deletion was never confirmed. */
+async function unconfirmed(out: string, runId: string, provider: string) {
+  // A run with no attempts file yet reads as none.
+  const records = await readJsonLines(join(out, "attempts.jsonl"), attemptRecordSchema);
+
+  return records.flatMap((r) =>
+    r.runId === runId && r.provider === provider && !r.deletionConfirmed ? r.sandboxIds : [],
+  );
+}
+
 export async function sweepProviders(
   runId: string,
   providers: readonly SlotProvider[],
@@ -674,6 +684,22 @@ export async function sweepProviders(
 
         await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
       }
+
+      // An attempt whose deletion was never confirmed may have left something list() no longer
+      // shows: Baseten lists no deleted sandbox, but a volume that failed to delete outlives it.
+      // Destroy those IDs again; destroy treats an absent sandbox as done and retries the rest.
+      const listed = new Set(left.map((x) => x.id));
+
+      for (const id of await unconfirmed(journalDir, runId, entry.name))
+        if (!listed.has(id)) {
+          const removed = await entry.provider
+            .destroy(id)
+            .then(() => true)
+            .catch(() => false);
+
+          if (!removed) undeleted++;
+          await note({ kind: "leftover", provider: entry.name, id, removed });
+        }
 
       // A sleeping machine (boxd) is out of list() and can't be checked without waking it.
       const asleep = await sleepingUnchecked(entry.provider);

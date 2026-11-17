@@ -5,6 +5,7 @@ import type {
   SandboxClient,
   SandboxClientOptions,
   SandboxCreateRequest,
+  SandboxCreateResult,
   SandboxInfo as BasetenInfo,
   SandboxLifecycle,
   VolumeInfo,
@@ -161,9 +162,26 @@ export function createBasetenProvider(
     const known = boxes.get(id);
 
     if (known) return known.previews;
-    const info = await c.getInfo({ name: id });
 
-    // Previews never use the execution URL; a pending record has none yet.
+    // Previews never use the execution URL: a pending record has none yet, and Baseten keeps a
+    // sandbox's previews after its own record expires, so a missing record still lists them.
+    let info: BasetenInfo;
+
+    try {
+      info = await c.getInfo({ name: id });
+    } catch (error) {
+      if (basetenError(error, id).code !== "not_found") throw error;
+      info = {
+        name: id,
+        status: "TERMINATED",
+        envs: {},
+        labels: {},
+        ports: [],
+        volumes: [],
+        createdAt: new Date(0),
+      };
+    }
+
     return (await c.get({ info: { ...info, url: info.url ?? "https://pending.invalid" } }))
       .previews;
   }
@@ -196,9 +214,11 @@ export function createBasetenProvider(
 
     if (known) return known;
     const c = await api();
-    const info = await c.getInfo({ name: id });
+    const found = await c.getInfo({ name: id });
 
-    if (!toInfo(info)) throw failure("Sandbox not found", "not_found", id);
+    if (!toInfo(found)) throw failure("Sandbox not found", "not_found", id);
+    // Another client may still be deploying it: wait for its URL. Never deletes, unlike create.
+    const info = await ready(c, found);
     const value = await c.get({ info });
     boxes.set(id, value);
 
@@ -317,9 +337,17 @@ export function createBasetenProvider(
 
         return true;
       } catch (error) {
-        if (basetenError(error).code === "not_found") return true;
+        const { code } = basetenError(error);
 
-        if (rejected(error) !== 409 || Date.now() > deadline) return false;
+        if (code === "not_found") return true;
+
+        // 409 while the sandbox shuts down; 5xx and network failures may pass too.
+        const retryable =
+          rejected(error) === 409 ||
+          (rejected(error) ?? 0) >= 500 ||
+          ["unavailable", "timeout"].includes(code);
+
+        if (!retryable || Date.now() > deadline) return false;
       }
 
       await sleep(1000);
@@ -408,53 +436,60 @@ export function createBasetenProvider(
         if (volume && options.volume)
           request.volumes = [{ name: volume.name, mountPath: options.volume.mountPath }];
 
-        let created;
+        // The record to wait on, and the handle create returned when it returned one.
+        let record: BasetenInfo;
+        let handle: SandboxCreateResult | undefined;
 
         try {
-          created = await c.create(request);
+          handle = await c.create(request);
+          record = handle.info;
         } catch (error) {
           const mapped = basetenError(error);
 
           // Only an HTTP rejection proves Baseten made nothing. Any other failure may follow an
-          // accepted create: a lost or aborted response, or the SDK throwing on the response
-          // itself (0.5.0 throws when it has no URL yet). Delete the sandbox under this name only
-          // when it carries this attempt's ID: absence, or another attempt's sandbox, settles
-          // that this one made nothing.
+          // accepted create: a lost response, or the SDK throwing on the response itself (0.5.0
+          // throws when it has no URL yet). A sandbox under this name with this attempt's ID is
+          // this create's: unless the caller aborted, wait for it like any other. Absence, or
+          // another attempt's sandbox, settles that this one made nothing.
           if (rejected(error) === undefined || ["unavailable", "timeout"].includes(mapped.code)) {
-            // Only an explicit other marker proves another attempt made it: labels can be
-            // replaced wholesale by update(), so a missing marker leaves the outcome unknown.
-            const cleaned = await c.getInfo({ name }).then(
-              (found) => {
-                const marker = found.labels[attemptLabel];
-
-                if (marker === undefined) return false;
-
-                if (marker !== attempt) return true;
-
-                return c.delete({ name }).then(
-                  () => true,
-                  (cause: unknown) => basetenError(cause).code === "not_found",
-                );
-              },
-              (cause: unknown) => basetenError(cause).code === "not_found",
-            );
-
-            if (!cleaned)
+            const found = await c.getInfo({ name }).catch((cause: unknown) => {
+              if (basetenError(cause).code === "not_found") return undefined;
               throw failure(
                 `Sandbox creation outcome is unknown; delete ${name}${volume ? ` and volume ${volume.name}` : ""} if they exist before retrying`,
                 "outcome_unknown",
               );
+            });
 
-            if (mapped.code === "aborted")
-              throw await withoutVolume(failure("Creation aborted", "aborted"));
-          }
+            const marker = found?.labels[attemptLabel];
+            const aborted = mapped.code === "aborted" || input.signal?.aborted === true;
 
-          throw await withoutVolume(mapped);
+            if (found && marker === attempt && !aborted && !gone.has(found.status)) record = found;
+            else {
+              // Only an explicit other marker proves another attempt made it: labels can be
+              // replaced wholesale by update(), so a missing marker leaves the outcome unknown.
+              const cleaned =
+                found === undefined ||
+                (marker !== undefined &&
+                  (marker !== attempt ||
+                    (await c.delete({ name }).then(
+                      () => true,
+                      (cause: unknown) => basetenError(cause).code === "not_found",
+                    ))));
+
+              if (!cleaned)
+                throw failure(
+                  `Sandbox creation outcome is unknown; delete ${name}${volume ? ` and volume ${volume.name}` : ""} if they exist before retrying`,
+                  "outcome_unknown",
+                );
+
+              throw await withoutVolume(aborted ? failure("Creation aborted", "aborted") : mapped);
+            }
+          } else throw await withoutVolume(mapped);
         }
 
         try {
-          const info = await ready(c, created.info);
-          boxes.set(info.name, info === created.info ? created : await c.get({ info }));
+          const info = await ready(c, record);
+          boxes.set(info.name, handle && info === record ? handle : await c.get({ info }));
           const value = toInfo(info);
 
           if (!value) throw failure("Created sandbox is not usable", "provider", info.name);
@@ -463,21 +498,21 @@ export function createBasetenProvider(
 
           return value;
         } catch (error) {
-          boxes.delete(created.name);
+          boxes.delete(name);
 
           // The sandbox exists and is billed: settle the failure only once it is gone.
-          const cleaned = await c.delete({ name: created.name }).then(
+          const cleaned = await c.delete({ name }).then(
             () => true,
             (cause: unknown) => basetenError(cause).code === "not_found",
           );
 
           if (!cleaned)
             throw failure(
-              `Sandbox ${created.name} did not become usable and could not be deleted; delete it${volume ? ` and volume ${volume.name}` : ""} before retrying`,
+              `Sandbox ${name} did not become usable and could not be deleted; delete it${volume ? ` and volume ${volume.name}` : ""} before retrying`,
               "outcome_unknown",
-              created.name,
+              name,
             );
-          throw await withoutVolume(basetenError(error, created.name));
+          throw await withoutVolume(basetenError(error, name));
         }
       }),
     find: (key) => safe(undefined, () => lookup(keyedName(key))),
