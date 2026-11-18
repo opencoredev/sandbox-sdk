@@ -7,6 +7,7 @@ import { createAppByLabel } from "./modal-apps.js";
 const templateKeys = new Map([
   ["e2b", "template"],
   ["superserve", "template"],
+  ["instabox", "template"],
   ["daytona", "snapshot"],
   ["freestyle", "snapshotId"],
   ["tenki", "image"],
@@ -65,6 +66,7 @@ export type LoadedProvider = ReadyProvider | SkippedProvider;
 
 const credentials = new Map([
   ["superserve", ["SUPERSERVE_API_KEY"]],
+  ["instabox", ["INSTABOX_API_KEY"]],
   ["e2b", ["E2B_API_KEY"]],
   ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],
   ["vercel", ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"]],

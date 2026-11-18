@@ -110,6 +110,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |
 | [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`      | `modal`                       |
 | [Baseten](https://sandbox-sdk.app/docs/providers/baseten)              | `@opencoredev/sandbox-sdk/baseten`    | `@basetenlabs/sandbox`        |
+| [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`   | nothing                       |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
 | [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |

@@ -14,7 +14,7 @@ npm install @opencoredev/sandbox-sdk
 
 The docs for this version are at https://v2.sandbox-sdk.app/docs.
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
 
 Check it works with no account and no Docker:
 
@@ -36,6 +36,7 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 | Vercel         | `@opencoredev/sandbox-sdk/vercel`     | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID`                               |
 | Modal          | `@opencoredev/sandbox-sdk/modal`      | `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`; optional `MODAL_SANDBOX_REGION`                                      |
 | Baseten        | `@opencoredev/sandbox-sdk/baseten`    | `BASETEN_API_KEY`                                                                                             |
+| Instabox       | `@opencoredev/sandbox-sdk/instabox`   | `INSTABOX_API_KEY`; optional `INSTABOX_API_URL`                                                               |
 | Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        |
 | Railway        | `@opencoredev/sandbox-sdk/railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 |
 | Luxor          | `@opencoredev/sandbox-sdk/tenki`      | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                                                         |

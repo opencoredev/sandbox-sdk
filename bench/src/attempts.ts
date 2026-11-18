@@ -16,6 +16,7 @@ export const cloudProviders = [
   "modal",
   "vercel",
   "baseten",
+  "instabox",
 ];
 
 export const mainTests = [

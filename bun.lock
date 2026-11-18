@@ -101,6 +101,7 @@
         "@boatdev/sdk": "1.9.9",
         "@boxd-sh/sdk": "0.3.2",
         "@daytonaio/sdk": "^0.225.0",
+        "@insforge/instabox-sdk": "0.9.0",
         "@superserve/sdk": "0.11.4",
         "@tenkicloud/sandbox": "^1.4.1",
         "@upstash/box": "^0.7.9",
@@ -175,6 +176,7 @@
         "@boatdev/sdk": "1.9.9",
         "@boxd-sh/sdk": "0.3.2",
         "@daytonaio/sdk": "^0.225.0",
+        "@insforge/instabox-sdk": "0.9.0",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
@@ -679,6 +681,8 @@
     "@img/sharp-win32-ia32": ["@img/sharp-win32-ia32@0.35.5", "", { "os": "win32", "cpu": "ia32" }, "sha512-5Zm82LoBc43nhwNybZlG7Y1KO//Zhsn306fQl29ZOuStHLGTo3BWL83q3cznX0poxSAMuYL1On/BHBxkBeKr6A=="],
 
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.35.5", "", { "os": "win32", "cpu": "x64" }, "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg=="],
+
+    "@insforge/instabox-sdk": ["@insforge/instabox-sdk@0.9.0", "", {}, "sha512-dEFYkmGuewhNUX2P4ExduSzjskyYONEFqwEF4yfEh4KHX8DYTdqBm3uzjONKyOY2j+JFr0iAiQwTBTOUjngjSQ=="],
 
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 

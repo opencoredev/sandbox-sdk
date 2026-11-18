@@ -68,6 +68,7 @@ const nativePackages = {
   tenki: "@tenkicloud/sandbox",
   superserve: "@superserve/sdk",
   baseten: "@basetenlabs/sandbox",
+  instabox: "@insforge/instabox-sdk",
 } as const;
 
 /** A provider this script can measure. */
@@ -307,6 +308,37 @@ const providers = {
           },
           write: async (path, data) => {
             await sandbox.fs.writeBytes({ path, content: data });
+          },
+        };
+      },
+    };
+  },
+  async instabox() {
+    const m: typeof import("@opencoredev/sandbox-sdk/instabox") = await import(
+      moduleUrl("providers/instabox/index.js")
+    );
+
+    const provider = m.instabox();
+
+    // The adapter calls the REST API itself; the floor is Instabox's official SDK, connected once
+    // per sandbox without resuming it.
+    return {
+      provider,
+      floor: (id) => {
+        const box = once(async () => {
+          const native: typeof import("@insforge/instabox-sdk") = await import(
+            nativeUrl("@insforge/instabox-sdk")
+          );
+
+          return native.Sandbox.connect(id, { resume: false });
+        });
+
+        return {
+          exec: async (command = "true") => {
+            await (await box()).commands.run(command, { timeoutMs });
+          },
+          write: async (path, data) => {
+            await (await box()).files.write(path, data);
           },
         };
       },
@@ -587,6 +619,37 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     const box = info === created.info ? created : await client.get({ info });
 
     return raw;
+  }
+
+  if (name === "instabox") {
+    const m: typeof import("@insforge/instabox-sdk") = await import(
+      nativeUrl("@insforge/instabox-sdk")
+    );
+
+    // Sandbox.create waits until the machine runs, as the adapter's create does.
+    const box = await m.Sandbox.create({ metadata: label });
+
+    return {
+      id: box.sandboxId,
+      exec: async () => {
+        const r = await box.commands.run("true", { timeoutMs });
+
+        if (r.exitCode !== 0) throw new Error(`exit ${r.exitCode}`);
+      },
+      destroy: async () => {
+        await box.kill();
+      },
+      exists: async () => {
+        try {
+          await box.getInfo();
+
+          return true;
+        } catch (error) {
+          if (error instanceof m.InstaboxError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
   }
 
   throw new Error(`Unknown provider ${name}`);

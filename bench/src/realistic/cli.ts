@@ -148,6 +148,7 @@ export const heldOpenProviders = [
   "boxd",
   "modal",
   "vercel",
+  "instabox",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */

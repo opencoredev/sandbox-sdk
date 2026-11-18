@@ -59,6 +59,8 @@ const defaults: DefaultAllocations = {
   vercel: { cpu: 2, memoryGiB: 4, diskGiB: 64 },
   // Files live in memory (half of it by default), so no disk is provisioned.
   baseten: { cpu: 2, memoryGiB: 4, diskGiB: 0 },
+  // agent-browser default: 4 vCPU / 8 GiB, 20 GiB /data (where /workspace lives) plus a 16 GiB system disk.
+  instabox: { cpu: 4, memoryGiB: 8, diskGiB: 20 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

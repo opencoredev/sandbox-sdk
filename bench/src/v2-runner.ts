@@ -2081,7 +2081,9 @@ export async function runV2(
 
         const configured =
           config["account-limits"][p.name] ??
-          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10 }[p.name] ??
+          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
+            p.name
+          ] ??
           10;
 
         const account = Math.min(configured, p.name === "boxd" ? 50 : configured);

@@ -46,11 +46,34 @@ async function withModal<T>(
   }
 }
 
+function instaboxBase() {
+  return process.env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+}
+
 export async function snapshotCleaner(
   name: string,
   provider: Provider,
   sandboxId: string,
 ): Promise<(id: string) => Promise<void>> {
+  if (name === "instabox") {
+    // A fresh request: cleanup can run after the source machine is gone.
+    return async (id) => {
+      const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: {
+          "X-API-Key": process.env.INSTABOX_API_KEY ?? "",
+          "Idempotency-Key": crypto.randomUUID(),
+          "X-Confirm-Delete": id,
+        },
+      });
+
+      if (!response.ok && response.status !== 404)
+        throw Object.assign(new Error("Instabox snapshot delete failed"), {
+          status: response.status,
+        });
+    };
+  }
+
   if (name === "superserve") {
     const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
@@ -200,6 +223,7 @@ const snapshotInfo = z.object({
   sessionId: z.string().nullish(),
   sourceVmId: z.string().nullish(),
   box_id: z.string().nullish(),
+  sourceMachineId: z.string().nullish(),
 });
 
 type SnapshotInfo = z.infer<typeof snapshotInfo>;
@@ -256,6 +280,19 @@ export async function inspectSnapshot(
         const snapshots = await freestyleSnapshots();
 
         info = snapshotInfo.parse(await snapshots.get(id));
+        break;
+      }
+
+      case "instabox": {
+        const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
+          headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" },
+        });
+
+        if (!response.ok)
+          throw Object.assign(new Error("Snapshot metadata unavailable"), {
+            status: response.status,
+          });
+        info = snapshotInfo.parse(await response.json());
         break;
       }
 
@@ -329,10 +366,18 @@ export async function inspectSnapshot(
     if (info.id !== id && info.name !== id) throw new Error("Snapshot metadata ID mismatch");
 
     const parent =
-      info.sourceSandboxId ?? info.sandboxId ?? info.sessionId ?? info.sourceVmId ?? info.box_id;
+      info.sourceSandboxId ??
+      info.sandboxId ??
+      info.sessionId ??
+      info.sourceVmId ??
+      info.box_id ??
+      info.sourceMachineId;
 
     // These APIs expose provenance: unreadable or cleared source fields cannot authorize deletion.
-    if (["daytona", "superserve", "tenki", "freestyle", "upstash"].includes(name) && !parent)
+    if (
+      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox"].includes(name) &&
+      !parent
+    )
       throw new Error("Snapshot source metadata unavailable");
 
     if (!parent) return { exists: true };

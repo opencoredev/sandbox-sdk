@@ -56,6 +56,25 @@ export interface PriceTable {
 }
 
 export const pricing: PriceTable = {
+  instabox: {
+    ...base,
+    cpuSecond: 0.004 / 3600,
+    memoryGiBSecond: 0.00225 / 3600,
+    diskGiBSecond: 0.00011 / 3600,
+    // Paid plans include disk across all machines (Pro 200 GiB, Builder 1 TiB); each machine's
+    // 20 GiB /data is counted as included, so estimates price compute only.
+    freeDiskGiB: 20,
+    retrieved: "2026-11-18",
+    source: "https://instabox.sh/docs/account/pricing.md",
+    offeredSizes: [
+      { cpu: 2, memoryGiB: 4 },
+      { cpu: 4, memoryGiB: 8 },
+      { cpu: 8, memoryGiB: 16 },
+      { cpu: 16, memoryGiB: 32 },
+    ],
+    notes:
+      "Published usage rates: $0.004/vCPU-hour and $0.00225/GiB-hour of memory, per second while running (not while starting, paused or stopped). Paid plans include disk (Builder 1 TiB across machines), beyond that $0.08/GiB-month; each machine's 20 GiB /data is counted as included. Plan fee and monthly credits ($20 Pro, $100 Builder) and egress ($0.02/GiB beyond the plan's) excluded. Default agent-browser template is 4 vCPU / 8 GiB.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -272,6 +291,7 @@ export const defaultCompute: ComputeTable = {
   superserve: { cpu: 1, memoryGiB: 1 },
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
+  instabox: { cpu: 4, memoryGiB: 8 },
 };
 
 export function estimateCost(

@@ -170,6 +170,15 @@ const sources = new Map<string, BillingSource>(
       key: "BASETEN_API_KEY",
       notes: ["No billing API found; no fabricated cost."],
     },
+    instabox: {
+      source: "https://api.instabox.sh/v1/machines/{id}/usage",
+      granularity: "machine running seconds, vCPU-seconds and memory GiB-seconds over a window",
+      delay: "live; final once the machine is deleted (still readable by ID afterwards)",
+      key: "INSTABOX_API_KEY",
+      notes: [
+        "Metered, not invoice: Instabox's own per-machine usage (running time only, not starting, paused or stopped) at the published rates, $0.004/vCPU-hour and $0.00225/GiB-hour (https://instabox.sh/docs/account/pricing.md). Disk is included in paid plans (Builder: 1 TiB across machines) and egress within the plan's allowance, so neither is priced. Plan fee, monthly credits and tax are excluded.",
+      ],
+    },
     freestyle: {
       source: "No verified public billing endpoint",
       granularity: "not available",
@@ -246,6 +255,49 @@ export function decodeBoat(raw: Json, id: string): Cost {
     confidence: "medium",
     note: "Provider's list-price usage dollars; not invoice; plan minimum excluded",
   };
+}
+
+const instaboxUsageSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  runningSeconds: money,
+  vcpuSeconds: money,
+  memGiBSeconds: money,
+});
+
+/**
+ * One machine's usage from `GET /v1/machines/{id}/usage` at the published CPU and memory rates.
+ * It covers the machine's whole life only when the window starts before the machine did
+ * (`started`: its first sample's start is known) and the machine was already deleted when the
+ * usage was read; otherwise it is a window amount and never final.
+ */
+export function decodeInstabox(raw: Json, state: { deleted: boolean; started: boolean }): Cost {
+  const usage = instaboxUsageSchema.parse(raw);
+  const rate = pricing.instabox;
+
+  if (!rate) throw new Error("No Instabox price");
+  const lifetime = state.deleted && state.started;
+
+  return {
+    kind: "metered",
+    usd: usage.vcpuSeconds * rate.cpuSecond + usage.memGiBSeconds * rate.memoryGiBSecond,
+    scope: lifetime ? "sandbox-lifetime" : "window",
+    complete: lifetime,
+    confidence: lifetime ? "medium" : "low",
+    note: lifetime
+      ? `Metered, not invoice: Instabox's per-machine usage (${usage.runningSeconds} running seconds) at published CPU and memory rates; disk included in the plan`
+      : `Partial: Instabox's usage over ${usage.from} to ${usage.to} only, because ${state.started ? "the machine still existed" : "its start is unknown"}`,
+  };
+}
+
+/** The usage window for one machine: from a day before its first sample to now. */
+export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = Date.now()) {
+  const query = new URLSearchParams({ to: new Date(now).toISOString() });
+  const started = row.startedAt === null ? Number.NaN : Date.parse(row.startedAt);
+
+  if (Number.isFinite(started)) query.set("from", new Date(started - 24 * 3_600_000).toISOString());
+
+  return query;
 }
 
 export function decodeUpstash(raw: Json, id: string): Cost {
@@ -851,6 +903,7 @@ export async function collectProvider(
     "daytona",
     "modal",
     "vercel",
+    "instabox",
   ].includes(provider);
 
   let blocked = offline
@@ -1094,6 +1147,25 @@ export async function collectProvider(
         cost = exhausted
           ? decodeEvents(events)
           : unavailable("Event pagination limit; history incomplete");
+      } else if (provider === "instabox") {
+        const headers = { "X-API-Key": key ?? "" };
+        const base = env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+
+        // Deletion first: a machine already gone (404) when its usage is read has a final meter.
+        const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(
+          () => false,
+          (cause: unknown) => {
+            if (cause instanceof BillingHttpError && cause.status === 404) return true;
+            throw cause;
+          },
+        );
+
+        const usage = await transport(
+          `${base}/v1/machines/${id}/usage?${instaboxUsageQuery(row, extra.now)}`,
+          headers,
+        );
+
+        cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });
