@@ -165,3 +165,41 @@ it("allowlists admitted IDs, native state and cleanup evidence with sanitized sh
     failureOutcome(error, (s) => s.replaceAll("native-id", "[REDACTED]")).sandboxId,
   ).toBeUndefined();
 });
+
+it("records a boxd failure's gRPC status, message, reason, call and machine, without claiming the machine", () => {
+  // The core passes an adapter's evidence on as the JSON text of the SandboxError's cause.
+  const cause = JSON.stringify({
+    operation: "machines.resume",
+    machineId: "m-1",
+    providerCode: 9,
+    providerStatus: "FAILED_PRECONDITION",
+    nativeName: "ConflictError",
+    providerReason: "machine_not_suspended",
+    requestId: "req-7",
+    providerMessage: "machine m-1 is not suspended (bxd-key-9)",
+  });
+
+  const error = Object.assign(new Error("boxd request failed", { cause }), {
+    code: "invalid_argument",
+  });
+
+  const outcome = failureOutcome(error, (text) => text.replaceAll("bxd-key-9", "[REDACTED]"));
+
+  expect(outcome).toEqual({
+    kind: "failure",
+    note: "boxd request failed",
+    code: "invalid_argument",
+    cause: {
+      operation: "machines.resume",
+      providerCode: "9",
+      providerStatus: "FAILED_PRECONDITION",
+      providerReason: "machine_not_suspended",
+      providerMessage: "machine m-1 is not suspended ([REDACTED])",
+      nativeName: "ConflictError",
+      machineId: "m-1",
+      requestId: "req-7",
+    },
+  });
+  // A machine named only in evidence is never the sample's sandbox, which would claim ownership.
+  expect(outcome.sandboxId).toBeUndefined();
+});

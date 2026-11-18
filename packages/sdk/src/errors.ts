@@ -1,5 +1,5 @@
 import type { InspectOptionsStylized, inspect as nodeInspect } from "node:util";
-import { isString } from "./shared/narrow.js";
+import { isBoolean, isNumber, isObject, isString } from "./shared/narrow.js";
 
 /**
  * Why a {@link SandboxError} was thrown. A non-zero exit, a command timeout, or an
@@ -164,8 +164,9 @@ export class Redactor {
         cause:
           cause.cause === undefined
             ? undefined
-            : scrub(
-                this.text(cause.cause instanceof Error ? cause.cause.message : String(cause.cause)),
+            : scrubCause(
+                cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
+                (text) => this.text(text),
               ),
       });
     }
@@ -212,10 +213,82 @@ function scrubCredentials(text: string): string {
 }
 
 /** @internal Removes credential-shaped text (URLs, auth headers, key=value secrets, control characters) and bounds the length. */
-export function scrub(text: string): string {
+export function scrub(text: string, max = 1000): string {
   return scrubCredentials(text)
     .replace(/\p{Cc}+/gu, " ")
-    .slice(0, 1000);
+    .slice(0, max);
+}
+
+type EvidenceValue = string | number | boolean | null;
+
+/** Evidence keys that name a credential, as the whole-text credential patterns match them. */
+const credentialKey = /(?:api[-_]?key|token|password|secret|authorization)$/i;
+
+/** The fields of a flat JSON object, the form {@link evidenceCause} writes. Undefined for any other text. */
+function evidenceFields(text: string): [string, EvidenceValue][] | undefined {
+  if (!text.startsWith("{")) return undefined;
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+
+  if (!isObject(parsed) || Array.isArray(parsed)) return undefined;
+  const fields: [string, EvidenceValue][] = [];
+
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!(isString(value) || isNumber(value) || isBoolean(value) || value === null))
+      return undefined;
+    fields.push([key, value]);
+  }
+
+  return fields;
+}
+
+/**
+ * Redacts and scrubs a SandboxError's cause text. Adapter evidence ({@link evidenceCause}) is a flat
+ * JSON object, so each decoded string field is redacted, scrubbed and then bounded on its own: a secret
+ * JSON-escaped in the text is still found, a credential pattern can't swallow the JSON around it, and
+ * the length bound can't cut the JSON or leave part of a secret. Any other text is handled whole.
+ */
+function scrubCause(text: string, redact: (text: string) => string): string {
+  const fields = evidenceFields(text);
+
+  if (fields === undefined) return scrub(redact(text));
+
+  const clean = fields.map(([key, value]): [string, EvidenceValue] => {
+    const name = scrub(redact(key)).slice(0, 64);
+
+    // A field named like a credential is one, as the whole-text scrub treats `"token": …`, whatever its type.
+    if (credentialKey.test(key) && value !== null) return [name, "[REDACTED]"];
+
+    if (isString(value)) return [name, scrub(redact(value))];
+
+    // A number or boolean that is a registered secret is redacted too; any other keeps its type.
+    return [name, value !== null && redact(String(value)) !== String(value) ? "[REDACTED]" : value];
+  });
+
+  const fit = (entries: [string, EvidenceValue][], bound: number) =>
+    JSON.stringify(
+      Object.fromEntries(
+        entries.map(([key, value]) => [key, isString(value) ? value.slice(0, bound) : value]),
+      ),
+    );
+
+  for (const bound of [300, 120, 40]) {
+    const json = fit(clean, bound);
+
+    if (json.length <= 1000) return json;
+  }
+
+  // Too many fields to fit: drop whole fields from the end until it does, so it stays valid JSON.
+  const kept = [...clean];
+
+  while (kept.length > 0 && fit(kept, 40).length > 1000) kept.pop();
+
+  return fit(kept, 40);
 }
 
 /**
@@ -283,8 +356,9 @@ export function describeNative(
 
 /**
  * @internal Bounded machine fields an adapter copies from a native failure, each already checked
- * against an allowlist and the secrets it knows. Never a response's message, body, headers or URL;
- * `native` is at most the scrubbed text {@link describeNative} keeps.
+ * against an allowlist and the secrets it knows. Never a response's body, headers or URL, and a
+ * response's message only as `providerMessage`; `native` is at most the scrubbed text
+ * {@link describeNative} keeps.
  */
 export interface NativeEvidence {
   operation?: string;
@@ -294,6 +368,15 @@ export interface NativeEvidence {
   source?: string;
   nativeName?: string;
   native?: string;
+  /** The provider's name for `providerCode`, such as gRPC `FAILED_PRECONDITION`. */
+  providerStatus?: string;
+  /** A machine-readable reason the provider attached, such as boxd's `x-boxd-error-reason` trailer. */
+  providerReason?: string;
+  /**
+   * The provider's own text for a failed control-plane call (create, pause, resume, snapshot), redacted,
+   * scrubbed and bounded. Never kept for guest file or command calls, whose text can echo user paths.
+   */
+  providerMessage?: string;
   /** Luxor create: the session this call created, and how far it got. */
   admittedByThisCall?: true;
   stage?: string;

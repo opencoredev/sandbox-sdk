@@ -18,7 +18,7 @@ import type {
 } from "@boxd-sh/sdk";
 import type { CreateInput, Provider, SandboxInfo } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
-import { boxdError, failure } from "./errors.js";
+import { boxdError, failure, type BoxdCall } from "./errors.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isString } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
@@ -272,7 +272,19 @@ export function createBoxdProvider<C extends BoxdClient>(
     try {
       return await action();
     } catch (error) {
-      throw boxdError(error, id);
+      throw boxdError(error, { sandboxId: id }, [options.apiKey]);
+    }
+  }
+
+  /** Runs one boxd control-plane call, so a failure names the call and keeps boxd's status and message. */
+  async function control<T>(
+    context: { call: BoxdCall; sandboxId?: string; machineId?: string },
+    action: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await action();
+    } catch (error) {
+      throw boxdError(error, context, [options.apiKey]);
     }
   }
 
@@ -510,23 +522,29 @@ export function createBoxdProvider<C extends BoxdClient>(
           if (deleteAfter !== undefined) params.deleteAfter = deleteAfter;
           m = await c.machines.create(params);
         } catch (error) {
-          const mapped = boxdError(error);
+          const mapped = boxdError(error, { call: "machines.create" }, [options.apiKey]);
 
           if (mapped.code === "unavailable" || mapped.code === "timeout")
             throw failure(
               "Machine creation outcome is unknown; inspect the account before retrying",
               "outcome_unknown",
+              undefined,
+              mapped.cause,
             );
-          throw error;
+          throw mapped;
         }
 
         try {
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
 
-          if (m.status !== "running")
-            m = await c.machines.waitUntilReady(m.id, {
-              timeout: options.requestTimeoutMs ?? 90000,
-            });
+          const created = m;
+
+          if (created.status !== "running")
+            m = await control({ call: "machines.waitUntilReady", machineId: created.id }, () =>
+              c.machines.waitUntilReady(created.id, {
+                timeout: options.requestTimeoutMs ?? 90000,
+              }),
+            );
 
           const id = m.id;
 
@@ -543,7 +561,9 @@ export function createBoxdProvider<C extends BoxdClient>(
 
           // Confirmed before return, so no user command runs under a wider list.
           if (allow) {
-            const actual = await c.machines.setEgressAllow(id, allow);
+            const actual = await control({ call: "machines.setEgressAllow", machineId: id }, () =>
+              c.machines.setEgressAllow(id, allow),
+            );
 
             if (actual.length !== allow.length || allow.some((entry) => !actual.includes(entry)))
               throw failure(
@@ -604,7 +624,12 @@ export function createBoxdProvider<C extends BoxdClient>(
     connect: (id) =>
       safe(id, async () => {
         try {
-          const m = await (await api()).machines.get(id);
+          const c = await api();
+
+          const m = await control({ call: "machines.get", sandboxId: id }, () =>
+            c.machines.get(id),
+          );
+
           // Connecting is for use, so a paused machine may be woken to read its metadata.
           const value = await info(m, { attach: true });
           boxes.set(id, m);
@@ -619,7 +644,11 @@ export function createBoxdProvider<C extends BoxdClient>(
         try {
           await (await api()).machines.delete(id);
         } catch (error) {
-          if (boxdError(error).code !== "not_found") throw error;
+          const mapped = boxdError(error, { call: "machines.delete", sandboxId: id }, [
+            options.apiKey,
+          ]);
+
+          if (mapped.code !== "not_found") throw mapped;
         }
 
         boxes.delete(id);
@@ -658,11 +687,13 @@ export function createBoxdProvider<C extends BoxdClient>(
       }),
     pause: (id) =>
       safe(id, async () => {
-        await (await api()).machines.pause(id);
+        const c = await api();
+        await control({ call: "machines.pause", sandboxId: id }, () => c.machines.pause(id));
       }),
     resume: (id) =>
       safe(id, async () => {
-        await (await api()).machines.resume(id);
+        const c = await api();
+        await control({ call: "machines.resume", sandboxId: id }, () => c.machines.resume(id));
       }),
     snapshot: (id, snapshotOptions) =>
       safe(id, async () => {
@@ -677,10 +708,14 @@ export function createBoxdProvider<C extends BoxdClient>(
         const deadline = Date.now() + (options.requestTimeoutMs ?? 90000);
 
         try {
-          await c.snapshots.create(id, name);
+          await control({ call: "snapshots.create", sandboxId: id }, () =>
+            c.snapshots.create(id, name),
+          );
 
           while (Date.now() < deadline) {
-            const snapshot = await c.snapshots.get(name);
+            const snapshot = await control({ call: "snapshots.get", sandboxId: id }, () =>
+              c.snapshots.get(name),
+            );
 
             if (snapshot.status === "ready") return { id: name };
 
@@ -696,11 +731,16 @@ export function createBoxdProvider<C extends BoxdClient>(
           try {
             await c.snapshots.delete(name);
           } catch (cleanupError) {
-            if (boxdError(cleanupError, id).code !== "not_found")
+            const cleanup = boxdError(cleanupError, { call: "snapshots.delete", sandboxId: id }, [
+              options.apiKey,
+            ]);
+
+            if (cleanup.code !== "not_found")
               throw failure(
-                `Snapshot ${name} cleanup is unconfirmed after ${boxdError(error, id).code}; inspect and remove it before retrying`,
+                `Snapshot ${name} cleanup is unconfirmed after ${boxdError(error, { sandboxId: id }).code}; inspect and remove it before retrying`,
                 "outcome_unknown",
                 id,
+                cleanup.cause,
               );
           }
 
@@ -727,7 +767,7 @@ export function createBoxdProvider<C extends BoxdClient>(
   // boxd's machine list only, never a guest, so no machine is woken even if it falls asleep now.
   const listSleeping = () =>
     safe(undefined, async () =>
-      (await (await api()).machines.list())
+      (await control({ call: "machines.list" }, async () => (await api()).machines.list()))
         .filter((m) => m.name.startsWith("sbxsdk-") && m.status !== "destroyed" && wakes(m))
         .map((m) => ({
           id: m.id,

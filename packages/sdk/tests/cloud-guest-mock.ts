@@ -46,6 +46,7 @@ export class MockBoxd {
         shared: false,
         networking: { networks: [], isolated: true },
         egressAllow: [],
+        labels: {},
         access: {
           sshPort: null,
           domain: "boxd.sh",
@@ -64,6 +65,16 @@ export class MockBoxd {
         lastConnectedAt: null,
         bootTimeMs: null,
         pausedAutomations: 0,
+        ssh: false,
+        os: "linux",
+        rdp: null,
+        spec: null,
+        createdSpec: null,
+        createdBy: null,
+        createdByName: null,
+        requirements: [],
+        packages: [],
+        region: null,
       };
 
       boxdState.boxes.set(guest.id, { guest, machine });
