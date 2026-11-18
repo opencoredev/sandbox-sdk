@@ -503,6 +503,37 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
     await settle(parseOperation(op), id);
   }
 
+  /** Writes one guest file, creating its parents. */
+  async function upload(
+    id: string,
+    path: string,
+    data: Uint8Array,
+    options: { mode?: number; signal?: AbortSignal; timeoutMs: number },
+  ): Promise<void> {
+    const query: Query = {
+      path: absolute(path),
+      parents: "true",
+      mode: options.mode === undefined ? undefined : `0${(options.mode & 0o7777).toString(8)}`,
+    };
+
+    try {
+      await send({
+        method: "PUT",
+        path: `/v1/machines/${encodeURIComponent(id)}/files`,
+        operation: "write file",
+        query,
+        raw: data,
+        sandboxId: id,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+      });
+    } catch (error) {
+      if (error instanceof ApiFailure && error.body.code === "not_a_file")
+        throw fail(`${path} is a directory`, "invalid_argument", { sandboxId: id });
+      throw instaboxError(error, "write file", id);
+    }
+  }
+
   /** Streams one guest command over SSE. Closing the stream kills the command's process group. */
   async function stream(
     id: string,
@@ -811,11 +842,31 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         if (bytes.byteLength <= 1024 * 1024)
           return stream(id, { ...body, stdin: input.stdin }, input);
         const staged = `/tmp/.sandbox-sdk/stdin-${randomUUID()}`;
+        // The upload counts against the command's deadline and stops when the caller aborts.
+        const started = Date.now();
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort(), input.timeoutMs);
 
-        await provider.files.write(id, staged, bytes);
+        const signal = input.signal
+          ? AbortSignal.any([input.signal, deadline.signal])
+          : deadline.signal;
+
+        try {
+          await upload(id, staged, bytes, { signal, timeoutMs: input.timeoutMs });
+        } catch (error) {
+          if (signal.aborted) return { exitCode: null, timedOut: true };
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+
         const cmd = `exec < ${quote(staged)}; rm -f ${quote(staged)}; ${input.command}`;
 
-        return stream(id, { ...body, cmd }, input);
+        return stream(
+          id,
+          { ...body, cmd },
+          { ...input, timeoutMs: Math.max(1, input.timeoutMs - (Date.now() - started)) },
+        );
       }
 
       return stream(id, body, input);
@@ -848,29 +899,7 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
       },
 
       async write(id, path, data, writeOptions) {
-        const mode = writeOptions?.mode;
-
-        const query: Query = {
-          path: absolute(path),
-          parents: "true",
-          mode: mode === undefined ? undefined : `0${(mode & 0o7777).toString(8)}`,
-        };
-
-        try {
-          await send({
-            method: "PUT",
-            path: `/v1/machines/${encodeURIComponent(id)}/files`,
-            operation: "write file",
-            query,
-            raw: data,
-            sandboxId: id,
-            timeoutMs: 300_000,
-          });
-        } catch (error) {
-          if (error instanceof ApiFailure && error.body.code === "not_a_file")
-            throw fail(`${path} is a directory`, "invalid_argument", { sandboxId: id });
-          throw instaboxError(error, "write file", id);
-        }
+        await upload(id, path, data, { mode: writeOptions?.mode, timeoutMs: 300_000 });
       },
 
       async list(id, path) {

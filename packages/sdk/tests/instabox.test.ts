@@ -372,6 +372,64 @@ describe("instabox exec", () => {
     expect(result).toEqual({ exitCode: null, timedOut: true });
   });
 
+  test("a large stdin upload stops at the command's deadline, before the command starts", async () => {
+    server.on("PUT /v1/machines/{id}/files", { hang: true });
+    const started = Date.now();
+
+    const result = await provider().exec("m_abc123", {
+      command: "wc -c",
+      cwd: "/workspace",
+      env: {},
+      stdin: "x".repeat(1024 * 1024 + 1),
+      timeoutMs: 300,
+      onChunk: () => undefined,
+    });
+
+    expect(result).toEqual({ exitCode: null, timedOut: true });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(server.calls("POST /v1/machines/{id}/exec")).toHaveLength(0);
+  });
+
+  test("a large stdin upload stops when the caller aborts", async () => {
+    server.on("PUT /v1/machines/{id}/files", { hang: true });
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), 100);
+
+    const result = await provider().exec("m_abc123", {
+      command: "wc -c",
+      cwd: "/workspace",
+      env: {},
+      stdin: "x".repeat(1024 * 1024 + 1),
+      timeoutMs: 60_000,
+      signal: abort.signal,
+      onChunk: () => undefined,
+    });
+
+    expect(result).toEqual({ exitCode: null, timedOut: true });
+    expect(server.calls("POST /v1/machines/{id}/exec")).toHaveLength(0);
+  });
+
+  test("a large stdin is staged, then the command reads it within the remaining deadline", async () => {
+    server
+      .on("PUT /v1/machines/{id}/files", { status: 204 })
+      .on("POST /v1/machines/{id}/exec", { stream: sse(["exit", { exitCode: 0 }]) });
+
+    const result = await provider().exec("m_abc123", {
+      command: "wc -c",
+      cwd: "/workspace",
+      env: {},
+      stdin: "x".repeat(1024 * 1024 + 1),
+      timeoutMs: 10_000,
+      onChunk: () => undefined,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const [exec] = server.calls("POST /v1/machines/{id}/exec");
+    const body = JSON.parse(exec!.body.toString());
+    expect(body.cmd).toMatch(/^exec < '\/tmp\/\.sandbox-sdk\/stdin-[0-9a-f-]+'; rm -f .*; wc -c$/);
+    expect(body.timeoutSeconds).toBeLessThanOrEqual(11);
+  });
+
   test("an error event keeps its code only", async () => {
     server.on("POST /v1/machines/{id}/exec", {
       stream: sse(["error", { code: "quota_exceeded", message: "32 execs at /x" }]),
