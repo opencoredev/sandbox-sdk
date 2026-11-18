@@ -235,6 +235,26 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
+    // Instabox: the default agent-browser template is 4 vCPU / 8 GiB (Debian 13, glibc) with a
+    // 20 GiB /data disk that /workspace links to, so both tracks run the same machine; same-machine
+    // asks for 4/8 explicitly. Idle pause is Instabox's default (30 minutes).
+    // https://instabox.sh/docs/account/limits.md
+    name: "instabox",
+    adapter: "instabox",
+    product: null,
+    lifetime: true,
+    pricingKey: "instabox",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 20),
+        tooSmall: {},
+      },
+      default: { vcpu: 4, provisioned: size(4, 8, 20), tooSmall: {} },
+    },
+  },
+  {
     // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
     // sandbox's files in its memory, so the build's workspace goes on an 8 GiB volume (the
     // account's cap, 2026-11-16), as Baseten advised: without one, its node_modules sat in RAM and

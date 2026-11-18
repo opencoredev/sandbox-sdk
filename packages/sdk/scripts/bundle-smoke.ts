@@ -46,6 +46,7 @@ const fakes = {
   freestyle: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   superserve: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   baseten: `{ apiKey: "smoke-key" }`,
+  instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
 };
 
 // Providers without an optional peer SDK, or whose peer never touches the network.

@@ -335,6 +335,7 @@ const lookupKeys = new Map([
   ["superserve", "SUPERSERVE_API_KEY"],
   ["modal", "MODAL_TOKEN_SECRET"],
   ["baseten", "BASETEN_API_KEY"],
+  ["instabox", "INSTABOX_API_KEY"],
 ]);
 
 const nativeInfo = z.object({
@@ -445,6 +446,19 @@ export async function lookupSandbox(
           const response = await new BoatApi(config).get({ sandboxId: id });
 
           return nativeInfo.parse(response.sandbox);
+        }
+
+        case "instabox": {
+          // GET only: it never wakes, starts or changes the machine.
+          const response = await fetch(
+            `${process.env.INSTABOX_API_URL ?? "https://api.instabox.sh"}/v1/machines/${encodeURIComponent(id)}`,
+            { headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" }, signal },
+          );
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          return nativeInfo.parse(await response.json());
         }
 
         case "superserve": {

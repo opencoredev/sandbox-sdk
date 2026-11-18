@@ -67,6 +67,10 @@ const registry = {
     env: [["BASETEN_API_KEY"]],
     load: async () => (await import("../src/providers/baseten/index.js")).baseten(),
   },
+  instabox: {
+    env: [["INSTABOX_API_KEY"]],
+    load: async () => (await import("../src/providers/instabox/index.js")).instabox(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),
