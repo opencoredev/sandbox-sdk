@@ -94,6 +94,40 @@ const setupCommand = [
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+/** Names Instabox refuses in a machine's environment (CreateMachineRequest.env); set per command instead. */
+const reservedEnv = new Set([
+  "BASH_ENV",
+  "ENV",
+  "HOME",
+  "HOSTNAME",
+  "IFS",
+  "LOGNAME",
+  "OLDPWD",
+  "PATH",
+  "PWD",
+  "SHELL",
+  "SHLVL",
+  "USER",
+  "BASHOPTS",
+  "BASH_VERSINFO",
+  "EUID",
+  "PPID",
+  "SHELLOPTS",
+  "UID",
+  "TERM",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "NODE_EXTRA_CA_CERTS",
+]);
+
+function isReservedEnv(name: string) {
+  return reservedEnv.has(name) || name.startsWith("INSTABOX_") || name.startsWith("SSH_");
+}
+
 /** Query parameters; an undefined one is left out. */
 interface Query {
   readonly [name: string]: string | undefined;
@@ -331,7 +365,7 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
       }
 
       // A gateway timeout on a POST or PATCH leaves the outcome unknown, like no answer at all.
-      if (write && !replayable && response.status === 504)
+      if (write && response.status === 504)
         throw fail(`${input.operation} timed out at the gateway`, "outcome_unknown", {
           sandboxId: input.sandboxId,
         });
@@ -343,7 +377,24 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
   async function json(input: RequestInput): Promise<JsonValue | undefined> {
     try {
       const response = await send(input);
-      const text = await response.text();
+      let text: string;
+
+      try {
+        text = await response.text();
+      } catch (cause) {
+        const write = input.method === "POST" || input.method === "PATCH";
+
+        throw fail(
+          `${input.operation}: the answer broke off`,
+          write ? "outcome_unknown" : "unavailable",
+          {
+            sandboxId: input.sandboxId,
+            retryable: !write,
+            cause: describeNative(cause, { code: "unavailable", known: true }).cause,
+          },
+        );
+      }
+
       let value: JsonValue | undefined;
 
       try {
@@ -381,10 +432,18 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
           operation: "operation status",
           query: { wait: `${Math.max(1, Math.min(25, Math.floor(left / 1000)))}s` },
           sandboxId,
-          timeoutMs: Math.min(40_000, left + 5_000),
+          timeoutMs: Math.max(1, Math.min(40_000, left)),
         }),
       );
+
+      if (!isFinished(op) && Date.now() > deadline) break;
     }
+
+    if (!isFinished(op))
+      throw fail(`operation ${op.id} did not finish in time`, "timeout", {
+        sandboxId,
+        retryable: true,
+      });
 
     if (op.state === "failed")
       throw operationError({ operationId: op.id, errorCode: op.errorCode, sandboxId });
@@ -687,10 +746,15 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
 
       if (input.timeoutMs !== undefined) body.deleteAfterSeconds = lifetimeSeconds(input.timeoutMs);
 
-      if (input.env !== undefined && Object.keys(input.env).length > 0) body.env = { ...input.env };
+      const machineEnv = Object.fromEntries(
+        Object.entries(input.env ?? {}).filter(([key]) => !isReservedEnv(key)),
+      );
+
+      if (Object.keys(machineEnv).length > 0) body.env = machineEnv;
 
       // The admission request ignores the caller's signal: aborting it mid-flight could leave a
-      // machine whose ID never arrived. An abort is honoured once the ID is known, by deleting it.
+      // machine whose ID never arrived. An abort is honoured once the create has finished (Instabox
+      // refuses a delete while an operation runs), by deleting the machine.
       const op = parseOperation(
         await json({
           method: "POST",
@@ -705,14 +769,14 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
       let stage: CreateStage = "operation";
       const aborted = () => fail("create aborted", "aborted", { sandboxId: id });
 
-      if (input.signal?.aborted) return abandon(id, stage, aborted());
-
       try {
         await settle(op, id);
 
         if (input.signal?.aborted) throw aborted();
         stage = "prepare";
         await guest(id, ["bash", "-c", setupCommand]);
+
+        if (input.signal?.aborted) throw aborted();
         stage = "read";
 
         return toInfo(await getMachine(id));

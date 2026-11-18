@@ -154,7 +154,7 @@ An exact `size` such as `{ cpu: 4, memoryMb: 8192 }` must be a size your plan of
 ## How it works
 
 - The adapter calls `https://api.instabox.sh` with your key in `X-API-Key`. Changes such as create, pause and delete return an operation, which the adapter long-polls until it finishes. Every change carries an `Idempotency-Key`, reused across retries, so a retried request is never applied twice. Rate limits (`429`) are retried after Instabox's `Retry-After`, and server errors only for requests that are safe to repeat; a command is never sent twice. Every request names the SDK in `User-Agent` and refuses redirects, so your key never leaves `api.instabox.sh`.
-- At create, `/workspace` is linked to `/data/workspace` on the persistent disk, and the sandbox's `env` becomes the machine's own environment, which every login shell exports. If that step fails, the adapter deletes the machine before it throws.
+- At create, `/workspace` is linked to `/data/workspace` on the persistent disk, and the sandbox's `env` becomes the machine's own environment, which every login shell exports. Names Instabox reserves (`PATH`, `HOME`, `SSH_*`, `INSTABOX_*` and a few others) are sent with each command instead. If that step fails, the adapter deletes the machine before it throws.
 - Your `labels` become Instabox metadata, and a key is stored as the `sandbox-sdk-key` label. Instabox allows 32 labels per machine.
 - Commands stream over server-sent events. Closing the stream kills the command's process group, so a timeout or abort stops it.
 - `box.native` returns `{ machineId, request }`. `request({ method, path, body })` calls Instabox's API with the adapter's key, adding an `Idempotency-Key` to writes.

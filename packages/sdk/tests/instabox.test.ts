@@ -166,14 +166,20 @@ describe("instabox create review cases", () => {
         controller.abort();
         setTimeout(() => {
           response.writeHead(202, { "content-type": "application/json" });
-          response.end(JSON.stringify(op("succeeded")));
+          response.end(JSON.stringify(op("pending")));
         }, 50);
       })
+      .on("GET /v1/operations/{id}", { json: op("succeeded") })
       .on("DELETE /v1/machines/{id}", { status: 202, json: op("succeeded") });
 
     const error = await rejection(provider().create({ labels: {}, signal: controller.signal }));
 
     expect(error.code).toBe("aborted");
+    // The delete waits for the create to finish: Instabox refuses it while an operation runs.
+    const order = server.requests.map((r) => `${r.method} ${r.url.split("?")[0]}`);
+    expect(order.indexOf("GET /v1/operations/op_1")).toBeLessThan(
+      order.indexOf("DELETE /v1/machines/m_abc123"),
+    );
     expect(server.calls("DELETE /v1/machines/{id}")).toHaveLength(1);
     expect(evidence(error)).toMatchObject({ admittedByThisCall: true, sandboxId: "m_abc123" });
   });
@@ -200,11 +206,35 @@ describe("instabox transport review cases", () => {
       .on("POST /v1/machines/{id}/exec", { stream: sse(["exit", { exitCode: 0 }]) })
       .on("GET /v1/machines/{id}", { json: machine() });
 
-    await provider().create({ labels: {}, env: { API_TOKEN: "t1" } });
+    await provider().create({
+      labels: {},
+      env: { API_TOKEN: "t1", PATH: "/opt/bin:/usr/bin", SSH_PRIVATE_KEY: "k", INSTABOX_X: "1" },
+    });
     const [create] = server.calls("POST /v1/machines");
 
     expect(create!.headers["user-agent"]).toMatch(/^sandbox-sdk\//);
+    // Names Instabox reserves stay per command; the rest becomes the machine's environment.
     expect(JSON.parse(create!.body.toString()).env).toEqual({ API_TOKEN: "t1" });
+  });
+
+  test("a gateway timeout on a keyed create leaves the outcome unknown", async () => {
+    server.on("POST /v1/machines", { status: 504, json: { error: { code: "unknown" } } });
+
+    // Retried with the same idempotency key while time is left; the last 504 is the answer.
+    const short = instabox({
+      apiKey: "ibk_test_key",
+      baseUrl: server.url,
+      requestTimeoutMs: 1_200,
+    });
+
+    const error = await rejection(short.create({ labels: {} }));
+
+    const keys = new Set(
+      server.calls("POST /v1/machines").map((r) => r.headers["idempotency-key"]),
+    );
+
+    expect(error.code).toBe("outcome_unknown");
+    expect(keys.size).toBe(1);
   });
 
   test("a failed command request is not replayed", async () => {
@@ -249,12 +279,12 @@ describe("instabox transport review cases", () => {
 
 describe("instabox errors", () => {
   test("an invalid JSON answer never quotes the body", async () => {
-    server.on("GET /v1/machines/{id}", { body: "not json ibk_secret_echo" });
+    server.on("GET /v1/machines/{id}", { body: "ibkleak" });
 
     const error = await rejection(provider().connect("m_abc123"));
 
-    expect(error.message).not.toContain("ibk_secret_echo");
-    expect(String(error.cause ?? "")).not.toContain("ibk_secret_echo");
+    expect(error.message).not.toContain("ibkleak");
+    expect(String(error.cause ?? "")).not.toContain("ibkleak");
   });
 
   test("keep Instabox's code and status, never its message", async () => {

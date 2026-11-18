@@ -42,7 +42,9 @@ or gets a gateway timeout, fails with `outcome_unknown`; a read with
 operation has left.
 
 Create sends the labels as metadata, the sandbox `env` as the machine's own
-environment (every login shell exports it, so a reconnect can read secrets back), the key as the `sandbox-sdk-key` label,
+environment (every login shell exports it, so a reconnect can read secrets back;
+names Instabox reserves, such as `PATH`, `HOME`, `SSH_*` and `INSTABOX_*`, go
+with each command instead), the key as the `sandbox-sdk-key` label,
 the size as `vcpus` and `memMiB`, `idleTimeoutMs` as `autoSuspendAfterSeconds`
 (300 to 1800 in whole minutes) and `timeoutMs` as `deleteAfterSeconds`
 (60 to 86400). Then it links `/workspace` to `/data/workspace` on the
