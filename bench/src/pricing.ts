@@ -193,7 +193,7 @@ export const pricing: PriceTable = {
     retrieved: "2026-11-18",
     source: "https://www.beam.cloud/pricing",
     notes:
-      "Published Sandboxes rates on the Performance tier, the default ($0.05/vCPU-hour, $0.01/GiB RAM-hour), priced on the allocation and billed per millisecond while running (2026-11-18). Shared ($0.011, $0.0055) and Spot ($0.0063, $0.00135) tiers are cheaper and not used. Disk not billed. Memory snapshots are used by the snapshot scenarios; their storage is not priced. Credits excluded.",
+      "Published Sandboxes rates on the Performance tier, the default ($0.05/vCPU-hour, $0.01/GiB RAM-hour), priced on the allocation and billed per millisecond while running (2026-11-18). Shared ($0.011, $0.0055) and Spot ($0.0063, $0.00135) tiers are cheaper and not used. Disk not billed. The snapshot tests did not run: Beam has no API to delete a memory snapshot. Credits excluded.",
   },
   tenki: {
     ...base,
