@@ -1140,18 +1140,18 @@ describe("boxd failure evidence", () => {
   });
 
   test("boxd's message is not cut before the core redacts the sandbox's secrets", async () => {
-    const secret = "SANDBOX-SECRET-0123456789";
+    // 64 characters: 15 redacted copies shrink, so a copy cut at character 1,000 would land
+    // inside the core's 300-character field bound and leave a fragment.
+    const secret = `SANDBOX-SECRET-${"0123456789".repeat(4)}-abcdefgh`;
     const box = await createSandbox(factory(), { secrets: { TOKEN: secret } });
     const machines = box.native.client.machines;
 
-    const resume = vi
-      .spyOn(machines, "resume")
-      .mockRejectedValueOnce(
-        Object.assign(new Error(`${"x".repeat(990)}${secret}`), {
-          name: "ConflictError",
-          grpcCode: 9,
-        }),
-      );
+    const resume = vi.spyOn(machines, "resume").mockRejectedValueOnce(
+      Object.assign(new Error(`${`${secret} `.repeat(15)}pad${secret}`), {
+        name: "ConflictError",
+        grpcCode: 9,
+      }),
+    );
 
     try {
       await box.pause();
