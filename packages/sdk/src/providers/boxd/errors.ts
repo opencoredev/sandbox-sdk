@@ -147,9 +147,9 @@ function boxdEvidence(
   native: NativeError,
   context: BoxdContext,
   detail: string | undefined,
+  keys: readonly string[],
 ): BoxdEvidence {
-  const apiKey = process.env.BOXD_API_KEY;
-  const denied = (value: string) => apiKey !== undefined && apiKey !== "" && value.includes(apiKey);
+  const denied = (value: string) => keys.some((key) => value.includes(key));
   const evidence: BoxdEvidence = {};
 
   if (context.call !== undefined) evidence.operation = context.call;
@@ -177,17 +177,34 @@ function boxdEvidence(
   if (requestId !== undefined && token.test(requestId) && !denied(requestId))
     evidence.requestId = requestId;
 
+  // Bounded so the whole evidence stays within the core's 1,000-character cause.
   if (context.call !== undefined && native.message)
-    evidence.providerMessage = scrub(redacting([apiKey])(native.message)).slice(0, 500);
+    evidence.providerMessage = scrub(redacting(keys)(native.message)).slice(0, 300);
 
-  if (detail !== undefined) evidence.native = detail;
+  // The kept native detail usually repeats boxd's message; keep it only when it adds something.
+  if (
+    detail !== undefined &&
+    !(evidence.providerMessage && detail.includes(evidence.providerMessage.slice(0, 80)))
+  )
+    evidence.native = detail.slice(0, 300);
 
   return evidence;
 }
 
-export function boxdError(cause: unknown, context: BoxdContext = {}): SandboxError {
+/**
+ * Maps a boxd failure to a SandboxError with evidence in its cause. `secrets` are values to redact
+ * besides `BOXD_API_KEY`, such as an `apiKey` passed to the provider.
+ */
+export function boxdError(
+  cause: unknown,
+  context: BoxdContext = {},
+  secrets: readonly (string | undefined)[] = [],
+): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const { sandboxId } = context;
+  const keys = [process.env.BOXD_API_KEY, ...secrets].filter(
+    (key): key is string => key !== undefined && key !== "",
+  );
   const native = decodeNative(cause);
   const status = native.grpcCode;
 
@@ -197,10 +214,10 @@ export function boxdError(cause: unknown, context: BoxdContext = {}): SandboxErr
       code,
       known,
       status: status === undefined ? undefined : `gRPC ${status}`,
-      redact: redacting([process.env.BOXD_API_KEY]),
+      redact: redacting(keys),
     });
 
-  const evidence = (detail?: string) => evidenceCause(boxdEvidence(native, context, detail));
+  const evidence = (detail?: string) => evidenceCause(boxdEvidence(native, context, detail, keys));
 
   // 0.2.17's local machines.exec deadline is a plain BoxdError, without
   // grpcCode. Match its published message narrowly; never expose that message.

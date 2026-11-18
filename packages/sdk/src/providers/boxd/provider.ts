@@ -272,7 +272,7 @@ export function createBoxdProvider<C extends BoxdClient>(
     try {
       return await action();
     } catch (error) {
-      throw boxdError(error, { sandboxId: id });
+      throw boxdError(error, { sandboxId: id }, [options.apiKey]);
     }
   }
 
@@ -284,7 +284,7 @@ export function createBoxdProvider<C extends BoxdClient>(
     try {
       return await action();
     } catch (error) {
-      throw boxdError(error, context);
+      throw boxdError(error, context, [options.apiKey]);
     }
   }
 
@@ -522,7 +522,7 @@ export function createBoxdProvider<C extends BoxdClient>(
           if (deleteAfter !== undefined) params.deleteAfter = deleteAfter;
           m = await c.machines.create(params);
         } catch (error) {
-          const mapped = boxdError(error, { call: "machines.create" });
+          const mapped = boxdError(error, { call: "machines.create" }, [options.apiKey]);
 
           if (mapped.code === "unavailable" || mapped.code === "timeout")
             throw failure(
@@ -644,7 +644,9 @@ export function createBoxdProvider<C extends BoxdClient>(
         try {
           await (await api()).machines.delete(id);
         } catch (error) {
-          const mapped = boxdError(error, { call: "machines.delete", sandboxId: id });
+          const mapped = boxdError(error, { call: "machines.delete", sandboxId: id }, [
+            options.apiKey,
+          ]);
 
           if (mapped.code !== "not_found") throw mapped;
         }
@@ -729,7 +731,9 @@ export function createBoxdProvider<C extends BoxdClient>(
           try {
             await c.snapshots.delete(name);
           } catch (cleanupError) {
-            const cleanup = boxdError(cleanupError, { call: "snapshots.delete", sandboxId: id });
+            const cleanup = boxdError(cleanupError, { call: "snapshots.delete", sandboxId: id }, [
+              options.apiKey,
+            ]);
 
             if (cleanup.code !== "not_found")
               throw failure(

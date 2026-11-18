@@ -60,7 +60,11 @@ async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing" |
       res.writeHead(200, { "content-type": "application/grpc-web+proto" });
       res.write(Buffer.from([0]));
     } else if (behavior === "missing") {
-      res.writeHead(200, { "grpc-status": "5", "grpc-message": "private-native-detail" });
+      res.writeHead(200, {
+        "grpc-status": "5",
+        "grpc-message": "private-native-detail",
+        "x-boxd-error-reason": "vm_not_found",
+      });
       res.end();
     } else if (behavior === "nofile") {
       // boxd's wording for a missing guest path; a missing VM is "VM not found".
@@ -323,6 +327,7 @@ for (const kind of ["upload", "download"] as const) {
       providerCode: 5,
       providerStatus: "NOT_FOUND",
       nativeName: "NotFoundError",
+      providerReason: "vm_not_found",
     });
   });
 }

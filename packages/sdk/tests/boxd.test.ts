@@ -1126,6 +1126,19 @@ describe("boxd failure evidence", () => {
     }
   });
 
+  test("an API key passed to the provider is redacted like BOXD_API_KEY", () => {
+    const error = boxdError(
+      Object.assign(new Error("key sk-explicit-42 is not allowed here"), { grpcCode: 7 }),
+      { call: "machines.create" },
+      ["sk-explicit-42"],
+    );
+
+    expect(evidence(error)).toMatchObject({
+      providerMessage: "key [REDACTED] is not allowed here",
+    });
+    expect(String(error.cause)).not.toContain("sk-explicit-42");
+  });
+
   test("a guest call never keeps boxd's text, which can echo user paths", () => {
     const error = boxdError(
       Object.assign(new Error("read /workspace/private.txt: input/output error"), {

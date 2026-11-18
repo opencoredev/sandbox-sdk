@@ -1,5 +1,5 @@
 import type { InspectOptionsStylized, inspect as nodeInspect } from "node:util";
-import { isString } from "./shared/narrow.js";
+import { isBoolean, isNumber, isObject, isString } from "./shared/narrow.js";
 
 /**
  * Why a {@link SandboxError} was thrown. A non-zero exit, a command timeout, or an
@@ -164,7 +164,7 @@ export class Redactor {
         cause:
           cause.cause === undefined
             ? undefined
-            : scrub(
+            : scrubCause(
                 this.text(cause.cause instanceof Error ? cause.cause.message : String(cause.cause)),
               ),
       });
@@ -216,6 +216,57 @@ export function scrub(text: string): string {
   return scrubCredentials(text)
     .replace(/\p{Cc}+/gu, " ")
     .slice(0, 1000);
+}
+
+type EvidenceValue = string | number | boolean | null;
+
+/** The fields of a flat JSON object, the form {@link evidenceCause} writes. Undefined for any other text. */
+function evidenceFields(text: string): [string, EvidenceValue][] | undefined {
+  if (!text.startsWith("{")) return undefined;
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+
+  if (!isObject(parsed) || Array.isArray(parsed)) return undefined;
+  const fields: [string, EvidenceValue][] = [];
+
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!(isString(value) || isNumber(value) || isBoolean(value) || value === null))
+      return undefined;
+    fields.push([key, value]);
+  }
+
+  return fields;
+}
+
+/**
+ * Scrubs a SandboxError's cause text. Adapter evidence ({@link evidenceCause}) is a flat JSON object, so
+ * each string field is scrubbed and bounded on its own: a credential pattern can't swallow the JSON
+ * around it, and the length bound can't cut the JSON mid-field. Any other text is scrubbed whole.
+ */
+function scrubCause(text: string): string {
+  const fields = evidenceFields(text);
+
+  if (fields === undefined) return scrub(text);
+
+  for (const bound of [300, 120, 40]) {
+    const json = JSON.stringify(
+      Object.fromEntries(
+        fields.map(([key, value]) => [
+          scrub(key).slice(0, 64),
+          isString(value) ? scrub(value).slice(0, bound) : value,
+        ]),
+      ),
+    );
+
+    if (json.length <= 1000) return json;
+  }
+
+  return scrub(text);
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createSandbox, SandboxError } from "../src/index.js";
-import { Redactor } from "../src/errors.js";
+import { Redactor, evidenceCause } from "../src/errors.js";
 import { memory } from "../src/memory.js";
 
 const causeText = (error: SandboxError) => String(error.cause);
@@ -77,4 +77,37 @@ test("redacts secrets spanning stdout and stderr in output and subscriptions", a
   } finally {
     await box.destroy();
   }
+});
+
+describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
+  test("credential patterns inside a field are scrubbed without breaking the JSON around them", () => {
+    const original = new SandboxError("boxd request failed", {
+      code: "invalid_argument",
+      provider: "boxd",
+      cause: evidenceCause({
+        operation: "machines.resume",
+        providerCode: 9,
+        providerMessage: "rejected token=abc123 authorization: Bearer zzz9",
+        native: "x".repeat(2000),
+      }),
+    });
+
+    const cause = String(new Redactor().error(original, "boxd").cause);
+    const fields: unknown = JSON.parse(cause);
+
+    expect(cause.length).toBeLessThanOrEqual(1000);
+    expect(fields).toMatchObject({ operation: "machines.resume", providerCode: 9 });
+    expect(cause).not.toMatch(/abc123|zzz9/);
+  });
+
+  test("a cause that is not flat evidence is scrubbed as text, as before", () => {
+    const original = new SandboxError("failed", {
+      code: "provider",
+      cause: new Error('{"body":{"token":"abc123"}}'),
+    });
+
+    const cause = String(new Redactor().error(original, "stub").cause);
+
+    expect(cause).not.toContain("abc123");
+  });
 });
