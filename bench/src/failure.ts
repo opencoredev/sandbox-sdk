@@ -14,6 +14,16 @@ const causeSchema = z.object({
   cleanupOutcome: cleanupSchema.optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   providerCode: z.string().optional(),
+  /** The provider's name for `providerCode`, such as gRPC `FAILED_PRECONDITION`. */
+  providerStatus: z.string().optional(),
+  /** A machine-readable reason the provider attached, such as boxd's `x-boxd-error-reason`. */
+  providerReason: z.string().optional(),
+  /** The provider's own text for a failed control-plane call, already redacted by the adapter. */
+  providerMessage: z.string().optional(),
+  /** The native SDK error class, from the adapter's allowlist. */
+  nativeName: z.string().optional(),
+  /** The machine a failed call touched. Evidence only: never an ownership claim, unlike `sandboxId`. */
+  machineId: z.string().optional(),
   requestId: z.string().optional(),
   operation: z.string().optional(),
   stage: z.string().optional(),
@@ -62,6 +72,11 @@ const metadataSchema = z.object({
   providerCode: nativeCode.optional().catch(undefined),
   provider_code: nativeCode.optional().catch(undefined),
   code: nativeCode.optional().catch(undefined),
+  providerStatus: z.string().optional().catch(undefined),
+  providerReason: z.string().optional().catch(undefined),
+  providerMessage: z.string().optional().catch(undefined),
+  nativeName: z.string().optional().catch(undefined),
+  machineId: z.string().optional().catch(undefined),
   requestId: z.string().optional().catch(undefined),
   request_id: z.string().optional().catch(undefined),
   operation: z.string().optional().catch(undefined),
@@ -153,6 +168,19 @@ export function failureOutcome(cause: unknown, sanitize: (text: string) => strin
     const requestId = v.requestId ?? v.request_id;
 
     if (providerCode) evidence.providerCode = sanitize(providerCode).slice(0, 200);
+
+    // Diagnostics for the provider's support team; recorded, never used to decide what counts.
+    for (const key of [
+      "providerStatus",
+      "providerReason",
+      "providerMessage",
+      "nativeName",
+      "machineId",
+    ] as const) {
+      const value = v[key];
+
+      if (value) evidence[key] = sanitize(value).slice(0, key === "providerMessage" ? 500 : 200);
+    }
 
     if (requestId) evidence.requestId = sanitize(requestId).slice(0, 200);
 

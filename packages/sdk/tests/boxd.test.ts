@@ -3,7 +3,8 @@ import { ExecStream } from "@boxd-sh/sdk";
 import { boxd as mockBoxd, boxdState, MockBoxd } from "./cloud-guest-mock.js";
 import { isString } from "../src/shared/narrow.js";
 import type { BoxdClient, BoxdOptions, BoxdTransfers } from "../src/providers/boxd/provider.js";
-import { boxdError } from "../src/providers/boxd/errors.js";
+import { boxdError, type BoxdEvidence } from "../src/providers/boxd/errors.js";
+import { SandboxError } from "../src/errors.js";
 import { createSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 
@@ -55,6 +56,26 @@ function boxd(options: BoxdOptions) {
 }
 
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
+
+/** The evidence fields a boxd SandboxError carries in its cause. */
+function evidence(error: SandboxError): BoxdEvidence {
+  if (!(error.cause instanceof Error)) throw new Error("expected an evidence cause");
+  const fields: BoxdEvidence = JSON.parse(error.cause.message);
+
+  return fields;
+}
+
+const statusName = (code: number) =>
+  ({
+    1: "CANCELLED",
+    3: "INVALID_ARGUMENT",
+    4: "DEADLINE_EXCEEDED",
+    5: "NOT_FOUND",
+    7: "PERMISSION_DENIED",
+    8: "RESOURCE_EXHAUSTED",
+    14: "UNAVAILABLE",
+    16: "UNAUTHENTICATED",
+  })[code];
 
 const factory = () => boxd({ apiKey: "mock-key" });
 
@@ -126,8 +147,12 @@ describe("boxd contract", () => {
     ] as const) {
       const error = boxdError(Object.assign(new Error("secret-native-error"), { grpcCode }));
       expect(error.code).toBe(code);
-      expect(error.cause).toBe(`Error gRPC ${grpcCode}`);
+      expect(evidence(error)).toEqual({
+        providerCode: grpcCode,
+        providerStatus: statusName(grpcCode),
+      });
       expect(String(error)).not.toContain("secret-native-error");
+      expect(String(error.cause)).not.toContain("secret-native-error");
     }
   });
   test("maps SDK failures without a gRPC status", () => {
@@ -137,10 +162,10 @@ describe("boxd contract", () => {
       ["APIConnectionError", "unavailable"],
       ["RateLimitError", "quota"],
     ] as const) {
-      // A recognized error keeps only its name as cause.
+      // A recognized error keeps only its name as evidence.
       const result = boxdError(Object.assign(new Error("private-key"), { name }));
       expect(result.code).toBe(code);
-      expect(result.cause).toBe(name);
+      expect(evidence(result)).toEqual({ nativeName: name });
     }
   });
   test("secrets use native stdin and never command text", async () => {
@@ -207,7 +232,7 @@ test("plain BoxdError local exec deadline maps to timeout without native details
   );
 
   expect(result.code).toBe("timeout");
-  expect(result.cause).toBe("BoxdError");
+  expect(evidence(result)).toEqual({ nativeName: "BoxdError" });
   expect(String(result)).not.toContain("10ms");
   expect(boxdError(Object.assign(new Error("unrelated failure"), { name: "BoxdError" })).code).toBe(
     "provider",
@@ -358,7 +383,7 @@ test("permission failures give a fixed safe category without native details", ()
   expect(result.message).toContain("permission denied");
   expect(result.message).not.toContain("private-key");
   expect(result.message).not.toContain("/secret/path");
-  expect(result.cause).toBe("Error gRPC 13");
+  expect(evidence(result)).toEqual({ providerCode: 13, providerStatus: "INTERNAL" });
 });
 
 test("a delayed native launch cannot run after cancellation was confirmed", async () => {
@@ -1063,4 +1088,154 @@ test("a create whose allow-list fails drops the machine locally even when its de
 
     if (failed) await provider.destroy(failed);
   }
+});
+
+describe("boxd failure evidence", () => {
+  test("a control-plane call keeps boxd's status, message, reason and request ID, with the API key redacted", () => {
+    vi.stubEnv("BOXD_API_KEY", "bxd-secret-key-123");
+
+    try {
+      const native = Object.assign(
+        new Error("machine 0a1b is not suspended (key bxd-secret-key-123)"),
+        {
+          name: "ConflictError",
+          grpcCode: 9,
+          reason: "machine_not_suspended",
+          metadata: new Headers({ "x-request-id": "req-42" }),
+        },
+      );
+
+      const error = boxdError(native, { call: "machines.resume", sandboxId: "0a1b" });
+
+      expect(error.code).toBe("invalid_argument");
+      expect(error.sandboxId).toBe("0a1b");
+      expect(error.message).not.toContain("not suspended");
+      expect(evidence(error)).toEqual({
+        operation: "machines.resume",
+        machineId: "0a1b",
+        providerCode: 9,
+        providerStatus: "FAILED_PRECONDITION",
+        nativeName: "ConflictError",
+        providerReason: "machine_not_suspended",
+        requestId: "req-42",
+        providerMessage: "machine 0a1b is not suspended (key [REDACTED])",
+      });
+      expect(String(error.cause)).not.toContain("bxd-secret-key-123");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test("a guest call never keeps boxd's text, which can echo user paths", () => {
+    const error = boxdError(
+      Object.assign(new Error("read /workspace/private.txt: input/output error"), {
+        name: "APIStatusError",
+        grpcCode: 13,
+      }),
+      { sandboxId: "box" },
+    );
+
+    expect(evidence(error)).toEqual({
+      providerCode: 13,
+      providerStatus: "INTERNAL",
+      nativeName: "APIStatusError",
+    });
+  });
+
+  test("request IDs and reasons that are not opaque tokens are dropped", () => {
+    const error = boxdError(
+      Object.assign(new Error("rejected"), {
+        grpcCode: 3,
+        reason: "has spaces /and/paths",
+        requestId: "x".repeat(200),
+      }),
+      { call: "machines.pause", sandboxId: "box" },
+    );
+
+    expect(evidence(error)).toEqual({
+      operation: "machines.pause",
+      machineId: "box",
+      providerCode: 3,
+      providerStatus: "INVALID_ARGUMENT",
+      providerMessage: "rejected",
+    });
+  });
+
+  test("a rejected resume names the call and machine, and keeps the same code", async () => {
+    const box = await createSandbox(factory());
+    const machines = box.native.client.machines;
+
+    const resume = vi.spyOn(machines, "resume").mockRejectedValueOnce(
+      Object.assign(new Error("machine is still suspending"), {
+        name: "ConflictError",
+        grpcCode: 9,
+      }),
+    );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      expect(error).toMatchObject({ code: "invalid_argument", sandboxId: box.id });
+      // The core keeps the evidence as text in the cause.
+      expect(error instanceof SandboxError ? JSON.parse(String(error.cause)) : null).toMatchObject({
+        operation: "machines.resume",
+        machineId: box.id,
+        providerCode: 9,
+        providerStatus: "FAILED_PRECONDITION",
+        nativeName: "ConflictError",
+        providerMessage: "machine is still suspending",
+      });
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
+  test("a machine that fails while starting is named in evidence, never as the create's sandbox", async () => {
+    const provider = factory();
+    const first = await createSandbox(provider);
+    const machines = first.native.client.machines;
+    const create = machines.create.bind(machines);
+    let failed = "";
+
+    const allocation = vi.spyOn(machines, "create").mockImplementationOnce(async (input) => {
+      const m = await create(input);
+      failed = m.id;
+
+      return { ...m, status: "pending" };
+    });
+
+    const wait = vi.spyOn(machines, "waitUntilReady").mockImplementationOnce(async (id) =>
+      Promise.reject(
+        Object.assign(new Error(`machine ${id} entered terminal state 'failed' while waiting`), {
+          name: "BoxdError",
+        }),
+      ),
+    );
+
+    try {
+      const error = await createSandbox(provider).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      expect(error).toBeInstanceOf(SandboxError);
+      expect(error instanceof SandboxError ? error.sandboxId : "set").toBeUndefined();
+      expect(error instanceof SandboxError ? JSON.parse(String(error.cause)) : null).toMatchObject({
+        operation: "machines.waitUntilReady",
+        machineId: failed,
+        nativeName: "BoxdError",
+        providerMessage: `machine ${failed} entered terminal state 'failed' while waiting`,
+      });
+    } finally {
+      allocation.mockRestore();
+      wait.mockRestore();
+      await first.destroy();
+    }
+  });
 });

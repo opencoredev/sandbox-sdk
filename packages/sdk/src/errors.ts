@@ -283,8 +283,9 @@ export function describeNative(
 
 /**
  * @internal Bounded machine fields an adapter copies from a native failure, each already checked
- * against an allowlist and the secrets it knows. Never a response's message, body, headers or URL;
- * `native` is at most the scrubbed text {@link describeNative} keeps.
+ * against an allowlist and the secrets it knows. Never a response's body, headers or URL, and a
+ * response's message only as `providerMessage`; `native` is at most the scrubbed text
+ * {@link describeNative} keeps.
  */
 export interface NativeEvidence {
   operation?: string;
@@ -294,6 +295,15 @@ export interface NativeEvidence {
   source?: string;
   nativeName?: string;
   native?: string;
+  /** The provider's name for `providerCode`, such as gRPC `FAILED_PRECONDITION`. */
+  providerStatus?: string;
+  /** A machine-readable reason the provider attached, such as boxd's `x-boxd-error-reason` trailer. */
+  providerReason?: string;
+  /**
+   * The provider's own text for a failed control-plane call (create, pause, resume, snapshot), redacted,
+   * scrubbed and bounded. Never kept for guest file or command calls, whose text can echo user paths.
+   */
+  providerMessage?: string;
   /** Luxor create: the session this call created, and how far it got. */
   admittedByThisCall?: true;
   stage?: string;

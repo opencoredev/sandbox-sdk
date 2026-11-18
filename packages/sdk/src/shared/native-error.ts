@@ -32,6 +32,8 @@ export interface NativeError {
   path?: string;
   /** A `requestId` field. */
   requestId?: string;
+  /** A string `reason` field: a machine-readable failure reason, such as boxd's `x-boxd-error-reason` trailer. */
+  reason?: string;
   /** The sandbox a failed Daytona create names. */
   sandboxId?: string;
   /** String values of a `headers` field: a fetch `Headers` or a plain object. */
@@ -81,6 +83,8 @@ export function decodeNative(cause: unknown): NativeError {
   if ("path" in cause && isString(cause.path)) error.path = cause.path;
 
   if ("requestId" in cause && isString(cause.requestId)) error.requestId = cause.requestId;
+
+  if ("reason" in cause && isString(cause.reason)) error.reason = cause.reason;
 
   if ("sandboxId" in cause && isString(cause.sandboxId)) error.sandboxId = cause.sandboxId;
 

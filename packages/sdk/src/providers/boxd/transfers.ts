@@ -143,7 +143,7 @@ export class FileTransfers {
               grpcCode:
                 "grpcCode" in error && isNumber(error.grpcCode) ? error.grpcCode : undefined,
             }),
-            pending.machine,
+            { sandboxId: pending.machine },
           ),
         );
       } else pending.reject(failure("Invalid file transfer response", "provider", pending.machine));
@@ -283,7 +283,7 @@ export class FileTransfers {
     try {
       return await Promise.race([
         native.catch((cause: unknown) => {
-          throw boxdError(cause, input.machine);
+          throw boxdError(cause, { sandboxId: input.machine });
         }),
         stopped,
       ]);

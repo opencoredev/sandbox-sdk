@@ -1,3 +1,4 @@
+import { SandboxError } from "../src/errors.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Worker } from "node:worker_threads";
 import { afterEach, expect, test, vi } from "vitest";
@@ -317,8 +318,14 @@ for (const kind of ["upload", "download"] as const) {
         : client.download("machine-id", "/file");
 
     await expect(pending).rejects.toMatchObject({ code: "not_found", sandboxId: "machine-id" });
-    // The worker sends only the error name and gRPC code, so the cause holds nothing else.
-    await expect(pending).rejects.toHaveProperty("cause", expect.stringMatching(/^\w+ gRPC \d+$/));
+    // The worker sends only the error name and gRPC code, so the evidence holds nothing else.
+    const error = await pending.catch((cause: unknown) => cause);
+    const cause = error instanceof SandboxError ? error.cause : undefined;
+    expect(cause instanceof Error ? JSON.parse(cause.message) : cause).toEqual({
+      providerCode: 5,
+      providerStatus: "NOT_FOUND",
+      nativeName: "NotFoundError",
+    });
   });
 }
 
