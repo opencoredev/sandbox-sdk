@@ -170,7 +170,7 @@
     },
     "packages/sdk": {
       "name": "@opencoredev/sandbox-sdk",
-      "version": "1.0.3",
+      "version": "1.1.0",
       "devDependencies": {
         "@basetenlabs/sandbox": "0.5.0",
         "@boatdev/sdk": "1.9.9",
