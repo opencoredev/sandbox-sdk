@@ -71,16 +71,15 @@ test("boxd and Freestyle tell a missing guest path from a missing sandbox", () =
       name: "NotFoundError",
       grpcCode: 5,
     }),
-    "box",
+    { sandboxId: "box" },
   );
 
   expect(boxdFile).toMatchObject({ code: "file_not_found", sandboxId: "box" });
   expect(`${boxdFile.message} ${String(boxdFile.cause)}`).not.toContain("private");
   expect(
-    boxdError(
-      Object.assign(new Error("VM not found"), { name: "NotFoundError", grpcCode: 5 }),
-      "box",
-    ).code,
+    boxdError(Object.assign(new Error("VM not found"), { name: "NotFoundError", grpcCode: 5 }), {
+      sandboxId: "box",
+    }).code,
   ).toBe("not_found");
 
   const freestyleFile = freestyleError(

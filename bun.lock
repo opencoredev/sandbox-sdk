@@ -99,7 +99,7 @@
       "devDependencies": {
         "@basetenlabs/sandbox": "0.5.0",
         "@boatdev/sdk": "1.9.9",
-        "@boxd-sh/sdk": "0.2.17",
+        "@boxd-sh/sdk": "0.3.2",
         "@daytonaio/sdk": "^0.225.0",
         "@insforge/instabox-sdk": "0.9.0",
         "@superserve/sdk": "0.11.4",
@@ -174,7 +174,7 @@
       "devDependencies": {
         "@basetenlabs/sandbox": "0.5.0",
         "@boatdev/sdk": "1.9.9",
-        "@boxd-sh/sdk": "0.2.17",
+        "@boxd-sh/sdk": "0.3.2",
         "@daytonaio/sdk": "^0.225.0",
         "@insforge/instabox-sdk": "0.9.0",
         "@mastra/core": "^1.78.0",
@@ -195,7 +195,7 @@
       },
       "peerDependencies": {
         "@basetenlabs/sandbox": "^0.5.0",
-        "@boxd-sh/sdk": "^0.2.17",
+        "@boxd-sh/sdk": ">=0.2.17 <0.4.0",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
@@ -434,7 +434,7 @@
 
     "@boatdev/sdk": ["@boatdev/sdk@1.9.9", "", {}, "sha512-VsemzYh6sfLA+XFH5To22rGfwL+rXVy6TlXZ0Zi2bAheh6Iw8c1vdNWdmQxOHV/lSd5eVia3iDx+Cve4Lmlf6Q=="],
 
-    "@boxd-sh/sdk": ["@boxd-sh/sdk@0.2.17", "", { "dependencies": { "@bufbuild/protobuf": "^2.10.2", "@grpc/grpc-js": "^1.12.0" } }, "sha512-Ap9DSCvkCgw9P/+7NOdaauLBO7V5Gbr91XnW+u3bQW4w37MLqeAmZFvIJ/EnAd94xDZjX2bqPnWoTRBNXhJlQw=="],
+    "@boxd-sh/sdk": ["@boxd-sh/sdk@0.3.2", "", { "dependencies": { "@bufbuild/protobuf": "^2.10.2", "@grpc/grpc-js": "^1.12.0" } }, "sha512-aUhnhF3nN/0iqP82hclSLH0YWbG6A4vB7iBWR94lMaQfQkMHjT0YX+RYcNY8QAO3y9iZniYDJCC3+zqQLgGcrA=="],
 
     "@braintree/sanitize-url": ["@braintree/sanitize-url@7.1.2", "", {}, "sha512-jigsZK+sMF/cuiB7sERuo9V7N9jx+dhmHHnQyDSVdpZwVutaBu7WvNYqMDLSgFgfB30n452TP3vjDAvFC973mA=="],
 

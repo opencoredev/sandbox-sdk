@@ -42,6 +42,8 @@ const workerSource = `import("node:worker_threads").then(async ({ parentPort, wo
       parentPort.postMessage({ requestId: request.requestId, error: {
         name: error instanceof Error ? error.name : "Error",
         grpcCode: typeof error === "object" && error !== null && typeof error.grpcCode === "number" ? error.grpcCode : undefined,
+        // boxd's machine-readable reason (0.3.x): an opaque token, never free text.
+        reason: typeof error === "object" && error !== null && typeof error.reason === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(error.reason) ? error.reason : undefined,
         permissionDenied: /permission denied/i.test(message),
         missingFile: /\\bno such file\\b/i.test(message),
       } });
@@ -142,8 +144,10 @@ export class FileTransfers {
               name: "name" in error && isString(error.name) ? error.name : "Error",
               grpcCode:
                 "grpcCode" in error && isNumber(error.grpcCode) ? error.grpcCode : undefined,
+              reason: "reason" in error && isString(error.reason) ? error.reason : undefined,
             }),
-            pending.machine,
+            { sandboxId: pending.machine },
+            [this.options.apiKey],
           ),
         );
       } else pending.reject(failure("Invalid file transfer response", "provider", pending.machine));
@@ -283,7 +287,7 @@ export class FileTransfers {
     try {
       return await Promise.race([
         native.catch((cause: unknown) => {
-          throw boxdError(cause, input.machine);
+          throw boxdError(cause, { sandboxId: input.machine }, [this.options.apiKey]);
         }),
         stopped,
       ]);
