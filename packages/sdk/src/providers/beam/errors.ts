@@ -80,7 +80,9 @@ export function maybeSent(cause: unknown) {
   if (cause instanceof BeamGatewayError && cause.kind === "malformed") return true;
 
   // beam-js's message when the allocation answer had no `ok` it could read (a body it could not
-  // parse arrives as text); a refusal carries Beam's own errorMsg instead.
+  // parse arrives as text). Beam's refusals carry their own errorMsg; one that came with an empty
+  // errorMsg throws the same message and is reported as unknown too. beam-js keeps the answer to
+  // itself, so the two can't be told apart here, and unknown is the side that never loses a sandbox.
   if (cause instanceof Error && cause.message === "Failed to create sandbox") return true;
 
   const status = httpStatus(cause);
