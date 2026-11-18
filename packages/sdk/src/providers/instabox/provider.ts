@@ -331,7 +331,19 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
       }
 
       if (response.ok) return response;
-      const text = await response.text();
+      let text = "";
+
+      try {
+        text = await response.text();
+      } catch (error) {
+        // The request reached Instabox; a write whose error answer broke off may still have run.
+        if (write && response.status >= 500)
+          throw fail(`${input.operation}: the error answer broke off`, "outcome_unknown", {
+            sandboxId: input.sandboxId,
+            cause: describeNative(error, { code: "outcome_unknown", known: true }).cause,
+          });
+      }
+
       let parsed: JsonValue | undefined;
 
       try {
@@ -851,9 +863,21 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
           ? AbortSignal.any([input.signal, deadline.signal])
           : deadline.signal;
 
+        // The command deletes the file once it reads it. When it may not have run, delete it
+        // here, on its own short deadline, since the caller's signal may already be aborted.
+        const discard = () =>
+          stream(
+            id,
+            { argv: ["rm", "-f", "--", staged] },
+            { timeoutMs: 10_000, onChunk: () => undefined },
+          ).catch(() => undefined);
+
         try {
           await upload(id, staged, bytes, { signal, timeoutMs: input.timeoutMs });
         } catch (error) {
+          // A PUT can land after its answer is lost or the caller gave up.
+          await discard();
+
           if (signal.aborted) return { exitCode: null, timedOut: true };
           throw error;
         } finally {
@@ -861,12 +885,23 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         }
 
         const cmd = `exec < ${quote(staged)}; rm -f ${quote(staged)}; ${input.command}`;
+        let result: ExecResult;
 
-        return stream(
-          id,
-          { ...body, cmd },
-          { ...input, timeoutMs: Math.max(1, input.timeoutMs - (Date.now() - started)) },
-        );
+        try {
+          result = await stream(
+            id,
+            { ...body, cmd },
+            { ...input, timeoutMs: Math.max(1, input.timeoutMs - (Date.now() - started)) },
+          );
+        } catch (error) {
+          await discard();
+          throw error;
+        }
+
+        // No exit code means the command may never have started; removing the file is harmless if it did.
+        if (result.exitCode === null) await discard();
+
+        return result;
       }
 
       return stream(id, body, input);

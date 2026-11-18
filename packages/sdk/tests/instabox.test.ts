@@ -387,7 +387,47 @@ describe("instabox exec", () => {
 
     expect(result).toEqual({ exitCode: null, timedOut: true });
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(server.calls("POST /v1/machines/{id}/exec")).toHaveLength(0);
+    // Only the cleanup ran: the PUT may have landed, so the staged file is removed.
+    const execs = server.calls("POST /v1/machines/{id}/exec");
+    expect(execs).toHaveLength(1);
+    expect(JSON.parse(execs[0]!.body.toString()).argv).toEqual([
+      "rm",
+      "-f",
+      "--",
+      expect.stringMatching(/^\/tmp\/\.sandbox-sdk\/stdin-/),
+    ]);
+  });
+
+  test("a staged stdin file is removed when the command can't start", async () => {
+    server
+      .on("PUT /v1/machines/{id}/files", { status: 204 })
+      .on(
+        "POST /v1/machines/{id}/exec",
+        { status: 400, json: { error: { code: "invalid_request", message: "bad" } } },
+        { stream: sse(["exit", { exitCode: 0 }]) },
+      );
+
+    await rejection(
+      provider().exec("m_abc123", {
+        command: "wc -c",
+        cwd: "/workspace",
+        env: {},
+        stdin: "x".repeat(1024 * 1024 + 1),
+        timeoutMs: 10_000,
+        onChunk: () => undefined,
+      }),
+    );
+
+    const execs = server.calls("POST /v1/machines/{id}/exec");
+    expect(execs).toHaveLength(2);
+    expect(JSON.parse(execs[1]!.body.toString()).argv?.slice(0, 3)).toEqual(["rm", "-f", "--"]);
+  });
+
+  test("a create whose 5xx error answer breaks off is outcome_unknown", async () => {
+    server.on("POST /v1/machines", { status: 500, stream: ['{"error":'], cut: true });
+
+    const error = await rejection(provider().create({ labels: {}, timeoutMs: 60_000 }));
+    expect(error.code).toBe("outcome_unknown");
   });
 
   test("a large stdin upload stops when the caller aborts", async () => {
@@ -406,7 +446,10 @@ describe("instabox exec", () => {
     });
 
     expect(result).toEqual({ exitCode: null, timedOut: true });
-    expect(server.calls("POST /v1/machines/{id}/exec")).toHaveLength(0);
+    // Only the cleanup ran.
+    const execs = server.calls("POST /v1/machines/{id}/exec");
+    expect(execs).toHaveLength(1);
+    expect(JSON.parse(execs[0]!.body.toString()).argv?.slice(0, 3)).toEqual(["rm", "-f", "--"]);
   });
 
   test("a large stdin is staged, then the command reads it within the remaining deadline", async () => {
