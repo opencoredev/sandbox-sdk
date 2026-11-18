@@ -157,7 +157,52 @@ describe("instabox create", () => {
   });
 });
 
+describe("instabox create review cases", () => {
+  test("an abort during admission still learns the ID and deletes the machine", async () => {
+    const controller = new AbortController();
+
+    server
+      .on("POST /v1/machines", (_request, response) => {
+        controller.abort();
+        setTimeout(() => {
+          response.writeHead(202, { "content-type": "application/json" });
+          response.end(JSON.stringify(op("succeeded")));
+        }, 50);
+      })
+      .on("DELETE /v1/machines/{id}", { status: 202, json: op("succeeded") });
+
+    const error = await rejection(provider().create({ labels: {}, signal: controller.signal }));
+
+    expect(error.code).toBe("aborted");
+    expect(server.calls("DELETE /v1/machines/{id}")).toHaveLength(1);
+    expect(evidence(error)).toMatchObject({ admittedByThisCall: true, sandboxId: "m_abc123" });
+  });
+
+  test("a create from a snapshot sends no size, so it keeps its source's", async () => {
+    server
+      .on("POST /v1/machines", { status: 202, json: op("succeeded") })
+      .on("POST /v1/machines/{id}/exec", { stream: sse(["exit", { exitCode: 0 }]) })
+      .on("GET /v1/machines/{id}", { json: machine() });
+
+    await provider().create({ labels: {}, from: "sn_source" });
+    const body = JSON.parse(server.calls("POST /v1/machines")[0]!.body.toString());
+
+    expect(body.snapshotId).toBe("sn_source");
+    expect(body.vcpus).toBeUndefined();
+    expect(body.memMiB).toBeUndefined();
+  });
+});
+
 describe("instabox errors", () => {
+  test("an invalid JSON answer never quotes the body", async () => {
+    server.on("GET /v1/machines/{id}", { body: "not json ibk_secret_echo" });
+
+    const error = await rejection(provider().connect("m_abc123"));
+
+    expect(error.message).not.toContain("ibk_secret_echo");
+    expect(String(error.cause ?? "")).not.toContain("ibk_secret_echo");
+  });
+
   test("keep Instabox's code and status, never its message", async () => {
     server.on("GET /v1/machines/{id}", {
       status: 404,
@@ -260,6 +305,24 @@ describe("instabox exec", () => {
 
     expect(error.code).toBe("quota");
     expect(error.message).not.toContain("/x");
+  });
+
+  test("an error event in the usual envelope keeps its code", async () => {
+    server.on("POST /v1/machines/{id}/exec", {
+      stream: sse(["error", { error: { code: "host_unavailable", message: "h-3 down" } }]),
+    });
+
+    const error = await rejection(
+      provider().exec("m_abc123", {
+        command: "true",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5_000,
+        onChunk: () => undefined,
+      }),
+    );
+
+    expect(error.code).toBe("unavailable");
   });
 });
 

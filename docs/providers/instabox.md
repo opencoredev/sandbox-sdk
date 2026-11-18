@@ -2,7 +2,9 @@
 
 Import `instabox` from `@opencoredev/sandbox-sdk/instabox`. The adapter calls
 Instabox's REST API (`https://api.instabox.sh`, or `INSTABOX_API_URL`) with
-`fetch`; there is no peer package. `box.native` is `{ machineId, request }`,
+`fetch`; there is no peer package. Create's admission request ignores the
+caller's `signal`, so an abort can't strand a machine whose ID never arrived;
+an abort that lands after admission deletes the machine and fails `aborted`. `box.native` is `{ machineId, request }`,
 where `request({ method, path, body })` calls the API with the adapter's key.
 
 ```ts
@@ -46,9 +48,9 @@ by the key label, so two concurrent creates with one key can both succeed.
 Presets: `small` is 2 vCPU / 4096 MiB, `medium` 4 / 8192, `large` 8 / 16384.
 An exact size must be one the plan offers; Instabox refuses others with
 `spec_not_allowed` (`unsupported`). `diskGb` fails with `unsupported`: the disk
-comes with the size. A machine created from a snapshot without a size gets
-`medium`, because Instabox otherwise uses the plan default rather than the
-source's size.
+comes with the size. A machine created from a snapshot sends no size: Instabox
+gives it the size of the machine the snapshot was saved from, and refuses any
+other with `spec_not_allowed`.
 
 Commands go to `POST /v1/machines/{id}/exec` with `Accept: text/event-stream`
 and stream `stdout`, `stderr`, `exit` and `error` events. The server limit is
@@ -65,4 +67,4 @@ publishes the port (public, 1024 and up) and caches the URL per machine.
 
 Errors keep only the HTTP status, Instabox's error code (snake_case, up to 48
 characters) and request ID, as evidence on the cause; Instabox's messages are
-never kept.
+never kept, and an answer that isn't valid JSON fails without quoting it.

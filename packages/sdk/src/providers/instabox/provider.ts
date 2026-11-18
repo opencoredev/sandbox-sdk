@@ -327,7 +327,16 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
     try {
       const response = await send(input);
       const text = await response.text();
-      const value: JsonValue | undefined = text ? JSON.parse(text) : undefined;
+      let value: JsonValue | undefined;
+
+      try {
+        value = text ? JSON.parse(text) : undefined;
+      } catch {
+        // The parser's message quotes the body, which can echo request data: never keep it.
+        throw fail(`${input.operation} returned invalid JSON`, "provider", {
+          sandboxId: input.sandboxId,
+        });
+      }
 
       return value;
     } catch (error) {
@@ -642,8 +651,8 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         throw fail("at most 32 labels (one is used for the key)", "unsupported");
       const fromSnapshot = input.from?.startsWith("sn_") ? input.from : undefined;
       const template = fromSnapshot ? undefined : (input.from ?? options.template);
-      // Without a size, a snapshot takes the plan's default size, not its source's.
-      const size = sizeOf(input.size ?? (fromSnapshot ? "medium" : undefined));
+      // Without a size, a snapshot gets the size of the machine it was saved from.
+      const size = sizeOf(input.size);
 
       const body: CreateBody = {
         name: `sbx-${randomUUID().slice(0, 13).replace("-", "")}`,
@@ -659,6 +668,8 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
 
       if (input.timeoutMs !== undefined) body.deleteAfterSeconds = lifetimeSeconds(input.timeoutMs);
 
+      // The admission request ignores the caller's signal: aborting it mid-flight could leave a
+      // machine whose ID never arrived. An abort is honoured once the ID is known, by deleting it.
       const op = parseOperation(
         await json({
           method: "POST",
@@ -666,15 +677,19 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
           operation: "create",
           body,
           idempotent: true,
-          signal: input.signal,
         }),
       );
 
       const id = op.machineId;
       let stage: CreateStage = "operation";
+      const aborted = () => fail("create aborted", "aborted", { sandboxId: id });
+
+      if (input.signal?.aborted) return abandon(id, stage, aborted());
 
       try {
         await settle(op, id);
+
+        if (input.signal?.aborted) throw aborted();
         stage = "prepare";
         await guest(id, ["bash", "-c", setupCommand]);
         stage = "read";

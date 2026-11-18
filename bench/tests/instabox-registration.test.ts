@@ -61,7 +61,7 @@ describe("Instabox bench registration", () => {
 
 describe("Instabox billing", () => {
   it("prices vCPU-seconds and GiB-seconds at the published rates", () => {
-    const cost = decodeInstabox(usage, true);
+    const cost = decodeInstabox(usage, { deleted: true, started: true });
     const rate = pricing.instabox!;
 
     expect(cost).toMatchObject({ kind: "metered", scope: "sandbox-lifetime", complete: true });
@@ -69,7 +69,16 @@ describe("Instabox billing", () => {
       400 * rate.cpuSecond + 800 * rate.memoryGiBSecond,
       12,
     );
-    expect(decodeInstabox(usage, false)).toMatchObject({ complete: false, confidence: "low" });
+    expect(decodeInstabox(usage, { deleted: false, started: true })).toMatchObject({
+      scope: "window",
+      complete: false,
+      confidence: "low",
+    });
+    // A start that is unknown (journal-only) leaves the default month window: never final.
+    expect(decodeInstabox(usage, { deleted: true, started: false })).toMatchObject({
+      scope: "window",
+      complete: false,
+    });
   });
 
   it("asks for a window from a day before the first sample to now", () => {
@@ -120,6 +129,8 @@ describe("Instabox billing", () => {
       ["m_gone", true],
       ["m_live", false],
     ]);
-    expect(urls[0]).toMatch(/^https:\/\/api\.instabox\.sh\/v1\/machines\/m_gone\/usage\?to=/);
+    // Deletion is checked before the usage is read.
+    expect(urls[0]).toBe("https://api.instabox.sh/v1/machines/m_gone");
+    expect(urls[1]).toMatch(/^https:\/\/api\.instabox\.sh\/v1\/machines\/m_gone\/usage\?to=/);
   });
 });

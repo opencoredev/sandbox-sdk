@@ -119,9 +119,10 @@ export function instaboxError(cause: unknown, operation: string, sandboxId?: str
     });
   }
 
-  const kept = describeNative(cause, { code: "provider" });
+  // Only the error's name: a native message can quote a response body.
+  const kept = describeNative(cause, { code: "provider", known: true });
 
-  return new SandboxError(`Instabox ${operation} failed: ${reason("provider", kept.detail)}`, {
+  return new SandboxError(`Instabox ${operation} failed: ${reason("provider")}`, {
     code: "provider",
     provider,
     sandboxId,

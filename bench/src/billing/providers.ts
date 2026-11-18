@@ -267,21 +267,26 @@ const instaboxUsageSchema = z.object({
 
 /**
  * One machine's usage from `GET /v1/machines/{id}/usage` at the published CPU and memory rates.
- * `deleted` (its GET answered 404) makes the meter final.
+ * It covers the machine's whole life only when the window starts before the machine did
+ * (`started`: its first sample's start is known) and the machine was already deleted when the
+ * usage was read; otherwise it is a window amount and never final.
  */
-export function decodeInstabox(raw: Json, deleted: boolean): Cost {
+export function decodeInstabox(raw: Json, state: { deleted: boolean; started: boolean }): Cost {
   const usage = instaboxUsageSchema.parse(raw);
   const rate = pricing.instabox;
 
   if (!rate) throw new Error("No Instabox price");
+  const lifetime = state.deleted && state.started;
 
   return {
     kind: "metered",
     usd: usage.vcpuSeconds * rate.cpuSecond + usage.memGiBSeconds * rate.memoryGiBSecond,
-    scope: "sandbox-lifetime",
-    complete: deleted,
-    confidence: deleted ? "medium" : "low",
-    note: `Metered, not invoice: Instabox's per-machine usage (${usage.runningSeconds} running seconds) at published CPU and memory rates; disk included in the plan`,
+    scope: lifetime ? "sandbox-lifetime" : "window",
+    complete: lifetime,
+    confidence: lifetime ? "medium" : "low",
+    note: lifetime
+      ? `Metered, not invoice: Instabox's per-machine usage (${usage.runningSeconds} running seconds) at published CPU and memory rates; disk included in the plan`
+      : `Partial: Instabox's usage over ${usage.from} to ${usage.to} only, because ${state.started ? "the machine still existed" : "its start is unknown"}`,
   };
 }
 
@@ -1146,12 +1151,7 @@ export async function collectProvider(
         const headers = { "X-API-Key": key ?? "" };
         const base = env.INSTABOX_API_URL ?? "https://api.instabox.sh";
 
-        const usage = await transport(
-          `${base}/v1/machines/${id}/usage?${instaboxUsageQuery(row, extra.now)}`,
-          headers,
-        );
-
-        // A deleted machine answers 404 and its usage is final; any other answer leaves it open.
+        // Deletion first: a machine already gone (404) when its usage is read has a final meter.
         const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(
           () => false,
           (cause: unknown) => {
@@ -1160,7 +1160,12 @@ export async function collectProvider(
           },
         );
 
-        cost = decodeInstabox(usage, deleted);
+        const usage = await transport(
+          `${base}/v1/machines/${id}/usage?${instaboxUsageQuery(row, extra.now)}`,
+          headers,
+        );
+
+        cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });

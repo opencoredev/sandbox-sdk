@@ -114,7 +114,7 @@ Anyone with the URL can open it. While the machine is paused, the URL answers 50
 
 `box.pause()` suspends the machine with its memory, so running processes continue after `box.resume()`. A paused machine bills only its disk. `resume()` also starts a machine that Instabox stopped.
 
-`box.snapshot()` saves the machine's disks and returns a snapshot ID (`sn_...`). Pass it as `from` to create a new machine from it. Without a `size`, the new machine gets 4 vCPU / 8 GiB rather than the size of the machine it was saved from. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
+`box.snapshot()` saves the machine's disks and returns a snapshot ID (`sn_...`). Pass it as `from` to create a new machine from it. The new machine gets the size of the machine the snapshot was saved from, and another `size` fails with `unsupported`. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
 
 ## Size, template, and lifetime
 

@@ -143,10 +143,10 @@ export function parseExecEvent(event: string, data: string): ExecEvent | undefin
     }
 
     case "error":
-      // The event is the error object itself, or wrapped in the usual envelope.
+      // The usual envelope first, then a bare error object.
       return {
         kind: "error",
-        code: (parseErrorBody({ error: value }) ?? parseErrorBody(value))?.code ?? "unknown",
+        code: (parseErrorBody(value) ?? parseErrorBody({ error: value }))?.code ?? "unknown",
       };
     default:
       return undefined;
