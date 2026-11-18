@@ -1,5 +1,5 @@
 import { loadPeer } from "../../peer.js";
-import { failure } from "./errors.js";
+import { cachedAuthorization, failure } from "./errors.js";
 import {
   createBeamProvider,
   type BeamModule,
@@ -20,11 +20,29 @@ let configured: string | undefined;
 async function load(): Promise<BeamModule> {
   const m = await loadPeer("@beamcloud/beam-js", "beam", () => import("@beamcloud/beam-js"));
 
+  // The same module instance the root imports; it holds the cached HTTP client.
+  const client = await loadPeer(
+    "@beamcloud/beam-js",
+    "beam",
+    () => import("@beamcloud/beam-js/lib/client"),
+  );
+
   return {
     configure(settings) {
       const value = JSON.stringify([settings.token, settings.workspaceId, settings.gatewayUrl]);
+      const opts = m.beamOpts;
+      const cached = cachedAuthorization(client.default);
 
-      if (configured !== undefined && configured !== value)
+      // Another provider, or code using beam-js directly, already set it up for another account.
+      const taken =
+        (configured !== undefined && configured !== value) ||
+        (opts.token !== "" && opts.token !== settings.token) ||
+        (opts.workspaceId !== "" && opts.workspaceId !== settings.workspaceId) ||
+        (cached !== undefined &&
+          (cached.authorization !== `Bearer ${settings.token}` ||
+            cached.baseURL !== settings.gatewayUrl));
+
+      if (taken)
         throw failure(
           "One process can use one Beam token, workspace and gateway: @beamcloud/beam-js keeps one global client",
           "invalid_argument",

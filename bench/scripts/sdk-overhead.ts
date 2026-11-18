@@ -405,16 +405,34 @@ const beamNative = once(async () => {
   return m;
 });
 
-/** beam-js prints create progress on stdout, which this script's Markdown report also uses. */
+/**
+ * beam-js prints create progress on stdout, which this script's Markdown report also uses, and logs
+ * raw HTTP errors, Authorization header included, with console.error. While a native create runs,
+ * log is dropped and warn/error pass only text, with the token removed.
+ */
 async function quietly<T>(action: () => Promise<T>): Promise<T> {
-  const log = console.log;
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  const token = process.env.BEAM_TOKEN ?? "";
+
+  const scrub = (args: unknown[]) =>
+    args.map((arg) => {
+      const text = z.string().safeParse(arg);
+
+      if (!text.success) return "[omitted]";
+
+      return token.length >= 8 ? text.data.split(token).join("[redacted]") : text.data;
+    });
 
   console.log = () => {};
+
+  console.warn = (...args: unknown[]) => original.warn(...scrub(args));
+
+  console.error = (...args: unknown[]) => original.error(...scrub(args));
 
   try {
     return await action();
   } finally {
-    console.log = log;
+    Object.assign(console, original);
   }
 }
 
@@ -721,8 +739,10 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       keepWarmSeconds: 600,
     }));
 
-    const instance = await quietly(() => template.create());
-    const id = instance.containerId;
+    // Allocate without waiting, so the ID is admitted for cleanup before anything else can fail;
+    // the connect that beam-js's default create does follows, inside this create's timing.
+    const allocated = await quietly(() => template.create({ waitForReady: false }));
+    const id = allocated.containerId;
 
     const raw = {
       id,
@@ -750,6 +770,8 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     };
 
     admit(raw);
+
+    const instance = await m.Sandbox.connect(id);
 
     return raw;
   }

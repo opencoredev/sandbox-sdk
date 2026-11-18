@@ -21,6 +21,7 @@ function fakeBeam() {
   let stopRefusals = 0;
   let uploadRefusals = 0;
   let createFailure: Error | undefined;
+  let restoreAnswer: "ok" | "truncated" | "5xx" | "refused" = "ok";
   let next = 0;
 
   const add = (status = "RUNNING") => {
@@ -52,8 +53,18 @@ function fakeBeam() {
         })),
       });
 
-    if (path === "/pods" && init?.method === "POST")
-      return json({ ok: true, ...add(), stubId: "" });
+    if (path === "/pods" && init?.method === "POST") {
+      if (restoreAnswer === "refused") return json({ ok: false, errorMsg: "no such checkpoint" });
+
+      const made = add();
+
+      if (restoreAnswer === "truncated")
+        return new Response(`{"ok":true,"containerId":"${made.containerId}`, { status: 200 });
+
+      if (restoreAnswer === "5xx") return json({ ok: false, errorMsg: "internal" }, 502);
+
+      return json({ ok: true, ...made, stubId: "" });
+    }
 
     const stop = /^\/containers\/([^/]+)\/stop$/.exec(path);
 
@@ -143,6 +154,9 @@ function fakeBeam() {
     },
     failCreates: (error: Error | undefined) => {
       createFailure = error;
+    },
+    answerRestores: (answer: typeof restoreAnswer) => {
+      restoreAnswer = answer;
     },
     provider: (options = {}) =>
       createBeamProvider(
@@ -340,5 +354,22 @@ describe("beam adapter", () => {
     }
 
     expect(console.error).not.toBe(spy);
+  });
+
+  test("a restore whose answer cannot be read, or a 5xx, is outcome_unknown; a refusal is not", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+
+    for (const answer of ["truncated", "5xx"] as const) {
+      beam.answerRestores(answer);
+      await expect(provider.create({ labels: {}, from: "snap-1" })).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
+    }
+
+    beam.answerRestores("refused");
+    await expect(provider.create({ labels: {}, from: "snap-1" })).rejects.toMatchObject({
+      code: "provider",
+    });
   });
 });

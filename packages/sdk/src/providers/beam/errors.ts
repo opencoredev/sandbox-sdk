@@ -62,16 +62,43 @@ export function beamError(cause: unknown, sandboxId?: string): SandboxError {
   );
 }
 
-/** Whether a failed request may have reached Beam: no HTTP answer came back (network, timeout). */
+/**
+ * Whether a failed allocation may still have allocated: no validated answer came back. A refusal
+ * (an HTTP 4xx, or Beam's `ok:false`) made nothing; a network failure, a timeout, a 5xx or an
+ * answer that could not be read leaves it unknown.
+ */
 export function maybeSent(cause: unknown) {
   if (
     cause instanceof Error &&
-    ["AbortError", "TimeoutError", "CanceledError"].includes(cause.name)
+    ["AbortError", "TimeoutError", "CanceledError", "SyntaxError"].includes(cause.name)
   )
     return true;
 
   if (cause instanceof TypeError) return true;
 
-  // An axios cause without a response: the request may have arrived.
-  return isObject(cause) && "isAxiosError" in cause && !("response" in cause && cause.response);
+  const status = httpStatus(cause);
+
+  if (status !== undefined) return status >= 500;
+
+  // An axios error without a response: the request may have arrived.
+  return isObject(cause) && "isAxiosError" in cause;
+}
+
+/** The token and base URL of beam-js's cached HTTP client, when it has made one. */
+export function cachedAuthorization(
+  cause: unknown,
+): { authorization: unknown; baseURL: unknown } | undefined {
+  if (!isObject(cause) || !("_client" in cause) || !isObject(cause._client)) return undefined;
+  const axios = cause._client;
+
+  if (!("defaults" in axios) || !isObject(axios.defaults))
+    return { authorization: undefined, baseURL: undefined };
+  const defaults = axios.defaults;
+
+  const headers = "headers" in defaults && isObject(defaults.headers) ? defaults.headers : {};
+
+  return {
+    authorization: "Authorization" in headers ? headers.Authorization : undefined,
+    baseURL: "baseURL" in defaults ? defaults.baseURL : undefined,
+  };
 }
