@@ -193,6 +193,60 @@ describe("instabox create review cases", () => {
   });
 });
 
+describe("instabox transport review cases", () => {
+  test("every request names the SDK, and a create sends its environment machine-wide", async () => {
+    server
+      .on("POST /v1/machines", { status: 202, json: op("succeeded") })
+      .on("POST /v1/machines/{id}/exec", { stream: sse(["exit", { exitCode: 0 }]) })
+      .on("GET /v1/machines/{id}", { json: machine() });
+
+    await provider().create({ labels: {}, env: { API_TOKEN: "t1" } });
+    const [create] = server.calls("POST /v1/machines");
+
+    expect(create!.headers["user-agent"]).toMatch(/^sandbox-sdk\//);
+    expect(JSON.parse(create!.body.toString()).env).toEqual({ API_TOKEN: "t1" });
+  });
+
+  test("a failed command request is not replayed", async () => {
+    server.on("POST /v1/machines/{id}/exec", { status: 503, json: { error: { code: "unknown" } } });
+
+    const error = await rejection(
+      provider().exec("m_abc123", {
+        command: "echo once >> f",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5_000,
+        onChunk: () => undefined,
+      }),
+    );
+
+    expect(error.code).toBe("unavailable");
+    expect(server.calls("POST /v1/machines/{id}/exec")).toHaveLength(1);
+  });
+
+  test("a redirect is refused, so the key never leaves the API", async () => {
+    server.on("GET /v1/machines/{id}", {
+      status: 302,
+      headers: { location: "https://example.invalid/steal" },
+    });
+
+    // fetch refuses the redirect instead of following it with the key; the read then fails.
+    expect((await rejection(provider().connect("m_abc123"))).code).toBe("unavailable");
+  });
+
+  test("/workspace, the SDK's link to /data/workspace, stats as its directory", async () => {
+    server.on("POST /v1/machines/{id}/exec", {
+      stream: sse(["stdout", { data: "directory|4096|1700000000.000" }], ["exit", { exitCode: 0 }]),
+    });
+
+    const info = await provider().files.stat("m_abc123", "/workspace");
+    const body = JSON.parse(server.calls("POST /v1/machines/{id}/exec")[0]!.body.toString());
+
+    expect(info.type).toBe("directory");
+    expect(body.argv).toContain("-L");
+  });
+});
+
 describe("instabox errors", () => {
   test("an invalid JSON answer never quotes the body", async () => {
     server.on("GET /v1/machines/{id}", { body: "not json ibk_secret_echo" });

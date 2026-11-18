@@ -27,17 +27,24 @@ options: `template` (default Instabox's `agent-browser`, optionally pinned as
 `id@version`), `requestTimeoutMs` (60 s per request) and `operationTimeoutMs`
 (5 minutes per asynchronous change).
 
-Every change (create, start, suspend, resume, delete, snapshot) returns an
+Every request carries `User-Agent: sandbox-sdk/<version>` and refuses redirects,
+so the key never leaves the API host. Every change (create, start, suspend,
+resume, delete, snapshot) returns an
 operation, which the adapter long-polls with `GET /v1/operations/{id}?wait=25s`
 until it succeeds or fails. Writes carry an `Idempotency-Key` that stays the
 same across retries. Network failures before an answer are retried for reads and
-idempotent writes; `429` and retryable `5xx` answers are retried after
-`retryAfterSeconds` or `Retry-After`. A read that never gets an answer fails
-with `unavailable`, a write with `outcome_unknown`.
+idempotent writes, PUT and DELETE; `429` is retried for every request, since
+Instabox refuses it before any effect, and retryable `5xx` answers only for
+those replayable requests, after `retryAfterSeconds` or `Retry-After`. A
+command (`exec`) is never replayed. A POST or PATCH that never gets an answer,
+or gets a gateway timeout, fails with `outcome_unknown`; a read with
+`unavailable` or `timeout`. Operation polls are bounded by the time the
+operation has left.
 
-Create sends the labels as metadata, the key as the `sandbox-sdk-key` label,
+Create sends the labels as metadata, the sandbox `env` as the machine's own
+environment (every login shell exports it, so a reconnect can read secrets back), the key as the `sandbox-sdk-key` label,
 the size as `vcpus` and `memMiB`, `idleTimeoutMs` as `autoSuspendAfterSeconds`
-(300 to 1800 in whole minutes, or 0) and `timeoutMs` as `deleteAfterSeconds`
+(300 to 1800 in whole minutes) and `timeoutMs` as `deleteAfterSeconds`
 (60 to 86400). Then it links `/workspace` to `/data/workspace` on the
 persistent disk and checks `python3`, `git`, `tar`, `nohup` and `setsid`. If the
 operation, that step or the final read fails, the adapter deletes the machine

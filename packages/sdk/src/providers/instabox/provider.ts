@@ -7,6 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { SandboxError, describeNative, type ErrorCode } from "../../errors.js";
+import { userAgent } from "../../version.js";
 import type {
   CreateInput,
   ExecInput,
@@ -108,6 +109,8 @@ interface CreateBody {
   templateId?: string;
   autoSuspendAfterSeconds?: number;
   deleteAfterSeconds?: number;
+  /** Exported by every login shell on the machine, so a fresh connect can read it back. */
+  env?: Record<string, string>;
 }
 
 /** `POST /v1/machines/{id}/exec`: a shell command (`cmd`) or an argument vector (`argv`). */
@@ -139,13 +142,12 @@ function sizeOf(size: CreateInput["size"]) {
   return { vcpus: size.cpu, memMiB: size.memoryMb };
 }
 
-/** 300 to 1800 seconds in whole minutes, or 0 for off. */
+/** 300 to 1800 seconds in whole minutes. */
 function idleSeconds(ms: number) {
-  if (ms === 0) return 0;
   const seconds = Math.ceil(ms / 60_000) * 60;
 
   if (seconds < 300 || seconds > 1800)
-    throw fail("idleTimeoutMs must be 0 or between 5 and 30 minutes", "unsupported");
+    throw fail("idleTimeoutMs must be between 5 and 30 minutes", "unsupported");
 
   return seconds;
 }
@@ -222,13 +224,20 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
     return target;
   }
 
-  /** One request with bounded retries of retryable failures. Resolves with a successful response. */
+  /**
+   * One request with bounded retries, under the shared transport's rules (docs/spec.md): only a
+   * read, a PUT or DELETE, or a write with an idempotency key is replayed; a 429 is refused before
+   * any effect, so it is retried for every method; a write that may have reached Instabox and then
+   * got no answer is `outcome_unknown`. Redirects are refused, so the key never leaves the API.
+   */
   async function send(input: RequestInput): Promise<Response> {
     const idempotencyKey = input.idempotent ? randomUUID() : undefined;
     const deadline = Date.now() + (input.timeoutMs ?? requestTimeoutMs);
+    const write = input.method === "POST" || input.method === "PATCH";
+    const replayable = !write || !!idempotencyKey;
 
     for (let attempt = 0; ; attempt++) {
-      const headers = new Headers({ "X-API-Key": apiKey() });
+      const headers = new Headers({ "X-API-Key": apiKey(), "User-Agent": userAgent });
 
       if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
 
@@ -256,6 +265,7 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
           headers,
           body,
           signal,
+          redirect: "error",
         });
       } catch (error) {
         const kept = describeNative(error, { code: "outcome_unknown", known: true });
@@ -266,27 +276,24 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
             cause: kept.cause,
           });
 
+        // A POST or PATCH that got no answer may have been applied: a new call could repeat it.
         if (timeout.aborted)
-          throw fail(`${input.operation} timed out`, "timeout", {
+          throw fail(`${input.operation} timed out`, write ? "outcome_unknown" : "timeout", {
             sandboxId: input.sandboxId,
-            retryable: true,
+            retryable: !write,
             cause: kept.cause,
           });
 
-        // A network failure before any answer: safe to retry reads and idempotent writes.
-        if ((input.method === "GET" || idempotencyKey) && attempt < 4) {
+        if (replayable && attempt < 4) {
           await sleep(250 * 2 ** attempt, input.signal);
           continue;
         }
 
-        // A read changed nothing; a write without an answer may have been applied.
-        const code = input.method === "GET" ? "unavailable" : "outcome_unknown";
-
-        throw fail(`${input.operation}: the connection failed`, code, {
-          sandboxId: input.sandboxId,
-          retryable: true,
-          cause: kept.cause,
-        });
+        throw fail(
+          `${input.operation}: the connection failed`,
+          write ? "outcome_unknown" : "unavailable",
+          { sandboxId: input.sandboxId, retryable: !write, cause: kept.cause },
+        );
       }
 
       if (response.ok) return response;
@@ -306,8 +313,12 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         requestId: undefined,
       };
 
-      // 429s (start rate, the 32-request exec limit) and retryable 5xx are refused before any effect.
-      const retryable = failure.retryable || response.status === 429;
+      // A 429 (start rate, the 32-request exec limit) is refused before any effect; other
+      // retryable answers are replayed only when the request is safe to repeat.
+      const retryable =
+        response.status === 429 ||
+        (replayable && (failure.retryable || [502, 503, 504].includes(response.status)));
+
       const header = Number(response.headers.get("retry-after"));
       const waitMs = 1000 * (failure.retryAfterSeconds ?? (Number.isFinite(header) ? header : 0));
       const backoff = Math.max(waitMs, 500 * 2 ** Math.min(attempt, 5));
@@ -318,6 +329,12 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         if (input.signal?.aborted) throw fail(`${input.operation} aborted`, "aborted");
         continue;
       }
+
+      // A gateway timeout on a POST or PATCH leaves the outcome unknown, like no answer at all.
+      if (write && !replayable && response.status === 504)
+        throw fail(`${input.operation} timed out at the gateway`, "outcome_unknown", {
+          sandboxId: input.sandboxId,
+        });
 
       throw new ApiFailure(response.status, failure);
     }
@@ -355,14 +372,16 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
           sandboxId,
           retryable: true,
         });
+      const left = deadline - Date.now();
+
       op = parseOperation(
         await json({
           method: "GET",
           path: `/v1/operations/${encodeURIComponent(op.id)}`,
           operation: "operation status",
-          query: { wait: "25s" },
+          query: { wait: `${Math.max(1, Math.min(25, Math.floor(left / 1000)))}s` },
           sandboxId,
-          timeoutMs: 40_000,
+          timeoutMs: Math.min(40_000, left + 5_000),
         }),
       );
     }
@@ -668,6 +687,8 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
 
       if (input.timeoutMs !== undefined) body.deleteAfterSeconds = lifetimeSeconds(input.timeoutMs);
 
+      if (input.env !== undefined && Object.keys(input.env).length > 0) body.env = { ...input.env };
+
       // The admission request ignores the caller's signal: aborting it mid-flight could leave a
       // machine whose ID never arrived. An abort is honoured once the ID is known, by deleting it.
       const op = parseOperation(
@@ -816,6 +837,7 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
         if (entries.length >= 5000) {
           const { stdout } = await guest(id, [
             "find",
+            "-H",
             absolute(path),
             "-mindepth",
             "1",
@@ -832,9 +854,13 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
       },
 
       async stat(id, path) {
+        const target = absolute(path);
+        // The SDK's /workspace alias reads as its directory; any other link stays a link.
+        const follow = target === "/workspace" || target === "/workspace/" ? ["-L"] : [];
+
         const { exitCode, stdout } = await guest(
           id,
-          ["stat", "-c", "%F|%s|%.3Y", "--", absolute(path)],
+          ["stat", ...follow, "-c", "%F|%s|%.3Y", "--", target],
           [0, 1],
         );
 

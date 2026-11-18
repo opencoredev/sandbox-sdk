@@ -154,6 +154,22 @@ export function operationError(input: {
 
 export type CreateStage = "operation" | "prepare" | "read";
 
+/** The allowlisted request fields an Instabox error's evidence already holds. */
+function carried(cause: unknown): Pick<NativeEvidence, "status" | "providerCode" | "requestId"> {
+  if (!(cause instanceof Error)) return {};
+  const kept: Pick<NativeEvidence, "status" | "providerCode" | "requestId"> = {};
+
+  if ("status" in cause && isNumber(cause.status)) kept.status = cause.status;
+
+  if ("providerCode" in cause && isString(cause.providerCode) && safeCode.test(cause.providerCode))
+    kept.providerCode = cause.providerCode;
+
+  if ("requestId" in cause && isString(cause.requestId) && safeRequestId.test(cause.requestId))
+    kept.requestId = cause.requestId;
+
+  return kept;
+}
+
 /**
  * A create that failed after this call's POST /v1/machines admitted a machine. The evidence
  * names the machine, so the bench can recover it by its labels if the adapter's own delete
@@ -169,6 +185,7 @@ export function createError(
     operation: "create",
     admittedByThisCall: true,
     stage: context.stage,
+    ...carried(mapped.cause),
   };
 
   if (/^m_[a-z0-9]{1,64}$/.test(context.sandboxId)) kept.sandboxId = context.sandboxId;

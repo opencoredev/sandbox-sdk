@@ -71,7 +71,7 @@ console.log(result.stdout);
 | Machine size                   | Partial     | 2/4, 4/8 or 8/16 vCPU/GiB on Pro; no disk setting       |
 | Network policy                 | No          | Outbound access is always on                            |
 | Hard lifetime (`timeoutMs`)    | Yes         | `deleteAfterSeconds`, 1 minute to 24 hours              |
-| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the machine; 5 to 30 whole minutes, or 0 for off |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the machine; 5 to 30 whole minutes               |
 | Keys                           | Best-effort | Stored as a metadata label; concurrent creates can race |
 | Terminal                       | No          |                                                         |
 
@@ -128,7 +128,7 @@ An exact `size` such as `{ cpu: 4, memoryMb: 8192 }` must be a size your plan of
 
 `instabox({ template })` picks the template for new machines, optionally pinned as `id@version`. Without it, Instabox uses `agent-browser`.
 
-`idleTimeoutMs` pauses the machine after that long without activity. Instabox takes 5 to 30 minutes in whole minutes, rounded up, or 0 for off. Without it, Instabox pauses an idle machine after 30 minutes. `timeoutMs` deletes the machine whatever its state, from 1 minute to 24 hours.
+`idleTimeoutMs` pauses the machine after that long without activity. Instabox takes 5 to 30 minutes in whole minutes, rounded up. Without it, Instabox pauses an idle machine after 30 minutes. A command, file call or preview request to a paused machine wakes it, so code that reconnects to an idle machine needs no `resume()` first. `timeoutMs` deletes the machine whatever its state, from 1 minute to 24 hours.
 
 `network` accepts only `"all"`, the default. `"none"` and allow lists fail with `unsupported`. Instabox blocks outbound HTTPS to public DNS resolvers such as `1.1.1.1:443` and `8.8.8.8:443`; other port 443 traffic, such as GitHub and npm, works.
 
@@ -153,8 +153,8 @@ An exact `size` such as `{ cpu: 4, memoryMb: 8192 }` must be a size your plan of
 
 ## How it works
 
-- The adapter calls `https://api.instabox.sh` with your key in `X-API-Key`. Changes such as create, pause and delete return an operation, which the adapter long-polls until it finishes. Every change carries an `Idempotency-Key`, reused across retries, so a retried request is never applied twice. Rate limits (`429`) and retryable server errors are retried after Instabox's `Retry-After`.
-- At create, `/workspace` is linked to `/data/workspace` on the persistent disk. If that step fails, the adapter deletes the machine before it throws.
+- The adapter calls `https://api.instabox.sh` with your key in `X-API-Key`. Changes such as create, pause and delete return an operation, which the adapter long-polls until it finishes. Every change carries an `Idempotency-Key`, reused across retries, so a retried request is never applied twice. Rate limits (`429`) are retried after Instabox's `Retry-After`, and server errors only for requests that are safe to repeat; a command is never sent twice. Every request names the SDK in `User-Agent` and refuses redirects, so your key never leaves `api.instabox.sh`.
+- At create, `/workspace` is linked to `/data/workspace` on the persistent disk, and the sandbox's `env` becomes the machine's own environment, which every login shell exports. If that step fails, the adapter deletes the machine before it throws.
 - Your `labels` become Instabox metadata, and a key is stored as the `sandbox-sdk-key` label. Instabox allows 32 labels per machine.
 - Commands stream over server-sent events. Closing the stream kills the command's process group, so a timeout or abort stops it.
 - `box.native` returns `{ machineId, request }`. `request({ method, path, body })` calls Instabox's API with the adapter's key, adding an `Idempotency-Key` to writes.
