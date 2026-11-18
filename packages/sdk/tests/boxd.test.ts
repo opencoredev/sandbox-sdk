@@ -1139,6 +1139,35 @@ describe("boxd failure evidence", () => {
     expect(String(error.cause)).not.toContain("sk-explicit-42");
   });
 
+  test("boxd's message is not cut before the core redacts the sandbox's secrets", async () => {
+    const secret = "SANDBOX-SECRET-0123456789";
+    const box = await createSandbox(factory(), { secrets: { TOKEN: secret } });
+    const machines = box.native.client.machines;
+
+    const resume = vi
+      .spyOn(machines, "resume")
+      .mockRejectedValueOnce(
+        Object.assign(new Error(`${"x".repeat(990)}${secret}`), {
+          name: "ConflictError",
+          grpcCode: 9,
+        }),
+      );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      expect(String(error instanceof SandboxError ? error.cause : "")).not.toContain("SANDBOX-SEC");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
   test("a guest call never keeps boxd's text, which can echo user paths", () => {
     const error = boxdError(
       Object.assign(new Error("read /workspace/private.txt: input/output error"), {

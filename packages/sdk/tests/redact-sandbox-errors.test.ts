@@ -161,6 +161,31 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
     expect(() => JSON.parse(cause)).not.toThrow();
   });
 
+  test("a numeric secret is redacted, under a credential key or as a registered secret", () => {
+    const redactor = new Redactor();
+    redactor.add(["987654"]);
+
+    const original = new SandboxError("failed", {
+      code: "provider",
+      cause: evidenceCause({ providerCode: 987654, operation: "create", stage: "boot" }),
+    });
+
+    const fromKey = new Redactor().error(
+      new SandboxError("failed", {
+        code: "provider",
+        cause: new Error('{"token":123456,"providerCode":5}'),
+      }),
+      "stub",
+    ).cause;
+
+    expect(JSON.parse(String(fromKey))).toEqual({ token: "[REDACTED]", providerCode: 5 });
+    expect(JSON.parse(String(redactor.error(original, "stub").cause))).toEqual({
+      providerCode: "[REDACTED]",
+      operation: "create",
+      stage: "boot",
+    });
+  });
+
   test("a cause that is not flat evidence is scrubbed as text, as before", () => {
     const original = new SandboxError("failed", {
       code: "provider",

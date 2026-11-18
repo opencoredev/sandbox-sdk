@@ -179,7 +179,7 @@ function boxdEvidence(
 
   // The core bounds each field after redacting the sandbox's own secrets, so no cut here leaves part of one.
   if (context.call !== undefined && native.message)
-    evidence.providerMessage = scrub(redacting(keys)(native.message));
+    evidence.providerMessage = scrub(redacting(keys)(native.message), Number.POSITIVE_INFINITY);
 
   // The kept native detail usually repeats boxd's message; keep it only when it adds something.
   if (

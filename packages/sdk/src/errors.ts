@@ -213,10 +213,10 @@ function scrubCredentials(text: string): string {
 }
 
 /** @internal Removes credential-shaped text (URLs, auth headers, key=value secrets, control characters) and bounds the length. */
-export function scrub(text: string): string {
+export function scrub(text: string, max = 1000): string {
   return scrubCredentials(text)
     .replace(/\p{Cc}+/gu, " ")
-    .slice(0, 1000);
+    .slice(0, max);
 }
 
 type EvidenceValue = string | number | boolean | null;
@@ -258,11 +258,17 @@ function scrubCause(text: string, redact: (text: string) => string): string {
 
   if (fields === undefined) return scrub(redact(text));
 
-  const clean = fields.map(([key, value]): [string, EvidenceValue] => [
-    scrub(redact(key)).slice(0, 64),
-    // A field named like a credential is one, as the whole-text scrub treats `"token": "…"`.
-    isString(value) ? (credentialKey.test(key) ? "[REDACTED]" : scrub(redact(value))) : value,
-  ]);
+  const clean = fields.map(([key, value]): [string, EvidenceValue] => {
+    const name = scrub(redact(key)).slice(0, 64);
+
+    // A field named like a credential is one, as the whole-text scrub treats `"token": …`, whatever its type.
+    if (credentialKey.test(key) && value !== null) return [name, "[REDACTED]"];
+
+    if (isString(value)) return [name, scrub(redact(value))];
+
+    // A number or boolean that is a registered secret is redacted too; any other keeps its type.
+    return [name, value !== null && redact(String(value)) !== String(value) ? "[REDACTED]" : value];
+  });
 
   const fit = (entries: [string, EvidenceValue][], bound: number) =>
     JSON.stringify(
