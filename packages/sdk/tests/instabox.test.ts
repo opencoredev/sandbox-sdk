@@ -96,14 +96,14 @@ describe("instabox create", () => {
       .on("POST /v1/machines/{id}/exec", { stream: sse(["exit", { exitCode: 0 }]) })
       .on("GET /v1/machines/{id}", { json: machine() });
 
-    await provider().create({ size: "small" });
+    await provider().create({ labels: {}, size: "small" });
     expect(JSON.parse(server.calls("POST /v1/machines")[0]!.body.toString())).toMatchObject({
       vcpus: 2,
       memMiB: 4096,
     });
 
     const refused = await rejection(
-      provider().create({ size: { cpu: 4, memoryMb: 8192, diskGb: 50 } }),
+      provider().create({ labels: {}, size: { cpu: 4, memoryMb: 8192, diskGb: 50 } }),
     );
 
     expect(refused.code).toBe("unsupported");
@@ -117,7 +117,7 @@ describe("instabox create", () => {
       })
       .on("DELETE /v1/machines/{id}", { status: 202, json: op("succeeded") });
 
-    const error = await rejection(provider().create({}));
+    const error = await rejection(provider().create({ labels: {} }));
 
     expect(error.sandboxId).toBe("m_abc123");
     expect(server.calls("DELETE /v1/machines/{id}")).toHaveLength(1);
@@ -145,7 +145,7 @@ describe("instabox create", () => {
         json: { error: { code: "permission_denied", message: "nope" } },
       });
 
-    const error = await rejection(provider().create({}));
+    const error = await rejection(provider().create({ labels: {} }));
 
     expect(error.code).toBe("quota");
     expect(error.message).not.toContain("h-17");
@@ -234,6 +234,8 @@ describe("instabox exec", () => {
 
     const result = await provider().exec("m_abc123", {
       command: "sleep 100",
+      cwd: "/workspace",
+      env: {},
       timeoutMs: 1_000,
       onChunk: () => undefined,
     });
@@ -247,7 +249,13 @@ describe("instabox exec", () => {
     });
 
     const error = await rejection(
-      provider().exec("m_abc123", { command: "true", timeoutMs: 5_000, onChunk: () => undefined }),
+      provider().exec("m_abc123", {
+        command: "true",
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 5_000,
+        onChunk: () => undefined,
+      }),
     );
 
     expect(error.code).toBe("quota");
