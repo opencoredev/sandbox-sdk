@@ -25,6 +25,7 @@ export const externalPackages: readonly string[] = [
   "railway",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
+  "@modelcontextprotocol/sdk",
   "@openai/agents",
   "ai",
   "vitest",

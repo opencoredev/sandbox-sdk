@@ -1,0 +1,58 @@
+---
+title: MCP
+description: Give Claude, Cursor or any MCP client a sandbox. Run the sandbox-mcp server for sandboxes on every provider, or expose one sandbox with sandboxMcpServer from @opencoredev/sandbox-sdk/mcp.
+---
+
+There are two ways to reach a sandbox over the [Model Context Protocol](https://modelcontextprotocol.io). Run `sandbox-mcp` when an MCP client, such as Claude or Cursor, should create and manage sandboxes by itself. Use `sandboxMcpServer(box)` when your own server holds the sandbox and you want to hand it to a client.
+
+Both serve the same tools as the other integrations. See [Give your agent a sandbox](/guides/give-your-agent-a-sandbox) for what they do and how to limit them.
+
+## Run the server
+
+Add it to your MCP client's config, with the key of the provider you use:
+
+```json title="mcp.json"
+{
+  "mcpServers": {
+    "sandbox": {
+      "command": "npx",
+      "args": ["-y", "@opencoredev/sandbox-mcp"],
+      "env": { "E2B_API_KEY": "..." }
+    }
+  }
+}
+```
+
+The server offers every provider whose credentials are in its environment, then `local` for Docker on your machine. `SANDBOX_PROVIDERS=e2b,local` names them outright, and `SANDBOX_PROVIDER` picks the default.
+
+On top of the command and file tools it adds `list_providers`, `create_sandbox`, `list_sandboxes`, `pause_sandbox`, `resume_sandbox` and `destroy_sandbox`. `create_sandbox` returns a reference such as `e2b:abc123`, and every other tool takes it as `sandbox`. The reference stays valid when the server restarts.
+
+Sandboxes outlive the server. Nothing is destroyed until the agent calls `destroy_sandbox`, or the provider's lifetime or the `timeoutMinutes` passed at creation runs out.
+
+## Expose one sandbox
+
+Install the MCP SDK next to Sandbox SDK:
+
+```bash
+npm install @opencoredev/sandbox-sdk @modelcontextprotocol/sdk zod
+```
+
+Needs `@modelcontextprotocol/sdk` 1.32 and Zod 4.6.
+
+```ts title="server.ts"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { e2b } from "@opencoredev/sandbox-sdk/e2b";
+import { sandboxMcpServer } from "@opencoredev/sandbox-sdk/mcp";
+
+const box = await createSandbox(e2b(), { key: "project:123" });
+const server = sandboxMcpServer(box, { root: "/workspace/app" });
+
+await server.connect(new StdioServerTransport());
+```
+
+`sandboxMcpServer` takes the same options as `sandboxTools`: `root`, `allow`, `deny`, `beforeRun` and `limits`. To add the tools to an MCP server you already have, call `registerSandboxTools(server, box)`.
+
+## What the client gets
+
+Each tool has a JSON Schema generated from its Zod schema. A result is the tool's compact text: a verdict line and capped output, with `isError` set when the verdict is `FAILED`. When a call carries a progress token, command output streams to the client as progress notifications. Cancelling the request stops the command in the sandbox.

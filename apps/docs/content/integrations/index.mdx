@@ -1,6 +1,6 @@
 ---
 title: Integrations
-description: Use Sandbox SDK with agent frameworks (AI SDK, Mastra, OpenAI Agents SDK) and web frameworks (Next.js, Hono). Each page shows the wiring and where keys stay.
+description: Use Sandbox SDK with agent frameworks (AI SDK, Mastra, OpenAI Agents SDK), MCP clients, and web frameworks (Next.js, Hono). Each page shows the wiring and where keys stay.
 ---
 
 Sandbox SDK is a server-side TypeScript library with no framework dependency. These pages show how it fits into the tools you already use: which subpath to import, where the sandbox is created, and where keys stay.
@@ -20,6 +20,14 @@ Each framework gets `sandboxTools(box)` from its own subpath. The tools, their o
   </Card>
   <Card title="OpenAI Agents" href="/integrations/openai-agents" icon="/integrations/openai.svg">
     A tool array for the OpenAI Agents SDK.
+  </Card>
+</CardGroup>
+
+MCP clients such as Claude and Cursor get the same tools from a server:
+
+<CardGroup cols={1}>
+  <Card title="MCP" href="/integrations/mcp" icon="plug">
+    The `sandbox-mcp` server for sandboxes on every provider, or one sandbox from your own server.
   </Card>
 </CardGroup>
 

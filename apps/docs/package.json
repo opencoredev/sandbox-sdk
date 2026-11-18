@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@mastra/core": "^1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@openai/agents": "^0.20",
     "@opencoredev/sandbox-sdk": "workspace:*",
     "@types/node": "^22.20.1",
