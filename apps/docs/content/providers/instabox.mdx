@@ -1,0 +1,166 @@
+---
+title: Instabox
+seo:
+  title: Instabox Sandbox SDK in TypeScript
+description: Use Instabox Firecracker machines from TypeScript through Instabox's REST API and one portable API. Pause and resume with memory, snapshots, sizes, a persistent /data disk, and public previews, with no extra package.
+---
+
+`instabox()` runs each sandbox as an [Instabox](https://instabox.sh) machine, a Firecracker microVM from InsForge, by calling Instabox's REST API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(instabox())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Instabox has no network policy and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you an authenticated request to Instabox's API when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create an API key (`ibk_...`) in Instabox and set `INSTABOX_API_KEY`, or pass `instabox({ apiKey })`. Snapshots need a key with the `images:write` and `images:delete` scopes.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { instabox } from "@opencoredev/sandbox-sdk/instabox";
+
+await using box = await createSandbox(instabox(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the machine when the block ends. `timeoutMs` becomes Instabox's `deleteAfterSeconds`, which deletes the machine 30 minutes after creation, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                   |
+| ------------------------------ | ----------- | ------------------------------------------------------- |
+| Commands and streaming         | Yes         | Server-sent events; live output                         |
+| Files                          | Yes         | `/workspace` is on the persistent 20 GiB `/data` disk   |
+| Background processes           | Yes         |                                                         |
+| Preview URLs                   | Yes         | Public `https://` URLs for ports 1024 and up            |
+| Pause and resume               | Yes         | Suspends the machine with its memory                    |
+| Snapshots                      | Yes         | Kept until deleted; `deleteSnapshot` works              |
+| Templates                      | No          | Pass an Instabox template with `template` instead       |
+| Machine size                   | Partial     | 2/4, 4/8 or 8/16 vCPU/GiB on Pro; no disk setting       |
+| Network policy                 | No          | Outbound access is always on                            |
+| Hard lifetime (`timeoutMs`)    | Yes         | `deleteAfterSeconds`, 1 minute to 24 hours              |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the machine; 5 to 30 whole minutes, or 0 for off |
+| Keys                           | Best-effort | Stored as a metadata label; concurrent creates can race |
+| Terminal                       | No          |                                                         |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { instabox } from "@opencoredev/sandbox-sdk/instabox";
+
+await using box = await createSandbox(instabox());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default template, `agent-browser`, is Debian 13 with Node.js 22, Python 3.13, Bun, Go, Rust, a JDK, Docker and a desktop. Commands run under `bash`. Instabox runs one command for at most 10 minutes; start longer jobs with `box.start`. Command input up to 1 MiB is sent with the request, and anything larger is uploaded as a file first.
+
+## Background processes and previews
+
+`box.preview(port)` publishes the port and returns its public `https://` URL. Nothing needs to be declared at creation, and asking again for the same port returns the same URL. Instabox publishes ports 1024 and up, at most 16 per machine.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { instabox } from "@opencoredev/sandbox-sdk/instabox";
+
+await using box = await createSandbox(instabox(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000);
+console.log(preview.url);
+```
+
+Anyone with the URL can open it. While the machine is paused, the URL answers 503.
+
+## Pause, resume, and snapshots
+
+`box.pause()` suspends the machine with its memory, so running processes continue after `box.resume()`. A paused machine bills only its disk. `resume()` also starts a machine that Instabox stopped.
+
+`box.snapshot()` saves the machine's disks and returns a snapshot ID (`sn_...`). Pass it as `from` to create a new machine from it. Without a `size`, the new machine gets 4 vCPU / 8 GiB rather than the size of the machine it was saved from. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
+
+## Size, template, and lifetime
+
+| Preset   | vCPUs | Memory    |
+| -------- | ----- | --------- |
+| `small`  | 2     | 4096 MiB  |
+| `medium` | 4     | 8192 MiB  |
+| `large`  | 8     | 16384 MiB |
+
+An exact `size` such as `{ cpu: 4, memoryMb: 8192 }` must be a size your plan offers: Pro has 2/4, 4/8 and 8/16, Builder goes up to 16/32. Instabox has no 1 vCPU size. The disk comes with the size (20 GiB at `/data`) and can only be grown afterwards, so `diskGb` fails with `unsupported`. Without `size`, a machine gets 4 vCPU / 8 GiB.
+
+`instabox({ template })` picks the template for new machines, optionally pinned as `id@version`. Without it, Instabox uses `agent-browser`.
+
+`idleTimeoutMs` pauses the machine after that long without activity. Instabox takes 5 to 30 minutes in whole minutes, rounded up, or 0 for off. Without it, Instabox pauses an idle machine after 30 minutes. `timeoutMs` deletes the machine whatever its state, from 1 minute to 24 hours.
+
+`network` accepts only `"all"`, the default. `"none"` and allow lists fail with `unsupported`. Instabox blocks outbound HTTPS to public DNS resolvers such as `1.1.1.1:443` and `8.8.8.8:443`; other port 443 traffic, such as GitHub and npm, works.
+
+## Configuration
+
+| Option               | Type     | Default                   | Env var            |
+| -------------------- | -------- | ------------------------- | ------------------ |
+| `apiKey`             | `string` |                           | `INSTABOX_API_KEY` |
+| `baseUrl`            | `string` | `https://api.instabox.sh` | `INSTABOX_API_URL` |
+| `template`           | `string` | `agent-browser`           |                    |
+| `requestTimeoutMs`   | `number` | 60 seconds                |                    |
+| `operationTimeoutMs` | `number` | 5 minutes                 |                    |
+
+`operationTimeoutMs` bounds each asynchronous change: create, pause, resume, delete and snapshot.
+
+## Limitations
+
+- No network policy, and outbound HTTPS to public DNS resolvers is blocked.
+- Keys are best-effort: two clients creating with one key at once can make two machines.
+- No terminal or template builds.
+- One command runs for at most 10 minutes.
+
+## How it works
+
+- The adapter calls `https://api.instabox.sh` with your key in `X-API-Key`. Changes such as create, pause and delete return an operation, which the adapter long-polls until it finishes. Every change carries an `Idempotency-Key`, reused across retries, so a retried request is never applied twice. Rate limits (`429`) and retryable server errors are retried after Instabox's `Retry-After`.
+- At create, `/workspace` is linked to `/data/workspace` on the persistent disk. If that step fails, the adapter deletes the machine before it throws.
+- Your `labels` become Instabox metadata, and a key is stored as the `sandbox-sdk-key` label. Instabox allows 32 labels per machine.
+- Commands stream over server-sent events. Closing the stream kills the command's process group, so a timeout or abort stops it.
+- `box.native` returns `{ machineId, request }`. `request({ method, path, body })` calls Instabox's API with the adapter's key, adding an `Idempotency-Key` to writes.
+- Errors keep only Instabox's HTTP status, error code and request ID, never its message, which can echo paths or request data.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

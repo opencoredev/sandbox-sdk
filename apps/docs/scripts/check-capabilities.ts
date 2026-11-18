@@ -39,6 +39,7 @@ import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/pro
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
 import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
 import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.ts";
+import { instabox } from "../../../packages/sdk/src/providers/instabox/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
@@ -64,7 +65,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -139,6 +140,10 @@ const subjects: readonly Subject[] = [
   {
     column: "Freestyle",
     build: () => freestyle({ apiKey: offlineKey }),
+  },
+  {
+    column: "Instabox",
+    build: () => instabox({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
   },
   { column: "Memory", build: () => memory() },
 ];
