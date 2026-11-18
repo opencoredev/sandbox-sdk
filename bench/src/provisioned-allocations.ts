@@ -61,6 +61,8 @@ const defaults: DefaultAllocations = {
   baseten: { cpu: 2, memoryGiB: 4, diskGiB: 0 },
   // agent-browser default: 4 vCPU / 8 GiB, 20 GiB /data (where /workspace lives) plus a 16 GiB system disk.
   instabox: { cpu: 4, memoryGiB: 8, diskGiB: 20 },
+  // Beam's TypeScript SDK default, 1 CPU and 128 MiB; sandbox disk is not billed.
+  beam: { cpu: 1, memoryGiB: 0.125, diskGiB: 0 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

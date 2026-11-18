@@ -14,6 +14,7 @@ const templateKeys = new Map([
   ["boxd", "image"],
   ["modal", "image"],
   ["baseten", "image"],
+  ["beam", "image"],
   ["local", "image"],
 ]);
 
@@ -78,6 +79,7 @@ const credentials = new Map([
   ["freestyle", ["FREESTYLE_API_KEY"]],
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
   ["baseten", ["BASETEN_API_KEY"]],
+  ["beam", ["BEAM_TOKEN", "BEAM_WORKSPACE_ID"]],
 ]);
 
 const regionKeys = new Map([

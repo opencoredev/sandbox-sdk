@@ -60,6 +60,7 @@ const fit = {
   heap1g: "FIT.md: 1 vCPU / 1 GiB, tsc aborts with JavaScript heap out of memory",
   install1g: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install",
   tenkiBuild: "FIT.md: 2 vCPU / 3.8 GiB is OOM-killed in the build",
+  beam128m: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install; Beam's default is 128 MiB",
 } as const;
 
 export const providerSetups: readonly ProviderSetup[] = [
@@ -284,6 +285,30 @@ export const providerSetups: readonly ProviderSetup[] = [
         vcpu: 2,
         provisioned: size(2, 4, 0),
         tooSmall: {},
+      },
+    },
+  },
+  {
+    // Beam Sandboxes (2026-11-18): any whole vCPU count and MiB, set per sandbox and enforced as
+    // the cgroup limit (checked in the guest: nproc 2, memory.max 4 GiB for 2:4096). Default is the
+    // TypeScript SDK's 1 CPU / 128 MiB, which cannot run either profile. The adapter's default
+    // image is node:22-bookworm (glibc); Beam's own image has no Node. Sandbox disk is not billed.
+    name: "beam",
+    adapter: "beam",
+    product: null,
+    lifetime: true,
+    pricingKey: "beam",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 0),
+        tooSmall: {},
+      },
+      default: {
+        vcpu: 1,
+        provisioned: size(1, 0.125, 0),
+        tooSmall: { "fix-and-test": fit.beam128m, build: fit.beam128m },
       },
     },
   },
