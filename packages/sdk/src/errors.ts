@@ -165,7 +165,8 @@ export class Redactor {
           cause.cause === undefined
             ? undefined
             : scrubCause(
-                this.text(cause.cause instanceof Error ? cause.cause.message : String(cause.cause)),
+                cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
+                (text) => this.text(text),
               ),
       });
     }
@@ -244,29 +245,35 @@ function evidenceFields(text: string): [string, EvidenceValue][] | undefined {
 }
 
 /**
- * Scrubs a SandboxError's cause text. Adapter evidence ({@link evidenceCause}) is a flat JSON object, so
- * each string field is scrubbed and bounded on its own: a credential pattern can't swallow the JSON
- * around it, and the length bound can't cut the JSON mid-field. Any other text is scrubbed whole.
+ * Redacts and scrubs a SandboxError's cause text. Adapter evidence ({@link evidenceCause}) is a flat
+ * JSON object, so each decoded string field is redacted, scrubbed and then bounded on its own: a secret
+ * JSON-escaped in the text is still found, a credential pattern can't swallow the JSON around it, and
+ * the length bound can't cut the JSON or leave part of a secret. Any other text is handled whole.
  */
-function scrubCause(text: string): string {
+function scrubCause(text: string, redact: (text: string) => string): string {
   const fields = evidenceFields(text);
 
-  if (fields === undefined) return scrub(text);
+  if (fields === undefined) return scrub(redact(text));
+
+  const clean = fields.map(([key, value]): [string, EvidenceValue] => [
+    scrub(redact(key)).slice(0, 64),
+    isString(value) ? scrub(redact(value)) : value,
+  ]);
 
   for (const bound of [300, 120, 40]) {
     const json = JSON.stringify(
       Object.fromEntries(
-        fields.map(([key, value]) => [
-          scrub(key).slice(0, 64),
-          isString(value) ? scrub(value).slice(0, bound) : value,
-        ]),
+        clean.map(([key, value]) => [key, isString(value) ? value.slice(0, bound) : value]),
       ),
     );
 
     if (json.length <= 1000) return json;
   }
 
-  return scrub(text);
+  // Too many fields to fit: keep the machine fields, which are short, and drop the text.
+  return JSON.stringify(
+    Object.fromEntries(clean.filter(([, value]) => !isString(value) || value.length <= 40)),
+  );
 }
 
 /**

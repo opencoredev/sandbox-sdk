@@ -177,16 +177,16 @@ function boxdEvidence(
   if (requestId !== undefined && token.test(requestId) && !denied(requestId))
     evidence.requestId = requestId;
 
-  // Bounded so the whole evidence stays within the core's 1,000-character cause.
+  // The core bounds each field after redacting the sandbox's own secrets, so no cut here leaves part of one.
   if (context.call !== undefined && native.message)
-    evidence.providerMessage = scrub(redacting(keys)(native.message)).slice(0, 300);
+    evidence.providerMessage = scrub(redacting(keys)(native.message));
 
   // The kept native detail usually repeats boxd's message; keep it only when it adds something.
   if (
     detail !== undefined &&
     !(evidence.providerMessage && detail.includes(evidence.providerMessage.slice(0, 80)))
   )
-    evidence.native = detail.slice(0, 300);
+    evidence.native = detail;
 
   return evidence;
 }

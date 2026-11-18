@@ -100,6 +100,27 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
     expect(cause).not.toMatch(/abc123|zzz9/);
   });
 
+  test("a registered secret is found even when JSON escaping changed it, and no cut leaves part of one", () => {
+    const redactor = new Redactor();
+    redactor.add(['quo"te\\secret', "LONGSECRET0123456789"]);
+
+    const original = new SandboxError("boxd request failed", {
+      code: "provider",
+      provider: "boxd",
+      cause: evidenceCause({
+        providerMessage: `echo quo"te\\secret and ${"x".repeat(290)}LONGSECRET0123456789`,
+      }),
+    });
+
+    const cause = String(redactor.error(original, "boxd").cause);
+    const fields: unknown = JSON.parse(cause);
+    const message = isObjectWith(fields) ? fields.providerMessage : undefined;
+
+    expect(message).toBeTypeOf("string");
+    expect(message).not.toContain("quo");
+    expect(message).not.toContain("LONGSEC");
+  });
+
   test("a cause that is not flat evidence is scrubbed as text, as before", () => {
     const original = new SandboxError("failed", {
       code: "provider",
@@ -111,3 +132,7 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
     expect(cause).not.toContain("abc123");
   });
 });
+
+function isObjectWith(value: unknown): value is { providerMessage?: unknown } {
+  return typeof value === "object" && value !== null;
+}
