@@ -4,7 +4,7 @@ import { files, python, type Guest } from "../../shared/guest.js";
 import { isNumber, isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 import { createGateway, type BeamContainer, type BeamGateway } from "./api.js";
-import { beamError, failure } from "./errors.js";
+import { beamError, failure, maybeSent } from "./errors.js";
 import { execute, rangeCommand, type BeamGuest } from "./execute.js";
 
 export interface BeamOptions {
@@ -42,7 +42,11 @@ export interface BeamMade {
   stubId: string;
 }
 
-/** One sandbox configuration. Beam prepares its stub on the first create and reuses it after. */
+/**
+ * One sandbox configuration. Beam prepares its stub on the first create and reuses it after.
+ * `create` returns once Beam allocated the container, without waiting for it to accept commands,
+ * so the adapter holds its ID before anything else can fail.
+ */
 export interface BeamTemplate {
   create(): Promise<BeamMade>;
 }
@@ -59,7 +63,6 @@ export interface BeamModule {
   /** Sets beam-js's one global configuration, read when its HTTP client is first made. */
   configure(settings: { token: string; workspaceId: string; gatewayUrl: string }): void;
   template(config: BeamTemplateConfig): BeamTemplate;
-  restore(snapshotId: string): Promise<BeamMade>;
 }
 
 const defaultImage = "node:22-bookworm";
@@ -145,26 +148,60 @@ const pieceProgram =
   "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[3])); open(sys.argv[2],'wb').write(f.read(int(sys.argv[4])))";
 
 /**
- * `@beamcloud/beam-js` prints its build and create progress with console.log. Creates run with
- * those calls dropped; other output passes through. Counted, so overlapping creates restore once.
+ * `@beamcloud/beam-js` prints build and create progress with console.log and logs raw HTTP errors,
+ * which carry the request's Authorization header, with console.error. While a create runs, log and
+ * info are dropped, and warn and error pass only text with the token removed: an error object
+ * becomes its name. Counted, so overlapping creates restore the console once.
  */
 let quiet = 0;
-let saved: { log: typeof console.log; info: typeof console.info } | undefined;
 
-async function silently<T>(action: () => Promise<T>): Promise<T> {
+let saved: Pick<typeof console, "log" | "info" | "warn" | "error"> | undefined;
+
+const secrets = new Set<string>();
+
+function scrubbed(args: unknown[]): string[] {
+  // One pass, longest first, so no secret is replaced inside another's replacement.
+  const list = [...secrets].sort((a, b) => b.length - a.length);
+
+  const pattern = new RegExp(
+    list.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+    "g",
+  );
+
+  return args.map((arg) => {
+    if (!isString(arg)) return arg instanceof Error ? `[${arg.name}]` : "[omitted]";
+
+    return list.length ? arg.replace(pattern, "[redacted]") : arg;
+  });
+}
+
+async function silently<T>(token: string, action: () => Promise<T>): Promise<T> {
+  // Real tokens are long; a short one would only mangle unrelated text.
+  if (token.length >= 8) secrets.add(token);
+
   if (quiet++ === 0) {
-    saved = { log: console.log, info: console.info };
+    const original = {
+      log: console.log,
+      info: console.info,
+      warn: console.warn,
+      error: console.error,
+    };
+
+    saved = original;
     console.log = () => {};
 
     console.info = () => {};
+
+    console.warn = (...args: unknown[]) => original.warn(...scrubbed(args));
+
+    console.error = (...args: unknown[]) => original.error(...scrubbed(args));
   }
 
   try {
     return await action();
   } finally {
     if (--quiet === 0 && saved) {
-      console.log = saved.log;
-      console.info = saved.info;
+      Object.assign(console, saved);
       saved = undefined;
     }
   }
@@ -286,7 +323,7 @@ export function createBeamProvider(
       id,
       shell: (script, timeoutMs, signal) => shell(id, script, timeoutMs, signal),
       raw: (command) => shell(id, command, 120_000),
-      upload: (path, bytes) => api().upload(id, path, bytes, 0o600),
+      upload: (path, bytes) => upload(id, path, bytes, 0o600),
       read: (path, range, signal) => readRange(id, path, range, signal),
     };
   }
@@ -429,6 +466,25 @@ export function createBeamProvider(
     stubs.delete(id);
   }
 
+  /**
+   * After a create got a container but could not finish it: stop the container and keep the
+   * original failure, or, when the stop is not confirmed, fail as outcome_unknown with its ID.
+   */
+  async function abandon(id: string, cause: unknown): Promise<never> {
+    const confirmed = await stop(id).then(
+      () => true,
+      () => false,
+    );
+
+    if (!confirmed)
+      throw failure(
+        `Sandbox ${id} did not finish creating and could not be confirmed stopped; stop it before retrying`,
+        "outcome_unknown",
+        id,
+      );
+    throw beamError(cause, id);
+  }
+
   const provider: BeamProvider = {
     name: "beam",
     keyMode: "best-effort",
@@ -438,6 +494,13 @@ export function createBeamProvider(
       safe(undefined, async () => {
         if (input.network !== undefined && input.network !== "all")
           throw failure("Beam adapter has no network policy", "unsupported");
+
+        if (input.idleTimeoutMs !== undefined)
+          throw failure("Beam sandboxes have no idle timeout; use timeoutMs", "unsupported");
+
+        // A restore runs at the snapshot's size; Beam takes no size for it.
+        if (input.from !== undefined && input.size !== undefined)
+          throw failure("Beam restores a snapshot at its own size", "unsupported");
         const size = sizeOf(input.size);
 
         const ttl =
@@ -446,14 +509,12 @@ export function createBeamProvider(
             : Math.max(1, Math.ceil(input.timeoutMs / 1000));
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
-        const m = await sdk();
         let made: BeamMade;
 
         try {
-          if (input.from !== undefined) {
-            const from = input.from;
-            made = await silently(() => m.restore(from));
-          } else {
+          if (input.from !== undefined) made = await api().restore(input.from, input.signal);
+          else {
+            const m = await sdk();
             const configKey = JSON.stringify([size.cpu, size.memoryMb, ttl]);
             let template = templates.get(configKey);
 
@@ -468,28 +529,28 @@ export function createBeamProvider(
                 })),
               );
             const chosen = template;
-            made = await silently(() => chosen.create());
+
+            made = await silently(credentials().token, () => chosen.create());
           }
         } catch (error) {
-          // beam-js throws its own errors for a refused create and axios errors for HTTP
-          // failures. A create the gateway accepted but whose connect then failed leaves a
-          // container behind without a marker; Beam stops it when its lifetime ends.
-          const mapped = beamError(error);
-
-          throw ["auth", "quota", "invalid_argument"].includes(mapped.code)
-            ? mapped
-            : failure(
-                `Sandbox creation failed; a sandbox may be left running until its ${ttl} s lifetime ends`,
-                "outcome_unknown",
-              );
+          // A refusal (an HTTP status, or Beam's ok:false) made nothing. Without an answer, the
+          // allocation may have happened, and nothing names the container to stop.
+          if (!maybeSent(error)) throw beamError(error);
+          throw failure(
+            `Sandbox creation outcome is unknown; a sandbox may be left running until its ${ttl} s lifetime ends`,
+            "outcome_unknown",
+          );
         }
 
         const id = made.containerId;
-        stubs.set(id, made.stubId);
+
+        if (made.stubId) stubs.set(id, made.stubId);
         const createdAt = Date.now();
 
         try {
           const g = api();
+
+          await g.connect(id, input.signal);
 
           // A restored sandbox keeps the marker and env of the sandbox it was snapshotted from;
           // both are rewritten for this one.
@@ -515,8 +576,7 @@ export function createBeamProvider(
 
           if (input.signal?.aborted) throw failure("Creation aborted", "aborted", id);
         } catch (error) {
-          await stop(id).catch(() => {});
-          throw beamError(error, id);
+          return abandon(id, error);
         }
 
         return { id, key: input.key, labels: { ...input.labels }, state: "running", createdAt };
@@ -556,7 +616,14 @@ export function createBeamProvider(
     files: files(async (id) => fileGuest(id), safe),
     previewUrl: (id, port) =>
       safe(id, async () => ({ url: await api().expose(id, await stubOf(id), port) })),
-    snapshot: (id) => safe(id, async () => ({ id: await api().snapshot(id, await stubOf(id)) })),
+    snapshot: (id, options) =>
+      safe(id, async () => {
+        // Beam keeps a memory snapshot with no expiry and has no call to delete one.
+        if (options?.expiresInMs)
+          throw failure("Beam snapshots do not expire and cannot be deleted", "unsupported", id);
+
+        return { id: await api().snapshot(id, await stubOf(id)) };
+      }),
     native(id) {
       const stubId = stubs.get(id) ?? containerPattern.exec(id)?.[1];
 

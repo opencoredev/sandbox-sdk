@@ -1,4 +1,5 @@
 import { loadPeer } from "../../peer.js";
+import { failure } from "./errors.js";
 import {
   createBeamProvider,
   type BeamModule,
@@ -8,25 +9,42 @@ import {
 
 export type { BeamNative, BeamOptions, BeamProvider } from "./provider.js";
 
+/**
+ * beam-js keeps one global configuration and caches its HTTP client, with the first token and
+ * gateway, for the life of the process. One process can therefore use one Beam account: a provider
+ * with another token, workspace or gateway is refused instead of creating in the wrong account.
+ */
+let configured: string | undefined;
+
 /** The adapter's view of `@beamcloud/beam-js` 1.1.6. */
 async function load(): Promise<BeamModule> {
   const m = await loadPeer("@beamcloud/beam-js", "beam", () => import("@beamcloud/beam-js"));
 
   return {
     configure(settings) {
+      const value = JSON.stringify([settings.token, settings.workspaceId, settings.gatewayUrl]);
+
+      if (configured !== undefined && configured !== value)
+        throw failure(
+          "One process can use one Beam token, workspace and gateway: @beamcloud/beam-js keeps one global client",
+          "invalid_argument",
+        );
+      configured = value;
       m.beamOpts.token = settings.token;
       m.beamOpts.workspaceId = settings.workspaceId;
       m.beamOpts.gatewayUrl = settings.gatewayUrl;
     },
-    template: (config) =>
-      new m.Sandbox({
+    template(config) {
+      const sandbox = new m.Sandbox({
         name: "sandbox-sdk",
         cpu: config.cpu,
         memory: config.memoryMb,
         image: new m.Image({ baseImage: config.image }),
         keepWarmSeconds: config.keepWarmSeconds,
-      }),
-    restore: (snapshotId) => m.Sandbox.createFromSnapshot(snapshotId),
+      });
+
+      return { create: () => sandbox.create({ waitForReady: false }) };
+    },
   };
 }
 

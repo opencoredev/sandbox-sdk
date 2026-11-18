@@ -51,6 +51,11 @@ describe.skipIf(!credentials)("Beam live options", { timeout: 180_000 }, () => {
 
       expect((await box.run("wc -c", { stdin: input })).stdout.trim()).toBe("300000");
 
+      // Over the gateway's upload limit once hex-encoded: the staged input goes up in pieces.
+      const huge = "y".repeat(6 * 1024 * 1024);
+
+      expect((await box.run("wc -c", { stdin: huge })).stdout.trim()).toBe(String(huge.length));
+
       const big = await box.run("head -c 2000000 /dev/zero | tr '\\0' y", {
         maxOutputBytes: 4_000_000,
       });

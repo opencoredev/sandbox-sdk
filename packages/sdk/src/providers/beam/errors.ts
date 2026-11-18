@@ -61,3 +61,17 @@ export function beamError(cause: unknown, sandboxId?: string): SandboxError {
     { code, provider: "beam", sandboxId, cause: kept.cause },
   );
 }
+
+/** Whether a failed request may have reached Beam: no HTTP answer came back (network, timeout). */
+export function maybeSent(cause: unknown) {
+  if (
+    cause instanceof Error &&
+    ["AbortError", "TimeoutError", "CanceledError"].includes(cause.name)
+  )
+    return true;
+
+  if (cause instanceof TypeError) return true;
+
+  // An axios cause without a response: the request may have arrived.
+  return isObject(cause) && "isAxiosError" in cause && !("response" in cause && cause.response);
+}

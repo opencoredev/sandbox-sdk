@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import {
   createBeamProvider,
@@ -19,6 +19,8 @@ function fakeBeam() {
   const creates: BeamTemplateConfig[] = [];
   const stops: string[] = [];
   let stopRefusals = 0;
+  let uploadRefusals = 0;
+  let createFailure: Error | undefined;
   let next = 0;
 
   const add = (status = "RUNNING") => {
@@ -50,6 +52,9 @@ function fakeBeam() {
         })),
       });
 
+    if (path === "/pods" && init?.method === "POST")
+      return json({ ok: true, ...add(), stubId: "" });
+
     const stop = /^\/containers\/([^/]+)\/stop$/.exec(path);
 
     if (stop) {
@@ -77,7 +82,15 @@ function fakeBeam() {
       return json({ ok: false, errorMsg: "Failed to connect to sandbox" });
     const route = pod[2] ?? "";
 
+    if (route === "connect") return json({ ok: true });
+
     if (route === "files/upload") {
+      if (uploadRefusals > 0) {
+        uploadRefusals--;
+
+        return json({ ok: false, errorMsg: "refused" });
+      }
+
       c.files.set(body.containerPath, Buffer.from(body.data, "base64").toString());
 
       return json({ ok: true });
@@ -91,7 +104,7 @@ function fakeBeam() {
         : json({ ok: true, data: Buffer.from(file).toString("base64") });
     }
 
-    if (route === "ttl") return json({ ok: true });
+    if (route === "ttl" && init?.method === "PATCH") return json({ ok: true });
 
     if (route === "ports/expose") return json({ ok: true, url: `https://${body.port}.example` });
 
@@ -104,12 +117,17 @@ function fakeBeam() {
     configure() {},
     template: (config) => ({
       async create() {
+        // beam-js logs a failed request whole, Authorization header included, before it throws.
+        if (createFailure) {
+          console.error("Build failed: Bearer secret-token-123", createFailure);
+          throw createFailure;
+        }
+
         creates.push(config);
 
         return add();
       },
     }),
-    restore: async () => add(),
   };
 
   return {
@@ -119,6 +137,12 @@ function fakeBeam() {
     add,
     refuseStops: (n: number) => {
       stopRefusals = n;
+    },
+    refuseUploads: (n: number) => {
+      uploadRefusals = n;
+    },
+    failCreates: (error: Error | undefined) => {
+      createFailure = error;
     },
     provider: (options = {}) =>
       createBeamProvider(
@@ -235,5 +259,86 @@ describe("beam adapter", () => {
 
     expect(await provider.snapshot?.(box.id)).toEqual({ id: "snap-1" });
     expect((await provider.previewUrl(box.id, 3000)).url).toBe("https://3000.example");
+  });
+
+  test("options Beam cannot honour are refused before anything is made", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+    const box = await provider.create({ labels: {} });
+
+    await expect(provider.create({ labels: {}, idleTimeoutMs: 10_000 })).rejects.toMatchObject({
+      code: "unsupported",
+    });
+    await expect(
+      provider.create({ labels: {}, from: "snap-1", size: { cpu: 4, memoryMb: 8192 } }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+    await expect(provider.snapshot?.(box.id, { expiresInMs: 1 })).rejects.toMatchObject({
+      code: "unsupported",
+    });
+    expect(beam.creates.length).toBe(1);
+  });
+
+  test("a create that cannot finish and cannot confirm the stop is outcome_unknown with its ID", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+
+    beam.refuseUploads(1);
+    beam.refuseStops(1);
+
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({
+      code: "outcome_unknown",
+      sandboxId: expect.stringMatching(/^sandbox-/),
+    });
+  });
+
+  test("a create that cannot finish but stops cleanly keeps its own error", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+
+    beam.refuseUploads(1);
+
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({ code: "provider" });
+    expect([...beam.containers.values()].every((c) => c.status === "STOPPED")).toBe(true);
+  });
+
+  test("a create with no answer is outcome_unknown; a refusal keeps its code", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+
+    beam.failCreates(Object.assign(new Error("socket hang up"), { isAxiosError: true }));
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+
+    beam.failCreates(
+      Object.assign(new Error("Request failed with status code 429"), {
+        isAxiosError: true,
+        response: { status: 429 },
+      }),
+    );
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({ code: "quota" });
+  });
+
+  test("beam-js errors logged during a create lose the token and any objects", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider({ token: "secret-token-123" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      beam.failCreates(
+        Object.assign(new Error("Request failed with status code 401"), {
+          isAxiosError: true,
+          response: { status: 401 },
+          config: { headers: { Authorization: "Bearer secret-token-123" } },
+        }),
+      );
+      await expect(provider.create({ labels: {} })).rejects.toMatchObject({ code: "auth" });
+      expect(spy).toHaveBeenCalledWith("Build failed: Bearer [redacted]", "[Error]");
+      expect(JSON.stringify(spy.mock.calls)).not.toContain("secret-token-123");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(console.error).not.toBe(spy);
   });
 });

@@ -25,6 +25,13 @@ export interface ExecStart {
 
 export interface BeamGateway {
   containers(signal?: AbortSignal): Promise<BeamContainer[]>;
+  /** Waits until a new container accepts commands. */
+  connect(id: string, signal?: AbortSignal): Promise<void>;
+  /** Starts a container from a memory snapshot. */
+  restore(
+    checkpointId: string,
+    signal?: AbortSignal,
+  ): Promise<{ containerId: string; stubId: string }>;
   stop(id: string): Promise<void>;
   exec(id: string, command: string, signal?: AbortSignal): Promise<ExecStart>;
   /** The exit code, or -1 while the process runs. */
@@ -87,7 +94,7 @@ export function createGateway(options: GatewayOptions): BeamGateway {
   const base = options.url.replace(/\/+$/, "") + "/api/v1/gateway";
 
   async function call(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PATCH",
     path: string,
     body?: JsonObject,
     signal?: AbortSignal,
@@ -122,6 +129,17 @@ export function createGateway(options: GatewayOptions): BeamGateway {
       const list = Array.isArray(value.containers) ? value.containers : [];
 
       return list.flatMap((entry) => container(entry) ?? []);
+    },
+    async connect(id, signal) {
+      accepted(await call("POST", `${pod(id)}/connect`, {}, signal));
+    },
+    async restore(checkpointId, signal) {
+      const value = accepted(await call("POST", "/pods", { checkpointId }, signal));
+      const containerId = text(value.containerId);
+
+      if (!containerId) throw new BeamGatewayError(undefined, "refused");
+
+      return { containerId, stubId: text(value.stubId) ?? "" };
     },
     async stop(id) {
       accepted(await call("POST", `/containers/${encodeURIComponent(id)}/stop`, {}));
@@ -199,7 +217,8 @@ export function createGateway(options: GatewayOptions): BeamGateway {
       return checkpoint;
     },
     async ttl(id, seconds) {
-      accepted(await call("POST", `${pod(id)}/ttl`, { ttl: seconds }));
+      // beam-js 1.1.6 updates the lifetime with PATCH.
+      accepted(await call("PATCH", `${pod(id)}/ttl`, { ttl: seconds }));
     },
   };
 }
