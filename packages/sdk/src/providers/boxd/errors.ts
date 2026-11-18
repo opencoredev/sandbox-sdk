@@ -202,9 +202,11 @@ export function boxdError(
 ): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const { sandboxId } = context;
+
   const keys = [process.env.BOXD_API_KEY, ...secrets].filter(
     (key): key is string => key !== undefined && key !== "",
   );
+
   const native = decodeNative(cause);
   const status = native.grpcCode;
 
