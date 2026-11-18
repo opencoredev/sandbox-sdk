@@ -46,6 +46,7 @@ const fakes = {
   freestyle: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   superserve: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   baseten: `{ apiKey: "smoke-key" }`,
+  beam: `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000 }`,
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
 };
 

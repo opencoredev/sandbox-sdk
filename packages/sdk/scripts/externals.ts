@@ -8,6 +8,7 @@ export const externalPackages: readonly string[] = [
   // Provider SDKs.
   "@basetenlabs/sandbox",
   "@basetenlabs/client",
+  "@beamcloud/beam-js",
   "@boatdev/sdk",
   "@boxd-sh/sdk",
   "@daytonaio/sdk",
