@@ -149,10 +149,12 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
     const fields = Object.fromEntries(
       Array.from({ length: 40 }, (_, i) => [`field${i}`, `value ${i} `.repeat(10)]),
     );
+
     const original = new SandboxError("failed", {
       code: "provider",
       cause: new Error(JSON.stringify(fields)),
     });
+
     const cause = String(new Redactor().error(original, "stub").cause);
 
     expect(cause.length).toBeLessThanOrEqual(1000);
