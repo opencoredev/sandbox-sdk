@@ -4,7 +4,8 @@
  * - Same-machine sizes and templates are the bench's existing same-spec flags (collection-plan.sh):
  *   E2B and Superserve 4 vCPU / 8 GiB templates, Daytona's daytona-large, Upstash medium, boxd
  *   4 vCPU / 16 GiB (its 4 vCPU shape; non-compliant by the eligibility code), Luxor 4:8192, and
- *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle.
+ *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle. Luxor and Superserve get 20 GB disks
+ *   (2026-11-18): their 5 GB and 4 GiB disks left too little free space for the workloads.
  * - Default sizes and "default size too small" come from FIT.md (SBX-95, fetched 2026-11-05).
  * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve and Boat refuse it).
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
@@ -160,10 +161,12 @@ export const providerSetups: readonly ProviderSetup[] = [
     lifetime: true,
     pricingKey: "tenki",
     tracks: {
+      // 20 GB disk: at Luxor's 5 GB minimum the build stopped in preparation with 2.06 GiB free
+      // of the 4 GiB it needs (rw-head1, 2026-11-05). Other providers run with 10 to 100 GB.
       "same-machine": {
-        size: { cpu: 4, memoryMb: 8192 },
+        size: { cpu: 4, memoryMb: 8192, diskGb: 20 },
         vcpu: 4,
-        provisioned: size(4, 8, 5),
+        provisioned: size(4, 8, 20),
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 3.8, 5), tooSmall: { build: fit.tenkiBuild } },
@@ -176,10 +179,12 @@ export const providerSetups: readonly ProviderSetup[] = [
     lifetime: false,
     pricingKey: "superserve",
     tracks: {
+      // Same recipe as sandbox-bench-node22-py311-4x8-pinned with a 20 GiB disk: at 4 GiB the build
+      // and fix-and-test stopped in preparation with 1.46 GiB free (rw-head1, 2026-11-05).
       "same-machine": {
-        template: "sandbox-bench-node22-py311-4x8-pinned",
+        template: "sandbox-bench-node22-py311-4x8-d20-pinned",
         vcpu: 4,
-        provisioned: size(4, 8, 4),
+        provisioned: size(4, 8, 20),
         tooSmall: {},
       },
       default: {
