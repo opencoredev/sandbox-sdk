@@ -1,7 +1,8 @@
 /** Verified against @beamcloud/beam-js 1.1.6 and Beam's gateway on 2026-11-18. */
 import type { CreateInput, Labels, Provider, SandboxInfo } from "../../provider.js";
-import { files, type Guest } from "../../shared/guest.js";
+import { files, python, type Guest } from "../../shared/guest.js";
 import { isNumber, isObject, isString, isStringRecord } from "../../shared/narrow.js";
+import { quote } from "../../shared/shell.js";
 import { createGateway, type BeamContainer, type BeamGateway } from "./api.js";
 import { beamError, failure } from "./errors.js";
 import { execute, rangeCommand, type BeamGuest } from "./execute.js";
@@ -129,6 +130,19 @@ const containerPattern =
   /^sandbox-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-[0-9a-f]+$/;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Beam's gateway refuses (HTTP 429) an upload of 10 MiB (8 MiB passes) and a download of 4 MiB or
+// more: the download travels as one gRPC message, capped at 4 MiB (measured 2026-11-18). Larger
+// files move in pieces of these sizes.
+const uploadPieceBytes = 4 * 1024 * 1024;
+const downloadPieceBytes = 3 * 1024 * 1024;
+
+// Prints the size of argv[1].
+const sizeProgram = "import os,sys; print(os.path.getsize(sys.argv[1]))";
+
+// Copies argv[4] bytes of argv[1] from offset argv[3] into a new file argv[2].
+const pieceProgram =
+  "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[3])); open(sys.argv[2],'wb').write(f.read(int(sys.argv[4])))";
 
 /**
  * `@beamcloud/beam-js` prints its build and create progress with console.log. Creates run with
@@ -277,15 +291,71 @@ export function createBeamProvider(
     };
   }
 
+  /** Uploads a file, in pieces joined in the guest when it is too large for one request. */
+  async function upload(id: string, path: string, bytes: Uint8Array, mode: number) {
+    if (bytes.length <= uploadPieceBytes) return api().upload(id, path, bytes, mode);
+
+    const stem = `/tmp/.sandbox-sdk/up-${crypto.randomUUID()}`;
+    const pieces: string[] = [];
+
+    try {
+      for (let offset = 0; offset < bytes.length; offset += uploadPieceBytes) {
+        const piece = `${stem}.${pieces.length}`;
+
+        pieces.push(piece);
+        await api().upload(id, piece, bytes.subarray(offset, offset + uploadPieceBytes), 0o600);
+      }
+
+      await shell(
+        id,
+        `mkdir -p -- "$(dirname -- ${quote(path)})" && cat ${pieces.map(quote).join(" ")} >${quote(path)} && chmod ${mode.toString(8)} ${quote(path)}`,
+        120_000,
+      );
+    } finally {
+      await shell(id, `rm -f -- ${pieces.map(quote).join(" ")}`, 60_000).catch(() => {});
+    }
+  }
+
+  /** Downloads a file, in pieces copied aside in the guest when it is too large for one response. */
+  async function download(id: string, path: string): Promise<Uint8Array | undefined> {
+    try {
+      return await api().download(id, path);
+    } catch (error) {
+      if (beamError(error, id).code !== "quota") throw error;
+    }
+
+    const size = Number((await shell(id, python(sizeProgram, path), 60_000)).trim());
+    const result = new Uint8Array(size);
+    const piece = `/tmp/.sandbox-sdk/down-${crypto.randomUUID()}`;
+
+    try {
+      for (let offset = 0; offset < size; offset += downloadPieceBytes) {
+        const length = Math.min(downloadPieceBytes, size - offset);
+
+        await shell(id, python(pieceProgram, path, piece, String(offset), String(length)), 60_000);
+
+        const bytes = await api().download(id, piece);
+
+        if (bytes?.length !== length)
+          throw failure("File changed while it was read", "provider", id);
+        result.set(bytes, offset);
+      }
+    } finally {
+      await shell(id, `rm -f -- ${quote(piece)}`, 60_000).catch(() => {});
+    }
+
+    return result;
+  }
+
   /** The guest the shared file operations run through. */
   function fileGuest(id: string): Guest {
     return {
       name: "beam",
       raw: (command) => shell(id, command, 120_000),
-      upload: (path, bytes, mode) => api().upload(id, path, bytes, mode ?? 0o644),
+      upload: (path, bytes, mode) => upload(id, path, bytes, mode ?? 0o644),
       read: async (path, range) => {
         if (range) return readRange(id, path, range);
-        const bytes = await api().download(id, path);
+        const bytes = await download(id, path);
 
         if (bytes === undefined) throw failure("File does not exist", "file_not_found", id);
 

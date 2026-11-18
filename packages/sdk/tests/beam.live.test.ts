@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, test, vi } from "vitest";
 import { createSandbox } from "../src/index.js";
 import { beam, type BeamOptions } from "../src/providers/beam/index.js";
@@ -55,6 +56,27 @@ describe.skipIf(!credentials)("Beam live options", { timeout: 180_000 }, () => {
       });
 
       expect(big.stdout.length).toBe(2_000_000);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  // Beam's gateway refuses a body of about 10 MB, so files that size move in pieces.
+  test("a 10 MiB file goes up and comes back whole", async () => {
+    const box = await createSandbox(liveProvider(), { size: { cpu: 1, memoryMb: 2048 } });
+
+    try {
+      const bytes = new Uint8Array(10 * 1024 * 1024).map((_, i) => (i * 31) % 251);
+
+      await box.files.write("/workspace/big.bin", bytes);
+      expect((await box.run("sha256sum /workspace/big.bin")).stdout.split(" ")[0]).toBe(
+        createHash("sha256").update(bytes).digest("hex"),
+      );
+      expect(
+        Buffer.from(await box.files.read("/workspace/big.bin", { as: "bytes" })).equals(
+          Buffer.from(bytes),
+        ),
+      ).toBe(true);
     } finally {
       await box.destroy();
     }
