@@ -3,9 +3,12 @@ import { Sandbox, Template } from "@superserve/sdk";
 async function main() {
   const [size = "1x1", ...extra] = process.argv.slice(2);
 
-  if ((size !== "1x1" && size !== "4x8") || extra.length > 0) {
-    throw new Error("Usage: bun build.ts [1x1|4x8]");
+  if ((size !== "1x1" && size !== "4x8" && size !== "4x8-d20") || extra.length > 0) {
+    throw new Error("Usage: bun build.ts [1x1|4x8|4x8-d20]");
   }
+
+  // 4x8-d20: the 4x8 recipe with a 20 GiB disk, for the realistic workloads (bench/SUPERSERVE.md).
+  const small = size === "1x1";
 
   const apiKey = process.env.SUPERSERVE_API_KEY;
 
@@ -16,9 +19,9 @@ async function main() {
     name: `sandbox-bench-node22-py311-${size}-pinned`,
     // The version tag is informational; the digest is the immutable build input.
     from: "node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d",
-    vcpu: size === "1x1" ? 1 : 4,
-    memoryMib: size === "1x1" ? 1024 : 8192,
-    diskMib: 4096,
+    vcpu: small ? 1 : 4,
+    memoryMib: small ? 1024 : 8192,
+    diskMib: size === "4x8-d20" ? 20_480 : 4096,
     steps: [
       {
         run: `printf '%s\\n' 'Types: deb' 'URIs: http://snapshot.debian.org/archive/debian/20261022T000000Z/' 'Suites: bookworm bookworm-updates' 'Components: main' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' 'Check-Valid-Until: no' '' 'Types: deb' 'URIs: http://snapshot.debian.org/archive/debian-security/20261022T000000Z/' 'Suites: bookworm-security' 'Components: main' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' 'Check-Valid-Until: no' > /etc/apt/sources.list.d/debian.sources`,
@@ -74,8 +77,12 @@ try {
   if (error instanceof Error && error.message.includes("vcpu must be 1-2")) {
     process.stderr.write("BLOCKED: vcpu must be 1-2 (your team's limit)\n");
   } else {
+    // The message can name a limit (such as the plan's disk maximum); redact the key before printing.
+    const key = process.env.SUPERSERVE_API_KEY?.trim();
+    const message = error instanceof Error ? error.message : String(error);
+    const safe = key ? message.split(key).join("[redacted]") : message;
     process.stderr.write(
-      "Template build failed. Check the size argument, credentials, and Superserve build status.\n",
+      `Template build failed: ${safe.slice(0, 500)}\nCheck the size argument, credentials, and Superserve build status.\n`,
     );
   }
 
