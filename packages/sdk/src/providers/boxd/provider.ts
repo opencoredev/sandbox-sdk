@@ -625,9 +625,11 @@ export function createBoxdProvider<C extends BoxdClient>(
       safe(id, async () => {
         try {
           const c = await api();
+
           const m = await control({ call: "machines.get", sandboxId: id }, () =>
             c.machines.get(id),
           );
+
           // Connecting is for use, so a paused machine may be woken to read its metadata.
           const value = await info(m, { attach: true });
           boxes.set(id, m);

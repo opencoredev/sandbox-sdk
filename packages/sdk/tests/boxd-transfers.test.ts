@@ -39,17 +39,15 @@ async function fixture(stall: "headers" | "body" | "auth" | "none" | "missing" |
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     paths.push(req.url ?? "");
-    const auth = req.url?.includes("/auth/");
+    // @boxd-sh/sdk 0.3 sends the API key itself to a TLS or loopback endpoint, after one Whoami
+    // before its first stream (a stream can't be replayed if the key is refused). That Whoami is
+    // the auth step this fixture answers or stalls.
+    const auth = req.url?.endsWith("/Whoami");
 
     if (auth && behavior !== "auth") {
       req.resume();
-      res.setHeader("content-type", "application/json");
-      res.end(
-        JSON.stringify({
-          token: "local-fixture-token",
-          expires_at: Math.floor(Date.now() / 1000) + 3600,
-        }),
-      );
+      res.writeHead(200, { "content-type": "application/grpc-web+proto", "grpc-status": "0" });
+      res.end(frame(Buffer.alloc(0)));
 
       return;
     }
@@ -194,7 +192,7 @@ test("successful streaming upload and binary download leave the client reusable"
     4 * 1024 * 1024,
   );
   expect(await client.download("machine", "/file")).toEqual(new Uint8Array([0, 255, 42]));
-  expect(server.paths.filter((path) => path.includes("/auth/"))).toHaveLength(1);
+  expect(server.paths.filter((path) => path.endsWith("/Whoami"))).toHaveLength(1);
 });
 
 test("a timed-out worker is replaced without replaying its upload", async () => {
