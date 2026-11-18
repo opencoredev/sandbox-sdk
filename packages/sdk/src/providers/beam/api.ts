@@ -137,7 +137,8 @@ export function createGateway(options: GatewayOptions): BeamGateway {
       const value = accepted(await call("POST", "/pods", { checkpointId }, signal));
       const containerId = text(value.containerId);
 
-      if (!containerId) throw new BeamGatewayError(undefined, "refused");
+      // Accepted without naming the container: it may exist, so this is not a refusal.
+      if (!containerId) throw new BeamGatewayError(undefined, "malformed");
 
       return { containerId, stubId: text(value.stubId) ?? "" };
     },

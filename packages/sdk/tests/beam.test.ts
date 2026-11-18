@@ -21,7 +21,7 @@ function fakeBeam() {
   let stopRefusals = 0;
   let uploadRefusals = 0;
   let createFailure: Error | undefined;
-  let restoreAnswer: "ok" | "truncated" | "5xx" | "refused" = "ok";
+  let restoreAnswer: "ok" | "truncated" | "5xx" | "refused" | "no-id" = "ok";
   let next = 0;
 
   const add = (status = "RUNNING") => {
@@ -62,6 +62,8 @@ function fakeBeam() {
         return new Response(`{"ok":true,"containerId":"${made.containerId}`, { status: 200 });
 
       if (restoreAnswer === "5xx") return json({ ok: false, errorMsg: "internal" }, 502);
+
+      if (restoreAnswer === "no-id") return json({ ok: true });
 
       return json({ ok: true, ...made, stubId: "" });
     }
@@ -360,7 +362,7 @@ describe("beam adapter", () => {
     const beam = fakeBeam();
     const provider = beam.provider();
 
-    for (const answer of ["truncated", "5xx"] as const) {
+    for (const answer of ["truncated", "5xx", "no-id"] as const) {
       beam.answerRestores(answer);
       await expect(provider.create({ labels: {}, from: "snap-1" })).rejects.toMatchObject({
         code: "outcome_unknown",
@@ -371,5 +373,19 @@ describe("beam adapter", () => {
     await expect(provider.create({ labels: {}, from: "snap-1" })).rejects.toMatchObject({
       code: "provider",
     });
+  });
+
+  test("an allocation answer beam-js could not read is outcome_unknown", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+
+    // beam-js's own message when the answer had no readable `ok`.
+    beam.failCreates(new Error("Failed to create sandbox"));
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+
+    beam.failCreates(new Error("Failed to prepare runtime: image build failed"));
+    await expect(provider.create({ labels: {} })).rejects.toMatchObject({ code: "provider" });
   });
 });

@@ -12,7 +12,7 @@ export function failure(message: string, code: ErrorCode = "provider", sandboxId
 export class BeamGatewayError extends Error {
   constructor(
     readonly status: number | undefined,
-    readonly kind: "http" | "refused" | "missing",
+    readonly kind: "http" | "refused" | "missing" | "malformed",
   ) {
     super(status === undefined ? `Beam gateway ${kind}` : `Beam gateway HTTP ${status}`);
     this.name = "BeamGatewayError";
@@ -76,6 +76,13 @@ export function maybeSent(cause: unknown) {
 
   if (cause instanceof TypeError) return true;
 
+  // An answer that said ok but named no container, or that could not be read.
+  if (cause instanceof BeamGatewayError && cause.kind === "malformed") return true;
+
+  // beam-js's message when the allocation answer had no `ok` it could read (a body it could not
+  // parse arrives as text); a refusal carries Beam's own errorMsg instead.
+  if (cause instanceof Error && cause.message === "Failed to create sandbox") return true;
+
   const status = httpStatus(cause);
 
   if (status !== undefined) return status >= 500;
@@ -88,8 +95,11 @@ export function maybeSent(cause: unknown) {
 export function cachedAuthorization(
   cause: unknown,
 ): { authorization: unknown; baseURL: unknown } | undefined {
-  if (!isObject(cause) || !("_client" in cause) || !isObject(cause._client)) return undefined;
+  if (!isObject(cause) || !("_client" in cause)) return undefined;
   const axios = cause._client;
+
+  // An axios instance is a function with properties, so objects and functions both count.
+  if (!isObject(axios) && !(axios instanceof Function)) return undefined;
 
   if (!("defaults" in axios) || !isObject(axios.defaults))
     return { authorization: undefined, baseURL: undefined };
