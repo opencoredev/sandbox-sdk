@@ -221,6 +221,9 @@ export function scrub(text: string): string {
 
 type EvidenceValue = string | number | boolean | null;
 
+/** Evidence keys that name a credential, as the whole-text credential patterns match them. */
+const credentialKey = /(?:api[-_]?key|token|password|secret|authorization)$/i;
+
 /** The fields of a flat JSON object, the form {@link evidenceCause} writes. Undefined for any other text. */
 function evidenceFields(text: string): [string, EvidenceValue][] | undefined {
   if (!text.startsWith("{")) return undefined;
@@ -257,23 +260,29 @@ function scrubCause(text: string, redact: (text: string) => string): string {
 
   const clean = fields.map(([key, value]): [string, EvidenceValue] => [
     scrub(redact(key)).slice(0, 64),
-    isString(value) ? scrub(redact(value)) : value,
+    // A field named like a credential is one, as the whole-text scrub treats `"token": "…"`.
+    isString(value) ? (credentialKey.test(key) ? "[REDACTED]" : scrub(redact(value))) : value,
   ]);
 
-  for (const bound of [300, 120, 40]) {
-    const json = JSON.stringify(
+  const fit = (entries: [string, EvidenceValue][], bound: number) =>
+    JSON.stringify(
       Object.fromEntries(
-        clean.map(([key, value]) => [key, isString(value) ? value.slice(0, bound) : value]),
+        entries.map(([key, value]) => [key, isString(value) ? value.slice(0, bound) : value]),
       ),
     );
+
+  for (const bound of [300, 120, 40]) {
+    const json = fit(clean, bound);
 
     if (json.length <= 1000) return json;
   }
 
-  // Too many fields to fit: keep the machine fields, which are short, and drop the text.
-  return JSON.stringify(
-    Object.fromEntries(clean.filter(([, value]) => !isString(value) || value.length <= 40)),
-  );
+  // Too many fields to fit: drop whole fields from the end until it does, so it stays valid JSON.
+  const kept = [...clean];
+
+  while (kept.length > 0 && fit(kept, 40).length > 1000) kept.pop();
+
+  return fit(kept, 40);
 }
 
 /**

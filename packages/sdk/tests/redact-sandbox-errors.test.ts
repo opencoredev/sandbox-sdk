@@ -121,6 +121,44 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
     expect(message).not.toContain("LONGSEC");
   });
 
+  test("a field named like a credential is redacted, as the whole-text scrub did", () => {
+    const original = new SandboxError("failed", {
+      code: "provider",
+      cause: evidenceCause({ operation: "create", requestId: "req-1" }),
+    });
+
+    for (const key of ["token", "api_key", "password", "accessToken"]) {
+      const cause = new Redactor().error(
+        new SandboxError("failed", {
+          code: "provider",
+          cause: new Error(JSON.stringify({ [key]: "fixture-value-1" })),
+        }),
+        "stub",
+      ).cause;
+
+      expect(String(cause)).not.toContain("fixture-value-1");
+    }
+
+    expect(JSON.parse(String(new Redactor().error(original, "stub").cause))).toEqual({
+      operation: "create",
+      requestId: "req-1",
+    });
+  });
+
+  test("evidence with too many fields stays valid JSON within 1,000 characters", () => {
+    const fields = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`field${i}`, `value ${i} `.repeat(10)]),
+    );
+    const original = new SandboxError("failed", {
+      code: "provider",
+      cause: new Error(JSON.stringify(fields)),
+    });
+    const cause = String(new Redactor().error(original, "stub").cause);
+
+    expect(cause.length).toBeLessThanOrEqual(1000);
+    expect(() => JSON.parse(cause)).not.toThrow();
+  });
+
   test("a cause that is not flat evidence is scrubbed as text, as before", () => {
     const original = new SandboxError("failed", {
       code: "provider",
