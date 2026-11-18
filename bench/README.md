@@ -306,7 +306,7 @@ The builder appends the agent copy and entrypoint. The main suite keeps Baseten'
 
 ### Instabox
 
-Instabox's Builder plan allows 30 starts a minute across the account (create, start, resume and wake; more is a retryable `429 rate_limited`). Collect each burst cohort as its own command, at least 65 seconds after the last, with nothing else creating Instabox machines meanwhile: `--bursts 10 --burst-cohorts 1`, three times, then the same for K=25. The same-spec track asks for `--size instabox=4:8192`, which is also Instabox's default.
+Instabox limits starts per account: 30 a minute on Pro, 50 on Builder (create, start, resume and wake; more is a retryable `429 rate_limited`). Collect each burst cohort as its own command, at least 65 seconds after the last, with nothing else creating Instabox machines meanwhile: `--bursts 10 --burst-cohorts 1`, three times, then the same for K=25. The same-spec track asks for `--size instabox=4:8192`, which is also Instabox's default.
 
 Instabox blocks outbound HTTPS to public DNS resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8 and 9.9.9.9 on port 443), so the `tcp-ms` probe, which connects to `1.1.1.1:443`, times out on every attempt. Other port 443 connections (GitHub, npm, Cloudflare) work, as does `1.1.1.1` on ports 80 and 53. Record it as not available in the collection policy, not as a provider failure.
 
