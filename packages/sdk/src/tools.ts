@@ -68,7 +68,8 @@ export interface ToolResult {
   text: string;
 }
 
-const descriptions: Record<ToolName, string> = {
+/** What each tool tells the model. Shared so every integration describes the tools the same way. */
+export const toolDescriptions: Record<ToolName, string> = {
   run: "Run a noninteractive command with a timeout. cwd and exports do not persist. Do not use for servers; use start_process, or file tools for reading and editing.",
   read_file:
     "Read numbered lines and a SHA-256; offset is a zero-based line index. Do not use for directory listings or binary contents.",
@@ -330,7 +331,7 @@ export function createSandboxTools(box: Sandbox, options: SandboxToolsOptions = 
 
     return {
       name: tool,
-      description: descriptions[tool],
+      description: toolDescriptions[tool],
       inputSchema: schema,
       async execute(
         input: JsonValue,

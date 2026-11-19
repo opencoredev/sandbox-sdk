@@ -168,6 +168,7 @@ export default defineConfig({
                   root: "/integrations/openai-agents",
                   icon: "/integrations/openai.svg",
                 },
+                { label: "MCP", root: "/integrations/mcp", icon: "plug" },
               ],
             },
             {

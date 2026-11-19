@@ -1,0 +1,59 @@
+{
+  "name": "@opencoredev/sandbox-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server that gives any agent sandboxes on E2B, Daytona, Vercel, Luxor, Docker and more, through Sandbox SDK.",
+  "keywords": [
+    "ai-agents",
+    "mcp",
+    "model-context-protocol",
+    "sandbox"
+  ],
+  "homepage": "https://sandbox-sdk.app",
+  "bugs": {
+    "url": "https://github.com/opencoredev/sandbox-sdk/issues"
+  },
+  "license": "MIT",
+  "author": "OpenCore",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencoredev/sandbox-sdk.git",
+    "directory": "packages/mcp"
+  },
+  "bin": {
+    "sandbox-mcp": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src tests",
+    "test": "timeout 120s vitest run --maxWorkers=4"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@opencoredev/sandbox-sdk": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "oxlint": "1.90.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
