@@ -3,7 +3,9 @@
  *
  * Each provider gets `--rounds` rounds of `--size` Fix and test tasks started together on the
  * same-machine track, with the setup the headline runs use (setup.ts, loadSlotProvider). Providers
- * run `--parallel` at a time; two on one account never overlap. Output in `--out`:
+ * run `--parallel` at a time; two on one account never overlap. With `--control`, each burst round
+ * is preceded by a control round of 1 task alone, so the slowdown divides by a solo time measured in
+ * the same hour instead of the published solo median. Output in `--out`:
  *
  *   run.json         the run's identity (commit, times, location, size, rounds)
  *   attempts.jsonl   one attempt record per task, as the headline writes them (variant "concurrent")
@@ -28,8 +30,11 @@ import {
   runRound,
   spendGuard,
   summarizeProvider,
+  uploadSeconds,
   type ProviderBurst,
   type RoundReport,
+  type RoundRole,
+  type RoundTask,
 } from "./burst.js";
 import {
   artifactPaths,
@@ -77,11 +82,15 @@ const listingSchema = z.object({
   error: z.string().nullable(),
 });
 
+const roundRoleSchema = z.enum(["control", "burst"]) satisfies z.ZodType<RoundRole>;
+
 const roundLineSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("round"),
     provider: z.string(),
+    /** Counted within the role. Files from before control rounds existed hold burst rounds only. */
     round: z.number().int(),
+    role: roundRoleSchema.default("burst"),
     size: z.number().int(),
     startedAt: z.number(),
     allDoneAt: z.number(),
@@ -98,6 +107,9 @@ const roundLineSchema = z.discriminatedUnion("kind", [
 
 type RoundLine = z.infer<typeof roundLineSchema>;
 
+/** How providers were scheduled: one at a time, or several at once (`--parallel` above 1). */
+const runModeSchema = z.enum(["one-provider-at-a-time", "parallel"]);
+
 const runInfoSchema = z.object({
   id: z.string(),
   sdkCommit: z.string(),
@@ -110,6 +122,10 @@ const runInfoSchema = z.object({
   profile: z.literal("fix-and-test"),
   providers: z.array(z.string()),
   budgetUSD: z.number(),
+  /** Run folders from before this field ran 3 providers at once. */
+  mode: runModeSchema.default("parallel"),
+  /** Whether each burst round was preceded by a 1-task control round. */
+  control: z.boolean().default(false),
 });
 
 type RunInfo = z.infer<typeof runInfoSchema>;
@@ -197,6 +213,7 @@ export async function burstCommand(args: string[]) {
       size: { type: "string", default: "5" },
       rounds: { type: "string", default: "2" },
       parallel: { type: "string", default: "3" },
+      control: { type: "boolean", default: false },
       "budget-usd": { type: "string", default: "15" },
       solo: { type: "string", default: defaultSolo },
       location: { type: "string", default: "Boca Raton, FL (evo-1)" },
@@ -256,6 +273,8 @@ export async function burstCommand(args: string[]) {
     profile: profileName,
     providers: names,
     budgetUSD: guard.state().capUSD,
+    mode: parallel === 1 ? "one-provider-at-a-time" : "parallel",
+    control: values.control,
   };
 
   await writeFile(join(out, "run.json"), JSON.stringify(info, null, 2) + "\n");
@@ -323,9 +342,17 @@ export async function burstCommand(args: string[]) {
         const created = new Set<string>();
         let ranAny = false;
 
-        for (let round = 1; round <= rounds; round++) {
+        for (const [index, step] of roundSchedule({
+          rounds,
+          size,
+          control: values.control,
+        }).entries()) {
+          const { role, round } = step;
+          const label = role === "control" ? `control round ${round}` : `round ${round}`;
+
           const reserve =
-            size * attemptBudget(setup, track, slotMs, provisionedFor(setup, track, profileName));
+            step.size *
+            attemptBudget(setup, track, slotMs, provisionedFor(setup, track, profileName));
 
           // Other providers' rounds in flight may hold the reservation: wait for them to settle.
           let reserved = guard.reserve(reserve);
@@ -337,26 +364,35 @@ export async function burstCommand(args: string[]) {
 
           if (!reserved) {
             const state = guard.state();
-            await note({ kind: "budget-stop", provider: setup.name, round, ...state, reserve });
+            await note({
+              kind: "budget-stop",
+              provider: setup.name,
+              round,
+              role,
+              ...state,
+              reserve,
+            });
 
             if (!ranAny)
               await notRun(
                 setup.name,
                 `spend ceiling: $${state.spentUSD.toFixed(2)} spent and $${state.reservedUSD.toFixed(2)} reserved, a round reserves $${reserve.toFixed(2)}, ceiling $${state.capUSD}`,
               );
-            else say(`${setup.name}: round ${round} skipped at the spend ceiling`);
+            else say(`${setup.name}: ${label} skipped at the spend ceiling`);
 
             return;
           }
 
-          say(`${setup.name}: round ${round}, ${size} tasks`);
+          say(`${setup.name}: ${label}, ${step.size} task${step.size === 1 ? "" : "s"}`);
           let report: RoundReport;
 
           try {
             report = await runRound({
               runId,
               round,
-              size,
+              role,
+              batch: index + 1,
+              size: step.size,
               manifest,
               manifestSha256,
               profileName,
@@ -376,9 +412,10 @@ export async function burstCommand(args: string[]) {
               kind: "round-error",
               provider: setup.name,
               round,
+              role,
               error: sanitize(error instanceof Error ? error.message : String(error)),
             });
-            say(`${setup.name}: round ${round} failed before its tasks finished; see notes`);
+            say(`${setup.name}: ${label} failed before its tasks finished; see notes`);
 
             return;
           }
@@ -391,7 +428,8 @@ export async function burstCommand(args: string[]) {
             kind: "round",
             provider: setup.name,
             round,
-            size,
+            role,
+            size: step.size,
             startedAt: report.startedAt,
             allDoneAt: report.allDoneAt,
             before: report.before,
@@ -403,10 +441,10 @@ export async function burstCommand(args: string[]) {
 
           for (const record of report.records)
             say(
-              `  ${setup.name} ${record.slot.id}: ${record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s)`,
+              `  ${setup.name} ${record.slot.id}: ${record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s, upload ${uploadSeconds(record)?.toFixed(1) ?? "n/a"} s)`,
             );
           say(
-            `${setup.name}: round ${round} all done in ${Math.round((report.allDoneAt - report.startedAt) / 1000)} s; leftovers ${report.leftovers.length}; est. spent $${guard.state().spentUSD.toFixed(2)}`,
+            `${setup.name}: ${label} all done in ${Math.round((report.allDoneAt - report.startedAt) / 1000)} s; leftovers ${report.leftovers.length}; est. spent $${guard.state().spentUSD.toFixed(2)}`,
           );
 
           // Every create refused by an account limit: another round would be refused too.
@@ -447,11 +485,40 @@ export async function burstCommand(args: string[]) {
   process.stdout.write(summaryMarkdown(data, guard.state().spentUSD));
 }
 
+/** One round in a provider's schedule. */
+export interface ScheduledRound {
+  readonly role: RoundRole;
+  /** Counted within the role, from 1. */
+  readonly round: number;
+  readonly size: number;
+}
+
+/**
+ * The order a provider's rounds run in: `rounds` burst rounds of `size`, each preceded by a 1-task
+ * control round when `control` is set (control 1, burst 1, control 2, burst 2, ...).
+ */
+export function roundSchedule({
+  rounds,
+  size,
+  control,
+}: {
+  rounds: number;
+  size: number;
+  control: boolean;
+}): ScheduledRound[] {
+  return Array.from({ length: rounds }, (_, i): ScheduledRound[] => {
+    const burst: ScheduledRound = { role: "burst", round: i + 1, size };
+
+    return control ? [{ role: "control", round: i + 1, size: 1 }, burst] : [burst];
+  }).flat();
+}
+
 export interface BurstExport {
   readonly schema: 1;
   readonly generatedAt: string;
   readonly run: {
     readonly id: string;
+    readonly mode: z.infer<typeof runModeSchema>;
     readonly sdkCommit: string;
     readonly startedAt: string;
     readonly endedAt: string | null;
@@ -467,6 +534,8 @@ export interface BurstExport {
 /**
  * The site data file from one or more run folders. A provider in a later folder replaces the same
  * provider from an earlier one (a rerun), and every folder must share the run's size and rounds.
+ * A folder run with `--control` divides by its own control tasks; one without divides by the
+ * published solo median in `solo`.
  */
 export async function buildExport(
   dirs: readonly string[],
@@ -511,13 +580,28 @@ export async function buildExport(
     if (!found) return [];
     const skipped = found.lines.find((l) => l.kind === "not-run");
     const rounds = found.lines.flatMap((l) => (l.kind === "round" ? [l] : []));
+    const placed = new Map<string, { role: RoundRole; round: number }>();
+
+    for (const line of rounds)
+      for (const id of line.attemptIds) placed.set(id, { role: line.role, round: line.round });
+
+    // A record no round line names (its round stopped before the line was written) is a burst
+    // task of the round its batch says, as before control rounds existed.
+    const tasks = (role: RoundRole): RoundTask[] =>
+      found.records.flatMap((record) => {
+        const at = placed.get(record.attemptId) ?? { role: "burst", round: record.batch };
+
+        return at.role === role ? [{ round: at.round, record }] : [];
+      });
 
     return [
       summarizeProvider({
         provider,
-        records: found.records,
-        rounds,
-        soloMedianWallS: solo.get(provider) ?? null,
+        tasks: tasks("burst"),
+        rounds: rounds.filter((l) => l.role === "burst"),
+        solo: found.info.control
+          ? { kind: "same-day", tasks: tasks("control") }
+          : { kind: "published", medianWallS: solo.get(provider) ?? null },
         notRun: skipped?.kind === "not-run" && rounds.length === 0 ? skipped.reason : undefined,
         redact: sanitize,
       }),
@@ -540,6 +624,9 @@ export async function buildExport(
     generatedAt: new Date().toISOString(),
     run: {
       id: [...new Set(runs.map((r) => r.id))].join("+"),
+      mode: runs.every((r) => r.mode === "one-provider-at-a-time")
+        ? "one-provider-at-a-time"
+        : "parallel",
       sdkCommit: [...new Set(runs.map((r) => r.sdkCommit))].join("+"),
       startedAt,
       endedAt,
@@ -556,21 +643,28 @@ export async function buildExport(
 export function summaryMarkdown(data: BurstExport, spentUSD: number | null): string {
   const s = (v: number | null) => (v === null ? "n/a" : v.toFixed(1));
 
+  const x = (v: number | null) => (v === null ? "n/a" : `${v.toFixed(2)}x`);
+
   const lines = data.providers.map((p) => {
-    const failures = p.tasks.flatMap((t) =>
-      t.failure ? [`r${t.round} ${t.failure.stage}: ${t.failure.reason.slice(0, 120)}`] : [],
+    const failures = [
+      ...(p.solo?.tasks ?? []).map((t) => ({ t, tag: `c${t.round}` })),
+      ...p.tasks.map((t) => ({ t, tag: `r${t.round}` })),
+    ].flatMap(({ t, tag }) =>
+      t.failure ? [`${tag} ${t.failure.stage}: ${t.failure.reason.slice(0, 120)}`] : [],
     );
 
-    return `| ${p.provider} | ${p.status === "ran" ? "ran" : `not run: ${p.reason}`} | ${s(p.medianWallS)} | ${s(p.soloMedianWallS)} | ${p.slowdown === null ? "n/a" : `${p.slowdown.toFixed(2)}x`} | ${p.completed}/${p.attempts} | ${p.roundAllDoneS.map((v) => v.toFixed(0)).join(", ") || "n/a"} | ${failures.join("; ").replaceAll("|", "/") || "none"} |`;
+    const solo = p.solo ? ` (${p.solo.completed}/${p.solo.attempts})` : " (published)";
+
+    return `| ${p.provider} | ${p.status === "ran" ? "ran" : `not run: ${p.reason}`} | ${s(p.medianWallS)} | ${s(p.soloMedianWallS)}${solo} | ${x(p.slowdown)} | ${x(p.slowdownWithoutUpload)} | ${s(p.medianUploadS)} / ${s(p.soloMedianUploadS)} | ${p.completed}/${p.attempts} | ${p.roundAllDoneS.map((v) => v.toFixed(0)).join(", ") || "n/a"} | ${failures.join("; ").replaceAll("|", "/") || "none"} |`;
   });
 
   return [
-    `Real tasks at once: ${data.size} Fix and test tasks started together per round, ${data.rounds} rounds, same-machine track. Run ${data.run.id} at ${data.run.sdkCommit.slice(0, 7)} from ${data.run.location}.`,
+    `Real tasks at once: ${data.size} Fix and test tasks started together per round, ${data.rounds} rounds, same-machine track, providers ${data.run.mode === "one-provider-at-a-time" ? "one at a time" : "several at once"}. Run ${data.run.id} at ${data.run.sdkCommit.slice(0, 7)} from ${data.run.location}.`,
     "Timing only: billing windows were not reconciled and no cost is claimed.",
     spentUSD === null ? "" : `Estimated spend at list price: $${spentUSD.toFixed(2)}.`,
     "",
-    "| Provider | Status | Median wall (s) | Solo median (s) | Slowdown | Completed | All done per round (s) | Failures |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Provider | Status | Median wall (s) | Solo median (s) | Slowdown | Without upload | Upload, at once / solo (s) | Completed | All done per round (s) | Failures |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...lines,
     "",
   ].join("\n");

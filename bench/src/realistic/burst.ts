@@ -44,6 +44,8 @@ export interface Leftover {
 export interface RoundReport {
   readonly provider: string;
   readonly round: number;
+  readonly role: RoundRole;
+  readonly batch: number;
   readonly size: number;
   /** When every task was released at once (after any per-task setup such as Modal's App). */
   readonly startedAt: number;
@@ -57,9 +59,23 @@ export interface RoundReport {
   readonly records: readonly AttemptRecord[];
 }
 
+/**
+ * A burst round starts `size` tasks together. A control round runs 1 task alone in the same hour, so
+ * the provider's solo time and its time under concurrency share the day and the network.
+ */
+export type RoundRole = "control" | "burst";
+
 export interface RoundPlan {
   readonly runId: string;
+  /** The round's number within its role: control rounds and burst rounds each count from 1. */
   readonly round: number;
+  /** Default "burst". */
+  readonly role?: RoundRole;
+  /**
+   * The records' `batch`, unique per provider in the run. Defaults to `round`; a run that
+   * interleaves control rounds numbers its rounds in the order they run.
+   */
+  readonly batch?: number;
   readonly size: number;
   readonly manifest: HarnessManifest;
   readonly manifestSha256: string | null;
@@ -81,19 +97,34 @@ export interface RoundPlan {
   readonly attempt?: typeof runAttempt;
 }
 
-/** The attempt ID of task `task` in round `round`. */
+/** The slot ID of task `task` in a round: `r1-t0` for a burst round, `c1-t0` for a control round. */
+export function taskSlotId({
+  role,
+  round,
+  task,
+}: {
+  role: RoundRole;
+  round: number;
+  task: number;
+}) {
+  return `${role === "control" ? "c" : "r"}${round}-t${task}`;
+}
+
+/** The attempt ID of task `task` in round `round` (a burst round unless `role` says otherwise). */
 export function taskAttemptId({
   runId,
   provider,
   round,
   task,
+  role = "burst",
 }: {
   runId: string;
   provider: string;
   round: number;
   task: number;
+  role?: RoundRole;
 }) {
-  return `${runId}-r${round}-t${task}-${provider}`;
+  return `${runId}-${taskSlotId({ role, round, task })}-${provider}`;
 }
 
 /** Resolve with the value, or null once `ms` passes. The timer is always cleared. */
@@ -163,6 +194,8 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
   const listTimeoutMs = plan.listTimeoutMs ?? 30_000;
   const graceMs = plan.timeoutGraceMs ?? 150_000;
   const attempt = plan.attempt ?? runAttempt;
+  const role = plan.role ?? "burst";
+  const batch = plan.batch ?? plan.round;
   const before = await listSandboxes(entry, plan.runId, clock, listTimeoutMs);
   const ownBefore = ownIn(before, plan.created);
   const tasks = Array.from({ length: plan.size }, (_, task) => task);
@@ -174,14 +207,15 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
       provider: entry.name,
       round: plan.round,
       task,
+      role,
     }),
     manifest: plan.manifest,
     manifestSha256: plan.manifestSha256,
     profileName: plan.profileName,
     track: plan.track,
     variant: "concurrent" as const,
-    batch: plan.round,
-    slot: { index: task, id: `r${plan.round}-t${task}` },
+    batch,
+    slot: { index: task, id: taskSlotId({ role, round: plan.round, task }) },
     seed: 0,
     slotStartedAt: startedAt,
   });
@@ -362,6 +396,8 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
   return {
     provider: entry.name,
     round: plan.round,
+    role,
+    batch,
     size: plan.size,
     startedAt,
     allDoneAt,
@@ -372,6 +408,8 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
     records,
   };
 }
+
+const round3 = (value: number | null) => (value === null ? null : Math.round(value * 1000) / 1000);
 
 /** Where a task stopped, for the published failure line. */
 export type FailureStage =
@@ -385,6 +423,11 @@ export type FailureStage =
 export interface TaskResult {
   readonly round: number;
   readonly wallS: number;
+  /**
+   * Seconds spent uploading the toolchain and the dependency cache from the host into the sandbox
+   * (the attempt's `download` spans, which lie inside prepare); null when no upload was recorded.
+   */
+  readonly uploadS: number | null;
   readonly completed: boolean;
   readonly failure?: { readonly stage: FailureStage; readonly reason: string };
 }
@@ -407,6 +450,15 @@ export function isAccountLimit(record: AttemptRecord): boolean {
 /** Seconds from the create request to the confirmed deletion (or the record's end without one). */
 export function wallSeconds(record: AttemptRecord): number {
   return ((lifecycleOf(record).deletedAt ?? record.endedAt) - record.startedAt) / 1000;
+}
+
+/** Seconds in the attempt's uploads (its `download` spans), or null when it recorded none. */
+export function uploadSeconds(record: AttemptRecord): number | null {
+  const spans = record.phases.filter((p) => p.name === "download");
+
+  if (spans.length === 0) return null;
+
+  return spans.reduce((sum, p) => sum + (p.endedAt - p.startedAt), 0) / 1000;
 }
 
 /** The stage of the last phase the attempt started before its sandbox was deleted. */
@@ -437,21 +489,26 @@ function stageReached(record: AttemptRecord): FailureStage {
   return fallback;
 }
 
-/** One task as published: wall time, whether it passed its checks, and where it failed. */
+/**
+ * One task as published: wall time, upload time, whether it passed its checks, and where it failed.
+ * `round` defaults to the record's batch.
+ */
 export function taskResult(
   record: AttemptRecord,
   redact: (text: string) => string = (text) => text,
+  round: number = record.batch,
 ): TaskResult {
-  const round = record.batch;
   const wallS = Math.round(wallSeconds(record) * 1000) / 1000;
+  const uploadS = round3(uploadSeconds(record));
   const short = (text: string) => redact(text).replace(/\s+/g, " ").slice(0, 300);
 
   if (record.completion.kind === "completed") {
-    if (record.deletionConfirmed) return { round, wallS, completed: true };
+    if (record.deletionConfirmed) return { round, wallS, uploadS, completed: true };
 
     return {
       round,
       wallS,
+      uploadS,
       completed: false,
       failure: { stage: "delete", reason: "Passed its checks, but its deletion was not confirmed" },
     };
@@ -472,6 +529,7 @@ export function taskResult(
   return {
     round,
     wallS,
+    uploadS,
     completed: false,
     failure: { stage, reason: short(`${reason}: ${detail}`) },
   };
@@ -488,20 +546,53 @@ const median = (values: readonly number[]) => {
     : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
 };
 
+/** A task's record and the round it ran in, counted within its role (control or burst). */
+export interface RoundTask {
+  readonly round: number;
+  readonly record: AttemptRecord;
+}
+
+/** What a provider's slowdown divides by. */
+export type SoloBaseline =
+  /** The provider's published solo median, from another day. */
+  | { readonly kind: "published"; readonly medianWallS: number | null }
+  /** This run's control tasks, each run alone in the same hour as the burst rounds. */
+  | { readonly kind: "same-day"; readonly tasks: readonly RoundTask[] };
+
+/** The same-day control tasks of a provider. */
+export interface SoloRun {
+  readonly tasks: readonly TaskResult[];
+  readonly completed: number;
+  readonly attempts: number;
+}
+
 /** One provider in the site data file. */
 export type ProviderBurst = {
   readonly provider: string;
+  /** The burst tasks. */
   readonly tasks: readonly TaskResult[];
   /** Median wall time of completed tasks under concurrency, as the published solo median. */
   readonly medianWallS: number | null;
+  /** Median upload time of the completed burst tasks. */
+  readonly medianUploadS: number | null;
   readonly completed: number;
   /** Tasks that ran; creates an account limit refused are not attempts. */
   readonly attempts: number;
-  /** Per round, seconds from the release of its tasks until the last one finished. */
+  /** Per burst round, seconds from the release of its tasks until the last one finished. */
   readonly roundAllDoneS: readonly number[];
+  /** The same-day control tasks; null when the baseline is the published solo median. */
+  readonly solo: SoloRun | null;
+  /** Median wall time of the completed control tasks, or the published solo median. */
   readonly soloMedianWallS: number | null;
+  /** Median upload time of the completed control tasks; null with the published baseline. */
+  readonly soloMedianUploadS: number | null;
   /** medianWallS / soloMedianWallS. */
   readonly slowdown: number | null;
+  /**
+   * The same ratio with each task's upload taken out of its wall time: the median of
+   * (wall - upload) under concurrency over the same median for the control tasks.
+   */
+  readonly slowdownWithoutUpload: number | null;
 } & ({ readonly status: "ran" } | { readonly status: "not-run"; readonly reason: string });
 
 export interface RoundTiming {
@@ -510,57 +601,110 @@ export interface RoundTiming {
   readonly allDoneAt: number;
 }
 
-const round3 = (value: number | null) => (value === null ? null : Math.round(value * 1000) / 1000);
+const ratio = (top: number | null, bottom: number | null) =>
+  top !== null && bottom !== null && bottom > 0 ? Math.round((top / bottom) * 1000) / 1000 : null;
+
+/** Tasks as published, in round and slot order, and the medians over the ones that ran and passed. */
+function tally(tasks: readonly RoundTask[], redact?: (text: string) => string) {
+  const results = [...tasks]
+    .sort((a, b) => a.round - b.round || a.record.slot.index - b.record.slot.index)
+    .map(({ round, record }) => taskResult(record, redact, round));
+
+  const ran = results.filter((t) => t.failure?.stage !== "account-limit");
+  const done = ran.filter((t) => t.completed);
+
+  const withUpload = done.flatMap((t) =>
+    t.uploadS === null ? [] : [{ wallS: t.wallS, uploadS: t.uploadS }],
+  );
+
+  return {
+    results,
+    ran,
+    done,
+    medianWallS: round3(median(done.map((t) => t.wallS))),
+    medianUploadS: round3(median(withUpload.map((t) => t.uploadS))),
+    medianWithoutUploadS: round3(median(withUpload.map((t) => t.wallS - t.uploadS))),
+  };
+}
 
 /**
- * A provider's row. `notRun` is a reason it never ran (an account limit known in advance, the
- * budget). A provider whose every task was refused by an account limit is not run either, with the
- * provider's own refusal as the reason.
+ * A provider's row. `tasks` are the burst tasks; `solo` is the baseline. `notRun` is a reason it
+ * never ran (an account limit known in advance, the budget). A provider whose every burst task was
+ * refused by an account limit is not run either, with the provider's own refusal as the reason.
  */
 export function summarizeProvider({
   provider,
-  records,
+  tasks,
   rounds,
-  soloMedianWallS,
+  solo,
   notRun,
   redact,
 }: {
   provider: string;
-  records: readonly AttemptRecord[];
+  tasks: readonly RoundTask[];
   rounds: readonly RoundTiming[];
-  soloMedianWallS: number | null;
+  solo: SoloBaseline;
   notRun?: string;
   redact?: (text: string) => string;
 }): ProviderBurst {
-  const tasks = [...records]
-    .sort((a, b) => a.batch - b.batch || a.slot.index - b.slot.index)
-    .map((record) => taskResult(record, redact));
-
-  const ran = tasks.filter((t) => t.failure?.stage !== "account-limit");
-  const done = ran.filter((t) => t.completed);
-  const medianWallS = round3(median(done.map((t) => t.wallS)));
+  const burst = tally(tasks, redact);
 
   const roundAllDoneS = [...rounds]
     .sort((a, b) => a.round - b.round)
-    .filter((r) => records.some((rec) => rec.batch === r.round && !isAccountLimit(rec)))
+    .filter((r) => tasks.some((t) => t.round === r.round && !isAccountLimit(t.record)))
     .map((r) => Math.round(r.allDoneAt - r.startedAt) / 1000);
+
+  const baseline = (() => {
+    switch (solo.kind) {
+      case "published":
+        return {
+          solo: null,
+          soloMedianWallS: solo.medianWallS,
+          soloMedianUploadS: null,
+          withoutUploadS: null,
+        };
+      case "same-day": {
+        const control = tally(solo.tasks, redact);
+
+        return {
+          solo: {
+            tasks: control.results,
+            completed: control.done.length,
+            attempts: control.ran.length,
+          },
+          soloMedianWallS: control.medianWallS,
+          soloMedianUploadS: control.medianUploadS,
+          withoutUploadS: control.medianWithoutUploadS,
+        };
+      }
+
+      default: {
+        const _exhaustive: never = solo;
+
+        return _exhaustive;
+      }
+    }
+  })();
 
   const common = {
     provider,
-    tasks,
-    medianWallS,
-    completed: done.length,
-    attempts: ran.length,
+    tasks: burst.results,
+    medianWallS: burst.medianWallS,
+    medianUploadS: burst.medianUploadS,
+    completed: burst.done.length,
+    attempts: burst.ran.length,
     roundAllDoneS,
-    soloMedianWallS,
-    slowdown:
-      medianWallS !== null && soloMedianWallS !== null && soloMedianWallS > 0
-        ? Math.round((medianWallS / soloMedianWallS) * 1000) / 1000
-        : null,
+    solo: baseline.solo,
+    soloMedianWallS: baseline.soloMedianWallS,
+    soloMedianUploadS: baseline.soloMedianUploadS,
+    slowdown: ratio(burst.medianWallS, baseline.soloMedianWallS),
+    slowdownWithoutUpload: ratio(burst.medianWithoutUploadS, baseline.withoutUploadS),
   };
 
-  const refused = tasks.find((t) => t.failure?.stage === "account-limit")?.failure?.reason;
-  const reason = notRun ?? (ran.length === 0 && refused ? `account limit: ${refused}` : undefined);
+  const refused = burst.results.find((t) => t.failure?.stage === "account-limit")?.failure?.reason;
+
+  const reason =
+    notRun ?? (burst.ran.length === 0 && refused ? `account limit: ${refused}` : undefined);
 
   return reason === undefined
     ? { ...common, status: "ran" }
