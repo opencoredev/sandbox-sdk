@@ -557,6 +557,10 @@ describe("the spend guard", () => {
     guard.settle({ reservedUSD: 10, spentUSD: 1 });
     expect(guard.reserve(6)).toBe(true);
     expect(guard.state()).toEqual({ spentUSD: 1, reservedUSD: 6, capUSD: 15 });
+    // Held only by another reservation: it could fit once that settles. Past the spend, never.
+    expect(guard.reserve(9)).toBe(false);
+    expect(guard.couldFit(9)).toBe(true);
+    expect(guard.couldFit(14.5)).toBe(false);
     expect(() => spendGuard(Number.NaN)).toThrow(/positive/);
   });
 });
