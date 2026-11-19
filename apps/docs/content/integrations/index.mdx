@@ -23,6 +23,8 @@ Each framework gets `sandboxTools(box)` from its own subpath. The tools, their o
   </Card>
 </CardGroup>
 
+The OpenAI Agents SDK also has its own `SandboxAgent` with sandbox clients. [OpenAI Agents SDK sandbox in TypeScript](https://sandbox-sdk.app/blog/openai-agents-sdk-sandbox-typescript) compares it with `sandboxTools`.
+
 Using another framework? `@opencoredev/sandbox-sdk/tools` exports `createSandboxTools` and `toolSchemas`, the Zod schemas behind every tool. Convert them with `z.toJSONSchema`. See [Agent tools](/reference/agent-tools#other-integrations).
 
 ## Web frameworks

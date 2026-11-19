@@ -131,6 +131,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 - [E2B self-hosted: E2B Embed, or Docker instead](https://sandbox-sdk.app/blog/e2b-self-hosted): run E2B on your own machine, or the same sandbox code in Docker.
 - [E2B SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript): the `e2b` package, E2B's REST API, and the same task on Daytona.
 - [Daytona SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/daytona-sdk-api-typescript): `@daytona/sdk`, Daytona's REST and toolbox APIs, and moving code from E2B.
+- [OpenAI Agents SDK sandbox in TypeScript](https://sandbox-sdk.app/blog/openai-agents-sdk-sandbox-typescript): OpenAI's `SandboxAgent` and its sandbox clients next to `sandboxTools` on a regular `Agent`, and when to use which.
 
 More on the [blog](https://sandbox-sdk.app/blog).
 
