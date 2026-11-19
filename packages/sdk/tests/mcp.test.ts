@@ -3,7 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createSandbox } from "../src/index.js";
 import { memory } from "../src/memory.js";
-import { sandboxMcpServer } from "../src/mcp.js";
+import { progressEmitter, sandboxMcpServer } from "../src/mcp.js";
 
 /** The text of a tool result, as a model would read it. */
 function textOf(result: Awaited<ReturnType<Client["callTool"]>>) {
@@ -41,5 +41,38 @@ describe("sandbox MCP server", () => {
     expect(failed.isError).toBe(true);
 
     await client.close();
+  });
+
+  it("combines output while a notification is in flight and drops the oldest past its bound", async () => {
+    const sent: string[] = [];
+    let release = () => {};
+
+    const emit = progressEmitter({
+      signal: new AbortController().signal,
+      requestId: 1,
+      _meta: { progressToken: "t" },
+      sendNotification: (notification) => {
+        if (notification.method === "notifications/progress")
+          sent.push(notification.params.message ?? "");
+
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+      sendRequest: () => Promise.reject(new Error("unused")),
+    });
+
+    const output = (text: string) =>
+      emit?.({ tool: "run", kind: "output", stream: "stdout", text });
+
+    output("a");
+    output("b");
+    output("x".repeat(70_000));
+    expect(sent).toEqual(["a"]);
+
+    release();
+    await expect.poll(() => sent.length).toBe(2);
+    expect(sent[1]).toHaveLength(64 * 1024);
+    expect(sent[1]).not.toContain("b");
   });
 });

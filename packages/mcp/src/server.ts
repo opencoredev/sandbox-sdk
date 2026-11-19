@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { progressEmitter } from "@opencoredev/sandbox-sdk/mcp";
 import {
   SandboxError,
   connectSandbox,
@@ -41,6 +42,9 @@ const boxTools: ToolName[] = [
   "preview",
 ];
 
+/** Provider names are the first half of a sandbox reference, so they share its alphabet. */
+const providerKey = /^[a-z0-9-]+$/;
+
 const sandboxRef = z
   .string()
   .regex(/^[a-z0-9-]+:.+$/)
@@ -81,13 +85,25 @@ export function createSandboxMcpServer(options: SandboxMcpServerOptions): McpSer
   const names = [...options.providers.keys()];
   const fallback = options.defaultProvider ?? names[0];
 
-  if (!fallback || !options.providers.has(fallback))
-    throw new Error("No sandbox provider configured. Pass at least one provider");
+  if (!fallback) throw new Error("No sandbox provider configured. Pass at least one provider");
+
+  if (!options.providers.has(fallback))
+    throw new Error(
+      `Default provider "${fallback}" is not configured. Configured: ${names.join(", ")}`,
+    );
+  const invalid = names.filter((name) => !providerKey.test(name));
+
+  // A reference is "<provider>:<id>", so a name outside this alphabet would issue references that
+  // every other tool then rejects.
+  if (invalid.length)
+    throw new Error(
+      `Provider names take lower-case letters, digits and hyphens. Rename: ${invalid.join(", ")}`,
+    );
 
   const server = new McpServer({ name: "sandbox", version: "0.1.0" });
   const loaded = new Map<string, Promise<Provider>>();
   const handles = new Map<string, Promise<Sandbox>>();
-  const tools = new Map<string, ReturnType<typeof createSandboxTools>>();
+  const tools = new Map<string, Promise<ReturnType<typeof createSandboxTools>>>();
 
   function provider(name = fallback): Promise<Provider> {
     const key = name ?? "";
@@ -127,6 +143,24 @@ export function createSandboxMcpServer(options: SandboxMcpServerOptions): McpSer
   function forget(ref: string) {
     handles.delete(ref);
     tools.delete(ref);
+  }
+
+  /**
+   * One tool set per sandbox. It owns the replay windows that `process_logs` reads, so parallel first
+   * calls share the pending set instead of each building one and the last replacing the rest.
+   */
+  function definitionsFor(ref: string) {
+    let pending = tools.get(ref);
+
+    if (!pending) {
+      pending = open(ref).then((box) =>
+        createSandboxTools(box, { ...options.tools, allow: boxTools }),
+      );
+      tools.set(ref, pending);
+      pending.catch(() => tools.delete(ref));
+    }
+
+    return pending;
   }
 
   server.registerTool(
@@ -172,20 +206,25 @@ export function createSandboxMcpServer(options: SandboxMcpServerOptions): McpSer
         })
         .strict(),
     },
-    (input) =>
+    (input, extra) =>
       attempt(async () => {
         const name = input.provider ?? fallback;
 
+        // The request's signal: a cancelled creation destroys a sandbox that arrives late.
         const box = await createSandbox(await provider(name), {
           key: input.key,
           size: input.size,
           ports: input.ports,
           timeoutMs: input.timeoutMinutes ? input.timeoutMinutes * 60_000 : undefined,
+          signal: extra.signal,
         });
 
         const ref = `${name}:${box.id}`;
-        forget(ref);
-        handles.set(ref, Promise.resolve(box));
+
+        // Reattaching by key: the cached handle keeps its replay windows and process records, so the
+        // new one is released. Closing a handle leaves the sandbox running.
+        if (handles.has(ref)) await box.close();
+        else handles.set(ref, Promise.resolve(box));
 
         return `sandbox=${ref} created=${box.created}${box.key ? ` key=${box.key}` : ""}`;
       }),
@@ -262,20 +301,16 @@ export function createSandboxMcpServer(options: SandboxMcpServerOptions): McpSer
         const { sandbox, ...rest } = input;
 
         try {
-          let definitions = tools.get(sandbox);
-
-          if (!definitions) {
-            definitions = createSandboxTools(await open(sandbox), {
-              ...options.tools,
-              allow: boxTools,
-            });
-            tools.set(sandbox, definitions);
-          }
-
+          const definitions = await definitionsFor(sandbox);
           const found = definitions.find((candidate) => candidate.name === tool);
 
           if (!found) return reply(false, `Tool ${tool} is disabled on this server`);
-          const result = await found.execute(schema.parse(rest), undefined, extra.signal);
+
+          const result = await found.execute(
+            schema.parse(rest),
+            progressEmitter(extra),
+            extra.signal,
+          );
 
           return {
             content: [{ type: "text" as const, text: result.text }],

@@ -26,23 +26,27 @@ claude mcp add sandbox -e E2B_API_KEY=... -- npx -y @opencoredev/sandbox-mcp
 
 The server offers every provider whose credentials are in its environment, then `local` (Docker on your machine, no key).
 
-| Provider     | Environment                                           |
-| ------------ | ----------------------------------------------------- |
-| `local`      | None. Needs Docker                                    |
-| `e2b`        | `E2B_API_KEY`                                         |
-| `vercel`     | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` |
-| `modal`      | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`                |
-| `baseten`    | `BASETEN_API_KEY`                                     |
-| `instabox`   | `INSTABOX_API_KEY`                                    |
-| `daytona`    | `DAYTONA_API_KEY`                                     |
-| `upstash`    | `UPSTASH_BOX_API_KEY`                                 |
-| `railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`         |
-| `sandboxer`  | `SANDBOXER_API_KEY`                                   |
-| `boat`       | `BOAT_API_KEY`                                        |
-| `luxor`      | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                 |
-| `superserve` | `SUPERSERVE_API_KEY`                                  |
-| `boxd`       | `BOXD_API_KEY`                                        |
-| `freestyle`  | `FREESTYLE_API_KEY`                                   |
+| Provider     | Environment                                                             |
+| ------------ | ----------------------------------------------------------------------- |
+| `local`      | None. Needs Docker                                                      |
+| `e2b`        | `E2B_API_KEY`                                                           |
+| `vercel`     | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`                   |
+| `modal`      | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`                                  |
+| `baseten`    | `BASETEN_API_KEY`                                                       |
+| `instabox`   | `INSTABOX_API_KEY`                                                      |
+| `daytona`    | `DAYTONA_API_KEY`, or `DAYTONA_JWT_TOKEN` and `DAYTONA_ORGANIZATION_ID` |
+| `upstash`    | `UPSTASH_BOX_API_KEY`                                                   |
+| `railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                           |
+| `sandboxer`  | `SANDBOXER_API_KEY`                                                     |
+| `boat`       | `BOAT_API_KEY`                                                          |
+| `luxor`      | `TENKI_API_KEY` or `TENKI_AUTH_TOKEN`                                   |
+| `superserve` | `SUPERSERVE_API_KEY`, plus the setup below                              |
+| `boxd`       | `BOXD_API_KEY`                                                          |
+| `freestyle`  | `FREESTYLE_API_KEY`                                                     |
+
+A provider is offered only when its whole row is set, so a stray `VERCEL_TOKEN` without its team and project does not push Docker out of the default spot. Vercel also accepts `VERCEL_OIDC_TOKEN` on its own.
+
+Superserve's default template has no Python, which the adapter needs. Set `SUPERSERVE_TEMPLATE` to a template that has it, or `SUPERSERVE_INSTALL_PYTHON=1` to let the adapter install it on first use.
 
 `SANDBOX_PROVIDERS=e2b,local` names the providers outright. `SANDBOX_PROVIDER=e2b` picks the default for calls that name none; without it, the first one is the default.
 
