@@ -672,7 +672,7 @@ const railway = scene((ctx, t) => {
 });
 
 /* Luxor: their pyramid mark, stacked out of sandboxes in Luxor gold. Small cubes snap in fast, the whole one glows, then they lift away and it rebuilds. */
-const tenki = scene((ctx, t) => {
+const luxor = scene((ctx, t) => {
   fill(
     ctx,
     [
@@ -994,7 +994,7 @@ export const providerScenes = {
   upstash,
   boat,
   railway,
-  tenki,
+  luxor,
   boxd,
   freestyle,
   superserve,

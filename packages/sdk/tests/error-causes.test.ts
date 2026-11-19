@@ -11,7 +11,7 @@ import { freestyleError } from "../src/providers/freestyle/errors.js";
 import { modalError } from "../src/providers/modal/errors.js";
 import { railwayError } from "../src/providers/railway/errors.js";
 import { superserveError } from "../src/providers/superserve/errors.js";
-import { tenkiError } from "../src/providers/tenki/errors.js";
+import { luxorError } from "../src/providers/luxor/errors.js";
 import { upstashError } from "../src/providers/upstash/errors.js";
 import { vercelError } from "../src/providers/vercel/errors.js";
 import { rejection } from "./rejection.js";
@@ -31,7 +31,7 @@ const mappers: [string, (cause: unknown) => SandboxError][] = [
   ["agentos", (error) => agentosError(error)],
   ["daytona", (error) => daytonaError(error)],
   ["freestyle", (error) => freestyleError(error)],
-  ["tenki", (error) => tenkiError(error)],
+  ["luxor", (error) => luxorError(error)],
   ["upstash", (error) => upstashError(error)],
 ];
 

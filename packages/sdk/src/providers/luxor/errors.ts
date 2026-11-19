@@ -10,7 +10,15 @@ import {
 import { decodeNative } from "../../shared/native-error.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 
-export type TenkiOperation =
+/** Luxor Agent Cloud was called Tenki, and its API still accepts the TENKI_* names. The new names win. */
+export const keyVariables = [
+  "LUXOR_AUTH_TOKEN",
+  "LUXOR_API_KEY",
+  "TENKI_AUTH_TOKEN",
+  "TENKI_API_KEY",
+] as const;
+
+export type LuxorOperation =
   | "request"
   | "create"
   | "list"
@@ -121,21 +129,19 @@ function localDetail(
   return detail === undefined ? {} : { native: detail };
 }
 
-export function tenkiError(
+export function luxorError(
   cause: unknown,
   sandboxId?: string,
-  operation: TenkiOperation = "request",
+  operation: LuxorOperation = "request",
   secrets: string[] = [],
 ): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const name = cause instanceof Error ? cause.name : "";
   const code = codes.get(name) ?? "provider";
 
-  const denied = [
-    ...secrets,
-    process.env.TENKI_API_KEY ?? "",
-    process.env.TENKI_AUTH_TOKEN ?? "",
-  ].filter(Boolean);
+  const denied = [...secrets, ...keyVariables.map((name) => process.env[name] ?? "")].filter(
+    Boolean,
+  );
 
   const native = nativeEvidence(cause, denied);
 
@@ -149,7 +155,7 @@ export function tenkiError(
     `Luxor request failed: ${reason(code, evidence.native)}. Check credentials, quotas, and session state.`,
     {
       code,
-      provider: "tenki",
+      provider: "luxor",
       sandboxId,
       cause: evidenceCause(evidence),
       retryable: ["quota", "unavailable", "timeout"].includes(code),
@@ -173,13 +179,11 @@ export function createError(
   secrets: string[],
   cleanupCode?: ErrorCode,
 ): SandboxError {
-  const mapped = tenkiError(cause, context.id, "create", secrets);
+  const mapped = luxorError(cause, context.id, "create", secrets);
 
-  const denied = [
-    ...secrets,
-    process.env.TENKI_API_KEY ?? "",
-    process.env.TENKI_AUTH_TOKEN ?? "",
-  ].filter(Boolean);
+  const denied = [...secrets, ...keyVariables.map((name) => process.env[name] ?? "")].filter(
+    Boolean,
+  );
 
   const evidence: CreateEvidence = {
     operation: "create",
@@ -198,7 +202,7 @@ export function createError(
 
   return new SandboxError(mapped.message, {
     code: mapped.code,
-    provider: "tenki",
+    provider: "luxor",
     sandboxId: context.id,
     retryable: mapped.retryable,
     hint: mapped.hint,
@@ -211,6 +215,6 @@ export function failure(message: string, code: ErrorCode = "provider"): SandboxE
     code === "auth"
       ? message
       : `${message}. Luxor could not honor the request. Check the provider options.`,
-    { code, provider: "tenki" },
+    { code, provider: "luxor" },
   );
 }

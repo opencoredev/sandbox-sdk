@@ -1,17 +1,17 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { TenkiSandbox } from "@tenkicloud/sandbox";
+import { LuxorSandbox } from "@luxorai/sandbox";
 import { expect, test, vi } from "vitest";
-import { waitReady, workspaceSetup } from "../src/providers/tenki/ready.js";
+import { waitReady, workspaceSetup } from "../src/providers/luxor/ready.js";
 
 // Exercise the installed SDK and its own protocol dependency, without adding
 // production dependencies just for this in-memory transport.
-const nativeRequire = createRequire(createRequire(import.meta.url).resolve("@tenkicloud/sandbox"));
+const nativeRequire = createRequire(createRequire(import.meta.url).resolve("@luxorai/sandbox"));
 const { fromJson } = await import(nativeRequire.resolve("@bufbuild/protobuf"));
 
 type Transport = NonNullable<
-  NonNullable<ConstructorParameters<typeof TenkiSandbox>[0]>["transport"]
+  NonNullable<ConstructorParameters<typeof LuxorSandbox>[0]>["transport"]
 >;
 
 function nativeSession(runningFrame: boolean) {
@@ -56,7 +56,7 @@ function nativeSession(runningFrame: boolean) {
     },
   };
 
-  return { client: new TenkiSandbox({ authToken: "tk_offline", transport }), queried, cancelled };
+  return { client: new LuxorSandbox({ authToken: "tk_offline", transport }), queried, cancelled };
 }
 
 test("native RUNNING without stream EOF succeeds within the readiness budget without a polling RPC", async () => {
@@ -105,7 +105,7 @@ test("an allocation with RUNNING state and a native data plane skips readiness",
 
 test("guest initialization serializes concurrent migrations and preserves existing files", async () => {
   const script = `import os,tempfile,threading,json
-with tempfile.TemporaryDirectory(prefix='sdk-tenki-lock-') as root:
+with tempfile.TemporaryDirectory(prefix='sdk-luxor-lock-') as root:
  workspace=root+'/workspace'
  os.mkdir(workspace)
  with open(workspace+'/existing','w') as f: f.write('retained')

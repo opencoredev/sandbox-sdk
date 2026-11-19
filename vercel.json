@@ -40,6 +40,11 @@
     },
     { "source": "/docs/providers/compare", "destination": "/docs/providers", "permanent": true },
     { "source": "/docs/providers/box", "destination": "/docs/providers", "permanent": true },
+    {
+      "source": "/docs/providers/tenki",
+      "destination": "/docs/providers/luxor",
+      "permanent": true
+    },
     { "source": "/docs/agent-skill", "destination": "/docs", "permanent": true },
     {
       "source": "/docs/api/commands",

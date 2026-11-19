@@ -103,7 +103,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [Instabox](https://sandbox-sdk.app/docs/providers/instabox)    | `/instabox`   | `instabox()`            | `INSTABOX_API_KEY` (optional `INSTABOX_API_URL`)                                |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)  | `/upstash`    | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)      | `/railway`    | `railway()`             | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                   |
-| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)          | `/tenki`      | `tenki()`               | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                           |
+| [Luxor](https://sandbox-sdk.app/docs/providers/luxor)          | `/luxor`      | `luxor()`               | `LUXOR_AUTH_TOKEN` or `LUXOR_API_KEY`                                           |
 | boxd                                                           | `/boxd`       | `boxd()`                | `BOXD_API_KEY` (optional `BOXD_BASE_URL`)                                       |
 | Freestyle                                                      | `/freestyle`  | `freestyle()`           | `FREESTYLE_API_KEY`                                                             |
 | Superserve                                                     | `/superserve` | `superserve()`          | `SUPERSERVE_API_KEY`                                                            |
@@ -121,17 +121,17 @@ Every factory also accepts its credential as an option, such as `e2b({ apiKey })
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
 const providers = [
   boxd({ baseUrl: "https://boxd.sh:9443" }),
   daytona({ baseUrl: "https://app.daytona.io/api" }),
   boat({ baseUrl: "https://boat.dev/api/v1", machine: "small" }),
-  tenki({ apiKey: process.env.TENKI_API_KEY }),
+  luxor({ apiKey: process.env.LUXOR_API_KEY }),
 ];
 ```
 
-The old names (`boxd.baseURL`, `daytona.apiUrl`, `boat.apiUrl`, `tenki.authToken`, and `boat.type`) still work as deprecated aliases until 1.0.0. When both names are set, the new name wins.
+The old names (`boxd.baseURL`, `daytona.apiUrl`, `boat.apiUrl`, `luxor.authToken`, and `boat.type`) still work as deprecated aliases until 1.0.0. When both names are set, the new name wins.
 
 ## Core API
 

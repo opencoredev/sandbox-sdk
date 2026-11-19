@@ -3,9 +3,9 @@ title: Luxor
 description: Run coding agents on full Luxor Linux VMs. Memory pause, disk and memory snapshots, exact sizes, network allow lists, and a hard lifetime.
 ---
 
-`tenki()` runs each sandbox as a full Linux VM on [Luxor](https://luxor.ai/products/sandbox) through the official `@tenkicloud/sandbox` SDK.
+`luxor()` runs each sandbox as a full Linux VM on [Luxor](https://luxor.ai/products/sandbox) through the official `@luxorai/sandbox` SDK.
 
-Luxor Agent Cloud was called Tenki. The adapter keeps its Tenki names: the `tenki()` factory, the `/tenki` import path, the `@tenkicloud/sandbox` peer package and the `TENKI_*` environment variables, all of which Luxor still supports.
+Luxor Agent Cloud was called Tenki. `tenki()` from `@opencoredev/sandbox-sdk/tenki` still works as a deprecated alias of `luxor()`, and the `TENKI_*` environment variables are still read after the `LUXOR_*` ones. The peer package is now `@luxorai/sandbox`: it is the same code as `@tenkicloud/sandbox`, published under the new name.
 
 ## Install
 
@@ -13,42 +13,42 @@ Luxor Agent Cloud was called Tenki. The adapter keeps its Tenki names: the `tenk
   <Tab title="npm">
 
 ```bash
-npm install @opencoredev/sandbox-sdk @tenkicloud/sandbox
+npm install @opencoredev/sandbox-sdk @luxorai/sandbox
 ```
 
   </Tab>
   <Tab title="pnpm">
 
 ```bash
-pnpm add @opencoredev/sandbox-sdk @tenkicloud/sandbox
+pnpm add @opencoredev/sandbox-sdk @luxorai/sandbox
 ```
 
   </Tab>
   <Tab title="yarn">
 
 ```bash
-yarn add @opencoredev/sandbox-sdk @tenkicloud/sandbox
+yarn add @opencoredev/sandbox-sdk @luxorai/sandbox
 ```
 
   </Tab>
   <Tab title="bun">
 
 ```bash
-bun add @opencoredev/sandbox-sdk @tenkicloud/sandbox
+bun add @opencoredev/sandbox-sdk @luxorai/sandbox
 ```
 
   </Tab>
 </Tabs>
 
-The adapter needs `@tenkicloud/sandbox` 1.4.1 or later. Set `TENKI_API_KEY` to a workspace API key on your server, and keep it out of browser bundles.
+The adapter needs `@luxorai/sandbox` 1.5.3 or later. Set `LUXOR_API_KEY` to a workspace API key on your server, and keep it out of browser bundles.
 
 ## Quickstart
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki());
+await using box = await createSandbox(luxor());
 const result = await box.run("uname -a");
 console.log(result.stdout);
 ```
@@ -80,9 +80,9 @@ Await `box.run` for the result, or iterate it to stream output as it arrives.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki());
+await using box = await createSandbox(luxor());
 const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
 console.log(result.exitCode, result.stdout);
 
@@ -99,9 +99,9 @@ Relative paths resolve against `/workspace`.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki());
+await using box = await createSandbox(luxor());
 await box.files.write("notes/todo.txt", "ship the docs\n");
 console.log(await box.files.read("notes/todo.txt"));
 console.log(await box.files.list("notes"));
@@ -116,9 +116,9 @@ No ports to declare. The preview URL is public, so keep authentication in the ap
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki());
+await using box = await createSandbox(luxor());
 await box.start("python3 -m http.server 3000", { name: "web", ready: { port: 3000 } });
 const preview = await box.preview(3000);
 console.log(preview.url, preview.expiresAt);
@@ -132,23 +132,23 @@ Pause and resume keep disk and memory. Snapshots capture both, but not attached 
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki(), { key: "user:123" });
+await using box = await createSandbox(luxor(), { key: "user:123" });
 await box.pause();
 await box.resume();
 
 const { id } = await box.snapshot();
-await using copy = await createSandbox(tenki(), { from: id });
+await using copy = await createSandbox(luxor(), { from: id });
 ```
 
 Pause closes active TCP, preview, and SSH connections; reconnect clients after resume. Snapshots stay in Luxor after the VM is gone, unless you give them an expiry:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki());
+await using box = await createSandbox(luxor());
 const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Luxor deletes it in 7 days
 ```
 
@@ -164,9 +164,9 @@ const { id } = await box.snapshot({ expiresInMs: 7 * 24 * 60 * 60_000 }); // Lux
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { tenki } from "@opencoredev/sandbox-sdk/tenki";
+import { luxor } from "@opencoredev/sandbox-sdk/luxor";
 
-await using box = await createSandbox(tenki(), {
+await using box = await createSandbox(luxor(), {
   size: { cpu: 4, memoryMb: 16_384, diskGb: 50 },
   network: { allow: ["registry.npmjs.org", "*.github.com"] },
   timeoutMs: 30 * 60_000,
@@ -182,8 +182,8 @@ await using box = await createSandbox(tenki(), {
 
 | Option             | Type                                   | Default                        | Env var                                    |
 | ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------ |
-| `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`   |
-| `baseUrl`          | `string`                               | `https://api.tenki.cloud`      | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
+| `apiKey`           | `string`                               |                                | `LUXOR_AUTH_TOKEN`, then `LUXOR_API_KEY`   |
+| `baseUrl`          | `string`                               | `https://api.luxor.ai`         | `LUXOR_API_ENDPOINT`, then `LUXOR_API_URL` |
 | `image`            | `string`                               | Luxor's default image          |                                            |
 | `requestTimeoutMs` | `number`                               | `30_000`                       |                                            |
 | `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                            |
@@ -206,7 +206,7 @@ await using box = await createSandbox(tenki(), {
 
 - Luxor clears `/tmp` on pause. The adapter keeps SDK state under `/home/tenki/.sandbox-sdk` and relinks `/tmp/.sandbox-sdk` on resume and connect.
 - Sticky mode is off, so it can't override `timeoutMs`.
-- `@tenkicloud/sandbox` 1.4.1 can't cancel control-plane calls. A timed-out create may still finish; the adapter tries to close a late VM, but keep your process alive for that and check your sessions if it fails.
+- `@luxorai/sandbox` 1.5.3 can't cancel control-plane calls. A timed-out create may still finish; the adapter tries to close a late VM, but keep your process alive for that and check your sessions if it fails.
 - Command output spools to a file in the VM, which uses guest disk until the run finishes.
 
 ## Next steps

@@ -1,9 +1,9 @@
 import { guestSpec } from "../../shared/wire.js";
 import { cachedPython, guestProcess, guestPump } from "../../shared/guest.js";
-import type { StreamingSession, TenkiDataPlane, TenkiRunRequest } from "./provider.js";
+import type { StreamingSession, LuxorDataPlane, LuxorRunRequest } from "./provider.js";
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { deadline } from "./deadline.js";
-import { failure, tenkiError } from "./errors.js";
+import { failure, luxorError } from "./errors.js";
 import { raw } from "./exec.js";
 import { isChunk, isExitRecord } from "./records.js";
 import { isObject } from "../../shared/narrow.js";
@@ -127,7 +127,7 @@ export async function executeStream(
     for (let attempt = 0; attempt < 2; attempt++) {
       const attemptTransport = new AbortController();
       const signal = AbortSignal.any([transport.signal, attemptTransport.signal]);
-      let plane: TenkiDataPlane | undefined;
+      let plane: LuxorDataPlane | undefined;
       let receivedResponse = false;
 
       async function* requests() {
@@ -144,12 +144,12 @@ export async function executeStream(
               },
             },
           },
-        } satisfies TenkiRunRequest;
+        } satisfies LuxorRunRequest;
         // Send input immediately: waiting for started adds a network round trip.
         signal.throwIfAborted();
         mayHaveLaunched = true;
-        yield { frame: { payload: { case: "stdin", value: spec } } } satisfies TenkiRunRequest;
-        yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies TenkiRunRequest;
+        yield { frame: { payload: { case: "stdin", value: spec } } } satisfies LuxorRunRequest;
+        yield { frame: { payload: { case: "stdinClose", value: true } } } satisfies LuxorRunRequest;
         await new Promise<void>((resolve) => {
           if (signal.aborted) resolve();
           else signal.addEventListener("abort", () => resolve(), { once: true });
@@ -202,7 +202,7 @@ export async function executeStream(
         if (transport.signal.aborted) throw error;
         const code = isObject(error) && "code" in error ? error.code : undefined;
         const message = error instanceof Error ? error.message : "";
-        const auth = code === 16 || tenkiError(error).code === "auth";
+        const auth = code === 16 || luxorError(error).code === "auth";
 
         const provisioning =
           code === 5 &&
@@ -273,7 +273,7 @@ export async function executeStream(
       }
     }
 
-    if (input.signal?.aborted || tenkiError(error).code === "timeout")
+    if (input.signal?.aborted || luxorError(error).code === "timeout")
       return { exitCode: null, timedOut: true };
     throw error;
   } finally {

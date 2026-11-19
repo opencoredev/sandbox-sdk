@@ -11,7 +11,7 @@ export const providerInfo = {
   boat: { name: "Boat", color: "oklch(0.91 0.13 192)" },
   boxd: { name: "boxd", color: "oklch(0.92 0.11 96)" },
   freestyle: { name: "Freestyle", color: "oklch(0.82 0.11 303)" },
-  tenki: { name: "Tenki", color: "oklch(0.68 0.16 331)" },
+  tenki: { name: "Luxor", color: "oklch(0.68 0.16 331)" },
   superserve: { name: "Superserve", color: "oklch(0.86 0.22 129)" },
 } as const satisfies Record<string, { name: string; color: string }>;
 

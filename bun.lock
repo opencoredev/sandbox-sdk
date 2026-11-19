@@ -177,11 +177,11 @@
         "@boxd-sh/sdk": "0.3.2",
         "@daytonaio/sdk": "^0.225.0",
         "@insforge/instabox-sdk": "0.9.0",
+        "@luxorai/sandbox": "^1.5.3",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
         "@superserve/sdk": "0.11.4",
-        "@tenkicloud/sandbox": "^1.4.1",
         "@upstash/box": "^0.7.9",
         "@vercel/sandbox": "3.8.0",
         "ai": "^7.0.143",
@@ -196,10 +196,10 @@
       "peerDependencies": {
         "@basetenlabs/sandbox": "^0.5.0",
         "@boxd-sh/sdk": ">=0.2.17 <0.4.0",
+        "@luxorai/sandbox": "^1.5.3",
         "@mastra/core": "^1.78.0",
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
-        "@tenkicloud/sandbox": "^1.4.1",
         "@upstash/box": "^0.7.9",
         "@vercel/sandbox": "^3.8.0",
         "ai": "^7.0.143",
@@ -211,10 +211,10 @@
       "optionalPeers": [
         "@basetenlabs/sandbox",
         "@boxd-sh/sdk",
+        "@luxorai/sandbox",
         "@mastra/core",
         "@openai/agents",
         "@rivet-dev/agentos-core",
-        "@tenkicloud/sandbox",
         "@upstash/box",
         "@vercel/sandbox",
         "ai",
@@ -706,6 +706,8 @@
     "@lukeed/csprng": ["@lukeed/csprng@1.1.0", "", {}, "sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA=="],
 
     "@lukeed/uuid": ["@lukeed/uuid@2.0.1", "", { "dependencies": { "@lukeed/csprng": "^1.1.0" } }, "sha512-qC72D4+CDdjGqJvkFMMEAtancHUQ7/d/tAiHf64z8MopFDmcrtbcJuerDtFceuAfQJ2pDSfCKCtbqoGBNnwg0w=="],
+
+    "@luxorai/sandbox": ["@luxorai/sandbox@1.5.3", "", { "dependencies": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.1.2", "@connectrpc/connect-node": "2.1.2", "ws": "8.21.3" } }, "sha512-XeHXcfjkXGNb5Gj1yablmILgF7zjN7rnj43WToWFbRMCL1e3qO06YIpSQltjemhbKcuRRy277p0x0pY/EyyWJA=="],
 
     "@manypkg/find-root": ["@manypkg/find-root@3.1.0", "", { "dependencies": { "@manypkg/tools": "^2.1.0" } }, "sha512-BcSqCyKhBVZ5YkSzOiheMCV41kqAFptW6xGqYSTjkVTl9XQpr+pqHhwgGCOHQtjDCv7Is6EFyA14Sm5GVbVABA=="],
 
@@ -2888,6 +2890,10 @@
     "@astrojs/react/@vitejs/plugin-react": ["@vitejs/plugin-react@6.1.2", "", { "dependencies": { "@rolldown/pluginutils": "^1.0.1" }, "peerDependencies": { "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0", "babel-plugin-react-compiler": "^1.0.0", "oxc-transform-react": "^0.152.0", "vite": "^8.0.0" }, "optionalPeers": ["@rolldown/plugin-babel", "babel-plugin-react-compiler", "oxc-transform-react"] }, "sha512-fhJNGUdscQa4HkI0xFxwonWyhnVReCPDbXI7FH7jmzpnVCrFQI7PRrhWecO263610vOrs9tr2Y4xcf8uAdFxbw=="],
 
     "@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
+
+    "@luxorai/sandbox/@bufbuild/protobuf": ["@bufbuild/protobuf@2.12.1", "", {}, "sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg=="],
+
+    "@luxorai/sandbox/ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
 
     "@mapbox/node-pre-gyp/https-proxy-agent": ["https-proxy-agent@7.0.6", "", { "dependencies": { "agent-base": "^7.1.2", "debug": "4" } }, "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw=="],
 

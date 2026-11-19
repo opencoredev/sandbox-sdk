@@ -127,11 +127,11 @@ export const providerArt: ProviderArt[] = [
   },
   {
     kind: "launch",
-    id: "tenki",
+    id: "luxor",
     name: "Luxor",
     line: "Coding agents on full Linux VMs, with disk and memory snapshots.",
-    href: "/docs/providers/tenki",
-    paint: providerScenes.tenki,
+    href: "/docs/providers/luxor",
+    paint: providerScenes.luxor,
   },
   {
     kind: "launch",

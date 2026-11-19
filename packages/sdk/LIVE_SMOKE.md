@@ -24,7 +24,7 @@ Run `sbx69-mvu55r9k-a3a2ab1f` on the SBX-75 branch (1.0.0-beta.1 after the lint 
 | Daytona        | PASS   |      1676 |          331 |                                                                                                                                      |
 | Upstash Box    | PASS   |      2306 |          142 |                                                                                                                                      |
 | Boat           | PASS   |       783 |          399 |                                                                                                                                      |
-| Tenki          | PASS   |       490 |          305 |                                                                                                                                      |
+| Luxor          | PASS   |       490 |          305 |                                                                                                                                      |
 | boxd           | PASS   |      2099 |          262 |                                                                                                                                      |
 | Freestyle      | PASS   |      1129 |          184 |                                                                                                                                      |
 | Superserve     | PASS   |       197 |          228 | Uses template `sandbox-bench-node22-py311-1x1-pinned`. The default `superserve/node-22` has no python3 and fails with `unsupported`. |

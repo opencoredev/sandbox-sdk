@@ -1,25 +1,25 @@
-import type { ProcessRunResult } from "@tenkicloud/sandbox";
+import type { ProcessRunResult } from "@luxorai/sandbox";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { cleanupTenki, MockSession, MockTenki, tenki, tenkiState } from "./tenki-mock.js";
+import { cleanupLuxor, MockSession, MockLuxor, luxor, luxorState } from "./luxor-mock.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
 import { runConformance } from "../src/testing.js";
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
-const factory = () => tenki({ authToken: "offline-test-key" });
+const factory = () => luxor({ authToken: "offline-test-key" });
 
 runConformance(factory, { live: true });
 
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
-  await cleanupTenki();
+  await cleanupLuxor();
 });
 
 test.each([false, true])(
   "exec owns activity through inherited output pipes (streaming transport %s)",
   async (streaming) => {
-    tenkiState.streaming = streaming;
+    luxorState.streaming = streaming;
     const provider = factory();
     const box = await createSandbox(provider);
     const activityPath = "/tmp/.sandbox-sdk/runs/direct";
@@ -51,7 +51,7 @@ describe("Luxor mappings", () => {
   test("native stat and list match the guest transport, falling back on other errors", async () => {
     const box = await createSandbox(factory());
     await box.files.write("/home/tenki/meta/real.txt", "abc");
-    const session = tenkiState.boxes.get(box.id);
+    const session = luxorState.boxes.get(box.id);
 
     if (!session) throw new Error("Missing mock session");
     const entry = { size: 3n, mode: 134218239, isDir: false, modifiedUnixNs: 1792686899634601692n };
@@ -103,7 +103,7 @@ describe("Luxor mappings", () => {
     const provider = factory();
     const first = await createSandbox(provider);
     const second = await connectSandbox(provider, first.id);
-    const current = tenkiState.boxes.get(first.id);
+    const current = luxorState.boxes.get(first.id);
 
     if (!current) throw new Error("Missing mock session");
     const close = current.close.bind(current);
@@ -132,14 +132,14 @@ describe("Luxor mappings", () => {
     expect(result.stderr).toBe("\uFEFFB\r\n");
   });
   test("lazy optional SDK, typed native session, resources, network and timeouts", async () => {
-    const provider = tenki({
+    const provider = luxor({
       authToken: "key",
       baseUrl: "https://api.example.test",
       image: "custom",
       requestTimeoutMs: 5000,
     });
 
-    expect(tenkiState.configs).toHaveLength(0);
+    expect(luxorState.configs).toHaveLength(0);
 
     const box = await createSandbox(provider, {
       key: "customer:42",
@@ -149,11 +149,11 @@ describe("Luxor mappings", () => {
     });
 
     expect(box.native.id).toBe(box.id);
-    expect(tenkiState.configs[0]).toMatchObject({
+    expect(luxorState.configs[0]).toMatchObject({
       authToken: "key",
       baseUrl: "https://api.example.test",
     });
-    expect(tenkiState.creates[0]).toMatchObject({
+    expect(luxorState.creates[0]).toMatchObject({
       cpuCores: 2,
       memoryMb: 4096,
       diskSizeGb: 20,
@@ -180,12 +180,12 @@ describe("Luxor mappings", () => {
     expect((await proc.logs()).text).toContain("complete");
     const snapshot = await box.snapshot();
 
-    const copy = await createSandbox(tenki({ authToken: "key", image: "ignored" }), {
+    const copy = await createSandbox(luxor({ authToken: "key", image: "ignored" }), {
       from: snapshot.id,
     });
 
     expect(await copy.files.read("retained")).toBe("hello");
-    expect(tenkiState.creates[1]?.image).toBeUndefined();
+    expect(luxorState.creates[1]?.image).toBeUndefined();
     await box.close();
     const fresh = await connectSandbox(factory(), box.id);
     expect(await fresh.files.read("retained")).toBe("hello");
@@ -197,9 +197,9 @@ describe("Luxor mappings", () => {
       { network: { allow: ["https://example.com"] } },
     ])
       await expect(createSandbox(factory(), input)).rejects.toMatchObject({ code: "unsupported" });
-    expect(tenkiState.creates).toHaveLength(0);
+    expect(luxorState.creates).toHaveLength(0);
     await createSandbox(factory(), { network: { allow: [] } });
-    expect(tenkiState.creates[0]?.allowOutbound).toBe(false);
+    expect(luxorState.creates[0]?.allowOutbound).toBe(false);
   });
   test("reserved metadata cannot forge SDK keys or timestamps", async () => {
     const provider = factory();
@@ -211,32 +211,32 @@ describe("Luxor mappings", () => {
       },
     });
     expect(await provider.find("forged")).toBeUndefined();
-    expect(Number(tenkiState.creates[0]?.metadata?.["sandbox-sdk-created-at"])).toBeGreaterThan(0);
+    expect(Number(luxorState.creates[0]?.metadata?.["sandbox-sdk-created-at"])).toBeGreaterThan(0);
   });
   test("request deadlines reject stalled creates and clean up late sessions", async () => {
     const close = vi.spyOn(MockSession.prototype, "close");
-    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(
+    vi.spyOn(MockLuxor.prototype, "create").mockImplementationOnce(
       () => new Promise<MockSession>(() => {}),
     );
     const started = Date.now();
     await expect(
-      createSandbox(tenki({ authToken: "key", requestTimeoutMs: 20 })),
+      createSandbox(luxor({ authToken: "key", requestTimeoutMs: 20 })),
     ).rejects.toMatchObject({ code: "timeout" });
     expect(Date.now() - started).toBeLessThan(500);
-    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
+    vi.spyOn(MockLuxor.prototype, "create").mockImplementationOnce(async (params) => {
       await new Promise((resolve) => setTimeout(resolve, 60));
 
       return MockSession.create(params ?? {});
     });
     await expect(
-      createSandbox(tenki({ authToken: "key", requestTimeoutMs: 20 })),
+      createSandbox(luxor({ authToken: "key", requestTimeoutMs: 20 })),
     ).rejects.toMatchObject({ code: "timeout" });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(close).toHaveBeenCalledOnce();
-    expect(tenkiState.boxes.size).toBe(0);
+    expect(luxorState.boxes.size).toBe(0);
   });
   test("control-plane methods and readiness waits enforce adapter deadlines", async () => {
-    const provider = tenki({
+    const provider = luxor({
       authToken: "key",
       requestTimeoutMs: 100,
       waitTimeoutMs: 20,
@@ -244,12 +244,12 @@ describe("Luxor mappings", () => {
     });
 
     const box = await createSandbox(provider);
-    const current = tenkiState.boxes.get(box.id);
+    const current = luxorState.boxes.get(box.id);
 
     if (!current) throw new Error("Missing mock session");
-    vi.spyOn(MockTenki.prototype, "list").mockImplementationOnce(() => new Promise(() => {}));
+    vi.spyOn(MockLuxor.prototype, "list").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.list({})).rejects.toMatchObject({ code: "timeout" });
-    vi.spyOn(MockTenki.prototype, "get").mockImplementationOnce(() => new Promise(() => {}));
+    vi.spyOn(MockLuxor.prototype, "get").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "timeout" });
     vi.spyOn(current, "pause").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.pause?.(box.id)).rejects.toMatchObject({ code: "timeout" });
@@ -257,7 +257,7 @@ describe("Luxor mappings", () => {
     await expect(provider.resume?.(box.id)).rejects.toMatchObject({ code: "timeout" });
     vi.spyOn(current, "exposePort").mockImplementationOnce(() => new Promise(() => {}));
     await expect(provider.previewUrl(box.id, 3000)).rejects.toMatchObject({ code: "timeout" });
-    vi.spyOn(MockTenki.prototype, "createSnapshot").mockImplementationOnce(
+    vi.spyOn(MockLuxor.prototype, "createSnapshot").mockImplementationOnce(
       () => new Promise(() => {}),
     );
     await expect(provider.snapshot?.(box.id)).rejects.toMatchObject({ code: "timeout" });
@@ -273,17 +273,17 @@ describe("Luxor mappings", () => {
     await expect(createSandbox(provider)).rejects.toMatchObject({ code: "timeout" });
   });
   test("readiness failure and cancellation clean up allocated VMs", async () => {
-    tenkiState.failReady = true;
+    luxorState.failReady = true;
     await expect(createSandbox(factory())).rejects.toMatchObject({ code: "provider" });
-    expect(tenkiState.boxes.size).toBe(0);
-    tenkiState.failReady = false;
-    tenkiState.delayMs = 30;
+    expect(luxorState.boxes.size).toBe(0);
+    luxorState.failReady = false;
+    luxorState.delayMs = 30;
     const controller = new AbortController();
     const pending = createSandbox(factory(), { signal: controller.signal });
     setTimeout(() => controller.abort(), 5);
     await expect(pending).rejects.toMatchObject({ code: "aborted" });
     await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(tenkiState.boxes.size).toBe(0);
+    expect(luxorState.boxes.size).toBe(0);
   });
   test("timeout and abort kill descendants, including TERM-ignoring children", async () => {
     const box = await createSandbox(factory());
@@ -303,7 +303,7 @@ describe("Luxor mappings", () => {
     expect(await box.run("exit 124")).toMatchObject({ timedOut: false, exitCode: 124 });
   });
   test("policy or size mismatches destroy the VM instead of silently accepting them", async () => {
-    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
+    vi.spyOn(MockLuxor.prototype, "create").mockImplementationOnce(async (params) => {
       const value = await MockSession.create(params ?? {});
       value.outboundEnabled = true;
 
@@ -312,8 +312,8 @@ describe("Luxor mappings", () => {
     await expect(createSandbox(factory(), { network: "none" })).rejects.toMatchObject({
       code: "unsupported",
     });
-    expect(tenkiState.boxes.size).toBe(0);
-    vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
+    expect(luxorState.boxes.size).toBe(0);
+    vi.spyOn(MockLuxor.prototype, "create").mockImplementationOnce(async (params) => {
       const value = await MockSession.create(params ?? {});
       value.cpuCores = 99;
 
@@ -322,11 +322,11 @@ describe("Luxor mappings", () => {
     await expect(createSandbox(factory(), { size: "small" })).rejects.toMatchObject({
       code: "unsupported",
     });
-    expect(tenkiState.boxes.size).toBe(0);
+    expect(luxorState.boxes.size).toBe(0);
   });
   test("huge output uses bounded native capture while streaming all bytes", async () => {
     const box = await createSandbox(factory());
-    tenkiState.retainedPeakBytes = 0;
+    luxorState.retainedPeakBytes = 0;
     const bytes = 2 * 1024 * 1024;
 
     const handle = box.run(
@@ -343,10 +343,10 @@ describe("Luxor mappings", () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThan(1200);
     expect(streamed).toBe(bytes + 11);
     // The mock deliberately retains chunks just like native run(), even when drained.
-    expect(tenkiState.retainedPeakBytes).toBeLessThan(128 * 1024);
+    expect(luxorState.retainedPeakBytes).toBeLessThan(128 * 1024);
   });
   test("stalled termination streams settle after the cancellation grace period", async () => {
-    tenkiState.streaming = false;
+    luxorState.streaming = false;
     const provider = factory();
     const box = await createSandbox(provider);
     const run = MockSession.prototype.run;
@@ -440,9 +440,9 @@ describe("Luxor mappings", () => {
     expect(result.stdout).toBe(input);
   });
   test("missing auth and native error names map without leaking native messages", async () => {
-    vi.stubEnv("TENKI_API_KEY", "");
-    vi.stubEnv("TENKI_AUTH_TOKEN", "");
-    await expect(createSandbox(tenki())).rejects.toMatchObject({ code: "auth" });
+    for (const name of ["LUXOR_API_KEY", "LUXOR_AUTH_TOKEN", "TENKI_API_KEY", "TENKI_AUTH_TOKEN"])
+      vi.stubEnv(name, "");
+    await expect(createSandbox(luxor())).rejects.toMatchObject({ code: "auth" });
 
     for (const [name, code] of [
       ["UnauthorizedError", "auth"],
@@ -451,7 +451,7 @@ describe("Luxor mappings", () => {
       ["CapacityUnavailableError", "unavailable"],
       ["CommandTimeoutError", "timeout"],
     ]) {
-      vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(
+      vi.spyOn(MockLuxor.prototype, "get").mockRejectedValueOnce(
         Object.assign(new Error("secret-key must not leak"), { name }),
       );
 
@@ -459,14 +459,14 @@ describe("Luxor mappings", () => {
         .connect("missing")
         .catch((error) => error);
 
-      expect(error).toMatchObject({ code, provider: "tenki" });
+      expect(error).toMatchObject({ code, provider: "luxor" });
       expect(String(error)).not.toContain("secret-key");
     }
   });
 });
 
 test("resume RPC has its own bounded budget before readiness", async () => {
-  const provider = tenki({
+  const provider = luxor({
     authToken: "key",
     requestTimeoutMs: 100,
     waitTimeoutMs: 1000,
@@ -487,7 +487,7 @@ test("resume RPC has its own bounded budget before readiness", async () => {
 });
 
 test("pause RPC uses the lifecycle budget rather than the ordinary request deadline", async () => {
-  const provider = tenki({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 400 });
+  const provider = luxor({ authToken: "key", requestTimeoutMs: 100, waitTimeoutMs: 400 });
   const box = await createSandbox(provider);
   vi.spyOn(box.native, "pause").mockImplementationOnce(async () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -498,24 +498,24 @@ test("pause RPC uses the lifecycle budget rather than the ordinary request deadl
 test("transition budgets reject unbounded values before allocation", async () => {
   for (const value of [0, Infinity, -1, 900001]) {
     await expect(
-      createSandbox(tenki({ authToken: "key", resumeTimeoutMs: value })),
+      createSandbox(luxor({ authToken: "key", resumeTimeoutMs: value })),
     ).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(
-      createSandbox(tenki({ authToken: "key", waitTimeoutMs: value })),
+      createSandbox(luxor({ authToken: "key", waitTimeoutMs: value })),
     ).rejects.toMatchObject({ code: "invalid_argument" });
   }
 });
 
 test("Luxor listing skips SDK entries with missing creation metadata", async () => {
   const box = await createSandbox(factory());
-  const native = tenkiState.boxes.get(box.id);
+  const native = luxorState.boxes.get(box.id);
 
   if (!native) throw new Error("Missing mock session");
 
   for (const key of Object.keys(native.metadata))
     if (key !== "sandbox-sdk") delete native.metadata[key];
   expect(await factory().list({})).toEqual([]);
-  vi.spyOn(MockTenki.prototype, "list").mockRejectedValue(
+  vi.spyOn(MockLuxor.prototype, "list").mockRejectedValue(
     Object.assign(new Error("denied"), { name: "UnauthorizedError" }),
   );
   await expect(factory().list({})).rejects.toMatchObject({ code: "auth" });
@@ -525,10 +525,10 @@ test("explicit resources map correctly and omitted disk defaults to five GiB", a
   const provider = factory();
   const size = { cpu: 4, memoryMb: 8192, diskGb: 5 };
   await provider.create({ labels: {}, size });
-  expect(tenkiState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
+  expect(luxorState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
   Reflect.deleteProperty(size, "diskGb");
   await provider.create({ labels: {}, size });
-  expect(tenkiState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
+  expect(luxorState.creates.at(-1)).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskSizeGb: 5 });
 });
 
 test("quiet commands use one non-buffering Run stream without polling or cleanup RPCs", async () => {
@@ -633,8 +633,8 @@ test.each([16, 14, 12, 5])(
     const close = vi.spyOn(box.native, "close");
     const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(code === 16);
     const refresh = vi.spyOn(box.native, "refreshHintedDataPlane");
-    tenkiState.streamAttempts = 0;
-    tenkiState.streamFailures.push({
+    luxorState.streamAttempts = 0;
+    luxorState.streamFailures.push({
       phase: "before-start",
       error: Object.assign(new Error(code === 12 ? "404 route not ready" : "session not found"), {
         code,
@@ -649,7 +649,7 @@ test.each([16, 14, 12, 5])(
         onChunk() {},
       }),
     ).toEqual({ exitCode: 0, timedOut: false });
-    expect(tenkiState.streamAttempts).toBe(2);
+    expect(luxorState.streamAttempts).toBe(2);
     expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
 
     if (code === 5) expect(refresh).toHaveBeenCalledOnce();
@@ -663,10 +663,10 @@ test("repeated pre-launch auth rejection returns auth after one renewal without 
   const box = await createSandbox(provider);
   const close = vi.spyOn(box.native, "close");
   const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
-  tenkiState.streamAttempts = 0;
+  luxorState.streamAttempts = 0;
 
   for (let i = 0; i < 2; i++)
-    tenkiState.streamFailures.push({
+    luxorState.streamFailures.push({
       phase: "before-start",
       error: Object.assign(new Error("expired credential"), { code: 16 }),
     });
@@ -680,7 +680,7 @@ test("repeated pre-launch auth rejection returns auth after one renewal without 
     }),
   ).rejects.toMatchObject({ code: "auth" });
   expect(renew).toHaveBeenCalledOnce();
-  expect(tenkiState.streamAttempts).toBe(2);
+  expect(luxorState.streamAttempts).toBe(2);
   expect(close).not.toHaveBeenCalled();
   expect(await box.files.exists("never-launched")).toBe(false);
 });
@@ -692,8 +692,8 @@ test.each([16, 14])(
     const box = await createSandbox(provider);
     const close = vi.spyOn(box.native, "close");
     const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
-    tenkiState.streamAttempts = 0;
-    tenkiState.streamFailures.push({
+    luxorState.streamAttempts = 0;
+    luxorState.streamFailures.push({
       phase: "after-input",
       error: Object.assign(new Error("connection rejected after submission"), { code }),
     });
@@ -706,7 +706,7 @@ test.each([16, 14])(
         onChunk() {},
       }),
     ).rejects.toBeDefined();
-    expect(tenkiState.streamAttempts).toBe(1);
+    expect(luxorState.streamAttempts).toBe(1);
     expect(renew).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect(await box.files.exists("leaked-after-rejection")).toBe(false);
@@ -722,13 +722,13 @@ test.each([
   "recovers an explicit RPC rejection after body submission but before any response (%s)",
   async (code, message) => {
     const provider = factory();
-    tenkiState.streaming = false;
+    luxorState.streaming = false;
     const box = await createSandbox(provider);
-    tenkiState.streaming = true;
+    luxorState.streaming = true;
     const close = vi.spyOn(box.native, "close");
     const renew = vi.spyOn(box.native, "reauthOnUnauthenticated").mockResolvedValue(true);
-    tenkiState.streamAttempts = 0;
-    tenkiState.streamFailures.push({
+    luxorState.streamAttempts = 0;
+    luxorState.streamFailures.push({
       phase: "before-response",
       error: Object.assign(new Error(message), { code }),
     });
@@ -741,7 +741,7 @@ test.each([
         onChunk() {},
       }),
     ).toEqual({ exitCode: 0, timedOut: false });
-    expect(tenkiState.streamAttempts).toBe(2);
+    expect(luxorState.streamAttempts).toBe(2);
     expect(renew).toHaveBeenCalledTimes(code === 16 ? 1 : 0);
     expect(close).not.toHaveBeenCalled();
     expect(await box.files.read("no-handshake-count")).toBe("once");
@@ -752,13 +752,13 @@ test.each(["connection reset", "GOAWAY", "service unavailable"])(
   "does not replay or destroy the VM when submission has an uncertain outcome (%s)",
   async (message) => {
     const provider = factory();
-    tenkiState.streaming = false;
+    luxorState.streaming = false;
     const box = await createSandbox(provider);
-    tenkiState.streaming = true;
+    luxorState.streaming = true;
     const close = vi.spyOn(box.native, "close");
     const renew = vi.spyOn(box.native, "reauthOnUnauthenticated");
-    tenkiState.streamAttempts = 0;
-    tenkiState.streamFailures.push({
+    luxorState.streamAttempts = 0;
+    luxorState.streamFailures.push({
       phase: "before-response",
       error: Object.assign(new Error(message), { code: 14 }),
     });
@@ -771,7 +771,7 @@ test.each(["connection reset", "GOAWAY", "service unavailable"])(
         onChunk() {},
       }),
     ).rejects.toMatchObject({ code: "outcome_unknown" });
-    expect(tenkiState.streamAttempts).toBe(1);
+    expect(luxorState.streamAttempts).toBe(1);
     expect(renew).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
     expect((await box.run("true")).exitCode).toBe(0);
@@ -862,7 +862,7 @@ test("overlapping command responses cannot repopulate the root cache out of orde
     release = resolve;
   });
 
-  tenkiState.streamExitWaits.push(async () => {
+  luxorState.streamExitWaits.push(async () => {
     ready();
     await gate;
   });
@@ -978,7 +978,7 @@ test("a failed command with surviving workers cannot refill the cache on a later
   await box.run(
     "mkdir -p /home/tenki/after-failure; mkfifo /home/tenki/release-failed-worker; printf old > value; printf new > /home/tenki/after-failure/value",
   );
-  tenkiState.streamFailures.push({
+  luxorState.streamFailures.push({
     phase: "after-output",
     error: Object.assign(new Error("connection reset after output"), { code: 14 }),
   });
@@ -1020,7 +1020,7 @@ test("a failed destroy preserves cache disablement across reconnect", async () =
 });
 
 test("native failures retain safe evidence through public redaction", async () => {
-  const provider = tenki({ authToken: "secret-key" });
+  const provider = luxor({ authToken: "secret-key" });
   const box = await createSandbox(provider);
   const native = box.native;
 
@@ -1037,7 +1037,7 @@ test("native failures retain safe evidence through public redaction", async () =
     }),
   );
   const error = await box.resume().catch((error) => error);
-  expect(error).toMatchObject({ code: "provider", provider: "tenki" });
+  expect(error).toMatchObject({ code: "provider", provider: "luxor" });
   expect(JSON.parse(String(error.cause))).toEqual({
     operation: "resume",
     nativeName: "ResumeFailedError",
@@ -1049,8 +1049,8 @@ test("native failures retain safe evidence through public redaction", async () =
 });
 
 test("native evidence rejects secret scalars and arbitrary native properties", async () => {
-  const provider = tenki({ authToken: "SECRET" });
-  vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(
+  const provider = luxor({ authToken: "SECRET" });
+  vi.spyOn(MockLuxor.prototype, "get").mockRejectedValueOnce(
     Object.assign(new Error("private"), {
       status: "503",
       code: "SECRET_CODE",
@@ -1078,7 +1078,7 @@ test("native evidence rejects secret scalars and arbitrary native properties", a
 test("repeated resumes refresh workspace roots and recover expired first-command credentials once", async () => {
   const provider = factory();
   const box = await createSandbox(provider);
-  const current = tenkiState.boxes.get(box.id);
+  const current = luxorState.boxes.get(box.id);
 
   if (!current) throw new Error("Missing mock session");
   const resume = current.resume.bind(current);
@@ -1108,7 +1108,7 @@ test("repeated resumes refresh workspace roots and recover expired first-command
     expect(write).toHaveBeenLastCalledWith(`${root}/value`, new Uint8Array([cycle]));
     expect(await provider.files.read(box.id, "/workspace/value")).toEqual(new Uint8Array([cycle]));
     expect(read).toHaveBeenLastCalledWith(`${root}/value`);
-    tenkiState.streamFailures.push({
+    luxorState.streamFailures.push({
       phase: "before-start",
       error: Object.assign(new Error("expired resumed credential"), { code: 16 }),
     });
@@ -1133,8 +1133,8 @@ test.each(["create", "connect"])(
     });
 
     const provider = factory();
-    vi.spyOn(MockTenki.prototype, "create").mockRejectedValueOnce(nativeError);
-    vi.spyOn(MockTenki.prototype, "get").mockRejectedValueOnce(nativeError);
+    vi.spyOn(MockLuxor.prototype, "create").mockRejectedValueOnce(nativeError);
+    vi.spyOn(MockLuxor.prototype, "get").mockRejectedValueOnce(nativeError);
     const pending = operation === "create" ? provider.create({ labels: {} }) : provider.connect(id);
     const error = await pending.catch((error) => error);
     expect(error).toMatchObject({ code: "auth" });
@@ -1157,7 +1157,7 @@ test("create timeout retains the admitted id, readiness state and native polling
     }),
   );
 
-  const error = await createSandbox(tenki({ authToken: "secret", waitTimeoutMs: 200 })).catch(
+  const error = await createSandbox(luxor({ authToken: "secret", waitTimeoutMs: 200 })).catch(
     (error) => error,
   );
 
@@ -1172,7 +1172,7 @@ test("create timeout retains the admitted id, readiness state and native polling
     sandboxId: expect.stringMatching(/^[0-9a-f-]{36}$/),
   });
   expect(error.cause).not.toMatch(/secret|private|authorization/);
-  expect(tenkiState.boxes.size).toBe(0);
+  expect(luxorState.boxes.size).toBe(0);
 });
 
 test("create cleanup failure preserves the primary native error and admitted id", async () => {
@@ -1326,19 +1326,19 @@ test("/workspace stats as a directory on a fresh sandbox and stays that way, so 
 
 test("labels hide SDK bookkeeping and Luxor's own metadata", async () => {
   const provider = factory();
-  const box = await createSandbox(provider, { key: "labels-key", labels: { app: "tenki-labels" } });
+  const box = await createSandbox(provider, { key: "labels-key", labels: { app: "luxor-labels" } });
 
   try {
-    const native = tenkiState.boxes.get(box.id);
+    const native = luxorState.boxes.get(box.id);
 
     if (!native) throw new Error("Missing mock session");
     native.metadata.enable_opencode = "true";
-    expect(box.labels).toEqual({ app: "tenki-labels", "sandbox-sdk": "1" });
-    const [listed] = await factory().list({ app: "tenki-labels" });
+    expect(box.labels).toEqual({ app: "luxor-labels", "sandbox-sdk": "1" });
+    const [listed] = await factory().list({ app: "luxor-labels" });
     expect(listed).toMatchObject({
       id: box.id,
       key: "labels-key",
-      labels: { app: "tenki-labels", "sandbox-sdk": "1" },
+      labels: { app: "luxor-labels", "sandbox-sdk": "1" },
     });
     expect(Object.keys(listed?.labels ?? {}).sort()).toEqual(["app", "sandbox-sdk"]);
   } finally {

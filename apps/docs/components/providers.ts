@@ -16,7 +16,7 @@ export const PROVIDERS = {
   superserve: { name: "Superserve", logo: "/integrations/superserve.svg" },
   freestyle: { name: "Freestyle", logo: "/integrations/freestyle.svg" },
   boxd: { name: "boxd", logo: "/integrations/boxd.svg" },
-  tenki: { name: "Luxor", logo: "/integrations/tenki.svg" },
+  luxor: { name: "Luxor", logo: "/integrations/luxor.svg" },
   agentos: { name: "agentOS", logo: "/integrations/agentos.svg" },
   memory: { name: "Memory", logo: "/integrations/memory.svg" },
 } as const satisfies Record<string, { name: string; logo: string | undefined }>;

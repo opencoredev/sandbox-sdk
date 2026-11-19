@@ -1,9 +1,9 @@
-/** Official API sources (checked against @tenkicloud/sandbox 1.4.1 types):
+/** Official API sources (checked against @luxorai/sandbox 1.5.3 types):
  * https://luxor.ai/docs/sandbox/sdk.md
  * https://luxor.ai/docs/sandbox/sessions.md
  * https://luxor.ai/docs/sandbox/snapshots.md
  * https://luxor.ai/docs/sandbox/base-image.md
- * https://www.npmjs.com/package/@tenkicloud/sandbox
+ * https://www.npmjs.com/package/@luxorai/sandbox
  */
 import type {
   ClientOptions,
@@ -13,7 +13,7 @@ import type {
   Session as NativeSession,
   SessionFs,
   Snapshot,
-} from "@tenkicloud/sandbox";
+} from "@luxorai/sandbox";
 import type { ErrorCode } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { isObject, isString } from "../../shared/narrow.js";
@@ -23,19 +23,20 @@ import { waitReady } from "./ready.js";
 import { execute, raw } from "./exec.js";
 import { files } from "./files.js";
 import {
-  tenkiError,
+  luxorError,
   failure,
   createError,
   type CreateStage,
-  type TenkiOperation,
+  type LuxorOperation,
+  keyVariables,
 } from "./errors.js";
 
-export interface TenkiOptions {
-  /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY; required on first use. */
+export interface LuxorOptions {
+  /** Defaults to LUXOR_AUTH_TOKEN, then LUXOR_API_KEY, then the TENKI_* names Luxor still reads; required on first use. */
   apiKey?: string;
   /** @deprecated Use apiKey. Removed in 1.0.0. */
   authToken?: string;
-  /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
+  /** Defaults to LUXOR_API_ENDPOINT, then LUXOR_API_URL, then the TENKI_* names, then https://api.luxor.ai. */
   baseUrl?: string;
   /** Base image; default: the Luxor service default image. */
   image?: string;
@@ -55,9 +56,9 @@ export interface TenkiOptions {
   previewTtlMs?: number;
 }
 
-export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
+export type LuxorCapability = "pause" | "snapshot" | "size" | "network-policy";
 
-export type TenkiProvider = Provider<NativeSession, TenkiCapability>;
+export type LuxorProvider = Provider<NativeSession, LuxorCapability>;
 
 type DataPlaneClient = Awaited<ReturnType<NativeSession["requireDataPlane"]>>;
 
@@ -67,7 +68,7 @@ type NativeRun = DataPlaneClient["run"];
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
 /** A request frame for the data-plane `run` stream. */
-export type TenkiRunRequest = Parameters<NativeRun>[0] extends AsyncIterable<infer T> ? T : never;
+export type LuxorRunRequest = Parameters<NativeRun>[0] extends AsyncIterable<infer T> ? T : never;
 
 // Without the peer installed, the derived frame types stay `any` instead of collapsing to
 // `unknown`, so a consumer's typecheck reports only the missing module.
@@ -92,7 +93,7 @@ type NativeRunVariant<Case extends NativeRunPayload["case"]> = Extract<
  * fields the adapter reads, so the native frames satisfy it and test fixtures can
  * build it without protobuf message metadata.
  */
-export interface TenkiRunResponse {
+export interface LuxorRunResponse {
   frame?: {
     payload:
       | NativeRunVariant<"stdout" | "stderr">
@@ -102,17 +103,17 @@ export interface TenkiRunResponse {
 }
 
 /** The data-plane client calls the adapter makes. */
-export interface TenkiDataPlane {
+export interface LuxorDataPlane {
   run(
-    requests: AsyncIterable<TenkiRunRequest>,
+    requests: AsyncIterable<LuxorRunRequest>,
     options: Required<Pick<NativeRunOptions, "signal">>,
-  ): AsyncIterable<TenkiRunResponse>;
+  ): AsyncIterable<LuxorRunResponse>;
 }
 
 /** The parts of a Luxor session the adapter uses. The data-plane entry points are
  * optional: without them, commands fall back to buffered `run()` pages.
  */
-export type TenkiSession = Pick<
+export type LuxorSession = Pick<
   NativeSession,
   | "id"
   | "state"
@@ -137,20 +138,20 @@ export type TenkiSession = Pick<
   | "reauthOnUnauthenticated"
 > & {
   fs: Pick<SessionFs, "stat" | "list">;
-  dataPlaneRPC?(): TenkiDataPlane | undefined;
-  requireDataPlane?(verifyServing?: boolean): Promise<TenkiDataPlane>;
-  dataPlaneProvisioningPending(plane: TenkiDataPlane): boolean;
-  markDataPlaneServing(plane: TenkiDataPlane): void;
-  refreshHintedDataPlane(plane: TenkiDataPlane): Promise<boolean>;
+  dataPlaneRPC?(): LuxorDataPlane | undefined;
+  requireDataPlane?(verifyServing?: boolean): Promise<LuxorDataPlane>;
+  dataPlaneProvisioningPending(plane: LuxorDataPlane): boolean;
+  markDataPlaneServing(plane: LuxorDataPlane): void;
+  refreshHintedDataPlane(plane: LuxorDataPlane): Promise<boolean>;
 };
 
 /** A session whose client streams commands over the data plane. */
-export type StreamingSession = TenkiSession & Required<Pick<TenkiSession, "requireDataPlane">>;
+export type StreamingSession = LuxorSession & Required<Pick<LuxorSession, "requireDataPlane">>;
 
-type Session = TenkiSession;
+type Session = LuxorSession;
 
 /** The parts of a Luxor client the adapter uses. */
-export interface TenkiClient<S extends TenkiSession> {
+export interface LuxorClient<S extends LuxorSession> {
   create(options: CreateOptions): Promise<S>;
   get(id: string): Promise<S>;
   list(options: ListOptions | undefined): Promise<S[]>;
@@ -162,9 +163,19 @@ export interface TenkiClient<S extends TenkiSession> {
   ): Promise<Pick<Snapshot, "id">>;
 }
 
-/** The parts of the Luxor SDK the adapter uses: the real `@tenkicloud/sandbox` module, or a test fixture. */
-export interface TenkiModule<S extends TenkiSession> {
-  TenkiSandbox: new (options: ClientOptions) => TenkiClient<S>;
+/** The parts of the Luxor SDK the adapter uses: the real `@luxorai/sandbox` module, or a test fixture. */
+export interface LuxorModule<S extends LuxorSession> {
+  LuxorSandbox: new (options: ClientOptions) => LuxorClient<S>;
+}
+
+function envKey() {
+  for (const name of keyVariables) {
+    const value = process.env[name]?.trim();
+
+    if (value) return value;
+  }
+
+  return undefined;
 }
 
 const keyTag = "sandbox-sdk-key";
@@ -235,12 +246,12 @@ const prepare = [
   "set -e; mkdir -p /home/tenki/.sandbox-sdk /tmp; exec 9>/home/tenki/.sandbox-sdk/setup.lock; flock -x 9; if [ ! -e /workspace ]; then mkdir -p /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; elif [ ! -L /workspace ] && [ ! -e /home/tenki/workspace ]; then mv /workspace /home/tenki/workspace; ln -s /home/tenki/workspace /workspace; fi; flock -u 9; if [ ! -e /tmp/.sandbox-sdk ]; then ln -s /home/tenki/.sandbox-sdk /tmp/.sandbox-sdk; fi; test -L /tmp/.sandbox-sdk; command -v python3 git tar nohup setsid >/dev/null; readlink -f /workspace",
 ];
 
-/** @internal The adapter behind `tenki()`. `load` imports the Luxor SDK; tests pass a fixture. */
-export function createTenkiProvider<S extends TenkiSession>(
-  options: TenkiOptions,
-  load: () => Promise<TenkiModule<S>>,
-): Provider<S, TenkiCapability> {
-  let client: Promise<TenkiClient<S>> | undefined;
+/** @internal The adapter behind `luxor()`. `load` imports the Luxor SDK; tests pass a fixture. */
+export function createLuxorProvider<S extends LuxorSession>(
+  options: LuxorOptions,
+  load: () => Promise<LuxorModule<S>>,
+): Provider<S, LuxorCapability> {
+  let client: Promise<LuxorClient<S>> | undefined;
 
   const boxes = new Map<string, S>();
   const destroying = new Map<string, Promise<void>>();
@@ -318,20 +329,17 @@ export function createTenkiProvider<S extends TenkiSession>(
       )
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
 
-      const authToken =
-        options.apiKey ??
-        options.authToken ??
-        (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
+      const authToken = options.apiKey ?? options.authToken ?? envKey();
 
       if (!authToken)
         throw failure(
-          "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
+          "Luxor API key is missing. Authentication is required. Set LUXOR_API_KEY or LUXOR_AUTH_TOKEN or pass apiKey.",
           "auth",
         );
 
-      const { TenkiSandbox } = await loadPeer("@tenkicloud/sandbox", "tenki", load);
+      const { LuxorSandbox } = await loadPeer("@luxorai/sandbox", "luxor", load);
 
-      return new TenkiSandbox({
+      return new LuxorSandbox({
         authToken,
         baseUrl: options.baseUrl,
       });
@@ -339,14 +347,14 @@ export function createTenkiProvider<S extends TenkiSession>(
   }
 
   async function safe<T>(
-    operation: TenkiOperation,
+    operation: LuxorOperation,
     id: string | undefined,
     action: () => Promise<T>,
   ): Promise<T> {
     try {
       return await action();
     } catch (error) {
-      throw tenkiError(error, id, operation, [options.apiKey ?? options.authToken ?? ""]);
+      throw luxorError(error, id, operation, [options.apiKey ?? options.authToken ?? ""]);
     }
   }
 
@@ -362,12 +370,12 @@ export function createTenkiProvider<S extends TenkiSession>(
     return value;
   }
 
-  const provider: Provider<S, TenkiCapability> = {
-    name: "tenki",
+  const provider: Provider<S, LuxorCapability> = {
+    name: "luxor",
     keyMode: "best-effort",
     inlineActivity: true,
     processRecordRoot: "/home/tenki/.sandbox-sdk/procs",
-    capabilities: new Set<TenkiCapability>(["pause", "snapshot", "size", "network-policy"]),
+    capabilities: new Set<LuxorCapability>(["pause", "snapshot", "size", "network-policy"]),
     create: (input) =>
       safe("create", undefined, async () => {
         if (input.idleTimeoutMs !== undefined)
@@ -434,7 +442,7 @@ export function createTenkiProvider<S extends TenkiSession>(
 
         // Admit without waiting so every subsequent failure has an ID to clean up.
         const client = await api();
-        // create() has no AbortSignal in `@tenkicloud/sandbox` 1.4.1. Keep observing its result
+        // create() has no AbortSignal in `@luxorai/sandbox` 1.4.1. Keep observing its result
         // after the caller's deadline so a late allocation can still be closed.
         const pending = client.create(params);
         let value: S;
@@ -482,7 +490,7 @@ export function createTenkiProvider<S extends TenkiSession>(
           try {
             await provider.destroy(value.id);
           } catch (cleanupError) {
-            cleanupCode = tenkiError(cleanupError).code;
+            cleanupCode = luxorError(cleanupError).code;
           }
 
           throw createError(
@@ -514,7 +522,7 @@ export function createTenkiProvider<S extends TenkiSession>(
             try {
               return [info(value)];
             } catch (error) {
-              if (tenkiError(error).code !== "not_found") throw error;
+              if (luxorError(error).code !== "not_found") throw error;
 
               return [];
             }
@@ -550,7 +558,7 @@ export function createTenkiProvider<S extends TenkiSession>(
           await request(async () => (await box(id)).close());
           terminated = true;
         } catch (error) {
-          if (tenkiError(error).code !== "not_found") throw error;
+          if (luxorError(error).code !== "not_found") throw error;
           terminated = true;
         } finally {
           boxes.delete(id);

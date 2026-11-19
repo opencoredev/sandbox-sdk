@@ -44,7 +44,7 @@ const PROVIDERS = [
   ["daytona", "Daytona"],
   ["upstash", "Upstash"],
   ["railway", "Railway"],
-  ["tenki", "Luxor"],
+  ["luxor", "Luxor"],
   ["docker", "Docker"],
   ["freestyle", "Freestyle"],
   ["superserve", "Superserve"],
