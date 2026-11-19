@@ -680,6 +680,10 @@ export function spendGuard(capUSD: number) {
 
       return true;
     },
+    /** Whether `usd` could ever be reserved: true while only other rounds' reservations are in the way. */
+    couldFit(usd: number): boolean {
+      return spent + usd <= capUSD;
+    },
     settle({ reservedUSD, spentUSD }: { reservedUSD: number; spentUSD: number }) {
       reserved = Math.max(0, reserved - reservedUSD);
       spent += spentUSD;

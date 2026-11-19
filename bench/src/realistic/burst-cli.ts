@@ -327,7 +327,15 @@ export async function burstCommand(args: string[]) {
           const reserve =
             size * attemptBudget(setup, track, slotMs, provisionedFor(setup, track, profileName));
 
-          if (!guard.reserve(reserve)) {
+          // Other providers' rounds in flight may hold the reservation: wait for them to settle.
+          let reserved = guard.reserve(reserve);
+
+          while (!reserved && guard.couldFit(reserve)) {
+            await systemClock.sleep(5_000);
+            reserved = guard.reserve(reserve);
+          }
+
+          if (!reserved) {
             const state = guard.state();
             await note({ kind: "budget-stop", provider: setup.name, round, ...state, reserve });
 
