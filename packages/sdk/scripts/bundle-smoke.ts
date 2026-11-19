@@ -53,6 +53,7 @@ const fakes = {
 const skipped = {
   local: "no optional peer; drives the Docker CLI",
   agentos: "embedded runtime with a native sidecar; no network call to observe",
+  tenki: "deprecated alias of luxor; the luxor probe covers the same adapter and peer",
 };
 
 const providers = Object.entries(pkg.exports).flatMap(([subpath, target]) =>
