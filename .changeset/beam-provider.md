@@ -1,0 +1,5 @@
+---
+"@opencoredev/sandbox-sdk": minor
+---
+
+Add the Beam provider, `beam()` from `@opencoredev/sandbox-sdk/beam`. It runs Beam Sandboxes through Beam's official `@beamcloud/beam-js` SDK (1.1.6 or later), an optional peer. It supports commands, files (files over Beam's gateway limits move in pieces), listing and reconnect, public preview URLs, memory snapshots and restore, and `size` presets (small 1 vCPU / 2048 MiB, medium 2 / 4096, large 4 / 8192) and exact sizes in whole vCPUs and MiB. With no `size`, a sandbox gets Beam's own default of 1 vCPU and 128 MiB. Keys are best-effort, stored in a marker file in the sandbox. A sandbox lives for `timeoutMs`, or `keepWarmSeconds` (default 3600) when none is given, counted from creation. There is no pause, network policy, disk size or terminal, and Beam snapshots never expire and cannot be deleted. Because `@beamcloud/beam-js` keeps one global client, one process can use one Beam token, workspace and gateway; a second provider for another account is refused. Set `BEAM_TOKEN` and `BEAM_WORKSPACE_ID`, and optionally pass `image`, `gatewayUrl` and `requestTimeoutMs`.
