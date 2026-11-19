@@ -85,12 +85,12 @@ import {
 import { sha256Hex } from "./steps.js";
 
 /** One line of notes.jsonl. */
-type RunNote = { readonly kind: string } & { readonly [key: string]: Json | undefined };
+export type RunNote = { readonly kind: string } & { readonly [key: string]: Json | undefined };
 
-const defaultManifest = "/home/leo/agents/realistic-workloads/manifest.json";
+export const defaultManifest = "/home/leo/agents/realistic-workloads/manifest.json";
 
 /** Where the frozen artifacts live on evo-1, top level only. */
-const defaultArtifactDirs = [
+export const defaultArtifactDirs = [
   "/home/leo/agents/realistic-workloads/depcache/vue-core",
   "/home/leo/agents/realistic-workloads/depcache/jitsi-web",
   "/home/leo/agents/realistic-workloads/toolchain",
@@ -200,7 +200,7 @@ async function readJsonLines<T>(path: string, schema: z.ZodType<T>): Promise<T[]
 }
 
 /** Every artifact the manifest names, found by file name in the artifact directories. */
-async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[]) {
+export async function artifactPaths(manifest: HarnessManifest, dirs: readonly string[]) {
   const wanted = new Map<string, string>();
 
   for (const toolchain of Object.values(manifest.toolchains))
@@ -286,7 +286,7 @@ async function spentUSD(path: string) {
   return records.reduce((sum, r) => (r.sandboxIds.length === 0 ? sum : sum + recordedBudget(r)), 0);
 }
 
-async function loadSlotProvider(
+export async function loadSlotProvider(
   setup: ProviderSetup,
   track: TrackId,
   slotMs: number,
@@ -1483,10 +1483,16 @@ export async function realisticCommand(args: string[]) {
       return summary(rest);
     case "sweep":
       return sweep(rest);
+    case "burst":
+      return (await import("./burst-cli.js")).burstCommand(rest);
+    case "burst-summary":
+      return (await import("./burst-cli.js")).burstSummaryCommand(rest);
     default:
       process.stdout.write(
         "bun bench realistic run --out DIR --run ID [--plan headline|held-open] [--providers a,b] [--profiles fix-and-test,build] [--tracks same-machine,default] [--batches N] [--first-batch K] [--budget-usd 75]\n" +
-          "bun bench realistic billing --out DIR [--providers a,b]\nbun bench realistic summary --out DIR [--out DIR2] [--to DIR] [--drop provider@run[@track]] [--audit FILE]\nbun bench realistic sweep --out DIR --run ID\n",
+          "bun bench realistic billing --out DIR [--providers a,b]\nbun bench realistic summary --out DIR [--out DIR2] [--to DIR] [--drop provider@run[@track]] [--audit FILE]\nbun bench realistic sweep --out DIR --run ID\n" +
+          "bun bench realistic burst --out DIR --run ID [--providers a,b] [--size 5] [--rounds 2] [--parallel 3] [--budget-usd 15] [--solo realistic.json]\n" +
+          "bun bench realistic burst-summary --out DIR [--out DIR2] --solo realistic.json --to FILE\n",
       );
   }
 }
