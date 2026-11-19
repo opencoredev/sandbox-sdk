@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { runAttempt } from "../../src/realistic/attempt.js";
-import { buildExport, soloMedians } from "../../src/realistic/burst-cli.js";
+import { buildExport, roundSchedule, soloMedians } from "../../src/realistic/burst-cli.js";
 import {
   accountRefusal,
   runPool,
@@ -187,6 +187,25 @@ describe("a round", () => {
     expect(report.after.ids).toEqual([]);
   });
 
+  it("runs a control round as one task alone, with its own IDs and the batch it is given", async () => {
+    const records: AttemptRecord[] = [];
+    const starts: number[] = [];
+
+    const report = await runRound(
+      round(
+        { round: 2, role: "control", batch: 3, size: 1, attempt: scripted(() => ({}), starts) },
+        records,
+      ),
+    );
+
+    expect(starts).toHaveLength(1);
+    expect(report).toMatchObject({ round: 2, role: "control", batch: 3, size: 1 });
+    expect(records.map((r) => [r.attemptId, r.slot.id, r.batch])).toEqual([
+      ["rtb-test-c2-t0-e2b", "c2-t0", 3],
+    ]);
+    expect(report.leftovers).toEqual([]);
+  });
+
   it("deletes only this run's leftovers and confirms them gone; a foreign sandbox is untouched", async () => {
     const records: AttemptRecord[] = [];
     const provider = memory();
@@ -262,6 +281,8 @@ function done({
   completion = { kind: "completed" },
   created = true,
   lastPhase = "workload",
+  uploadS,
+  attemptId = `rtb-test-r${batch}-t${task}-e2b`,
 }: {
   round: number;
   task: number;
@@ -269,11 +290,14 @@ function done({
   completion?: AttemptRecord["completion"];
   created?: boolean;
   lastPhase?: "create" | "prepare" | "workload";
+  /** Recorded as two uploads (toolchain, dependency cache) splitting this time. */
+  uploadS?: number;
+  attemptId?: string;
 }): AttemptRecord {
   const record = emptyRecord(
     {
       runId: "rtb-test",
-      attemptId: `rtb-test-r${batch}-t${task}-e2b`,
+      attemptId,
       provider: "e2b",
       manifest: fixture.manifest,
       manifestSha256: null,
@@ -302,6 +326,22 @@ function done({
         ...(lastPhase === "create"
           ? []
           : [{ name: "prepare" as const, startedAt: 1_100, endedAt: 1_200 }]),
+        ...(uploadS === undefined
+          ? []
+          : [
+              {
+                name: "download" as const,
+                startedAt: 1_100,
+                endedAt: 1_100 + uploadS * 400,
+                label: "toolchain",
+              },
+              {
+                name: "download" as const,
+                startedAt: 2_000,
+                endedAt: 2_000 + uploadS * 600,
+                label: "dependency-cache",
+              },
+            ]),
         ...(lastPhase === "workload"
           ? [{ name: "workload" as const, startedAt: 1_200, endedAt: end - 100 }]
           : []),
@@ -312,13 +352,23 @@ function done({
   return record;
 }
 
+const byBatch = (records: AttemptRecord[]) =>
+  records.map((record) => ({ round: record.batch, record }));
+
 describe("task results", () => {
   it("time each task from the create request to the confirmed deletion, not the record's end", () => {
     expect(taskResult(done({ round: 1, task: 0, wallS: 90 }))).toEqual({
       round: 1,
       wallS: 90,
+      uploadS: null,
       completed: true,
     });
+  });
+
+  it("carry the time spent uploading from the host, and the round they are given", () => {
+    expect(taskResult(done({ round: 4, task: 0, wallS: 90, uploadS: 12.5 }), undefined, 2)).toEqual(
+      { round: 2, wallS: 90, uploadS: 12.5, completed: true },
+    );
   });
 
   it("name the stage a task failed at", () => {
@@ -402,7 +452,12 @@ describe("a provider's row", () => {
       done({ round: 2, task: 1, wallS: 130 }),
     ];
 
-    const row = summarizeProvider({ provider: "e2b", records, rounds, soloMedianWallS: 100 });
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: byBatch(records),
+      rounds,
+      solo: { kind: "published", medianWallS: 100 },
+    });
 
     expect(row).toMatchObject({
       provider: "e2b",
@@ -439,18 +494,18 @@ describe("a provider's row", () => {
 
     const mixed = summarizeProvider({
       provider: "e2b",
-      records: [done({ round: 1, task: 0, wallS: 100 }), refused(1, 1)],
+      tasks: byBatch([done({ round: 1, task: 0, wallS: 100 }), refused(1, 1)]),
       rounds: rounds.slice(0, 1),
-      soloMedianWallS: 50,
+      solo: { kind: "published", medianWallS: 50 },
     });
 
     expect(mixed).toMatchObject({ status: "ran", attempts: 1, completed: 1, slowdown: 2 });
 
     const none = summarizeProvider({
       provider: "e2b",
-      records: [refused(1, 0), refused(1, 1)],
+      tasks: byBatch([refused(1, 0), refused(1, 1)]),
       rounds: rounds.slice(0, 1),
-      soloMedianWallS: 50,
+      solo: { kind: "published", medianWallS: 50 },
     });
 
     expect(none).toMatchObject({
@@ -467,9 +522,9 @@ describe("a provider's row", () => {
     expect(
       summarizeProvider({
         provider: "daytona",
-        records: [],
+        tasks: [],
         rounds: [],
-        soloMedianWallS: 92.8,
+        solo: { kind: "published", medianWallS: 92.8 },
         notRun: "Daytona's account allows 10 vCPU in total",
       }),
     ).toEqual({
@@ -478,12 +533,90 @@ describe("a provider's row", () => {
       reason: "Daytona's account allows 10 vCPU in total",
       tasks: [],
       medianWallS: null,
+      medianUploadS: null,
       completed: 0,
       attempts: 0,
       roundAllDoneS: [],
+      solo: null,
       soloMedianWallS: 92.8,
+      soloMedianUploadS: null,
       slowdown: null,
+      slowdownWithoutUpload: null,
     });
+  });
+
+  it("divides by the same-day control tasks, with and without the upload", () => {
+    const control = (round: number, wallS: number, uploadS: number, extra = {}) => ({
+      round,
+      record: done({
+        round: round * 2 - 1,
+        task: 0,
+        wallS,
+        uploadS,
+        attemptId: `rtb-test-c${round}-t0-e2b`,
+        ...extra,
+      }),
+    });
+
+    const burst = (round: number, task: number, wallS: number, uploadS: number) => ({
+      round,
+      record: done({ round: round * 2, task, wallS, uploadS }),
+    });
+
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: [burst(1, 0, 120, 20), burst(1, 1, 130, 30), burst(2, 0, 110, 10)],
+      rounds: [
+        { round: 1, startedAt: 0, allDoneAt: 131_000 },
+        { round: 2, startedAt: 500_000, allDoneAt: 611_000 },
+      ],
+      solo: { kind: "same-day", tasks: [control(2, 104, 4), control(1, 96, 6)] },
+    });
+
+    expect(row).toMatchObject({
+      status: "ran",
+      medianWallS: 120,
+      medianUploadS: 20,
+      completed: 3,
+      attempts: 3,
+      roundAllDoneS: [131, 111],
+      solo: {
+        tasks: [
+          { round: 1, wallS: 96, uploadS: 6, completed: true },
+          { round: 2, wallS: 104, uploadS: 4, completed: true },
+        ],
+        completed: 2,
+        attempts: 2,
+      },
+      soloMedianWallS: 100,
+      soloMedianUploadS: 5,
+      slowdown: 1.2,
+      // (wall - upload): burst 100, 100, 100 -> 100; control 90, 100 -> 95.
+      slowdownWithoutUpload: 1.053,
+    });
+    expect(row.tasks.map((t) => t.round)).toEqual([1, 1, 2]);
+
+    const failedControl = summarizeProvider({
+      provider: "e2b",
+      tasks: [burst(1, 0, 120, 20)],
+      rounds: [],
+      solo: {
+        kind: "same-day",
+        tasks: [
+          control(1, 30, 5, {
+            completion: { kind: "incomplete", reason: "prepare-failed", detail: "upload" },
+          }),
+        ],
+      },
+    });
+
+    expect(failedControl).toMatchObject({
+      solo: { completed: 0, attempts: 1 },
+      soloMedianWallS: null,
+      slowdown: null,
+      slowdownWithoutUpload: null,
+    });
+    expect(failedControl.solo?.tasks[0]?.failure?.stage).toBe("prepare");
   });
 });
 
@@ -565,7 +698,110 @@ describe("the spend guard", () => {
   });
 });
 
+describe("the round schedule", () => {
+  it("puts a 1-task control round before each burst round when asked", () => {
+    expect(roundSchedule({ rounds: 2, size: 5, control: true })).toEqual([
+      { role: "control", round: 1, size: 1 },
+      { role: "burst", round: 1, size: 5 },
+      { role: "control", round: 2, size: 1 },
+      { role: "burst", round: 2, size: 5 },
+    ]);
+    expect(roundSchedule({ rounds: 2, size: 5, control: false })).toEqual([
+      { role: "burst", round: 1, size: 5 },
+      { role: "burst", round: 2, size: 5 },
+    ]);
+  });
+});
+
 describe("the site data file", () => {
+  it("divides by the run's own control tasks when the run had them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-export-control-"));
+
+    try {
+      await writeFile(
+        join(dir, "run.json"),
+        JSON.stringify({
+          id: "rtb-test",
+          sdkCommit: "abc1234",
+          startedAt: "2026-11-19T10:00:00.000Z",
+          endedAt: "2026-11-19T11:00:00.000Z",
+          location: "Boca Raton, FL (evo-1)",
+          size: 2,
+          rounds: 1,
+          track: "same-machine",
+          profile: "fix-and-test",
+          providers: ["e2b"],
+          budgetUSD: 10,
+          mode: "one-provider-at-a-time",
+          control: true,
+        }),
+      );
+
+      const listing = { at: 0, ids: [], runIds: [], error: null };
+
+      const line = (role: string, batch: number, size: number, attemptIds: string[]) => ({
+        kind: "round",
+        provider: "e2b",
+        round: 1,
+        role,
+        size,
+        startedAt: batch * 1_000_000,
+        allDoneAt: batch * 1_000_000 + 131_000,
+        before: listing,
+        after: listing,
+        ownBefore: [],
+        leftovers: [],
+        attemptIds,
+      });
+
+      await writeFile(
+        join(dir, "rounds.jsonl"),
+        [
+          line("control", 1, 1, ["rtb-test-c1-t0-e2b"]),
+          line("burst", 2, 2, ["rtb-test-r1-t0-e2b", "rtb-test-r1-t1-e2b"]),
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n") + "\n",
+      );
+
+      await writeFile(
+        join(dir, "attempts.jsonl"),
+        [
+          done({ round: 1, task: 0, wallS: 100, uploadS: 5, attemptId: "rtb-test-c1-t0-e2b" }),
+          done({ round: 2, task: 0, wallS: 120, uploadS: 10, attemptId: "rtb-test-r1-t0-e2b" }),
+          done({ round: 2, task: 1, wallS: 130, uploadS: 20, attemptId: "rtb-test-r1-t1-e2b" }),
+        ]
+          .map((r) => JSON.stringify(r))
+          .join("\n") + "\n",
+      );
+
+      // The published solo median is not used when the run measured its own.
+      const data = await buildExport([dir], new Map([["e2b", 999]]));
+
+      expect(data.run.mode).toBe("one-provider-at-a-time");
+      expect(data.providers[0]).toMatchObject({
+        provider: "e2b",
+        status: "ran",
+        tasks: [
+          { round: 1, wallS: 120, uploadS: 10, completed: true },
+          { round: 1, wallS: 130, uploadS: 20, completed: true },
+        ],
+        medianWallS: 125,
+        medianUploadS: 15,
+        completed: 2,
+        attempts: 2,
+        roundAllDoneS: [131],
+        solo: { tasks: [{ round: 1, wallS: 100, uploadS: 5, completed: true }], completed: 1 },
+        soloMedianWallS: 100,
+        soloMedianUploadS: 5,
+        slowdown: 1.25,
+        slowdownWithoutUpload: 1.158,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("is built from a run folder with the published solo medians", async () => {
     const dir = await mkdtemp(join(tmpdir(), "rtb-export-"));
 
@@ -660,6 +896,7 @@ describe("the site data file", () => {
         schema: 1,
         run: {
           id: "rtb-test",
+          mode: "parallel",
           sdkCommit: "abc1234",
           startedAt: "2026-11-19T10:00:00.000Z",
           endedAt: "2026-11-19T11:00:00.000Z",
