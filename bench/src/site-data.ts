@@ -17,6 +17,7 @@ import {
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
+import { isStressSample, stressData } from "./stress-site.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
 // Every number here is derived from results.json; the site never hard-codes measurements.
@@ -461,14 +462,66 @@ export function exclusions(input: SiteReport, track: "default" | "same-spec") {
   };
 }
 
+/**
+ * The collection window without runs that collected only stress rows, so adding one leaves the
+ * window as it was. Null when there are none: the merged report's own window applies.
+ */
+function legacyWindow(input: Pick<SiteReport, "samples" | "sources">) {
+  const stressOnly = new Set(
+    input.sources
+      .filter((source) => {
+        const rows = input.samples.filter((s) => s.sourceRunId === source.runId);
+
+        return rows.length > 0 && rows.every(isStressSample);
+      })
+      .map((source) => source.runId),
+  );
+
+  if (!stressOnly.size) return null;
+  const others = input.sources.filter((s) => !stressOnly.has(s.runId));
+
+  return {
+    start: others.map((s) => s.timestamp).sort()[0] ?? null,
+    end:
+      others
+        .map((s) => s.finishedAt)
+        .sort()
+        .at(-1) ?? null,
+  };
+}
+
+/** Policy rules for the stress suites belong to the stress section, not the older exclusions. */
+const stressSuites: ReadonlySet<string> = new Set(["cpu-burst", "survival"]);
+
 export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
-  const disclosed = exclusions(input, track);
+  const allExclusions = exclusions(input, track);
+
+  const disclosed = {
+    ...allExclusions,
+    superseded: allExclusions.superseded.filter((rule) => !stressSuites.has(rule.suite)),
+    notRun: allExclusions.notRun.filter((rule) => !stressSuites.has(rule.suite)),
+    replacements: allExclusions.replacements.filter((rule) => !stressSuites.has(rule.suite)),
+  };
 
   // Nothing below reads the per-track counts; exclusions above already has them.
-  const r = publicationTrack(
+  const full = publicationTrack(
     { ...input, selectionRemovedByTrack: input.selectionRemovedByTrack ?? {} },
     track,
   );
+
+  // Every field but `stress` reads only the scenarios that existed before it, so adding stress
+  // rows to a report leaves them unchanged. Runs that collected only stress rows drop out too.
+  const legacySamples = full.samples.filter((s) => !isStressSample(s));
+  const legacyRuns = new Set(legacySamples.map((s) => s.sourceRunId));
+
+  const r = {
+    ...full,
+    samples: legacySamples,
+    summaries: full.summaries.filter((s) => !isStressSample(s)),
+    sources: full.sources.filter(
+      (s) => legacyRuns.has(s.runId) || !full.samples.some((x) => x.sourceRunId === s.runId),
+    ),
+  };
 
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
 
@@ -631,7 +684,7 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
       verification: p.allocationVerification,
     })),
     generatedFrom: r.runId,
-    window: { start: r.timestamp, end: r.finishedAt },
+    window: legacyWindow(input) ?? { start: r.timestamp, end: r.finishedAt },
     observations: r.samples.length,
     runs: r.sources.map((s) => ({ id: s.runId, suite: s.suite, samples: s.sampleCount })),
     excluded: r.excludedSources,
@@ -640,6 +693,10 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
     providers,
     metrics,
     coldSamples,
+    // CPU sustained, CPU burst and burst survival (stress-site.ts).
+    stress: stressData(full, [
+      ...new Set(full.sources.flatMap((s) => s.providers.map((p) => p.name))),
+    ]),
   };
 }
 

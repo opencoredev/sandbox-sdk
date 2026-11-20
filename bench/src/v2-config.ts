@@ -147,6 +147,9 @@ const schema = z.object({
     .pipe(z.array(z.enum(["modal"]))),
   "account-limits": overrides,
   "burst-cohorts": integer.max(100).default(3),
+  // Survival cohorts: every member must answer a heartbeat every interval through the window.
+  "survival-window-ms": integer.max(3_600_000).default(300_000),
+  "survival-heartbeat-ms": integer.min(1000).default(15_000),
   bursts: z
     .string()
     .default("3")
@@ -179,6 +182,9 @@ export function parseV2(args: string[]) {
   );
 
   const config = schema.parse(parseArgs({ args, options, strict: true }).values);
+
+  if (config["survival-heartbeat-ms"] > config["survival-window-ms"])
+    throw new Error("--survival-heartbeat-ms must not exceed --survival-window-ms");
 
   if (config.scenarios.includes("cost") && config.scenarios.length !== 1)
     throw new Error("The cost suite must run alone (--scenarios cost)");

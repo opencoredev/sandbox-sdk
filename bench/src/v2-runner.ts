@@ -30,11 +30,39 @@ import {
 } from "./fingerprint.js";
 import { estimateCost, budgetUSD, settledBudgetUSD } from "./pricing.js";
 import { pricedResources, reservationResources } from "./billed-resources.js";
-import { iterationBoundMs, scenarioNames } from "./scenarios.js";
+import {
+  cohortAggregate,
+  cohortBoundMs,
+  cohortOnly,
+  isCohortKind,
+  iterationBoundMs,
+  parseCohortScenario,
+  scenarioNames,
+  selectedCohorts,
+  selectsScenario,
+  type CohortKind,
+  type SurvivalPlan,
+} from "./scenarios.js";
+import { cpuResult, cpuWork, throughputSpread, type CpuResult, type CpuWork } from "./cpu.js";
+import {
+  heartbeatCommand,
+  heartbeatDetails,
+  heartbeatWindow,
+  parseBootId,
+  survivalFailure,
+  type SurvivalVerdict,
+} from "./survival.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
-import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js";
+import {
+  Barrier,
+  CohortGates,
+  DeadlineError,
+  deadline,
+  DeletionWork,
+  PendingWork,
+} from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import {
   autoStandby,
@@ -129,6 +157,37 @@ const downstream = new Map([
   ["dev-server", ["preview-first-byte", "edit-loop"]],
   ["preview-first-byte", ["edit-loop"]],
 ]);
+
+/** One cohort's shared state: K members start together, then the cohort writes its aggregate row. */
+interface CohortRun {
+  kind: CohortKind;
+  k: number;
+  /** Released once every member is created (or failed): cpu-burst work and survival windows start together. */
+  ready: Barrier;
+  /** Released once every member has finished its work; members keep their sandboxes until then. */
+  done: Barrier;
+  /** `performance.now()` when each member's CPU workload returned successfully (cpu-burst). */
+  cpuFinishedAt: number[];
+  /** Each member's window verdict (survival). */
+  verdicts: SurvivalVerdict["kind"][];
+}
+
+/** The aggregate a finished cohort records. `finishedAt` is epoch milliseconds. */
+interface CohortRow {
+  outcome: Outcome;
+  durationMs: number;
+  unit: string;
+  finishedAt: number;
+  details: object;
+}
+
+interface CohortMember {
+  run: CohortRun;
+  gates: CohortGates;
+}
+
+const outcomeValues = (rows: readonly Sample[]) =>
+  rows.flatMap((s) => (s.outcome.kind === "sample" ? [s.outcome.value] : []));
 
 /** A burst cohort is a sample only when every sandbox became ready. */
 function burstOutcome(burst: {
@@ -321,6 +380,21 @@ export async function runV2(
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
     ],
   };
+
+  if (selectsScenario(config.scenarios, "cpu-sustained") || config.scenarios.includes("cpu-burst"))
+    report.methodology.push(
+      `CPU probe (probes/cpu.py): perf.py's CPython 32-bit LCG kernel and seed, fixed work of segments x steps (cpu-sustained ${cpuWork.sustained.segments}x${cpuWork.sustained.steps}, cpu-burst ${cpuWork.burst.segments}x${cpuWork.burst.steps}) on one process, then on ceil(min(nproc, quota)) fork() workers (max 64) reporting over pipes. Every process's final LCG state must equal the harness's own computation or the row fails. Rows: steps/s single and all-core (worker startup included), each segment's rate, steadiness (last quarter of segments over first quarter), and the CPUs the guest sees (affinity, cgroup quota). Python version differences remain a confounder.`,
+    );
+
+  if (config.scenarios.includes("cpu-burst"))
+    report.methodology.push(
+      "CPU burst: K sandboxes created at once; once every member is ready (or failed), all start the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's return and is a sample only when all K complete. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.",
+    );
+
+  if (config.scenarios.includes("survival"))
+    report.methodology.push(
+      `Burst survival: K sandboxes created at once; once every member is ready (or failed), each sends a heartbeat (${heartbeatCommand}) every ${config["survival-heartbeat-ms"]} ms for ${config["survival-window-ms"]} ms, each bounded by the interval. A missed heartbeat triggers an exact read-only native lookup: absent, terminal or dead native state, an SDK not_found, or a changed boot ID is death; any other miss marks the member unresponsive. Create failures keep the failure taxonomy (account limits are not provider failures). An interrupted run's unfinished windows are skipped, not failures.`,
+    );
 
   let reportWrites = Promise.resolve();
 
@@ -573,16 +647,17 @@ export async function runV2(
 
   const costSuite = config.scenarios.length === 1 && config.scenarios[0] === "cost";
 
+  const survivalPlan: SurvivalPlan = {
+    windowMs: config["survival-window-ms"],
+    intervalMs: config["survival-heartbeat-ms"],
+  };
+
   function selected(scenario: string) {
     return config.scenarios.includes("all") || config.scenarios.includes(scenario);
   }
 
-  async function iteration(
-    p: ReadyProvider,
-    index: number,
-    burst = 0,
-    barrier?: () => Promise<void>,
-  ) {
+  async function iteration(p: ReadyProvider, index: number, cohort?: CohortMember) {
+    const prefix = cohort ? `${cohort.run.kind}-${cohort.run.k}` : null;
     const foundState = states.get(p.name);
 
     if (!foundState) return;
@@ -633,7 +708,11 @@ export async function runV2(
       p.name,
       estimateCost(
         p.name,
-        costSuite ? timeout * 4 : burst ? timeout * 2 : iterationBoundMs(timeout),
+        costSuite
+          ? timeout * 4
+          : cohort
+            ? cohortBoundMs(cohort.run.kind, timeout, survivalPlan)
+            : iterationBoundMs(timeout, config.scenarios),
         reservationResources(p.name, state.fp, allocation.requestedSize),
         p.region,
       ) ?? dollarsMax,
@@ -651,11 +730,13 @@ export async function runV2(
     if (stop) {
       state.stop = stop;
 
-      const skipped = burst
-        ? [`burst-${burst}/cold`]
+      const skipped = prefix
+        ? [`${prefix}/cold`]
         : [
             "cold",
-            ...(config.scenarios.includes("all") ? scenarioNames : config.scenarios),
+            ...(config.scenarios.includes("all")
+              ? scenarioNames
+              : config.scenarios.filter((name) => !isCohortKind(name))),
             "destroy",
           ];
 
@@ -668,7 +749,7 @@ export async function runV2(
           reason: stop,
         });
       report.budgets[p.name] = { created: state.created, estimatedUSD: state.estimatedUSD, stop };
-      await barrier?.();
+      await cohort?.gates.done();
 
       return;
     }
@@ -679,7 +760,7 @@ export async function runV2(
 
     // This iteration's own App, for the cold create and its restores. Bursts share the default App.
     const app =
-      !burst && config["app-per-attempt"].some((name) => name === p.name)
+      !cohort && config["app-per-attempt"].some((name) => name === p.name)
         ? attemptApp(config.run, index)
         : undefined;
 
@@ -958,7 +1039,7 @@ export async function runV2(
         ...allocation,
         provider: p.name,
         iteration: index,
-        scenario: burst ? `burst-${burst}/${scenario}` : scenario,
+        scenario: prefix ? `${prefix}/${scenario}` : scenario,
         unit,
         startedAt: clock?.startedAt ?? startedAt,
         finishedAt: clock?.finishedAt ?? new Date().toISOString(),
@@ -1114,7 +1195,9 @@ export async function runV2(
           if (["cold", "reconnect", "pause-resume", "snapshot"].includes(scenario))
             blockedBy ??= scenario;
 
-          if (scenario === "fingerprint") dependencies.set("perf", scenario);
+          // Probes sized from the fingerprint's CPU count cannot run without it.
+          if (scenario === "fingerprint")
+            for (const sized of ["perf", "cpu-sustained", "cpu"]) dependencies.set(sized, scenario);
 
           for (const target of downstream.get(scenario) ?? [])
             dependencies.set(target, dependencies.get(scenario) ?? scenario);
@@ -1144,6 +1227,162 @@ export async function runV2(
         }
 
         return { kind: "unsuccessful" as const, sample };
+      }
+    }
+
+    /** Whether a sample belongs to this iteration's namespace: main rows, or this cohort's members. */
+    function sameNamespace(scenario: string) {
+      const parsed = parseCohortScenario(scenario);
+
+      if (!prefix) return parsed === null;
+
+      return parsed !== null && !parsed.aggregate && `${parsed.kind}-${parsed.k}` === prefix;
+    }
+
+    /**
+     * Run the fixed-work CPU probe (probes/cpu.py) and publish its probe row plus two throughput
+     * rows, `<scenario>-single` and `<scenario>-all`, like perf's derived metrics.
+     */
+    async function cpuScenario(active: Sandbox, scenario: string, work: CpuWork) {
+      const probe = await measure(scenario, async (signal): Promise<CpuResult> => {
+        if (p.name === "memory") throw new Skip("Memory is an offline fake");
+
+        if (!fp) throw new Error("Fingerprint required to size the all-core run");
+        const workers = Math.min(64, Math.ceil(resources(fp).cpu));
+        const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
+
+        const output = await command(
+          active,
+          `BENCH_CPU_SEGMENTS=${work.segments} BENCH_CPU_STEPS=${work.steps} BENCH_CORES=${workers} python3 - <<'BENCH_CPU'\n${script}\nBENCH_CPU`,
+          timeout,
+          signal,
+        );
+
+        if (signal.aborted) throw new Error("CPU probe aborted");
+
+        return cpuResult(output, work, workers);
+      });
+
+      const source = probe.sample;
+
+      for (const phase of ["single", "all"] as const) {
+        const outcome: Outcome =
+          probe.kind === "success"
+            ? {
+                kind: "sample",
+                value:
+                  phase === "single"
+                    ? probe.result.singleOpsPerSecond
+                    : probe.result.allOpsPerSecond,
+              }
+            : source.outcome;
+
+        const details =
+          probe.kind === "success"
+            ? {
+                work,
+                workers: phase === "single" ? 1 : probe.result.workers,
+                seconds: phase === "single" ? probe.result.singleSeconds : probe.result.allSeconds,
+                steadiness:
+                  phase === "single" ? probe.result.singleSteadiness : probe.result.allSteadiness,
+                guestVcpus: probe.result.guestVcpus,
+                cpus: probe.result.probe.cpus,
+                python: probe.result.probe.python,
+              }
+            : null;
+
+        const clock = new PhaseClock();
+        clock.start = 0;
+        clock.end = source.durationMs;
+        clock.startedAt = source.startedAt;
+        clock.finishedAt = source.finishedAt;
+        await add(
+          `${scenario}-${phase}`,
+          "ops/s",
+          outcome,
+          0,
+          source.startedAt,
+          source.hostBefore,
+          details,
+          {},
+          clock,
+          source.durationMs,
+          source.hostAfter,
+        );
+      }
+
+      return probe;
+    }
+
+    /**
+     * A cohort member's work once every member is created: nothing for a readiness burst, the
+     * short CPU workload for cpu-burst, the heartbeat window for survival.
+     */
+    async function cohortWork({ run, gates }: CohortMember, active: Sandbox) {
+      await gates.ready();
+
+      if (stopping.signal.aborted) return;
+
+      switch (run.kind) {
+        case "burst":
+          return;
+        case "cpu-burst": {
+          const probe = await cpuScenario(active, "cpu", cpuWork.burst);
+
+          if (probe.kind === "success") run.cpuFinishedAt.push(performance.now());
+
+          return;
+        }
+
+        case "survival": {
+          const before = await host(),
+            at = new Date().toISOString(),
+            start = performance.now();
+
+          const result = await heartbeatWindow({
+            plan: survivalPlan,
+            heartbeat: async (signal) =>
+              parseBootId(await command(active, heartbeatCommand, timeout, signal)),
+            lookup: () => lookupSandbox(p.provider, active.id, timeout),
+            heartbeatTimeoutMs: timeout,
+            stop: stopping.signal,
+            sanitize,
+            track: (work) => pending.track(work),
+          });
+
+          run.verdicts.push(result.verdict.kind);
+
+          const outcome: Outcome =
+            result.verdict.kind === "survived"
+              ? { kind: "sample", value: result.elapsedMs }
+              : result.verdict.kind === "interrupted"
+                ? { kind: "skipped", note: "Run interrupted before the window ended" }
+                : (survivalFailure(result, `${prefix}/window`) ?? {
+                    kind: "failure",
+                    note: "Heartbeat window failed",
+                  });
+
+          await add(
+            "window",
+            "ms",
+            outcome,
+            start,
+            at,
+            before,
+            { ...heartbeatDetails(result), plan: survivalPlan },
+            {},
+            undefined,
+            result.elapsedMs,
+          );
+
+          return;
+        }
+
+        default: {
+          const exhaustive: never = run.kind;
+
+          return exhaustive;
+        }
       }
     }
 
@@ -1193,7 +1432,12 @@ export async function runV2(
         state.fp = fp;
 
         for (const sample of report.samples)
-          if (sample.provider === p.name && sample.iteration === index && !sample.fingerprint) {
+          if (
+            sample.provider === p.name &&
+            sample.iteration === index &&
+            !sample.fingerprint &&
+            sameNamespace(sample.scenario)
+          ) {
             sample.fingerprint = fp;
             sample.estimatedCost = estimateCost(p.name, sample.durationMs, priced(fp), p.region);
           }
@@ -1201,7 +1445,11 @@ export async function runV2(
         return fp;
       });
 
-      if (burst) return;
+      if (cohort) {
+        await cohortWork(cohort, active);
+
+        return;
+      }
 
       const groups = shuffle(
         [
@@ -1216,6 +1464,8 @@ export async function runV2(
           "app",
           "tool-replay",
           "pip-install",
+          // Appended only when selected, so runs without it keep their seeded order.
+          ...(selectsScenario(config.scenarios, "cpu-sustained") ? ["cpu-sustained"] : []),
         ],
         config.seed + index,
       );
@@ -1645,6 +1895,12 @@ export async function runV2(
           continue;
         }
 
+        if (group === "cpu-sustained") {
+          await cpuScenario(active, "cpu-sustained", cpuWork.sustained);
+
+          continue;
+        }
+
         if (group === "perf") {
           const probe = await measure("perf", async (signal) => {
             if (!fp) throw new Error("Fingerprint required to size all-core benchmark");
@@ -1848,7 +2104,7 @@ export async function runV2(
         );
       }
     } finally {
-      await barrier?.();
+      await cohort?.gates.done();
 
       if (!(await pending.drain(timeout))) {
         unsafeProviders.add(p.name);
@@ -2044,7 +2300,7 @@ export async function runV2(
   );
 
   await schedule(
-    config.scenarios.includes("burst") && !config.scenarios.includes("all") ? [] : jobs,
+    cohortOnly(config.scenarios) ? [] : jobs,
     { global: config.concurrency, perProvider: costSuite ? 1 : config["provider-concurrency"] },
     async (job) => {
       const p = ready.find((p) => p.name === job.provider);
@@ -2058,127 +2314,242 @@ export async function runV2(
     },
   );
 
-  // Burst cohorts are isolated from normal iterations. K is bounded by configured account limits.
-  for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
-    for (const k of costSuite ? [] : config.bursts)
-      for (const p of ready) {
-        const scenario = `burst-${k}/all-ready`;
+  /** The aggregate row a finished cohort writes from its members' rows. */
+  function cohortRow(
+    run: CohortRun,
+    rows: readonly Sample[],
+    timing: { at: string; start: number; cohortIndex: number },
+  ): CohortRow {
+    const { kind, k } = run;
+    const prefix = `${kind}-${k}`;
+    const cold = rows.filter((s) => s.scenario === `${prefix}/cold`);
+    const attempted = cold.length;
+    const readyCount = outcomeValues(cold).length;
+    const base = { k, cohort: timing.cohortIndex, attempted };
 
-        const excluded = collectionPolicy().notRun.find(
-          (rule) =>
-            rule.provider === p.name &&
-            (rule.track ?? "default") === config.track &&
-            rule.suite === "burst" &&
-            (rule.scenario === scenario || rule.scenario === `burst-${k}/*`),
-        );
-
-        if (excluded) {
-          const info = report.providers.find((v) => v.name === p.name);
-
-          if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
-          continue;
-        }
-
-        const configured =
-          config["account-limits"][p.name] ??
-          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
-            p.name
-          ] ??
-          10;
-
-        const account = Math.min(configured, p.name === "boxd" ? 50 : configured);
-
-        const existing = await deadline(config["timeout-ms"], () => p.provider.list({}))
-          .then((v) => v.length)
-          .catch(() => account);
-
-        if (k > Math.min(account - existing, config.concurrency)) {
-          const reason = `Burst ${k} admission stopped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
-          report.admissionStopped?.push({
-            provider: p.name,
-            scenario,
-            iteration: cohortIndex,
-            track: config.track,
-            reason,
-          });
-          const info = report.providers.find((v) => v.name === p.name);
-
-          if (info)
-            info.note += `; burst ${k} skipped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
-          continue;
-        }
-
-        const start = performance.now();
-
-        const at = new Date().toISOString(),
-          before = await host();
-
-        const offset = report.samples.length;
-        let arrived = 0;
-        let release = () => {};
-
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-
-        const barrier = async () => {
-          if (++arrived === k) release();
-          await gate;
-        };
-
-        await Promise.all(
-          Array.from({ length: k }, (_, i) => iteration(p, cohortIndex * k + i, k, barrier)),
-        );
-        const cohort = report.samples.slice(offset).filter((s) => s.scenario === `burst-${k}/cold`);
-        const success = cohort.filter((s) => s.outcome.kind === "sample").length;
-        const cohortHostAfter = await host();
-
+    switch (kind) {
+      case "burst": {
         const readyAt =
-          success === k ? Math.max(...cohort.map((s) => Date.parse(s.finishedAt))) : Date.now();
+          readyCount === k ? Math.max(...cold.map((s) => Date.parse(s.finishedAt))) : Date.now();
 
         const readyMs =
-          success === k
+          readyCount === k
             ? Math.max(
-                ...cohort.map(
+                ...cold.map(
                   (s) =>
                     Date.parse(s.finishedAt) -
-                    Date.parse(at) -
+                    Date.parse(timing.at) -
                     (s.phases.ownershipPersistMs ?? 0) -
                     (s.phases.ownershipVerifyMs ?? 0),
                 ),
               )
-            : readyAt - Date.parse(at);
+            : readyAt - Date.parse(timing.at);
 
-        const durationMs = success === k ? readyMs : performance.now() - start;
-        report.samples.push({
-          track: config.track,
-          requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
-          template: config.template[p.name] ?? null,
-          product: config.product[p.name] ?? null,
-          provider: p.name,
-          iteration: cohortIndex,
-          scenario: `burst-${k}/all-ready`,
+        const durationMs = readyCount === k ? readyMs : performance.now() - timing.start;
+
+        return {
           unit: "ms",
-          startedAt: at,
-          finishedAt: new Date(readyAt).toISOString(),
+          finishedAt: readyAt,
           durationMs,
-          sandboxId: null,
-          outcome: burstOutcome({
-            k,
-            success,
-            attempted: cohort.length,
-            readyMs,
-            durationMs,
-          }),
-          phases: {},
-          hostBefore: before,
-          hostAfter: cohortHostAfter,
-          headroom: headroom(before, cohortHostAfter),
-          fingerprint: null,
-          estimatedCost: null,
-          details: { k, cohort: cohortIndex, success, attempted: cohort.length },
-        });
+          outcome: burstOutcome({ k, success: readyCount, attempted, readyMs, durationMs }),
+          details: { k, cohort: timing.cohortIndex, success: readyCount, attempted },
+        };
       }
+
+      case "cpu-burst": {
+        const single = outcomeValues(rows.filter((s) => s.scenario === `${prefix}/cpu-single`));
+        const all = outcomeValues(rows.filter((s) => s.scenario === `${prefix}/cpu-all`));
+        const released = run.ready.releasedAt;
+
+        // From the moment every member was released together to the slowest member's return.
+        const allCompleteMs =
+          single.length === k && released !== null && run.cpuFinishedAt.length === k
+            ? Math.max(...run.cpuFinishedAt) - released
+            : null;
+
+        const durationMs = allCompleteMs ?? performance.now() - timing.start;
+        const note = `${single.length}/${k} completed the CPU workload; ${readyCount}/${k} ready; ${attempted} attempted (budgets may prevent admission)`;
+
+        // A probe skipped as inapplicable (the offline memory fake) makes the cohort no observation.
+        const skippedProbe = rows.some(
+          (s) => s.scenario === `${prefix}/cpu` && s.outcome.kind === "skipped",
+        );
+
+        const outcome: Outcome =
+          allCompleteMs !== null
+            ? { kind: "sample", value: allCompleteMs }
+            : attempted < k || skippedProbe
+              ? { kind: "skipped", note }
+              : {
+                  kind: "failure",
+                  note,
+                  stage: `${prefix}/${cohortAggregate[kind]}`,
+                  elapsedMs: durationMs,
+                };
+
+        return {
+          unit: "ms",
+          finishedAt: Date.now(),
+          durationMs,
+          outcome,
+          details: {
+            ...base,
+            ready: readyCount,
+            completed: single.length,
+            allCompleteMs,
+            single: throughputSpread(single),
+            all: throughputSpread(all),
+          },
+        };
+      }
+
+      case "survival": {
+        const count = (verdict: SurvivalVerdict["kind"]) =>
+          run.verdicts.filter((v) => v === verdict).length;
+
+        const tally = {
+          survived: count("survived"),
+          died: count("died"),
+          unresponsive: count("unresponsive"),
+          interrupted: count("interrupted"),
+          createFailed: attempted - readyCount,
+          // Created, but stopped before its window (the run was interrupted while waiting).
+          noWindow: readyCount - run.verdicts.length,
+        };
+
+        const note = `${tally.survived}/${k} survived ${survivalPlan.windowMs} ms; ${attempted} attempted`;
+
+        const outcome: Outcome =
+          attempted < k
+            ? { kind: "skipped", note: `${note} (budgets may prevent admission)` }
+            : tally.interrupted || tally.noWindow
+              ? { kind: "skipped", note: `${note}; run interrupted before every window ended` }
+              : { kind: "sample", value: tally.survived };
+
+        return {
+          unit: "sandboxes",
+          finishedAt: Date.now(),
+          durationMs: performance.now() - timing.start,
+          outcome,
+          details: { ...base, ...tally, plan: survivalPlan },
+        };
+      }
+
+      default: {
+        const exhaustive: never = kind;
+
+        return exhaustive;
+      }
+    }
+  }
+
+  /** One isolated cohort on one provider: admission, K members together, then the aggregate row. */
+  async function runCohort(p: ReadyProvider, kind: CohortKind, k: number, cohortIndex: number) {
+    const prefix = `${kind}-${k}`;
+    const scenario = `${prefix}/${cohortAggregate[kind]}`;
+
+    const excluded = collectionPolicy().notRun.find(
+      (rule) =>
+        rule.provider === p.name &&
+        (rule.track ?? "default") === config.track &&
+        rule.suite === kind &&
+        (rule.scenario === scenario || rule.scenario === `${prefix}/*`),
+    );
+
+    if (excluded) {
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
+
+      return;
+    }
+
+    const configured =
+      config["account-limits"][p.name] ??
+      { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
+        p.name
+      ] ??
+      10;
+
+    const account = Math.min(configured, p.name === "boxd" ? 50 : configured);
+
+    const existing = await deadline(config["timeout-ms"], () => p.provider.list({}))
+      .then((v) => v.length)
+      .catch(() => account);
+
+    if (k > Math.min(account - existing, config.concurrency)) {
+      const reason = `${kind === "burst" ? "Burst" : kind} ${k} admission stopped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
+      report.admissionStopped?.push({
+        provider: p.name,
+        scenario,
+        iteration: cohortIndex,
+        track: config.track,
+        reason,
+      });
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info)
+        info.note += `; ${kind} ${k} skipped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
+
+      return;
+    }
+
+    const start = performance.now();
+
+    const at = new Date().toISOString(),
+      before = await host();
+
+    const offset = report.samples.length;
+
+    const run: CohortRun = {
+      kind,
+      k,
+      ready: new Barrier(k),
+      done: new Barrier(k),
+      cpuFinishedAt: [],
+      verdicts: [],
+    };
+
+    await Promise.all(
+      Array.from({ length: k }, (_, i) =>
+        iteration(p, cohortIndex * k + i, { run, gates: new CohortGates(run.ready, run.done) }),
+      ),
+    );
+
+    const cohortHostAfter = await host();
+    const row = cohortRow(run, report.samples.slice(offset), { at, start, cohortIndex });
+
+    report.samples.push({
+      track: config.track,
+      requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
+      template: config.template[p.name] ?? null,
+      product: config.product[p.name] ?? null,
+      provider: p.name,
+      iteration: cohortIndex,
+      scenario,
+      unit: row.unit,
+      startedAt: at,
+      finishedAt: new Date(row.finishedAt).toISOString(),
+      durationMs: row.durationMs,
+      sandboxId: null,
+      outcome: row.outcome,
+      phases: {},
+      hostBefore: before,
+      hostAfter: cohortHostAfter,
+      headroom: headroom(before, cohortHostAfter),
+      fingerprint: null,
+      estimatedCost: null,
+      details: row.details,
+    });
+  }
+
+  // Cohorts are isolated from normal iterations and from each other. K is bounded by account limits.
+  const kinds = costSuite ? [] : selectedCohorts(config.scenarios, config.bursts);
+
+  for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
+    for (const kind of kinds)
+      for (const k of config.bursts)
+        for (const p of ready) await runCohort(p, kind, k, cohortIndex);
 
   for (const p of ready) {
     const errors: string[] = [];

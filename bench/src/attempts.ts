@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { MergedSample, MergeSource, Suite } from "./merge.js";
 import { attemptApp, type JournalApp } from "./modal-apps.js";
-import { sampleSuite, suiteFor } from "./suite.js";
+import { sampleSuite, suiteFor, suiteSchema } from "./suite.js";
 
 export const cloudProviders = [
   "e2b",
@@ -49,7 +49,7 @@ export const workloads = [
 
 const identity = z.object({
   provider: z.enum(cloudProviders),
-  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  suite: suiteSchema,
   scenario: z.string(),
   track: z.enum(["default", "same-spec"]).optional(),
 });
@@ -61,7 +61,7 @@ const identity = z.object({
  */
 const supersededIterations = z.object({
   provider: z.enum(cloudProviders),
-  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  suite: suiteSchema,
   track: z.enum(["default", "same-spec"]).optional(),
   sourceRunId: z.string().min(1),
   iterations: z.array(z.number().int().nonnegative()).min(1),
@@ -374,7 +374,7 @@ export async function attemptsCommand(args: string[]) {
           sourceSampleIndex: z.number(),
           sourceIteration: z.number(),
           iterationNamespace: z.string(),
-          suite: z.enum(["main", "snapshot", "burst", "cost"]),
+          suite: suiteSchema,
           failureClass: z
             .enum(["provider-account-limit", "client-third-party", "provider-operation"])
             .nullable(),

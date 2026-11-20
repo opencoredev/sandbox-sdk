@@ -135,6 +135,20 @@ export function markdownV2(r: ReportV2) {
     );
   rows.push(
     "",
+    "## Stress planning estimates",
+    "",
+    "CPU sustained as 30 dedicated iterations (create, fingerprint, probe, destroy); cpu-burst and survival at K=10 and K=25 with the configured number of cohorts, from the pilot's mean member lifetime at any K. A dash means the pilot did not run that suite. These are extrapolations, not quotes, and are not part of the totals above.",
+    "",
+    "| Provider | Currency | CPU sustained 30 | CPU burst 10 | CPU burst 25 | Survival 10 | Survival 25 | Total |",
+    "|---|---|---:|---:|---:|---:|---:|---:|",
+  );
+
+  for (const p of projectCosts(r))
+    rows.push(
+      `|${p.provider}|${p.currency}|${f(p.stress.cpuSustained30)}|${f(p.stress.cpuBurst10)}|${f(p.stress.cpuBurst25)}|${f(p.stress.survival10)}|${f(p.stress.survival25)}|${f(p.stress.total)}|`,
+    );
+  rows.push(
+    "",
     "## Client headroom",
     "",
     "Host CPU/load/network describe the harness host during each sample. High-load flag: normalized load >=1 or host busy fraction >=0.90. Network includes all host traffic; overlapping samples are not additive.",
