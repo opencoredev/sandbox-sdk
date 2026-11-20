@@ -20,7 +20,7 @@ import {
   sha256GuestScript,
   sha256TotalBytes,
   sieveGuestScript,
-  sieveLimit,
+  sieveWindow,
 } from "../src/expanded/cpu.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import { describeContract, flipHex, seedA, seedB } from "./expanded-contract.js";
@@ -71,7 +71,8 @@ const sieveEvidence =
   (seed: number): Evidence =>
   (round) => ({
     proof: expectedSieve(seed, round).digest,
-    limit: expectedSieve(seed, round).limit,
+    low: expectedSieve(seed, round).low,
+    high: expectedSieve(seed, round).high,
     count: expectedSieve(seed, round).count,
   });
 
@@ -93,16 +94,49 @@ describe("cpu scenarios", () => {
     ]);
   });
 
-  it("derives a seed-dependent sieve limit in the documented range, different every round", () => {
-    expect(sieveLimit(0)).toBe(32_000_000);
-    expect(sieveLimit(seedA)).toBe(32_000_000 + seedA);
-    expect(sieveLimit(0xffff_ffff)).toBeLessThan(40_000_000);
+  it("gives every sieve round its own window, never overlapping another round's", () => {
+    expect(sieveWindow(0)).toEqual({ low: 100_000_000, high: 115_999_999 });
+    expect(sieveWindow(seedA).low).toBe(100_000_000 + (seedA % 8_000_000));
 
-    const limits = Array.from({ length: 5000 }, (_, round) => sieveLimit(0xffff_ffff, round));
+    const windows = Array.from({ length: 250 }, (_, round) => sieveWindow(0xffff_ffff, round));
 
-    expect(new Set(limits).size).toBe(5000);
-    expect(Math.min(...limits)).toBeGreaterThanOrEqual(32_000_000);
-    expect(Math.max(...limits)).toBeLessThan(40_000_000);
+    for (const [round, window] of windows.entries()) {
+      const next = windows[round + 1];
+
+      if (next !== undefined) expect(next.low).toBe(window.high + 1);
+    }
+
+    expect(windows.at(-1)?.high).toBeLessThan(2 ** 32);
+  });
+
+  it("rejects a round that reports another round's sieve work", () => {
+    const seed = seedA;
+
+    const rounds = [0, 1, 2].map((round) => ({
+      seconds: 0.4,
+      proof: expectedSieve(seed, round).digest,
+      low: expectedSieve(seed, round).low,
+      high: expectedSieve(seed, round).high,
+      count: expectedSieve(seed, round).count,
+    }));
+
+    const honest = { seed, rounds, digest: rounds[0]?.proof };
+    const scenarioSieve = scenario("cpu-prime-sieve");
+
+    expect(scenarioSieve.verifyOutput(JSON.stringify(honest), seed).ok).toBe(true);
+
+    const first = rounds[0];
+
+    if (first === undefined) throw new Error("no first round");
+
+    const reused = {
+      ...honest,
+      rounds: rounds.map((round, index) =>
+        index === 0 ? round : { ...round, proof: first.proof, count: first.count },
+      ),
+    };
+
+    expect(scenarioSieve.verifyOutput(JSON.stringify(reused), seed).ok).toBe(false);
   });
 
   it("builds a JSON document of about 1 MiB", () => {
@@ -183,7 +217,10 @@ describeContract({
     digest: expectedSieve(seed, 0).digest,
   }),
   tampered: [
-    ["rounds", editRound(fourRounds(sieveEvidence(seedA)), 1, { limit: sieveLimit(seedA, 1) + 1 })],
+    [
+      "rounds",
+      editRound(fourRounds(sieveEvidence(seedA)), 1, { low: sieveWindow(seedA, 1).low + 1 }),
+    ],
     [
       "rounds",
       editRound(fourRounds(sieveEvidence(seedA)), 2, {

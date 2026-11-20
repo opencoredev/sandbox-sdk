@@ -856,21 +856,32 @@ const cpuJsonParse: ExpandedScenario = {
 // cpu-prime-sieve
 // ---------------------------------------------------------------------------------------------
 
-const sieveBaseLimit = 32_000_000;
-const sieveLimitSpread = 8_000_000;
+/** Where the first window may start; above 10^8 the work per number is close to flat. */
+const sieveWindowBase = 100_000_000;
+/** How far the seed moves the first window. */
+
+const sieveSeedSpread = 8_000_000;
+/** Numbers each round sieves. */
+
+const sieveWindowSize = 16_000_000;
 const sieveSegmentBytes = 1 << 18;
+/** Most rounds a reply may carry, so every window stays below 2^32 for its u32 encoding. */
 
-/** Between rounds the limit steps by this prime, so no two of up to 5000 rounds share a limit. */
-const sieveRoundStep = 7919;
+const sieveMaxRounds = 250;
 
-/** The limit round `round` sieves to: the seed's limit, stepped within the same range. */
-export function sieveLimit(seed: number, round = 0): number {
-  return sieveBaseLimit + (((seed >>> 0) + round * sieveRoundStep) % sieveLimitSpread);
+/**
+ * The window round `round` sieves: `[low, high]`. Windows of one seed are consecutive and never
+ * overlap, so no round's primes can be reused for another round.
+ */
+export function sieveWindow(seed: number, round = 0) {
+  const low = sieveWindowBase + ((seed >>> 0) % sieveSeedSpread) + round * sieveWindowSize;
+
+  return { low, high: low + sieveWindowSize - 1 };
 }
 
-/** Every prime up to `limit`, by a segmented sieve of Eratosthenes. Mirrored in the guest script. */
-function segmentedSieve(limit: number): Uint32Array {
-  const root = Math.floor(Math.sqrt(limit));
+/** Every prime in `[low, high]`, by a segmented sieve of Eratosthenes. Mirrored in the guest script. */
+function segmentedSieve(low: number, high: number): Uint32Array {
+  const root = Math.floor(Math.sqrt(high));
   const small = new Uint8Array(root + 1);
   const base: number[] = [];
 
@@ -883,75 +894,45 @@ function segmentedSieve(limit: number): Uint32Array {
   }
 
   const segment = new Uint8Array(sieveSegmentBytes);
-  const primes = new Uint32Array(Math.ceil((limit / Math.log(limit)) * 1.3) + 16);
+  const primes = new Uint32Array(Math.ceil(((high - low + 1) / Math.log(low)) * 1.3) + 16);
   let count = 0;
 
-  for (let low = 2; low <= limit; low += sieveSegmentBytes) {
-    const high = Math.min(low + sieveSegmentBytes - 1, limit);
+  for (let from = low; from <= high; from += sieveSegmentBytes) {
+    const to = Math.min(from + sieveSegmentBytes - 1, high);
     segment.fill(0);
 
     for (const p of base) {
-      if (p * p > high) break;
+      if (p * p > to) break;
 
-      for (let j = Math.max(p * p, Math.ceil(low / p) * p); j <= high; j += p) segment[j - low] = 1;
+      for (let j = Math.max(p * p, Math.ceil(from / p) * p); j <= to; j += p) segment[j - from] = 1;
     }
 
-    for (let i = low; i <= high; i++) if (segment[i - low] === 0) primes[count++] = i;
+    for (let i = from; i <= to; i++) if (segment[i - from] === 0) primes[count++] = i;
   }
 
   return primes.subarray(0, count);
 }
 
-/** Every prime below the largest limit, as little-endian u32s, computed once for every seed. */
-let allPrimes: { readonly primes: Uint32Array; readonly bytes: Buffer } | null = null;
-
-function primesUpToMax() {
-  if (allPrimes) return allPrimes;
-
-  const primes = segmentedSieve(sieveBaseLimit + sieveLimitSpread - 1);
-  const bytes = Buffer.alloc(primes.length * 4);
-
-  for (let i = 0; i < primes.length; i++) bytes.writeUInt32LE(primes[i] ?? 0, i * 4);
-
-  allPrimes = { primes, bytes };
-
-  return allPrimes;
-}
-
-/** How many of the ascending `primes` are at most `limit`. */
-function countAtMost(primes: Uint32Array, limit: number): number {
-  let low = 0;
-  let high = primes.length;
-
-  while (low < high) {
-    const mid = (low + high) >>> 1;
-
-    if ((primes[mid] ?? 0) <= limit) low = mid + 1;
-    else high = mid;
-  }
-
-  return low;
-}
-
 /**
- * What round `round` must print: its limit, its prime count, and SHA-256 over (seed, round) then
- * every prime up to its limit, each as a little-endian u32. One shared sieve answers every round.
+ * What round `round` must print: its window, its prime count, and SHA-256 over (seed, round) then
+ * every prime in its window, each as a little-endian u32. The host sieves every round's window
+ * itself, because the evidence is the work.
  */
 export const expectedSieve = perRound((seed, round) => {
-  const limit = sieveLimit(seed, round);
-  const { primes, bytes } = primesUpToMax();
-  const count = countAtMost(primes, limit);
+  const { low, high } = sieveWindow(seed, round);
+  const primes = segmentedSieve(low, high);
   const head = Buffer.alloc(8);
   head.writeUInt32LE(seed >>> 0, 0);
   head.writeUInt32LE(round, 4);
+  const body = Buffer.alloc(primes.length * 4);
+
+  for (let i = 0; i < primes.length; i++) body.writeUInt32LE(primes[i] ?? 0, i * 4);
 
   return {
-    limit,
-    count,
-    digest: createHash("sha256")
-      .update(head)
-      .update(bytes.subarray(0, count * 4))
-      .digest("hex"),
+    low,
+    high,
+    count: primes.length,
+    digest: createHash("sha256").update(head).update(body).digest("hex"),
   };
 });
 
@@ -962,9 +943,12 @@ export const sieveGuestScript = `import { createHash } from "node:crypto";
 ${nodeRoundsSource}
 const seed = Number(process.argv[2]) >>> 0;
 const SEGMENT = ${sieveSegmentBytes};
-const prepare = (round) => ({ round, limit: ${sieveBaseLimit} + ((seed + round * ${sieveRoundStep}) % ${sieveLimitSpread}) });
-const rounds = await timedRounds(${sieveMinRounds}, prepare, ({ round, limit }) => {
-const root = Math.floor(Math.sqrt(limit));
+const prepare = (round) => {
+  const low = ${sieveWindowBase} + (seed % ${sieveSeedSpread}) + round * ${sieveWindowSize};
+  return { round, low, high: low + ${sieveWindowSize} - 1 };
+};
+const rounds = await timedRounds(${sieveMinRounds}, prepare, ({ round, low, high }) => {
+const root = Math.floor(Math.sqrt(high));
 const small = new Uint8Array(root + 1);
 const base = [];
 for (let i = 2; i <= root; i++) {
@@ -973,30 +957,34 @@ for (let i = 2; i <= root; i++) {
   for (let j = i * i; j <= root; j += i) small[j] = 1;
 }
 const segment = new Uint8Array(SEGMENT);
-const primes = new Uint32Array(Math.ceil((limit / Math.log(limit)) * 1.3) + 16);
+const primes = new Uint32Array(Math.ceil(((high - low + 1) / Math.log(low)) * 1.3) + 16);
 let count = 0;
-for (let low = 2; low <= limit; low += SEGMENT) {
-  const high = Math.min(low + SEGMENT - 1, limit);
+for (let from = low; from <= high; from += SEGMENT) {
+  const to = Math.min(from + SEGMENT - 1, high);
   segment.fill(0);
   for (const p of base) {
-    if (p * p > high) break;
-    for (let j = Math.max(p * p, Math.ceil(low / p) * p); j <= high; j += p) segment[j - low] = 1;
+    if (p * p > to) break;
+    for (let j = Math.max(p * p, Math.ceil(from / p) * p); j <= to; j += p) segment[j - from] = 1;
   }
-  for (let i = low; i <= high; i++) if (segment[i - low] === 0) primes[count++] = i;
+  for (let i = from; i <= to; i++) if (segment[i - from] === 0) primes[count++] = i;
 }
 const head = Buffer.alloc(8);
 head.writeUInt32LE(seed, 0);
 head.writeUInt32LE(round, 4);
 const body = Buffer.alloc(count * 4);
 for (let i = 0; i < count; i++) body.writeUInt32LE(primes[i], i * 4);
-return { proof: createHash("sha256").update(head).update(body).digest("hex"), limit, count };
+return { proof: createHash("sha256").update(head).update(body).digest("hex"), low, high, count };
 });
 console.log(JSON.stringify({ seed, rounds, digest: rounds[0].proof }));
 `;
 
 const sieveReply = z.strictObject({
   seed: seedField,
-  rounds: roundsWith({ limit: z.number().int().positive(), count: z.number().int().positive() }),
+  rounds: roundsWith({
+    low: z.number().int().positive(),
+    high: z.number().int().positive(),
+    count: z.number().int().positive(),
+  }),
   digest: hexDigest,
 });
 
@@ -1008,12 +996,13 @@ const maxSieveRate = 5e10;
 function sieveRoundWrong(seed: number, round: SieveRound, index: number): string | null {
   const expected = expectedSieve(seed, index);
 
-  if (round.limit !== expected.limit) return `limit ${round.limit}, want ${expected.limit}`;
+  if (round.low !== expected.low || round.high !== expected.high)
+    return `window ${round.low}..${round.high}, want ${expected.low}..${expected.high}`;
 
   if (round.count !== expected.count)
     return `counted ${round.count} primes, want ${expected.count}`;
 
-  if (round.proof !== expected.digest) return "prime digest does not match the round's limit";
+  if (round.proof !== expected.digest) return "prime digest does not match the round's window";
 
   return null;
 }
@@ -1027,6 +1016,9 @@ function verifySieve(raw: string, seed: number): VerifyResult {
 
   if (data.seed !== seed >>> 0) return wrongSeed(data.seed, seed);
 
+  if (data.rounds.length > sieveMaxRounds)
+    return { ok: false, reason: `ran ${data.rounds.length} rounds, at most ${sieveMaxRounds}` };
+
   if (data.digest !== expectedSieve(seed, 0).digest)
     return { ok: false, reason: "digest does not match the seed" };
 
@@ -1038,18 +1030,17 @@ function verifySieve(raw: string, seed: number): VerifyResult {
 
   if (!rounds.ok) return rounds;
 
-  const limits = data.rounds.map((round) => round.limit);
-  const fastest = Math.max(...data.rounds.map((round) => round.limit / round.seconds));
+  const fastest = sieveWindowSize / Math.min(...data.rounds.map((round) => round.seconds));
 
   if (fastest > maxSieveRate) return { ok: false, reason: `implausible rate ${fastest} ops/s` };
 
   return {
     ok: true,
-    value: limits.reduce((sum, limit) => sum + limit, 0) / rounds.totalSeconds,
+    value: (sieveWindowSize * rounds.count) / rounds.totalSeconds,
     proof: data.digest,
     details: {
-      limit: expectedSieve(seed, 0).limit,
-      primes: expectedSieve(seed, 0).count,
+      windowSize: sieveWindowSize,
+      firstWindowPrimes: expectedSieve(seed, 0).count,
       rounds: rounds.count,
       seconds: rounds.totalSeconds,
     },
@@ -1061,7 +1052,7 @@ const cpuPrimeSieve: ExpandedScenario = {
   category: "cpu",
   label: "Prime sieve",
   description:
-    "Runs a segmented sieve of Eratosthenes up to a seeded limit near 32 million, a different limit each round, and hashes every prime found, in rounds for at least a second.",
+    "Runs a segmented sieve of Eratosthenes over a 16-million-number window above 100 million, a new non-overlapping window each round, and hashes every prime found, in rounds for at least a second.",
   unit: "ops/s",
   better: "higher",
   async run(box, ctx) {
