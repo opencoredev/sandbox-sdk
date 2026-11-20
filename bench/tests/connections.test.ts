@@ -440,6 +440,20 @@ describe("bench reap acts only through the connection the run used", () => {
   /** A run whose delete failed, so its sandbox stays journaled, under E2B_API_KEY=run-key. */
   async function crashedRun(out: string) {
     vi.stubEnv("E2B_API_KEY", "run-key");
+    // The run's own lookups after its failed delete: E2B unreachable, so they stay unavailable
+    // and the sandbox stays journaled. No request leaves the process.
+    fakeNativeModules({
+      e2b: {
+        Sandbox: {
+          getInfo: async () => {
+            throw new Error("E2B unreachable");
+          },
+          listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }),
+          deleteSnapshot: vi.fn(),
+        },
+        SandboxNotFoundError: class extends Error {},
+      },
+    });
 
     const provider = bound({
       ...memory(),
