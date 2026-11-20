@@ -12,8 +12,11 @@ import { freestyle } from "../../packages/sdk/src/providers/freestyle/index.js";
 vi.stubGlobal("fetch", vi.fn(freestyleFetch));
 
 import { createSandbox } from "../../packages/sdk/src/index.js";
+import { memory } from "../../packages/sdk/src/memory.js";
 import { main } from "../src/cli.js";
+import { fingerprintOf } from "../src/connections.js";
 import type { LoadedProvider } from "../src/providers.js";
+import { bound } from "./native-fakes.js";
 
 afterAll(() => vi.unstubAllGlobals());
 
@@ -30,7 +33,7 @@ afterEach(async () => {
 
 test("bench reap skips legacy missing metadata, recovers native-labelled orphans, and keeps other runs", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  const provider = freestyle({ apiKey: "mock-key" });
+  const provider = bound(freestyle({ apiKey: "mock-key" }), { apiKey: "mock-key" });
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "reap-43" } });
   const unrelated = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
   const legacy = await createSandbox(provider);
@@ -62,7 +65,11 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
     // Journal can know a returned id, but cannot know the orphan's id before create returns.
     await writeFile(
       resolve(directory, "ownership.json"),
-      JSON.stringify({ runId: "reap-43", resources: [] }),
+      JSON.stringify({
+        runId: "reap-43",
+        connectionFingerprints: { freestyle: fingerprintOf(provider) },
+        resources: [],
+      }),
     );
     process.argv = [
       "bun",
@@ -98,12 +105,20 @@ test("bench reap fails on native listing auth errors", async () => {
     name: "freestyle",
     cloud: true,
     region: null,
-    provider: freestyle({ apiKey: "offline" }),
+    provider: bound(freestyle({ apiKey: "offline" }), { apiKey: "offline" }),
   };
 
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 
   try {
+    await writeFile(
+      resolve(directory, "ownership.json"),
+      JSON.stringify({
+        runId: "reap-43",
+        connectionFingerprints: { freestyle: fingerprintOf(loaded.provider) },
+        resources: [],
+      }),
+    );
     freestyleState.listError = 401;
     process.argv = [
       "bun",
@@ -127,9 +142,50 @@ test("bench reap fails on native listing auth errors", async () => {
 
 test("reap recovers exactly labelled resources even when the journal is truncated", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  const provider = freestyle({ apiKey: "mock-key" });
+  // An adapter that resolves its own connection has no fingerprint to check.
+  const provider = memory();
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
   const other = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
+
+  const loaded: LoadedProvider = {
+    kind: "ready",
+    name: "memory",
+    cloud: false,
+    region: null,
+    provider,
+  };
+
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+
+  try {
+    await writeFile(resolve(directory, "ownership.json"), '{"resources":[');
+    process.argv = [
+      "bun",
+      "bench",
+      "reap",
+      "--providers",
+      "memory",
+      "--run",
+      "corrupt-run",
+      "--out",
+      directory,
+    ];
+    process.exitCode = 0;
+    await main(async () => loaded);
+    expect(process.exitCode).toBe(0);
+    expect((await provider.list({})).map((info) => info.id)).toEqual([other.id]);
+    expect(own.id).not.toBe(other.id);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("journal is corrupt"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a truncated journal keeps no fingerprint, so reap reads nothing through a connected adapter", async () => {
+  const directory = await mkdtemp(resolve("reap-test-"));
+  const provider = bound(freestyle({ apiKey: "mock-key" }), { apiKey: "mock-key" });
+  const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
+  const requests = vi.mocked(fetch).mock.calls.length;
 
   const loaded: LoadedProvider = {
     kind: "ready",
@@ -156,10 +212,12 @@ test("reap recovers exactly labelled resources even when the journal is truncate
     ];
     process.exitCode = 0;
     await main(async () => loaded);
-    expect(process.exitCode).toBe(0);
-    expect(freestyleState.boxes.has(own.id)).toBe(false);
-    expect(freestyleState.boxes.has(other.id)).toBe(true);
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("journal is corrupt"));
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(fetch).mock.calls.length).toBe(requests);
+    expect(freestyleState.boxes.has(own.id)).toBe(true);
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringContaining("SKIP freestyle: the run's journal has no connection fingerprint"),
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

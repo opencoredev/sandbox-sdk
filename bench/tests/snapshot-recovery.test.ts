@@ -7,6 +7,7 @@ import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import * as snapshots from "../src/snapshots.js";
 import { bound, fakeNativeModules } from "./native-fakes.js";
+import { fingerprintOf } from "../src/connections.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 
@@ -263,6 +264,8 @@ it.each([true, false])(
       join(out, "ownership.json"),
       JSON.stringify({
         runId: "snapshot-run",
+        // As the run journaled it: reap reads only through the connection the run used.
+        connectionFingerprints: { e2b: fingerprintOf(provider) },
         resources: [
           {
             provider: "e2b",
@@ -344,6 +347,8 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
     join(out, "ownership.json"),
     JSON.stringify({
       runId: "snapshot-run",
+      // As the run journaled it: reap reads only through the connection the run used.
+      connectionFingerprints: { e2b: fingerprintOf(provider) },
       resources: [
         { provider: "e2b", id: source.id, kind: "sandbox", parent: null },
         { provider: "e2b", id: restore.id, kind: "sandbox", parent: null },

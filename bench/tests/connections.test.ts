@@ -1,13 +1,13 @@
 /**
  * How the harness keeps each adapter instance's connection: an instance it did not bind is never
- * read through the environment, and a reap rebuilds the run's endpoint, region and scope from the
- * run's journal with credentials from the environment.
+ * read through the environment, a run journals only each connection's fingerprint, and a reap
+ * reads only through an adapter whose connection, rebuilt from its environment, matches it.
  */
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+import { z } from "zod";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { lookupSandbox } from "../src/existence.js";
@@ -15,13 +15,7 @@ import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
 import { writeV2 } from "../src/v2-report.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
-import {
-  bindConnection,
-  differingFields,
-  savedConnectionOf,
-  savedConnections,
-  savedOptions,
-} from "../src/connections.js";
+import { bindConnection, fingerprintOf } from "../src/connections.js";
 import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
@@ -116,142 +110,50 @@ describe("an adapter instance the harness did not build is never read through th
   });
 });
 
-describe("a reap rebuilds the run's connection, with credentials from the environment", () => {
-  it("the saved connection holds no credential, and its options reach the same endpoint", async () => {
-    const options = { apiKey: "live-key", baseUrl: "https://live.invalid/api/", target: "eu" };
-    const run = bindConnection(daytona(options), options);
-    const saved = savedConnectionOf(run);
+describe("a connection fingerprint names the whole connection without holding any of it", () => {
+  const options = { apiKey: "live-key", baseUrl: "https://live.invalid/api/", target: "eu" };
 
-    expect(saved).toEqual({
-      apiUrl: "https://live.invalid/api/",
+  // `loadProvider` skips Daytona without a key in the environment; the options' key still wins.
+  beforeEach(() => vi.stubEnv("DAYTONA_API_KEY", "env-key"));
+
+  it("is the same for adapters built from the same options and environment", async () => {
+    const run = await load("daytona", options);
+
+    const again = await load("daytona", {
       target: "eu",
-      organizationId: null,
+      baseUrl: options.baseUrl,
+      apiKey: "live-key",
     });
-    expect(JSON.stringify(saved)).not.toContain("live-key");
 
-    const dir = await mkdtemp(join(tmpdir(), "bench-connections-"));
-
-    try {
-      await writeFile(
-        join(dir, "ownership.json"),
-        JSON.stringify({ runId: "r1", connections: { daytona: saved }, resources: [] }),
-      );
-
-      const kept = (await savedConnections(dir)).daytona;
-
-      if (!kept) throw new Error("No saved connection");
-
-      // The environment now names another endpoint; the key still comes from it.
-      vi.stubEnv("DAYTONA_API_KEY", "live-key");
-      vi.stubEnv("DAYTONA_API_URL", "https://other.invalid/api");
-      const rebuilt = await load("daytona", savedOptions("daytona", kept));
-
-      expect(differingFields(rebuilt, kept)).toEqual([]);
-      expect(savedConnectionOf(rebuilt)).toEqual(saved);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    expect(fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
+    expect(fingerprintOf(again)).toBe(fingerprintOf(run));
   });
 
-  it("a connection the environment changes (E2B_API_URL) is reported, so reap refuses it", async () => {
+  it.each([
+    ["key", { apiKey: "other-key" }],
+    ["endpoint", { baseUrl: "https://live.invalid/api" }],
+    ["region", { target: "us" }],
+  ])("changes with the %s", async (_field, change) => {
+    const run = await load("daytona", options);
+    const other = await load("daytona", { ...options, ...change });
+
+    expect(fingerprintOf(other)).not.toBe(fingerprintOf(run));
+  });
+
+  it("changes when only the environment does (E2B_API_URL)", async () => {
     vi.stubEnv("E2B_API_KEY", "live-key");
-    const run = await load("e2b", { domain: "live.invalid" });
-    const saved = savedConnectionOf(run);
+    const run = await load("e2b", {});
 
-    if (!saved) throw new Error("No saved connection");
     vi.stubEnv("E2B_API_URL", "https://elsewhere.invalid");
-    const rebuilt = await load("e2b", savedOptions("e2b", saved));
+    expect(fingerprintOf(await load("e2b", {}))).not.toBe(fingerprintOf(run));
+  });
 
-    expect(differingFields(rebuilt, saved)).toEqual(["apiUrl"]);
+  it("is null for an adapter that resolves its own connection", () => {
+    expect(fingerprintOf(bound(memory()))).toBeNull();
   });
 });
 
-describe("bench reap loads each adapter with the run's saved connection", () => {
-  const argv = process.argv;
-  const exitCode = process.exitCode;
-
-  afterEach(() => {
-    process.argv = argv;
-    process.exitCode = exitCode;
-  });
-
-  async function reapWith(load: (name: string, factory: FactoryOptions) => Provider) {
-    const dir = await mkdtemp(join(tmpdir(), "bench-reap-connections-"));
-    const factories: FactoryOptions[] = [];
-    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-
-    vi.spyOn(process.stdout, "write").mockReturnValue(true);
-
-    try {
-      await writeFile(
-        join(dir, "ownership.json"),
-        JSON.stringify({
-          runId: "r1",
-          connections: {
-            daytona: { apiUrl: "https://live.invalid/api", target: "eu", organizationId: null },
-          },
-          resources: [],
-        }),
-      );
-      process.argv = [
-        "bun",
-        "bench",
-        "reap",
-        "--providers",
-        "daytona",
-        "--run",
-        "r1",
-        "--out",
-        dir,
-      ];
-      process.exitCode = 0;
-
-      const { main } = await import("../src/cli.js");
-
-      await main(async (name, _env, _importer, config) => {
-        const factory = config?.factory ?? {};
-        factories.push(factory);
-
-        return { kind: "ready", name, cloud: false, region: null, provider: load(name, factory) };
-      });
-
-      return {
-        factories,
-        stderr: stderr.mock.calls.map((call) => String(call[0])).join(""),
-        exitCode: process.exitCode,
-      };
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
-
-  it("passes the saved endpoint and region as factory options, keys from the environment", async () => {
-    vi.stubEnv("DAYTONA_API_KEY", "env-key");
-    vi.stubEnv("DAYTONA_API_URL", "https://other.invalid/api");
-
-    const result = await reapWith((name, factory) => bound({ ...memory(), name }, factory));
-
-    expect(result.factories).toEqual([
-      { baseUrl: "https://live.invalid/api", target: "eu", organizationId: undefined },
-    ]);
-    expect(result.stderr).not.toContain("SKIP daytona");
-    expect(result.exitCode).toBe(0);
-  });
-
-  it("skips a provider whose rebuilt connection differs, rather than read elsewhere", async () => {
-    vi.stubEnv("DAYTONA_API_KEY", "env-key");
-    vi.stubEnv("DAYTONA_API_URL", "https://other.invalid/api");
-
-    // An adapter that ignores the saved options connects where the environment points.
-    const result = await reapWith((name) => bound({ ...memory(), name }));
-
-    expect(result.stderr).toContain(
-      "SKIP daytona: Connection differs from the saved run (apiUrl, target)",
-    );
-  });
-});
-
-it("a run saves each adapter's endpoint and scope in its journal, never its key", async () => {
+it("a run reads through each adapter's own connection and journals only its fingerprint", async () => {
   vi.stubEnv("INSTABOX_API_KEY", "env-key");
   vi.stubEnv("INSTABOX_API_URL", "https://other.invalid/ib");
 
@@ -296,10 +198,10 @@ it("a run saves each adapter's endpoint and scope in its journal, never its key"
 
     const text = await readFile(join(out, "ownership.json"), "utf8");
 
-    expect(JSON.parse(text).connections).toEqual({
-      instabox: { baseUrl: "https://live.invalid/ib" },
+    expect(JSON.parse(text).connectionFingerprints).toEqual({
+      instabox: expect.stringMatching(/^[0-9a-f]{16}$/),
     });
-    expect(text).not.toContain("run-key");
+    expect(text).not.toMatch(/run-key|live\.invalid/);
     // Every exact lookup after a delete went to the run's endpoint with the run's key.
     expect(reads.length).toBeGreaterThan(0);
     expect(reads.every((read) => read.startsWith("https://live.invalid/ib/v1/machines/"))).toBe(
@@ -310,6 +212,16 @@ it("a run saves each adapter's endpoint and scope in its journal, never its key"
     await rm(out, { recursive: true, force: true });
   }
 });
+
+const journalSchema = z.object({
+  connectionFingerprints: z.record(z.string(), z.string()).default({}),
+  resources: z.array(z.object({ provider: z.string(), id: z.string(), kind: z.string() })),
+});
+
+/** The run journal in `out`. */
+async function journalIn(out: string) {
+  return journalSchema.parse(JSON.parse(await readFile(join(out, "ownership.json"), "utf8")));
+}
 
 /** Every file under `dir`, recursively, with its text. */
 async function filesUnder(dir: string): Promise<{ path: string; text: string }[]> {
@@ -405,10 +317,11 @@ it("a run's journal and reports hold no credential or endpoint text, for every c
     expect(files.filter((file) => /canary/i.test(file.text)).map((file) => file.path)).toEqual([]);
 
     // Each connection is journaled as a 16-hex fingerprint under its provider's name, nothing else.
-    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+    const journal = await journalIn(out);
 
-    expect(Object.keys(journal.fingerprints).sort()).toEqual([...connected]);
-    for (const value of Object.values(journal.fingerprints))
+    expect(Object.keys(journal.connectionFingerprints).sort()).toEqual([...connected]);
+
+    for (const value of Object.values(journal.connectionFingerprints))
       expect(value).toMatch(/^[0-9a-f]{16}$/);
   } finally {
     await rm(out, { recursive: true, force: true });
@@ -433,13 +346,16 @@ describe("bench reap acts only through the connection the run used", () => {
     fakeNativeModules({
       e2b: {
         Sandbox: {
-          getInfo: async (sandboxId: string, options: { apiKey: string }) => {
-            calls.push(sandboxId);
+          getInfo: vi
+            .fn()
+            .mockImplementation(async (sandboxId: string, options: { apiKey: string }) => {
+              calls.push(sandboxId);
 
-            if (options.apiKey === "run-key" && live.has(sandboxId))
-              return { sandboxId, state: "running" };
-            throw new SandboxNotFoundError("not found");
-          },
+              if (options.apiKey === "run-key" && live.has(sandboxId))
+                return { sandboxId, state: "running" };
+
+              throw new SandboxNotFoundError("not found");
+            }),
           listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }),
           deleteSnapshot: vi.fn(),
         },
@@ -453,9 +369,9 @@ describe("bench reap acts only through the connection the run used", () => {
   /** A run whose delete failed, so its sandbox stays journaled, under E2B_API_KEY=run-key. */
   async function crashedRun(out: string) {
     vi.stubEnv("E2B_API_KEY", "run-key");
-    const backing = memory();
+
     const provider = bound({
-      ...backing,
+      ...memory(),
       name: "e2b",
       destroy: async () => {
         throw new Error("delete refused");
@@ -483,12 +399,9 @@ describe("bench reap acts only through the connection the run used", () => {
       (r) => writeV2(r, out),
     );
 
-    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
-    const ids: string[] = journal.resources
-      .filter(
-        (r: { provider: string; kind: string }) => r.provider === "e2b" && r.kind === "sandbox",
-      )
-      .map((r: { id: string }) => r.id);
+    const ids = (await journalIn(out)).resources
+      .filter((r) => r.provider === "e2b" && r.kind === "sandbox")
+      .map((r) => r.id);
 
     if (ids.length === 0) throw new Error("The run left no journaled sandbox");
 
@@ -515,7 +428,6 @@ describe("bench reap acts only through the connection the run used", () => {
     process.exitCode = 0;
 
     const { main } = await import("../src/cli.js");
-    let failure: unknown = null;
 
     try {
       // The adapter as `loadProvider` builds it: options from the reap's config, keys from the env.
@@ -526,14 +438,14 @@ describe("bench reap acts only through the connection the run used", () => {
         region: null,
         provider: bound({ ...memory(), name }, config?.factory ?? {}),
       }));
-    } catch (error) {
-      failure = error;
+
+      return {
+        stderr: stderr.mock.calls.map((call) => String(call[0])).join(""),
+        exitCode: process.exitCode,
+      };
+    } finally {
+      stderr.mockRestore();
     }
-
-    const text = stderr.mock.calls.map((call) => String(call[0])).join("");
-    stderr.mockRestore();
-
-    return { stderr: text, exitCode: process.exitCode, failure };
   }
 
   it("with the same endpoint but another account's key, makes no request and keeps the entry", async () => {
@@ -545,13 +457,10 @@ describe("bench reap acts only through the connection the run used", () => {
 
       vi.stubEnv("E2B_API_KEY", "other-key");
       const result = await reap(out);
-      const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+      const journal = await journalIn(out);
 
-      expect(result.failure).toBeNull();
       // The sandbox is still running under the run's key: its entry must stay.
-      expect(journal.resources.map((r: { id: string }) => r.id)).toEqual(
-        expect.arrayContaining(ids),
-      );
+      expect(journal.resources.map((r) => r.id)).toEqual(expect.arrayContaining(ids));
       expect(calls).toEqual([]);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("SKIP e2b:");
@@ -570,16 +479,41 @@ describe("bench reap acts only through the connection the run used", () => {
       const calls = e2bAccount(new Set());
 
       const result = await reap(out);
-      const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+      const journal = await journalIn(out);
 
-      expect(result.failure).toBeNull();
       expect(result.stderr).not.toContain("SKIP e2b");
       expect(calls).toEqual(expect.arrayContaining(ids));
-      expect(journal.resources.filter((r: { kind: string }) => r.kind === "sandbox")).toEqual([]);
+      expect(journal.resources.filter((r) => r.kind === "sandbox")).toEqual([]);
     } finally {
       await rm(out, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("skips a connected provider the journal has no fingerprint for, without a request", async () => {
+    const out = await mkdtemp(join(tmpdir(), "bench-reap-unfingerprinted-"));
+
+    try {
+      vi.stubEnv("E2B_API_KEY", "run-key");
+      const calls = e2bAccount(new Set());
+
+      await writeFile(
+        join(out, "ownership.json"),
+        JSON.stringify({
+          runId: "fp-run",
+          resources: [{ provider: "e2b", id: "sb-1", kind: "sandbox", parent: null }],
+        }),
+      );
+      const result = await reap(out);
+      const journal = await journalIn(out);
+
+      expect(calls).toEqual([]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("SKIP e2b: the run's journal has no connection fingerprint");
+      expect(journal.resources).toHaveLength(1);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a journal from before fingerprints, which kept endpoint text", async () => {
     const out = await mkdtemp(join(tmpdir(), "bench-reap-legacy-"));
@@ -596,10 +530,8 @@ describe("bench reap acts only through the connection the run used", () => {
           resources: [{ provider: "e2b", id: "sb-1", kind: "sandbox", parent: null }],
         }),
       );
-      const result = await reap(out);
-
+      await expect(reap(out)).rejects.toThrow("endpoint text");
       expect(calls).toEqual([]);
-      expect(String(result.failure)).toContain("endpoint text");
     } finally {
       await rm(out, { recursive: true, force: true });
     }

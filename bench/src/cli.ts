@@ -5,7 +5,6 @@ import { loadProvider, providerRegion } from "./providers.js";
 import { runV2, sanitize } from "./v2-runner.js";
 import { collectMetadata } from "./publication.js";
 import { writeV2 } from "./v2-report.js";
-import { differingFields, savedConnections, savedOptions } from "./connections.js";
 
 /** Run the bench CLI. Tests pass `load` to supply providers without importing adapters. */
 export async function main(load: typeof loadProvider = loadProvider) {
@@ -79,32 +78,12 @@ export async function main(load: typeof loadProvider = loadProvider) {
   // A conflicting region configuration refuses the whole run, not just that provider.
   for (const name of config.providers) providerRegion(name, process.env);
   const providers = [];
-  // A reap rebuilds each adapter on the endpoint, region and scope the run saved, with credentials
-  // from the environment, so its reads reach the run's sandboxes and not the environment's default.
-  const saved = reap ? await savedConnections(resolve(config.out)) : {};
 
+  // A reap builds each adapter from this environment, as the run did; `reapRun` reads through it
+  // only when its connection has the fingerprint the run journaled.
   for (const name of config.providers) {
     try {
-      const kept = saved[name];
-
-      const loaded = await load(
-        name,
-        process.env,
-        undefined,
-        kept ? { ...config, factory: savedOptions(name, kept) } : config,
-      );
-
-      const differs = kept && loaded.kind === "ready" ? differingFields(loaded.provider, kept) : [];
-
-      providers.push(
-        differs.length
-          ? {
-              kind: "skipped" as const,
-              name,
-              note: `Connection differs from the saved run (${differs.join(", ")}); not reading through another endpoint or scope`,
-            }
-          : loaded,
-      );
+      providers.push(await load(name, process.env, undefined, config));
     } catch (error) {
       providers.push({
         kind: "skipped" as const,

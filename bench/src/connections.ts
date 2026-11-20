@@ -1,7 +1,5 @@
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { FactoryOptions } from "./providers.js";
 import {
@@ -146,8 +144,8 @@ function byName(connection: Connection): Partial<Connections> {
 type Binding =
   | {
       readonly kind: "resolved";
-      readonly connection: Connection;
       readonly configs: Partial<Connections>;
+      readonly fingerprint: string;
     }
   | { readonly kind: "own" }
   | { readonly kind: "failed"; readonly reason: string };
@@ -181,7 +179,9 @@ export function bindConnection<P extends Provider>(provider: P, options: Factory
     const connection = resolve(provider.name, parsed.data);
     bindings.set(
       provider,
-      connection ? { kind: "resolved", connection, configs: byName(connection) } : { kind: "own" },
+      connection
+        ? { kind: "resolved", configs: byName(connection), fingerprint: fingerprint(connection) }
+        : { kind: "own" },
     );
   } catch (error) {
     bindings.set(provider, { kind: "failed", reason: reasonOf(error) });
@@ -215,129 +215,80 @@ export function endpoint(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
-/** A connection's non-secret fields: endpoints, region and scope. Kept in the run's journal. */
-export const savedConnectionSchema = z.record(z.string(), z.string().nullable());
+/** A connection's fingerprint: the first 16 hex characters of a SHA-256 over all of it. */
+export const fingerprintSchema = z.string().regex(/^[0-9a-f]{16}$/);
 
-export type SavedConnection = z.infer<typeof savedConnectionSchema>;
+/** Every adapter's resolved connection is flat: named strings, some of them unset. */
+const connectionFields = z.record(z.string(), z.string().optional());
 
-/** The endpoints, region and scope of a connection, without its credentials. */
-function publicFields(connection: Connection): SavedConnection {
-  switch (connection.name) {
-    case "baseten":
-      return { teamId: connection.config.teamId ?? null };
-    case "boat":
-    case "freestyle":
-    case "instabox":
-    case "upstash":
-      return { baseUrl: connection.config.baseUrl };
-    case "boxd":
-      return { baseURL: connection.config.baseURL ?? null };
-    case "daytona": {
-      const { config } = connection;
+/**
+ * The fingerprint of a whole resolved connection: provider, endpoints, scope and credentials.
+ * It identifies the connection without holding any of it, so the run's journal can keep it and a
+ * reap can tell whether its environment rebuilds the same connection. Fields are sorted and unset
+ * ones dropped, so equal connections hash alike whatever order `resolveConfig` built them in.
+ */
+function fingerprint(connection: Connection): string {
+  const fields = Object.entries(connectionFields.parse(connection.config))
+    .filter((field): field is [string, string] => field[1] !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
-      return {
-        apiUrl: config.apiUrl,
-        target: config.target,
-        organizationId: "organizationId" in config ? config.organizationId : null,
-      };
-    }
-
-    case "e2b":
-      return { domain: connection.config.domain, apiUrl: connection.config.apiUrl };
-    case "superserve":
-      return {
-        baseUrl: connection.config.baseUrl,
-        sandboxHost: connection.config.sandboxHost,
-      };
-    case "tenki":
-      return { baseUrl: connection.config.baseUrl ?? null };
-    case "vercel": {
-      const { config } = connection;
-
-      return "token" in config
-        ? { teamId: config.teamId, projectId: config.projectId }
-        : { teamId: null, projectId: null };
-    }
-
-    default: {
-      const exhaustive: never = connection;
-
-      return exhaustive;
-    }
-  }
+  return createHash("sha256")
+    .update(JSON.stringify([connection.name, fields]))
+    .digest("hex")
+    .slice(0, 16);
 }
 
-/** What to keep in the run's journal for this instance, or null when it has nothing to keep. */
-export function savedConnectionOf(provider: Provider): SavedConnection | null {
+/** This instance's connection fingerprint for the run's journal, or null when it has none. */
+export function fingerprintOf(provider: Provider): string | null {
   const binding = bindings.get(provider);
 
-  return binding?.kind === "resolved" ? publicFields(binding.connection) : null;
+  return binding?.kind === "resolved" ? binding.fingerprint : null;
 }
 
-/**
- * The factory options that rebuild a saved connection; credentials come from the environment.
- * E2B's API URL has no option (it comes from E2B_API_URL), so only the check below covers it.
- */
-export function savedOptions(name: string, saved: SavedConnection): ConnectionOptions {
-  const text = (key: string) => saved[key] ?? undefined;
+const connectedNames = {
+  baseten: true,
+  boat: true,
+  boxd: true,
+  daytona: true,
+  e2b: true,
+  freestyle: true,
+  instabox: true,
+  superserve: true,
+  tenki: true,
+  upstash: true,
+  vercel: true,
+} satisfies Record<Connected, true>;
 
-  switch (name) {
-    case "baseten":
-      return { teamId: text("teamId") };
-    case "boat":
-    case "freestyle":
-    case "instabox":
-    case "superserve":
-    case "upstash":
-    case "tenki":
-      return { baseUrl: text("baseUrl") };
-    case "boxd":
-      return { baseURL: text("baseURL") };
-    case "daytona":
-      return {
-        baseUrl: text("apiUrl"),
-        target: text("target"),
-        organizationId: text("organizationId"),
+/**
+ * Whether a reap may read through `provider` for a run that journaled `journaled` as its
+ * connection fingerprint. A connected provider passes only when this instance resolved the very
+ * connection the run used: any other endpoint, account, team or project would answer 404 for the
+ * run's live sandboxes. The refusal says why without any connection value.
+ */
+export function reapConnection(
+  provider: Provider,
+  journaled: string | undefined,
+): { readonly kind: "same" } | { readonly kind: "differs"; readonly reason: string } {
+  const binding = bindings.get(provider);
+
+  if (
+    binding?.kind === "own" ||
+    (binding === undefined && !Object.hasOwn(connectedNames, provider.name))
+  )
+    return { kind: "same" };
+
+  if (binding === undefined) return { kind: "differs", reason: "adapter instance not bound" };
+
+  if (binding.kind === "failed") return { kind: "differs", reason: binding.reason };
+
+  if (journaled === undefined)
+    return { kind: "differs", reason: "the run's journal has no connection fingerprint for it" };
+
+  return binding.fingerprint === journaled
+    ? { kind: "same" }
+    : {
+        kind: "differs",
+        reason:
+          "connection fingerprint differs from the run's: this environment's endpoint, credentials or scope are not the ones the run used",
       };
-    case "e2b":
-      return { domain: text("domain") };
-    case "vercel":
-      return { teamId: text("teamId"), projectId: text("projectId") };
-    default:
-      return {};
-  }
-}
-
-/**
- * Whether an instance rebuilt for a saved run connects where the run did. A field that differs
- * (an E2B_API_URL that changed, a token now set where the run used OIDC) means reads through it
- * could miss the run's sandboxes, so recovery refuses that provider rather than read elsewhere.
- */
-export function differingFields(provider: Provider, saved: SavedConnection): string[] {
-  const current = savedConnectionOf(provider);
-
-  if (current === null) return ["connection"];
-
-  return [...new Set([...Object.keys(saved), ...Object.keys(current)])]
-    .filter((key) => !isDeepStrictEqual(saved[key] ?? null, current[key] ?? null))
-    .sort();
-}
-
-const journalConnections = z.object({
-  connections: z.record(z.string(), savedConnectionSchema).default({}),
-});
-
-/**
- * The connections a run saved in its ownership journal, by provider. Empty when the journal is
- * missing, unreadable or older than saved connections; recovery reports a corrupt journal itself.
- */
-export async function savedConnections(out: string): Promise<Record<string, SavedConnection>> {
-  try {
-    const raw: unknown = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
-    const parsed = journalConnections.safeParse(raw);
-
-    return parsed.success ? parsed.data.connections : {};
-  } catch {
-    return {};
-  }
 }
