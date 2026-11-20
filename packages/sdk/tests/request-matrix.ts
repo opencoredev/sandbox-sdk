@@ -1,6 +1,7 @@
 // Records what each adapter sends for a matrix of configurations: every HTTP request it makes
 // (method, URL, headers with credentials replaced by their names) and every argument it hands its
-// provider's own SDK. `request-parity.test.ts` runs it against this tree and against the commit
+// provider's own SDK, through list, connect, create, create from a snapshot, snapshot, snapshot
+// deletion, destroy and the native SDK bindings. `request-parity.test.ts` runs it against this tree and against the commit
 // before `resolveConfig` existed, and the two recordings must be equal.
 //
 //   bun tests/request-matrix.ts <path to an SDK src directory>
@@ -8,6 +9,7 @@
 // No request leaves the process: `fetch` is replaced, provider SDKs the adapters load are replaced
 // by recording fakes (except `@vercel/sandbox`, which only calls `fetch`), and a socket opened
 // any other way is recorded as an escape and fails the comparison.
+import { AsyncLocalStorage } from "node:async_hooks";
 import net from "node:net";
 import tls from "node:tls";
 import { isAbsolute, join, resolve } from "node:path";
@@ -36,10 +38,13 @@ function label(text: string): string {
 
   for (const [name, value] of Object.entries(secrets)) out = out.replaceAll(value, `<${name}>`);
 
-  // Random request IDs, idempotency keys and timestamps differ between any two runs.
+  // Random request IDs, idempotency keys and timestamps differ between any two runs: UUIDs, ISO
+  // times, epoch milliseconds, and the base-36 creation time in Boxd's generated machine names.
   return out
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<uuid>")
-    .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "<time>");
+    .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "<time>")
+    .replace(/(?<!\d)1\d{12}(?!\d)/g, "<epoch ms>")
+    .replace(/sbxsdk-v2-([01])-[0-9a-z]+-/g, "sbxsdk-v2-$1-<time36>-");
 }
 
 const recorders = new WeakSet<object>();
@@ -96,6 +101,26 @@ interface Recording {
 
 let current: Recording = { events: [] };
 
+/** The events of one step, open until the step settles. */
+interface StepScope {
+  readonly events: JsonValue[];
+  open: boolean;
+}
+
+/**
+ * The step whose work made an event. A step that times out leaves its work running (a poll for a
+ * fake that never becomes ready); its later events are dropped, so they land in no other step.
+ */
+const stepScope = new AsyncLocalStorage<StepScope>();
+
+/** Record an adapter's request or SDK call in the step that made it. */
+function emit(event: JsonValue): void {
+  const scope = stepScope.getStore();
+
+  if (scope === undefined) current.events.push(event);
+  else if (scope.open) scope.events.push(event);
+}
+
 /** A stand-in for any SDK export: constructing or calling it records the arguments. */
 /** Every member of a fake is another fake; the type says only that it can be called. */
 type FakeExport = () => void;
@@ -111,12 +136,12 @@ function fake(path: string): FakeExport {
     },
     has: () => false,
     construct(_target, args) {
-      current.events.push({ sdk: `new ${path}`, args: snapshot(args) });
+      emit({ sdk: `new ${path}`, args: snapshot(args) });
 
       return fake(`new ${path}`);
     },
     apply(_target, _this, args) {
-      current.events.push({ sdk: `${path}()`, args: snapshot(args) });
+      emit({ sdk: `${path}()`, args: snapshot(args) });
 
       return fake(`${path}()`);
     },
@@ -157,7 +182,7 @@ globalThis.fetch = Object.assign(
   async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-    current.events.push({ fetch: method, url: label(url), headers: headersOf(input, init) });
+    emit({ fetch: method, url: label(url), headers: headersOf(input, init) });
 
     return Response.json(
       { code: 404, error: "not_found", message: "not found", statusCode: 404 },
@@ -170,7 +195,7 @@ globalThis.fetch = Object.assign(
 /** Replaces a socket opener: a client that opens its own sockets would leave the machine. */
 function refuse(name: string) {
   return (...args: JsonValue[]) => {
-    current.events.push({ escape: name, args: snapshot(args) });
+    emit({ escape: name, args: snapshot(args) });
     throw new Error(`request-matrix: ${name} is disabled`);
   };
 }
@@ -487,9 +512,15 @@ interface SdkBinding {
 interface Adapter {
   list(labels: Readonly<Record<string, string>>): Promise<object>;
   connect(id: string): Promise<object>;
+  create(input: {
+    readonly labels: Readonly<Record<string, string>>;
+    readonly from?: string;
+  }): Promise<object>;
   destroy(id: string): Promise<void>;
   native(id: string): Partial<SdkBinding>;
   readonly api?: Partial<SdkBinding>;
+  readonly snapshot?: (id: string) => Promise<object>;
+  readonly deleteSnapshot?: (id: string) => Promise<boolean>;
 }
 
 function isFactory(value: unknown): value is (options: Options) => Partial<Adapter> {
@@ -504,16 +535,19 @@ type Factory = (options: Options) => Adapter;
 
 /** The adapter a factory made, once it has every member the matrix calls. */
 function adapterOf(made: Partial<Adapter>): Adapter {
-  const { list, connect, destroy, native, api } = made;
+  const { list, connect, create, destroy, native, api, snapshot, deleteSnapshot } = made;
 
-  if (!list || !connect || !destroy || !native) throw new Error("Not an adapter");
+  if (!list || !connect || !create || !destroy || !native) throw new Error("Not an adapter");
 
   return {
     list: list.bind(made),
     connect: connect.bind(made),
+    create: create.bind(made),
     destroy: destroy.bind(made),
     native: native.bind(made),
     api,
+    snapshot: snapshot?.bind(made),
+    deleteSnapshot: deleteSnapshot?.bind(made),
   };
 }
 
@@ -534,7 +568,7 @@ async function factory(provider: string): Promise<Factory> {
       return (options) =>
         adapterOf(
           createBoxdProvider(options, fakeModule, (config: Options) => {
-            current.events.push({ sdk: "boxd transfers", args: snapshot([config]) });
+            emit({ sdk: "boxd transfers", args: snapshot([config]) });
 
             return fake("boxd transfers");
           }),
@@ -572,29 +606,56 @@ function errorOf(cause: unknown): JsonValue {
   return { name: cause.name, code, message: label(cause.message) };
 }
 
-/** One step, bounded: a step that never settles is recorded as such. */
-async function step(name: string, run: () => Promise<object | void>): Promise<void> {
-  current.events.push({ step: name });
+/** Each distinct event once, in the order first seen. */
+function distinct(events: readonly JsonValue[]): JsonValue[] {
+  const seen = new Set<string>();
+
+  return events.filter((event) => {
+    const key = JSON.stringify(event);
+
+    if (seen.has(key)) return false;
+
+    seen.add(key);
+
+    return true;
+  });
+}
+
+/**
+ * One step, bounded: a step that never settles is recorded as such. How often its poll ran by
+ * then depends on the machine's load, so a timed-out step keeps each distinct event once.
+ */
+async function step(name: string, run: () => Promise<object | boolean | void>): Promise<void> {
+  const scope: StepScope = { events: [], open: true };
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let outcome: JsonValue;
+
+  current.events.push({ step: name });
 
   try {
     const settled = await Promise.race([
-      run().then(() => "ok"),
+      stepScope.run(scope, run).then(() => "ok"),
       new Promise<string>((done) => {
         timer = setTimeout(() => done("<timeout>"), 3000);
       }),
     ]);
 
-    current.events.push({ result: settled });
+    outcome = { result: settled };
   } catch (error) {
-    current.events.push({ error: errorOf(error) });
+    outcome = { error: errorOf(error) };
   } finally {
     clearTimeout(timer);
+    scope.open = false;
   }
+
+  const timedOut = JSON.stringify(outcome) === JSON.stringify({ result: "<timeout>" });
+
+  current.events.push(...(timedOut ? distinct(scope.events) : scope.events), outcome);
 }
 
 const loadFake = async () => fake("sdk");
 const id = "sbx-fixture";
+const snapshotId = "snap-fixture";
 const results: Record<string, Recording> = {};
 
 for (const entry of cases) {
@@ -609,8 +670,22 @@ for (const entry of cases) {
     const adapter = make({ ...entry.options });
     const { api } = adapter;
 
+    const { snapshot, deleteSnapshot } = adapter;
+
     await step("list", () => adapter.list({ "sandbox-sdk": "1" }));
     await step("connect", () => adapter.connect(id));
+    // Create and snapshot paths build their own URLs and SDK calls; each must match base too.
+    await step("create", () => adapter.create({ labels: { "sandbox-sdk": "1" } }));
+    await step("create from snapshot", () =>
+      adapter.create({ labels: { "sandbox-sdk": "1" }, from: snapshotId }),
+    );
+
+    if (snapshot) await step("snapshot", () => snapshot(id));
+    else current.events.push({ step: "snapshot", result: "<not supported>" });
+
+    if (deleteSnapshot) await step("deleteSnapshot", () => deleteSnapshot(snapshotId));
+    else current.events.push({ step: "deleteSnapshot", result: "<not supported>" });
+
     await step("destroy", () => adapter.destroy(id));
     await step("api.sdk", async () => api?.sdk?.(loadFake));
     await step("native.sdk", async () => adapter.native(id).sdk?.(loadFake));
