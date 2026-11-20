@@ -513,6 +513,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
             error instanceof Error ? error.message : String(error),
           );
 
+          // The attempt ran from its invocation: a sandbox it made is priced from then, not for 0 s.
+          failed.startedAt = invokedAt;
+          failed.startOffsetMs = invokedAt - slotStartedAt;
           failed.sandboxIds = created;
           failed.deletionConfirmed = created.length === 0;
           records.set(entry.name, failed);

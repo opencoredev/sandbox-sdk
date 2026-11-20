@@ -254,11 +254,12 @@ describe("slot execution", () => {
     });
   });
 
-  it("records the entry's disk on each attempt, so it is priced at the disk it ran with", async () => {
+  it("records the entry's disk and run time on an attempt that fails after create, so it is priced", async () => {
     const records: AttemptRecord[] = [];
 
     const failing: typeof runAttempt = async (plan, environment) => {
       await environment.onSandbox?.(plan.provider.name, "made-1");
+      await new Promise((done) => setTimeout(done, 50));
 
       throw new Error("failed after create");
     };
@@ -267,14 +268,16 @@ describe("slot execution", () => {
       batch(
         {
           slots: slots.slice(0, 1),
-          providers: [provider("e2b", { diskGiB: 20 })],
+          providers: [provider("e2b", { diskGiB: 13 })],
           attempt: failing,
         },
         records,
       ),
     );
 
-    expect(records[0]).toMatchObject({ sandboxIds: ["made-1"], diskGiB: 20 });
+    expect(records[0]).toMatchObject({ sandboxIds: ["made-1"], diskGiB: 13 });
+    // The sandbox existed while the attempt ran, so the record spans that time and is priced for it.
+    expect(records[0]!.endedAt - records[0]!.startedAt).toBeGreaterThanOrEqual(40);
   });
 
   it("voids a window whose listing is only SDK-scoped", async () => {
