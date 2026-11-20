@@ -8,6 +8,8 @@ import type { runAttempt } from "../../src/realistic/attempt.js";
 import {
   buildExport,
   burstCommand,
+  claimOutput,
+  notRunLines,
   preloadArtifacts,
   requiredArtifacts,
   roundSchedule,
@@ -25,6 +27,7 @@ import {
   runRound,
   spendGuard,
   summarizeProvider,
+  taskEnd,
   taskResult,
   type BurstTag,
   type Leftover,
@@ -32,6 +35,7 @@ import {
   type RoundReport,
   type StoredRecord,
 } from "../../src/realistic/burst.js";
+import { sweepProviders } from "../../src/realistic/cli.js";
 import { ProviderTrace, systemClock } from "../../src/realistic/gaps.js";
 import type { HarnessManifest } from "../../src/realistic/manifest.js";
 import { attemptRecordSchema, type AttemptRecord } from "../../src/realistic/record.js";
@@ -1343,8 +1347,9 @@ describe("a partly admitted burst", () => {
       solo: { kind: "published", medianWallS: 50 },
     });
 
-    // Completed: 100 (round 1) and 100 to 104 (round 2), median 101.5, over 50.
-    expect(both).toMatchObject({ slowdownWithheld: null, slowdown: 2.03 });
+    // The slowdown is from the fully admitted round only: 100 to 104, median 102, over 50. Round
+    // 1's lone task ran alone in effect and stays out of it, though medianWallS counts it.
+    expect(both).toMatchObject({ slowdownWithheld: null, slowdown: 2.04, medianWallS: 101.5 });
   });
 });
 
@@ -1354,6 +1359,27 @@ describe("round spend", () => {
     destroyed: true,
     goneAfter: true,
     confirmedAt,
+  });
+
+  it("caps a late cleanup's time at the provider's hard lifetime, and caps nothing without one", () => {
+    // $1 per second; the cleanup confirmed the sandbox gone 2,000 s after its start.
+    const price = (_: StoredRecord, ms: number) => ms / 1000;
+    const leaked = tagged(done({ round: 1, task: 1, wallS: 100 }));
+    leaked.deletionConfirmed = false;
+
+    const spend = (hardLifetimeMs: number | null) =>
+      roundSpend({
+        records: [leaked],
+        leftovers: [leftover("sbx-1-1", 2_001_000)],
+        perTaskUSD: 900,
+        hardLifetimeMs,
+        price,
+      });
+
+    // A 900 s hard lifetime: it cannot have billed past it, so the settlement stays in its share.
+    expect(spend(900_000)).toBe(900);
+    // No hard lifetime: it billed until it was confirmed gone.
+    expect(spend(null)).toBe(2_000);
   });
 
   it("charges an unresolved task its whole reservation and a recovered one until it was confirmed gone", () => {
@@ -1366,7 +1392,7 @@ describe("round spend", () => {
     lost.deletionConfirmed = false;
 
     const spend = (records: StoredRecord[], leftovers: Leftover[]) =>
-      roundSpend({ records, leftovers, perTaskUSD: 1_000, price });
+      roundSpend({ records, leftovers, perTaskUSD: 1_000, hardLifetimeMs: null, price });
 
     expect(spend([finished], [])).toBe(100.5);
     // Its record ended at 101.5 s; the cleanup confirmed it gone 300 s after the start.
@@ -1394,6 +1420,7 @@ describe("round spend", () => {
       records: [record],
       leftovers: [],
       perTaskUSD: perTask,
+      hardLifetimeMs: billableLifetimeMs(30 * 60_000),
       price: (_, ms) => perMinute(ms),
     });
 
@@ -1410,22 +1437,26 @@ function rounds({
   perTaskUSD,
   control,
   round: run,
+  hardLifetimeMs = 45 * 60_000,
+  guard = spendGuard(capUSD),
 }: {
   capUSD: number;
   perTaskUSD: number;
   control: boolean;
   round: ProviderRounds["runRound"];
+  hardLifetimeMs?: number | null;
+  guard?: ReturnType<typeof spendGuard>;
 }) {
   const lines: RoundLineInput[] = [];
   const notes: { kind: string }[] = [];
   const notRun: string[] = [];
-  const guard = spendGuard(capUSD);
 
   const plan: ProviderRounds = {
     name: "e2b",
     schedule: roundSchedule({ rounds: 2, size: 2, control }),
     guard,
     perTaskUSD,
+    hardLifetimeMs,
     price: () => 0.01,
     runRound: run,
     writeRound: async (line) => {
@@ -1478,7 +1509,14 @@ describe("a provider's rounds", () => {
 
     // Two tasks ran and may have billed: their $10 stays spent, not $0.
     expect(run.guard.state()).toMatchObject({ spentUSD: 10, reservedUSD: 0 });
+    // The round is marked failed, so the export leaves out any record of it that was written.
     expect(run.lines).toEqual([
+      expect.objectContaining({
+        kind: "failed",
+        role: "burst",
+        round: 1,
+        reason: expect.stringContaining("ENOSPC"),
+      }),
       expect.objectContaining({ kind: "skipped", role: "burst", round: 2 }),
     ]);
   });
@@ -1703,5 +1741,440 @@ describe("the site data file, from tagged records", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a create the SDK stopped waiting on", () => {
+  it("is followed to the end: a sandbox its late error names is owned and deleted by ID", async () => {
+    const records: AttemptRecord[] = [];
+    const created = new Set<string>();
+    const noted: string[] = [];
+    let allocated = "";
+
+    // Beam's half-create, answered after the slot timeout: the SDK has already returned `aborted`.
+    const beam = provider((inner) => ({
+      create: async () => {
+        allocated = (await inner.create({ labels: {} })).id;
+        await sleep(300);
+        throw new SandboxError("Beam create failed: the request may or may not have happened", {
+          code: "outcome_unknown",
+          provider: "beam",
+          sandboxId: allocated,
+        });
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: beam }),
+          manifest: withSlotTimeout(fixture.manifest, 100),
+          created,
+          onSandbox: async (id) => {
+            noted.push(id);
+          },
+        },
+        records,
+      ),
+    );
+
+    const [record] = report.records;
+
+    expect(record?.completion).toMatchObject({ reason: "slot-timeout" });
+    expect(record?.burst.createError).toEqual({ code: "outcome_unknown", sandboxId: allocated });
+    expect(record?.sandboxIds).toEqual([allocated]);
+    expect(created.has(allocated)).toBe(true);
+    expect(noted).toEqual([allocated]);
+    expect(report.leftovers).toMatchObject([{ id: allocated, destroyed: true, goneAfter: true }]);
+    expect(await beam.list({})).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+  }, 5_000);
+
+  it("owns a sandbox the create returned after the abort", async () => {
+    const records: AttemptRecord[] = [];
+    let allocated = "";
+
+    const slow = provider((inner) => ({
+      create: async (input) => {
+        await sleep(300);
+        const info = await inner.create(input);
+        allocated = info.id;
+
+        return info;
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: slow }),
+          manifest: withSlotTimeout(fixture.manifest, 100),
+        },
+        records,
+      ),
+    );
+
+    const [record] = report.records;
+
+    expect(record?.burst.createError).toEqual({ code: "aborted", sandboxId: allocated });
+    expect(record?.sandboxIds).toEqual([allocated]);
+    expect(await slow.list({})).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+  }, 5_000);
+});
+
+describe("the cleanup's result", () => {
+  it("overrides an attempt's confirmed deletion that the listing after the round contradicts", async () => {
+    const records: AttemptRecord[] = [];
+
+    const stuck = provider(() => ({
+      destroy: async () => {
+        throw new Error("delete refused");
+      },
+    }));
+
+    const leaky = scripted(() => ({ leak: true }), []);
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: stuck }),
+          // The attempt says its deletion was confirmed, but the sandbox is still there.
+          attempt: async (plan, environment) => {
+            const outcome = await leaky(plan, environment);
+            outcome.record.deletionConfirmed = true;
+
+            return outcome;
+          },
+        },
+        records,
+      ),
+    );
+
+    expect(report.leftovers).toMatchObject([{ destroyed: false, goneAfter: false }]);
+    expect(report.unresolved).toEqual([report.records[0]?.attemptId]);
+    expect(report.allDoneAt).toBeNull();
+
+    // When the cleanup did delete it, the task ends when the cleanup confirmed it gone.
+    const record = tagged(done({ round: 1, task: 0, wallS: 100 }));
+
+    expect(
+      taskEnd(record, [{ id: "sbx-1-0", destroyed: true, goneAfter: true, confirmedAt: 500_000 }]),
+    ).toEqual({ kind: "recovered", at: 500_000 });
+  });
+});
+
+describe("admitted tasks", () => {
+  it("are only those the provider allocated a sandbox for; other refusals stay failed attempts", async () => {
+    const records: AttemptRecord[] = [];
+    const ok = scripted(() => ({}), []);
+
+    // Task 0 runs; the other four creates are refused for a bad key, not an account limit.
+    const attempt: typeof runAttempt = async (plan, environment) => {
+      if (plan.slot.index === 0) return ok(plan, environment);
+
+      const error = new SandboxError("E2B create failed: invalid API key", {
+        code: "auth",
+        provider: "e2b",
+      });
+
+      await environment.onCreateFailed?.(plan.provider.name, error);
+
+      const record = emptyRecord(
+        { ...plan, provider: plan.provider.name },
+        "create-failed",
+        error.message,
+        Date.now(),
+        environment.attribution,
+      );
+
+      record.deletionConfirmed = true;
+
+      return { record, trace: new ProviderTrace(systemClock) };
+    };
+
+    const report = await runRound(round({ size: 5, attempt }, records));
+
+    expect(report.admitted).toBe(1);
+
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: report.records.map((record) => ({ round: 1, record })),
+      rounds: [{ round: 1, size: 5, startedAt: report.startedAt, allDoneAt: report.allDoneAt }],
+      solo: { kind: "published", medianWallS: 50 },
+    });
+
+    expect(row).toMatchObject({
+      attempts: 5,
+      completed: 1,
+      burstRounds: [{ round: 1, size: 5, admitted: 1 }],
+      slowdown: null,
+    });
+    expect(row.tasks.filter((t) => t.failure?.stage === "create")).toHaveLength(4);
+  });
+});
+
+describe("a provider with no hard lifetime", () => {
+  it("stops every provider's rounds once a round leaves one of its sandboxes unresolved", async () => {
+    const unresolvedRound = async (step: ScheduledRound) => ({
+      ...report(step),
+      allDoneAt: null,
+      unresolved: [`rtb-test-r${step.round}-t0-e2b`],
+    });
+
+    const guard = spendGuard(100);
+
+    const run = rounds({
+      capUSD: 100,
+      perTaskUSD: 5,
+      control: false,
+      hardLifetimeMs: null,
+      guard,
+      round: unresolvedRound,
+    });
+
+    await runProviderRounds(run.plan);
+
+    expect(run.lines.map((l) => [l.kind, "round" in l ? l.round : null])).toEqual([
+      ["round", 1],
+      ["skipped", 2],
+    ]);
+    // Another provider's next round is not admitted either, and does not wait for room.
+    expect(guard.couldFit(1)).toBe(false);
+    expect(guard.reserve(1)).toBe(false);
+
+    // With a hard lifetime the same round bounds its own spend, and the run goes on.
+    const bounded = rounds({
+      capUSD: 100,
+      perTaskUSD: 5,
+      control: false,
+      round: unresolvedRound,
+    });
+
+    await runProviderRounds(bounded.plan);
+    expect(bounded.lines.map((l) => l.kind)).toEqual(["round", "round"]);
+  });
+});
+
+describe("the final sweep", () => {
+  const slot = (name: string, inner: SlotProvider["provider"]): SlotProvider => ({
+    name,
+    provider: inner,
+    attribution: attributionFor("e2b").attribution,
+    settlementMs: null,
+    paddingMs: 0,
+  });
+
+  it("deletes known IDs when a listing fails, and a stalled provider does not stop the next", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-sweep-"));
+
+    try {
+      // Unlabeled sandboxes the run owns (a create error named them), on three providers.
+      const failing = memory();
+      const a = (await failing.create({ labels: {} })).id;
+      const stalling = memory();
+      const b = (await stalling.create({ labels: {} })).id;
+      const fine = memory();
+      const c = (await fine.create({ labels: { "sandbox-bench-run": "rtb-sweep" } })).id;
+
+      const result = await sweepProviders(
+        "rtb-sweep",
+        [
+          slot("e2b", {
+            ...failing,
+            list: async () => {
+              throw new Error("listing failed");
+            },
+          }),
+          slot("vercel", { ...stalling, list: () => new Promise<never>(() => {}) }),
+          slot("daytona", fine),
+        ],
+        async () => {},
+        dir,
+        {
+          // Live ownership: no attempt record names these.
+          known: new Map([
+            ["e2b", new Set([a])],
+            ["vercel", new Set([b])],
+          ]),
+          callTimeoutMs: 50,
+        },
+      );
+
+      expect(await failing.list({})).toEqual([]);
+      expect(await stalling.list({})).toEqual([]);
+      expect(await fine.list({})).toEqual([]);
+      expect(c).toBeTruthy();
+      // Both failed listings are reported, so the run still fails and says so.
+      expect(result).toEqual({ unchecked: 0, failed: 2, undeleted: 0 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 5_000);
+});
+
+describe("a round that throws", () => {
+  it("is left out of every count, and its reason is published", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-export-failed-"));
+
+    try {
+      await writeFile(
+        join(dir, "run.json"),
+        JSON.stringify({
+          id: "rtb-test",
+          sdkCommit: "abc1234",
+          startedAt: "2026-11-19T10:00:00.000Z",
+          endedAt: "2026-11-19T11:00:00.000Z",
+          location: "Boca Raton, FL (evo-1)",
+          size: 2,
+          rounds: 2,
+          track: "same-machine",
+          profile: "fix-and-test",
+          providers: ["e2b"],
+          budgetUSD: 10,
+          mode: "one-provider-at-a-time",
+          control: false,
+        }),
+      );
+
+      const listing = { at: 0, ids: [], runIds: [], error: null };
+
+      await writeFile(
+        join(dir, "rounds.jsonl"),
+        [
+          {
+            kind: "round",
+            provider: "e2b",
+            round: 1,
+            role: "burst",
+            size: 2,
+            startedAt: 0,
+            allDoneAt: 131_000,
+            admitted: 2,
+            before: listing,
+            after: listing,
+            ownBefore: [],
+            leftovers: [],
+            attemptIds: ["rtb-test-r1-t0-e2b", "rtb-test-r1-t1-e2b"],
+          },
+          // Round 2 wrote one record, then a second write failed and the round threw.
+          {
+            kind: "failed",
+            provider: "e2b",
+            role: "burst",
+            round: 2,
+            reason: "round 2 failed before it finished: ENOSPC",
+          },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n") + "\n",
+      );
+
+      await writeFile(
+        join(dir, "attempts.jsonl"),
+        [
+          tagged(done({ round: 1, task: 0, wallS: 120 })),
+          tagged(done({ round: 1, task: 1, wallS: 130 })),
+          tagged(done({ round: 2, task: 0, wallS: 999 })),
+        ]
+          .map((r) => JSON.stringify(r))
+          .join("\n") + "\n",
+      );
+
+      const [e2b] = (await buildExport([dir], new Map([["e2b", 100]]))).providers;
+
+      expect(e2b).toMatchObject({
+        status: "ran",
+        attempts: 2,
+        medianWallS: 125,
+        slowdown: 1.25,
+        harnessFailures: [
+          {
+            role: "burst",
+            round: 2,
+            stage: "round",
+            reason: "round 2 failed before it finished: ENOSPC",
+          },
+        ],
+      });
+      expect(e2b?.tasks.map((t) => t.round)).toEqual([1, 1]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    // When the only burst round failed, the provider is not run, and the reason says why.
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: [{ round: 1, record: tagged(done({ round: 1, task: 0, wallS: 120 })) }],
+      rounds: [],
+      solo: { kind: "published", medianWallS: 100 },
+      failed: [{ role: "burst", round: 1, reason: "round 1 failed before it finished: ENOSPC" }],
+    });
+
+    expect(row).toMatchObject({
+      status: "not-run",
+      reason: "our side: round 1 failed before it finished: ENOSPC",
+      attempts: 0,
+    });
+  });
+});
+
+describe("claiming the output folder", () => {
+  it("lets only one of two runs that start together write there", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-claim-"));
+    const out = join(dir, "out");
+
+    const info = (id: string): Parameters<typeof claimOutput>[1] => ({
+      id,
+      sdkCommit: "abc1234",
+      startedAt: "2026-11-19T10:00:00.000Z",
+      endedAt: null,
+      location: "Boca Raton, FL (evo-1)",
+      size: 5,
+      rounds: 2,
+      track: "same-machine",
+      profile: "fix-and-test",
+      providers: ["e2b"],
+      budgetUSD: 10,
+      mode: "parallel",
+      control: false,
+    });
+
+    try {
+      const results = await Promise.allSettled([
+        claimOutput(out, info("first")),
+        claimOutput(out, info("second")),
+      ]);
+
+      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const winner = results[0]?.status === "fulfilled" ? "first" : "second";
+      const stored: unknown = JSON.parse(await readFile(join(out, "run.json"), "utf8"));
+
+      expect(stored).toMatchObject({ id: winner });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a provider not run before its first round", () => {
+  it("has every scheduled burst round recorded as skipped", () => {
+    const reason =
+      "Daytona's account allows 10 vCPU in total; 5 tasks x 4 vCPU = 20 vCPU does not fit";
+
+    expect(
+      notRunLines({
+        provider: "daytona",
+        schedule: roundSchedule({ rounds: 2, size: 5, control: true }),
+        reason,
+      }),
+    ).toEqual([
+      { kind: "skipped", provider: "daytona", role: "burst", round: 1, reason },
+      { kind: "skipped", provider: "daytona", role: "burst", round: 2, reason },
+      { kind: "not-run", provider: "daytona", reason },
+    ]);
   });
 });

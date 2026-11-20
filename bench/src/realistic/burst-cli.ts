@@ -129,6 +129,17 @@ const roundLineSchema = z.discriminatedUnion("kind", [
     round: z.number().int(),
     reason: z.string(),
   }),
+  /**
+   * A round that threw before it finished (a record write, the runner). Some of its records may be
+   * written; the export leaves them out of every count and publishes the reason.
+   */
+  z.object({
+    kind: z.literal("failed"),
+    provider: z.string(),
+    role: roundRoleSchema,
+    round: z.number().int(),
+    reason: z.string(),
+  }),
 ]);
 
 type RoundLine = z.infer<typeof roundLineSchema>;
@@ -232,7 +243,8 @@ const runArtifacts = [
 /**
  * Refuses an `--out` folder that already holds a run: attempts and rounds are appended while
  * run.json is replaced, so a second run there would mix with the first. Separate runs go in
- * separate folders and are merged with burst-summary.
+ * separate folders and are merged with burst-summary. This check fails fast, before artifacts are
+ * read; `claimOutput` is what settles a race between two runs.
  */
 export async function assertFreshOutput(out: string): Promise<void> {
   let names: string[];
@@ -250,6 +262,61 @@ export async function assertFreshOutput(out: string): Promise<void> {
     throw new Error(
       `${out} already holds a run (${present.join(", ")}); give each run its own --out folder and merge folders with burst-summary`,
     );
+}
+
+/**
+ * Claims `out` for one run by creating its run.json exclusively: of two runs that both passed
+ * `assertFreshOutput`, only one creates the file and the other stops before writing anything.
+ */
+export async function claimOutput(out: string, info: RunInfo): Promise<void> {
+  await mkdir(out, { recursive: true });
+
+  try {
+    await writeFile(join(out, "run.json"), JSON.stringify(info, null, 2) + "\n", { flag: "wx" });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST")
+      throw new Error(
+        `${out} already holds a run (run.json was created by another run); give each run its own --out folder`,
+      );
+    throw error;
+  }
+}
+
+/**
+ * The lines for a provider that runs none of its schedule: every scheduled burst round as skipped,
+ * then the reason it was not run.
+ */
+export function notRunLines({
+  provider,
+  schedule,
+  reason,
+}: {
+  provider: string;
+  schedule: readonly ScheduledRound[];
+  reason: string;
+}): RoundLineInput[] {
+  const clean = sanitize(reason);
+
+  return [
+    ...skippedLines({ provider, steps: schedule, reason: clean }),
+    { kind: "not-run", provider, reason: clean },
+  ];
+}
+
+function skippedLines({
+  provider,
+  steps,
+  reason,
+}: {
+  provider: string;
+  steps: readonly ScheduledRound[];
+  reason: string;
+}): RoundLineInput[] {
+  return steps.flatMap((step): RoundLineInput[] =>
+    step.role === "burst"
+      ? [{ kind: "skipped", provider, role: step.role, round: step.round, reason }]
+      : [],
+  );
 }
 
 /** Every artifact a profile's tasks read, by sha256, with a name for messages. */
@@ -319,8 +386,13 @@ export interface ProviderRounds {
   readonly name: string;
   readonly schedule: readonly ScheduledRound[];
   readonly guard: SpendGuard;
-  /** What one task reserves: list price through its longest billable lifetime. */
+  /** What one task reserves: list price through its billable lifetime. */
   readonly perTaskUSD: number;
+  /**
+   * The lifetime the provider enforces on each sandbox (the setup's `lifetime`); null when it
+   * enforces none, so a sandbox the cleanup could not resolve may bill without end.
+   */
+  readonly hardLifetimeMs: number | null;
   /** A task's list price for `ms` of its sandbox. */
   price(record: StoredRecord, ms: number): number;
   runRound(step: ScheduledRound, batch: number): Promise<RoundReport>;
@@ -333,31 +405,51 @@ export interface ProviderRounds {
 }
 
 /**
- * Runs a provider's schedule under the spend guard. A round reserves every task's longest billable
- * lifetime and settles to its estimate, keeping the share of any task whose sandbox is unresolved;
- * a round that throws keeps its whole reservation. Burst rounds that do not run are written as
- * skipped, and a provider whose first burst round never ran is not run, whatever control ran.
+ * Runs a provider's schedule under the spend guard. A round reserves every task's billable lifetime
+ * and settles to its estimate, keeping the share of any task whose sandbox is unresolved; a round
+ * that throws keeps its whole reservation and is marked failed. A round that leaves a sandbox
+ * unresolved on a provider with no hard lifetime stops the guard, so no further round starts on any
+ * provider. Burst rounds that do not run are written as skipped, and a provider whose first burst
+ * round never ran is not run, whatever control ran.
  */
 export async function runProviderRounds(run: ProviderRounds): Promise<void> {
   const { name, guard } = run;
   let burstRan = false;
 
   const skipRest = async (from: number, reason: string) => {
-    for (const step of run.schedule.slice(from))
-      if (step.role === "burst")
-        await run.writeRound({
-          kind: "skipped",
-          provider: name,
-          role: step.role,
-          round: step.round,
-          reason: sanitize(reason),
-        });
+    for (const line of skippedLines({
+      provider: name,
+      steps: run.schedule.slice(from),
+      reason: sanitize(reason),
+    }))
+      await run.writeRound(line);
+  };
+
+  /** A sandbox with no bound on its spend may still exist: nothing more may start. */
+  const unbounded = async (label: string) => {
+    if (run.hardLifetimeMs !== null) return;
+    const reason = `${name} ${label} may have left a sandbox running, and ${name} has no hard lifetime`;
+
+    guard.stop(reason);
+    await run.note({ kind: "budget-stop", provider: name, reason: sanitize(reason) });
   };
 
   for (const [index, step] of run.schedule.entries()) {
     const { role, round } = step;
     const label = role === "control" ? `control round ${round}` : `round ${round}`;
     const reserve = step.size * run.perTaskUSD;
+    const stopped = guard.stopped();
+
+    if (stopped !== null) {
+      const reason = `spend guard stopped: ${stopped}`;
+
+      await skipRest(index, reason);
+
+      if (!burstRan) await run.notRun(reason);
+      else run.say(`${name}: ${label} skipped: ${stopped}`);
+
+      return;
+    }
 
     // Other providers' rounds in flight may hold the reservation: wait for them to settle.
     let reserved = guard.reserve(reserve);
@@ -389,13 +481,18 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
     } catch (error) {
       // Its sandboxes may have run, and some may still exist: it keeps its whole reservation.
       guard.settle({ reservedUSD: reserve, spentUSD: reserve });
-      await run.note({
-        kind: "round-error",
+      const text = sanitize(error instanceof Error ? error.message : String(error));
+
+      await run.note({ kind: "round-error", provider: name, round, role, error: text });
+      // Some of its records may be written: the marker keeps them out of the published counts.
+      await run.writeRound({
+        kind: "failed",
         provider: name,
-        round,
         role,
-        error: sanitize(error instanceof Error ? error.message : String(error)),
+        round,
+        reason: `${label} failed before it finished: ${text}`,
       });
+      await unbounded(label);
       await skipRest(index + 1, `${label} failed before it finished`);
       run.say(`${name}: ${label} failed before its tasks finished; see notes`);
 
@@ -410,9 +507,12 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
         records: report.records,
         leftovers: report.leftovers,
         perTaskUSD: run.perTaskUSD,
+        hardLifetimeMs: run.hardLifetimeMs,
         price: run.price,
       }),
     });
+
+    if (report.unresolved.length) await unbounded(label);
 
     await run.writeRound({
       kind: "round",
@@ -559,7 +659,7 @@ export async function burstCommand(args: string[]) {
     control: values.control,
   };
 
-  await writeFile(join(out, "run.json"), JSON.stringify(info, null, 2) + "\n");
+  await claimOutput(out, info);
 
   const regions: Record<string, string | null> = {};
 
@@ -571,6 +671,14 @@ export async function burstCommand(args: string[]) {
     say(`${provider}: not run: ${reason}`);
   };
 
+  const schedule = roundSchedule({ rounds, size, control: values.control });
+
+  /** A provider stopped before any round: its whole schedule is skipped. */
+  const notRunAtAll = async (provider: string, reason: string) => {
+    for (const line of notRunLines({ provider, schedule, reason })) await writeRound(line);
+    say(`${provider}: not run: ${reason}`);
+  };
+
   const loaded: { setup: ProviderSetup; entry: SlotProvider }[] = [];
 
   for (const setup of setups) {
@@ -578,25 +686,28 @@ export async function burstCommand(args: string[]) {
     const refusal = accountRefusal({ provider: setup.name, size, vcpu: config.vcpu });
 
     if (refusal) {
-      await notRun(setup.name, refusal);
+      await notRunAtAll(setup.name, refusal);
       continue;
     }
 
     const tooSmall = config.tooSmall[profileName];
 
     if (tooSmall) {
-      await notRun(setup.name, tooSmall);
+      await notRunAtAll(setup.name, tooSmall);
       continue;
     }
 
     // Fix and test has no profile factory (only Baseten's build does), so the plain adapter runs it.
     const result = await loadSlotProvider(setup, track, slotMs, join(out, "usage"), out);
 
-    if (result.kind === "skipped") await notRun(setup.name, `adapter not loaded: ${result.note}`);
+    if (result.kind === "skipped")
+      await notRunAtAll(setup.name, `adapter not loaded: ${result.note}`);
     else loaded.push({ setup, entry: result.entry });
   }
 
-  const schedule = roundSchedule({ rounds, size, control: values.control });
+  // Every sandbox ID this run owns, per provider, live: the final sweep deletes these by ID even
+  // when a listing fails or an attempt record was never written.
+  const owned = new Map(loaded.map(({ setup }) => [setup.name, new Set<string>()]));
 
   try {
     await runPool({
@@ -604,7 +715,7 @@ export async function burstCommand(args: string[]) {
       parallel,
       account: ({ setup }) => setup.adapter,
       run: async ({ setup, entry }) => {
-        const created = new Set<string>();
+        const created = owned.get(setup.name) ?? new Set<string>();
         const provisioned = provisionedFor(setup, track, profileName);
 
         await runProviderRounds({
@@ -612,6 +723,7 @@ export async function burstCommand(args: string[]) {
           schedule,
           guard,
           perTaskUSD: attemptBudget(setup, track, billableLifetimeMs(slotMs), provisioned),
+          hardLifetimeMs: setup.lifetime ? billableLifetimeMs(slotMs) : null,
           price: (record, ms) =>
             attemptBudget(setup, track, ms, provisionedOf(setup, track, record) ?? provisioned),
           runRound: (step, batch) =>
@@ -644,14 +756,16 @@ export async function burstCommand(args: string[]) {
       },
     });
   } finally {
-    // Always: nothing this run made is left running, whatever stopped it. Bounded, so a stalled
-    // App lookup or listing cannot hold the process open; past the bound the run fails.
+    // Always: nothing this run made is left running, whatever stopped it. Each provider call is
+    // bounded inside the sweep, so one stalled call cannot keep later providers from being swept;
+    // the whole sweep is bounded too, and past it the run fails.
     const swept = await within(
       sweepProviders(
         runId,
         loaded.map((l) => l.entry),
         note,
         out,
+        { known: owned },
       ),
       sweepTimeoutMs,
     );
@@ -787,6 +901,10 @@ export async function buildExport(
       l.kind === "skipped" && l.role === "burst" ? [l.round] : [],
     );
 
+    const failed = found.lines.flatMap((l) =>
+      l.kind === "failed" ? [{ role: l.role, round: l.round, reason: l.reason }] : [],
+    );
+
     const placed = new Map<string, { role: RoundRole; round: number }>();
 
     for (const line of rounds)
@@ -809,6 +927,7 @@ export async function buildExport(
         tasks: tasks("burst"),
         rounds: burstRounds,
         skipped,
+        failed,
         solo: found.info.control
           ? { kind: "same-day", tasks: tasks("control") }
           : { kind: "published", medianWallS: solo.get(provider) ?? null },
