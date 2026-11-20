@@ -81,6 +81,17 @@ const credentials = new Map([
   ["baseten", ["BASETEN_API_KEY"]],
 ]);
 
+/**
+ * Every provider `loadProvider` builds: the cloud ones with a credential policy, the local Docker
+ * adapter, and the in-process ones. Each must have a connection fingerprint (connections.ts).
+ */
+export const providerNames: readonly string[] = [
+  ...credentials.keys(),
+  "local",
+  "memory",
+  "agentos",
+];
+
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
@@ -237,7 +248,7 @@ export async function loadProvider(
   // Before anything else: a conflicting region configuration refuses the run.
   const region = providerRegion(name, env);
 
-  if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
+  if (!providerNames.includes(name))
     return {
       kind: "skipped",
       name,

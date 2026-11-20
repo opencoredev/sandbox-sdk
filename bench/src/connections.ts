@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { request } from "node:http";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { FactoryOptions } from "./providers.js";
 import {
@@ -209,6 +210,58 @@ export function connectionOf<N extends Connected>(provider: Provider, name: N): 
 
   return config;
 }
+
+/** The part of Modal's SDK that resolves a connection; hand-typed from modal 0.11.1. */
+export interface ModalModule {
+  ModalClient: new (params: { tokenId?: string; tokenSecret?: string; environment?: string }) => {
+    readonly profile?: unknown;
+    close(): void;
+  };
+}
+
+const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
+
+/** Docker's `/info`: the daemon's ID, which stays the same across its restarts. */
+const dockerInfo = z.object({ ID: z.string().min(1) });
+
+/**
+ * The reads a connection fingerprint makes beyond the adapter's options and environment. Tests
+ * replace `loadModal`; `dockerDaemonId` is a plain read on the socket.
+ */
+export const connectionProbes = {
+  /** Modal's SDK from the SDK package's install, the module instance the adapter uses. */
+  loadModal: async (): Promise<ModalModule> => {
+    const module: ModalModule = await import(import.meta.resolve("modal", sdkPackage.href));
+
+    return module;
+  },
+  /** The ID of the Docker daemon answering on `socketPath`. Rejects on any failure. */
+  dockerDaemonId: (socketPath: string, timeoutMs: number) =>
+    new Promise<string>((resolve, reject) => {
+      const req = request({ socketPath, path: "/v1.44/info", method: "GET" }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("error", reject);
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`Docker /info answered ${res.statusCode ?? "no status"}`));
+
+            return;
+          }
+
+          try {
+            resolve(dockerInfo.parse(JSON.parse(Buffer.concat(chunks).toString())).ID);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+
+      req.setTimeout(timeoutMs, () => req.destroy(new Error("Docker /info timed out")));
+      req.on("error", reject);
+      req.end();
+    }),
+};
 
 /** The base URL as the adapters' HTTP clients join it with a path: trailing slashes dropped. */
 export function endpoint(baseUrl: string): string {
