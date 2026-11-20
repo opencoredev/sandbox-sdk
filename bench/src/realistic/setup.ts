@@ -4,7 +4,8 @@
  * - Same-machine sizes and templates are the bench's existing same-spec flags (collection-plan.sh):
  *   E2B and Superserve 4 vCPU / 8 GiB templates, Daytona's daytona-large, Upstash medium, boxd
  *   4 vCPU / 16 GiB (its 4 vCPU shape; non-compliant by the eligibility code), Luxor 4:8192, and
- *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle.
+ *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle. Luxor and Superserve get 20 GB disks
+ *   (2026-11-18): their 5 GB and 4 GiB disks left too little free space for the workloads.
  * - Default sizes and "default size too small" come from FIT.md (SBX-95, fetched 2026-11-05).
  * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve and Boat refuse it).
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
@@ -31,6 +32,16 @@ export interface TrackSetup {
   /** Worker count for the frozen commands: the size's vCPUs. */
   readonly vcpu: number;
   readonly provisioned: ProvisionedSize;
+  /**
+   * The disk attempts ran with before records named theirs (`diskGiB`), when this track's disk has
+   * changed since. Unset: older records ran with today's disk.
+   */
+  readonly unrecordedDiskGiB?: number;
+  /**
+   * Runs made before records named their disk that are known to have run with another disk, by run
+   * ID. Checked before `unrecordedDiskGiB`.
+   */
+  readonly unrecordedDiskGiBByRun?: ReadonlyMap<string, number>;
   /** Profiles the fit check found this size cannot complete, with FIT.md's reason. */
   readonly tooSmall: { readonly [profile: string]: string };
 }
@@ -54,6 +65,21 @@ export interface ProviderSetup {
 }
 
 const size = (cpu: number, memoryGiB: number, diskGiB: number) => ({ cpu, memoryGiB, diskGiB });
+
+/**
+ * Luxor and Superserve same-machine runs made with 20 GB disks before attempts recorded their disk:
+ * the 2026-11-18 disk reruns (49e053c, which df confirmed at 19.6 GiB) and the 2026-11-19 Real
+ * tasks at once runs (8fb5100). Both commits made the same change as this one.
+ */
+const luxorTwentyGbRuns = new Map([
+  ["rw-disk-smoke1", 20],
+  ["rw-disk-head1", 20],
+  ["rtb1119-main1", 20],
+  ["rtb1119-seq1", 20],
+]);
+
+/** As above, plus rw-disk-ss2, which ran Superserve only. */
+const superserveTwentyGbRuns = new Map([...luxorTwentyGbRuns, ["rw-disk-ss2", 20]]);
 
 const fit = {
   e2b: "FIT.md: 2 vCPU / 0.5 GiB is OOM-killed during install",
@@ -160,10 +186,15 @@ export const providerSetups: readonly ProviderSetup[] = [
     lifetime: true,
     pricingKey: "tenki",
     tracks: {
+      // 20 GB disk: at Luxor's 5 GB minimum the build stopped in preparation with 2.06 GiB free
+      // of the 4 GiB it needs (rw-head1, 2026-11-05). Other providers run with 10 to 100 GB.
       "same-machine": {
-        size: { cpu: 4, memoryMb: 8192 },
+        size: { cpu: 4, memoryMb: 8192, diskGb: 20 },
         vcpu: 4,
-        provisioned: size(4, 8, 5),
+        provisioned: size(4, 8, 20),
+        // Luxor's 5 GB minimum until 2026-11-18.
+        unrecordedDiskGiB: 5,
+        unrecordedDiskGiBByRun: luxorTwentyGbRuns,
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 3.8, 5), tooSmall: { build: fit.tenkiBuild } },
@@ -176,10 +207,15 @@ export const providerSetups: readonly ProviderSetup[] = [
     lifetime: false,
     pricingKey: "superserve",
     tracks: {
+      // Same recipe as sandbox-bench-node22-py311-4x8-pinned with a 20 GiB disk: at 4 GiB the build
+      // and fix-and-test stopped in preparation with 1.46 GiB free (rw-head1, 2026-11-05).
       "same-machine": {
-        template: "sandbox-bench-node22-py311-4x8-pinned",
+        template: "sandbox-bench-node22-py311-4x8-d20-pinned",
         vcpu: 4,
-        provisioned: size(4, 8, 4),
+        provisioned: size(4, 8, 20),
+        // sandbox-bench-node22-py311-4x8-pinned's 4 GiB until 2026-11-18.
+        unrecordedDiskGiB: 4,
+        unrecordedDiskGiBByRun: superserveTwentyGbRuns,
         tooSmall: {},
       },
       default: {
@@ -307,16 +343,30 @@ export function provisionedAtMost(setup: ProviderSetup, track: TrackId): Provisi
 }
 
 /**
- * The size a recorded attempt provisioned: its track's, plus the volume the record says it
- * mounted. A record without `volumeGiB` from a provider whose setup mounts volumes predates the
- * field, so whether it had one is unknown: null, which prices nothing rather than guessing.
+ * The size a recorded attempt provisioned: its track's CPU and memory, the disk the record says it
+ * ran with, plus the volume it says it mounted. A record without `diskGiB` predates that field and
+ * ran with the track's disk of its time (`unrecordedDiskGiB`). A record without `volumeGiB` from a
+ * provider whose setup mounts volumes predates that field, so whether it had one is unknown: null,
+ * which prices nothing rather than guessing.
  */
 export function provisionedOf(
   setup: ProviderSetup,
   track: TrackId,
-  record: { readonly volumeGiB?: number | undefined },
-) {
-  const base = setup.tracks[track].provisioned;
+  record: {
+    readonly runId?: string;
+    readonly diskGiB?: number | undefined;
+    readonly volumeGiB?: number | undefined;
+  },
+): ProvisionedSize | null {
+  const config = setup.tracks[track];
+
+  const byRun =
+    record.runId === undefined ? undefined : config.unrecordedDiskGiBByRun?.get(record.runId);
+
+  const base = {
+    ...config.provisioned,
+    diskGiB: record.diskGiB ?? byRun ?? config.unrecordedDiskGiB ?? config.provisioned.diskGiB,
+  };
 
   if (record.volumeGiB !== undefined) return { ...base, diskGiB: base.diskGiB + record.volumeGiB };
 

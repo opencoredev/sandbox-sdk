@@ -56,6 +56,8 @@ export interface AttemptPlan {
   workdir?: string;
   /** GiB of the volume the provider mounts for this attempt, recorded for pricing. */
   volumeGiB?: number;
+  /** GiB of the sandbox's own disk as the track's setup provisions it, recorded for pricing. */
+  diskGiB?: number;
   /** Worker count for this provider when its size differs from the track's (the default track). */
   vcpu?: number;
   /** Only the run label, for providers whose labels share a short name budget (Boat). */
@@ -420,6 +422,8 @@ export async function runAttempt(plan: AttemptPlan, environment: AttemptEnvironm
   };
 
   if (plan.volumeGiB !== undefined) record.volumeGiB = plan.volumeGiB;
+
+  if (plan.diskGiB !== undefined) record.diskGiB = plan.diskGiB;
 
   return { record, trace };
 }

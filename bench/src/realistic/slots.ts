@@ -57,6 +57,8 @@ export interface SlotProvider {
   workdir?: string;
   /** GiB of the volume this entry's adapter mounts on every sandbox (0: none), recorded on each attempt. */
   volumeGiB?: number;
+  /** GiB of the sandbox's own disk on this entry's track, recorded on each attempt. */
+  diskGiB?: number;
   /** Worker count on a track whose size differs per provider (the default track). */
   vcpuFor?(track: string): number | undefined;
   /** Label sandboxes with the run only (labels share a short name budget on Boat). */
@@ -324,6 +326,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
 
       if (entry.volumeGiB !== undefined) empty.volumeGiB = entry.volumeGiB;
 
+      if (entry.diskGiB !== undefined) empty.diskGiB = entry.diskGiB;
+
       return empty;
     };
 
@@ -431,6 +435,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
 
         if (entry.volumeGiB !== undefined) attemptPlan.volumeGiB = entry.volumeGiB;
 
+        if (entry.diskGiB !== undefined) attemptPlan.diskGiB = entry.diskGiB;
+
         if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
 
         if (entry.uploadConcurrency !== undefined)
@@ -452,6 +458,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         );
 
         const invokedAt = clock.now();
+        let attemptStartedAt = invokedAt;
 
         try {
           // Outside the attempt's spans, so its create timing excludes the App lookup, but bounded by
@@ -480,6 +487,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
             attemptPlan.labels = app.labels;
           }
 
+          // A failed attempt's fallback record starts here, after the App lookup, as its own record would.
+          attemptStartedAt = clock.now();
+
           const outcome = await within(
             attempt(attemptPlan, environment).then(({ record: done }) => done),
             Math.max(0, deadline + graceMs - clock.now()),
@@ -493,8 +503,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
               "The attempt did not return within the slot timeout plus its grace; abandoned",
             );
 
-            abandoned.startedAt = invokedAt;
-            abandoned.startOffsetMs = invokedAt - slotStartedAt;
+            abandoned.startedAt = attemptStartedAt;
+            abandoned.startOffsetMs = attemptStartedAt - slotStartedAt;
             abandoned.sandboxIds = created;
             // Deletion is unconfirmed: the reserved-gap cleanup must remove these IDs.
             abandoned.deletionConfirmed = created.length === 0;
@@ -507,6 +517,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
             error instanceof Error ? error.message : String(error),
           );
 
+          // The attempt ran from when it was invoked: a sandbox it made is priced from then, not for 0 s.
+          failed.startedAt = attemptStartedAt;
+          failed.startOffsetMs = attemptStartedAt - slotStartedAt;
           failed.sandboxIds = created;
           failed.deletionConfirmed = created.length === 0;
           records.set(entry.name, failed);
