@@ -16,9 +16,11 @@
  * code and any sandbox it named), and any failure on our side. Older records lack it.
  */
 import { SandboxError } from "@opencoredev/sandbox-sdk";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import type { AttemptApp } from "./apps.js";
 import { lifecycleOf } from "../cost/attempt-input.js";
+import { providerMember } from "../providers.js";
 import { runAttempt, SlotTimeout, type AttemptEnvironment, type AttemptPlan } from "./attempt.js";
 import type { Clock } from "./gaps.js";
 import type { HarnessManifest } from "./manifest.js";
@@ -39,11 +41,72 @@ export type RoundRole = z.infer<typeof roundRoleSchema>;
 export const createErrorSchema = z.object({
   /** The SDK error code; null when the create threw something other than a SandboxError. */
   code: z.string().nullable(),
-  /** The sandbox the error named: the provider allocated it, so this run owns it. */
+  /**
+   * The sandbox the error named, or the one the provider's create returned after the attempt had
+   * given up on it: the provider allocated it, so this run owns it.
+   */
   sandboxId: z.string().nullable(),
 });
 
 export type CreateError = z.infer<typeof createErrorSchema>;
+
+/** What the provider's own create answered, apart from what the SDK returned to the attempt. */
+export type CreateOutcome =
+  | { readonly kind: "created"; readonly id: string }
+  | { readonly kind: "failed"; readonly error: CreateError };
+
+/**
+ * The provider with its creates observed. After an abort the SDK returns `aborted` at once and
+ * drops what the provider answers later, such as Beam's half-create error naming the container it
+ * allocated. Every create here is followed to the end, so the round owns any sandbox it names.
+ */
+export interface WatchedCreates {
+  readonly provider: Provider;
+  /** What each create answered, in the order they settled. */
+  readonly outcomes: readonly CreateOutcome[];
+  /** Waits up to `ms` for every create to settle; false when one is still in flight. */
+  settle(ms: number): Promise<boolean>;
+}
+
+export function watchCreates(provider: Provider): WatchedCreates {
+  const outcomes: CreateOutcome[] = [];
+  const inflight = new Set<Promise<void>>();
+
+  const create: Provider["create"] = (input) => {
+    const pending = provider.create(input);
+
+    const settled: Promise<void> = pending
+      .then(
+        (info) => {
+          outcomes.push({ kind: "created", id: info.id });
+        },
+        (error) => {
+          outcomes.push({ kind: "failed", error: createErrorOf(error) });
+        },
+      )
+      .finally(() => inflight.delete(settled));
+
+    inflight.add(settled);
+
+    return pending;
+  };
+
+  // Every other member as the attempt's tracer sees it: bound to the adapter.
+  const watched = new Proxy(provider, {
+    get: (target, key) => (key === "create" ? create : providerMember(target, key)),
+  });
+
+  return {
+    provider: watched,
+    outcomes,
+    settle: async (ms) =>
+      inflight.size === 0 ||
+      (await within(
+        Promise.all(inflight).then(() => true),
+        Math.max(0, ms),
+      )) === true,
+  };
+}
 
 /**
  * A failure on our side, not the provider's: "setup" is the per-task setup before any create
@@ -111,9 +174,11 @@ export function allocationUnknown(record: StoredRecord): boolean {
 }
 
 /**
- * The longest a task's sandbox can bill: the slot timeout plus the 15 minutes past it that
- * `loadSlotProvider` sets as the hard lifetime. That margin also covers the abandon grace (150 s),
- * the attempt's own deletion (120 s) and the round's cleanup listings and deletions.
+ * A task's billable lifetime: the slot timeout plus the 15 minutes past it that `loadSlotProvider`
+ * sets as the hard lifetime where the adapter accepts one. That margin also covers the abandon
+ * grace (150 s), the attempt's own deletion (120 s) and the round's cleanup listings and deletions.
+ * A provider with no hard lifetime (Upstash, Superserve, Boat) is reserved the same, but nothing
+ * bounds a sandbox of it that the cleanup could not resolve (see `spendGuard`).
  */
 export function billableLifetimeMs(slotTimeoutMs: number): number {
   return slotTimeoutMs + 15 * 60_000;
@@ -152,22 +217,36 @@ export type TaskEnd =
   /** A sandbox of it may still exist: a deletion nothing confirmed, or a create with no ID. */
   | { readonly kind: "unresolved" };
 
+/**
+ * The round's cleanup is newer than the attempt's own deletion: a sandbox the cleanup touched
+ * (still listed after the round, or never confirmed deleted) ends as the cleanup found it, even when
+ * its attempt confirmed the deletion. Only a sandbox the cleanup never touched keeps the attempt's
+ * confirmation.
+ */
 export function taskEnd(record: StoredRecord, leftovers: readonly Leftover[]): TaskEnd {
   if (allocationUnknown(record)) return { kind: "unresolved" };
+  let recoveredAt: number | null = null;
+
+  for (const id of record.sandboxIds) {
+    const leftover = leftovers.find((l) => l.id === id);
+
+    if (!leftover) {
+      if (record.deletionConfirmed) continue;
+
+      return { kind: "unresolved" };
+    }
+
+    if (!leftover.destroyed || !leftover.goneAfter || leftover.confirmedAt === null)
+      return { kind: "unresolved" };
+    recoveredAt = Math.max(recoveredAt ?? record.endedAt, leftover.confirmedAt);
+  }
+
+  if (recoveredAt !== null) return { kind: "recovered", at: recoveredAt };
 
   if (record.deletionConfirmed)
     return { kind: "confirmed", at: lifecycleOf(record).deletedAt ?? record.endedAt };
 
-  const times = record.sandboxIds.map(
-    (id) => leftovers.find((l) => l.id === id && l.destroyed && l.goneAfter)?.confirmedAt ?? null,
-  );
-
-  const at = times.reduce<number | null>(
-    (latest, time) => (latest === null || time === null ? null : Math.max(latest, time)),
-    record.endedAt,
-  );
-
-  return times.length === 0 || at === null ? { kind: "unresolved" } : { kind: "recovered", at };
+  return { kind: "unresolved" };
 }
 
 export interface RoundReport {
@@ -183,7 +262,7 @@ export interface RoundReport {
    * confirmed a recovered one. null while any task's sandbox is unresolved.
    */
   readonly allDoneAt: number | null;
-  /** Tasks whose create the provider admitted: not refused by an account limit, not failed on our side. */
+  /** Tasks the provider allocated a sandbox for (`isAdmitted`). */
   readonly admitted: number;
   /** Attempt IDs whose sandbox may still exist after the cleanup. */
   readonly unresolved: readonly string[];
@@ -360,15 +439,16 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
   }
 
   /**
-   * Tag the record. A sandbox its create error named is this run's: it joins the record's IDs with
-   * its deletion unconfirmed, so the cleanup and the final sweep delete it by ID. A create that
-   * threw with no ID, other than a refusal, leaves the deletion unconfirmed too.
+   * Tag the record. A sandbox the task owns that its record does not list (one its create error
+   * named, or one the provider's create returned after the attempt gave up on it) joins the record's
+   * IDs with its deletion unconfirmed, so the cleanup and the final sweep delete it by ID. A create
+   * that threw with no ID, other than a refusal, leaves the deletion unconfirmed too.
    */
-  const tag = (record: AttemptRecord, seen: Seen): BurstRecord => {
-    const owned = seen.createError?.sandboxId ?? null;
+  const tag = (record: AttemptRecord, seen: Seen, owned: readonly string[]): BurstRecord => {
+    const missing = owned.filter((id) => !record.sandboxIds.includes(id));
 
-    if (owned !== null && !record.sandboxIds.includes(owned)) {
-      record.sandboxIds = [...record.sandboxIds, owned];
+    if (missing.length) {
+      record.sandboxIds = [...record.sandboxIds, ...missing];
       record.deletionConfirmed = false;
     }
 
@@ -450,16 +530,46 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
       if (prepared?.error) {
         seen.harness = { stage: "setup", detail: prepared.error };
 
-        return tag(failed(task, startedAt, prepared.error, []), seen);
+        return tag(failed(task, startedAt, prepared.error, []), seen, []);
       }
 
       const app = prepared?.app ?? null;
       const controller = new AbortController();
       const ids: string[] = [];
+      const creates = watchCreates(entry.provider);
 
       const own = (id: string) => {
         if (!ids.includes(id)) ids.push(id);
         plan.created.add(id);
+      };
+
+      /**
+       * After the attempt: wait (to the task's bound) for a create the SDK stopped waiting on, own
+       * any sandbox it names and journal it, and replace the SDK's `aborted` with the provider's own
+       * answer. A create still in flight at the bound leaves the allocation unknown.
+       */
+      const settleCreates = async () => {
+        await creates.settle(deadline + graceMs - clock.now());
+        const late: string[] = [];
+
+        for (const outcome of creates.outcomes) {
+          const id = outcome.kind === "created" ? outcome.id : outcome.error.sandboxId;
+
+          if (id !== null && !ids.includes(id)) {
+            own(id);
+            late.push(id);
+          }
+        }
+
+        const error = seen.createError;
+        const answer = creates.outcomes.at(-1);
+
+        if (error !== null && error.sandboxId === null && answer)
+          seen.createError =
+            answer.kind === "created" ? { code: error.code, sandboxId: answer.id } : answer.error;
+
+        // Journal writes, as for a failed create: one failing must not skip another.
+        await Promise.allSettled(late.flatMap((id) => [app?.created(id), plan.onSandbox?.(id)]));
       };
 
       const environment: AttemptEnvironment = {
@@ -507,7 +617,7 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
 
       const attemptPlan: AttemptPlan = {
         ...base(task, startedAt),
-        provider: { name: entry.name, provider: entry.provider },
+        provider: { name: entry.name, provider: creates.provider },
       };
 
       if (entry.create) attemptPlan.create = entry.create(plan.track);
@@ -539,7 +649,13 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
           Math.max(0, deadline + graceMs - clock.now()),
         );
 
-        if (outcome) return tag(outcome, seen);
+        if (outcome) {
+          await settleCreates();
+
+          return tag(outcome, seen, ids);
+        }
+
+        await settleCreates();
 
         const abandoned = failed(
           task,
@@ -556,15 +672,16 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
         abandoned.startedAt = invokedAt;
         abandoned.startOffsetMs = invokedAt - startedAt;
 
-        return tag(abandoned, seen);
+        return tag(abandoned, seen, ids);
       } catch (error) {
         // runAttempt records every provider failure itself; one that throws is a harness bug.
         seen.harness ??= {
           stage: "runner",
           detail: `Our side: the attempt runner threw: ${message(error)}`,
         };
+        await settleCreates();
 
-        return tag(failed(task, startedAt, message(error), ids), seen);
+        return tag(failed(task, startedAt, message(error), ids), seen, ids);
       } finally {
         clearTimeout(abort);
       }
@@ -649,7 +766,7 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
     size: plan.size,
     startedAt,
     allDoneAt,
-    admitted: records.filter((r) => r.burst.harness === null && !isAccountLimit(r)).length,
+    admitted: records.filter(isAdmitted).length,
     unresolved,
     before,
     after,
@@ -702,6 +819,16 @@ export function isAccountLimit(record: StoredRecord): boolean {
   const error = record.burst.createError;
 
   return error !== null && error.code === "quota" && error.sandboxId === null;
+}
+
+/**
+ * The provider allocated the task a sandbox: its record names one, and it did not fail on our side.
+ * A create refused for any reason (an account limit, auth, a bad argument) or one whose outcome is
+ * unknown allocated nothing that can be shown, so it is not admitted; a refusal other than an
+ * account limit still counts as a failed attempt.
+ */
+export function isAdmitted(record: StoredRecord): boolean {
+  return harnessFailureOf(record) === null && record.sandboxIds.length > 0;
 }
 
 /** The task failed on our side; it is not a provider attempt. Older records never say so. */
@@ -828,11 +955,21 @@ export interface SoloRun {
   readonly attempts: number;
 }
 
-/** A task that failed on our side, published apart from the provider's attempts. */
+/**
+ * A task that failed on our side, published apart from the provider's attempts; or, with stage
+ * "round", a whole round that threw before it finished, whose tasks are left out of every count.
+ */
 export interface HarnessTask {
   readonly role: RoundRole;
   readonly round: number;
-  readonly stage: HarnessFailure["stage"];
+  readonly stage: HarnessFailure["stage"] | "round";
+  readonly reason: string;
+}
+
+/** A round that threw before it finished (a record write, the runner): rounds.jsonl marks it. */
+export interface FailedRound {
+  readonly role: RoundRole;
+  readonly round: number;
   readonly reason: string;
 }
 
@@ -840,7 +977,7 @@ export interface HarnessTask {
 export interface BurstRound {
   readonly round: number;
   readonly size: number;
-  /** Tasks the provider admitted: not refused by an account limit, not failed on our side. */
+  /** Tasks the provider allocated a sandbox for (`isAdmitted`). */
   readonly admitted: number;
   /** Seconds from the release until the last task's sandbox was gone; null when unresolved. */
   readonly allDoneS: number | null;
@@ -867,7 +1004,7 @@ export type ProviderBurst = {
   readonly burstRounds: readonly BurstRound[];
   /** Burst rounds the run skipped (the spend ceiling, an earlier round's failure). */
   readonly skippedBurstRounds: readonly number[];
-  /** Tasks, burst or control, that failed on our side: in no count above. */
+  /** Tasks, burst or control, and whole rounds, that failed on our side: in no count above. */
   readonly harnessFailures: readonly HarnessTask[];
   /** The same-day control tasks; null when the baseline is the published solo median. */
   readonly solo: SoloRun | null;
@@ -875,11 +1012,15 @@ export type ProviderBurst = {
   readonly soloMedianWallS: number | null;
   /** Median upload time of the completed control tasks; null with the published baseline. */
   readonly soloMedianUploadS: number | null;
-  /** medianWallS / soloMedianWallS; null when withheld. */
+  /**
+   * The median wall time of the completed tasks in burst rounds that had every task admitted, over
+   * soloMedianWallS; null when withheld. A partly admitted round did not run at the requested
+   * concurrency, so its tasks are left out (medianWallS keeps them).
+   */
   readonly slowdown: number | null;
   /**
    * The same ratio with each task's upload taken out of its wall time: the median of
-   * (wall - upload) under concurrency over the same median for the control tasks.
+   * (wall - upload) over the same fully admitted rounds, over the same median for the control tasks.
    */
   readonly slowdownWithoutUpload: number | null;
   /** Why both slowdowns are withheld: no burst round ran at the requested size. */
@@ -897,9 +1038,6 @@ export interface RoundTiming {
 
 const ratio = (top: number | null, bottom: number | null) =>
   top !== null && bottom !== null && bottom > 0 ? Math.round((top / bottom) * 1000) / 1000 : null;
-
-const admittedTask = (record: StoredRecord) =>
-  harnessFailureOf(record) === null && !isAccountLimit(record);
 
 /**
  * Tasks as published, in round and slot order, and the medians over the ones that ran and passed.
@@ -947,11 +1085,12 @@ function tally(tasks: readonly RoundTask[], redact?: (text: string) => string) {
  */
 export function summarizeProvider({
   provider,
-  tasks,
+  tasks: allTasks,
   rounds,
-  solo,
+  solo: givenSolo,
   notRun,
   skipped = [],
+  failed = [],
   redact = (text) => text,
 }: {
   provider: string;
@@ -961,10 +1100,23 @@ export function summarizeProvider({
   notRun?: string;
   /** Burst rounds the run skipped. */
   skipped?: readonly number[];
+  /** Rounds, burst or control, that threw before they finished: their tasks are left out. */
+  failed?: readonly FailedRound[];
   redact?: (text: string) => string;
 }): ProviderBurst {
-  const burst = tally(tasks, redact);
   const short = (text: string) => redact(text).replace(/\s+/g, " ").slice(0, 300);
+
+  const kept = (role: RoundRole, list: readonly RoundTask[]) =>
+    list.filter((t) => !failed.some((f) => f.role === role && f.round === t.round));
+
+  const tasks = kept("burst", allTasks);
+
+  const solo: SoloBaseline =
+    givenSolo.kind === "same-day"
+      ? { kind: "same-day", tasks: kept("control", givenSolo.tasks) }
+      : givenSolo;
+
+  const burst = tally(tasks, redact);
 
   const burstRounds = [...rounds]
     .sort((a, b) => a.round - b.round)
@@ -972,7 +1124,7 @@ export function summarizeProvider({
       (r): BurstRound => ({
         round: r.round,
         size: r.size,
-        admitted: tasks.filter((t) => t.round === r.round && admittedTask(t.record)).length,
+        admitted: tasks.filter((t) => t.round === r.round && isAdmitted(t.record)).length,
         allDoneS: r.allDoneAt === null ? null : Math.round(r.allDoneAt - r.startedAt) / 1000,
       }),
     );
@@ -1018,14 +1170,29 @@ export function summarizeProvider({
   const harnessFailures: HarnessTask[] = [
     ...baseline.harness.map(({ round, failure }) => ({ role: "control" as const, round, failure })),
     ...burst.harness.map(({ round, failure }) => ({ role: "burst" as const, round, failure })),
-  ].map(({ role, round, failure }) => ({
-    role,
-    round,
-    stage: failure.stage,
-    reason: short(failure.detail),
-  }));
+  ]
+    .map(
+      ({ role, round, failure }): HarnessTask => ({
+        role,
+        round,
+        stage: failure.stage,
+        reason: short(failure.detail),
+      }),
+    )
+    .concat(
+      [...failed]
+        .sort((a, b) => a.round - b.round || a.role.localeCompare(b.role))
+        .map((f) => ({ role: f.role, round: f.round, stage: "round", reason: short(f.reason) })),
+    );
 
-  const full = burstRounds.some((r) => r.admitted >= r.size);
+  // The slowdown compares runs at the requested concurrency: only fully admitted rounds count.
+  const fullRounds = new Set(burstRounds.filter((r) => r.admitted >= r.size).map((r) => r.round));
+  const full = fullRounds.size > 0;
+
+  const atSize = tally(
+    tasks.filter((t) => fullRounds.has(t.round)),
+    redact,
+  );
 
   const slowdownWithheld = full
     ? null
@@ -1047,13 +1214,15 @@ export function summarizeProvider({
     solo: baseline.solo,
     soloMedianWallS: baseline.soloMedianWallS,
     soloMedianUploadS: baseline.soloMedianUploadS,
-    slowdown: full ? ratio(burst.medianWallS, baseline.soloMedianWallS) : null,
-    slowdownWithoutUpload: full ? ratio(burst.medianWithoutUploadS, baseline.withoutUploadS) : null,
+    slowdown: full ? ratio(atSize.medianWallS, baseline.soloMedianWallS) : null,
+    slowdownWithoutUpload: full
+      ? ratio(atSize.medianWithoutUploadS, baseline.withoutUploadS)
+      : null,
     slowdownWithheld,
   };
 
   const refused = burst.results.find((t) => t.failure?.stage === "account-limit")?.failure?.reason;
-  const ours = burst.harness[0]?.failure.detail;
+  const ours = failed.find((f) => f.role === "burst")?.reason ?? burst.harness[0]?.failure.detail;
 
   const reason =
     notRun ??
@@ -1072,32 +1241,38 @@ export function summarizeProvider({
 
 /**
  * A round's spend at list price, for the spend guard. `price` is a task's list price for `ms` of
- * its sandbox; `perTaskUSD` is what one task reserved (its longest billable lifetime). A task whose
- * sandbox is unresolved after the cleanup may bill to that lifetime, so it keeps its whole
- * reservation; a recovered one is charged until the listing that confirmed it gone.
+ * its sandbox; `perTaskUSD` is what one task reserved. A task whose sandbox is unresolved after the
+ * cleanup keeps at least its whole reservation; a recovered one is charged until the listing that
+ * confirmed it gone. Where the provider enforces a hard lifetime (`hardLifetimeMs`), no sandbox can
+ * bill past it, so every elapsed time is capped there; without one, nothing caps it.
  */
 export function roundSpend({
   records,
   leftovers,
   perTaskUSD,
+  hardLifetimeMs,
   price,
 }: {
   records: readonly StoredRecord[];
   leftovers: readonly Leftover[];
   perTaskUSD: number;
+  /** The lifetime the provider enforces on each sandbox; null when it enforces none. */
+  hardLifetimeMs: number | null;
   price: (record: StoredRecord, ms: number) => number;
 }): number {
+  const billed = (ms: number) => (hardLifetimeMs === null ? ms : Math.min(ms, hardLifetimeMs));
+
   return records.reduce((sum, record) => {
     const end = taskEnd(record, leftovers);
     const ran = record.endedAt - record.startedAt;
 
     switch (end.kind) {
       case "unresolved":
-        return sum + Math.max(perTaskUSD, price(record, ran));
+        return sum + Math.max(perTaskUSD, price(record, billed(ran)));
       case "recovered":
-        return sum + price(record, Math.max(ran, end.at - record.startedAt));
+        return sum + price(record, billed(Math.max(ran, end.at - record.startedAt)));
       case "confirmed":
-        return sum + (record.sandboxIds.length ? price(record, ran) : 0);
+        return sum + (record.sandboxIds.length ? price(record, billed(ran)) : 0);
       default: {
         const _exhaustive: never = end;
 
@@ -1202,28 +1377,36 @@ export async function runPool<T>({
 }
 
 /**
- * The run's spend ceiling at list price. A round reserves its worst case (every task to the slot
- * timeout) before it starts and settles to its estimate when it ends; a round that would cross the
- * ceiling is refused.
+ * The run's spend ceiling at list price. A round reserves its worst case (every task through its
+ * billable lifetime) before it starts and settles to its estimate when it ends; a round that would
+ * cross the ceiling is refused. A sandbox left unresolved on a provider with no hard lifetime can
+ * bill without end, so it stops the guard: no round is admitted after it, on any provider.
  */
 export function spendGuard(capUSD: number) {
   if (!Number.isFinite(capUSD) || capUSD <= 0)
     throw new Error(`The spend ceiling must be a positive number of dollars, got ${capUSD}`);
   let spent = 0;
   let reserved = 0;
+  let stopped: string | null = null;
 
   return {
     /** Reserves `usd` and returns true, or returns false when it would cross the ceiling. */
     reserve(usd: number): boolean {
-      if (spent + reserved + usd > capUSD) return false;
+      if (stopped !== null || spent + reserved + usd > capUSD) return false;
       reserved += usd;
 
       return true;
     },
     /** Whether `usd` could ever be reserved: true while only other rounds' reservations are in the way. */
     couldFit(usd: number): boolean {
-      return spent + usd <= capUSD;
+      return stopped === null && spent + usd <= capUSD;
     },
+    /** Admits no more rounds: an allocation with no bound on its spend is unresolved. */
+    stop(reason: string) {
+      stopped ??= reason;
+    },
+    /** Why the guard admits no more rounds, or null. */
+    stopped: () => stopped,
     settle({ reservedUSD, spentUSD }: { reservedUSD: number; spentUSD: number }) {
       reserved = Math.max(0, reserved - reservedUSD);
       spent += spentUSD;

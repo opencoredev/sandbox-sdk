@@ -635,13 +635,45 @@ async function unconfirmed(out: string, runId: string, provider: string) {
   );
 }
 
+/** How long one provider call in a sweep may take before it counts as failed. */
+const sweepCallTimeoutMs = 120_000;
+
+/** Resolves with the call's value, or rejects once `ms` passes. */
+async function bounded<T>(what: string, work: () => Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Deletes this run's sandboxes on each provider. Discovery (the run's listing, Modal's pending
+ * restores, sleeping machines) and deletion by known ID are separate: a failed listing still
+ * deletes every ID the run knows, from its attempt records and from `known` (the live ownership
+ * sets, which hold IDs whose record was never written). Every provider call is bounded, so one
+ * stalled call fails its provider and the next provider is still swept.
+ */
 export async function sweepProviders(
   runId: string,
   providers: readonly SlotProvider[],
   note: (entry: RunNote) => Promise<void>,
   journalDir: string,
+  options: {
+    /** Sandbox IDs this run owns, by provider name (the SlotProvider's `name`). */
+    readonly known?: ReadonlyMap<string, ReadonlySet<string>>;
+    /** Bound on each provider call. Default 120 s. */
+    readonly callTimeoutMs?: number;
+  } = {},
 ): Promise<SweepResult> {
-  const seen = new Set<Provider>();
+  const callTimeoutMs = options.callTimeoutMs ?? sweepCallTimeoutMs;
   let unchecked = 0;
   let failed = 0;
   let undeleted = 0;
@@ -649,88 +681,113 @@ export async function sweepProviders(
   const apps = await readAppJournal(journal);
   const changed = new Set<(typeof apps)[number]>();
 
-  for (const entry of providers) {
-    if (seen.has(entry.provider)) continue;
-    seen.add(entry.provider);
+  // Entries that share one adapter instance are swept together: one discovery, every name's IDs.
+  const groups = new Map<Provider, SlotProvider[]>();
+
+  for (const entry of providers)
+    groups.set(entry.provider, [...(groups.get(entry.provider) ?? []), entry]);
+
+  for (const [provider, entries] of groups) {
+    const name = entries.map((e) => e.name).join("+");
+    let broken = false;
+
+    const fail = async (stage: string, error: string) => {
+      broken = true;
+      await note({ kind: "sweep-failed", provider: name, stage, error }).catch(() => {});
+    };
+
+    const remove = async (id: string) => {
+      const removed = await bounded(`destroy ${id}`, () => provider.destroy(id), callTimeoutMs)
+        .then(() => true)
+        .catch(() => false);
+
+      // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
+      // leaves its cost provisional, the safe side, and never stops the sweep.
+      if (!removed) undeleted++;
+      else
+        await recordStop({
+          path: join(journalDir, stopJournalFile),
+          provider: provider.name,
+          sandboxId: id,
+        }).catch(() => {});
+
+      await note({ kind: "leftover", provider: name, id, removed }).catch(() => {});
+    };
+
+    let left: { id: string }[] | null = null;
 
     try {
-      // Modal lists only the Apps this process knows: prepare every journaled one first.
-      await prepareJournaledApps(entry.provider, apps);
+      left = await bounded(
+        `${name} discovery`,
+        async () => {
+          // Modal lists only the Apps this process knows: prepare every journaled one first.
+          await prepareJournaledApps(provider, apps);
 
-      // Restores whose setup never finished stay tagged pending and out of list() (Modal).
-      const left = [
-        ...(await entry.provider.list({ "sandbox-bench-run": runId })),
-        ...(await pendingForRun(entry.provider, runId)),
-      ];
+          // Restores whose setup never finished stay tagged pending and out of list() (Modal).
+          const found = [
+            ...(await provider.list({ "sandbox-bench-run": runId })),
+            ...(await pendingForRun(provider, runId)),
+          ];
 
-      for (const item of new Map(left.map((found) => [found.id, found])).values()) {
-        // A sandbox whose create response was lost joins its App's journal entry.
-        for (const app of apps)
-          if (reconcileDiscovered([app], entry.provider.name, item)) changed.add(app);
+          // A sandbox whose create response was lost joins its App's journal entry.
+          for (const item of found)
+            for (const app of apps)
+              if (reconcileDiscovered([app], provider.name, item)) changed.add(app);
 
-        const removed = await entry.provider
-          .destroy(item.id)
-          .then(() => true)
-          .catch(() => false);
+          return found;
+        },
+        callTimeoutMs,
+      );
+    } catch (error) {
+      await fail("list", error instanceof Error ? error.message : String(error));
+    }
 
-        // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
-        // leaves its cost provisional, the safe side, and never stops the sweep.
-        if (!removed) undeleted++;
-        else
-          await recordStop({
-            path: join(journalDir, stopJournalFile),
-            provider: entry.provider.name,
-            sandboxId: item.id,
-          }).catch(() => {});
+    const listed = new Set((left ?? []).map((x) => x.id));
 
-        await note({ kind: "leftover", provider: entry.name, id: item.id, removed });
+    for (const id of listed) await remove(id);
+
+    // IDs the run knows that discovery did not show (or could not, when it failed): an attempt
+    // whose deletion was never confirmed may have left something list() no longer shows (Baseten
+    // lists no deleted sandbox, but a volume that failed to delete outlives it), and a live set
+    // holds IDs whose record was never written. Destroy treats an absent sandbox as done.
+    const known = new Set<string>();
+
+    for (const entry of entries) {
+      for (const id of options.known?.get(entry.name) ?? []) known.add(id);
+
+      try {
+        for (const id of await unconfirmed(journalDir, runId, entry.name)) known.add(id);
+      } catch (error) {
+        await fail("attempt records", error instanceof Error ? error.message : String(error));
       }
+    }
 
-      // An attempt whose deletion was never confirmed may have left something list() no longer
-      // shows: Baseten lists no deleted sandbox, but a volume that failed to delete outlives it.
-      // Destroy those IDs again; destroy treats an absent sandbox as done and retries the rest.
-      const listed = new Set(left.map((x) => x.id));
+    for (const id of known) if (!listed.has(id)) await remove(id);
 
-      for (const id of await unconfirmed(journalDir, runId, entry.name))
-        if (!listed.has(id)) {
-          const removed = await entry.provider
-            .destroy(id)
-            .then(() => true)
-            .catch(() => false);
-
-          // As for a listed leftover: billing settles a Modal sandbox only after its confirmed stop.
-          if (!removed) undeleted++;
-          else
-            await recordStop({
-              path: join(journalDir, stopJournalFile),
-              provider: entry.provider.name,
-              sandboxId: id,
-            }).catch(() => {});
-
-          await note({ kind: "leftover", provider: entry.name, id, removed });
-        }
-
-      // A sleeping machine (boxd) is out of list() and can't be checked without waking it.
-      const asleep = await sleepingUnchecked(entry.provider);
+    // A sleeping machine (boxd) is out of list() and can't be checked without waking it.
+    try {
+      const asleep = await bounded(
+        `${name} sleeping listing`,
+        () => sleepingUnchecked(provider),
+        callTimeoutMs,
+      );
 
       for (const id of asleep)
-        await note({ kind: "leftover-unchecked", provider: entry.name, id, reason: "sleeping" });
+        await note({ kind: "leftover-unchecked", provider: name, id, reason: "sleeping" });
       unchecked += asleep.length;
 
-      await note({
-        kind: "swept",
-        provider: entry.name,
-        found: new Set(left.map((x) => x.id)).size,
-        sleepingUnchecked: asleep.length,
-      });
+      if (!broken)
+        await note({
+          kind: "swept",
+          provider: name,
+          found: listed.size,
+          sleepingUnchecked: asleep.length,
+        });
     } catch (error) {
-      failed++;
-      await note({
-        kind: "sweep-failed",
-        provider: entry.name,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await fail("sleeping", error instanceof Error ? error.message : String(error));
     }
+
+    if (broken) failed++;
   }
 
   for (const app of changed) await persistApp(journal, app);
