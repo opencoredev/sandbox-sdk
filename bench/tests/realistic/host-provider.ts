@@ -90,6 +90,9 @@ export async function hostProvider(): Promise<HostProvider> {
     child.stderr?.on("data", (data: Buffer) =>
       input.onChunk({ stream: "stderr", text: outward(m, data.toString("utf8")) }),
     );
+    // A command that exits without reading its stdin closes the pipe first: the write fails with
+    // EPIPE, which says nothing the exit status does not, so it must not surface as uncaught.
+    child.stdin?.on("error", () => {});
     child.stdin?.end(input.stdin ?? "");
 
     return child;
