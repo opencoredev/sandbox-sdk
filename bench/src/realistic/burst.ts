@@ -68,7 +68,18 @@ export interface WatchedCreates {
   settle(ms: number): Promise<boolean>;
 }
 
-export function watchCreates(provider: Provider): WatchedCreates {
+export function watchCreates(
+  provider: Provider,
+  hooks: {
+    /**
+     * Called as each create settles with the sandbox it names, however late: the run owns it from
+     * then on, even after the task stopped waiting. Its failures are swallowed.
+     */
+    readonly owned?: (id: string) => Promise<void>;
+    /** Every create still in flight, shared with the final sweep so it can wait for them. */
+    readonly open?: Set<Promise<void>> | undefined;
+  } = {},
+): WatchedCreates {
   const outcomes: CreateOutcome[] = [];
   const inflight = new Set<Promise<void>>();
 
@@ -79,14 +90,26 @@ export function watchCreates(provider: Provider): WatchedCreates {
       .then(
         (info) => {
           outcomes.push({ kind: "created", id: info.id });
+
+          return info.id;
         },
         (error) => {
-          outcomes.push({ kind: "failed", error: createErrorOf(error) });
+          const outcome = createErrorOf(error);
+          outcomes.push({ kind: "failed", error: outcome });
+
+          return outcome.sandboxId;
         },
       )
-      .finally(() => inflight.delete(settled));
+      .then(async (id) => {
+        if (id !== null) await hooks.owned?.(id).catch(() => {});
+      })
+      .finally(() => {
+        inflight.delete(settled);
+        hooks.open?.delete(settled);
+      });
 
     inflight.add(settled);
+    hooks.open?.add(settled);
 
     return pending;
   };
@@ -161,6 +184,24 @@ const refusalCodes: ReadonlySet<string> = new Set([
   "not_found",
 ]);
 
+/**
+ * Providers whose refusals do not prove nothing was allocated. Modal's client allocates a sandbox
+ * and then waits for it to be scheduled, so even a quota or permission error can follow an
+ * allocation it does not name (`failedAllocation` in modal-apps.ts keeps every such create
+ * ambiguous for billing too).
+ */
+const allocateBeforeRefusal: ReadonlySet<string> = new Set(["modal"]);
+
+/** A create the provider refused before allocating anything, by its code; never for Modal. */
+function refusedUnallocated(provider: string, error: CreateError): boolean {
+  return (
+    error.sandboxId === null &&
+    error.code !== null &&
+    refusalCodes.has(error.code) &&
+    !allocateBeforeRefusal.has(provider)
+  );
+}
+
 /** The create threw without naming a sandbox, and not as a refusal: a sandbox may exist unnamed. */
 export function allocationUnknown(record: StoredRecord): boolean {
   const error = record.burst?.createError;
@@ -169,7 +210,7 @@ export function allocationUnknown(record: StoredRecord): boolean {
     error !== null &&
     error !== undefined &&
     error.sandboxId === null &&
-    (error.code === null || !refusalCodes.has(error.code))
+    !refusedUnallocated(record.provider, error)
   );
 }
 
@@ -295,8 +336,13 @@ export interface RoundPlan {
   readonly blobs: BlobStore;
   readonly prepare: PrepareSettings;
   readonly outputDir?: string;
-  /** Every sandbox ID this run created on this provider so far; this round adds to it. */
+  /**
+   * Every sandbox ID this run created on this provider so far; this round adds to it, including a
+   * sandbox a create names after its task stopped waiting.
+   */
   readonly created: Set<string>;
+  /** Creates still in flight, shared across rounds so the final sweep can wait for them. */
+  readonly openCreates?: Set<Promise<void>>;
   readonly listTimeoutMs?: number;
   /** How long the cleanup waits for each deletion. Default 120 s, as an attempt's own. */
   readonly destroyTimeoutMs?: number;
@@ -480,6 +526,8 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
 
     if (entry.volumeGiB !== undefined) record.volumeGiB = entry.volumeGiB;
 
+    if (entry.diskGiB !== undefined) record.diskGiB = entry.diskGiB;
+
     return record;
   };
 
@@ -536,26 +584,49 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
       const app = prepared?.app ?? null;
       const controller = new AbortController();
       const ids: string[] = [];
-      const creates = watchCreates(entry.provider);
+      /** IDs whose creation is written down (the App journal and the run's notes). */
+      const journaled = new Set<string>();
+      /** Set once the task stopped waiting on its creates: later IDs are journaled as they come. */
+      let closed = false;
 
       const own = (id: string) => {
         if (!ids.includes(id)) ids.push(id);
         plan.created.add(id);
       };
 
+      /** Journal writes, as for a failed create: one failing must not skip another. */
+      const journal = async (id: string) => {
+        if (journaled.has(id)) return;
+        journaled.add(id);
+        await Promise.allSettled([app?.created(id), plan.onSandbox?.(id)]);
+      };
+
+      // Every ID a create names joins the run's ownership set when the create settles, however
+      // late; one that settles after the task stopped waiting is journaled then too.
+      const creates = watchCreates(entry.provider, {
+        owned: async (id) => {
+          own(id);
+
+          if (closed) await journal(id);
+        },
+        open: plan.openCreates,
+      });
+
       /**
        * After the attempt: wait (to the task's bound) for a create the SDK stopped waiting on, own
        * any sandbox it names and journal it, and replace the SDK's `aborted` with the provider's own
-       * answer. A create still in flight at the bound leaves the allocation unknown.
+       * answer. A create still in flight at the bound leaves the allocation unknown in the record,
+       * and the settlement itself owns and journals whatever it names later.
        */
       const settleCreates = async () => {
         await creates.settle(deadline + graceMs - clock.now());
+        closed = true;
         const late: string[] = [];
 
         for (const outcome of creates.outcomes) {
           const id = outcome.kind === "created" ? outcome.id : outcome.error.sandboxId;
 
-          if (id !== null && !ids.includes(id)) {
+          if (id !== null) {
             own(id);
             late.push(id);
           }
@@ -568,8 +639,7 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
           seen.createError =
             answer.kind === "created" ? { code: error.code, sandboxId: answer.id } : answer.error;
 
-        // Journal writes, as for a failed create: one failing must not skip another.
-        await Promise.allSettled(late.flatMap((id) => [app?.created(id), plan.onSandbox?.(id)]));
+        await Promise.all(late.map(journal));
       };
 
       const environment: AttemptEnvironment = {
@@ -580,6 +650,7 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
         attribution: entry.attribution,
         onSandbox: async (_, id) => {
           own(id);
+          journaled.add(id);
 
           try {
             await app?.created(id);
@@ -597,7 +668,10 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
           seen.createError = createErrorOf(cause);
           const named = seen.createError.sandboxId;
 
-          if (named !== null) own(named);
+          if (named !== null) {
+            own(named);
+            journaled.add(named);
+          }
 
           // Both are journal writes; one failing must not skip the other.
           await Promise.allSettled([
@@ -625,6 +699,8 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
       if (entry.workdir) attemptPlan.workdir = entry.workdir;
 
       if (entry.volumeGiB !== undefined) attemptPlan.volumeGiB = entry.volumeGiB;
+
+      if (entry.diskGiB !== undefined) attemptPlan.diskGiB = entry.diskGiB;
 
       if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
 
@@ -704,19 +780,25 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
   const after = await listSandboxes(entry, plan.runId, clock, listTimeoutMs);
   const unconfirmed = records.flatMap((r) => (r.deletionConfirmed ? [] : r.sandboxIds));
   const targets = [...new Set([...ownIn(after, plan.created), ...unconfirmed])];
-  const destroyed = new Map<string, boolean>();
 
-  for (const id of targets)
-    destroyed.set(
-      id,
-      (await within(
-        entry.provider
-          .destroy(id)
-          .then(() => true)
-          .catch(() => false),
-        destroyTimeoutMs,
-      )) ?? false,
-    );
+  // Deleted together, so a slow deletion does not keep the others billing behind it.
+  const destroyed = new Map(
+    await Promise.all(
+      targets.map(
+        async (id) =>
+          [
+            id,
+            (await within(
+              entry.provider
+                .destroy(id)
+                .then(() => true)
+                .catch(() => false),
+              destroyTimeoutMs,
+            )) ?? false,
+          ] as const,
+      ),
+    ),
+  );
 
   const recheck = targets.length
     ? await listSandboxes(entry, plan.runId, clock, listTimeoutMs)
@@ -809,16 +891,19 @@ const legacyAccountLimitPattern =
 /**
  * A create the provider refused for an account limit before allocating anything: the SDK's `quota`
  * code with no sandbox named. Not an attempt. A quota error that names a sandbox was admitted and
- * failed later, so it stays a create failure, as does every other code.
+ * failed later, so it stays a create failure, as does every other code. A Modal quota error may
+ * follow an allocation it does not name, so it is never one.
  */
 export function isAccountLimit(record: StoredRecord): boolean {
   if (record.completion.kind !== "incomplete" || record.completion.reason !== "create-failed")
     return false;
 
+  if (allocateBeforeRefusal.has(record.provider)) return false;
+
   if (!record.burst) return legacyAccountLimitPattern.test(record.completion.detail);
   const error = record.burst.createError;
 
-  return error !== null && error.code === "quota" && error.sandboxId === null;
+  return error !== null && error.code === "quota" && refusedUnallocated(record.provider, error);
 }
 
 /**
@@ -880,19 +965,27 @@ function stageReached(record: AttemptRecord): FailureStage {
 
 /**
  * One task as published: wall time, upload time, whether it passed its checks, and where it failed.
- * `round` defaults to the record's batch.
+ * `round` defaults to the record's batch. `leftovers` are its round's cleanup results: how the task's
+ * sandbox ended is taken from them (`taskEnd`), so a sandbox the cleanup found still running and
+ * could not delete is not a completed task even when its attempt confirmed the deletion, and one the
+ * cleanup deleted ends when the cleanup confirmed it gone.
  */
 export function taskResult(
   record: StoredRecord,
   redact: (text: string) => string = (text) => text,
   round: number = record.batch,
+  leftovers: readonly Leftover[] = [],
 ): TaskResult {
-  const wallS = Math.round(wallSeconds(record) * 1000) / 1000;
+  const end = taskEnd(record, leftovers);
+
+  const wallMs = end.kind === "unresolved" ? wallSeconds(record) * 1000 : end.at - record.startedAt;
+
+  const wallS = Math.round(wallMs) / 1000;
   const uploadS = round3(uploadSeconds(record));
   const short = (text: string) => redact(text).replace(/\s+/g, " ").slice(0, 300);
 
   if (record.completion.kind === "completed") {
-    if (record.deletionConfirmed) return { round, wallS, uploadS, completed: true };
+    if (end.kind !== "unresolved") return { round, wallS, uploadS, completed: true };
 
     return {
       round,
@@ -939,6 +1032,8 @@ const median = (values: readonly number[]) => {
 export interface RoundTask {
   readonly round: number;
   readonly record: StoredRecord;
+  /** Its round's cleanup results; none when the round line predates them or was never written. */
+  readonly leftovers?: readonly Leftover[];
 }
 
 /** What a provider's slowdown divides by. */
@@ -1056,7 +1151,7 @@ function tally(tasks: readonly RoundTask[], redact?: (text: string) => string) {
 
   const results = sorted
     .filter(({ record }) => harnessFailureOf(record) === null)
-    .map(({ round, record }) => taskResult(record, redact, round));
+    .map(({ round, record, leftovers }) => taskResult(record, redact, round, leftovers));
 
   const ran = results.filter((t) => t.failure?.stage !== "account-limit");
   const done = ran.filter((t) => t.completed);

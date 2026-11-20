@@ -1549,7 +1549,7 @@ export async function realisticCommand(args: string[]) {
       process.stdout.write(
         "bun bench realistic run --out DIR --run ID [--plan headline|held-open] [--providers a,b] [--profiles fix-and-test,build] [--tracks same-machine,default] [--batches N] [--first-batch K] [--budget-usd 75]\n" +
           "bun bench realistic billing --out DIR [--providers a,b]\nbun bench realistic summary --out DIR [--out DIR2] [--to DIR] [--drop provider@run[@track]] [--audit FILE]\nbun bench realistic sweep --out DIR --run ID\n" +
-          "bun bench realistic burst --out DIR --run ID [--providers a,b] [--size 5] [--rounds 2] [--parallel 3] [--budget-usd 15] [--solo realistic.json]\n" +
+          "bun bench realistic burst --out DIR --run ID [--providers a,b] [--size 5] [--rounds 2] [--control] [--parallel N, default 3, or 1 with --control] [--budget-usd 15, a hard cap only where the provider enforces a lifetime] [--solo realistic.json, not read with --control]\n" +
           "bun bench realistic burst-summary --out DIR [--out DIR2] --solo realistic.json --to FILE\n",
       );
   }

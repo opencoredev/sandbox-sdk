@@ -6,10 +6,14 @@ import { SandboxError } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { runAttempt } from "../../src/realistic/attempt.js";
 import {
+  budgetAdvisoryFor,
   buildExport,
   burstCommand,
+  burstSummaryCommand,
   claimOutput,
+  finalSweep,
   notRunLines,
+  parallelOf,
   preloadArtifacts,
   requiredArtifacts,
   roundSchedule,
@@ -21,7 +25,9 @@ import {
 } from "../../src/realistic/burst-cli.js";
 import {
   accountRefusal,
+  allocationUnknown,
   billableLifetimeMs,
+  isAccountLimit,
   roundSpend,
   runPool,
   runRound,
@@ -37,6 +43,7 @@ import {
 } from "../../src/realistic/burst.js";
 import { sweepProviders } from "../../src/realistic/cli.js";
 import { ProviderTrace, systemClock } from "../../src/realistic/gaps.js";
+import { providerSetup } from "../../src/realistic/setup.js";
 import type { HarnessManifest } from "../../src/realistic/manifest.js";
 import { attemptRecordSchema, type AttemptRecord } from "../../src/realistic/record.js";
 import { attributionFor, emptyRecord, type SlotProvider } from "../../src/realistic/slots.js";
@@ -813,7 +820,7 @@ describe("the site data file", () => {
       );
 
       // The published solo median is not used when the run measured its own.
-      const data = await buildExport([dir], new Map([["e2b", 999]]));
+      const data = await buildExport([dir], async () => new Map([["e2b", 999]]));
 
       expect(data.run.mode).toBe("one-provider-at-a-time");
       expect(data.providers[0]).toMatchObject({
@@ -927,7 +934,7 @@ describe("the site data file", () => {
         }),
       );
 
-      const data = await buildExport([dir], await soloMedians(join(dir, "realistic.json")));
+      const data = await buildExport([dir], () => soloMedians(join(dir, "realistic.json")));
 
       expect(data).toMatchObject({
         schema: 1,
@@ -1624,7 +1631,7 @@ describe("local artifacts", () => {
 });
 
 describe("the site data file, from tagged records", () => {
-  it("places a control task by its record when its round line was never written, and lists skipped rounds", async () => {
+  it("counts a tagged task only when a completed round line names it, and lists skipped rounds", async () => {
     const dir = await mkdtemp(join(tmpdir(), "rtb-export-tagged-"));
 
     try {
@@ -1711,26 +1718,28 @@ describe("the site data file, from tagged records", () => {
           tagged(done({ round: 2, task: 1, wallS: 130, attemptId: "rtb-test-r1-t1-e2b" }), {
             round: 1,
           }),
-          // Batch 3 in run order: an untagged record there would read as burst round 3.
+          // Control round 2 never wrote its line, so its cleanup never finished: left out.
           control(2, 3, 110),
           control(1, 1, 90, "vercel"),
+          // An older, untagged record with no round line still reads as burst round 1 by batch.
+          done({ round: 1, task: 2, wallS: 140, attemptId: "rtb-test-r1-t2-e2b" }),
         ]
           .map((r) => JSON.stringify(r))
           .join("\n") + "\n",
       );
 
-      const data = await buildExport([dir], new Map());
+      const data = await buildExport([dir], async () => new Map());
       const [e2b, vercel] = data.providers;
 
       expect(e2b).toMatchObject({
         status: "ran",
-        attempts: 2,
-        medianWallS: 125,
-        solo: { completed: 2, attempts: 2 },
-        soloMedianWallS: 105,
+        attempts: 3,
+        medianWallS: 130,
+        solo: { completed: 1, attempts: 1 },
+        soloMedianWallS: 100,
         skippedBurstRounds: [2],
       });
-      expect(e2b?.tasks.map((t) => t.round)).toEqual([1, 1]);
+      expect(e2b?.tasks.map((t) => t.round)).toEqual([1, 1, 1]);
       expect(vercel).toMatchObject({
         status: "not-run",
         reason: "spend ceiling: $9 spent",
@@ -1946,16 +1955,56 @@ describe("a provider with no hard lifetime", () => {
     expect(guard.couldFit(1)).toBe(false);
     expect(guard.reserve(1)).toBe(false);
 
-    // With a hard lifetime the same round bounds its own spend, and the run goes on.
+    // With a hard lifetime the same round bounds its own spend, so other providers go on; but its
+    // sandbox may still run, so this provider's next round would not be alone or at its size.
     const bounded = rounds({
       capUSD: 100,
       perTaskUSD: 5,
-      control: false,
+      control: true,
       round: unresolvedRound,
     });
 
     await runProviderRounds(bounded.plan);
-    expect(bounded.lines.map((l) => l.kind)).toEqual(["round", "round"]);
+    expect(
+      bounded.lines.map((l) => [
+        l.kind,
+        "role" in l ? l.role : null,
+        "round" in l ? l.round : null,
+      ]),
+    ).toEqual([
+      ["round", "control", 1],
+      ["skipped", "burst", 1],
+      ["skipped", "burst", 2],
+    ]);
+    expect(bounded.notRun).toEqual(["control round 1 left 1 sandbox(es) unresolved"]);
+    expect(bounded.guard.couldFit(1)).toBe(true);
+  });
+
+  it("stops the guard before a failing write, so no other provider starts a round", async () => {
+    const guard = spendGuard(100);
+
+    const run = rounds({
+      capUSD: 100,
+      perTaskUSD: 5,
+      control: false,
+      hardLifetimeMs: null,
+      guard,
+      round: async () => {
+        throw new Error("Writing 2 attempt record(s) failed: ENOSPC");
+      },
+    });
+
+    // The disk is full: the notes cannot be written either.
+    const failing: ProviderRounds = {
+      ...run.plan,
+      note: async () => {
+        throw new Error("ENOSPC: no space left on device");
+      },
+    };
+
+    await expect(runProviderRounds(failing)).rejects.toThrow(/ENOSPC/);
+    expect(guard.stopped()).toMatch(/e2b round 1 may have left a sandbox running/);
+    expect(guard.reserve(1)).toBe(false);
   });
 });
 
@@ -2084,7 +2133,7 @@ describe("a round that throws", () => {
           .join("\n") + "\n",
       );
 
-      const [e2b] = (await buildExport([dir], new Map([["e2b", 100]]))).providers;
+      const [e2b] = (await buildExport([dir], async () => new Map([["e2b", 100]]))).providers;
 
       expect(e2b).toMatchObject({
         status: "ran",
@@ -2176,5 +2225,365 @@ describe("a provider not run before its first round", () => {
       { kind: "skipped", provider: "daytona", role: "burst", round: 2, reason },
       { kind: "not-run", provider: "daytona", reason },
     ]);
+  });
+});
+
+describe("burst records' disk", () => {
+  it("is the entry's disk, on an attempt and on a task that failed before its create", async () => {
+    const seen: (number | undefined)[] = [];
+    const ok = scripted(() => ({}), []);
+
+    const ran = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ diskGiB: 20 }),
+          attempt: async (plan, environment) => {
+            seen.push(plan.diskGiB);
+
+            return ok(plan, environment);
+          },
+        },
+        [],
+      ),
+    );
+
+    expect(seen).toEqual([20]);
+    expect(ran.records).toHaveLength(1);
+
+    const setupFailed = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({
+            diskGiB: 20,
+            beforeAttempt: async () => {
+              throw new Error("journal unavailable");
+            },
+          }),
+        },
+        [],
+      ),
+    );
+
+    expect(setupFailed.records[0]?.diskGiB).toBe(20);
+  });
+});
+
+describe("a Modal create that fails without naming a sandbox", () => {
+  const failedCreate = (provider: string, code: string) => {
+    const record = done({ round: 1, task: 0, wallS: 5, created: false });
+
+    record.provider = provider;
+    record.completion = {
+      kind: "incomplete",
+      reason: "create-failed",
+      detail: `${provider} create failed: ${code}`,
+    };
+
+    return tagged(record, { createError: { code, sandboxId: null } });
+  };
+
+  it("may have allocated one, whatever its code, so it keeps its reservation", () => {
+    for (const code of ["quota", "auth"]) {
+      const modal = failedCreate("modal", code);
+
+      expect(allocationUnknown(modal)).toBe(true);
+      expect(isAccountLimit(modal)).toBe(false);
+      expect(taskEnd(modal, [])).toEqual({ kind: "unresolved" });
+      expect(
+        roundSpend({
+          records: [modal],
+          leftovers: [],
+          perTaskUSD: 3,
+          hardLifetimeMs: null,
+          price: () => 0,
+        }),
+      ).toBe(3);
+    }
+
+    // Elsewhere a refusal by code still allocated nothing.
+    expect(allocationUnknown(failedCreate("e2b", "quota"))).toBe(false);
+    expect(isAccountLimit(failedCreate("e2b", "quota"))).toBe(true);
+  });
+});
+
+describe("providers at once", () => {
+  it("default to one with control rounds and three without; an explicit --parallel wins", () => {
+    expect(parallelOf({ parallel: undefined, control: true })).toBe(1);
+    expect(parallelOf({ parallel: undefined, control: false })).toBe(3);
+    expect(parallelOf({ parallel: "2", control: true })).toBe(2);
+  });
+});
+
+describe("the budget", () => {
+  it("is advisory for providers without a provider-enforced lifetime", () => {
+    const names = ["boat", "e2b", "superserve", "upstash", "vercel"];
+
+    expect(budgetAdvisoryFor(names.map(providerSetup))).toEqual(["boat", "superserve", "upstash"]);
+  });
+});
+
+describe("a round's cleanup", () => {
+  it("deletes its leftovers together, not one after another", async () => {
+    let open = 0;
+    let most = 0;
+
+    const slow = provider((inner) => ({
+      destroy: async (id) => {
+        open++;
+        most = Math.max(most, open);
+        await sleep(100);
+        open--;
+
+        return inner.destroy(id);
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 3,
+          entry: entry({ provider: slow }),
+          attempt: scripted(() => ({ leak: true }), []),
+        },
+        [],
+      ),
+    );
+
+    expect(report.leftovers).toHaveLength(3);
+    expect(report.unresolved).toEqual([]);
+    expect(most).toBe(3);
+  });
+});
+
+describe("a create that answers after its task stopped waiting", () => {
+  it("joins the run's ownership set and the journal when it answers", async () => {
+    const created = new Set<string>();
+    const openCreates = new Set<Promise<void>>();
+    const noted: string[] = [];
+    let allocated = "";
+
+    const late = provider((inner) => ({
+      create: async () => {
+        await sleep(500);
+        allocated = (await inner.create({ labels: {} })).id;
+        throw new SandboxError("Beam create failed: the request may or may not have happened", {
+          code: "outcome_unknown",
+          provider: "beam",
+          sandboxId: allocated,
+        });
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: late }),
+          manifest: withSlotTimeout(fixture.manifest, 100),
+          timeoutGraceMs: 50,
+          created,
+          openCreates,
+          onSandbox: async (id) => {
+            noted.push(id);
+          },
+        },
+        [],
+      ),
+    );
+
+    // The round gave up on it: unresolved, and nothing owned yet.
+    expect(report.unresolved).toHaveLength(1);
+    expect(created.size).toBe(0);
+    expect(openCreates.size).toBe(1);
+
+    await Promise.all(openCreates);
+
+    expect(created).toEqual(new Set([allocated]));
+    expect(noted).toEqual([allocated]);
+    expect(openCreates.size).toBe(0);
+  }, 5_000);
+});
+
+describe("the final sweep, per provider", () => {
+  const slot = (name: string, inner: SlotProvider["provider"]): SlotProvider => ({
+    name,
+    provider: inner,
+    attribution: attributionFor("e2b").attribution,
+    settlementMs: null,
+    paddingMs: 0,
+  });
+
+  it("waits for open creates, and gives each provider its own deadline", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-final-"));
+
+    try {
+      // Three sandboxes whose deletions all stall: alone they outlast the provider's deadline.
+      const stalling = memory();
+      const stuck: string[] = [];
+
+      for (let i = 0; i < 3; i++) stuck.push((await stalling.create({ labels: {} })).id);
+
+      const fine = memory();
+      const known = (await fine.create({ labels: {} })).id;
+      const fineOwned = new Set([known]);
+
+      const owned = new Map([
+        ["vercel", new Set(stuck)],
+        ["daytona", fineOwned],
+      ]);
+
+      // A create still in flight names a sandbox once it answers.
+      const openCreates = new Set<Promise<void>>();
+      let late = "";
+
+      const pending: Promise<void> = sleep(100)
+        .then(async () => {
+          late = (await fine.create({ labels: {} })).id;
+          fineOwned.add(late);
+        })
+        .finally(() => openCreates.delete(pending));
+
+      openCreates.add(pending);
+
+      const problems = await finalSweep({
+        runId: "rtb-final",
+        entries: [
+          slot("vercel", { ...stalling, destroy: () => new Promise<never>(() => {}) }),
+          slot("daytona", fine),
+        ],
+        note: async () => {},
+        out: dir,
+        owned,
+        openCreates,
+        createWaitMs: 2_000,
+        providerDeadlineMs: 300,
+        callTimeoutMs: 200,
+      });
+
+      expect(late).toBeTruthy();
+      // The provider after the stalled one was still swept, including the late create's sandbox.
+      expect(await fine.list({})).toEqual([]);
+      expect(problems).toEqual([expect.stringMatching(/^vercel: the sweep did not finish/)]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 5_000);
+
+  it("names a create that may have allocated a sandbox no listing ties to the run", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-final-unknown-"));
+
+    try {
+      // Boat accepted the create, every reply was lost, and Boat labels a sandbox after create.
+      const record = done({ round: 1, task: 0, wallS: 5, created: false });
+
+      record.runId = "rtb-final";
+      record.provider = "boat";
+      record.attemptId = "rtb-final-r1-t0-boat";
+      record.completion = { kind: "incomplete", reason: "create-failed", detail: "lost" };
+      record.deletionConfirmed = false;
+      await writeFile(
+        join(dir, "attempts.jsonl"),
+        JSON.stringify(
+          tagged(record, { createError: { code: "outcome_unknown", sandboxId: null } }),
+        ) + "\n",
+      );
+
+      const problems = await finalSweep({
+        runId: "rtb-final",
+        entries: [slot("boat", memory())],
+        note: async () => {},
+        out: dir,
+        owned: new Map(),
+        openCreates: new Set(),
+      });
+
+      expect(problems).toEqual([expect.stringContaining("rtb-final-r1-t0-boat")]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a task the round's cleanup found still running", () => {
+  it("is not completed, and a recovered one ends when the cleanup confirmed it gone", () => {
+    const record = tagged(done({ round: 1, task: 0, wallS: 100 }));
+
+    const stuck: Leftover = {
+      id: "sbx-1-0",
+      destroyed: false,
+      goneAfter: false,
+      confirmedAt: null,
+    };
+
+    expect(taskResult(record, undefined, 1, [stuck])).toMatchObject({
+      completed: false,
+      failure: { stage: "delete" },
+    });
+
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: [{ round: 1, record, leftovers: [stuck] }],
+      rounds: [{ round: 1, size: 1, startedAt: 1_000, allDoneAt: null }],
+      solo: { kind: "published", medianWallS: 50 },
+    });
+
+    expect(row).toMatchObject({ completed: 0, attempts: 1, medianWallS: null, slowdown: null });
+
+    const recovered: Leftover = {
+      ...stuck,
+      destroyed: true,
+      goneAfter: true,
+      confirmedAt: 301_000,
+    };
+
+    expect(taskResult(record, undefined, 1, [recovered])).toMatchObject({
+      completed: true,
+      wallS: 300,
+    });
+  });
+});
+
+describe("burst-summary over control runs", () => {
+  it("never reads the published solo medians", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-summary-control-"));
+
+    try {
+      await writeFile(
+        join(dir, "run.json"),
+        JSON.stringify({
+          id: "rtb-test",
+          sdkCommit: "abc1234",
+          startedAt: "2026-11-19T10:00:00.000Z",
+          endedAt: "2026-11-19T11:00:00.000Z",
+          location: "Boca Raton, FL (evo-1)",
+          size: 1,
+          rounds: 1,
+          track: "same-machine",
+          profile: "fix-and-test",
+          providers: ["e2b"],
+          budgetUSD: 10,
+          mode: "one-provider-at-a-time",
+          control: true,
+        }),
+      );
+      await writeFile(join(dir, "rounds.jsonl"), "");
+
+      const to = join(dir, "out.json");
+      const write = process.stdout.write.bind(process.stdout);
+
+      process.stdout.write = () => true;
+
+      try {
+        await burstSummaryCommand(["--out", dir, "--solo", join(dir, "absent.json"), "--to", to]);
+      } finally {
+        process.stdout.write = write;
+      }
+
+      expect(JSON.parse(await readFile(to, "utf8"))).toMatchObject({ schema: 1, providers: [] });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

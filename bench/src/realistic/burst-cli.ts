@@ -27,6 +27,7 @@ import { sanitize } from "../v2-runner.js";
 import { appJournalFile, stopJournalFile } from "./apps.js";
 import {
   accountRefusal,
+  allocationUnknown,
   billableLifetimeMs,
   isAccountLimit,
   roundRoleSchema,
@@ -38,6 +39,7 @@ import {
   summarizeProvider,
   uploadSeconds,
   within,
+  type Leftover,
   type ProviderBurst,
   type RoundReport,
   type RoundRole,
@@ -166,6 +168,11 @@ const runInfoSchema = z.object({
   mode: runModeSchema.default("parallel"),
   /** Whether each burst round was preceded by a 1-task control round. */
   control: z.boolean().default(false),
+  /**
+   * Providers with no provider-enforced lifetime, for which the budget was advisory rather than a
+   * hard cap. Absent in older runs.
+   */
+  budgetAdvisoryFor: z.array(z.string()).optional(),
 });
 
 type RunInfo = z.infer<typeof runInfoSchema>;
@@ -425,13 +432,18 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
       await run.writeRound(line);
   };
 
-  /** A sandbox with no bound on its spend may still exist: nothing more may start. */
-  const unbounded = async (label: string) => {
-    if (run.hardLifetimeMs !== null) return;
+  /**
+   * A sandbox with no bound on its spend may still exist: nothing more may start, on any provider.
+   * Synchronous, so it takes effect before any file write that could fail; returns the note to
+   * write, or null on a provider with a hard lifetime.
+   */
+  const unbounded = (label: string): RunNote | null => {
+    if (run.hardLifetimeMs !== null) return null;
     const reason = `${name} ${label} may have left a sandbox running, and ${name} has no hard lifetime`;
 
     guard.stop(reason);
-    await run.note({ kind: "budget-stop", provider: name, reason: sanitize(reason) });
+
+    return { kind: "budget-stop", provider: name, reason: sanitize(reason) };
   };
 
   for (const [index, step] of run.schedule.entries()) {
@@ -479,8 +491,10 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
     try {
       report = await run.runRound(step, index + 1);
     } catch (error) {
-      // Its sandboxes may have run, and some may still exist: it keeps its whole reservation.
+      // Its sandboxes may have run, and some may still exist: it keeps its whole reservation, and
+      // the guard stops before any write below can fail (the round may have thrown on a full disk).
       guard.settle({ reservedUSD: reserve, spentUSD: reserve });
+      const stop = unbounded(label);
       const text = sanitize(error instanceof Error ? error.message : String(error));
 
       await run.note({ kind: "round-error", provider: name, round, role, error: text });
@@ -492,7 +506,8 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
         round,
         reason: `${label} failed before it finished: ${text}`,
       });
-      await unbounded(label);
+
+      if (stop) await run.note(stop);
       await skipRest(index + 1, `${label} failed before it finished`);
       run.say(`${name}: ${label} failed before its tasks finished; see notes`);
 
@@ -512,7 +527,7 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
       }),
     });
 
-    if (report.unresolved.length) await unbounded(label);
+    const stop = report.unresolved.length ? unbounded(label) : null;
 
     await run.writeRound({
       kind: "round",
@@ -545,6 +560,21 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
       `${name}: ${label} ${allDone}; ${report.admitted}/${step.size} admitted; leftovers ${report.leftovers.length}; est. spent $${guard.state().spentUSD.toFixed(2)}`,
     );
 
+    // A sandbox of this round may still be running. Even where the provider's lifetime bounds its
+    // spend, a next round here would not run alone (a control) or at the requested size (a burst),
+    // so this provider's schedule ends; without a lifetime the guard has stopped every provider.
+    if (report.unresolved.length) {
+      if (stop) await run.note(stop);
+      const reason = `${label} left ${report.unresolved.length} sandbox(es) unresolved`;
+
+      run.say(`${name}: ${reason}; no more rounds`);
+      await skipRest(index + 1, reason);
+
+      if (!burstRan) await run.notRun(reason);
+
+      return;
+    }
+
     // Every create refused by an account limit: another round would be refused too.
     if (report.records.length > 0 && report.records.every(isAccountLimit)) {
       const reason = `account limit: every create of ${label} was refused`;
@@ -559,8 +589,156 @@ export async function runProviderRounds(run: ProviderRounds): Promise<void> {
   }
 }
 
-/** How long the final sweep may take; past it the run fails and says so. */
+/**
+ * Providers run at once: `--parallel` when given, else 1 with `--control` (a control round must run
+ * alone, with no other provider's uploads on the host's network) and 3 without.
+ */
+export function parallelOf({
+  parallel,
+  control,
+}: {
+  parallel: string | undefined;
+  control: boolean;
+}): number {
+  return positiveInt("parallel", parallel ?? (control ? "1" : "3"));
+}
+
+/**
+ * Providers with no provider-enforced lifetime. A round's spend there is bounded only by its own
+ * cleanup, so the budget is advisory for them, not a hard cap.
+ */
+export function budgetAdvisoryFor(setups: readonly Pick<ProviderSetup, "name" | "lifetime">[]) {
+  return setups.flatMap((s) => (s.lifetime ? [] : [s.name]));
+}
+
+/** How long the final sweep may take on one provider; past it the run fails and says so. */
 const sweepTimeoutMs = 15 * 60_000;
+
+/** How long the final sweep waits for creates still in flight before it starts. */
+const openCreateWaitMs = 150_000;
+
+/**
+ * The run's last cleanup. It first waits (bounded) for creates still in flight, so any sandbox they
+ * name joins `owned` before anything is swept. Then each provider is swept on its own, all at once,
+ * each under its own deadline, so one provider's slow deletions cannot use up another's time.
+ * Records whose create may have allocated a sandbox no ID or label ties to the run (a lost reply on
+ * a provider that labels after create, such as Boat) are named too: no sweep can clear them.
+ * Returns what it could not clear; empty means clean.
+ */
+export async function finalSweep({
+  runId,
+  entries,
+  note,
+  out,
+  owned,
+  openCreates,
+  createWaitMs = openCreateWaitMs,
+  providerDeadlineMs = sweepTimeoutMs,
+  callTimeoutMs = 120_000,
+}: {
+  runId: string;
+  entries: readonly SlotProvider[];
+  note: (entry: RunNote) => Promise<void>;
+  /** The run folder: its attempts.jsonl and journals. */
+  out: string;
+  owned: ReadonlyMap<string, ReadonlySet<string>>;
+  openCreates: ReadonlySet<Promise<void>>;
+  createWaitMs?: number;
+  providerDeadlineMs?: number;
+  /** Bound on each provider call, as sweepProviders defaults it. */
+  callTimeoutMs?: number;
+}): Promise<string[]> {
+  const problems: string[] = [];
+
+  if (openCreates.size)
+    await within(
+      Promise.allSettled(openCreates).then(() => true),
+      createWaitMs,
+    );
+
+  if (openCreates.size) {
+    problems.push(
+      `${openCreates.size} create(s) still had no answer after ${createWaitMs} ms; a sandbox they allocate is not swept`,
+    );
+    await note({ kind: "creates-open", count: openCreates.size, afterMs: createWaitMs }).catch(
+      () => {},
+    );
+  }
+
+  // Entries that share one adapter instance are swept together, as sweepProviders groups them.
+  const groups = new Map<SlotProvider["provider"], SlotProvider[]>();
+
+  for (const entry of entries)
+    groups.set(entry.provider, [...(groups.get(entry.provider) ?? []), entry]);
+
+  await Promise.all(
+    [...groups.values()].map(async (group) => {
+      const name = group.map((e) => e.name).join("+");
+
+      const outcome = await within(
+        sweepProviders(runId, group, note, out, {
+          known: owned,
+          callTimeoutMs,
+        }).then(
+          (result) => ({ kind: "swept", result }) as const,
+          (error) =>
+            ({
+              kind: "threw",
+              error: error instanceof Error ? error.message : String(error),
+            }) as const,
+        ),
+        providerDeadlineMs,
+      );
+
+      if (outcome === null) {
+        problems.push(`${name}: the sweep did not finish in ${providerDeadlineMs} ms`);
+        await note({ kind: "sweep-timeout", provider: name, afterMs: providerDeadlineMs }).catch(
+          () => {},
+        );
+
+        return;
+      }
+
+      if (outcome.kind === "threw") {
+        problems.push(`${name}: the sweep threw: ${outcome.error}`);
+        await note({ kind: "sweep-failed", provider: name, error: outcome.error }).catch(() => {});
+
+        return;
+      }
+
+      const swept = outcome.result;
+
+      await note({ kind: "sweep-result", provider: name, ...swept }).catch(() => {});
+
+      if (swept.failed || swept.undeleted || swept.unchecked)
+        problems.push(
+          `${name}: the sweep left something (failed ${swept.failed}, undeleted ${swept.undeleted}, unchecked ${swept.unchecked})`,
+        );
+    }),
+  );
+
+  try {
+    const unknown = (await readLines(join(out, "attempts.jsonl"), storedRecordSchema)).filter(
+      (r) => r.runId === runId && allocationUnknown(r),
+    );
+
+    if (unknown.length) {
+      problems.push(
+        `${unknown.length} create(s) may have allocated a sandbox no ID or label ties to this run: ${unknown.map((r) => r.attemptId).join(", ")}`,
+      );
+      await note({
+        kind: "unknown-allocations",
+        attemptIds: unknown.map((r) => r.attemptId),
+      }).catch(() => {});
+    }
+  } catch (error) {
+    problems.push(
+      `the attempt records could not be read for unknown allocations: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return problems;
+}
 
 export async function burstCommand(args: string[]) {
   const { values } = parseArgs({
@@ -574,7 +752,9 @@ export async function burstCommand(args: string[]) {
       profile: { type: "string", default: "fix-and-test" },
       size: { type: "string", default: "5" },
       rounds: { type: "string", default: "2" },
-      parallel: { type: "string", default: "3" },
+      // Default 3, or 1 with --control: a control round must run alone, with no other provider's
+      // uploads on the host's network. An explicit --parallel wins.
+      parallel: { type: "string" },
       control: { type: "boolean", default: false },
       "budget-usd": { type: "string", default: "15" },
       solo: { type: "string", default: defaultSolo },
@@ -595,7 +775,7 @@ export async function burstCommand(args: string[]) {
   const profileName = "fix-and-test" as const;
   const size = positiveInt("size", values.size);
   const rounds = positiveInt("rounds", values.rounds);
-  const parallel = positiveInt("parallel", values.parallel);
+  const parallel = parallelOf({ parallel: values.parallel, control: values.control });
   const guard = spendGuard(Number(values["budget-usd"]));
   const runId = values.run;
   const out = resolve(values.out);
@@ -641,7 +821,12 @@ export async function burstCommand(args: string[]) {
     : allProviders;
 
   const setups = names.map(providerSetup);
-  const solo = await soloMedians(values.solo);
+  // A run with control rounds divides by its own; only a run without reads the published medians,
+  // and reads them now so a missing file stops it before anything is created.
+  const solo = values.control ? null : await soloMedians(values.solo);
+  const soloPath = values.solo;
+  const publishedSolo = async () => solo ?? soloMedians(soloPath);
+  const advisory = budgetAdvisoryFor(setups);
 
   const info: RunInfo = {
     id: runId,
@@ -657,9 +842,15 @@ export async function burstCommand(args: string[]) {
     budgetUSD: guard.state().capUSD,
     mode: parallel === 1 ? "one-provider-at-a-time" : "parallel",
     control: values.control,
+    budgetAdvisoryFor: advisory,
   };
 
   await claimOutput(out, info);
+
+  if (advisory.length)
+    say(
+      `Budget $${info.budgetUSD} is a hard cap only where the provider enforces a lifetime; for ${advisory.join(", ")} it is advisory: a round's spend there is bounded by its cleanup, not by the provider`,
+    );
 
   const regions: Record<string, string | null> = {};
 
@@ -708,6 +899,8 @@ export async function burstCommand(args: string[]) {
   // Every sandbox ID this run owns, per provider, live: the final sweep deletes these by ID even
   // when a listing fails or an attempt record was never written.
   const owned = new Map(loaded.map(({ setup }) => [setup.name, new Set<string>()]));
+  // Creates still in flight, so the final sweep can wait for the sandboxes they name.
+  const openCreates = new Set<Promise<void>>();
 
   try {
     await runPool({
@@ -743,6 +936,7 @@ export async function burstCommand(args: string[]) {
               prepare: { cacheBaseUrl: "sdk-upload", upload: { source } },
               outputDir: join(out, "outputs"),
               created,
+              openCreates,
               onRecord: (record) => appendFile(attemptsPath, JSON.stringify(record) + "\n"),
               onSandbox: (id) =>
                 note({ kind: "sandbox", provider: setup.name, id, round: step.round }),
@@ -756,31 +950,22 @@ export async function burstCommand(args: string[]) {
       },
     });
   } finally {
-    // Always: nothing this run made is left running, whatever stopped it. Each provider call is
-    // bounded inside the sweep, so one stalled call cannot keep later providers from being swept;
-    // the whole sweep is bounded too, and past it the run fails.
-    const swept = await within(
-      sweepProviders(
-        runId,
-        loaded.map((l) => l.entry),
-        note,
-        out,
-        { known: owned },
-      ),
-      sweepTimeoutMs,
-    );
+    // Always: nothing this run made is left running, whatever stopped it. Each provider is swept
+    // on its own under its own deadline; whatever the sweep could not clear fails the run.
+    const problems = await finalSweep({
+      runId,
+      entries: loaded.map((l) => l.entry),
+      note,
+      out,
+      owned,
+      openCreates,
+    });
 
-    if (swept === null) {
-      await note({ kind: "sweep-timeout", afterMs: sweepTimeoutMs });
-      process.stderr.write(`The final sweep did not finish in time; see ${notesPath}\n`);
+    if (problems.length) {
+      process.stderr.write(
+        `The final sweep could not clear everything; see ${notesPath}\n${problems.map((p) => `  ${sanitize(p)}\n`).join("")}`,
+      );
       process.exitCode = 1;
-    } else {
-      await note({ kind: "sweep-result", ...swept });
-
-      if (swept.failed || swept.undeleted || swept.unchecked) {
-        process.stderr.write(`Sweep left something; see ${notesPath}\n`);
-        process.exitCode = 1;
-      }
     }
 
     await writeFile(
@@ -790,7 +975,7 @@ export async function burstCommand(args: string[]) {
     await note({ kind: "spend", ...guard.state() });
   }
 
-  const data = await buildExport([out], solo);
+  const data = await buildExport([out], publishedSolo);
   await writeFile(join(out, "realtask-burst.json"), JSON.stringify(data, null, 2) + "\n");
   await writeFile(join(out, "summary.md"), summaryMarkdown(data, guard.state().spentUSD));
   process.stdout.write(summaryMarkdown(data, guard.state().spentUSD));
@@ -846,11 +1031,11 @@ export interface BurstExport {
  * The site data file from one or more run folders. A provider in a later folder replaces the same
  * provider from an earlier one (a rerun), and every folder must share the run's size and rounds.
  * A folder run with `--control` divides by its own control tasks; one without divides by the
- * published solo median in `solo`.
+ * published solo median that `solo` reads, called only when such a folder is present.
  */
 export async function buildExport(
   dirs: readonly string[],
-  solo: ReadonlyMap<string, number | null>,
+  solo: () => Promise<ReadonlyMap<string, number | null>>,
 ): Promise<BurstExport> {
   const byProvider = new Map<
     string,
@@ -884,6 +1069,10 @@ export async function buildExport(
 
   if (!first) throw new Error("burst-summary needs at least one --out");
 
+  const published = [...byProvider.values()].some((v) => !v.info.control)
+    ? await solo()
+    : new Map<string, number | null>();
+
   const order = [
     ...first.providers,
     ...[...byProvider.keys()].filter((p) => !first.providers.includes(p)),
@@ -905,20 +1094,29 @@ export async function buildExport(
       l.kind === "failed" ? [{ role: l.role, round: l.round, reason: l.reason }] : [],
     );
 
-    const placed = new Map<string, { role: RoundRole; round: number }>();
+    const placed = new Map<
+      string,
+      { role: RoundRole; round: number; leftovers: readonly Leftover[] }
+    >();
 
     for (const line of rounds)
-      for (const id of line.attemptIds) placed.set(id, { role: line.role, round: line.round });
+      for (const id of line.attemptIds)
+        placed.set(id, { role: line.role, round: line.round, leftovers: line.leftovers });
 
-    // A record says its role and round. An older one is placed by the round line that names it,
-    // or, with none (its round stopped before the line was written), as a burst task of the round
-    // its batch says, as before control rounds existed.
+    // A tagged record counts only when a completed round line names it: a round that stopped
+    // before its line (a crash, a failed write) never finished its cleanup, so how its sandboxes
+    // ended is unknown. An older, untagged record is placed by the round line that names it, or,
+    // with none, as a burst task of the round its batch says, as before control rounds existed.
     const tasks = (role: RoundRole): RoundTask[] =>
       found.records.flatMap((record) => {
-        const at = record.burst ??
-          placed.get(record.attemptId) ?? { role: "burst", round: record.batch };
+        const line = placed.get(record.attemptId);
 
-        return at.role === role ? [{ round: at.round, record }] : [];
+        if (record.burst && !line) return [];
+        const at = record.burst ?? line ?? { role: "burst", round: record.batch };
+
+        return at.role === role
+          ? [{ round: at.round, record, leftovers: line?.leftovers ?? [] }]
+          : [];
       });
 
     return [
@@ -930,7 +1128,7 @@ export async function buildExport(
         failed,
         solo: found.info.control
           ? { kind: "same-day", tasks: tasks("control") }
-          : { kind: "published", medianWallS: solo.get(provider) ?? null },
+          : { kind: "published", medianWallS: published.get(provider) ?? null },
         // A provider stopped before its first burst round is not run, whatever control ran.
         notRun:
           notRunLine?.kind === "not-run" && burstRounds.length === 0
@@ -1022,9 +1220,12 @@ export async function burstSummaryCommand(args: string[]) {
 
   if (!values.out?.length || !values.to) throw new Error("burst-summary needs --out and --to");
 
+  const soloPath = values.solo;
+
+  // Read only when some folder ran without control rounds.
   const data = await buildExport(
     values.out.map((d) => resolve(d)),
-    await soloMedians(values.solo),
+    () => soloMedians(soloPath),
   );
 
   await writeFile(resolve(values.to), JSON.stringify(data, null, 2) + "\n");
