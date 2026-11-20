@@ -2,6 +2,10 @@
  * Build scenarios: a TypeScript project stripped and bundled by Node itself, a Python package
  * compiled to bytecode, a local git branch-and-merge workflow, and an HTTP server under load.
  * Every program needs only what node:22-bookworm ships; none touches the network.
+ *
+ * One build takes 0.05 to 0.15 s, so each scenario repeats it from scratch in timed rounds (see
+ * `rounds.ts`) for at least a second. Build times report the median round; the HTTP server
+ * reports requests per second over every round.
  */
 import { createHmac } from "node:crypto";
 import { z } from "zod";
@@ -16,13 +20,16 @@ import {
   proofOf,
   pythonPrelude,
   runGuestProgram,
-  secondsSchema,
   seededHex,
   seedMismatch,
   seedSchema,
   sha256Hex,
 } from "./guest-kit.js";
+import { checkRounds, nodeRoundsSource, pythonRoundsSource, roundsSchema } from "./rounds.js";
 import type { ExpandedScenario, VerifyResult } from "./types.js";
+
+/** Minimum timed rounds for every build scenario. */
+const buildMinRounds = 5;
 
 const modulus = 1_000_003;
 
@@ -85,13 +92,13 @@ export function expectedTsDigest(seed: number): string {
 }
 
 export const tsBundleProgram = `${nodePrelude}
-import { mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
+${nodeRoundsSource}
+import { mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { stripTypeScriptTypes } from "node:module";
 const N = ${tsModules};
 const pad = (i) => String(i).padStart(2, "0");
 mkdirSync(ROOT + "/src", { recursive: true });
-mkdirSync(ROOT + "/dist", { recursive: true });
 for (let i = 0; i < N; i++) {
   const hex = h("ts", i);
   const scale = 1 + (parseInt(hex.slice(0, 4), 16) % 997);
@@ -131,30 +138,34 @@ for (let i = 0; i < N; i++) {
   writeFileSync(ROOT + "/src/m" + pad(i) + ".ts", lines.join("\\n") + "\\n");
 }
 writeFileSync(ROOT + "/src/run.ts", 'import { main } from "./m' + pad(N - 1) + '.ts";\\nconsole.log(main());\\n');
-const t0 = now();
-const parts = ["// bundled by bench-ts-build"];
-for (let i = 0; i < N; i++) {
-  let js = stripTypeScriptTypes(readFileSync(ROOT + "/src/m" + pad(i) + ".ts", "utf8"), { mode: "transform" });
-  js = js.replace(/^import \\{ (\\w+) \\} from "\\.\\/m(\\d+)\\.ts";$/gm, (_, name, n) => "const { " + name + " } = __m" + Number(n) + ";");
-  js = js.replace(/^export (function|const|var|let) /gm, "$1 ");
-  if (/^\\s*(import|export)\\b/m.test(js)) throw new Error("unbundled module syntax in m" + pad(i));
-  const names = ["f" + i, "C" + i, "Kind" + i].concat(i === N - 1 ? ["main"] : []);
-  parts.push("const __m" + i + " = (() => {\\n" + js + "\\nreturn { " + names.join(", ") + " };\\n})();");
-}
-parts.push("console.log(__m" + (N - 1) + ".main());");
-writeFileSync(ROOT + "/dist/bundle.mjs", parts.join("\\n") + "\\n");
-const bundled = execFileSync(process.execPath, [ROOT + "/dist/bundle.mjs"], { encoding: "utf8" }).trim();
-const seconds = now() - t0;
+let bundled = "";
+const { rounds, digest } = await timedRounds(${buildMinRounds}, () => {
+  rmSync(ROOT + "/dist", { recursive: true, force: true });
+  mkdirSync(ROOT + "/dist");
+  const parts = ["// bundled by bench-ts-build"];
+  for (let i = 0; i < N; i++) {
+    let js = stripTypeScriptTypes(readFileSync(ROOT + "/src/m" + pad(i) + ".ts", "utf8"), { mode: "transform" });
+    js = js.replace(/^import \\{ (\\w+) \\} from "\\.\\/m(\\d+)\\.ts";$/gm, (_, name, n) => "const { " + name + " } = __m" + Number(n) + ";");
+    js = js.replace(/^export (function|const|var|let) /gm, "$1 ");
+    if (/^\\s*(import|export)\\b/m.test(js)) throw new Error("unbundled module syntax in m" + pad(i));
+    const names = ["f" + i, "C" + i, "Kind" + i].concat(i === N - 1 ? ["main"] : []);
+    parts.push("const __m" + i + " = (() => {\\n" + js + "\\nreturn { " + names.join(", ") + " };\\n})();");
+  }
+  parts.push("console.log(__m" + (N - 1) + ".main());");
+  writeFileSync(ROOT + "/dist/bundle.mjs", parts.join("\\n") + "\\n");
+  bundled = execFileSync(process.execPath, [ROOT + "/dist/bundle.mjs"], { encoding: "utf8" }).trim();
+  return sha(bundled);
+});
 const direct = execFileSync(process.execPath, ["--no-warnings", "--experimental-transform-types", ROOT + "/src/run.ts"], { encoding: "utf8" }).trim();
 if (direct !== bundled) throw new Error("bundle output differs from direct TypeScript execution");
-console.log(JSON.stringify({ seed: SEED, moduleCount: N, bundleBytes: statSync(ROOT + "/dist/bundle.mjs").size, seconds, digest: sha(bundled) }));
+console.log(JSON.stringify({ seed: SEED, moduleCount: N, bundleBytes: statSync(ROOT + "/dist/bundle.mjs").size, rounds, digest }));
 `;
 
 const tsOutput = z.strictObject({
   seed: seedSchema,
   moduleCount: z.number().int(),
   bundleBytes: z.number().int(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -175,11 +186,20 @@ export function verifyTsBundle(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== expectedTsDigest(seed)) return failure("bundle output digest mismatch");
 
+  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: buildMinRounds });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: out.seconds,
+    value: rounds.medianSeconds,
     proof: proofOf("build-ts", out.digest),
-    details: { moduleCount: out.moduleCount, bundleBytes: out.bundleBytes },
+    details: {
+      moduleCount: out.moduleCount,
+      bundleBytes: out.bundleBytes,
+      rounds: rounds.count,
+      seconds: rounds.totalSeconds,
+    },
   };
 }
 
@@ -219,7 +239,8 @@ export function expectedPyDigest(seed: number): string {
 }
 
 export const pyBytecodeProgram = `${pythonPrelude}
-import glob, importlib, subprocess
+${pythonRoundsSource}
+import glob, importlib, shutil, subprocess
 N = ${pyModules}
 pkg = os.path.join(ROOT, "benchpkg")
 os.makedirs(pkg)
@@ -257,23 +278,29 @@ for i in range(N):
             "    return {'acc': acc, 'samples': samples}",
         ]
     open(os.path.join(pkg, "m%02d.py" % i), "w").write("\\n".join(lines) + "\\n")
-t0 = time.perf_counter()
-subprocess.run([sys.executable, "-m", "compileall", "-q", pkg], check=True)
-compiled = len(glob.glob(os.path.join(pkg, "__pycache__", "m[0-9][0-9].*.pyc")))
 sys.dont_write_bytecode = True
 sys.path.insert(0, ROOT)
-entry = importlib.import_module("benchpkg.m%02d" % (N - 1))
-if not entry.__cached__ or not os.path.exists(entry.__cached__):
-    raise SystemExit("entry module has no bytecode")
-result = json.dumps(entry.main(), separators=(",", ":"))
-seconds = time.perf_counter() - t0
-print(json.dumps({"seed": SEED, "modulesCompiled": compiled, "seconds": seconds, "digest": sha(result)}))
+compiled = []
+def work(r):
+    # A clean build each round: no bytecode on disk and no package modules in this process.
+    shutil.rmtree(os.path.join(pkg, "__pycache__"), ignore_errors=True)
+    for name in [m for m in sys.modules if m == "benchpkg" or m.startswith("benchpkg.")]:
+        del sys.modules[name]
+    importlib.invalidate_caches()
+    subprocess.run([sys.executable, "-m", "compileall", "-q", pkg], check=True)
+    compiled.append(len(glob.glob(os.path.join(pkg, "__pycache__", "m[0-9][0-9].*.pyc"))))
+    entry = importlib.import_module("benchpkg.m%02d" % (N - 1))
+    if not entry.__cached__ or not os.path.exists(entry.__cached__):
+        raise SystemExit("entry module has no bytecode")
+    return sha(json.dumps(entry.main(), separators=(",", ":")))
+rounds, digest = timed_rounds(${buildMinRounds}, work)
+print(json.dumps({"seed": SEED, "modulesCompiled": min(compiled), "rounds": rounds, "digest": digest}))
 `;
 
 const pyOutput = z.strictObject({
   seed: seedSchema,
   modulesCompiled: z.number().int(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -292,11 +319,19 @@ export function verifyPyBytecode(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== expectedPyDigest(seed)) return failure("package result digest mismatch");
 
+  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: buildMinRounds });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: out.seconds,
+    value: rounds.medianSeconds,
     proof: proofOf("build-py", out.digest),
-    details: { modulesCompiled: out.modulesCompiled },
+    details: {
+      modulesCompiled: out.modulesCompiled,
+      rounds: rounds.count,
+      seconds: rounds.totalSeconds,
+    },
   };
 }
 
@@ -331,15 +366,18 @@ export function expectedGitDigest(seed: number): string {
 }
 
 export const gitProgram = `${nodePrelude}
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+${nodeRoundsSource}
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 const repo = ROOT + "/repo";
-mkdirSync(repo);
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (...args) => execFileSync("git", args, { cwd: repo, env, encoding: "utf8" });
 const plan = ${JSON.stringify(gitPlan)};
 const path = (branch, n) => branch === "main" ? "main/file" + (n % 3) + ".txt" : branch + "/file" + (n % 2) + ".txt";
-const t0 = now();
+let facts = null;
+const { rounds, digest } = await timedRounds(${buildMinRounds}, () => {
+rmSync(repo, { recursive: true, force: true });
+mkdirSync(repo);
 git("init", "-q", "-b", "main");
 git("config", "user.name", "Bench");
 git("config", "user.email", "bench@example.invalid");
@@ -367,9 +405,13 @@ const clean = git("status", "--porcelain").trim() === "";
 const tracked = git("ls-files").trim().split("\\n");
 const lines = tracked.sort().map((rel) => rel + ":" + sha(readFileSync(repo + "/" + rel)));
 const onDisk = readdirSync(repo, { recursive: true, withFileTypes: true }).filter((e) => e.isFile() && !(e.parentPath ?? e.path).includes("/.git")).length;
-const seconds = now() - t0;
 if (onDisk !== tracked.length) throw new Error("untracked files in the working tree");
-console.log(JSON.stringify({ seed: SEED, commitCount, logLines, diffFiles, trackedFiles: tracked.length, clean, seconds, digest: sha(commitCount + "\\n" + sha(lines.join("\\n"))) }));
+const roundFacts = { commitCount, logLines, diffFiles, trackedFiles: tracked.length, clean };
+if (facts !== null && JSON.stringify(facts) !== JSON.stringify(roundFacts)) throw new Error("round facts differ: " + JSON.stringify(roundFacts));
+facts = roundFacts;
+return sha(commitCount + "\\n" + sha(lines.join("\\n")));
+});
+console.log(JSON.stringify({ seed: SEED, ...facts, rounds, digest }));
 `;
 
 const gitOutput = z.strictObject({
@@ -379,7 +421,7 @@ const gitOutput = z.strictObject({
   diffFiles: z.number().int(),
   trackedFiles: z.number().int(),
   clean: z.boolean(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -406,11 +448,15 @@ export function verifyGit(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== expectedGitDigest(seed)) return failure("tree digest mismatch");
 
+  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: buildMinRounds });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: out.seconds,
+    value: rounds.medianSeconds,
     proof: proofOf("build-git", out.digest),
-    details: { commitCount: out.commitCount },
+    details: { commitCount: out.commitCount, rounds: rounds.count, seconds: rounds.totalSeconds },
   };
 }
 
@@ -429,11 +475,13 @@ export function expectedHttpDigest(seed: number): string {
 }
 
 export const httpProgram = `${nodePrelude}
+${nodeRoundsSource}
 import { createServer } from "node:http";
 import { createHmac } from "node:crypto";
 const key = h("http-key");
 const mac = (n) => createHmac("sha256", key).update("item:" + n).digest("hex");
-const t0 = now();
+let requests = ${httpRequests}, okCount = ${httpRequests}, connections = 0;
+const { rounds, digest } = await timedRounds(${buildMinRounds}, async () => {
 const server = createServer((req, res) => {
   const match = /^\\/item\\/(\\d+)$/.exec(req.url ?? "");
   if (!match) { res.writeHead(404).end(); return; }
@@ -459,10 +507,12 @@ await Promise.all(Array.from({ length: ${httpClients} }, async () => {
 }));
 server.closeAllConnections();
 await new Promise((resolve) => server.close(resolve));
-const seconds = now() - t0;
-const okCount = results.filter((r) => r && r.ok).length;
-const digest = sha(results.map((r) => r.n + ":" + r.mac).join("\\n"));
-console.log(JSON.stringify({ seed: SEED, requests: results.length, okCount, connections: sockets.size, seconds, digest }));
+requests = Math.min(requests, results.length);
+okCount = Math.min(okCount, results.filter((r) => r && r.ok).length);
+connections = Math.max(connections, sockets.size);
+return sha(results.map((r) => r.n + ":" + r.mac).join("\\n"));
+});
+console.log(JSON.stringify({ seed: SEED, requests, okCount, connections, rounds, digest }));
 `;
 
 const httpOutput = z.strictObject({
@@ -470,7 +520,7 @@ const httpOutput = z.strictObject({
   requests: z.number().int(),
   okCount: z.number().int(),
   connections: z.number().int(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -493,11 +543,19 @@ export function verifyHttp(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== expectedHttpDigest(seed)) return failure("response digest mismatch");
 
+  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: buildMinRounds });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: httpRequests / out.seconds,
+    value: (httpRequests * rounds.count) / rounds.totalSeconds,
     proof: proofOf("build-http", out.digest),
-    details: { seconds: out.seconds, connections: out.connections },
+    details: {
+      seconds: rounds.totalSeconds,
+      rounds: rounds.count,
+      connections: out.connections,
+    },
   };
 }
 
@@ -507,7 +565,7 @@ export const buildScenarios: readonly ExpandedScenario[] = [
     category: "builds",
     label: "TypeScript strip and bundle",
     description:
-      "Generate a 30-module TypeScript project (enums, generics, unions), strip types with Node's built-in transformer, bundle it into one file and run it.",
+      "Generate a 30-module TypeScript project (enums, generics, unions), then strip types with Node's built-in transformer, bundle it into one file and run it, in rounds for at least a second; reports the median round.",
     unit: "s",
     better: "lower",
     verifyOutput: verifyTsBundle,
@@ -531,7 +589,7 @@ export const buildScenarios: readonly ExpandedScenario[] = [
     category: "builds",
     label: "Python bytecode build",
     description:
-      "Generate a 60-module Python package, compile it with python3 -m compileall, then import and run its entry point from bytecode.",
+      "Generate a 60-module Python package, then compile it with python3 -m compileall and import and run its entry point from bytecode, in rounds for at least a second; reports the median round.",
     unit: "s",
     better: "lower",
     verifyOutput: verifyPyBytecode,
@@ -555,7 +613,7 @@ export const buildScenarios: readonly ExpandedScenario[] = [
     category: "builds",
     label: "git branch and merge",
     description:
-      "Local git: init, 20 commits across main and two feature branches, two no-ff merges, log, diff and a clean status check.",
+      "Local git: init, 20 commits across main and two feature branches, two no-ff merges, log, diff and a clean status check, in rounds for at least a second; reports the median round.",
     unit: "s",
     better: "lower",
     verifyOutput: verifyGit,
@@ -574,7 +632,7 @@ export const buildScenarios: readonly ExpandedScenario[] = [
     category: "builds",
     label: "Local HTTP server load",
     description:
-      "Serve seeded HMAC JSON from a Node HTTP server on an ephemeral port and drive 200 keep-alive fetches from 50 concurrent clients, checking every response.",
+      "Serve seeded HMAC JSON from a Node HTTP server on an ephemeral port and drive 200 keep-alive fetches from 50 concurrent clients, checking every response, in rounds for at least a second.",
     unit: "ops/s",
     better: "higher",
     verifyOutput: verifyHttp,

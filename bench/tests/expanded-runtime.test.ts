@@ -9,11 +9,30 @@ import {
   memProgram,
   runtimeScenarios,
   spawnProgram,
+  verifySpawn,
 } from "../src/expanded/runtime.js";
-import { seedA, verifierSuite } from "./expanded-verifier-suite.js";
+import { honestRounds, seedA, verifierSuite, withField } from "./expanded-verifier-suite.js";
 
 const mebibyte = 1_048_576;
 const streamBytes = expectedStream(seedA).length;
+
+/** 100 distinct child pids per round, none of them the parent's (pid 7). */
+function childPids(rounds: number): number[][] {
+  return Array.from({ length: rounds }, (_, round) =>
+    Array.from({ length: 100 }, (_, i) => 1000 + round * 100 + i),
+  );
+}
+
+function validSpawn(seed: number): string {
+  return JSON.stringify({
+    seed,
+    spawns: 100,
+    parentPid: 7,
+    childPids: childPids(4),
+    rounds: honestRounds(expectedSpawnDigest(seed), 4, 0.25),
+    digest: expectedSpawnDigest(seed),
+  });
+}
 
 describe("runtime scenarios", () => {
   verifierSuite(runtimeScenarios, [
@@ -24,20 +43,21 @@ describe("runtime scenarios", () => {
           seed,
           bytes: 128 * mebibyte,
           rssBytes: 180 * mebibyte,
-          seconds: 0.5,
+          rounds: honestRounds(expectedMemDigest(seed), 4, 0.25),
           digest: expectedMemDigest(seed),
         }),
       tampered: { bytes: 64 * mebibyte, rssBytes: mebibyte },
-      expectedValue: 256,
+      expectedValue: (128 * mebibyte * 4) / 1_000_000,
       guest: { source: memProgram, interpreter: "node" },
+      minRounds: 3,
     },
     {
       id: "runtime-fork-spawn-100",
-      valid: (seed) =>
-        JSON.stringify({ seed, spawns: 100, seconds: 0.5, digest: expectedSpawnDigest(seed) }),
-      tampered: { spawns: 99 },
-      expectedValue: 200,
+      valid: validSpawn,
+      tampered: { spawns: 99, parentPid: 1000 },
+      expectedValue: 400,
       guest: { source: spawnProgram, interpreter: "node" },
+      minRounds: 3,
     },
     {
       id: "runtime-stdout-stream",
@@ -46,11 +66,12 @@ describe("runtime scenarios", () => {
           seed,
           lines: 7500,
           bytes: expectedStream(seed).length,
-          seconds: 0.5,
+          rounds: honestRounds(sha256Hex(expectedStream(seed)), 4, 0.25),
           digest: sha256Hex(expectedStream(seed)),
         }),
       tampered: { lines: 7499, bytes: streamBytes - 1 },
-      expectedValue: streamBytes / mebibyte / 0.5,
+      expectedValue: (streamBytes * 4) / 1_000_000,
+      minRounds: 3,
     },
     {
       id: "runtime-env-isolation",
@@ -61,7 +82,33 @@ describe("runtime scenarios", () => {
     },
   ]);
 
-  it("streams about 512 KiB, well under the SDK's 1 MiB stdout cap", () => {
+  it("rejects child pids that are missing, shared or the parent's", () => {
+    const reusedPid = childPids(4).map((pids) => pids.map(() => 4242));
+
+    const withParent = childPids(4).map((pids, round) =>
+      round === 2 ? [7, ...pids.slice(1)] : pids,
+    );
+
+    const short = childPids(4).map((pids, round) => (round === 0 ? pids.slice(1) : pids));
+
+    const wrong: readonly (readonly [string, number[][], RegExp])[] = [
+      ["one pid for every child", reusedPid, /distinct child pids/],
+      ["a child with the parent's pid", withParent, /parent's pid/],
+      ["99 children in a round", short, /distinct child pids/],
+      ["pids for only three of four rounds", childPids(3), /rounds/],
+    ];
+
+    for (const [name, pids, reason] of wrong)
+      expect(
+        verifySpawn(withField(validSpawn(seedA), "childPids", pids), seedA),
+        name,
+      ).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(reason),
+      });
+  });
+
+  it("streams about 0.5 MB, well under the SDK's 1 MiB stdout cap", () => {
     const stream = expectedStream(seedA);
 
     expect(Buffer.byteLength(stream)).toBe(stream.length);

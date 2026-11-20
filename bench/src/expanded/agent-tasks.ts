@@ -22,8 +22,9 @@ import {
 
 /**
  * Agent task scenarios: the file and command sequence a coding agent runs to fix a bug, apply a
- * codemod, or triage logs. Each run builds a fresh seeded project, times the whole task on the
- * host, and checks the guest's final digest against one the host derives from the seed.
+ * codemod, or triage logs. Each run builds a fresh seeded project untimed, then times the task on
+ * the host from the first command an agent would run, and checks the guest's final digest against
+ * one the host derives from the seed.
  */
 
 /** Write `files` (paths relative to `root`) after clearing `root`. */
@@ -269,12 +270,12 @@ const agentFixBugNode: ExpandedScenario = {
   category: "agent-tasks",
   label: "Fix a Node bug",
   description:
-    "Writes a seeded Node ESM project, sees node --test fail, fixes two bugs with file edits, and reruns the tests.",
+    "Writes a seeded Node ESM project (untimed), then sees node --test fail, fixes two bugs with file edits, and reruns the tests.",
   unit: "s",
   better: "lower",
   async run(box, ctx) {
-    const started = performance.now();
     await freshProject(box, nodeRoot, nodeProjectFiles(ctx.seed), ctx.timeoutMs);
+    const started = performance.now();
     const before = await box.run(nodeTestCommand, { timeoutMs: ctx.timeoutMs });
 
     for (const fix of nodeFixes) await box.files.edit(`${nodeRoot}/${fix.path}`, fix);
@@ -531,12 +532,12 @@ const agentFixBugPython: ExpandedScenario = {
   category: "agent-tasks",
   label: "Fix a Python bug",
   description:
-    "Writes a seeded Python package, sees unittest fail, fixes the ledger bug with a file edit, and reruns the tests.",
+    "Writes a seeded Python package (untimed), then sees unittest fail, fixes the ledger bug with a file edit, and reruns the tests.",
   unit: "s",
   better: "lower",
   async run(box, ctx) {
-    const started = performance.now();
     await freshProject(box, pyRoot, pyProjectFiles(ctx.seed), ctx.timeoutMs);
+    const started = performance.now();
     const before = await box.run(pyTestCommand, { timeoutMs: ctx.timeoutMs });
     await box.files.edit(`${pyRoot}/${pyFix.path}`, pyFix);
     const after = await box.run(pyTestCommand, { timeoutMs: ctx.timeoutMs });
@@ -749,13 +750,13 @@ const agentRefactorCodemod: ExpandedScenario = {
   category: "agent-tasks",
   label: "Codemod rename",
   description:
-    "Renames an exported function across 40 chained ES modules with a codemod, then imports every module to check the result.",
+    "Writes 40 chained ES modules (untimed), then renames an exported function across them with a codemod and imports every module to check the result.",
   unit: "s",
   better: "lower",
   async run(box, ctx) {
-    const started = performance.now();
     const target = codemodTargetName(ctx.seed);
     await writeTree(box, codemodRoot, codemodProjectFiles(ctx.seed), ctx.timeoutMs);
+    const started = performance.now();
 
     const codemod = lastLine(
       codemodRun,
@@ -1019,11 +1020,10 @@ const agentDebugLogTriage: ExpandedScenario = {
   category: "agent-tasks",
   label: "Log triage",
   description:
-    "Generates 30,000 seeded JSONL service log lines with an error spike, inspects them, and finds the failing service and its p95 latency.",
+    "Generates 30,000 seeded JSONL service log lines with an error spike (untimed), then inspects them and finds the failing service and its p95 latency.",
   unit: "s",
   better: "lower",
   async run(box, ctx) {
-    const started = performance.now();
     await freshProject(
       box,
       logRoot,
@@ -1031,6 +1031,8 @@ const agentDebugLogTriage: ExpandedScenario = {
       ctx.timeoutMs,
     );
     await command(box, `cd ${logRoot} && node gen.mjs ${ctx.seed >>> 0} app.jsonl`, ctx.timeoutMs);
+    // The log is the fixture: the triage an agent runs starts at its first look at the file.
+    const started = performance.now();
     const lineCount = Number(await command(box, `wc -l < ${logRoot}/app.jsonl`, ctx.timeoutMs));
 
     if (lineCount !== logLineCount)

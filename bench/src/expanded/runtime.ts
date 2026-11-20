@@ -1,6 +1,11 @@
 /**
  * Runtime scenarios: memory allocation and page touching, process spawning, stdout streaming
  * through `box.run`, and the SDK's env, cwd, file and background-process contracts.
+ *
+ * Memory, spawn and stdout each take about 0.1 s, so they repeat in timed rounds (see
+ * `rounds.ts`) for at least a second and report a rate over every round. The guest code is ours:
+ * proofs catch a workload that silently did less or wrong work, not a malicious guest, so spawn
+ * asks every child for its own pid, which only a real process can report.
  */
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
@@ -19,9 +24,21 @@ import {
   seedSchema,
   sha256Hex,
 } from "./guest-kit.js";
+import {
+  checkRounds,
+  minTimedSeconds,
+  nodeRoundsSource,
+  roundProof,
+  roundsSchema,
+  type Round,
+} from "./rounds.js";
 import type { ExpandedContext, ExpandedScenario, VerifyResult } from "./types.js";
 
 const mebibyte = 1_048_576;
+const bytesPerMegabyte = 1_000_000;
+
+/** Minimum timed rounds for the memory, spawn and stdout scenarios. */
+const runtimeMinRounds = 3;
 
 // runtime-mem-alloc-128m
 
@@ -51,30 +68,33 @@ export function expectedMemDigest(seed: number): string {
 }
 
 export const memProgram = `${nodePrelude}
+${nodeRoundsSource}
 const bytes = ${memBytes}, pages = bytes / 4096, words = ${pageWords};
-const t0 = now();
-let mem = new Uint32Array(bytes / 4);
-for (let p = 0; p < pages; p++) {
-  const base = Math.imul(SEED ^ p, 0x9e3779b1) >>> 0;
-  const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
-  const offset = p * words;
-  for (let k = 0; k < words; k++) mem[offset + k] = (base + Math.imul(k, step)) >>> 0;
-}
-const rssBytes = process.memoryUsage().rss;
-let xor = 0;
-for (let i = 0; i < mem.length; i++) xor ^= mem[i];
-let stride = 0x811c9dc5;
-for (let p = 0; p < pages; p++) stride = Math.imul(stride ^ mem[p * words + ((p * 7) & (words - 1))], 16777619) >>> 0;
-mem = null;
-const seconds = now() - t0;
-console.log(JSON.stringify({ seed: SEED, bytes, rssBytes, seconds, digest: sha(SEED + ":" + bytes + ":" + (xor >>> 0) + ":" + stride) }));
+let rssBytes = Number.MAX_SAFE_INTEGER;
+const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
+  let mem = new Uint32Array(bytes / 4);
+  for (let p = 0; p < pages; p++) {
+    const base = Math.imul(SEED ^ p, 0x9e3779b1) >>> 0;
+    const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
+    const offset = p * words;
+    for (let k = 0; k < words; k++) mem[offset + k] = (base + Math.imul(k, step)) >>> 0;
+  }
+  rssBytes = Math.min(rssBytes, process.memoryUsage().rss);
+  let xor = 0;
+  for (let i = 0; i < mem.length; i++) xor ^= mem[i];
+  let stride = 0x811c9dc5;
+  for (let p = 0; p < pages; p++) stride = Math.imul(stride ^ mem[p * words + ((p * 7) & (words - 1))], 16777619) >>> 0;
+  mem = null;
+  return sha(SEED + ":" + bytes + ":" + (xor >>> 0) + ":" + stride);
+});
+console.log(JSON.stringify({ seed: SEED, bytes, rssBytes, rounds, digest }));
 `;
 
 const memOutput = z.strictObject({
   seed: seedSchema,
   bytes: z.number().int(),
   rssBytes: z.number().int(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -90,16 +110,28 @@ export function verifyMem(raw: string, seed: number): VerifyResult {
 
   if (out.bytes !== memBytes) return failure(`bytes ${out.bytes}, expected ${memBytes}`);
 
-  // Every page was written, so the process held the whole working set resident.
+  // Every page was written, so the process held the whole working set resident in every round.
   if (out.rssBytes < memBytes) return failure(`rss ${out.rssBytes} below the working set`);
 
   if (out.digest !== expectedMemDigest(seed)) return failure("stride digest mismatch");
 
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    digest: out.digest,
+    minRounds: runtimeMinRounds,
+  });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: out.bytes / mebibyte / out.seconds,
+    value: (out.bytes * rounds.count) / bytesPerMegabyte / rounds.totalSeconds,
     proof: proofOf("runtime-mem", out.digest),
-    details: { seconds: out.seconds, rssMiB: Math.round(out.rssBytes / mebibyte) },
+    details: {
+      seconds: rounds.totalSeconds,
+      rounds: rounds.count,
+      rssMiB: Math.round(out.rssBytes / mebibyte),
+    },
   };
 }
 
@@ -115,24 +147,41 @@ export function expectedSpawnDigest(seed: number): string {
   );
 }
 
+/**
+ * Each child prints its index, its seeded token and its own pid (`$$`), and the guest checks that
+ * pid against the one `spawnSync` started. Tokens alone come from the seed; pids only from
+ * processes that ran, so the verifier wants 100 distinct child pids per round, none the parent's.
+ */
 export const spawnProgram = `${nodePrelude}
+${nodeRoundsSource}
 import { spawnSync } from "node:child_process";
-const outputs = [];
-const t0 = now();
-for (let i = 0; i < ${spawnCount}; i++) {
-  const token = h("spawn", i).slice(0, 16);
-  const r = spawnSync("/bin/sh", ["-c", 'printf "%s:%s\\\\n" "$1" "$2"', "sh", String(i), token], { encoding: "utf8" });
-  if (r.status !== 0 || r.stdout !== i + ":" + token + "\\n") throw new Error("child " + i + " exited " + r.status + " with " + JSON.stringify(r.stdout));
-  outputs.push(r.stdout);
-}
-const seconds = now() - t0;
-console.log(JSON.stringify({ seed: SEED, spawns: outputs.length, seconds, digest: sha(outputs.join("")) }));
+const childPids = [];
+const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
+  const outputs = [];
+  const pids = [];
+  for (let i = 0; i < ${spawnCount}; i++) {
+    const token = h("spawn", i).slice(0, 16);
+    const r = spawnSync("/bin/sh", ["-c", 'printf "%s:%s:%s\\\\n" "$1" "$2" "$$"', "sh", String(i), token], { encoding: "utf8" });
+    const line = /^(\\d+):([0-9a-f]{16}):(\\d+)\\n$/.exec(r.stdout ?? "");
+    if (r.status !== 0 || !line || line[1] !== String(i) || line[2] !== token) throw new Error("child " + i + " exited " + r.status + " with " + JSON.stringify(r.stdout));
+    if (Number(line[3]) !== r.pid) throw new Error("child " + i + " reported pid " + line[3] + ", spawned " + r.pid);
+    outputs.push(i + ":" + token + "\\n");
+    pids.push(r.pid);
+  }
+  childPids.push(pids);
+  return sha(outputs.join(""));
+});
+console.log(JSON.stringify({ seed: SEED, spawns: ${spawnCount}, parentPid: process.pid, childPids, rounds, digest }));
 `;
+
+const pidSchema = z.number().int().positive();
 
 const spawnOutput = z.strictObject({
   seed: seedSchema,
   spawns: z.number().int(),
-  seconds: secondsSchema,
+  parentPid: pidSchema,
+  childPids: z.array(z.array(pidSchema)),
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
@@ -150,11 +199,33 @@ export function verifySpawn(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== expectedSpawnDigest(seed)) return failure("child output digest mismatch");
 
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    digest: out.digest,
+    minRounds: runtimeMinRounds,
+  });
+
+  if (!rounds.ok) return rounds;
+
+  if (out.childPids.length !== rounds.count)
+    return failure(`child pids for ${out.childPids.length} rounds, expected ${rounds.count}`);
+
+  for (const [round, pids] of out.childPids.entries()) {
+    const distinct = new Set(pids);
+
+    if (pids.length !== spawnCount || distinct.size !== spawnCount)
+      return failure(
+        `round ${round}: ${distinct.size} distinct child pids, expected ${spawnCount}`,
+      );
+
+    if (distinct.has(out.parentPid)) return failure(`round ${round}: a child has the parent's pid`);
+  }
+
   return {
     ok: true,
-    value: spawnCount / out.seconds,
+    value: (spawnCount * rounds.count) / rounds.totalSeconds,
     proof: proofOf("runtime-spawn", out.digest),
-    details: { seconds: out.seconds },
+    details: { seconds: rounds.totalSeconds, rounds: rounds.count },
   };
 }
 
@@ -174,13 +245,13 @@ const streamOutput = z.strictObject({
   seed: seedSchema,
   lines: z.number().int(),
   bytes: z.number().int(),
-  seconds: secondsSchema,
+  rounds: roundsSchema,
   digest: digestSchema,
 });
 
 /**
- * Raw output here is the host's record of one `box.run("cat ...")`: the line and byte counts
- * and SHA-256 of the stdout it received, and the host-measured wall time of the call.
+ * Raw output here is the host's record of repeated `box.run("cat ...")` calls: the line and byte
+ * counts and SHA-256 of the stdout it received, and each call's host-measured wall time.
  */
 export function verifyStream(raw: string, seed: number): VerifyResult {
   const parsed = parseGuestJson(raw, streamOutput);
@@ -200,11 +271,19 @@ export function verifyStream(raw: string, seed: number): VerifyResult {
 
   if (out.digest !== sha256Hex(expected)) return failure("stdout digest mismatch");
 
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    digest: out.digest,
+    minRounds: runtimeMinRounds,
+  });
+
+  if (!rounds.ok) return rounds;
+
   return {
     ok: true,
-    value: out.bytes / mebibyte / out.seconds,
+    value: (out.bytes * rounds.count) / bytesPerMegabyte / rounds.totalSeconds,
     proof: proofOf("runtime-stream", out.digest),
-    details: { seconds: out.seconds, bytes: out.bytes },
+    details: { seconds: rounds.totalSeconds, rounds: rounds.count, bytes: out.bytes },
   };
 }
 
@@ -225,25 +304,35 @@ async function runStream(box: Sandbox, ctx: ExpandedContext) {
 
   try {
     await box.files.write(path, expected);
-    const start = performance.now();
-    const result = await box.run(`cat ${path}`, { timeoutMs: ctx.timeoutMs });
-    const seconds = (performance.now() - start) / 1000;
+    const rounds: Round[] = [];
+    let spent = 0;
+    let first = "";
 
-    if (!result.ok) throw new Error(`runtime-stdout-stream: cat exited ${result.exitCode}`);
+    while (rounds.length < runtimeMinRounds || spent < minTimedSeconds) {
+      const start = performance.now();
+      const result = await box.run(`cat ${path}`, { timeoutMs: ctx.timeoutMs });
+      const seconds = (performance.now() - start) / 1000;
 
-    if (result.truncated) throw new Error("runtime-stdout-stream: stdout was truncated");
+      if (!result.ok) throw new Error(`runtime-stdout-stream: cat exited ${result.exitCode}`);
 
-    if (result.stdout !== expected)
-      throw new Error(
-        `runtime-stdout-stream: stdout differs at ${firstBadLine(result.stdout, expected)}`,
-      );
+      if (result.truncated) throw new Error("runtime-stdout-stream: stdout was truncated");
+
+      if (result.stdout !== expected)
+        throw new Error(
+          `runtime-stdout-stream: stdout differs at ${firstBadLine(result.stdout, expected)}`,
+        );
+
+      first ||= result.stdout;
+      spent += seconds;
+      rounds.push({ seconds, proof: roundProof(rounds.length, sha256Hex(result.stdout)) });
+    }
 
     return JSON.stringify({
       seed: ctx.seed,
-      lines: result.stdout.split("\n").length - 1,
-      bytes: Buffer.byteLength(result.stdout),
-      seconds,
-      digest: sha256Hex(result.stdout),
+      lines: first.split("\n").length - 1,
+      bytes: Buffer.byteLength(first),
+      rounds,
+      digest: sha256Hex(first),
     });
   } finally {
     await box.run(`rm -rf ${streamDir}`, { timeoutMs: ctx.timeoutMs });
@@ -443,7 +532,7 @@ export const runtimeScenarios: readonly ExpandedScenario[] = [
     category: "runtime",
     label: "128 MiB memory touch",
     description:
-      "Allocate a 128 MiB working set, write every 4 KiB page with seeded words, then read it back with a full XOR pass and a strided checksum.",
+      "Allocate a 128 MiB working set, write every 4 KiB page with seeded words, then read it back with a full XOR pass and a strided checksum, in rounds for at least a second.",
     unit: "MB/s",
     better: "higher",
     verifyOutput: verifyMem,
@@ -462,7 +551,7 @@ export const runtimeScenarios: readonly ExpandedScenario[] = [
     category: "runtime",
     label: "Spawn 100 processes",
     description:
-      "Spawn 100 short-lived /bin/sh children one after another, each printing a seeded token, and check every exit code and output.",
+      "Spawn 100 short-lived /bin/sh children one after another, each printing a seeded token and its own pid, and check every exit code, output and pid, in rounds for at least a second.",
     unit: "spawns/s",
     better: "higher",
     verifyOutput: verifySpawn,
@@ -486,7 +575,7 @@ export const runtimeScenarios: readonly ExpandedScenario[] = [
     category: "runtime",
     label: "stdout streaming",
     description:
-      "Stream 7,500 seeded lines (about 512 KiB) through box.run stdout and check every line arrived intact and untruncated.",
+      "Stream 7,500 seeded lines (about 0.5 MB) through box.run stdout, in rounds for at least a second, and check every line arrived intact and untruncated.",
     unit: "MB/s",
     better: "higher",
     verifyOutput: verifyStream,

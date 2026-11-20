@@ -7,10 +7,13 @@ import {
   cpuScenarios,
   expectedGzipDigest,
   expectedGzipRawBytes,
+  expectedGzipTrailer,
+  expectedJsonBytes,
   expectedJsonChecksum,
   expectedSha256Digest,
   expectedSieve,
   gzipGuestScript,
+  gzipMagic,
   jsonDocument,
   jsonGuestScript,
   jsonIterations,
@@ -19,8 +22,18 @@ import {
   sieveGuestScript,
   sieveLimit,
 } from "../src/expanded/cpu.js";
+import { roundProof } from "../src/expanded/rounds.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
-import { describeContract, seedA, seedB } from "./expanded-contract.js";
+import { describeContract, flipHex, seedA, seedB } from "./expanded-contract.js";
+import { honestRounds } from "./expanded-verifier-suite.js";
+
+/** Three rounds over two seconds, the first impossibly fast: the rate bound must reject it. */
+function implausibleRounds(digest: string) {
+  return [1e-9, 1, 1].map((seconds, round) => ({ seconds, proof: roundProof(round, digest) }));
+}
+
+/** Four 0.25 s rounds of `digest`. */
+const fourRounds = (digest: string) => honestRounds(digest, 4, 0.25);
 
 function scenario(id: string): ExpandedScenario {
   const found = cpuScenarios.find((s) => s.id === id);
@@ -48,6 +61,7 @@ describe("cpu scenarios", () => {
 
   it("builds a JSON document of about 1 MiB", () => {
     expect(jsonDocument(seedA).length).toBeGreaterThan(900_000);
+    expect(expectedJsonBytes(seedA)).toBe(jsonDocument(seedA).length);
     expect(jsonDocument(seedA)).not.toBe(jsonDocument(seedB));
   });
 });
@@ -57,30 +71,43 @@ describeContract({
   valid: (seed) => ({
     seed,
     bytes: sha256TotalBytes,
-    seconds: 0.25,
+    rounds: fourRounds(expectedSha256Digest(seed)),
     digest: expectedSha256Digest(seed),
   }),
   tampered: [
     ["bytes", sha256TotalBytes / 2],
-    ["seconds", 1e-9],
+    ["rounds", implausibleRounds(expectedSha256Digest(seedA))],
+    ["rounds", honestRounds(expectedSha256Digest(seedA), 2, 1)],
+    ["rounds", honestRounds(expectedSha256Digest(seedA), 4, 0.2)],
   ],
   proofField: "digest",
 });
 
-describeContract({
-  scenario: scenario("cpu-gzip-compress"),
-  valid: (seed) => ({
+/** A gzip reply for `seed` at zlib level 6's ratio of 0.223. */
+function validGzip(seed: number) {
+  return {
     seed,
     rawBytes: expectedGzipRawBytes(seed),
-    compressedBytes: Math.floor(expectedGzipRawBytes(seed) / 6),
-    seconds: 0.4,
+    compressedBytes: Math.floor(expectedGzipRawBytes(seed) * 0.223),
+    gzipHead: gzipMagic,
+    gzipTrailer: expectedGzipTrailer(seed),
+    rounds: fourRounds(expectedGzipDigest(seed)),
     digest: expectedGzipDigest(seed),
-  }),
+  };
+}
+
+describeContract({
+  scenario: scenario("cpu-gzip-compress"),
+  valid: validGzip,
   tampered: [
     ["rawBytes", expectedGzipRawBytes(seedA) - 1],
     ["compressedBytes", expectedGzipRawBytes(seedA)],
     ["compressedBytes", 0],
-    ["seconds", 1e-9],
+    ["compressedBytes", 1],
+    ["gzipHead", "000000"],
+    ["gzipTrailer", flipHex(expectedGzipTrailer(seedA))],
+    ["gzipTrailer", expectedGzipTrailer(seedB)],
+    ["rounds", implausibleRounds(expectedGzipDigest(seedA))],
   ],
   proofField: "digest",
 });
@@ -90,13 +117,15 @@ describeContract({
   valid: (seed) => ({
     seed,
     iterations: jsonIterations,
-    bytes: jsonDocument(seed).length,
+    bytes: expectedJsonBytes(seed),
     seconds: 0.5,
     checksum: expectedJsonChecksum(seed),
   }),
   tampered: [
     ["iterations", jsonIterations - 1],
     ["seconds", 1e-9],
+    ["bytes", expectedJsonBytes(seedA) - 1],
+    ["bytes", expectedJsonBytes(seedA) + 1],
   ],
   proofField: "checksum",
 });
@@ -107,15 +136,47 @@ describeContract({
     seed,
     limit: sieveLimit(seed),
     count: expectedSieve(seed).count,
-    seconds: 0.2,
+    rounds: fourRounds(expectedSieve(seed).digest),
     digest: expectedSieve(seed).digest,
   }),
   tampered: [
     ["limit", sieveLimit(seedA) + 1],
     ["count", expectedSieve(seedA).count + 1],
-    ["seconds", 1e-9],
+    ["rounds", implausibleRounds(expectedSieve(seedA).digest)],
   ],
   proofField: "digest",
+});
+
+describe("cpu verifiers ask for evidence only the work produces", () => {
+  const verifyGzip = scenario("cpu-gzip-compress").verifyOutput;
+
+  it("gzip: the roundtrip hash with an uncompressed or truncated size fails on the ratio", () => {
+    for (const compressedBytes of [1, expectedGzipRawBytes(seedA) + 18])
+      expect(
+        verifyGzip(JSON.stringify({ ...validGzip(seedA), compressedBytes }), seedA),
+      ).toMatchObject({ ok: false, reason: expect.stringMatching(/ratio/) });
+  });
+
+  it("gzip: a trailer that is not the corpus's CRC-32 and length fails", () => {
+    expect(
+      verifyGzip(JSON.stringify({ ...validGzip(seedA), gzipTrailer: "0".repeat(16) }), seedA),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/CRC-32/) });
+  });
+
+  it("json: the document size must be exact", () => {
+    const raw = JSON.stringify({
+      seed: seedA,
+      iterations: jsonIterations,
+      bytes: 1,
+      seconds: 0.5,
+      checksum: expectedJsonChecksum(seedA),
+    });
+
+    expect(scenario("cpu-json-parse").verifyOutput(raw, seedA)).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/bytes/),
+    });
+  });
 });
 
 describe("cpu guest scripts", () => {

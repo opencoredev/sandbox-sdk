@@ -5,9 +5,10 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import type { ProjectEdit } from "../src/expanded/verify-kit.js";
+import type { JsonValue } from "./expanded-verifier-suite.js";
 
 /** A reply field a verifier reads. */
-export type ReplyValue = number | string | boolean;
+export type ReplyValue = JsonValue;
 
 /** One verifier-contract case: a scenario, a valid reply for any seed, and edits that must fail it. */
 export interface ContractCase {

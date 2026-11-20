@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 import { z } from "zod";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { command, quote } from "../workloads.js";
+import { checkRounds, nodeRoundsSource, roundsSchema, type Round } from "./rounds.js";
 import type { ExpandedContext, ExpandedScenario, VerifyResult } from "./types.js";
 import {
   decode,
@@ -20,6 +22,13 @@ import {
  * with `performance.now()`, and prints one JSON line. The host recomputes the exact digest from
  * the seed, so a cached or hardcoded reply fails verification.
  *
+ * SHA-256, gzip and the sieve each take about 0.1 s, so they repeat in timed rounds (see
+ * `rounds.ts`) for at least a second and report work done per second over every round.
+ *
+ * The guest code is ours: proofs catch a workload that silently did less or wrong work (a missing
+ * tool, a broken fallback, a bug), not a malicious guest. Each proof needs evidence only the real
+ * work produces, such as the gzip trailer's CRC-32 of the corpus.
+ *
  * The guest scripts are plain JavaScript strings that mirror the TypeScript generators below.
  * `tests/expanded-cpu.test.ts` runs each script with the local `node` and checks its output passes
  * `verifyOutput`, so the two copies cannot drift apart unnoticed.
@@ -32,6 +41,11 @@ const bytesPerMegabyte = 1_000_000;
 const maxMegabytesPerSecond = 50_000;
 
 const seconds = positiveSeconds;
+
+/** The fastest round's rate in `unitsPerRound` per second; the plausibility bound checks this. */
+function fastestRate(rounds: readonly Round[], unitsPerRound: number): number {
+  return unitsPerRound / Math.min(...rounds.map((round) => round.seconds));
+}
 
 /** Write a guest script, run it with the seed, and return its last stdout line. */
 async function runGuestScript(box: Sandbox, ctx: ExpandedContext, name: string, source: string) {
@@ -90,8 +104,12 @@ export const expectedSha256Digest = memo((seed: number) => {
   return outer.digest("hex");
 });
 
+/** Minimum timed rounds for SHA-256; each is about 0.1 s on a fast core. */
+const sha256MinRounds = 3;
+
 export const sha256GuestScript = `import { createHash } from "node:crypto";
 ${rngSource}
+${nodeRoundsSource}
 const seed = Number(process.argv[2]) >>> 0;
 const BLOCK = ${shaBlockBytes}, BLOCKS = ${shaBlocks}, PASSES = ${shaPasses}, CHUNK = ${shaChunkBytes};
 const next = rng32(seed ^ 0x5a17);
@@ -104,29 +122,30 @@ for (let b = 0; b < BLOCKS; b++) {
   data.writeUInt32LE(b, offset);
   data.writeUInt32LE(seed, offset + 4);
 }
-const started = performance.now();
-const outer = createHash("sha256");
 let bytes = 0;
-for (let pass = 0; pass < PASSES; pass++) {
-  const prefix = Buffer.alloc(8);
-  prefix.writeUInt32LE(seed, 0);
-  prefix.writeUInt32LE(pass, 4);
-  const hash = createHash("sha256").update(prefix);
-  for (let offset = 0; offset < data.length; offset += CHUNK) {
-    hash.update(data.subarray(offset, offset + CHUNK));
-    bytes += Math.min(CHUNK, data.length - offset);
+const { rounds, digest } = await timedRounds(${sha256MinRounds}, () => {
+  const outer = createHash("sha256");
+  bytes = 0;
+  for (let pass = 0; pass < PASSES; pass++) {
+    const prefix = Buffer.alloc(8);
+    prefix.writeUInt32LE(seed, 0);
+    prefix.writeUInt32LE(pass, 4);
+    const hash = createHash("sha256").update(prefix);
+    for (let offset = 0; offset < data.length; offset += CHUNK) {
+      hash.update(data.subarray(offset, offset + CHUNK));
+      bytes += Math.min(CHUNK, data.length - offset);
+    }
+    outer.update(hash.digest());
   }
-  outer.update(hash.digest());
-}
-const digest = outer.digest("hex");
-const seconds = (performance.now() - started) / 1000;
-console.log(JSON.stringify({ seed, bytes, seconds, digest }));
+  return outer.digest("hex");
+});
+console.log(JSON.stringify({ seed, bytes, rounds, digest }));
 `;
 
 const sha256Reply = z.strictObject({
   seed: seedField,
   bytes: z.number().int().positive(),
-  seconds,
+  rounds: roundsSchema,
   digest: hexDigest,
 });
 
@@ -145,15 +164,24 @@ function verifySha256(raw: string, seed: number): VerifyResult {
   if (data.digest !== expectedSha256Digest(seed))
     return { ok: false, reason: "digest does not match the seed" };
 
-  const value = data.bytes / bytesPerMegabyte / data.seconds;
+  const rounds = checkRounds({
+    rounds: data.rounds,
+    digest: data.digest,
+    minRounds: sha256MinRounds,
+  });
 
-  if (value > maxMegabytesPerSecond) return { ok: false, reason: `implausible rate ${value} MB/s` };
+  if (!rounds.ok) return rounds;
+
+  const fastest = fastestRate(data.rounds, data.bytes / bytesPerMegabyte);
+
+  if (fastest > maxMegabytesPerSecond)
+    return { ok: false, reason: `implausible rate ${fastest} MB/s` };
 
   return {
     ok: true,
-    value,
+    value: (data.bytes * rounds.count) / bytesPerMegabyte / rounds.totalSeconds,
     proof: data.digest,
-    details: { bytes: data.bytes, seconds: data.seconds },
+    details: { bytes: data.bytes, rounds: rounds.count, seconds: rounds.totalSeconds },
   };
 }
 
@@ -162,7 +190,7 @@ const cpuSha256Hash: ExpandedScenario = {
   category: "cpu",
   label: "SHA-256 hashing",
   description:
-    "Streams SHA-256 over a seeded 32 MiB buffer eight times in Node and reports hashing throughput.",
+    "Streams SHA-256 over a seeded 32 MiB buffer eight times per round in Node, in rounds for at least a second, and reports hashing throughput.",
   unit: "MB/s",
   better: "higher",
   async run(box, ctx) {
@@ -284,11 +312,41 @@ function gzipCorpus(seed: number): Buffer {
   return Buffer.from(lines.join(""), "utf8");
 }
 
+/** The gzip trailer for `data`: CRC-32 then length mod 2^32, both little-endian, as hex. */
+function gzipTrailerOf(data: Buffer): string {
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(crc32(data), 0);
+  trailer.writeUInt32LE(data.length % 2 ** 32, 4);
+
+  return trailer.toString("hex");
+}
+
 const gzipExpected = memo((seed: number) => {
   const corpus = gzipCorpus(seed);
 
-  return { rawBytes: corpus.length, digest: createHash("sha256").update(corpus).digest("hex") };
+  return {
+    rawBytes: corpus.length,
+    digest: createHash("sha256").update(corpus).digest("hex"),
+    trailer: gzipTrailerOf(corpus),
+  };
 });
+
+/** The trailer the guest's gzip output must end with for `seed`. */
+export function expectedGzipTrailer(seed: number): string {
+  return gzipExpected(seed).trailer;
+}
+
+/** Gzip magic and the deflate method byte: every gzip member starts with these. */
+export const gzipMagic = "1f8b08";
+
+/**
+ * Compressed size over raw size. zlib level 6 gives 0.223 on this corpus for every seed tried;
+ * the range leaves room for other zlib builds, and rejects stored (about 1.0) or truncated output.
+ */
+const gzipRatioRange = { min: 0.15, max: 0.3 } as const;
+
+/** Minimum timed gzip rounds; each is about 0.17 s on a fast core. */
+const gzipMinRounds = 3;
 
 /** The digest the guest must print for `seed`: SHA-256 of the decompressed corpus. */
 export function expectedGzipDigest(seed: number): string {
@@ -303,6 +361,7 @@ export function expectedGzipRawBytes(seed: number): number {
 export const gzipGuestScript = `import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 ${rngSource}
+${nodeRoundsSource}
 const seed = Number(process.argv[2]) >>> 0;
 const words = ${JSON.stringify(words)};
 const word = (next) => words[next() % words.length];
@@ -326,24 +385,35 @@ for (let seq = 0; total < ${gzipTargetBytes}; seq++) {
   total += line.length;
 }
 const raw = Buffer.from(lines.join(""), "utf8");
-const expected = createHash("sha256").update(raw).digest("hex");
-const started = performance.now();
-const compressed = gzipSync(raw, { level: 6 });
-const restored = gunzipSync(compressed);
-const seconds = (performance.now() - started) / 1000;
-const digest = createHash("sha256").update(restored).digest("hex");
-if (digest !== expected || restored.length !== raw.length) {
+let compressed = Buffer.alloc(0);
+let restored = Buffer.alloc(0);
+const { rounds, digest } = await timedRounds(${gzipMinRounds}, () => {
+  compressed = gzipSync(raw, { level: 6 });
+  restored = gunzipSync(compressed);
+  return createHash("sha256").update(restored).digest("hex");
+});
+if (!restored.equals(raw)) {
   console.error("gzip roundtrip mismatch");
   process.exit(1);
 }
-console.log(JSON.stringify({ seed, rawBytes: raw.length, compressedBytes: compressed.length, seconds, digest }));
+console.log(JSON.stringify({
+  seed,
+  rawBytes: raw.length,
+  compressedBytes: compressed.length,
+  gzipHead: compressed.subarray(0, 3).toString("hex"),
+  gzipTrailer: compressed.subarray(-8).toString("hex"),
+  rounds,
+  digest,
+}));
 `;
 
 const gzipReply = z.strictObject({
   seed: seedField,
   rawBytes: z.number().int().positive(),
   compressedBytes: z.number().int().positive(),
-  seconds,
+  gzipHead: z.string(),
+  gzipTrailer: z.string().regex(/^[0-9a-f]{16}$/),
+  rounds: roundsSchema,
   digest: hexDigest,
 });
 
@@ -361,25 +431,45 @@ function verifyGzip(raw: string, seed: number): VerifyResult {
   if (data.rawBytes !== expected.rawBytes)
     return { ok: false, reason: `corpus is ${data.rawBytes} bytes, want ${expected.rawBytes}` };
 
-  // A structured corpus compresses at least 2x; anything outside (0, raw / 2) was not gzip of it.
-  if (data.compressedBytes >= data.rawBytes / 2)
-    return { ok: false, reason: `compressed size ${data.compressedBytes} is not plausible` };
+  // The roundtrip digest alone is the corpus hash, which skipping compression also yields. The
+  // member header, the trailer's CRC-32 and length of the exact corpus, and a ratio in zlib's
+  // range only come from compressing it.
+  if (data.gzipHead !== gzipMagic)
+    return { ok: false, reason: `output starts ${data.gzipHead}, not a gzip member` };
+
+  if (data.gzipTrailer !== expected.trailer)
+    return { ok: false, reason: "gzip trailer CRC-32 or length does not match the corpus" };
+
+  const ratio = data.compressedBytes / data.rawBytes;
+
+  if (ratio < gzipRatioRange.min || ratio > gzipRatioRange.max)
+    return { ok: false, reason: `compression ratio ${ratio.toFixed(3)} is not plausible` };
 
   if (data.digest !== expected.digest)
     return { ok: false, reason: "digest does not match the seed" };
 
-  const value = data.rawBytes / bytesPerMegabyte / data.seconds;
+  const rounds = checkRounds({
+    rounds: data.rounds,
+    digest: data.digest,
+    minRounds: gzipMinRounds,
+  });
 
-  if (value > maxMegabytesPerSecond) return { ok: false, reason: `implausible rate ${value} MB/s` };
+  if (!rounds.ok) return rounds;
+
+  const fastest = fastestRate(data.rounds, data.rawBytes / bytesPerMegabyte);
+
+  if (fastest > maxMegabytesPerSecond)
+    return { ok: false, reason: `implausible rate ${fastest} MB/s` };
 
   return {
     ok: true,
-    value,
+    value: (data.rawBytes * rounds.count) / bytesPerMegabyte / rounds.totalSeconds,
     proof: data.digest,
     details: {
       rawBytes: data.rawBytes,
       compressedBytes: data.compressedBytes,
-      seconds: data.seconds,
+      rounds: rounds.count,
+      seconds: rounds.totalSeconds,
     },
   };
 }
@@ -389,7 +479,7 @@ const cpuGzipCompress: ExpandedScenario = {
   category: "cpu",
   label: "gzip roundtrip",
   description:
-    "Compresses and decompresses a seeded 8 MiB JSON corpus with zlib and checks the roundtrip byte for byte.",
+    "Compresses and decompresses a seeded 8 MiB JSON corpus with zlib, in rounds for at least a second, and checks the roundtrip byte for byte and the gzip CRC-32.",
   unit: "MB/s",
   better: "higher",
   async run(box, ctx) {
@@ -555,18 +645,35 @@ function walkJson(hash: number, value: JsonValue): number {
   return h;
 }
 
-/** The checksum the guest must print for `seed`. */
-export const expectedJsonChecksum = memo((seed: number) => {
+/**
+ * The document size and checksum the guest must print for `seed`. Iteration `i` starts its walk
+ * from a hash of `i`, so each of the 40 checksums needs its own walk; one walk reused fails.
+ */
+const jsonExpected = memo((seed: number) => {
   const text = jsonDocument(seed);
-  const walked = walkJson(0x811c9dc5, jsonValue.parse(JSON.parse(text)));
+  const doc = jsonValue.parse(JSON.parse(text));
   let acc = 0x811c9dc5;
 
-  for (let i = 0; i < jsonIterations; i++) acc = mixHash(mixHash(acc, i), walked);
+  for (let i = 0; i < jsonIterations; i++)
+    acc = mixHash(mixHash(acc, i), walkJson(mixHash(0x811c9dc5, i), doc));
 
-  return createHash("sha256")
-    .update(`${seed >>> 0}:${jsonIterations}:${text.length}:${acc}`)
-    .digest("hex");
+  return {
+    bytes: text.length,
+    checksum: createHash("sha256")
+      .update(`${seed >>> 0}:${jsonIterations}:${text.length}:${acc}`)
+      .digest("hex"),
+  };
 });
+
+/** The checksum the guest must print for `seed`. */
+export function expectedJsonChecksum(seed: number): string {
+  return jsonExpected(seed).checksum;
+}
+
+/** The exact length of the seeded document. */
+export function expectedJsonBytes(seed: number): number {
+  return jsonExpected(seed).bytes;
+}
 
 export const jsonGuestScript = `import { createHash } from "node:crypto";
 ${rngSource}
@@ -630,7 +737,7 @@ const started = performance.now();
 let acc = 0x811c9dc5;
 for (let i = 0; i < ${jsonIterations}; i++) {
   const doc = JSON.parse(text);
-  const walked = walk(0x811c9dc5, doc);
+  const walked = walk(mix(0x811c9dc5, i), doc);
   if (JSON.stringify(doc).length !== text.length) {
     console.error("stringify roundtrip mismatch");
     process.exit(1);
@@ -661,6 +768,12 @@ function verifyJson(raw: string, seed: number): VerifyResult {
 
   if (data.iterations !== jsonIterations)
     return { ok: false, reason: `ran ${data.iterations} iterations, want ${jsonIterations}` };
+
+  if (data.bytes !== expectedJsonBytes(seed))
+    return {
+      ok: false,
+      reason: `document is ${data.bytes} bytes, want ${expectedJsonBytes(seed)}`,
+    };
 
   if (data.checksum !== expectedJsonChecksum(seed))
     return { ok: false, reason: "checksum does not match the seed" };
@@ -759,11 +872,16 @@ export const expectedSieve = memo((seed: number) => {
   return { count: primes.length, digest: primeDigest(seed, primes) };
 });
 
+/** Minimum timed sieve rounds; each is about 0.1 s on a fast core. */
+const sieveMinRounds = 3;
+
 export const sieveGuestScript = `import { createHash } from "node:crypto";
+${nodeRoundsSource}
 const seed = Number(process.argv[2]) >>> 0;
 const limit = ${sieveBaseLimit} + (seed % ${sieveLimitSpread});
 const SEGMENT = ${sieveSegmentBytes};
-const started = performance.now();
+let count = 0;
+const { rounds, digest } = await timedRounds(${sieveMinRounds}, () => {
 const root = Math.floor(Math.sqrt(limit));
 const small = new Uint8Array(root + 1);
 const base = [];
@@ -774,7 +892,7 @@ for (let i = 2; i <= root; i++) {
 }
 const segment = new Uint8Array(SEGMENT);
 const primes = new Uint32Array(Math.ceil((limit / Math.log(limit)) * 1.3) + 16);
-let count = 0;
+count = 0;
 for (let low = 2; low <= limit; low += SEGMENT) {
   const high = Math.min(low + SEGMENT - 1, limit);
   segment.fill(0);
@@ -788,16 +906,16 @@ const head = Buffer.alloc(4);
 head.writeUInt32LE(seed, 0);
 const body = Buffer.alloc(count * 4);
 for (let i = 0; i < count; i++) body.writeUInt32LE(primes[i], i * 4);
-const digest = createHash("sha256").update(head).update(body).digest("hex");
-const seconds = (performance.now() - started) / 1000;
-console.log(JSON.stringify({ seed, limit, count, seconds, digest }));
+return createHash("sha256").update(head).update(body).digest("hex");
+});
+console.log(JSON.stringify({ seed, limit, count, rounds, digest }));
 `;
 
 const sieveReply = z.strictObject({
   seed: seedField,
   limit: z.number().int().positive(),
   count: z.number().int().positive(),
-  seconds,
+  rounds: roundsSchema,
   digest: hexDigest,
 });
 
@@ -824,15 +942,28 @@ function verifySieve(raw: string, seed: number): VerifyResult {
   if (data.digest !== expected.digest)
     return { ok: false, reason: "digest does not match the seed" };
 
-  const value = data.limit / data.seconds;
+  const rounds = checkRounds({
+    rounds: data.rounds,
+    digest: data.digest,
+    minRounds: sieveMinRounds,
+  });
 
-  if (value > maxSieveRate) return { ok: false, reason: `implausible rate ${value} ops/s` };
+  if (!rounds.ok) return rounds;
+
+  const fastest = fastestRate(data.rounds, data.limit);
+
+  if (fastest > maxSieveRate) return { ok: false, reason: `implausible rate ${fastest} ops/s` };
 
   return {
     ok: true,
-    value,
+    value: (data.limit * rounds.count) / rounds.totalSeconds,
     proof: data.digest,
-    details: { limit: data.limit, primes: data.count, seconds: data.seconds },
+    details: {
+      limit: data.limit,
+      primes: data.count,
+      rounds: rounds.count,
+      seconds: rounds.totalSeconds,
+    },
   };
 }
 
@@ -841,7 +972,7 @@ const cpuPrimeSieve: ExpandedScenario = {
   category: "cpu",
   label: "Prime sieve",
   description:
-    "Runs a segmented sieve of Eratosthenes up to a seeded limit near 32 million and hashes every prime found.",
+    "Runs a segmented sieve of Eratosthenes up to a seeded limit near 32 million and hashes every prime found, in rounds for at least a second.",
   unit: "ops/s",
   better: "higher",
   async run(box, ctx) {
