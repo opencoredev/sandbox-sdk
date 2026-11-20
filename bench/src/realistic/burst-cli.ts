@@ -1103,6 +1103,21 @@ export async function buildExport(
       for (const id of line.attemptIds)
         placed.set(id, { role: line.role, round: line.round, leftovers: line.leftovers });
 
+    // A round with tagged records but neither a round line nor a failed line stopped part way (the
+    // process ended before writing either): it is reported, not silently left out.
+    for (const record of found.records) {
+      const at = record.burst;
+
+      if (!at || placed.has(record.attemptId)) continue;
+
+      if (failed.some((f) => f.role === at.role && f.round === at.round)) continue;
+      failed.push({
+        role: at.role,
+        round: at.round,
+        reason: "the round stopped before it finished, so its tasks are left out",
+      });
+    }
+
     // A tagged record counts only when a completed round line names it: a round that stopped
     // before its line (a crash, a failed write) never finished its cleanup, so how its sandboxes
     // ended is unknown. An older, untagged record is placed by the round line that names it, or,

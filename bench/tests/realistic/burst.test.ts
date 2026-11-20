@@ -1740,6 +1740,13 @@ describe("the site data file, from tagged records", () => {
         skippedBurstRounds: [2],
       });
       expect(e2b?.tasks.map((t) => t.round)).toEqual([1, 1, 1]);
+      // The control round that stopped before its line is reported, not silently dropped.
+      expect(e2b?.status === "ran" ? e2b.harnessFailures : []).toContainEqual({
+        role: "control",
+        round: 2,
+        stage: "round",
+        reason: "the round stopped before it finished, so its tasks are left out",
+      });
       expect(vercel).toMatchObject({
         status: "not-run",
         reason: "spend ceiling: $9 spent",
