@@ -7,6 +7,7 @@
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { createServer as createH2Server, type ServerHttp2Session } from "node:http2";
 import type { AddressInfo } from "node:net";
+import { ConnectionConfig, type ConnectionOpts } from "e2b";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
@@ -19,6 +20,7 @@ import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 import { BillingHttpError, collectProvider, vercelMeter } from "../src/billing/providers.js";
 import { lookupSandbox } from "../src/existence.js";
 import { inspectSnapshot, snapshotCleaner } from "../src/snapshots.js";
+import { fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
 
@@ -336,6 +338,28 @@ it("E2B: E2B_DEBUG does not move the lookup to localhost while the adapter uses 
       : [404, { code: 404, message: "Not found" }],
   );
 
+  // The e2b package sends API calls through its own HTTP/2 agent, which no fetch stub sees. Its
+  // real ConnectionConfig resolves where a call with these options would go.
+  class NotFound extends Error {}
+
+  fakeNativeModules({
+    e2b: {
+      Sandbox: {
+        async getInfo(sandboxId: string, opts?: ConnectionOpts) {
+          const target = new ConnectionConfig(opts).apiUrl;
+          rows.push({ method: "GET", url: `${target}/sandboxes/${sandboxId}`, status: 0 });
+
+          if (target !== "https://api.fixture.invalid") throw new NotFound();
+
+          return { sandboxId, state: "running" };
+        },
+        listSnapshots: vi.fn(),
+        deleteSnapshot: vi.fn(),
+      },
+      SandboxNotFoundError: NotFound,
+    },
+  });
+
   const adapter = e2b();
   await adapter.api.request("GET", `/sandboxes/${id}`);
   expect((await lookupSandbox(adapter, id, 1500)).result).toBe("present");
@@ -430,7 +454,7 @@ it("Superserve: snapshot reads drop a trailing slash like the adapter", async ()
   vi.stubEnv("SUPERSERVE_BASE_URL", "https://superserve.fixture/");
   stubFetch((url) =>
     url.pathname === `/snapshots/${id}`
-      ? [200, { id, sandboxId: "source" }]
+      ? [200, { id, sandbox_id: "source", status: "ready", created_at: "2026-11-20T00:00:00Z" }]
       : [404, { error: { code: "not_found", message: "Not found" } }],
   );
 
