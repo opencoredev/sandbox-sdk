@@ -222,20 +222,50 @@ export const fingerprintSchema = z.string().regex(/^[0-9a-f]{16}$/);
 const connectionFields = z.record(z.string(), z.string().optional());
 
 /**
- * The fingerprint of a whole resolved connection: provider, endpoints, scope and credentials.
- * It identifies the connection without holding any of it, so the run's journal can keep it and a
- * reap can tell whether its environment rebuilds the same connection. Fields are sorted and unset
- * ones dropped, so equal connections hash alike whatever order `resolveConfig` built them in.
+ * What a connection takes from the environment through the provider's own SDK, where
+ * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Vercel's OIDC token.
  */
-function fingerprint(connection: Connection): string {
-  const fields = Object.entries(connectionFields.parse(connection.config))
+function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
+  const env = process.env;
+
+  switch (connection.name) {
+    case "boxd":
+      return connection.config.baseURL === undefined
+        ? { BOXD_BASE_URL: env.BOXD_BASE_URL, BOXD_API_URL: env.BOXD_API_URL }
+        : {};
+    case "tenki":
+      return connection.config.baseUrl === undefined
+        ? { TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT, TENKI_API_URL: env.TENKI_API_URL }
+        : {};
+    case "vercel":
+      return "token" in connection.config ? {} : { VERCEL_OIDC_TOKEN: env.VERCEL_OIDC_TOKEN };
+    default:
+      return {};
+  }
+}
+
+/** A connection's set fields, sorted by name. */
+function setFields(fields: z.infer<typeof connectionFields>): [string, string][] {
+  return Object.entries(fields)
     .filter((field): field is [string, string] => field[1] !== undefined)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
 
-  return createHash("sha256")
-    .update(JSON.stringify([connection.name, fields]))
-    .digest("hex")
-    .slice(0, 16);
+/**
+ * The fingerprint of a whole resolved connection: provider, endpoints, scope and credentials,
+ * with what the provider's SDK reads from the environment itself. It identifies the connection
+ * without holding any of it, so the run's journal can keep it and a reap can tell whether its
+ * environment rebuilds the same connection. Fields are sorted and unset ones dropped, so equal
+ * connections hash alike whatever order `resolveConfig` built them in.
+ */
+function fingerprint(connection: Connection): string {
+  const serialized = JSON.stringify([
+    connection.name,
+    setFields(connectionFields.parse(connection.config)),
+    setFields(sdkEnvironment(connection)),
+  ]);
+
+  return createHash("sha256").update(serialized).digest("hex").slice(0, 16);
 }
 
 /** This instance's connection fingerprint for the run's journal, or null when it has none. */
