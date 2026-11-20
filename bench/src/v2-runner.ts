@@ -59,6 +59,7 @@ import {
 } from "./ownership.js";
 import {
   snapshotCleaner,
+  undeletableSnapshots,
   createNamedDaytonaSnapshot,
   snapshotsFromSource,
   deleteProvenSnapshot,
@@ -1363,6 +1364,9 @@ export async function runV2(
             async () => {
               if (!p.provider.capabilities.has("snapshot") || !p.provider.snapshot)
                 throw new Skip("Provider has no snapshot");
+              const undeletable = undeletableSnapshots.get(p.name);
+
+              if (undeletable) throw new Skip(undeletable);
               snapshotProof = await proveSource(setupPhases);
               const nativeCleaner = await snapshotCleaner(p.name, p.provider, active.id);
               clean = (id) => {

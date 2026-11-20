@@ -681,3 +681,61 @@ it.each([false, true])(
     }
   },
 );
+
+it("skips Beam's snapshot scenario, whose snapshots cannot be deleted, before taking one", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
+  const backing = memory();
+  const taken: string[] = [];
+
+  const provider = {
+    ...backing,
+    capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>(["snapshot"]),
+    snapshot: async (id: string) => {
+      taken.push(id);
+
+      return { id: "never-deletable" };
+    },
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+
+  try {
+    const report = await runV2(
+      [{ kind: "ready", name: "beam", cloud: false, region: null, provider }],
+      parseV2([
+        "--providers",
+        "beam",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "snapshot",
+        "--out",
+        directory,
+      ]),
+      async () => {},
+    );
+
+    const setup = report.samples.find((s) => s.scenario === "snapshot-setup");
+
+    expect(setup?.outcome).toMatchObject({
+      kind: "skipped",
+      note: expect.stringContaining("no API to delete"),
+    });
+    // The memory fake fails the shell fingerprint; only the snapshot rows matter here.
+    expect(
+      report.samples.filter(
+        (s) => s.scenario.startsWith("snapshot") && s.outcome.kind === "failure",
+      ),
+    ).toEqual([]);
+    expect(taken).toEqual([]);
+    expect(report.cleanup).toEqual([{ provider: "beam", remaining: [], error: null }]);
+  } finally {
+    vi.restoreAllMocks();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

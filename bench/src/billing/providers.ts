@@ -179,6 +179,15 @@ const sources = new Map<string, BillingSource>(
         "Metered, not invoice: Instabox's own per-machine usage (running time only, not starting, paused or stopped) at the published rates, $0.004/vCPU-hour and $0.00225/GiB-hour (https://instabox.sh/docs/account/pricing.md). Disk is included in paid plans (Builder: 1 TiB across machines) and egress within the plan's allowance, so neither is priced. Plan fee, monthly credits and tax are excluded.",
       ],
     },
+    beam: {
+      source: "No verified public billing endpoint",
+      granularity: "not available",
+      delay: "unknown",
+      key: "BEAM_TOKEN",
+      notes: [
+        "The dashboard's Usage page shows workspace totals; no per-sandbox billing API found. No fabricated cost.",
+      ],
+    },
     freestyle: {
       source: "No verified public billing endpoint",
       granularity: "not available",
