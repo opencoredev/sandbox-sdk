@@ -5,12 +5,13 @@ import { e2b } from "../src/providers/e2b/index.js";
 import { boxd } from "../src/providers/boxd/index.js";
 import { daytona } from "../src/providers/daytona/index.js";
 import { boat } from "../src/providers/boat/index.js";
+import { luxor } from "../src/providers/luxor/index.js";
 import { tenki } from "../src/providers/tenki/index.js";
 import { freestyle } from "../src/providers/freestyle/index.js";
 import { superserve } from "../src/providers/superserve/index.js";
 import { upstash } from "../src/providers/upstash/index.js";
 import { boxd as mockBoxd, MockBoxd } from "./cloud-guest-mock.js";
-import { tenki as mockTenki, tenkiState, cleanupTenki } from "./tenki-mock.js";
+import { luxor as mockLuxor, luxorState, cleanupLuxor } from "./luxor-mock.js";
 import { fakeServer } from "./http-fake.js";
 
 const boxdConfigs: BoxdClientOptions[] = [];
@@ -76,7 +77,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   boxdConfigs.length = 0;
   e2bKeys.length = 0;
-  await cleanupTenki();
+  await cleanupLuxor();
 });
 
 test("boxd endpoint alias works and baseUrl wins", async () => {
@@ -127,9 +128,9 @@ test("boat endpoint alias works and baseUrl wins", async () => {
 });
 
 test("Luxor authToken alias works and apiKey wins", async () => {
-  await mockTenki({ authToken: "old" }).list({});
-  await mockTenki({ apiKey: "new", authToken: "old" }).list({});
-  expect(tenkiState.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
+  await mockLuxor({ authToken: "old" }).list({});
+  await mockLuxor({ apiKey: "new", authToken: "old" }).list({});
+  expect(luxorState.configs).toMatchObject([{ authToken: "old" }, { authToken: "new" }]);
 });
 
 test("Boat type alias works, machine wins, and per-create size still wins", async () => {
@@ -155,14 +156,16 @@ for (const [name, factory, env, label, next] of [
   ["boxd", boxd, "BOXD_API_KEY", "boxd", "BOXD_API_KEY"],
   ["daytona", daytona, "DAYTONA_API_KEY", "Daytona", "DAYTONA_API_KEY"],
   ["boat", boat, "BOAT_API_KEY", "Boat", "BOAT_API_KEY"],
-  ["tenki", tenki, "TENKI_API_KEY", "Luxor", "TENKI_API_KEY or TENKI_AUTH_TOKEN"],
+  ["luxor", luxor, "LUXOR_API_KEY", "Luxor", "LUXOR_API_KEY or LUXOR_AUTH_TOKEN"],
   ["freestyle", freestyle, "FREESTYLE_API_KEY", "Freestyle", "FREESTYLE_API_KEY"],
   ["superserve", superserve, "SUPERSERVE_API_KEY", "Superserve", "SUPERSERVE_API_KEY"],
   ["upstash", upstash, "UPSTASH_BOX_API_KEY", "Upstash Box", "UPSTASH_BOX_API_KEY"],
 ] as const) {
   test(`${name} constructs freely and reports missing credentials on first use`, async () => {
     vi.stubEnv(env, "");
-    vi.stubEnv("TENKI_AUTH_TOKEN", "");
+
+    for (const legacy of ["LUXOR_AUTH_TOKEN", "TENKI_API_KEY", "TENKI_AUTH_TOKEN"])
+      vi.stubEnv(legacy, "");
     const provider = factory();
     await expect(provider.list({})).rejects.toMatchObject({
       code: "auth",
@@ -198,4 +201,14 @@ test("E2B reads env after construction and allows retry after missing credential
   vi.stubEnv("E2B_API_KEY", "late-key");
   expect(await provider.list({})).toEqual([]);
   expect(e2bKeys).toEqual(["late-key"]);
+});
+
+test("tenki() is the Luxor adapter under its old name, and the LUXOR_ key wins over TENKI_", async () => {
+  expect(tenki).toBe(luxor);
+  expect(tenki().name).toBe("luxor");
+  vi.stubEnv("LUXOR_AUTH_TOKEN", "");
+  vi.stubEnv("LUXOR_API_KEY", "new-name");
+  vi.stubEnv("TENKI_AUTH_TOKEN", "old-name");
+  await mockLuxor().list({});
+  expect(luxorState.configs.at(-1)).toMatchObject({ authToken: "new-name" });
 });

@@ -41,7 +41,7 @@ const fakes = {
   daytona: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   upstash: `{ apiKey: "smoke-key" }`,
   railway: `{ token: "smoke-token", environmentId: "smoke-env" }`,
-  tenki: `{ apiKey: "tk_smoke", requestTimeoutMs: 5000 }`,
+  luxor: `{ apiKey: "tk_smoke", requestTimeoutMs: 5000 }`,
   boxd: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   freestyle: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   superserve: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
@@ -53,6 +53,7 @@ const fakes = {
 const skipped = {
   local: "no optional peer; drives the Docker CLI",
   agentos: "embedded runtime with a native sidecar; no network call to observe",
+  tenki: "deprecated alias of luxor; the luxor probe covers the same adapter and peer",
 };
 
 const providers = Object.entries(pkg.exports).flatMap(([subpath, target]) =>
@@ -136,7 +137,7 @@ const requireBanner = {
 
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
-const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files"];
+const needsRequire = ["vercel", "modal", "luxor", "boxd", "boxd files"];
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
@@ -266,15 +267,15 @@ try {
   // Minifiers rename every class, and esbuild renames colliding ones (the Luxor SDK's FileNotFoundError)
   // even without --minify. The mappers must still recognize the real native errors.
   const mapping = `
-const { FileNotFoundError: TenkiFileNotFoundError } = require("@tenkicloud/sandbox");
+const { FileNotFoundError: LuxorFileNotFoundError } = require("@luxorai/sandbox");
 const railway = require("railway");
-const { tenkiError } = require("./src/providers/tenki/errors.ts");
+const { luxorError } = require("./src/providers/luxor/errors.ts");
 const { railwayError, rememberRailwayErrors } = require("./src/providers/railway/errors.ts");
 const { loadPeer } = require("./src/peer.ts");
 (async () => {
   rememberRailwayErrors(await loadPeer("railway", "railway", async () => railway));
   const cases = [
-    ["tenki FileNotFoundError", TenkiFileNotFoundError, tenkiError(new TenkiFileNotFoundError("missing.txt"), "box", "files").code, "file_not_found"],
+    ["luxor FileNotFoundError", LuxorFileNotFoundError, luxorError(new LuxorFileNotFoundError("missing.txt"), "box", "files").code, "file_not_found"],
     ["railway SandboxFileNotFoundError", railway.SandboxFileNotFoundError, railwayError(new railway.SandboxFileNotFoundError({ operation: "read", path: "/x", message: "missing" }), "box").code, "file_not_found"],
     ["railway ExecNotStartedError", railway.ExecNotStartedError, railwayError(new railway.ExecNotStartedError({ message: "not started" }), "box").code, "unavailable"],
   ];

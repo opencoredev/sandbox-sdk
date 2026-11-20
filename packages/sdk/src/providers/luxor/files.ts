@@ -1,9 +1,9 @@
 import { posix } from "node:path";
-import type { TenkiSession as Session } from "./provider.js";
+import type { LuxorSession as Session } from "./provider.js";
 import type { FileInfo, ProviderFiles } from "../../provider.js";
 import { raw } from "./exec.js";
 import { workspaceSetup } from "./ready.js";
-import { failure, tenkiError } from "./errors.js";
+import { failure, luxorError } from "./errors.js";
 import { deadline } from "./deadline.js";
 import { fileInfo, isFileInfo } from "../../shared/guest.js";
 
@@ -110,7 +110,7 @@ export function files(
     } catch (error) {
       // Native APIs reject symlinks escaping /home/tenki. Preserve arbitrary
       // guest paths with the privileged transport in that case.
-      const code = tenkiError(error).code;
+      const code = luxorError(error).code;
 
       if (operation === "write" && code === "timeout") {
         // Session.writeFile has no AbortSignal. Keep this mutation attached to
@@ -146,7 +146,7 @@ export function files(
       try {
         return await deadline(() => action(box, resolved), 30_000);
       } catch (error) {
-        if (tenkiError(error).code === "file_not_found")
+        if (luxorError(error).code === "file_not_found")
           throw failure("File does not exist", "file_not_found");
 
         return fallback();

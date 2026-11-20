@@ -14,7 +14,7 @@ const providerNames = [
   "vercel",
   "upstash",
   "railway",
-  "tenki",
+  "luxor",
   "boxd",
   "freestyle",
   "superserve",
@@ -51,8 +51,8 @@ async function loadProvider(name: ProviderName): Promise<Provider> {
       return (await import("@opencoredev/sandbox-sdk/upstash")).upstash();
     case "railway":
       return (await import("@opencoredev/sandbox-sdk/railway")).railway();
-    case "tenki":
-      return (await import("@opencoredev/sandbox-sdk/tenki")).tenki();
+    case "luxor":
+      return (await import("@opencoredev/sandbox-sdk/luxor")).luxor();
     case "boxd":
       return (await import("@opencoredev/sandbox-sdk/boxd")).boxd();
     case "freestyle":

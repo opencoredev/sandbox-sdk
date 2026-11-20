@@ -45,7 +45,7 @@ import { createModalProvider } from "../../../packages/sdk/src/providers/modal/p
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
 import { superserve } from "../../../packages/sdk/src/providers/superserve/index.ts";
-import { createTenkiProvider } from "../../../packages/sdk/src/providers/tenki/provider.ts";
+import { createLuxorProvider } from "../../../packages/sdk/src/providers/luxor/provider.ts";
 import { createUpstashProvider } from "../../../packages/sdk/src/providers/upstash/provider.ts";
 import { createVercelProvider } from "../../../packages/sdk/src/providers/vercel/provider.ts";
 
@@ -128,7 +128,7 @@ const subjects: readonly Subject[] = [
   },
   { column: "Boat", build: () => boat({ apiKey: offlineKey }) },
   { column: "Sandboxer", build: () => sandboxer({ apiKey: offlineKey }) },
-  { column: "Luxor", build: () => createTenkiProvider({ apiKey: offlineKey }, stubTransport) },
+  { column: "Luxor", build: () => createLuxorProvider({ apiKey: offlineKey }, stubTransport) },
   {
     column: "Superserve",
     build: () => superserve({ apiKey: offlineKey }),

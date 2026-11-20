@@ -13,24 +13,24 @@ import type {
   ProcessRunOptions,
   ProcessRunResult,
   Session,
-  TenkiSandbox,
-} from "@tenkicloud/sandbox";
+  LuxorSandbox,
+} from "@luxorai/sandbox";
 import { isObject, isString } from "../src/shared/narrow.js";
 import {
-  createTenkiProvider,
-  type TenkiDataPlane,
-  type TenkiOptions,
-  type TenkiRunRequest,
-  type TenkiRunResponse,
-} from "../src/providers/tenki/provider.js";
+  createLuxorProvider,
+  type LuxorDataPlane,
+  type LuxorOptions,
+  type LuxorRunRequest,
+  type LuxorRunResponse,
+} from "../src/providers/luxor/provider.js";
 
 type WriteStreamOptions = { mode?: number; truncate?: boolean };
 
 type ExposeOptions = Parameters<Session["exposePort"]>[1];
 
-type SnapshotOptions = Parameters<TenkiSandbox["createSnapshot"]>[1];
+type SnapshotOptions = Parameters<LuxorSandbox["createSnapshot"]>[1];
 
-type ListOptions = Parameters<TenkiSandbox["list"]>[0];
+type ListOptions = Parameters<LuxorSandbox["list"]>[0];
 
 const missing = () => Object.assign(new Error("missing"), { name: "SessionNotFoundError" });
 const configs: ClientOptions[] = [];
@@ -46,7 +46,7 @@ const streamFailures: {
   error: Error;
 }[] = [];
 
-export const tenkiState = {
+export const luxorState = {
   configs,
   creates,
   boxes: new Map<string, MockSession>(),
@@ -95,7 +95,14 @@ export class MockSession {
     this.memoryMb = params.memoryMb ?? 4096;
     this.diskSizeGb = params.diskSizeGb ?? 5;
     this.outboundEnabled = params.allowOutbound ?? true;
-    this.egress = { allowDomains: params.allowDomains ?? [], allowCidrs: [] };
+    this.egress = {
+      allowDomains: params.allowDomains ?? [],
+      allowCidrs: [],
+      interceptHttps: false,
+      allowedPorts: [],
+      httpRules: [],
+      policyNames: [],
+    };
   }
   static async create(params: CreateOptions) {
     const server = createServer();
@@ -106,13 +113,13 @@ export class MockSession {
     await new Promise<void>((resolve) => server.close(() => resolve()));
 
     const value = new MockSession(
-      await fs.mkdtemp(join(tmpdir(), "sdk-tenki-")),
+      await fs.mkdtemp(join(tmpdir(), "sdk-luxor-")),
       params,
       address.port,
     );
 
     if (params.snapshotId) {
-      const root = tenkiState.snapshots.get(params.snapshotId);
+      const root = luxorState.snapshots.get(params.snapshotId);
 
       if (!root) throw missing();
       await promisify(execFile)("cp", ["-a", `${root}/.`, value.root]);
@@ -120,7 +127,7 @@ export class MockSession {
     }
 
     await fs.mkdir(join(value.root, "home/tenki"), { recursive: true });
-    tenkiState.boxes.set(value.id, value);
+    luxorState.boxes.set(value.id, value);
 
     return value;
   }
@@ -176,7 +183,7 @@ export class MockSession {
 
     const retain = (bytes: number) => {
       retainedBytes += bytes;
-      tenkiState.retainedPeakBytes = Math.max(tenkiState.retainedPeakBytes, retainedBytes);
+      luxorState.retainedPeakBytes = Math.max(luxorState.retainedPeakBytes, retainedBytes);
     };
 
     const out: Buffer[] = [];
@@ -272,7 +279,7 @@ export class MockSession {
     data: ReadableStream<Uint8Array>,
     options: WriteStreamOptions = {},
   ) {
-    tenkiState.calls.writeFileStream.push({ path, options });
+    luxorState.calls.writeFileStream.push({ path, options });
     const mapped = this.rewrite(path);
     await fs.mkdir(join(mapped, ".."), { recursive: true });
     await fs.writeFile(mapped, new Uint8Array(await new Response(data).arrayBuffer()));
@@ -280,34 +287,34 @@ export class MockSession {
     if (options.mode !== undefined) await fs.chmod(mapped, options.mode);
   }
   async writeFile(path: string, data: Uint8Array) {
-    tenkiState.calls.writeFile++;
+    luxorState.calls.writeFile++;
     const mapped = this.rewrite(path);
     await fs.mkdir(join(mapped, ".."), { recursive: true });
     await fs.writeFile(mapped, data);
   }
   get requireDataPlane() {
-    if (!tenkiState.streaming) return undefined;
+    if (!luxorState.streaming) return undefined;
 
     return async () => ({
-      run: (requests: AsyncIterable<TenkiRunRequest>) => this.frames(requests),
+      run: (requests: AsyncIterable<LuxorRunRequest>) => this.frames(requests),
     });
   }
   async reauthOnUnauthenticated(_error: Parameters<Session["reauthOnUnauthenticated"]>[0]) {
     return false;
   }
-  dataPlaneProvisioningPending(_plane: TenkiDataPlane) {
+  dataPlaneProvisioningPending(_plane: LuxorDataPlane) {
     return true;
   }
-  async refreshHintedDataPlane(_plane: TenkiDataPlane) {
+  async refreshHintedDataPlane(_plane: LuxorDataPlane) {
     return true;
   }
-  markDataPlaneServing(_plane: TenkiDataPlane) {}
+  markDataPlaneServing(_plane: LuxorDataPlane) {}
   private async *frames(
-    requests: AsyncIterable<TenkiRunRequest>,
-  ): AsyncGenerator<TenkiRunResponse> {
-    tenkiState.streamAttempts++;
-    const beforeExit = tenkiState.streamExitWaits.shift();
-    const failure = tenkiState.streamFailures.shift();
+    requests: AsyncIterable<LuxorRunRequest>,
+  ): AsyncGenerator<LuxorRunResponse> {
+    luxorState.streamAttempts++;
+    const beforeExit = luxorState.streamExitWaits.shift();
+    const failure = luxorState.streamFailures.shift();
 
     if (failure?.phase === "before-start") throw failure.error;
     const iterator = requests[Symbol.asyncIterator]();
@@ -413,9 +420,9 @@ v=sdk_paths(v)`;
     yield { frame: { payload: { case: "exit", value: { exitCode: await completion } } } };
   }
   async waitReady(_timeout?: number, signal?: AbortSignal) {
-    if (tenkiState.delayMs) await new Promise((resolve) => setTimeout(resolve, tenkiState.delayMs));
+    if (luxorState.delayMs) await new Promise((resolve) => setTimeout(resolve, luxorState.delayMs));
 
-    if (tenkiState.failReady || signal?.aborted) throw new Error("readiness failed");
+    if (luxorState.failReady || signal?.aborted) throw new Error("readiness failed");
   }
   async refresh() {}
   async pause() {
@@ -428,12 +435,12 @@ v=sdk_paths(v)`;
   }
   async waitResumed() {}
   async close() {
-    tenkiState.boxes.delete(this.id);
+    luxorState.boxes.delete(this.id);
     // A watcher poll stopped just before close can still be writing here; retry ENOTEMPTY.
     await fs.rm(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
   async exposePort(_port: number, options?: ExposeOptions) {
-    tenkiState.calls.exposePort.push(options);
+    luxorState.calls.exposePort.push(options);
 
     return {
       port: _port,
@@ -443,34 +450,34 @@ v=sdk_paths(v)`;
   }
 }
 
-export class MockTenki {
+export class MockLuxor {
   constructor(config: ClientOptions) {
-    tenkiState.configs.push(config);
+    luxorState.configs.push(config);
   }
   async create(params: CreateOptions = {}) {
-    tenkiState.creates.push(params);
+    luxorState.creates.push(params);
 
     return MockSession.create(params);
   }
   async get(id: string) {
-    const value = tenkiState.boxes.get(id);
+    const value = luxorState.boxes.get(id);
 
     if (!value) throw missing();
 
     return value;
   }
   async list(options?: ListOptions) {
-    tenkiState.calls.list.push(options);
+    luxorState.calls.list.push(options);
 
-    return [...tenkiState.boxes.values()];
+    return [...luxorState.boxes.values()];
   }
   async createSnapshot(id: string, options?: SnapshotOptions) {
-    tenkiState.calls.createSnapshot.push(options);
+    luxorState.calls.createSnapshot.push(options);
     const box = await this.get(id);
-    const root = await fs.mkdtemp(join(tmpdir(), "sdk-tenki-snapshot-"));
+    const root = await fs.mkdtemp(join(tmpdir(), "sdk-luxor-snapshot-"));
     await promisify(execFile)("cp", ["-a", `${box.root}/.`, root]);
     const snapshot = crypto.randomUUID();
-    tenkiState.snapshots.set(snapshot, root);
+    luxorState.snapshots.set(snapshot, root);
 
     return { id: snapshot };
   }
@@ -479,22 +486,22 @@ export class MockTenki {
   }
 }
 
-export async function cleanupTenki() {
-  await Promise.all([...tenkiState.boxes.values()].map((value) => value.close()));
+export async function cleanupLuxor() {
+  await Promise.all([...luxorState.boxes.values()].map((value) => value.close()));
   await Promise.all(
-    [...tenkiState.snapshots.values()].map((root) => fs.rm(root, { recursive: true, force: true })),
+    [...luxorState.snapshots.values()].map((root) => fs.rm(root, { recursive: true, force: true })),
   );
-  tenkiState.snapshots.clear();
-  tenkiState.configs.length = 0;
-  tenkiState.creates.length = 0;
-  tenkiState.failReady = false;
-  tenkiState.delayMs = 0;
-  tenkiState.retainedPeakBytes = 0;
-  tenkiState.streaming = true;
-  tenkiState.streamAttempts = 0;
-  tenkiState.streamFailures.length = 0;
-  tenkiState.streamExitWaits.length = 0;
-  tenkiState.calls = {
+  luxorState.snapshots.clear();
+  luxorState.configs.length = 0;
+  luxorState.creates.length = 0;
+  luxorState.failReady = false;
+  luxorState.delayMs = 0;
+  luxorState.retainedPeakBytes = 0;
+  luxorState.streaming = true;
+  luxorState.streamAttempts = 0;
+  luxorState.streamFailures.length = 0;
+  luxorState.streamExitWaits.length = 0;
+  luxorState.calls = {
     writeFile: 0,
     writeFileStream: [],
     exposePort: [],
@@ -504,6 +511,6 @@ export async function cleanupTenki() {
 }
 
 /** The Luxor adapter with this fixture in place of the SDK's client. */
-export function tenki(options: TenkiOptions = {}) {
-  return createTenkiProvider(options, async () => ({ TenkiSandbox: MockTenki }));
+export function luxor(options: LuxorOptions = {}) {
+  return createLuxorProvider(options, async () => ({ LuxorSandbox: MockLuxor }));
 }

@@ -40,7 +40,7 @@ It is not a hosted service: it calls each provider's HTTP API or SDK with your k
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. E2B, Daytona, Freestyle, Superserve, Instabox, Boat, and Sandboxer need nothing else. For Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`modal\`, \`@basetenlabs/sandbox\`, \`@upstash/box\`, \`railway\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. E2B, Daytona, Freestyle, Superserve, Instabox, Boat, and Sandboxer need nothing else. For Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`modal\`, \`@basetenlabs/sandbox\`, \`@upstash/box\`, \`railway\`, \`@luxorai/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -133,7 +133,7 @@ export default defineConfig({
               root: "/providers/sandboxer",
               icon: "/integrations/sandboxer.svg",
             },
-            { label: "Luxor", root: "/providers/tenki", icon: "/integrations/tenki.svg" },
+            { label: "Luxor", root: "/providers/luxor", icon: "/integrations/luxor.svg" },
             {
               label: "Superserve",
               root: "/providers/superserve",

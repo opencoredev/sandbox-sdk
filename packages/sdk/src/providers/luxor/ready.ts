@@ -1,8 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { TenkiSession as Session } from "./provider.js";
+import type { LuxorSession as Session } from "./provider.js";
 import { SandboxError } from "../../errors.js";
 import { deadline } from "./deadline.js";
-import { failure, tenkiError } from "./errors.js";
+import { failure, luxorError } from "./errors.js";
 
 /** SDK 1.4.1 waits for stream EOF even after RUNNING, and does not recover a
  * silent stream. Reserve the rest of the original budget for bounded refreshes.
@@ -33,7 +33,7 @@ export async function waitReady(
   } catch (error) {
     if (signal?.aborted) throw failure("Creation aborted", "aborted");
 
-    if (tenkiError(error).code !== "timeout") throw error;
+    if (luxorError(error).code !== "timeout") throw error;
   }
 
   // The stream may already have delivered RUNNING plus route credentials, but
@@ -54,7 +54,7 @@ export async function waitReady(
       if (["TERMINATED", "TERMINATING"].includes(value.state))
         throw failure("Session terminated before readiness", "not_found");
     } catch (error) {
-      const code = tenkiError(error).code;
+      const code = luxorError(error).code;
 
       if (["auth", "not_found", "invalid_argument", "aborted"].includes(code)) throw error;
       lastError = error;
@@ -75,7 +75,7 @@ export async function waitReady(
   // it until then so polling transport failures do not disappear as timeouts.
   throw new SandboxError("Luxor session did not become ready within its readiness budget.", {
     code: "timeout",
-    provider: "tenki",
+    provider: "luxor",
     sandboxId: value.id,
     cause: lastError,
   });

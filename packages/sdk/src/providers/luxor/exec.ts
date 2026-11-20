@@ -1,5 +1,5 @@
 import { guestProcess } from "../../shared/guest.js";
-import type { StreamingSession, TenkiSession as Session } from "./provider.js";
+import type { StreamingSession, LuxorSession as Session } from "./provider.js";
 import type { ExecInput } from "../../provider.js";
 import { deadline } from "./deadline.js";
 import { failure } from "./errors.js";
@@ -12,7 +12,7 @@ import { isNumber, isObject } from "../../shared/narrow.js";
  * the guest file API rejects paths outside /home/tenki, including /workspace.
  * A guest supervisor owns the timeout and process group, even if I/O disconnects.
  */
-// Never send user output through native run(): `@tenkicloud/sandbox` 1.4.1 retains every chunk.
+// Never send user output through native run(): `@luxorai/sandbox` 1.4.1 retains every chunk.
 // One guest spool preserves stdout/stderr arrival order; each RPC reads <=3 records.
 const supervisor = `import os,sys,json,base64,signal,selectors,time,pwd
 ${guestProcess}

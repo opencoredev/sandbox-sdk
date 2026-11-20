@@ -39,7 +39,7 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 | Instabox       | `@opencoredev/sandbox-sdk/instabox`   | `INSTABOX_API_KEY`; optional `INSTABOX_API_URL`                                                               |
 | Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        |
 | Railway        | `@opencoredev/sandbox-sdk/railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 |
-| Luxor          | `@opencoredev/sandbox-sdk/tenki`      | `TENKI_AUTH_TOKEN` or `TENKI_API_KEY`                                                                         |
+| Luxor          | `@opencoredev/sandbox-sdk/luxor`      | `LUXOR_AUTH_TOKEN` or `LUXOR_API_KEY`                                                                         |
 | boxd           | `@opencoredev/sandbox-sdk/boxd`       | `BOXD_API_KEY`; optional `BOXD_BASE_URL`                                                                      |
 | Freestyle      | `@opencoredev/sandbox-sdk/freestyle`  | `FREESTYLE_API_KEY`                                                                                           |
 | Superserve     | `@opencoredev/sandbox-sdk/superserve` | `SUPERSERVE_API_KEY`                                                                                          |
@@ -129,7 +129,7 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 - agentOS has no preview URLs and no background processes (`start` fails with `unsupported`).
 - Memory runs a small fake shell (`echo`, `cat`, `printf`, `sleep`, `ls`, `printenv`) with no git and fake preview URLs. Use it for tests, not real workloads.
 - Local pulls `node:22-bookworm` on first use.
-- Live smoke on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
+- Live smoke on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Luxor, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
 
 ## Report issues
 

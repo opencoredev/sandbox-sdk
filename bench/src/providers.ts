@@ -283,7 +283,9 @@ export async function loadProvider(
     name,
     cloud: credentials.has(name),
     region,
-    provider,
+    // Reports, journals and native lookups key on the benchmark id. The deprecated `tenki` entry
+    // point returns the adapter named `luxor`, so pin the name to the id it was loaded under.
+    provider: provider.name === name ? provider : { ...provider, name },
   };
 }
 

@@ -113,7 +113,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`   | nothing                       |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
-| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
+| [Luxor](https://sandbox-sdk.app/docs/providers/luxor)                  | `@opencoredev/sandbox-sdk/luxor`      | `@luxorai/sandbox`            |
 | boxd                                                                   | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
 | Freestyle                                                              | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`                   |
 | Superserve                                                             | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`             |

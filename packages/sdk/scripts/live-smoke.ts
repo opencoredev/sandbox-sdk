@@ -59,9 +59,9 @@ const registry = {
     env: [["BOAT_API_KEY"]],
     load: async () => (await import("../src/providers/boat/index.js")).boat(),
   },
-  tenki: {
-    env: [["TENKI_API_KEY", "TENKI_AUTH_TOKEN"]],
-    load: async () => (await import("../src/providers/tenki/index.js")).tenki(),
+  luxor: {
+    env: [["LUXOR_API_KEY", "LUXOR_AUTH_TOKEN", "TENKI_API_KEY", "TENKI_AUTH_TOKEN"]],
+    load: async () => (await import("../src/providers/luxor/index.js")).luxor(),
   },
   baseten: {
     env: [["BASETEN_API_KEY"]],
