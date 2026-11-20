@@ -59,6 +59,8 @@ Run `bun bench attempts results/publication-final-v2` to print every required pr
 | `--concurrency`            | `4`                                                                  | Global active normal sandbox iterations, maximum 32                                               |
 | `--provider-concurrency`   | `1`                                                                  | Active normal iterations per provider, maximum 32                                                 |
 | `--bursts`                 | `3`                                                                  | Isolated cohorts, e.g. `10,25`; empty string disables                                             |
+| `--survival-window-ms`     | `300000`                                                             | How long every survival cohort member must stay alive and answer heartbeats (max 1 hour)          |
+| `--survival-heartbeat-ms`  | `15000`                                                              | Heartbeat interval in survival cohorts, also each heartbeat's deadline (min 1000)                 |
 | `--account-limits`         | conservative defaults                                                | Overrides such as `e2b=20,tenki=5,boxd=50`; boxd must never exceed 50                             |
 | `--timeout-ms`             | `180000`                                                             | Scenario deadline and bounded cleanup/drain grace                                                 |
 | `--seed`                   | `45`                                                                 | Recorded PRNG seed for scenario-group order and bootstrap CIs                                     |
@@ -111,6 +113,7 @@ K=25 is skipped on accounts whose configured cap is lower. A burst above `--conc
 | `edit-loop`                        | Edit fixture HTML marker; poll public preview until the changed bytes are served, bypassing caches                                                                                              |
 | `tool-replay`                      | After any separately recorded `tool-replay-prepare` fixture upload: 100 deterministic SDK operations: write, read/validate, edit, list, grep via run, Node test; per-operation timings retained |
 | `pip-install`                      | Pinned requests/numpy and transitive set into a workspace target; imports and versions verified; pinned pip wheel bootstrap with SHA-256                                                        |
+| `cpu-sustained`                    | Fixed-work CPU probe (see [CPU and survival](#cpu-sustained-cpu-burst-and-burst-survival)); `cpu-sustained-single` and `cpu-sustained-all` in steps/s                                           |
 | `destroy`                          | Deletion requests only, retries retained; ownership checks and journal writes appear separately as `ownershipVerifyMs`/`ownershipPersistMs`; final listing verifies eventual deletion           |
 
 The fingerprint records CPU model and flags, affinity-aware `nproc`, cgroup CPU quota and memory limit, host MemTotal, df/lsblk capacity/type, virtualization probes and readable DMI, kernel/distro, user/uid/sudo, installed tools, Python version, steal time, and optional no-key ipinfo egress IP/org/region. A failed IP lookup is null. A provider may expose host CPU/RAM/disk information beyond its allocation; prefer cgroup limits and inspect raw fields. Default Docker reference size is `medium` (2 vCPU / 4 GiB); its shared backing filesystem size is not a dedicated disk allocation.
@@ -123,6 +126,36 @@ Guest performance uses the same rootless CPython script everywhere. It never ins
 - Network: exactly 25,000,000 bytes from `https://speed.cloudflare.com/__down?bytes=25000000`, including TLS, using a fixed User-Agent; decimal MB/s. TCP latency is the mean of five connects to `1.1.1.1:443`. HTTP denial and byte-count mismatches are failures.
 
 The HTTP edit loop verifies served file changes, not browser rendering or React HMR execution. Network location, shared tenancy, provider image caches, package caches, and filesystem caching remain confounders. The raw host counters include loadavg, per-core ticks, process CPU and `/proc/net/dev` before/after each sample so client bottlenecks can be investigated.
+
+## CPU sustained, CPU burst and burst survival
+
+Three scenarios for how a provider holds up under load, beside the readiness bursts. None is part of the CI benchmark.
+
+**`cpu-sustained`** is a main-suite scenario, selected by `all` or by name. `probes/cpu.py` runs the same CPython 32-bit LCG kernel and seed as `perf.py`'s `cpu-single`/`cpu-all`, for fixed work: 20 segments of 10,000,000 steps on one process, then the same on `ceil(min(nproc, quota))` workers (max 64) started together. Workers are plain `fork()` children reporting over pipes, so the probe needs no `/dev/shm` (unlike `perf.py`). Every process's final LCG state must equal the harness's own computation, or the row fails: a fast row cannot come from skipped work. Rows: `cpu-sustained` (probe wall time, full output in `details`), `cpu-sustained-single` and `cpu-sustained-all` in steps/s. Their `details` record seconds, each segment's rate, steadiness (mean rate of the last quarter of segments over the first quarter; below 1 means the guest slowed down), and the CPUs the guest sees: visible, affinity set and cgroup quota, with `guestVcpus` = affinity capped by quota. On the CPUs published so far (9-20 M steps/s) each phase takes roughly 10-25 s. Use a dedicated collection so the main suite's timings are not lengthened: `--scenarios cpu-sustained --runs 30`.
+
+**`cpu-burst`** and **`survival`** are cohort suites like `burst`: K sandboxes created at once (K from `--bursts`, repeated `--burst-cohorts` times), isolated from normal iterations and from other providers, with the same account caps and admission rules. They run only when named in `--scenarios`; a run naming only them collects no normal iterations and no readiness bursts. Each member is created and fingerprinted, then waits until every member is ready or has failed, so the work starts together.
+
+- `cpu-burst`: every member runs the probe with 4 segments of 10,000,000 steps. Member rows: `cpu-burst-K/cold`, `fingerprint`, `cpu`, `cpu-single`, `cpu-all`, `destroy`, `sandbox-lifetime`. The aggregate `cpu-burst-K/all-complete` (ms) runs from the common start to the slowest member's return; it is a sample only when all K completed. Its `details` hold the per-sandbox spread for both phases: nearest-rank p50/p95, min/max, mean, max/min and coefficient of variation.
+- `survival`: each member sends `cat /proc/sys/kernel/random/boot_id` every `--survival-heartbeat-ms` from the common start through `--survival-window-ms` (21 heartbeats for 5 minutes at 15 s), each bounded by the interval. A reply must be a boot ID. After a missed heartbeat the harness makes one exact read-only native lookup. The member died if the sandbox is absent or terminal, its native state is dead (exited, stopped, failed and similar), the SDK said `not_found`, or the boot ID changed (a reboot loses state); any other miss makes it unresponsive, even if it recovered. Member rows: `survival-K/window` (ms; a sample when every heartbeat answered, else a failure carrying the first miss's error), with every heartbeat and the verdict in `details`. The aggregate `survival-K/cohort` (unit `sandboxes`) counts survivors, with `attempted`, `createFailed`, `died`, `unresponsive` and `interrupted` in `details`. An interrupted run's unfinished windows are skipped, not failures.
+
+Create failures in both suites keep the failure taxonomy. Besides the existing rules, a `cpu-burst` or `survival` create or heartbeat refused with SDK code `quota`, HTTP 429 or quota/rate-limit wording is `provider-account-limit`, not a provider failure. Admission reserves create + fingerprint + 1 step for `cpu-burst`, and create + fingerprint + 2 steps + the window for `survival`, per member. Modal's hard lifetime covers a survival window.
+
+```sh
+bun bench --scenarios cpu-sustained --runs 30 --bursts "" --run cpu-sustained-001 --out results/cpu-sustained-001
+bun bench --scenarios cpu-burst --bursts 10,25 --burst-cohorts 3 --concurrency 25 --run cpu-burst-001 --out results/cpu-burst-001
+bun bench --scenarios survival --bursts 10,25 --burst-cohorts 3 --concurrency 25 --run survival-001 --out results/survival-001
+```
+
+`merge` keeps them as raw rows under their own suites (`cpu-burst`, `survival`; `cpu-sustained` stays `main`), and `site-data` exports them in a `stress` section:
+
+- `stress.observations`, `stress.runs[]` (`id`, `suite`, `samples`): the stress rows and the runs they came from.
+- `stress.cpuSustained[]`: `provider`; `single` and `all` (`n`, `p50`, `p95`, `min`, `max`, `ciLow`, `ciHigh`, steps/s); `singleSeconds`, `allSeconds` (`p50`, `max`); `steadiness.single`/`.all` (`p50`, `min`); `guestVcpus` and `workers` (`value`, `count`); `attempts` (`successes`, `failures` by `accountLimit`/`clientNetwork`/`provider`, `blocked`, `skipped`).
+- `stress.cpuBurst[]` per `k`: `providers[]` with `cohorts`, `completeCohorts`, `members` (`attempted`, `ready`, `completed`), `failures` by class, `perSandbox.single`/`.all` spreads (`n`, `p50`, `p95`, `min`, `max`, `mean`, `maxOverMin`, `cv`), `withinCohortMaxOverMin` (`p50`, `max`), `allCompleteS` (`n`, `p50`, `max`).
+- `stress.burstSurvival[]` per `k`: `providers[]` with `windowS`, `heartbeatS`, `cohorts`, `attempted`, `survived`, `createFailed` (`total` and by class), `died`, `unresponsive`, `interrupted`, `windowFailures` by class, and `survivalRate` = survived / (attempted − account-limit and client create failures − interrupted).
+
+Every older site-data field reads only the older scenarios, so adding stress runs leaves them unchanged. A main run that also collected `cpu-sustained` still counts its cold, fingerprint and destroy rows in the older metrics, like any main run; its `runs[].samples` counts every row it has.
+
+The run report's "Stress planning estimates" table prices these suites from a pilot's own rows: CPU sustained as 30 dedicated iterations, and each cohort suite at K=10 and K=25 with the configured cohorts, from the mean member lifetime. It is separate from the existing totals.
 
 ## Costs and statistics
 

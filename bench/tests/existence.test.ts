@@ -300,3 +300,23 @@ it("recognizes installed boxd NotFoundError grpcCode5 without accepting auth, qu
   const output = spawnSync("bun", ["-e", source], { encoding: "utf8", timeout: 10000 });
   expect(output.status, output.stderr).toBe(0);
 });
+
+it("reads a local container's nested Docker state as evidence without calling it absent", async () => {
+  const id = "c86ad5bc28459bc554afb7866930b80b224be85d06bcc353c32bcfdfb60861ec";
+
+  const local = (status: string) => ({
+    ...memory(),
+    name: "local",
+    native: () => ({ client: { call: async () => ({ Id: id, State: { Status: status } }) } }),
+  });
+
+  // An exited container still exists until removed: present, with its state for the survival verdict.
+  expect(await lookupSandbox(local("exited"), id, 1000)).toMatchObject({
+    result: "present",
+    nativeState: "exited",
+  });
+  expect(await lookupSandbox(local("paused"), id, 1000)).toMatchObject({
+    result: "present",
+    nativeState: "paused",
+  });
+});

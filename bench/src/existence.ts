@@ -348,6 +348,12 @@ const nativeInfo = z.object({
 
 const memoryNotFound = z.object({ code: z.literal("not_found") });
 
+/** The fields the bench reads from Docker's container inspect. */
+const dockerContainer = z.object({
+  Id: z.string(),
+  State: z.object({ Status: z.string().optional() }).optional(),
+});
+
 /** Exact, read-only native lookup. No guest setup, connect/activate, resume or delete. */
 export async function lookupSandbox(
   provider: Provider,
@@ -512,9 +518,13 @@ export async function lookupSandbox(
         case "local": {
           const docker = localDocker(provider, id);
 
-          return nativeInfo.parse(
+          const container = dockerContainer.parse(
             await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`),
           );
+
+          // Docker nests the state ("running", "paused", "exited"). None is terminal: an exited
+          // container still exists until removed, so cleanup treats it as present.
+          return { Id: container.Id, state: container.State?.Status };
         }
 
         default:
