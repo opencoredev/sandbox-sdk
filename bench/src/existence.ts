@@ -286,7 +286,8 @@ export const nativeModules = { load: sdk };
 
 /**
  * The control plane a Superserve key's sandboxes live on, as @superserve/sdk 0.11.4's
- * `resolveConfig` picks it: a non-blank SUPERSERVE_BASE_URL, then the key's region
+ * `resolveConfig` picks it, joined as its HTTP client joins paths: a non-blank SUPERSERVE_BASE_URL
+ * without trailing slashes, then the key's region
  * (`ss_live_<region>_`), then US East. A lookup sent to another region's plane answers 404 for
  * a sandbox that is still running there, which would read as absence.
  */
@@ -294,7 +295,9 @@ export function superserveControlPlane(
   key = process.env.SUPERSERVE_API_KEY ?? "",
   override = process.env.SUPERSERVE_BASE_URL,
 ): string {
-  const explicit = override?.trim();
+  // The SDK's HTTP client drops trailing slashes before appending a path; a `//sandboxes` path
+  // can answer 404 for a live sandbox.
+  const explicit = override?.trim().replace(/\/+$/, "");
 
   if (explicit) return explicit;
   const region = /^ss_live_([a-z0-9]{1,17})_[A-Za-z0-9_-]{32}$/.exec(key)?.[1];
@@ -476,7 +479,7 @@ export async function lookupSandbox(
         case "instabox": {
           // GET only: it never wakes, starts or changes the machine.
           const response = await fetch(
-            `${process.env.INSTABOX_API_URL ?? "https://api.instabox.sh"}/v1/machines/${encodeURIComponent(id)}`,
+            `${(process.env.INSTABOX_API_URL ?? "https://api.instabox.sh").replace(/\/+$/, "")}/v1/machines/${encodeURIComponent(id)}`,
             { headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" }, signal },
           );
 

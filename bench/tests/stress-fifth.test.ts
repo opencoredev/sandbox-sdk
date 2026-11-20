@@ -55,3 +55,22 @@ it("an explicit SUPERSERVE_BASE_URL still wins over the key's region", async () 
   await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100);
   expect(fetcher.mock.calls[0]?.[0]).toBe("https://api-staging.superserve.ai/sandboxes/target");
 });
+
+it("a trailing slash on a base URL override doesn't change the lookup path, as in the SDK", async () => {
+  vi.stubEnv("SUPERSERVE_API_KEY", `ss_live_usw_${"a".repeat(32)}`);
+  vi.stubEnv("SUPERSERVE_BASE_URL", "https://api-usw.superserve.ai//");
+  vi.stubEnv("INSTABOX_API_URL", "https://api.instabox.sh/");
+  vi.stubEnv("INSTABOX_API_KEY", "offline");
+
+  const fetcher = vi
+    .fn()
+    .mockResolvedValue(new Response(JSON.stringify({ id: "target", status: "running" })));
+
+  vi.stubGlobal("fetch", fetcher);
+  await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100);
+  await lookupSandbox({ ...memory(), name: "instabox" }, "target", 100);
+  expect(fetcher.mock.calls.map((call) => call[0])).toEqual([
+    "https://api-usw.superserve.ai/sandboxes/target",
+    "https://api.instabox.sh/v1/machines/target",
+  ]);
+});
