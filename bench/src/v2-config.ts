@@ -168,18 +168,26 @@ const schema = z.object({
     .string()
     .regex(/^[a-zA-Z0-9_-]{1,100}$/)
     .default(`sbx45-${Date.now()}`),
+  // Start even when --out holds another run's journal with entries, overwriting it.
+  force: z.boolean().default(false),
 });
 
 export type ConfigV2 = z.infer<typeof schema>;
 
 const repeatable = new Set(["size", "template", "product"]);
+const flags = new Set(["force"]);
+
+type ArgOption = { type: "string"; multiple?: boolean } | { type: "boolean" };
+
+function argOption(key: string): ArgOption {
+  if (flags.has(key)) return { type: "boolean" };
+
+  return repeatable.has(key) ? { type: "string", multiple: true } : { type: "string" };
+}
 
 export function parseV2(args: string[]) {
-  const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
-    Object.keys(schema.shape).map((key) => [
-      key,
-      repeatable.has(key) ? { type: "string", multiple: true } : { type: "string" },
-    ]),
+  const options: Record<string, ArgOption> = Object.fromEntries(
+    Object.keys(schema.shape).map((key) => [key, argOption(key)]),
   );
 
   const config = schema.parse(parseArgs({ args, options, strict: true }).values);

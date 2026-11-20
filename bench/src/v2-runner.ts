@@ -98,6 +98,7 @@ import {
   hasRunOwnership,
   verifyRunOwnership,
   writeOwnership,
+  assertJournalFree,
   type CleanupReview,
   proveSnapshotSource,
   type SnapshotProvenance,
@@ -345,6 +346,8 @@ export async function runV2(
   metadata = collectMetadata(),
 ) {
   await mkdir(resolve(config.out), { recursive: true });
+  // Before this run writes anything there: another run's journal must not be overwritten.
+  await assertJournalFree(join(resolve(config.out), "ownership.json"), config.run, config.force);
   await journalFiles.writeFile(
     join(resolve(config.out), "run.json"),
     JSON.stringify({ runId: config.run }),
