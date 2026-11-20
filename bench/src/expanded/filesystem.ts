@@ -29,7 +29,16 @@ import {
   seedSchema,
   sha256Hex,
 } from "./guest-kit.js";
-import { checkRounds, nodeRoundsSource, pythonRoundsSource, roundsSchema } from "./rounds.js";
+import {
+  checkRounds,
+  nodeRoundsSource,
+  perRound,
+  proofIs,
+  pythonRoundsSource,
+  roundsSchema,
+  roundsWith,
+} from "./rounds.js";
+import { memo } from "./verify-kit.js";
 import type { ExpandedContext, ExpandedScenario, VerifyResult } from "./types.js";
 
 const bytesPerMegabyte = 1_000_000;
@@ -41,7 +50,7 @@ const smallDirCount = 20;
 
 const pad = (value: number, width: number) => String(value).padStart(width, "0");
 
-/** Path and content of small file `index`, as the guest generates it. */
+/** Path and content of small file `index`, as the guest generates it, before a round's salt. */
 function smallFile(seed: number, index: number) {
   const lines: string[] = [];
 
@@ -54,16 +63,23 @@ function smallFile(seed: number, index: number) {
   };
 }
 
-export function expectedSmallFilesDigest(seed: number): string {
+const smallFiles = memo((seed) =>
+  Array.from({ length: smallFileCount }, (_, index) => smallFile(seed, index)),
+);
+
+/**
+ * The manifest digest round `round` must print: every file starts with the round's salt line,
+ * `// <salt>`, then its seeded lines.
+ */
+export const expectedSmallFilesDigest = perRound((seed, round) => {
+  const salt = `// ${seededHex(seed, "small-round", round)}\n`;
   const entries = new Map<string, string>();
 
-  for (let index = 0; index < smallFileCount; index++) {
-    const file = smallFile(seed, index);
-    entries.set(file.path, sha256Hex(file.content));
-  }
+  for (const file of smallFiles(seed))
+    entries.set(file.path, createHash("sha256").update(salt).update(file.content).digest("hex"));
 
   return manifestDigest(entries);
-}
+});
 
 /** Minimum timed rounds of the 500-file tree; each is about 15 ms on local disk. */
 const smallMinRounds = 5;
@@ -79,11 +95,14 @@ for (let i = 0; i < ${smallFileCount}; i++) {
   for (let j = 0; j < 2 + (i % 7); j++) lines.push("export const k" + i + "_" + j + ' = "' + h("small", i, j) + '";');
   files.push(["d" + pad(i % ${smallDirCount}, 2) + "/f" + pad(i, 3) + ".ts", lines.join("\\n") + "\\n"]);
 }
-const written = new Map(files);
+const prepare = (round) => {
+  const salt = "// " + h("small-round", round) + "\\n";
+  return new Map(files.map(([path, content]) => [path, salt + content]));
+};
 let fileCount = 0;
-const { rounds, digest } = await timedRounds(${smallMinRounds}, () => {
+const rounds = await timedRounds(${smallMinRounds}, prepare, (written) => {
   for (let d = 0; d < ${smallDirCount}; d++) mkdirSync(base + "/d" + pad(d, 2), { recursive: true });
-  for (const [path, content] of files) writeFileSync(base + "/" + path, content);
+  for (const [path, content] of written) writeFileSync(base + "/" + path, content);
   const entries = [];
   for (const dir of readdirSync(base).sort()) {
     for (const name of readdirSync(base + "/" + dir).sort()) {
@@ -97,9 +116,9 @@ const { rounds, digest } = await timedRounds(${smallMinRounds}, () => {
   if (existsSync(base)) throw new Error("tree survived delete");
   fileCount = entries.length;
   entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return sha(entries.map(([p, d]) => p + ":" + d).join("\\n"));
+  return { proof: sha(entries.map(([p, d]) => p + ":" + d).join("\\n")) };
 });
-console.log(JSON.stringify({ seed: SEED, fileCount, rounds, digest }));
+console.log(JSON.stringify({ seed: SEED, fileCount, rounds, digest: rounds[0].proof }));
 `;
 
 const smallFilesOutput = z.strictObject({
@@ -122,9 +141,13 @@ export function verifySmallFiles(raw: string, seed: number): VerifyResult {
   if (out.fileCount !== smallFileCount)
     return failure(`fileCount ${out.fileCount}, expected ${smallFileCount}`);
 
-  if (out.digest !== expectedSmallFilesDigest(seed)) return failure("manifest digest mismatch");
+  if (out.digest !== expectedSmallFilesDigest(seed, 0)) return failure("manifest digest mismatch");
 
-  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: smallMinRounds });
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    minRounds: smallMinRounds,
+    check: proofIs((round) => expectedSmallFilesDigest(seed, round)),
+  });
 
   if (!rounds.ok) return rounds;
 
@@ -152,29 +175,52 @@ interface SqliteRow {
   value: number;
 }
 
-/** The guest's table after its inserts, lookups and updates, recomputed from the seed. */
-export function expectedSqlite(seed: number) {
-  const rows: SqliteRow[] = [];
-
-  for (let i = 0; i < sqliteRows; i++) {
+/** The seed's rows before any round's salt, with the lookup and update plans every round runs. */
+const sqliteBase = memo((seed) => {
+  const rows = Array.from({ length: sqliteRows }, (_, i) => {
     const hex = seededHex(seed, "row", i);
-    rows.push({
+
+    return {
       key: hex.slice(0, 16),
       group: hexInt(hex, 16, 20) % 50,
       value: hexInt(hex, 20, 28) % 1_000_000,
-    });
-  }
+    };
+  });
 
-  let lookupSum = 0;
+  const lookups = Array.from(
+    { length: sqliteLookups },
+    (_, j) => hexInt(seededHex(seed, "look", j), 0, 8) % sqliteRows,
+  );
 
-  for (let j = 0; j < sqliteLookups; j++)
-    lookupSum += rows[hexInt(seededHex(seed, "look", j), 0, 8) % sqliteRows]?.value ?? 0;
-
-  for (let j = 0; j < sqliteUpdates; j++) {
+  const updates = Array.from({ length: sqliteUpdates }, (_, j) => {
     const hex = seededHex(seed, "upd", j);
-    const row = rows[hexInt(hex, 0, 8) % sqliteRows];
 
-    if (row) row.value += hexInt(hex, 8, 12) % 1000;
+    return { id: hexInt(hex, 0, 8) % sqliteRows, delta: hexInt(hex, 8, 12) % 1000 };
+  });
+
+  return { rows, lookups, updates };
+});
+
+/** Round `round`'s salt: row `i` stores its seeded value plus `salt * (i + 1)`, mod 1,000,000. */
+function sqliteSalt(seed: number, round: number): number {
+  return hexInt(seededHex(seed, "sqlite-round", round), 0, 5);
+}
+
+const sqliteRound = perRound((seed, round) => {
+  const base = sqliteBase(seed);
+  const salt = sqliteSalt(seed, round);
+
+  const rows: SqliteRow[] = base.rows.map((row, i) => ({
+    ...row,
+    value: (row.value + salt * (i + 1)) % 1_000_000,
+  }));
+
+  const lookupSum = base.lookups.reduce((sum, id) => sum + (rows[id]?.value ?? 0), 0);
+
+  for (const update of base.updates) {
+    const row = rows[update.id];
+
+    if (row) row.value += update.delta;
   }
 
   const groups = new Map<number, { sum: number; count: number }>();
@@ -189,14 +235,15 @@ export function expectedSqlite(seed: number) {
   const ordered = [...groups.entries()].sort(([a], [b]) => a - b);
   const aggregateSum = ordered.reduce((total, [, group]) => total + group.sum, 0);
   const groupText = ordered.map(([id, group]) => `${id}:${group.sum}:${group.count}`).join(";");
-  const updatedIds = new Set<number>();
-
-  for (let j = 0; j < sqliteUpdates; j++)
-    updatedIds.add(hexInt(seededHex(seed, "upd", j), 0, 8) % sqliteRows);
-
+  const updatedIds = new Set(base.updates.map((update) => update.id));
   const updatedSum = [...updatedIds].reduce((total, id) => total + (rows[id]?.value ?? 0), 0);
 
   return { aggregateSum, updatedSum, digest: sha256Hex(`${lookupSum}|${groupText}`) };
+});
+
+/** The guest's table after round `round`'s inserts, lookups and updates, recomputed from the seed. */
+export function expectedSqlite(seed: number, round = 0) {
+  return sqliteRound(seed, round);
 }
 
 /** Minimum timed rounds of the OLTP mix; each is about 12 ms on local disk. */
@@ -205,10 +252,10 @@ const sqliteMinRounds = 5;
 export const sqliteProgram = `${pythonPrelude}
 ${pythonRoundsSource}
 import sqlite3
-rows = []
+base_rows = []
 for i in range(${sqliteRows}):
     r = h("row", i)
-    rows.append((i, r[:16], int(r[16:20], 16) % 50, int(r[20:28], 16) % 1000000))
+    base_rows.append((i, r[:16], int(r[16:20], 16) % 50, int(r[20:28], 16) % 1000000))
 looks = [int(h("look", j)[:8], 16) % ${sqliteRows} for j in range(${sqliteLookups})]
 updates = []
 for j in range(${sqliteUpdates}):
@@ -216,7 +263,10 @@ for j in range(${sqliteUpdates}):
     updates.append((int(u[8:12], 16) % 1000, int(u[:8], 16) % ${sqliteRows}))
 path = os.path.join(ROOT, "test.db")
 state = {}
-def work(r):
+def prepare(r):
+    salt = int(h("sqlite-round", r)[:5], 16)
+    return [(i, k, g, (v + salt * (i + 1)) % 1000000) for i, k, g, v in base_rows]
+def work(rows):
     for suffix in ("", "-wal", "-shm"):
         if os.path.exists(path + suffix):
             os.remove(path + suffix)
@@ -250,9 +300,10 @@ def work(r):
     integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
     ops += 1
     con.close()
-    state.update(ops=ops, mode=mode, integrity=integrity, aggregate=sum(g[1] for g in groups))
-    return sha("%d|%s" % (lookup_sum, ";".join("%d:%d:%d" % g for g in groups)))
-rounds, digest = timed_rounds(${sqliteMinRounds}, work)
+    state.update(ops=ops, mode=mode, integrity=integrity)
+    return {"proof": sha("%d|%s" % (lookup_sum, ";".join("%d:%d:%d" % g for g in groups))),
+        "aggregateSum": sum(g[1] for g in groups)}
+rounds = timed_rounds(${sqliteMinRounds}, prepare, work)
 # Untimed: facts only the database file the last round left behind can answer.
 file_bytes = os.path.getsize(path)
 con = sqlite3.connect(path, isolation_level=None)
@@ -265,10 +316,10 @@ file_mode = con.execute("PRAGMA journal_mode").fetchone()[0]
 file_integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
 con.close()
 print(json.dumps({"seed": SEED, "ops": state["ops"], "journalMode": state["mode"],
-    "integrityOk": state["integrity"] == "ok", "aggregateSum": state["aggregate"],
+    "integrityOk": state["integrity"] == "ok",
     "fileBytes": file_bytes, "filePageCount": page_count, "filePageSize": page_size,
     "fileRows": file_rows, "fileUpdatedSum": updated_sum, "fileJournalMode": file_mode,
-    "fileIntegrityOk": file_integrity == "ok", "rounds": rounds, "digest": digest}))
+    "fileIntegrityOk": file_integrity == "ok", "rounds": rounds, "digest": rounds[0]["proof"]}))
 `;
 
 const sqliteOutput = z.strictObject({
@@ -276,7 +327,6 @@ const sqliteOutput = z.strictObject({
   ops: z.number().int(),
   journalMode: z.string(),
   integrityOk: z.boolean(),
-  aggregateSum: z.number().int(),
   fileBytes: z.number().int(),
   filePageCount: z.number().int(),
   filePageSize: z.number().int(),
@@ -284,9 +334,22 @@ const sqliteOutput = z.strictObject({
   fileUpdatedSum: z.number().int(),
   fileJournalMode: z.string(),
   fileIntegrityOk: z.boolean(),
-  rounds: roundsSchema,
+  rounds: roundsWith({ aggregateSum: z.number().int() }),
   digest: digestSchema,
 });
+
+type SqliteRound = z.infer<typeof sqliteOutput>["rounds"][number];
+
+function sqliteRoundWrong(seed: number, round: SqliteRound, index: number): string | null {
+  const expected = expectedSqlite(seed, index);
+
+  if (round.aggregateSum !== expected.aggregateSum)
+    return `aggregateSum ${round.aggregateSum}, expected ${expected.aggregateSum}`;
+
+  if (round.proof !== expected.digest) return "query digest does not match the round's rows";
+
+  return null;
+}
 
 /** SQLite page sizes are powers of two from 512 to 65536. */
 const isPageSize = (size: number) => size >= 512 && size <= 65_536 && (size & (size - 1)) === 0;
@@ -306,19 +369,25 @@ export function verifySqlite(raw: string, seed: number): VerifyResult {
   if (out.journalMode !== "wal") return failure(`journal mode ${out.journalMode}, expected wal`);
 
   if (out.ops !== sqliteOps) return failure(`ops ${out.ops}, expected ${sqliteOps}`);
-  const expected = expectedSqlite(seed);
 
-  if (out.aggregateSum !== expected.aggregateSum)
-    return failure(`aggregateSum ${out.aggregateSum}, expected ${expected.aggregateSum}`);
+  if (out.digest !== expectedSqlite(seed, 0).digest) return failure("query digest mismatch");
 
-  if (out.digest !== expected.digest) return failure("query digest mismatch");
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    minRounds: sqliteMinRounds,
+    check: (round, index) => sqliteRoundWrong(seed, round, index),
+  });
 
-  // The digest and aggregate follow from the seed alone, so they cannot show a database was
+  if (!rounds.ok) return rounds;
+
+  // The digests and aggregates follow from the seed alone, so they cannot show a database was
   // used. These facts come from reopening the file the last round wrote.
+  const last = expectedSqlite(seed, rounds.count - 1);
+
   if (out.fileRows !== sqliteRows) return failure(`file holds ${out.fileRows} rows`);
 
-  if (out.fileUpdatedSum !== expected.updatedSum)
-    return failure(`updated rows sum to ${out.fileUpdatedSum}, expected ${expected.updatedSum}`);
+  if (out.fileUpdatedSum !== last.updatedSum)
+    return failure(`updated rows sum to ${out.fileUpdatedSum}, expected ${last.updatedSum}`);
 
   if (!isPageSize(out.filePageSize)) return failure(`page size ${out.filePageSize}`);
 
@@ -333,14 +402,6 @@ export function verifySqlite(raw: string, seed: number): VerifyResult {
 
   if (!out.fileIntegrityOk) return failure("integrity_check on the reopened file failed");
 
-  const rounds = checkRounds({
-    rounds: out.rounds,
-    digest: out.digest,
-    minRounds: sqliteMinRounds,
-  });
-
-  if (!rounds.ok) return rounds;
-
   return {
     ok: true,
     value: (out.ops * rounds.count) / rounds.totalSeconds,
@@ -349,7 +410,7 @@ export function verifySqlite(raw: string, seed: number): VerifyResult {
       seconds: rounds.totalSeconds,
       rounds: rounds.count,
       ops: out.ops,
-      aggregateSum: out.aggregateSum,
+      aggregateSum: expectedSqlite(seed, 0).aggregateSum,
       fileBytes: out.fileBytes,
     },
   };
@@ -396,44 +457,67 @@ export const tarStreamRange = {
 /** gzip-compressed hex text is about 0.58 of its size; well outside that was not gzip of the tree. */
 const tarRatioRange = { min: 0.45, max: 0.75 } as const;
 
-export function expectedTarDigest(seed: number): string {
+const tarPath = (i: number) => `src/m${i % 8}/file${pad(i, 3)}.txt`;
+
+/** Each file's seeded text after its first 65-byte line, which every round replaces. */
+const tarTails = memo((seed) =>
+  Array.from({ length: tarFileCount }, (_, i) => hexText(seed, "tar", i, tarFileSize(i)).slice(65)),
+);
+
+/**
+ * The extracted-tree digest round `round` must print: each file's first line is the round's own
+ * seeded line, `h("tar-round", round, i)`, and the rest is the file's seeded text.
+ */
+export const expectedTarDigest = perRound((seed, round) => {
+  const tails = tarTails(seed);
   const entries = new Map<string, string>();
 
-  for (let i = 0; i < tarFileCount; i++)
+  for (const [i, tail] of tails.entries())
     entries.set(
-      `src/m${i % 8}/file${pad(i, 3)}.txt`,
-      sha256Hex(hexText(seed, "tar", i, tarFileSize(i))),
+      tarPath(i),
+      createHash("sha256")
+        .update(`${seededHex(seed, "tar-round", round, i)}\n`)
+        .update(tail)
+        .digest("hex"),
     );
 
   return manifestDigest(entries);
-}
+});
 
 /** Minimum timed pack-and-extract rounds; each is about 0.22 s on local disk. */
 const tarMinRounds = 3;
 
 export const tarProgram = `${nodePrelude}
 ${nodeRoundsSource}
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 const tree = ROOT + "/tree", out = ROOT + "/out", archive = ROOT + "/project.tgz";
-const originals = new Map();
+const tails = [];
 let rawBytes = 0;
 for (let i = 0; i < ${tarFileCount}; i++) {
   const size = 32768 + (i % 6) * 8192;
   const parts = [];
   let length = 0;
   for (let k = 0; length < size; k++) { const line = h("tar", i, k) + "\\n"; parts.push(line); length += line.length; }
-  const content = Buffer.from(parts.join("").slice(0, size));
-  const rel = "src/m" + (i % 8) + "/file" + String(i).padStart(3, "0") + ".txt";
+  tails.push(parts.join("").slice(65, size));
   mkdirSync(tree + "/src/m" + (i % 8), { recursive: true });
-  writeFileSync(tree + "/" + rel, content);
-  originals.set(rel, content);
   rawBytes += size;
 }
+const rel = (i) => "src/m" + (i % 8) + "/file" + String(i).padStart(3, "0") + ".txt";
+// Untimed: the round's tree, every file under its own first line.
+const prepare = (round) => {
+  const originals = new Map();
+  tails.forEach((tail, i) => {
+    const content = Buffer.from(h("tar-round", round, i) + "\\n" + tail);
+    writeFileSync(tree + "/" + rel(i), content);
+    originals.set(rel(i), content);
+  });
+  return originals;
+};
 const walk = (dir, prefix) => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? walk(dir + "/" + e.name, prefix + e.name + "/") : [prefix + e.name]);
 let files = 0;
-const { rounds, digest } = await timedRounds(${tarMinRounds}, () => {
+const rounds = await timedRounds(${tarMinRounds}, prepare, (originals) => {
   rmSync(out, { recursive: true, force: true });
   rmSync(archive, { force: true });
   execFileSync("tar", ["-czf", archive, "-C", tree, "."]);
@@ -442,32 +526,59 @@ const { rounds, digest } = await timedRounds(${tarMinRounds}, () => {
   const extracted = walk(out, "").sort();
   if (extracted.length !== originals.size) throw new Error("extracted " + extracted.length + " files");
   const lines = [];
-  for (const rel of extracted) {
-    const back = readFileSync(out + "/" + rel);
-    const original = originals.get(rel);
-    if (!original || !back.equals(original)) throw new Error("byte mismatch at " + rel);
-    lines.push(rel + ":" + sha(back));
+  for (const name of extracted) {
+    const back = readFileSync(out + "/" + name);
+    const original = originals.get(name);
+    if (!original || !back.equals(original)) throw new Error("byte mismatch at " + name);
+    lines.push(name + ":" + sha(back));
   }
   files = extracted.length;
-  return sha(lines.join("\\n"));
+  // The member's first three bytes and the trailer's length field, without reading the archive.
+  const archiveBytes = statSync(archive).size;
+  const head = Buffer.alloc(3), size = Buffer.alloc(4), fd = openSync(archive, "r");
+  readSync(fd, head, 0, 3, 0);
+  readSync(fd, size, 0, 4, archiveBytes - 4);
+  closeSync(fd);
+  return { proof: sha(lines.join("\\n")), archiveBytes, head: head.toString("hex"), tarBytes: size.readUInt32LE(0) };
 });
-const archiveBytes = statSync(archive).size;
-const packed = readFileSync(archive);
-const archiveHead = packed.subarray(0, 3).toString("hex");
-const tarBytes = packed.readUInt32LE(packed.length - 4);
-console.log(JSON.stringify({ seed: SEED, files, rawBytes, archiveBytes, archiveHead, tarBytes, rounds, digest }));
+console.log(JSON.stringify({ seed: SEED, files, rawBytes, rounds, digest: rounds[0].proof }));
 `;
 
 const tarOutput = z.strictObject({
   seed: seedSchema,
   files: z.number().int(),
   rawBytes: z.number().int(),
-  archiveBytes: z.number().int(),
-  archiveHead: z.string(),
-  tarBytes: z.number().int(),
-  rounds: roundsSchema,
+  rounds: roundsWith({
+    archiveBytes: z.number().int(),
+    head: z.string(),
+    tarBytes: z.number().int(),
+  }),
   digest: digestSchema,
 });
+
+type TarRound = z.infer<typeof tarOutput>["rounds"][number];
+
+/**
+ * Why a round's archive is not a tar -czf of its own tree. The extracted digest alone would also
+ * pass a plain copy of the tree. A gzip member whose trailer length is a tar stream holding every
+ * file, at hex text's ratio, needs tar -czf.
+ */
+function tarRoundWrong(seed: number, round: TarRound, index: number): string | null {
+  if (round.head !== "1f8b08") return `archive starts ${round.head}, not gzip`;
+
+  if (round.tarBytes < tarStreamRange.min || round.tarBytes > tarStreamRange.max)
+    return `tar stream is ${round.tarBytes} bytes, expected ${tarStreamRange.min} or a little more`;
+
+  const ratio = round.archiveBytes / tarRawBytes;
+
+  if (ratio < tarRatioRange.min || ratio > tarRatioRange.max)
+    return `archiveBytes ${round.archiveBytes} out of range`;
+
+  if (round.proof !== expectedTarDigest(seed, index))
+    return "extracted tree digest does not match the round's tree";
+
+  return null;
+}
 
 export function verifyTar(raw: string, seed: number): VerifyResult {
   const parsed = parseGuestJson(raw, tarOutput);
@@ -484,25 +595,17 @@ export function verifyTar(raw: string, seed: number): VerifyResult {
   if (out.rawBytes !== tarRawBytes)
     return failure(`rawBytes ${out.rawBytes}, expected ${tarRawBytes}`);
 
-  // The extracted digest alone would also pass a plain copy of the tree. A gzip member whose
-  // trailer length is a tar stream holding every file, at hex text's ratio, needs tar -czf.
-  if (out.archiveHead !== "1f8b08") return failure(`archive starts ${out.archiveHead}, not gzip`);
+  if (out.digest !== expectedTarDigest(seed, 0)) return failure("extracted tree digest mismatch");
 
-  if (out.tarBytes < tarStreamRange.min || out.tarBytes > tarStreamRange.max)
-    return failure(
-      `tar stream is ${out.tarBytes} bytes, expected ${tarStreamRange.min} or a little more`,
-    );
-
-  const ratio = out.archiveBytes / out.rawBytes;
-
-  if (ratio < tarRatioRange.min || ratio > tarRatioRange.max)
-    return failure(`archiveBytes ${out.archiveBytes} out of range`);
-
-  if (out.digest !== expectedTarDigest(seed)) return failure("extracted tree digest mismatch");
-
-  const rounds = checkRounds({ rounds: out.rounds, digest: out.digest, minRounds: tarMinRounds });
+  const rounds = checkRounds({
+    rounds: out.rounds,
+    minRounds: tarMinRounds,
+    check: (round, index) => tarRoundWrong(seed, round, index),
+  });
 
   if (!rounds.ok) return rounds;
+
+  const last = out.rounds.at(-1);
 
   return {
     ok: true,
@@ -512,8 +615,8 @@ export function verifyTar(raw: string, seed: number): VerifyResult {
       seconds: rounds.totalSeconds,
       rounds: rounds.count,
       rawBytes: out.rawBytes,
-      archiveBytes: out.archiveBytes,
-      tarBytes: out.tarBytes,
+      archiveBytes: last?.archiveBytes ?? 0,
+      tarBytes: last?.tarBytes ?? 0,
     },
   };
 }

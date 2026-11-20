@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -59,7 +60,14 @@ const resultsFile = z.object({
   scenarioIds: z.array(z.string()),
   samples: z.array(z.object({ scenarioId: z.string(), provider: z.string(), value: z.number() })),
   failures: z.array(z.object({ scenarioId: z.string(), reason: z.string() })),
-  cleanupErrors: z.array(z.unknown()),
+  cleanupErrors: z.array(
+    z.object({
+      provider: z.string(),
+      sandboxId: z.string().nullable(),
+      sample: z.object({ scenarioId: z.string(), run: z.number() }).nullable(),
+      reason: z.string(),
+    }),
+  ),
 });
 
 const journalFile = z.object({
@@ -247,6 +255,110 @@ describe("expanded CLI", () => {
       await expandedCommand([...argv, "--force"], dependencies);
 
       expect(readJson(resultsFile, join(out, "results.json")).samples).toHaveLength(1);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a sandbox journaled after its delete is acknowledged, until a lookup sees it gone", async () => {
+    const out = mkdtempSync(join(tmpdir(), "bench-expanded-cli-"));
+    const backing = memory();
+    const journaledAfterAck: string[][] = [];
+
+    // The delete is acknowledged at once and lands 400 ms later, as on providers that delete
+    // asynchronously. At 200 ms the journal must still list the sandbox.
+    const provider = {
+      ...backing,
+      async destroy(id: string) {
+        setTimeout(() => {
+          journaledAfterAck.push(
+            readJson(journalFile, join(out, "ownership.json")).resources.map((r) => r.id),
+          );
+        }, 200);
+        setTimeout(() => void backing.destroy(id), 400);
+      },
+    };
+
+    try {
+      await expandedCommand(["--providers", "memory", "--out", out], {
+        load: loadMemory(provider),
+        catalog: [fakeFiles],
+      });
+
+      const results = readJson(resultsFile, join(out, "results.json"));
+
+      expect(journaledAfterAck).toEqual([[expect.any(String)]]);
+      expect(results.samples).toHaveLength(1);
+      expect(results.cleanupErrors).toEqual([]);
+      expect(readJson(journalFile, join(out, "ownership.json")).resources).toEqual([]);
+      expect(await backing.list({})).toEqual([]);
+      expect(process.exitCode).toBe(0);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a sandbox whose acknowledged delete never lands, and leaves it journaled", async () => {
+    const out = mkdtempSync(join(tmpdir(), "bench-expanded-cli-"));
+    const backing = memory();
+    // Acknowledges every delete and never deletes anything.
+    const provider = { ...backing, destroy: vi.fn(async () => {}) };
+
+    try {
+      await expandedCommand(["--providers", "memory", "--timeout-ms", "1000", "--out", out], {
+        load: loadMemory(provider),
+        catalog: [fakeFiles],
+      });
+
+      const results = readJson(resultsFile, join(out, "results.json"));
+      const live = await backing.list({});
+
+      expect(live).toHaveLength(1);
+      expect(results.cleanupErrors).toEqual([
+        {
+          provider: "memory",
+          sandboxId: live[0]?.id,
+          sample: expect.objectContaining({ scenarioId: "fake-files", run: 1 }),
+          reason: expect.stringMatching(/deletion not confirmed.*present/),
+        },
+      ]);
+      expect(readJson(journalFile, join(out, "ownership.json")).resources).toEqual([
+        expect.objectContaining({ provider: "memory", id: live[0]?.id }),
+      ]);
+      // The sample's own cleanup and the final sweep each sent a delete.
+      expect(provider.destroy).toHaveBeenCalledTimes(2);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("final sweep deletes a run-labeled sandbox the run never journaled", async () => {
+    const out = mkdtempSync(join(tmpdir(), "bench-expanded-cli-"));
+    const provider = memory();
+
+    // A sandbox whose create response the run never saw: only the run's label marks it.
+    const strays: ExpandedScenario = {
+      ...fakeFiles,
+      async run(box, ctx) {
+        const { runId } = readJson(journalFile, join(out, "ownership.json"));
+        await createSandbox(provider, { labels: { "sandbox-bench-run": runId } });
+
+        return fakeFiles.run(box, ctx);
+      },
+    };
+
+    try {
+      await expandedCommand(["--providers", "memory", "--out", out], {
+        load: loadMemory(provider),
+        catalog: [strays],
+      });
+
+      const results = readJson(resultsFile, join(out, "results.json"));
+
+      expect(results.cleanupErrors).toEqual([]);
+      expect(await provider.list({})).toEqual([]);
+      expect(readJson(journalFile, join(out, "ownership.json")).resources).toEqual([]);
     } finally {
       rmSync(out, { recursive: true, force: true });
     }

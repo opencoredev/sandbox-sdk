@@ -6,6 +6,7 @@ import {
   expectedMemDigest,
   expectedSpawnDigest,
   expectedStream,
+  expectedStreamRound,
   memProgram,
   runtimeScenarios,
   spawnProgram,
@@ -14,7 +15,9 @@ import {
 import { honestRounds, seedA, verifierSuite, withField } from "./expanded-verifier-suite.js";
 
 const mebibyte = 1_048_576;
-const streamBytes = expectedStream(seedA).length;
+
+/** Every round streams a 70-byte salt line before the uploaded lines. */
+const streamBytes = expectedStreamRound(seedA, 0).length;
 
 /** 100 distinct child pids per round, none of them the parent's (pid 7). */
 function childPids(rounds: number): number[][] {
@@ -29,7 +32,7 @@ function validSpawn(seed: number): string {
     spawns: 100,
     parentPid: 7,
     childPids: childPids(4),
-    rounds: honestRounds(expectedSpawnDigest(seed), 4, 0.25),
+    rounds: honestRounds((round) => ({ proof: expectedSpawnDigest(seed, round) }), 4, 0.25),
     digest: expectedSpawnDigest(seed),
   });
 }
@@ -43,7 +46,7 @@ describe("runtime scenarios", () => {
           seed,
           bytes: 128 * mebibyte,
           rssBytes: 180 * mebibyte,
-          rounds: honestRounds(expectedMemDigest(seed), 4, 0.25),
+          rounds: honestRounds((round) => ({ proof: expectedMemDigest(seed, round) }), 4, 0.25),
           digest: expectedMemDigest(seed),
         }),
       tampered: { bytes: 64 * mebibyte, rssBytes: mebibyte },
@@ -64,12 +67,16 @@ describe("runtime scenarios", () => {
       valid: (seed) =>
         JSON.stringify({
           seed,
-          lines: 7500,
-          bytes: expectedStream(seed).length,
-          rounds: honestRounds(sha256Hex(expectedStream(seed)), 4, 0.25),
-          digest: sha256Hex(expectedStream(seed)),
+          lines: 7501,
+          bytes: expectedStreamRound(seed, 0).length,
+          rounds: honestRounds(
+            (round) => ({ proof: sha256Hex(expectedStreamRound(seed, round)) }),
+            4,
+            0.25,
+          ),
+          digest: sha256Hex(expectedStreamRound(seed, 0)),
         }),
-      tampered: { lines: 7499, bytes: streamBytes - 1 },
+      tampered: { lines: 7500, bytes: streamBytes - 1 },
       expectedValue: (streamBytes * 4) / 1_000_000,
       minRounds: 3,
     },

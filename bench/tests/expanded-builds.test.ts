@@ -12,14 +12,13 @@ import {
   pyBytecodeProgram,
   tsBundleProgram,
 } from "../src/expanded/builds.js";
-import { roundProof } from "../src/expanded/rounds.js";
 import { honestRounds, seedA, seedB, verifierSuite } from "./expanded-verifier-suite.js";
 
-/** Rounds of 0.1, 0.2, ... 1.0 s: total 5.5 s, median 0.55 s. */
-function risingRounds(digest: string) {
+/** Rounds of 0.1, 0.2, ... 1.0 s, round `i` proving `digest(seed, i)`: total 5.5 s, median 0.55 s. */
+function risingRounds(seed: number, digest: (seed: number, round: number) => string) {
   return Array.from({ length: 10 }, (_, round) => ({
     seconds: (round + 1) / 10,
-    proof: roundProof(round, digest),
+    proof: digest(seed, round),
   }));
 }
 
@@ -32,8 +31,8 @@ describe("build scenarios", () => {
           seed,
           moduleCount: 30,
           bundleBytes: 17_000,
-          rounds: risingRounds(expectedTsDigest(seed)),
-          digest: expectedTsDigest(seed),
+          rounds: risingRounds(seed, expectedTsDigest),
+          digest: expectedTsDigest(seed, 0),
         }),
       tampered: { moduleCount: 29, bundleBytes: 0 },
       expectedValue: 0.55,
@@ -46,8 +45,8 @@ describe("build scenarios", () => {
         JSON.stringify({
           seed,
           modulesCompiled: 60,
-          rounds: risingRounds(expectedPyDigest(seed)),
-          digest: expectedPyDigest(seed),
+          rounds: risingRounds(seed, expectedPyDigest),
+          digest: expectedPyDigest(seed, 0),
         }),
       tampered: { modulesCompiled: 59 },
       expectedValue: 0.55,
@@ -64,8 +63,8 @@ describe("build scenarios", () => {
           diffFiles: 4,
           trackedFiles: 7,
           clean: true,
-          rounds: risingRounds(expectedGitDigest(seed)),
-          digest: expectedGitDigest(seed),
+          rounds: risingRounds(seed, expectedGitDigest),
+          digest: expectedGitDigest(seed, 0),
         }),
       tampered: { commitCount: 21, logLines: 21, diffFiles: 3, trackedFiles: 8, clean: false },
       expectedValue: 0.55,
@@ -80,8 +79,8 @@ describe("build scenarios", () => {
           requests: 200,
           okCount: 200,
           connections: 50,
-          rounds: honestRounds(expectedHttpDigest(seed), 8, 0.125),
-          digest: expectedHttpDigest(seed),
+          rounds: honestRounds((round) => ({ proof: expectedHttpDigest(seed, round) }), 8, 0.125),
+          digest: expectedHttpDigest(seed, 0),
         }),
       tampered: { requests: 199, okCount: 199, connections: 200 },
       expectedValue: 1600,
@@ -90,9 +89,11 @@ describe("build scenarios", () => {
     },
   ]);
 
-  it("prints a different program result for each seed", () => {
+  it("prints a different program result for each seed and each round", () => {
     expect(expectedTsOutput(seedA)).not.toBe(expectedTsOutput(seedB));
     expect(expectedPyOutput(seedA)).not.toBe(expectedPyOutput(seedB));
+    expect(expectedTsOutput(seedA, 1)).not.toBe(expectedTsOutput(seedA, 0));
+    expect(expectedPyOutput(seedA, 1)).not.toBe(expectedPyOutput(seedA, 0));
     expect(expectedTsOutput(seedA)).toMatch(/^\{"acc":\d+,"samples":\[(\d+,){4}\d+\]\}$/);
   });
 });

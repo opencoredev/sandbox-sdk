@@ -22,18 +22,58 @@ import {
   sieveGuestScript,
   sieveLimit,
 } from "../src/expanded/cpu.js";
-import { roundProof } from "../src/expanded/rounds.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import { describeContract, flipHex, seedA, seedB } from "./expanded-contract.js";
-import { honestRounds } from "./expanded-verifier-suite.js";
+import {
+  honestRounds,
+  reusedRounds,
+  type JsonValue,
+  type RoundRecord,
+} from "./expanded-verifier-suite.js";
+
+/** What round `round` of a scenario reports. */
+type Evidence = (round: number) => Readonly<Record<string, JsonValue>>;
 
 /** Three rounds over two seconds, the first impossibly fast: the rate bound must reject it. */
-function implausibleRounds(digest: string) {
-  return [1e-9, 1, 1].map((seconds, round) => ({ seconds, proof: roundProof(round, digest) }));
+function implausibleRounds(evidence: Evidence) {
+  return [1e-9, 1, 1].map((seconds, round) => ({ ...evidence(round), seconds }));
 }
 
-/** Four 0.25 s rounds of `digest`. */
-const fourRounds = (digest: string) => honestRounds(digest, 4, 0.25);
+/** Four 0.25 s rounds, each with its own round's evidence. */
+const fourRounds = (evidence: Evidence) => honestRounds(evidence, 4, 0.25);
+
+/** `rounds` with round `index` changed by `edit`. */
+function editRound(
+  rounds: readonly RoundRecord[],
+  index: number,
+  edit: Readonly<Record<string, JsonValue>>,
+): RoundRecord[] {
+  return rounds.map((round, i) => (i === index ? { ...round, ...edit } : round));
+}
+
+/** Each SHA-256 round hashes 256 MiB here too, so its fixtures use the minimum of three rounds. */
+const shaEvidence =
+  (seed: number): Evidence =>
+  (round) => ({ proof: expectedSha256Digest(seed, round) });
+
+const shaRounds = (seed: number) => honestRounds(shaEvidence(seed), 3, 0.4);
+
+const gzipEvidence =
+  (seed: number): Evidence =>
+  (round) => ({
+    proof: expectedGzipDigest(seed, round),
+    compressedBytes: Math.floor(expectedGzipRawBytes(seed) * 0.223),
+    head: gzipMagic,
+    trailer: expectedGzipTrailer(seed, round),
+  });
+
+const sieveEvidence =
+  (seed: number): Evidence =>
+  (round) => ({
+    proof: expectedSieve(seed, round).digest,
+    limit: expectedSieve(seed, round).limit,
+    count: expectedSieve(seed, round).count,
+  });
 
 function scenario(id: string): ExpandedScenario {
   const found = cpuScenarios.find((s) => s.id === id);
@@ -53,10 +93,16 @@ describe("cpu scenarios", () => {
     ]);
   });
 
-  it("derives a seed-dependent sieve limit in the documented range", () => {
+  it("derives a seed-dependent sieve limit in the documented range, different every round", () => {
     expect(sieveLimit(0)).toBe(32_000_000);
     expect(sieveLimit(seedA)).toBe(32_000_000 + seedA);
     expect(sieveLimit(0xffff_ffff)).toBeLessThan(40_000_000);
+
+    const limits = Array.from({ length: 5000 }, (_, round) => sieveLimit(0xffff_ffff, round));
+
+    expect(new Set(limits).size).toBe(5000);
+    expect(Math.min(...limits)).toBeGreaterThanOrEqual(32_000_000);
+    expect(Math.max(...limits)).toBeLessThan(40_000_000);
   });
 
   it("builds a JSON document of about 1 MiB", () => {
@@ -71,27 +117,27 @@ describeContract({
   valid: (seed) => ({
     seed,
     bytes: sha256TotalBytes,
-    rounds: fourRounds(expectedSha256Digest(seed)),
-    digest: expectedSha256Digest(seed),
+    rounds: shaRounds(seed),
+    digest: expectedSha256Digest(seed, 0),
   }),
   tampered: [
     ["bytes", sha256TotalBytes / 2],
-    ["rounds", implausibleRounds(expectedSha256Digest(seedA))],
-    ["rounds", honestRounds(expectedSha256Digest(seedA), 2, 1)],
-    ["rounds", honestRounds(expectedSha256Digest(seedA), 4, 0.2)],
+    ["rounds", implausibleRounds(shaEvidence(seedA))],
+    ["rounds", honestRounds(shaEvidence(seedA), 2, 1)],
+    ["rounds", honestRounds(shaEvidence(seedA), 4, 0.2)],
+    ["rounds", reusedRounds(shaRounds(seedA))],
   ],
   proofField: "digest",
 });
+
+const gzipTrailerA = (round: number) => expectedGzipTrailer(seedA, round);
 
 /** A gzip reply for `seed` at zlib level 6's ratio of 0.223. */
 function validGzip(seed: number) {
   return {
     seed,
     rawBytes: expectedGzipRawBytes(seed),
-    compressedBytes: Math.floor(expectedGzipRawBytes(seed) * 0.223),
-    gzipHead: gzipMagic,
-    gzipTrailer: expectedGzipTrailer(seed),
-    rounds: fourRounds(expectedGzipDigest(seed)),
+    rounds: fourRounds(gzipEvidence(seed)),
     digest: expectedGzipDigest(seed),
   };
 }
@@ -101,13 +147,12 @@ describeContract({
   valid: validGzip,
   tampered: [
     ["rawBytes", expectedGzipRawBytes(seedA) - 1],
-    ["compressedBytes", expectedGzipRawBytes(seedA)],
-    ["compressedBytes", 0],
-    ["compressedBytes", 1],
-    ["gzipHead", "000000"],
-    ["gzipTrailer", flipHex(expectedGzipTrailer(seedA))],
-    ["gzipTrailer", expectedGzipTrailer(seedB)],
-    ["rounds", implausibleRounds(expectedGzipDigest(seedA))],
+    ["rounds", editRound(validGzip(seedA).rounds, 1, { compressedBytes: 0 })],
+    ["rounds", editRound(validGzip(seedA).rounds, 1, { head: "000000" })],
+    ["rounds", editRound(validGzip(seedA).rounds, 2, { trailer: flipHex(gzipTrailerA(2)) })],
+    ["rounds", editRound(validGzip(seedA).rounds, 0, { trailer: expectedGzipTrailer(seedB) })],
+    ["rounds", reusedRounds(validGzip(seedA).rounds)],
+    ["rounds", implausibleRounds(gzipEvidence(seedA))],
   ],
   proofField: "digest",
 });
@@ -134,15 +179,19 @@ describeContract({
   scenario: scenario("cpu-prime-sieve"),
   valid: (seed) => ({
     seed,
-    limit: sieveLimit(seed),
-    count: expectedSieve(seed).count,
-    rounds: fourRounds(expectedSieve(seed).digest),
-    digest: expectedSieve(seed).digest,
+    rounds: fourRounds(sieveEvidence(seed)),
+    digest: expectedSieve(seed, 0).digest,
   }),
   tampered: [
-    ["limit", sieveLimit(seedA) + 1],
-    ["count", expectedSieve(seedA).count + 1],
-    ["rounds", implausibleRounds(expectedSieve(seedA).digest)],
+    ["rounds", editRound(fourRounds(sieveEvidence(seedA)), 1, { limit: sieveLimit(seedA, 1) + 1 })],
+    [
+      "rounds",
+      editRound(fourRounds(sieveEvidence(seedA)), 2, {
+        count: expectedSieve(seedA, 2).count + 1,
+      }),
+    ],
+    ["rounds", reusedRounds(fourRounds(sieveEvidence(seedA)))],
+    ["rounds", implausibleRounds(sieveEvidence(seedA))],
   ],
   proofField: "digest",
 });
@@ -151,16 +200,34 @@ describe("cpu verifiers ask for evidence only the work produces", () => {
   const verifyGzip = scenario("cpu-gzip-compress").verifyOutput;
 
   it("gzip: the roundtrip hash with an uncompressed or truncated size fails on the ratio", () => {
-    for (const compressedBytes of [1, expectedGzipRawBytes(seedA) + 18])
-      expect(
-        verifyGzip(JSON.stringify({ ...validGzip(seedA), compressedBytes }), seedA),
-      ).toMatchObject({ ok: false, reason: expect.stringMatching(/ratio/) });
+    for (const compressedBytes of [1, expectedGzipRawBytes(seedA) + 18]) {
+      const rounds = editRound(validGzip(seedA).rounds, 1, { compressedBytes });
+
+      expect(verifyGzip(JSON.stringify({ ...validGzip(seedA), rounds }), seedA)).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/^round 1: compression ratio/),
+      });
+    }
   });
 
-  it("gzip: a trailer that is not the corpus's CRC-32 and length fails", () => {
-    expect(
-      verifyGzip(JSON.stringify({ ...validGzip(seedA), gzipTrailer: "0".repeat(16) }), seedA),
-    ).toMatchObject({ ok: false, reason: expect.stringMatching(/CRC-32/) });
+  it("gzip: a trailer that is not the round's corpus's CRC-32 and length fails", () => {
+    const zero = editRound(validGzip(seedA).rounds, 2, { trailer: "0".repeat(16) });
+    // Round 0's trailer in round 2: the CRC-32 of another corpus.
+    const reused = editRound(validGzip(seedA).rounds, 2, { trailer: gzipTrailerA(0) });
+
+    for (const rounds of [zero, reused])
+      expect(verifyGzip(JSON.stringify({ ...validGzip(seedA), rounds }), seedA)).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/^round 2: .*CRC-32/),
+      });
+  });
+
+  it("gzip: every round's corpus, and so its CRC-32 and digest, is its own", () => {
+    const trailers = new Set([0, 1, 2, 3].map(gzipTrailerA));
+    const digests = new Set([0, 1, 2, 3].map((round) => expectedGzipDigest(seedA, round)));
+
+    expect(trailers.size).toBe(4);
+    expect(digests.size).toBe(4);
   });
 
   it("json: the document size must be exact", () => {

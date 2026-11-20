@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { minTimedSeconds, roundProof, type Round } from "../src/expanded/rounds.js";
+import { minTimedSeconds } from "../src/expanded/rounds.js";
 import type { ExpandedScenario, VerifyResult } from "../src/expanded/types.js";
 
 export const seedA = 123_456_789;
@@ -27,12 +27,34 @@ export const garbage = [
   "Error: guest crashed",
 ];
 
-/** `count` rounds that each produced `digest` in `secondsEach`, as an honest guest reports them. */
-export function honestRounds(digest: string, count: number, secondsEach: number): Round[] {
+const jsonValue = z.json();
+
+/** Any JSON value a reply field can hold. */
+export type JsonValue = z.infer<typeof jsonValue>;
+
+/** One round of a reply: its timing and its evidence fields. */
+export type RoundRecord = { readonly seconds: number } & Readonly<Record<string, JsonValue>>;
+
+/**
+ * `count` rounds of `secondsEach`, round `i` reporting `evidence(i)`, as an honest guest reports
+ * them: every round's evidence is its own round's.
+ */
+export function honestRounds(
+  evidence: (round: number) => Readonly<Record<string, JsonValue>>,
+  count: number,
+  secondsEach: number,
+): RoundRecord[] {
   return Array.from({ length: count }, (_, round) => ({
+    ...evidence(round),
     seconds: secondsEach,
-    proof: roundProof(round, digest),
   }));
+}
+
+/** Rounds that reused round 0's work: each keeps its timing but reports round 0's evidence. */
+export function reusedRounds(rounds: readonly RoundRecord[]): RoundRecord[] {
+  const first = rounds[0];
+
+  return first ? rounds.map((round) => ({ ...first, seconds: round.seconds })) : [];
 }
 
 export interface GuestProgramCase {
@@ -54,16 +76,10 @@ export interface VerifierCase {
   readonly minRounds?: number;
 }
 
-const jsonValue = z.json();
-
-/** Any JSON value a reply field can hold. */
-export type JsonValue = z.infer<typeof jsonValue>;
-
 const payload = z.record(z.string(), jsonValue);
 
 const roundsPayload = z.looseObject({
-  digest: z.string(),
-  rounds: z.array(z.object({ seconds: z.number(), proof: z.string() })),
+  rounds: z.array(z.object({ seconds: z.number() }).catchall(jsonValue)),
 });
 
 /** `raw` with one top-level field replaced. */
@@ -71,14 +87,14 @@ export function withField(raw: string, key: string, value: JsonValue): string {
   return JSON.stringify({ ...payload.parse(JSON.parse(raw)), [key]: value });
 }
 
-/** `raw` with its rounds replaced by `edit(rounds, digest)`. */
-function withRounds(
+/** `raw` with its rounds replaced by `edit(rounds)`. */
+export function withRounds(
   raw: string,
-  edit: (rounds: readonly Round[], digest: string) => readonly Round[],
+  edit: (rounds: readonly RoundRecord[]) => readonly RoundRecord[],
 ): string {
   const parsed = roundsPayload.parse(JSON.parse(raw));
 
-  return JSON.stringify({ ...parsed, rounds: edit(parsed.rounds, parsed.digest) });
+  return JSON.stringify({ ...parsed, rounds: edit(parsed.rounds) });
 }
 
 /** `raw` with its timing set to `value`: the top-level `seconds`, or the first round's. */
@@ -202,39 +218,39 @@ export function verifierSuite(
         const valid = () => c.valid(seedA);
 
         it("rejects fewer than the minimum rounds, even over a full window", () => {
-          const raw = withRounds(valid(), (_, digest) =>
-            honestRounds(digest, minRounds - 1, minTimedSeconds),
+          const raw = withRounds(valid(), (rounds) =>
+            rounds.slice(0, minRounds - 1).map((round) => ({ ...round, seconds: minTimedSeconds })),
           );
 
           expect(verify(raw)).toMatchObject({ ok: false, reason: expect.stringMatching(/rounds/) });
         });
 
         it("rejects a timed window shorter than the minimum", () => {
-          const raw = withRounds(valid(), (_, digest) =>
-            honestRounds(digest, minRounds, (minTimedSeconds * 0.9) / minRounds),
+          const raw = withRounds(valid(), (rounds) =>
+            rounds
+              .slice(0, minRounds)
+              .map((round) => ({ ...round, seconds: (minTimedSeconds * 0.9) / minRounds })),
           );
 
           expect(verify(raw)).toMatchObject({ ok: false, reason: expect.stringMatching(/timed/) });
         });
 
-        it("rejects a round whose proof is for another digest or another round", () => {
-          const otherDigest = withRounds(valid(), (rounds) =>
-            rounds.map((round, i) =>
-              i === 1 ? { ...round, proof: roundProof(1, "0".repeat(64)) } : round,
-            ),
+        it("rejects rounds that reused round 0's work, or swapped their work", () => {
+          const swapped = withRounds(valid(), (rounds) =>
+            rounds.map((round, i) => {
+              const other = rounds[i === 1 ? 2 : i === 2 ? 1 : i];
+
+              return other ? { ...other, seconds: round.seconds } : round;
+            }),
           );
 
-          const reused = withRounds(valid(), (rounds) =>
-            rounds.map((round) => ({ ...round, proof: rounds[0]?.proof ?? "" })),
-          );
-
-          expect(verify(otherDigest)).toMatchObject({
+          expect(verify(withRounds(valid(), reusedRounds))).toMatchObject({
             ok: false,
-            reason: expect.stringMatching(/round 1 proof/),
+            reason: expect.stringMatching(/^round 1: /),
           });
-          expect(verify(reused)).toMatchObject({
+          expect(verify(swapped)).toMatchObject({
             ok: false,
-            reason: expect.stringMatching(/proof/),
+            reason: expect.stringMatching(/^round 1: /),
           });
         });
       });

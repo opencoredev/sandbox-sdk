@@ -15,20 +15,26 @@
  * the scenario's own verifier accepted the guest output for that seed.
  *
  * Cleanup works like the main harness's. Sandboxes carry the `sandbox-bench-run` label, and
- * `ownership.json` in --out journals each live sandbox and every provider's connection
- * fingerprint, so `bun bench reap --run RUN_ID --out DIR --providers ...` finds what a crashed
- * run left. SIGINT or SIGTERM stops the run and destroys its live sandboxes first; a second
- * signal exits at once, leaving any sandbox not yet destroyed in the journal for `reap`.
+ * `ownership.json` in --out journals each sandbox and every provider's connection fingerprint, so
+ * `bun bench reap --run RUN_ID --out DIR --providers ...` finds what a crashed run left. A delete
+ * acknowledgment is not proof: a sandbox stays journaled until an exact lookup finds it absent or
+ * terminal. After the last sample, a final sweep lists the run's label on every provider, deletes
+ * what is still there and looks again; any sandbox it cannot see gone is a cleanup error and stays
+ * journaled for `reap`. SIGINT or SIGTERM stops the run and destroys its live sandboxes first; a
+ * second signal exits at once, leaving any sandbox not yet confirmed gone in the journal.
  */
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
 import { fingerprintOf } from "../connections.js";
-import { assertJournalFree, writeOwnership } from "../ownership.js";
+import { isAbsent, lookupSandbox, type LookupEvidence } from "../existence.js";
+import { assertJournalFree, hasRunOwnership, writeOwnership } from "../ownership.js";
 import { loadProvider, type LoadedProvider, type ReadyProvider } from "../providers.js";
+import { deadline } from "../timing.js";
 import { sanitize } from "../v2-runner.js";
 import { expandedScenarios, exportExpandedSiteData } from "./registry.js";
 import {
@@ -155,11 +161,25 @@ export function catalogTable(catalog: readonly ExpandedScenario[]): string {
   return `${lines.join("\n")}\n${catalog.length} scenarios\n`;
 }
 
-export interface ExpandedFailure {
+/** The sample a sandbox or a failure belongs to. */
+export interface SampleRef {
   readonly provider: string;
   readonly scenarioId: string;
   readonly run: number;
   readonly seed: number;
+}
+
+export interface ExpandedFailure extends SampleRef {
+  readonly reason: string;
+}
+
+/** A sandbox the run could not confirm gone, still journaled for `reap`. */
+export interface ExpandedCleanupError {
+  readonly provider: string;
+  /** Null when the final sweep could not list the provider's sandboxes at all. */
+  readonly sandboxId: string | null;
+  /** The sample that created it; null for one only the final sweep's listing found. */
+  readonly sample: SampleRef | null;
   readonly reason: string;
 }
 
@@ -176,7 +196,7 @@ export interface ExpandedResults {
   readonly providers: readonly { name: string; kind: LoadedProvider["kind"]; note: string }[];
   readonly samples: ExpandedRunSample[];
   readonly failures: ExpandedFailure[];
-  readonly cleanupErrors: ExpandedFailure[];
+  readonly cleanupErrors: ExpandedCleanupError[];
 }
 
 /** A caught error as redacted, bounded text for results.json. */
@@ -195,7 +215,7 @@ interface JournalResource {
 
 /**
  * The run's ownership journal, as `v2-runner.ts` keeps it: connection fingerprints written before
- * any create, each sandbox added once its create returns and removed once its destroy succeeds.
+ * any create, each sandbox added once its create returns and removed once a lookup sees it gone.
  * Writes are serialized and atomic (`writeOwnership`). Live labels, not this file, authorize a
  * deletion: `reap` lists the run's label and verifies each ID before destroying it.
  */
@@ -240,45 +260,228 @@ class OwnershipJournal {
 }
 
 /**
- * Sandboxes this run created and has not destroyed. Each is destroyed at most once: a sample's
- * own cleanup and an interrupt share the same attempt.
+ * How long a deletion has to be observed after its acknowledgment, as in `v2-runner.ts`: the
+ * per-command timeout, at most 30 s.
+ */
+const goneWaitMs = (timeoutMs: number) => Math.min(timeoutMs, 30_000);
+
+/**
+ * Look `id` up at once, then every 0.1 to 1 s, until an exact lookup finds it absent or terminal
+ * or `waitMs` runs out; returns the last lookup. Only that lookup, never a delete
+ * acknowledgment or a listing, shows a sandbox is gone.
+ */
+async function waitUntilGone(
+  provider: ReadyProvider,
+  id: string,
+  waitMs: number,
+): Promise<LookupEvidence> {
+  const end = performance.now() + waitMs;
+
+  for (let delay = 0; ; delay = Math.min(1000, Math.max(100, delay * 2))) {
+    if (delay > 0) await sleep(Math.min(delay, Math.max(0, end - performance.now())));
+
+    const evidence = await lookupSandbox(
+      provider.provider,
+      id,
+      Math.max(1, end - performance.now()),
+    );
+
+    if (isAbsent(evidence) || performance.now() >= end) return evidence;
+  }
+}
+
+/** Why a lookup did not show the sandbox gone. */
+function notGone(evidence: LookupEvidence): string {
+  const state = evidence.nativeState ? ` (${evidence.nativeState})` : "";
+
+  return `deletion not confirmed: the last exact lookup found it ${evidence.result}${state}`;
+}
+
+/** A sandbox this run created, journaled until it is confirmed gone. */
+interface OwnedSandbox {
+  readonly provider: ReadyProvider;
+  readonly id: string;
+  /** The SDK handle the first delete goes through; later deletes go to the provider by ID. */
+  readonly box: Sandbox | null;
+  readonly sample: SampleRef | null;
+  /** Whether a delete went through `box` already: the handle sends at most one. */
+  handleDeleted: boolean;
+  /** Why the last cleanup attempt did not confirm it gone. */
+  pending: string | null;
+}
+
+/**
+ * Sandboxes this run created and has not seen gone. Each is cleaned up by one attempt at a time:
+ * a sample's own cleanup and an interrupt share it. An attempt deletes the sandbox, then looks it
+ * up until it is gone; only then does the sandbox leave the journal.
  */
 class LiveSandboxes {
-  private readonly owners = new Map<Sandbox, string>();
-  private readonly destroying = new Map<Sandbox, Promise<void>>();
+  private readonly owned = new Map<string, OwnedSandbox>();
+  private readonly attempts = new Map<string, Promise<boolean>>();
 
-  constructor(private readonly journal: OwnershipJournal) {}
+  constructor(
+    private readonly journal: OwnershipJournal,
+    private readonly timeoutMs: number,
+  ) {}
 
+  /** Sandboxes not yet confirmed gone. */
   get size(): number {
-    return this.owners.size;
+    return this.owned.size;
   }
 
-  async add(provider: string, box: Sandbox): Promise<void> {
-    this.owners.set(box, provider);
-    await this.journal.track(provider, box.id);
-  }
-
-  destroy(box: Sandbox): Promise<void> {
-    const pending = this.destroying.get(box);
-
-    if (pending) return pending;
-
-    const provider = this.owners.get(box) ?? "";
-
-    const attempt = box.destroy().then(async () => {
-      this.owners.delete(box);
-      await this.journal.release(provider, box.id);
+  async add(provider: ReadyProvider, box: Sandbox, sample: SampleRef): Promise<void> {
+    this.owned.set(`${provider.name}/${box.id}`, {
+      provider,
+      id: box.id,
+      box,
+      sample,
+      handleDeleted: false,
+      pending: null,
     });
+    await this.journal.track(provider.name, box.id);
+  }
 
-    this.destroying.set(box, attempt);
+  /** Journal a sandbox only the final sweep's listing found, before deleting it. */
+  async adopt(provider: ReadyProvider, id: string): Promise<void> {
+    if (this.owned.has(`${provider.name}/${id}`)) return;
+
+    this.owned.set(`${provider.name}/${id}`, {
+      provider,
+      id,
+      box: null,
+      sample: null,
+      handleDeleted: false,
+      pending: null,
+    });
+    await this.journal.track(provider.name, id);
+  }
+
+  /**
+   * Delete the sandbox and wait until it is seen gone; true once it is, and out of the journal.
+   * False leaves it journaled with the reason in `pending`, for the final sweep.
+   */
+  clean(
+    provider: ReadyProvider,
+    id: string,
+    waitMs = goneWaitMs(this.timeoutMs),
+  ): Promise<boolean> {
+    const key = `${provider.name}/${id}`;
+    const running = this.attempts.get(key);
+
+    if (running) return running;
+
+    const attempt = this.attempt(key, waitMs).finally(() => this.attempts.delete(key));
+    this.attempts.set(key, attempt);
 
     return attempt;
   }
 
-  /** Destroy every live sandbox; failures stay journaled for `reap`. */
-  async destroyAll(): Promise<void> {
-    await Promise.allSettled([...this.owners.keys()].map((box) => this.destroy(box)));
+  private async attempt(key: string, waitMs: number): Promise<boolean> {
+    const entry = this.owned.get(key);
+
+    if (!entry) return true;
+
+    let deleteError: string | null = null;
+
+    try {
+      if (entry.box && !entry.handleDeleted) {
+        entry.handleDeleted = true;
+        await entry.box.destroy();
+      } else await entry.provider.provider.destroy(entry.id);
+    } catch (error) {
+      deleteError = errorText(error instanceof Error ? error : nonError);
+    }
+
+    let evidence: LookupEvidence;
+
+    try {
+      evidence = await waitUntilGone(entry.provider, entry.id, waitMs);
+    } catch (error) {
+      entry.pending = `existence lookup failed: ${errorText(error instanceof Error ? error : nonError)}`;
+
+      return false;
+    }
+
+    if (!isAbsent(evidence)) {
+      entry.pending = deleteError
+        ? `delete failed: ${deleteError}; ${notGone(evidence)}`
+        : notGone(evidence);
+
+      return false;
+    }
+
+    this.owned.delete(key);
+    await this.journal.release(entry.provider.name, entry.id);
+
+    return true;
   }
+
+  /** Clean every sandbox not yet seen gone. */
+  async cleanAll(): Promise<void> {
+    await Promise.allSettled(
+      [...this.owned.values()].map((entry) => this.clean(entry.provider, entry.id)),
+    );
+  }
+
+  /** The sandboxes `provider` still has journaled. */
+  of(provider: ReadyProvider): readonly OwnedSandbox[] {
+    return [...this.owned.values()].filter((entry) => entry.provider === provider);
+  }
+}
+
+/**
+ * The final sweep, after the last sample: list each provider's sandboxes under this run's label,
+ * journal any the run lost track of, and delete and look up every one not yet seen gone, within
+ * one shared wait. What is still not seen gone becomes a cleanup error and stays journaled.
+ */
+async function finalSweep(providers: readonly ReadyProvider[], state: RunState): Promise<void> {
+  const end = performance.now() + goneWaitMs(state.timeoutMs);
+  const left = () => Math.max(1, end - performance.now());
+
+  await Promise.all(
+    providers.map(async (provider) => {
+      try {
+        const listed = await deadline(left(), () =>
+          provider.provider.list({ "sandbox-bench-run": state.runId }),
+        );
+
+        for (const info of listed)
+          if (hasRunOwnership(info, state.runId)) await state.live.adopt(provider, info.id);
+      } catch (error) {
+        const reason = `final sweep could not list the run's sandboxes: ${errorText(error instanceof Error ? error : nonError)}`;
+        state.results.cleanupErrors.push({
+          provider: provider.name,
+          sandboxId: null,
+          sample: null,
+          reason,
+        });
+        process.stdout.write(`CLEANUP ${provider.name}: ${reason}\n`);
+      }
+
+      await Promise.all(
+        state.live.of(provider).map(async (entry) => {
+          let failed: string | null = null;
+
+          try {
+            if (await state.live.clean(provider, entry.id, left())) return;
+          } catch (error) {
+            failed = errorText(error instanceof Error ? error : nonError);
+          }
+
+          const reason = failed ?? entry.pending ?? "deletion not confirmed";
+          state.results.cleanupErrors.push({
+            provider: provider.name,
+            sandboxId: entry.id,
+            sample: entry.sample,
+            reason,
+          });
+          process.stdout.write(
+            `CLEANUP ${provider.name} ${entry.id}: ${reason}; left journaled for reap\n`,
+          );
+        }),
+      );
+    }),
+  );
 }
 
 /** The run-wide state a sample reads and updates. */
@@ -307,7 +510,7 @@ async function runSample(
     box = await createSandbox(provider.provider, {
       labels: { "sandbox-bench-run": state.runId },
     });
-    await state.live.add(provider.name, box);
+    await state.live.add(provider, box, where);
 
     if (state.stopSignal) throw new Error("not started: the run was interrupted");
 
@@ -340,15 +543,11 @@ async function runSample(
     state.results.failures.push({ ...where, reason });
     process.stdout.write(`FAIL ${provider.name} ${scenario.id} run ${run}: ${reason}\n`);
   } finally {
-    if (box) {
-      try {
-        await state.live.destroy(box);
-      } catch (error) {
-        const reason = errorText(error instanceof Error ? error : nonError);
-        state.results.cleanupErrors.push({ ...where, reason });
-        process.stdout.write(`CLEANUP ${provider.name} ${scenario.id}: ${reason}\n`);
-      }
-    }
+    // Not yet gone stays journaled; the final sweep retries it and reports what it cannot clear.
+    if (box && !(await state.live.clean(provider, box.id).catch(() => false)))
+      process.stdout.write(
+        `CLEANUP ${provider.name} ${scenario.id} ${box.id}: not confirmed gone; the final sweep retries it\n`,
+      );
   }
 }
 
@@ -478,7 +677,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
     runId,
     timeoutMs: args.timeoutMs,
     results,
-    live: new LiveSandboxes(journal),
+    live: new LiveSandboxes(journal, args.timeoutMs),
     stopSignal: null,
   };
 
@@ -490,7 +689,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
 
     state.stopSignal = signal;
     process.stdout.write(`${signal}: stopping, destroying ${state.live.size} live sandboxes\n`);
-    void state.live.destroyAll();
+    void state.live.cleanAll();
   };
 
   process.stdout.write(
@@ -514,7 +713,9 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
 
     // A sample whose create returned after the signal is destroyed by its own cleanup; this
     // catches anything still live.
-    if (state.stopSignal) await state.live.destroyAll();
+    if (state.stopSignal) await state.live.cleanAll();
+
+    await finalSweep(ready, state);
   } finally {
     signals.off("SIGINT", onSignal);
     signals.off("SIGTERM", onSignal);

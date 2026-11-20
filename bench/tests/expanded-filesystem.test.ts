@@ -15,27 +15,38 @@ import {
   verifySqlite,
   verifyTar,
 } from "../src/expanded/filesystem.js";
-import { honestRounds, seedA, verifierSuite, withField } from "./expanded-verifier-suite.js";
+import {
+  honestRounds,
+  seedA,
+  verifierSuite,
+  withField,
+  withRounds,
+} from "./expanded-verifier-suite.js";
 
 /** What the SQLite guest prints for `seed`: ten 0.125 s rounds over a 46-page WAL database file. */
 function validSqlite(seed: number): string {
-  const expected = expectedSqlite(seed);
-
   return JSON.stringify({
     seed,
     ops: sqliteOps,
     journalMode: "wal",
     integrityOk: true,
-    aggregateSum: expected.aggregateSum,
     fileBytes: 46 * 4096,
     filePageCount: 46,
     filePageSize: 4096,
     fileRows: 2500,
-    fileUpdatedSum: expected.updatedSum,
+    // The file the last round left behind.
+    fileUpdatedSum: expectedSqlite(seed, 9).updatedSum,
     fileJournalMode: "wal",
     fileIntegrityOk: true,
-    rounds: honestRounds(expected.digest, 10, 0.125),
-    digest: expected.digest,
+    rounds: honestRounds(
+      (round) => ({
+        proof: expectedSqlite(seed, round).digest,
+        aggregateSum: expectedSqlite(seed, round).aggregateSum,
+      }),
+      10,
+      0.125,
+    ),
+    digest: expectedSqlite(seed).digest,
   });
 }
 
@@ -44,12 +55,25 @@ function validTar(seed: number): string {
     seed,
     files: 120,
     rawBytes: tarRawBytes,
-    archiveBytes: 3_700_000,
-    archiveHead: "1f8b08",
-    tarBytes: 6_461_440,
-    rounds: honestRounds(expectedTarDigest(seed), 4, 0.25),
-    digest: expectedTarDigest(seed),
+    rounds: honestRounds(
+      (round) => ({
+        proof: expectedTarDigest(seed, round),
+        archiveBytes: 3_700_000,
+        head: "1f8b08",
+        tarBytes: 6_461_440,
+      }),
+      4,
+      0.25,
+    ),
+    digest: expectedTarDigest(seed, 0),
   });
+}
+
+/** `raw` with round `index`'s field `key` set to `value`. */
+function withRoundField(raw: string, index: number, key: string, value: number | string) {
+  return withRounds(raw, (rounds) =>
+    rounds.map((round, i) => (i === index ? { ...round, [key]: value } : round)),
+  );
 }
 
 describe("filesystem scenarios", () => {
@@ -60,8 +84,12 @@ describe("filesystem scenarios", () => {
         JSON.stringify({
           seed,
           fileCount: 500,
-          rounds: honestRounds(expectedSmallFilesDigest(seed), 10, 0.125),
-          digest: expectedSmallFilesDigest(seed),
+          rounds: honestRounds(
+            (round) => ({ proof: expectedSmallFilesDigest(seed, round) }),
+            10,
+            0.125,
+          ),
+          digest: expectedSmallFilesDigest(seed, 0),
         }),
       tampered: { fileCount: 499 },
       expectedValue: 4000,
@@ -75,7 +103,6 @@ describe("filesystem scenarios", () => {
         ops: sqliteOps - 1,
         integrityOk: false,
         journalMode: "delete",
-        aggregateSum: 0,
         fileRows: 0,
         fileUpdatedSum: 0,
         filePageCount: 0,
@@ -94,9 +121,6 @@ describe("filesystem scenarios", () => {
       tampered: {
         files: 119,
         rawBytes: tarRawBytes - 1,
-        archiveBytes: 0,
-        archiveHead: "504b03",
-        tarBytes: tarRawBytes,
       },
       expectedValue: (tarRawBytes * 4) / 1_000_000,
       guest: { source: tarProgram, interpreter: "node" },
@@ -116,26 +140,27 @@ describe("filesystem scenarios", () => {
     },
   ]);
 
-  it("reports the SQLite aggregate the guest computed from the seed", () => {
-    const raw = withField(
+  it("checks each round's SQLite aggregate against that round's rows", () => {
+    const raw = withRoundField(
       validSqlite(seedA),
+      3,
       "aggregateSum",
-      expectedSqlite(seedA).aggregateSum + 1,
+      expectedSqlite(seedA, 3).aggregateSum + 1,
     );
 
     expect(verifySqlite(raw, seedA)).toMatchObject({
       ok: false,
-      reason: expect.stringMatching(/aggregateSum/),
+      reason: expect.stringMatching(/^round 3: aggregateSum/),
     });
   });
 
   it("rejects SQLite results without facts read back from the database file", () => {
-    const expected = expectedSqlite(seedA);
-
     // With the file facts a fallback cannot know, each wrong one fails on its own.
     const wrong: readonly (readonly [string, number | string | boolean, RegExp])[] = [
       ["fileRows", 2499, /rows/],
-      ["fileUpdatedSum", expected.updatedSum - 1, /updated rows/],
+      ["fileUpdatedSum", expectedSqlite(seedA, 9).updatedSum - 1, /updated rows/],
+      // Round 0's file, not the last round's.
+      ["fileUpdatedSum", expectedSqlite(seedA, 0).updatedSum, /updated rows/],
       ["filePageCount", 0, /pages/],
       ["fileBytes", 0, /bytes/],
       ["fileIntegrityOk", false, /integrity/],
@@ -156,16 +181,22 @@ describe("filesystem scenarios", () => {
     });
   });
 
-  it("rejects a tar archive no smaller than the tree it packed", () => {
-    expect(verifyTar(withField(validTar(seedA), "archiveBytes", tarRawBytes), seedA).ok).toBe(
-      false,
-    );
+  it("rejects a round whose archive is no smaller than the tree it packed, or not gzip", () => {
+    for (const [key, value] of [
+      ["archiveBytes", tarRawBytes],
+      ["archiveBytes", 0],
+      ["head", "504b03"],
+    ] as const)
+      expect(verifyTar(withRoundField(validTar(seedA), 2, key, value), seedA), key).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/^round 2: /),
+      });
   });
 
-  it("rejects an archive whose tar stream is missing file data", () => {
+  it("rejects a round whose tar stream is missing file data", () => {
     expect(
-      verifyTar(withField(validTar(seedA), "tarBytes", tarStreamRange.min - 512), seedA),
-    ).toMatchObject({ ok: false, reason: expect.stringMatching(/tar stream/) });
+      verifyTar(withRoundField(validTar(seedA), 1, "tarBytes", tarStreamRange.min - 512), seedA),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/^round 1: tar stream/) });
   });
 
   it("packs about 6.4 MB in the tar tree, and GNU tar's stream fits the range", () => {

@@ -28,10 +28,12 @@ import {
   checkRounds,
   minTimedSeconds,
   nodeRoundsSource,
-  roundProof,
+  perRound,
+  proofIs,
   roundsSchema,
   type Round,
 } from "./rounds.js";
+import { memo } from "./verify-kit.js";
 import type { ExpandedContext, ExpandedScenario, VerifyResult } from "./types.js";
 
 const mebibyte = 1_048_576;
@@ -46,36 +48,59 @@ const memBytes = 128 * mebibyte;
 const pageWords = 1024;
 const memPages = memBytes / 4096;
 
-/**
- * Word `k` of page `p` is `base(p) + k * step(p)` mod 2^32. The digest folds an XOR over every
- * word and an FNV-1a pass over one strided word per page, computed without allocating.
- */
-export function expectedMemDigest(seed: number): string {
+/** Page `p`'s pattern: word `k` is `base + k * step` mod 2^32. */
+function memPattern(seed: number, p: number) {
+  return {
+    base: Math.imul(seed ^ p, 0x9e3779b1) >>> 0,
+    step: (Math.imul(p, 0x85ebca6b) | 1) >>> 0,
+  };
+}
+
+/** The XOR of every word of every page's pattern: the same for any order of the pages. */
+const memXor = memo((seed) => {
   let xor = 0;
+
+  for (let p = 0; p < memPages; p++) {
+    const { base, step } = memPattern(seed, p);
+
+    for (let k = 0; k < pageWords; k++) xor ^= (base + Math.imul(k, step)) >>> 0;
+  }
+
+  return xor >>> 0;
+});
+
+/**
+ * Round `round` fills page `p` with the pattern of page `(p + round) % pages`, so every round
+ * writes different memory. Its digest folds an XOR over every word, which no rotation changes,
+ * and an FNV-1a pass over one strided word per page in memory order, which every rotation
+ * changes; the host computes both without allocating.
+ */
+const memRound = perRound((seed, round) => {
   let stride = 0x811c9dc5;
 
   for (let p = 0; p < memPages; p++) {
-    const base = Math.imul(seed ^ p, 0x9e3779b1) >>> 0;
-    const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
-
-    for (let k = 0; k < pageWords; k++) xor ^= (base + Math.imul(k, step)) >>> 0;
-
+    const { base, step } = memPattern(seed, (p + round) % memPages);
     const k = (p * 7) & (pageWords - 1);
     stride = Math.imul(stride ^ ((base + Math.imul(k, step)) >>> 0), 16_777_619) >>> 0;
   }
 
-  return sha256Hex(`${seed}:${memBytes}:${xor >>> 0}:${stride}`);
+  return sha256Hex(`${seed}:${memBytes}:${round}:${memXor(seed)}:${stride}`);
+});
+
+export function expectedMemDigest(seed: number, round = 0): string {
+  return memRound(seed, round);
 }
 
 export const memProgram = `${nodePrelude}
 ${nodeRoundsSource}
 const bytes = ${memBytes}, pages = bytes / 4096, words = ${pageWords};
 let rssBytes = Number.MAX_SAFE_INTEGER;
-const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
+const rounds = await timedRounds(${runtimeMinRounds}, (round) => round, (round) => {
   let mem = new Uint32Array(bytes / 4);
   for (let p = 0; p < pages; p++) {
-    const base = Math.imul(SEED ^ p, 0x9e3779b1) >>> 0;
-    const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
+    const q = (p + round) % pages;
+    const base = Math.imul(SEED ^ q, 0x9e3779b1) >>> 0;
+    const step = (Math.imul(q, 0x85ebca6b) | 1) >>> 0;
     const offset = p * words;
     for (let k = 0; k < words; k++) mem[offset + k] = (base + Math.imul(k, step)) >>> 0;
   }
@@ -85,9 +110,9 @@ const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
   let stride = 0x811c9dc5;
   for (let p = 0; p < pages; p++) stride = Math.imul(stride ^ mem[p * words + ((p * 7) & (words - 1))], 16777619) >>> 0;
   mem = null;
-  return sha(SEED + ":" + bytes + ":" + (xor >>> 0) + ":" + stride);
+  return { proof: sha(SEED + ":" + bytes + ":" + round + ":" + (xor >>> 0) + ":" + stride) };
 });
-console.log(JSON.stringify({ seed: SEED, bytes, rssBytes, rounds, digest }));
+console.log(JSON.stringify({ seed: SEED, bytes, rssBytes, rounds, digest: rounds[0].proof }));
 `;
 
 const memOutput = z.strictObject({
@@ -117,8 +142,8 @@ export function verifyMem(raw: string, seed: number): VerifyResult {
 
   const rounds = checkRounds({
     rounds: out.rounds,
-    digest: out.digest,
     minRounds: runtimeMinRounds,
+    check: proofIs((round) => expectedMemDigest(seed, round)),
   });
 
   if (!rounds.ok) return rounds;
@@ -139,12 +164,19 @@ export function verifyMem(raw: string, seed: number): VerifyResult {
 
 const spawnCount = 100;
 
-const spawnToken = (seed: number, i: number) => seededHex(seed, "spawn", i).slice(0, 16);
+/** Child `i`'s token in round `round`: every round hands its children their own tokens. */
+const spawnToken = (seed: number, round: number, i: number) =>
+  seededHex(seed, "spawn", round, i).slice(0, 16);
 
-export function expectedSpawnDigest(seed: number): string {
-  return sha256Hex(
-    Array.from({ length: spawnCount }, (_, i) => `${i}:${spawnToken(seed, i)}\n`).join(""),
-  );
+const spawnRound = perRound((seed, round) =>
+  sha256Hex(
+    Array.from({ length: spawnCount }, (_, i) => `${i}:${spawnToken(seed, round, i)}\n`).join(""),
+  ),
+);
+
+/** The digest of every child's line in round `round`. */
+export function expectedSpawnDigest(seed: number, round = 0): string {
+  return spawnRound(seed, round);
 }
 
 /**
@@ -156,11 +188,12 @@ export const spawnProgram = `${nodePrelude}
 ${nodeRoundsSource}
 import { spawnSync } from "node:child_process";
 const childPids = [];
-const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
+const prepare = (round) => Array.from({ length: ${spawnCount} }, (_, i) => h("spawn", round, i).slice(0, 16));
+const rounds = await timedRounds(${runtimeMinRounds}, prepare, (tokens) => {
   const outputs = [];
   const pids = [];
   for (let i = 0; i < ${spawnCount}; i++) {
-    const token = h("spawn", i).slice(0, 16);
+    const token = tokens[i];
     const r = spawnSync("/bin/sh", ["-c", 'printf "%s:%s:%s\\\\n" "$1" "$2" "$$"', "sh", String(i), token], { encoding: "utf8" });
     const line = /^(\\d+):([0-9a-f]{16}):(\\d+)\\n$/.exec(r.stdout ?? "");
     if (r.status !== 0 || !line || line[1] !== String(i) || line[2] !== token) throw new Error("child " + i + " exited " + r.status + " with " + JSON.stringify(r.stdout));
@@ -169,9 +202,9 @@ const { rounds, digest } = await timedRounds(${runtimeMinRounds}, () => {
     pids.push(r.pid);
   }
   childPids.push(pids);
-  return sha(outputs.join(""));
+  return { proof: sha(outputs.join("")) };
 });
-console.log(JSON.stringify({ seed: SEED, spawns: ${spawnCount}, parentPid: process.pid, childPids, rounds, digest }));
+console.log(JSON.stringify({ seed: SEED, spawns: ${spawnCount}, parentPid: process.pid, childPids, rounds, digest: rounds[0].proof }));
 `;
 
 const pidSchema = z.number().int().positive();
@@ -201,8 +234,8 @@ export function verifySpawn(raw: string, seed: number): VerifyResult {
 
   const rounds = checkRounds({
     rounds: out.rounds,
-    digest: out.digest,
     minRounds: runtimeMinRounds,
+    check: proofIs((round) => expectedSpawnDigest(seed, round)),
   });
 
   if (!rounds.ok) return rounds;
@@ -235,11 +268,22 @@ export function verifySpawn(raw: string, seed: number): VerifyResult {
 const streamLines = 7500;
 const streamDir = "/workspace/bench-stream";
 
-export function expectedStream(seed: number): string {
-  return Array.from({ length: streamLines }, (_, j) => `${j}:${seededHex(seed, "line", j)}\n`).join(
-    "",
-  );
+/** The seeded lines uploaded once; every round streams them behind its own salt line. */
+export const expectedStream = memo((seed) =>
+  Array.from({ length: streamLines }, (_, j) => `${j}:${seededHex(seed, "line", j)}\n`).join(""),
+);
+
+/** Round `round`'s first line, the same 70 bytes long every round. */
+function streamSalt(seed: number, round: number): string {
+  return `salt:${seededHex(seed, "stream-round", round)}\n`;
 }
+
+/** What round `round`'s `cat` must print: its salt line, then the uploaded lines. */
+export function expectedStreamRound(seed: number, round: number): string {
+  return `${streamSalt(seed, round)}${expectedStream(seed)}`;
+}
+
+const streamRoundDigest = perRound((seed, round) => sha256Hex(expectedStreamRound(seed, round)));
 
 const streamOutput = z.strictObject({
   seed: seedSchema,
@@ -250,8 +294,9 @@ const streamOutput = z.strictObject({
 });
 
 /**
- * Raw output here is the host's record of repeated `box.run("cat ...")` calls: the line and byte
- * counts and SHA-256 of the stdout it received, and each call's host-measured wall time.
+ * Raw output here is the host's record of repeated `box.run("cat ...")` calls: round 0's line and
+ * byte counts and SHA-256 of the stdout it received, and each round's digest and host-measured
+ * wall time.
  */
 export function verifyStream(raw: string, seed: number): VerifyResult {
   const parsed = parseGuestJson(raw, streamOutput);
@@ -262,19 +307,20 @@ export function verifyStream(raw: string, seed: number): VerifyResult {
   const wrongSeed = seedMismatch(out.seed, seed);
 
   if (wrongSeed) return wrongSeed;
-  const expected = expectedStream(seed);
 
-  if (out.lines !== streamLines) return failure(`lines ${out.lines}, expected ${streamLines}`);
+  const bytes = expectedStreamRound(seed, 0).length;
 
-  if (out.bytes !== expected.length)
-    return failure(`bytes ${out.bytes}, expected ${expected.length}`);
+  if (out.lines !== streamLines + 1)
+    return failure(`lines ${out.lines}, expected ${streamLines + 1}`);
 
-  if (out.digest !== sha256Hex(expected)) return failure("stdout digest mismatch");
+  if (out.bytes !== bytes) return failure(`bytes ${out.bytes}, expected ${bytes}`);
+
+  if (out.digest !== streamRoundDigest(seed, 0)) return failure("stdout digest mismatch");
 
   const rounds = checkRounds({
     rounds: out.rounds,
-    digest: out.digest,
     minRounds: runtimeMinRounds,
+    check: proofIs((round) => streamRoundDigest(seed, round)),
   });
 
   if (!rounds.ok) return rounds;
@@ -297,20 +343,24 @@ function firstBadLine(received: string, expected: string) {
 }
 
 async function runStream(box: Sandbox, ctx: ExpandedContext) {
-  const expected = expectedStream(ctx.seed);
   const path = `${streamDir}/lines.txt`;
+  const saltPath = `${streamDir}/salt.txt`;
 
   await command(box, `rm -rf ${streamDir} && mkdir -p ${streamDir}`, ctx.timeoutMs);
 
   try {
-    await box.files.write(path, expected);
+    await box.files.write(path, expectedStream(ctx.seed));
     const rounds: Round[] = [];
     let spent = 0;
     let first = "";
 
     while (rounds.length < runtimeMinRounds || spent < minTimedSeconds) {
+      // Untimed: the round's own first line, so every round streams different bytes.
+      const expected = expectedStreamRound(ctx.seed, rounds.length);
+      await box.files.write(saltPath, streamSalt(ctx.seed, rounds.length));
+
       const start = performance.now();
-      const result = await box.run(`cat ${path}`, { timeoutMs: ctx.timeoutMs });
+      const result = await box.run(`cat ${saltPath} ${path}`, { timeoutMs: ctx.timeoutMs });
       const seconds = (performance.now() - start) / 1000;
 
       if (!result.ok) throw new Error(`runtime-stdout-stream: cat exited ${result.exitCode}`);
@@ -319,12 +369,12 @@ async function runStream(box: Sandbox, ctx: ExpandedContext) {
 
       if (result.stdout !== expected)
         throw new Error(
-          `runtime-stdout-stream: stdout differs at ${firstBadLine(result.stdout, expected)}`,
+          `runtime-stdout-stream: round ${rounds.length} stdout differs at ${firstBadLine(result.stdout, expected)}`,
         );
 
       first ||= result.stdout;
       spent += seconds;
-      rounds.push({ seconds, proof: roundProof(rounds.length, sha256Hex(result.stdout)) });
+      rounds.push({ seconds, proof: sha256Hex(result.stdout) });
     }
 
     return JSON.stringify({
