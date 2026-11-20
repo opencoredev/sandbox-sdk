@@ -5,12 +5,19 @@ import {
   type ExpandedSiteData,
   type ExpandedSiteMetric,
 } from "./types.js";
+import { buildScenarios } from "./builds.js";
+import { filesystemScenarios } from "./filesystem.js";
+import { runtimeScenarios } from "./runtime.js";
 
 /**
  * Registry of all expanded benchmark scenarios, grouped by category.
  * Kept separate from the legacy `scenarioNames` so existing publication site-data stays unchanged.
  */
-export const expandedScenarios: readonly ExpandedScenario[] = [];
+export const expandedScenarios: readonly ExpandedScenario[] = [
+  ...filesystemScenarios,
+  ...buildScenarios,
+  ...runtimeScenarios,
+];
 
 export function findExpandedScenario(id: string): ExpandedScenario | undefined {
   return expandedScenarios.find((s) => s.id === id);

@@ -1,0 +1,510 @@
+/**
+ * Runtime scenarios: memory allocation and page touching, process spawning, stdout streaming
+ * through `box.run`, and the SDK's env, cwd, file and background-process contracts.
+ */
+import type { Sandbox } from "@opencoredev/sandbox-sdk";
+import { z } from "zod";
+import { command, quote } from "../workloads.js";
+import {
+  digestSchema,
+  failure,
+  nodePrelude,
+  outcomeOf,
+  parseGuestJson,
+  proofOf,
+  runGuestProgram,
+  secondsSchema,
+  seededHex,
+  seedMismatch,
+  seedSchema,
+  sha256Hex,
+} from "./guest-kit.js";
+import type { ExpandedContext, ExpandedScenario, VerifyResult } from "./types.js";
+
+const mebibyte = 1_048_576;
+
+// runtime-mem-alloc-128m
+
+const memBytes = 128 * mebibyte;
+const pageWords = 1024;
+const memPages = memBytes / 4096;
+
+/**
+ * Word `k` of page `p` is `base(p) + k * step(p)` mod 2^32. The digest folds an XOR over every
+ * word and an FNV-1a pass over one strided word per page, computed without allocating.
+ */
+export function expectedMemDigest(seed: number): string {
+  let xor = 0;
+  let stride = 0x811c9dc5;
+
+  for (let p = 0; p < memPages; p++) {
+    const base = Math.imul(seed ^ p, 0x9e3779b1) >>> 0;
+    const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
+
+    for (let k = 0; k < pageWords; k++) xor ^= (base + Math.imul(k, step)) >>> 0;
+
+    const k = (p * 7) & (pageWords - 1);
+    stride = Math.imul(stride ^ ((base + Math.imul(k, step)) >>> 0), 16_777_619) >>> 0;
+  }
+
+  return sha256Hex(`${seed}:${memBytes}:${xor >>> 0}:${stride}`);
+}
+
+export const memProgram = `${nodePrelude}
+const bytes = ${memBytes}, pages = bytes / 4096, words = ${pageWords};
+const t0 = now();
+let mem = new Uint32Array(bytes / 4);
+for (let p = 0; p < pages; p++) {
+  const base = Math.imul(SEED ^ p, 0x9e3779b1) >>> 0;
+  const step = (Math.imul(p, 0x85ebca6b) | 1) >>> 0;
+  const offset = p * words;
+  for (let k = 0; k < words; k++) mem[offset + k] = (base + Math.imul(k, step)) >>> 0;
+}
+const rssBytes = process.memoryUsage().rss;
+let xor = 0;
+for (let i = 0; i < mem.length; i++) xor ^= mem[i];
+let stride = 0x811c9dc5;
+for (let p = 0; p < pages; p++) stride = Math.imul(stride ^ mem[p * words + ((p * 7) & (words - 1))], 16777619) >>> 0;
+mem = null;
+const seconds = now() - t0;
+console.log(JSON.stringify({ seed: SEED, bytes, rssBytes, seconds, digest: sha(SEED + ":" + bytes + ":" + (xor >>> 0) + ":" + stride) }));
+`;
+
+const memOutput = z.strictObject({
+  seed: seedSchema,
+  bytes: z.number().int(),
+  rssBytes: z.number().int(),
+  seconds: secondsSchema,
+  digest: digestSchema,
+});
+
+export function verifyMem(raw: string, seed: number): VerifyResult {
+  const parsed = parseGuestJson(raw, memOutput);
+
+  if (!parsed.ok) return parsed;
+  const out = parsed.data;
+
+  const wrongSeed = seedMismatch(out.seed, seed);
+
+  if (wrongSeed) return wrongSeed;
+
+  if (out.bytes !== memBytes) return failure(`bytes ${out.bytes}, expected ${memBytes}`);
+
+  // Every page was written, so the process held the whole working set resident.
+  if (out.rssBytes < memBytes) return failure(`rss ${out.rssBytes} below the working set`);
+
+  if (out.digest !== expectedMemDigest(seed)) return failure("stride digest mismatch");
+
+  return {
+    ok: true,
+    value: out.bytes / mebibyte / out.seconds,
+    proof: proofOf("runtime-mem", out.digest),
+    details: { seconds: out.seconds, rssMiB: Math.round(out.rssBytes / mebibyte) },
+  };
+}
+
+// runtime-fork-spawn-100
+
+const spawnCount = 100;
+
+const spawnToken = (seed: number, i: number) => seededHex(seed, "spawn", i).slice(0, 16);
+
+export function expectedSpawnDigest(seed: number): string {
+  return sha256Hex(
+    Array.from({ length: spawnCount }, (_, i) => `${i}:${spawnToken(seed, i)}\n`).join(""),
+  );
+}
+
+export const spawnProgram = `${nodePrelude}
+import { spawnSync } from "node:child_process";
+const outputs = [];
+const t0 = now();
+for (let i = 0; i < ${spawnCount}; i++) {
+  const token = h("spawn", i).slice(0, 16);
+  const r = spawnSync("/bin/sh", ["-c", 'printf "%s:%s\\\\n" "$1" "$2"', "sh", String(i), token], { encoding: "utf8" });
+  if (r.status !== 0 || r.stdout !== i + ":" + token + "\\n") throw new Error("child " + i + " exited " + r.status + " with " + JSON.stringify(r.stdout));
+  outputs.push(r.stdout);
+}
+const seconds = now() - t0;
+console.log(JSON.stringify({ seed: SEED, spawns: outputs.length, seconds, digest: sha(outputs.join("")) }));
+`;
+
+const spawnOutput = z.strictObject({
+  seed: seedSchema,
+  spawns: z.number().int(),
+  seconds: secondsSchema,
+  digest: digestSchema,
+});
+
+export function verifySpawn(raw: string, seed: number): VerifyResult {
+  const parsed = parseGuestJson(raw, spawnOutput);
+
+  if (!parsed.ok) return parsed;
+  const out = parsed.data;
+
+  const wrongSeed = seedMismatch(out.seed, seed);
+
+  if (wrongSeed) return wrongSeed;
+
+  if (out.spawns !== spawnCount) return failure(`spawns ${out.spawns}, expected ${spawnCount}`);
+
+  if (out.digest !== expectedSpawnDigest(seed)) return failure("child output digest mismatch");
+
+  return {
+    ok: true,
+    value: spawnCount / out.seconds,
+    proof: proofOf("runtime-spawn", out.digest),
+    details: { seconds: out.seconds },
+  };
+}
+
+// runtime-stdout-stream
+
+/** About 512 KiB of lines, half the SDK's 1 MiB per-stream cap, so nothing is truncated. */
+const streamLines = 7500;
+const streamDir = "/workspace/bench-stream";
+
+export function expectedStream(seed: number): string {
+  return Array.from({ length: streamLines }, (_, j) => `${j}:${seededHex(seed, "line", j)}\n`).join(
+    "",
+  );
+}
+
+const streamOutput = z.strictObject({
+  seed: seedSchema,
+  lines: z.number().int(),
+  bytes: z.number().int(),
+  seconds: secondsSchema,
+  digest: digestSchema,
+});
+
+/**
+ * Raw output here is the host's record of one `box.run("cat ...")`: the line and byte counts
+ * and SHA-256 of the stdout it received, and the host-measured wall time of the call.
+ */
+export function verifyStream(raw: string, seed: number): VerifyResult {
+  const parsed = parseGuestJson(raw, streamOutput);
+
+  if (!parsed.ok) return parsed;
+  const out = parsed.data;
+
+  const wrongSeed = seedMismatch(out.seed, seed);
+
+  if (wrongSeed) return wrongSeed;
+  const expected = expectedStream(seed);
+
+  if (out.lines !== streamLines) return failure(`lines ${out.lines}, expected ${streamLines}`);
+
+  if (out.bytes !== expected.length)
+    return failure(`bytes ${out.bytes}, expected ${expected.length}`);
+
+  if (out.digest !== sha256Hex(expected)) return failure("stdout digest mismatch");
+
+  return {
+    ok: true,
+    value: out.bytes / mebibyte / out.seconds,
+    proof: proofOf("runtime-stream", out.digest),
+    details: { seconds: out.seconds, bytes: out.bytes },
+  };
+}
+
+/** The first line that differs, for a precise failure message. */
+function firstBadLine(received: string, expected: string) {
+  const got = received.split("\n");
+  const want = expected.split("\n");
+  const index = want.findIndex((line, i) => got[i] !== line);
+
+  return index === -1 ? `line count ${got.length}` : `line ${index}`;
+}
+
+async function runStream(box: Sandbox, ctx: ExpandedContext) {
+  const expected = expectedStream(ctx.seed);
+  const path = `${streamDir}/lines.txt`;
+
+  await command(box, `rm -rf ${streamDir} && mkdir -p ${streamDir}`, ctx.timeoutMs);
+
+  try {
+    await box.files.write(path, expected);
+    const start = performance.now();
+    const result = await box.run(`cat ${path}`, { timeoutMs: ctx.timeoutMs });
+    const seconds = (performance.now() - start) / 1000;
+
+    if (!result.ok) throw new Error(`runtime-stdout-stream: cat exited ${result.exitCode}`);
+
+    if (result.truncated) throw new Error("runtime-stdout-stream: stdout was truncated");
+
+    if (result.stdout !== expected)
+      throw new Error(
+        `runtime-stdout-stream: stdout differs at ${firstBadLine(result.stdout, expected)}`,
+      );
+
+    return JSON.stringify({
+      seed: ctx.seed,
+      lines: result.stdout.split("\n").length - 1,
+      bytes: Buffer.byteLength(result.stdout),
+      seconds,
+      digest: sha256Hex(result.stdout),
+    });
+  } finally {
+    await box.run(`rm -rf ${streamDir}`, { timeoutMs: ctx.timeoutMs });
+  }
+}
+
+// runtime-env-isolation
+
+const envChecks = 4;
+const envDir = "/workspace/bench-env";
+
+/** Inputs for the four checks, all derived from the seed. */
+export function envInputs(seed: number) {
+  const hex = seededHex(seed, "env");
+  const binary = new Uint8Array(1024);
+
+  // Every byte value once, in a seeded rotation, then seeded filler.
+  for (let i = 0; i < 256; i++) binary[i] = (i + Number.parseInt(hex.slice(0, 2), 16)) & 0xff;
+
+  for (let i = 256; i < binary.length; i++)
+    binary[i] = Number.parseInt(seededHex(seed, "env-bin", i).slice(0, 2), 16);
+
+  return {
+    token: `tök ${hex.slice(0, 12)} "quoted" $HOME \`id\` =1 ✓`,
+    cwd: `${envDir}/sub-${hex.slice(12, 20)}`,
+    binary,
+    text: `seed ${seed}: ünïcödé 日本語 😀 ${hex.slice(20, 44)}\nsecond line\n`,
+    processName: `bench-env-${hex.slice(44, 52)}`,
+  };
+}
+
+/** One result line per check, as `runEnv` builds them when every check passes. */
+export function expectedEnvDigest(seed: number): string {
+  const inputs = envInputs(seed);
+
+  return sha256Hex(
+    [
+      `seed:${seed}`,
+      `env:${sha256Hex(inputs.token)}:unset`,
+      `cwd:${inputs.cwd}`,
+      `files:${sha256Hex(inputs.binary)}:${sha256Hex(inputs.text)}`,
+      "process:stopped",
+    ].join("\n"),
+  );
+}
+
+const envOutput = z.strictObject({
+  seed: seedSchema,
+  checksPassed: z.number().int(),
+  seconds: secondsSchema,
+  digest: digestSchema,
+});
+
+/** Raw output here is the host's record of the four checks and their host-measured time. */
+export function verifyEnv(raw: string, seed: number): VerifyResult {
+  const parsed = parseGuestJson(raw, envOutput);
+
+  if (!parsed.ok) return parsed;
+  const out = parsed.data;
+
+  const wrongSeed = seedMismatch(out.seed, seed);
+
+  if (wrongSeed) return wrongSeed;
+
+  if (out.checksPassed !== envChecks)
+    return failure(`checksPassed ${out.checksPassed}, expected ${envChecks}`);
+
+  if (out.digest !== expectedEnvDigest(seed)) return failure("check digest mismatch");
+
+  return {
+    ok: true,
+    value: out.seconds,
+    proof: proofOf("runtime-env", out.digest),
+    details: { checksPassed: out.checksPassed },
+  };
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array) {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+async function checkEnv(box: Sandbox, ctx: ExpandedContext, token: string) {
+  const set = await box.run(`printf '%s' "$BENCH_TOKEN"`, {
+    env: { BENCH_TOKEN: token },
+    timeoutMs: ctx.timeoutMs,
+  });
+
+  if (!set.ok || set.stdout !== token)
+    throw new Error(`env: got ${JSON.stringify(set.stdout)}, expected the token`);
+
+  const unset = await command(box, `printf '%s' "\${BENCH_TOKEN-unset}"`, ctx.timeoutMs);
+
+  if (unset !== "unset") throw new Error("env: BENCH_TOKEN leaked into a later command");
+
+  return `env:${sha256Hex(set.stdout)}:${unset}`;
+}
+
+async function checkCwd(box: Sandbox, ctx: ExpandedContext, cwd: string) {
+  await command(box, `mkdir -p ${quote(cwd)}`, ctx.timeoutMs);
+  const absolute = await box.run("pwd", { cwd, timeoutMs: ctx.timeoutMs });
+
+  const relative = await box.run("pwd", {
+    cwd: cwd.replace(/^\/workspace\//, ""),
+    timeoutMs: ctx.timeoutMs,
+  });
+
+  for (const result of [absolute, relative])
+    if (!result.ok || result.stdout.trim() !== cwd || result.cwd !== cwd)
+      throw new Error(`cwd: ran in ${result.stdout.trim()} (${result.cwd}), expected ${cwd}`);
+
+  return `cwd:${cwd}`;
+}
+
+async function checkFiles(
+  box: Sandbox,
+  ctx: ExpandedContext,
+  inputs: ReturnType<typeof envInputs>,
+) {
+  const binPath = `${envDir}/blob.bin`;
+  const textPath = `${envDir}/text.txt`;
+
+  await box.files.write(binPath, inputs.binary);
+  await box.files.write(textPath, inputs.text);
+
+  if (!sameBytes(await box.files.read(binPath, { as: "bytes" }), inputs.binary))
+    throw new Error("files: binary readback differs");
+
+  if ((await box.files.read(textPath)) !== inputs.text)
+    throw new Error("files: UTF-8 readback differs");
+
+  const sums = await command(box, `sha256sum ${binPath} ${textPath}`, ctx.timeoutMs);
+  const guest = sums.split("\n").map((line) => line.split(/\s+/)[0]);
+  const binHash = sha256Hex(inputs.binary);
+  const textHash = sha256Hex(inputs.text);
+
+  if (guest[0] !== binHash || guest[1] !== textHash)
+    throw new Error("files: guest sha256sum differs from the bytes sent");
+
+  return `files:${binHash}:${textHash}`;
+}
+
+async function checkProcess(box: Sandbox, ctx: ExpandedContext, name: string) {
+  const handle = await box.start("sleep 300", { name, cwd: envDir });
+
+  try {
+    const info = (await box.processes()).find((p) => p.name === name);
+
+    if (!info || info.pid <= 0) throw new Error("process: background process not listed");
+
+    await command(box, `kill -0 ${info.pid}`, ctx.timeoutMs);
+    // stop() always waits the full grace before SIGKILL; keep it short so the SDK's round trips
+    // dominate, not a fixed sleep.
+    await handle.stop({ graceMs: 100 });
+    const alive = await box.run(`kill -0 ${info.pid}`, { timeoutMs: ctx.timeoutMs });
+
+    if (alive.ok) throw new Error(`process: pid ${info.pid} survived stop`);
+
+    return "process:stopped";
+  } finally {
+    if (handle.status === "running" || handle.status === "starting")
+      await handle.stop({ graceMs: 0 }).catch(() => undefined);
+  }
+}
+
+async function runEnv(box: Sandbox, ctx: ExpandedContext) {
+  const inputs = envInputs(ctx.seed);
+
+  await command(box, `rm -rf ${envDir} && mkdir -p ${envDir}`, ctx.timeoutMs);
+
+  try {
+    const start = performance.now();
+
+    const results = [
+      `seed:${ctx.seed}`,
+      await checkEnv(box, ctx, inputs.token),
+      await checkCwd(box, ctx, inputs.cwd),
+      await checkFiles(box, ctx, inputs),
+      await checkProcess(box, ctx, inputs.processName),
+    ];
+
+    const seconds = (performance.now() - start) / 1000;
+
+    return JSON.stringify({
+      seed: ctx.seed,
+      checksPassed: results.length - 1,
+      seconds,
+      digest: sha256Hex(results.join("\n")),
+    });
+  } finally {
+    await box.run(`rm -rf ${envDir}`, { timeoutMs: ctx.timeoutMs });
+  }
+}
+
+export const runtimeScenarios: readonly ExpandedScenario[] = [
+  {
+    id: "runtime-mem-alloc-128m",
+    category: "runtime",
+    label: "128 MiB memory touch",
+    description:
+      "Allocate a 128 MiB working set, write every 4 KiB page with seeded words, then read it back with a full XOR pass and a strided checksum.",
+    unit: "MB/s",
+    better: "higher",
+    verifyOutput: verifyMem,
+    async run(box, ctx) {
+      const raw = await runGuestProgram(
+        box,
+        { dir: "/workspace/bench-mem", file: "mem.mjs", source: memProgram, interpreter: "node" },
+        ctx,
+      );
+
+      return outcomeOf("runtime-mem-alloc-128m", verifyMem(raw, ctx.seed));
+    },
+  },
+  {
+    id: "runtime-fork-spawn-100",
+    category: "runtime",
+    label: "Spawn 100 processes",
+    description:
+      "Spawn 100 short-lived /bin/sh children one after another, each printing a seeded token, and check every exit code and output.",
+    unit: "spawns/s",
+    better: "higher",
+    verifyOutput: verifySpawn,
+    async run(box, ctx) {
+      const raw = await runGuestProgram(
+        box,
+        {
+          dir: "/workspace/bench-spawn",
+          file: "spawn.mjs",
+          source: spawnProgram,
+          interpreter: "node",
+        },
+        ctx,
+      );
+
+      return outcomeOf("runtime-fork-spawn-100", verifySpawn(raw, ctx.seed));
+    },
+  },
+  {
+    id: "runtime-stdout-stream",
+    category: "runtime",
+    label: "stdout streaming",
+    description:
+      "Stream 7,500 seeded lines (about 512 KiB) through box.run stdout and check every line arrived intact and untruncated.",
+    unit: "MB/s",
+    better: "higher",
+    verifyOutput: verifyStream,
+    async run(box, ctx) {
+      return outcomeOf("runtime-stdout-stream", verifyStream(await runStream(box, ctx), ctx.seed));
+    },
+  },
+  {
+    id: "runtime-env-isolation",
+    category: "runtime",
+    label: "Env, cwd, files, processes",
+    description:
+      "Check per-command env and its isolation, absolute and relative cwd, binary and UTF-8 file round trips, and stopping a background process.",
+    unit: "s",
+    better: "lower",
+    verifyOutput: verifyEnv,
+    async run(box, ctx) {
+      return outcomeOf("runtime-env-isolation", verifyEnv(await runEnv(box, ctx), ctx.seed));
+    },
+  },
+];
