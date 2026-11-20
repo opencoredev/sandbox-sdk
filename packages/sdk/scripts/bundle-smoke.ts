@@ -7,8 +7,8 @@
 // failure is a SandboxError. A TypeError such as "m is not a constructor" fails the provider.
 // Each bundle runs from its own directory, with no node_modules in reach, like a deploy.
 // Also checked: boxd file transfers in every format (they used to resolve a file through
-// import.meta.url), the hint an ESM bundle without the banner gets, and that the error mappers
-// still recognize native errors once a minifier has renamed every class.
+// import.meta.url), Beam's create, the hint an ESM bundle without the banner gets, and that the
+// error mappers still recognize native errors once a minifier has renamed every class.
 //
 //   bun scripts/bundle-smoke.ts                         build, then check every provider offline
 //   SKIP_BUILD=1 bun scripts/bundle-smoke.ts            reuse dist
@@ -103,6 +103,12 @@ async function probe(name, factory) {
   const outcome = await Promise.race([listSandboxes(factory()).then(() => ({ ok: true }), error => ({ error })), timeout]);
   console.log(JSON.stringify({ name, attempts, timedOut: outcome.timedOut === true, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
 }
+// Beam lists over fetch and creates through its peer: only a create reaches the peer's Sandbox.
+async function createProbe(name, provider) {
+  attempts = 0;
+  const outcome = await createSandbox(provider).then(() => ({ ok: true }), error => ({ error }));
+  console.log(JSON.stringify({ name, attempts, timedOut: false, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
+}
 // boxd moves file bytes with its fetch client; reading through the adapter reaches it without a sandbox.
 async function transferProbe(name, provider) {
   attempts = 0;
@@ -112,7 +118,7 @@ async function transferProbe(name, provider) {
 `;
 
 const imports = [
-  `import { listSandboxes, SandboxError } from "@opencoredev/sandbox-sdk";`,
+  `import { createSandbox, listSandboxes, SandboxError } from "@opencoredev/sandbox-sdk";`,
   ...Object.keys(fakes).map(
     (name) => `import { ${name} } from "@opencoredev/sandbox-sdk/${name}";`,
   ),
@@ -123,9 +129,10 @@ const probes = [
     ([name, options]) => `await probe(${JSON.stringify(name)}, () => ${name}(${options}));`,
   ),
   `await transferProbe("boxd files", boxd(${fakes.boxd}));`,
+  `await createProbe("beam create", beam(${fakes.beam}));`,
 ];
 
-const rowNames = [...Object.keys(fakes), "boxd files"];
+const rowNames = [...Object.keys(fakes), "boxd files", "beam create"];
 const esm = [imports, blocker, ...probes].join("\n");
 
 // cjs output has no top-level await, so the same probes run in an async IIFE.
@@ -137,7 +144,7 @@ const requireBanner = {
 
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
-const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files"];
+const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files", "beam create"];
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
